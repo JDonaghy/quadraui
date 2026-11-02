@@ -24,8 +24,8 @@ use quadraui::{
 };
 
 use crate::drag::{
-    find_data_table_layout, find_split_layout, text_display_scroll_state, tree_scroll_state,
-    ActiveDrag, DataTableColumnDrag, ScrollbarDrag,
+    find_data_table_layout, find_split_layout, find_split_tree_layout, text_display_scroll_state,
+    tree_scroll_state, ActiveDrag, DataTableColumnDrag, ScrollbarDrag,
 };
 use crate::extra_paint::extra_as;
 use crate::hit::{
@@ -61,11 +61,13 @@ pub struct InteractionEngine {
     /// to translate an incoming pointer event's screen coordinates into the
     /// `WidgetId` (and finer [`HitDetail`]) it landed on.
     hit_map: RefCell<Vec<PaintedHit>>,
-    /// Armed by a `MouseDown` landing on a split divider (per [`Self::hit_map`]'s
-    /// [`PaintedHit::Split`] hit-testing) and cleared on the matching
-    /// `MouseUp`. While armed, [`InteractionEngine::handle`] turns every
-    /// `MouseMoved` into a synthesized `UiEvent::SplitDividerDragged` instead
-    /// of forwarding the raw move, so the binding's own event handler never
+    /// Armed by a `MouseDown` landing on a split divider — a two-pane
+    /// `Split`'s (per [`Self::hit_map`]'s [`PaintedHit::Split`]
+    /// hit-testing) or one of an N-way `SplitTree`'s (per
+    /// [`PaintedHit::SplitTree`]) — and cleared on the matching `MouseUp`.
+    /// While armed, [`InteractionEngine::handle`] turns every `MouseMoved`
+    /// into a synthesized `UiEvent::SplitDividerDragged` instead of
+    /// forwarding the raw move, so the binding's own event handler never
     /// has to recompute split geometry itself to support divider dragging.
     active_drag: RefCell<Option<ActiveDrag>>,
     /// Armed by a `MouseDown` landing on `HitDetail::TreeScrollbarThumb`
@@ -217,8 +219,12 @@ impl InteractionEngine {
 
     /// Derives this frame's tab stops directly from the hit map
     /// [`InteractionEngine::set_hits`] last recorded, in paint order.
-    /// `Split` carries no `WidgetId` and is not a focusable leaf, so it is
-    /// skipped; `Extra` is a tab stop only when its descriptor opts in via
+    /// `Split`/`SplitTree`/`Panel`/`SidebarPanel` are chrome around other
+    /// content, not focusable leaves themselves, so they are skipped (their
+    /// own action/toolbar buttons aren't recorded as separate `PaintedHit`
+    /// entries — see `crate::hit::HitDetail::PanelAction` et al. — so there
+    /// is nothing yet for a future keyboard-nav pass to pick up here
+    /// either); `Extra` is a tab stop only when its descriptor opts in via
     /// [`crate::extra_paint::ExtraPaint::tab_stop`] (currently `Switch` and
     /// `TextInput`); `TextDisplay` is always one (scroll/copy need
     /// keyboard focus the same way a `Tree`/`List` does); every other
@@ -234,7 +240,10 @@ impl InteractionEngine {
                 | PaintedHit::DataTable { id, area, .. }
                 | PaintedHit::TabBar { id, area, .. }
                 | PaintedHit::TextDisplay { id, area, .. } => Some((*id, *area)),
-                PaintedHit::Split { .. } => None,
+                PaintedHit::Split { .. }
+                | PaintedHit::SplitTree { .. }
+                | PaintedHit::Panel { .. }
+                | PaintedHit::SidebarPanel { .. } => None,
                 PaintedHit::Extra {
                     id, area, extra, ..
                 } => extra.tab_stop().then_some((*id, *area)),
@@ -467,8 +476,8 @@ impl InteractionEngine {
             if let Some(drag) = self.active_drag.borrow().as_ref() {
                 let new_ratio = drag.ratio_at(*position);
                 event = UiEvent::SplitDividerDragged {
-                    tree: drag.tree,
-                    split_index: 0,
+                    tree: drag.tree(),
+                    split_index: drag.split_index(),
                     new_ratio,
                 };
             } else if let Some(drag) = self.scrollbar_drag.borrow().as_ref() {
@@ -656,7 +665,23 @@ impl InteractionEngine {
                         if let Some(layout) =
                             find_split_layout(&self.hit_map.borrow(), *position, *id)
                         {
-                            *self.active_drag.borrow_mut() = Some(ActiveDrag { tree: *id, layout });
+                            *self.active_drag.borrow_mut() =
+                                Some(ActiveDrag::Split { tree: *id, layout });
+                        }
+                    }
+                } else if !double_click && matches!(detail, HitDetail::SplitTreeDivider { .. }) {
+                    // Mirrors the `SplitDivider` arm above: arms a drag
+                    // (consumed by the `MouseMoved` branch above on later
+                    // moves) for the N-way `SplitTree` case instead of the
+                    // two-pane `Split` one, keyed by the dragged divider's
+                    // own `split_index` rather than always `0`.
+                    if let HitDetail::SplitTreeDivider { split_index } = detail {
+                        if let Some(layout) = find_split_tree_layout(&self.hit_map.borrow(), *id) {
+                            *self.active_drag.borrow_mut() = Some(ActiveDrag::SplitTree {
+                                tree: *id,
+                                split_index: *split_index,
+                                layout,
+                            });
                         }
                     }
                 } else if !double_click
@@ -767,7 +792,8 @@ mod tests {
 
     use super::{EventSink, InteractionEngine};
     use crate::hit::HitDetail;
-    use crate::render::{draw_bands, RenderRefs};
+    use crate::layout::{LayoutLeaf, LayoutNode, LayoutPanel, LayoutSplitTree, LeafDescriptor};
+    use crate::render::{draw_bands, paint_layout, RenderRefs};
 
     /// Records every event [`InteractionEngine::handle`] dispatches, in
     /// order, so a test can assert on the orchestration's decisions (e.g.
@@ -1456,6 +1482,211 @@ mod tests {
                     if *id == WidgetId::new("log")
             )),
             "expected TextDisplay(Scrolled {{ new_offset: 1 }}): {:?}",
+            dispatched
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single `quadraui::SplitTree` node
+    /// (via [`paint_layout`], not [`draw_bands`] — `SplitTree` is a
+    /// `LayoutNode` shape, not one of the six fixed slots), for the
+    /// divider-drag coverage below.
+    struct SplitTreeLogic {
+        tree: quadraui::SplitTree,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for SplitTreeLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let node = LayoutNode::SplitTree(LayoutSplitTree {
+                id: "tree".to_string(),
+                tree: self.tree.clone(),
+                leaves: vec![
+                    LayoutNode::Leaf(LayoutLeaf {
+                        id: "left".to_string(),
+                        descriptor: LeafDescriptor::Button(Button::new(
+                            WidgetId::new("left-btn"),
+                            "L",
+                        )),
+                    }),
+                    LayoutNode::Leaf(LayoutLeaf {
+                        id: "right".to_string(),
+                        descriptor: LeafDescriptor::Button(Button::new(
+                            WidgetId::new("right-btn"),
+                            "R",
+                        )),
+                    }),
+                ],
+            });
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Dragging a `SplitTree` divider must turn the following `MouseMoved`
+    /// into `UiEvent::SplitDividerDragged` with the resolved ratio — the
+    /// N-way generalisation of [`dragging_a_header_divider_emits_column_resized`]'s
+    /// coverage, exercising [`crate::drag::ActiveDrag::SplitTree`] instead
+    /// of the two-pane [`crate::drag::ActiveDrag::Split`] case.
+    #[test]
+    fn dragging_a_split_tree_divider_changes_the_ratio() {
+        use quadraui::SplitDirection;
+
+        let tree = quadraui::SplitTree::split(
+            SplitDirection::Horizontal,
+            0.5,
+            quadraui::SplitTree::leaf(WidgetId::new("left-btn")),
+            quadraui::SplitTree::leaf(WidgetId::new("right-btn")),
+        );
+        let logic = SplitTreeLogic {
+            tree,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 41, 10);
+        driver.render();
+
+        // A 41-cell-wide viewport with the TUI's 1-cell-thick divider puts
+        // a ratio-0.5 divider's own band at x in [20.0, 21.0) —
+        // (41 - 1) * 0.5 == 20.0.
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(20.0, 0.0),
+            modifiers: Modifiers::default(),
+        });
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(30.0, 0.0),
+            buttons: quadraui::ButtonMask {
+                left: true,
+                right: false,
+                middle: false,
+            },
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        let dragged = dispatched.iter().find_map(|(event, _)| match event {
+            UiEvent::SplitDividerDragged {
+                tree,
+                split_index,
+                new_ratio,
+            } if *tree == WidgetId::new("tree") => Some((*split_index, *new_ratio)),
+            _ => None,
+        });
+        let (split_index, new_ratio) = dragged
+            .unwrap_or_else(|| panic!("expected a SplitDividerDragged event: {:?}", dispatched));
+        assert_eq!(split_index, 0);
+        assert!(
+            (new_ratio - 0.75).abs() < 0.001,
+            "expected a ratio around 0.75, got {new_ratio}"
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single `quadraui::Panel` node, for
+    /// the title-bar-action-click coverage below.
+    struct PanelLogic {
+        panel: quadraui::Panel,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for PanelLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let node = LayoutNode::Panel(LayoutPanel {
+                panel: self.panel.clone(),
+                content: Box::new(LayoutNode::Leaf(LayoutLeaf {
+                    id: "body".to_string(),
+                    descriptor: LeafDescriptor::Button(Button::new(
+                        WidgetId::new("body-btn"),
+                        "Body",
+                    )),
+                })),
+            });
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Clicking a `Panel` title-bar action button must set the raw
+    /// `MouseDown`'s `widget` to the action's own id — proving
+    /// `crate::render::paint_layout`'s `LayoutNode::Panel` arm now records
+    /// its chrome layout as a [`crate::hit::PaintedHit::Panel`] instead of
+    /// discarding it, same as every other primitive's own hit-test
+    /// coverage in this module.
+    #[test]
+    fn clicking_a_panel_action_button_sets_the_click_widget_to_its_id() {
+        use quadraui::{Panel, PanelAction, StyledText};
+
+        let panel = Panel {
+            id: WidgetId::new("outer"),
+            title: Some(StyledText::plain("Explorer")),
+            actions: vec![PanelAction {
+                id: WidgetId::new("close"),
+                icon: "x".to_string(),
+                tooltip: "Close".to_string(),
+                is_active: false,
+            }],
+            accent: None,
+            collapsed: false,
+        };
+        let logic = PanelLogic {
+            panel,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 10);
+        driver.render();
+
+        // The lone action button is right-aligned in the title bar — TUI's
+        // own 3-cell action width (`TUI_ACTION_BUTTON_WIDTH` in
+        // `quadraui::tui::panel`) puts it at [40.0 - 3.0, 40.0) ==
+        // [37.0, 40.0).
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(38.0, 0.0),
+            modifiers: Modifiers::default(),
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::MouseDown { widget: Some(id), .. } if *id == WidgetId::new("close")
+            )),
+            "expected a MouseDown with widget=close: {:?}",
             dispatched
         );
     }

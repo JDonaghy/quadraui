@@ -248,9 +248,16 @@ fn draw_text_display_hit(
 /// `Backend::draw_tab_bar_layout`, the same strip every backend already
 /// shares for the Rust-side `TabBar` primitive) and recurses into the
 /// remaining area with the selected tab's content, so a tab group is just a
-/// `Split` whose panes are each a `Tabs`. Per-child flex weights on
-/// `Row`/`Column` are a follow-up; every `Row`/`Column` child gets the same
-/// share for now.
+/// `Split` whose panes are each a `Tabs`. A `Panel`/`SidebarPanel` paints its
+/// chrome (title bar + actions, or toolbar) via `Backend::draw_panel`/
+/// `Backend::draw_sidebar_panel_interactive` and recurses into
+/// `content_bounds` with its one content subtree; a `SplitTree` paints its
+/// dividers via `Backend::draw_split_tree` and recurses into each resolved
+/// leaf rect. All four record a [`PaintedHit`] for their own chrome
+/// (divider / title bar / action button / toolbar button), same as `Split`,
+/// so a later pointer event can resolve against it. Per-child flex weights
+/// on `Row`/`Column` are a follow-up; every `Row`/`Column` child gets the
+/// same share for now.
 pub fn paint_layout(
     backend: &mut dyn Backend,
     area: Rect,
@@ -336,6 +343,15 @@ pub fn paint_layout(
         }
         LayoutNode::Panel(panel_node) => {
             let layout = backend.draw_panel(area, &panel_node.panel);
+            // Pushed before recursing into content, same reasoning as
+            // `LayoutNode::Split`'s own push below: a descendant primitive's
+            // more specific hit wins over this chrome hit (title bar /
+            // action button) only when nothing inside `content_bounds`
+            // claims the point first.
+            hits.push(PaintedHit::Panel {
+                id: panel_node.panel.id,
+                layout: layout.clone(),
+            });
             paint_layout(
                 backend,
                 layout.content_bounds,
@@ -350,6 +366,10 @@ pub fn paint_layout(
                 &sidebar_node.sidebar_panel,
                 &InteractionState::default(),
             );
+            hits.push(PaintedHit::SidebarPanel {
+                id: sidebar_node.sidebar_panel.id,
+                layout: layout.clone(),
+            });
             paint_layout(
                 backend,
                 layout.content_bounds,
@@ -360,6 +380,10 @@ pub fn paint_layout(
         }
         LayoutNode::SplitTree(split_tree) => {
             let layout = backend.draw_split_tree(area, &split_tree.tree);
+            hits.push(PaintedHit::SplitTree {
+                id: WidgetId::new(split_tree.id.as_str()),
+                layout: layout.clone(),
+            });
             for ((_, rect), content) in layout.leaves.iter().zip(split_tree.leaves.iter()) {
                 paint_layout(backend, *rect, content, hits, chrome_interaction);
             }

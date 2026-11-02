@@ -53,6 +53,45 @@ def test_panel_renders_nested_content():
     assert app.screen_contains("PANEL BODY")
 
 
+def test_clicking_a_panel_action_button_sets_the_click_s_widget_to_its_id():
+    # The lone action button is right-aligned in the title bar -- TUI's own
+    # 3-cell action width (`TUI_ACTION_BUTTON_WIDTH` in `quadraui::tui::panel`)
+    # puts it at x in [37.0, 40.0), row 0 (the title bar). `quadraui-binding-core`'s
+    # `InteractionEngine` now records the panel's own chrome layout as a
+    # hit, so the raw `MouseDown` carries the action's own id as `widget`
+    # instead of being silently dropped.
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "panel": {
+                "id": "panel:outer",
+                "title": {"spans": [{"text": "Explorer", "fg": None, "bg": None}]},
+                "actions": [
+                    {"id": "close", "icon": "x", "tooltip": "Close", "is_active": False}
+                ],
+                "content": _text("text:body", "PANEL BODY"),
+            }
+        }
+
+    app.set_render(render)
+    # Force the first paint so the panel's chrome layout is on the hit map
+    # before the click below -- `push_event`/`run` only ever re-render on a
+    # handler-returned `Reaction::Redraw`, never on their own.
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 38.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+
+    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
+    assert mouse_downs, received
+    assert mouse_downs[0]["widget"] == "close", received
+
+
 def test_sidebar_panel_renders_nested_content():
     app = QuiApp(40, 20)
 
@@ -89,6 +128,55 @@ def test_split_tree_renders_two_leaves_side_by_side():
     app.set_render(render)
     assert app.screen_contains("LEFT PANE")
     assert app.screen_contains("RIGHT PANE")
+
+
+def test_dragging_a_split_tree_divider_changes_the_ratio():
+    # A 41-column viewport with the TUI's 1-cell-thick divider puts a
+    # ratio-0.5 divider's own band at x in [20.0, 21.0) -- (41 - 1) * 0.5
+    # == 20.0 -- so a `MouseDown` there arms the drag `quadraui-binding-core`'s
+    # `InteractionEngine` turns a following `MouseMoved` into
+    # `SplitDividerDragged`, same shape dragging a `DataTable` header
+    # divider turns into `ColumnResized`.
+    app = QuiApp(41, 10)
+
+    def render():
+        return {
+            "split_tree": {
+                "id": "tree:1",
+                "root": {
+                    "split": {
+                        "orientation": "horizontal",
+                        "ratio": 0.5,
+                        "first": {"leaf": _text("text:left", "LEFT PANE")},
+                        "second": {"leaf": _text("text:right", "RIGHT PANE")},
+                    }
+                },
+            }
+        }
+
+    app.set_render(render)
+    # Force the first paint so the tree's divider layout is on the hit map
+    # before the drag below -- see the identical comment on the panel
+    # action-click test above.
+    app.screen()
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 20.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.push_event(
+        {
+            "MouseMoved": {
+                "position": {"x": 30.0, "y": 0.0},
+                "buttons": {"left": True, "right": False, "middle": False},
+            }
+        }
+    )
+    app.run(2)
+
+    dragged = [event["SplitDividerDragged"] for event in received if "SplitDividerDragged" in event]
+    assert dragged == [{"tree": "tree:1", "split_index": 0, "new_ratio": 0.75}], received
 
 
 def test_tabs_with_empty_list_renders_without_error():
