@@ -19,15 +19,18 @@ use quadraui::compose::{
 };
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{
-    wheel_row_delta, Backend, DataTableEvent, EditOp, MenuBar, Modifiers, Rect, UiEvent, WidgetId,
+    wheel_row_delta, Backend, DataTableEvent, EditOp, InteractionState, MenuBar, Modifiers, Rect,
+    TextDisplayEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{
-    find_data_table_layout, find_split_layout, tree_scroll_state, ActiveDrag, DataTableColumnDrag,
-    ScrollbarDrag,
+    find_data_table_layout, find_split_layout, text_display_scroll_state, tree_scroll_state,
+    ActiveDrag, DataTableColumnDrag, ScrollbarDrag,
 };
 use crate::extra_paint::extra_as;
-use crate::hit::{event_position, hit_test_painted, set_event_widget, HitDetail, PaintedHit};
+use crate::hit::{
+    chrome_hover_hit, event_position, hit_test_painted, set_event_widget, HitDetail, PaintedHit,
+};
 use crate::semantic::{focus_scoped_key_event, semantic_event_for_hit};
 use crate::text_input::{text_input_insert_event, TextCursorState};
 
@@ -103,6 +106,18 @@ pub struct InteractionEngine {
     /// the backend's [`quadraui::ModalStack`] for the same hit-test
     /// precedence [`Self::ctx_menu`] already has.
     dialog: Option<MessageDialogController>,
+    /// Per-bar hovered child, keyed by the chrome-bar extra's own id
+    /// (`Toolbar`'s button, `StatusBar`'s segment) — updated on every
+    /// `MouseMoved` via [`chrome_hover_hit`] and read back by
+    /// [`Self::chrome_interaction`] so `render` paints real hover state
+    /// instead of `InteractionState::default()`. A bar absent from this
+    /// map has nothing hovered.
+    chrome_hover: RefCell<HashMap<WidgetId, WidgetId>>,
+    /// Per-bar pressed child, mirroring [`Self::chrome_hover`]. Set on a
+    /// `MouseDown` landing on a chrome-bar child and cleared unconditionally
+    /// on every `MouseUp`, same as [`Self::active_drag`]/[`Self::scrollbar_drag`]/
+    /// [`Self::column_drag`].
+    chrome_pressed: RefCell<HashMap<WidgetId, WidgetId>>,
 }
 
 impl InteractionEngine {
@@ -205,7 +220,9 @@ impl InteractionEngine {
     /// `Split` carries no `WidgetId` and is not a focusable leaf, so it is
     /// skipped; `Extra` is a tab stop only when its descriptor opts in via
     /// [`crate::extra_paint::ExtraPaint::tab_stop`] (currently `Switch` and
-    /// `TextInput`); every other variant yields its id and bounding `Rect`.
+    /// `TextInput`); `TextDisplay` is always one (scroll/copy need
+    /// keyboard focus the same way a `Tree`/`List` does); every other
+    /// variant yields its id and bounding `Rect`.
     pub fn tab_stops(&self) -> Vec<(WidgetId, Rect)> {
         self.hit_map
             .borrow()
@@ -215,11 +232,26 @@ impl InteractionEngine {
                 PaintedHit::Tree { id, area, .. }
                 | PaintedHit::List { id, area, .. }
                 | PaintedHit::DataTable { id, area, .. }
-                | PaintedHit::TabBar { id, area, .. } => Some((*id, *area)),
+                | PaintedHit::TabBar { id, area, .. }
+                | PaintedHit::TextDisplay { id, area, .. } => Some((*id, *area)),
                 PaintedHit::Split { .. } => None,
-                PaintedHit::Extra { id, area, extra } => extra.tab_stop().then_some((*id, *area)),
+                PaintedHit::Extra {
+                    id, area, extra, ..
+                } => extra.tab_stop().then_some((*id, *area)),
             })
             .collect()
+    }
+
+    /// The hover/pressed [`InteractionState`] for the chrome-bar extra
+    /// painted under id `bar_id` this frame, read from [`Self::chrome_hover`]/
+    /// [`Self::chrome_pressed`] — call from `render`, once per chrome-bar
+    /// extra, right before repainting it, so it shows real hover/pressed
+    /// state instead of [`InteractionState::default()`].
+    pub fn chrome_interaction(&self, bar_id: WidgetId) -> InteractionState {
+        InteractionState::from_parts(
+            self.chrome_hover.borrow().get(&bar_id).copied(),
+            self.chrome_pressed.borrow().get(&bar_id).copied(),
+        )
     }
 
     /// Rebuilds [`Self::menu_system`]'s menu list from this frame's `"menu_bar"`
@@ -309,6 +341,7 @@ impl InteractionEngine {
             *self.active_drag.borrow_mut() = None;
             *self.scrollbar_drag.borrow_mut() = None;
             *self.column_drag.borrow_mut() = None;
+            self.chrome_pressed.borrow_mut().clear();
         }
 
         // An open message dialog is modal and painted on top of everything
@@ -396,6 +429,21 @@ impl InteractionEngine {
             }
             ContextMenuOutcome::Consumed => return Reaction::Redraw,
             ContextMenuOutcome::Ignored => {}
+        }
+
+        // Chrome-bar (`Toolbar`/`StatusBar`) hover bookkeeping, read back by
+        // `chrome_interaction` so `render` paints real hover state. Handled
+        // directly via `chrome_hover_hit` rather than the `hit`/`hit_test_painted`
+        // computed below, since `event_position` never resolves a position
+        // for `MouseMoved` (enriching its own `widget` field isn't this
+        // module's job) — so `hit_test_painted` never runs for it either.
+        if let UiEvent::MouseMoved { position, .. } = &event {
+            let chrome_hit = chrome_hover_hit(&self.hit_map.borrow(), *position);
+            let mut hover = self.chrome_hover.borrow_mut();
+            hover.retain(|bar, _| chrome_hit.map(|(hit_bar, _)| hit_bar) == Some(*bar));
+            if let Some((bar, action)) = chrome_hit {
+                hover.insert(bar, action);
+            }
         }
 
         // A move while a divider drag is armed becomes the drag itself —
@@ -486,6 +534,16 @@ impl InteractionEngine {
             set_event_widget(&mut event, id);
         }
 
+        // A `MouseDown` landing on a chrome-bar child presses it, mirroring
+        // `Self::chrome_hover`'s bookkeeping above — cleared unconditionally
+        // on the next `MouseUp` (top of this function), regardless of
+        // where that `MouseUp` lands.
+        if let (UiEvent::MouseDown { .. }, Some((action, HitDetail::ExtraChrome { bar }))) =
+            (&event, &hit)
+        {
+            self.chrome_pressed.borrow_mut().insert(*bar, *action);
+        }
+
         // A wheel `Scroll` landing anywhere over a tree (its rows, its
         // chevrons, or its scrollbar) replaces the raw event outright with
         // the `ScrollOffsetChanged` it resolves to — never dispatched
@@ -494,7 +552,10 @@ impl InteractionEngine {
         // via `scroll_translated`, below. A tree with nothing to scroll
         // (all rows fit the viewport) has no scrollbar, so
         // `tree_scroll_state` returns `None` and the raw `Scroll` passes
-        // through untouched.
+        // through untouched. A `TextDisplay` scrolls the same way, but
+        // into its own `TextDisplayEvent::Scrolled` — the primitive
+        // already has a typed scroll event, unlike `Tree`, so there is no
+        // need for the generic `ScrollOffsetChanged` substitute.
         let mut scroll_translated = false;
         if let UiEvent::Scroll { delta, .. } = &event {
             if let Some((id, detail)) = &hit {
@@ -505,6 +566,13 @@ impl InteractionEngine {
                         | HitDetail::TreeScrollbarThumb
                         | HitDetail::TreeScrollbarTrackBefore
                         | HitDetail::TreeScrollbarTrackAfter
+                );
+                let over_text_display = matches!(
+                    detail,
+                    HitDetail::TextDisplayLine { .. }
+                        | HitDetail::TextDisplayScrollbarThumb
+                        | HitDetail::TextDisplayScrollbarTrackBefore
+                        | HitDetail::TextDisplayScrollbarTrackAfter
                 );
                 if over_tree {
                     if let Some((_, total_rows, viewport_rows, scroll_offset)) =
@@ -517,6 +585,17 @@ impl InteractionEngine {
                             widget: *id,
                             new_offset,
                         };
+                        scroll_translated = true;
+                    }
+                } else if over_text_display {
+                    if let Some((total_lines, viewport_lines, scroll_offset)) =
+                        text_display_scroll_state(&self.hit_map.borrow(), *id)
+                    {
+                        let max_offset = total_lines.saturating_sub(viewport_lines);
+                        let rows = wheel_row_delta(delta.y, 1.0);
+                        let new_offset = scroll_by_clamped(scroll_offset, rows, max_offset);
+                        event =
+                            UiEvent::TextDisplay(*id, TextDisplayEvent::Scrolled { new_offset });
                         scroll_translated = true;
                     }
                 }
@@ -725,6 +804,7 @@ mod tests {
                     extra: &extra,
                 },
                 &mut hits,
+                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.render_dialog(backend);
             self.engine.set_hits(hits);
@@ -997,6 +1077,7 @@ mod tests {
                     extra: &extra,
                 },
                 &mut hits,
+                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.set_hits(hits);
         }
