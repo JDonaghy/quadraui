@@ -40,6 +40,15 @@ open, e.g. to show an "unsaved changes?" prompt first. A terminal opened
 via ``run_tui()`` has no close button to dispatch this for; quitting there
 is entirely up to whatever keystroke a registered handler chooses to raise
 on.
+
+``QuiApp.run_shell(width, height, config, ...)`` builds a ``QuiShellApp``
+instead: a headless VS Code-style app frame (activity bar + sidebar +
+optional bottom-panel tab strip) around Python-registered content and
+event handlers, driven by the same ``step``/``run`` discipline as ``QuiApp``
+itself. ``config`` is a ``dict`` (``"title"``, ``"panels"``, ``"position"``,
+``"bottom_panel"``, ...); sidebar show/hide/resize and bottom-panel tab
+switching are handled by the shell chrome itself and reported back via
+``set_on_shell_event``/``set_on_bottom_panel_event``.
 """
 
 from ._quadraui import (
@@ -56,6 +65,7 @@ from ._quadraui import (
     QuadrauiError,
     QuiApp,
     QuiAppWaker,
+    QuiShellApp,
     SlotOccupiedError,
     UnknownSlotError,
 )
@@ -63,6 +73,7 @@ from ._quadraui import (
 __all__ = [
     "QuiApp",
     "QuiAppWaker",
+    "QuiShellApp",
     "QuadrauiError",
     "InvalidDescriptorError",
     "SlotOccupiedError",
