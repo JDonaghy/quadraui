@@ -135,11 +135,22 @@ impl InteractionEngine {
     /// pushing its bounds onto the backend's [`quadraui::ModalStack`] (via
     /// [`quadraui::Backend::modal_stack_handle`]) so other modal-aware code
     /// gets the same hit-test precedence an open context menu already has.
-    /// Replaces (and pops) any dialog already open. Call from a binding's
-    /// own `show_message_dialog` surface, mirroring
+    /// Replaces (and pops) any dialog already open. Also closes an open
+    /// `"menu_bar"` dropdown or context-menu popup, if either is open: the
+    /// dialog paints on top of both (`render_dialog` runs after
+    /// `sync_menu_bar`/`render_ctx_menu`), and [`Self::handle`] now routes
+    /// the dialog ahead of both, so a popup left open underneath would be
+    /// unreachable input it still holds precedence over. Call from a
+    /// binding's own `show_message_dialog` surface, mirroring
     /// [`Self::ctx_menu_mut`]'s `.open(...)` call.
     pub fn open_message_dialog(&mut self, opts: MessageDialogOptions, backend: &mut dyn Backend) {
         self.close_message_dialog(backend);
+        if self.menu_system.borrow().is_open() {
+            self.menu_system.borrow_mut().close(backend);
+        }
+        if self.ctx_menu.is_open() {
+            self.ctx_menu.close(backend);
+        }
         let controller = MessageDialogController::new(opts);
         let id = controller.dialog().id;
         let bounds = controller.bounds(backend);
@@ -148,13 +159,22 @@ impl InteractionEngine {
     }
 
     /// Closes the open message dialog (if any), popping its
-    /// [`quadraui::ModalStack`] entry. A no-op if nothing is open.
-    fn close_message_dialog(&mut self, backend: &mut dyn Backend) {
-        if let Some(open) = self.dialog.take() {
-            backend
-                .modal_stack_handle()
-                .borrow_mut()
-                .pop(&open.dialog().id);
+    /// [`quadraui::ModalStack`] entry. Returns whether a dialog was open to
+    /// close. Exposed so a binding's own `show_message_dialog` surface can
+    /// offer a programmatic dismiss alongside input-driven resolution
+    /// (Enter/Escape/click) — without this, a dialog with no buttons at
+    /// all, or one the app wants to tear down from outside input, could
+    /// never be cleared. A no-op (returns `false`) if nothing is open.
+    pub fn close_message_dialog(&mut self, backend: &mut dyn Backend) -> bool {
+        match self.dialog.take() {
+            Some(open) => {
+                backend
+                    .modal_stack_handle()
+                    .borrow_mut()
+                    .pop(&open.dialog().id);
+                true
+            }
+            None => false,
         }
     }
 
@@ -277,6 +297,33 @@ impl InteractionEngine {
             *self.scrollbar_drag.borrow_mut() = None;
         }
 
+        // An open message dialog is modal and painted on top of everything
+        // else this frame (`render_dialog` runs after `sync_menu_bar`/
+        // `render_ctx_menu`), so it must see every event before the
+        // menu-bar/context-menu routing just below — hit precedence has to
+        // agree with paint order in both directions. `open_message_dialog`
+        // closes any open dropdown/popup when the dialog opens, so this and
+        // the menu-bar/context-menu checks below are never simultaneously
+        // "open" in practice; the ordering here is what makes that
+        // invariant hold even if that changes.
+        // `MessageDialogController::handle` reports `Ignored` immediately
+        // when nothing is open, so this is safe to run unconditionally.
+        if let Some(dialog) = self.dialog.as_mut() {
+            match dialog.handle(&event, &*backend) {
+                MessageDialogEvent::Resolved(choice) => {
+                    // The dialog is closing regardless of what `sink`
+                    // itself returns — force the repaint that takes it off
+                    // screen, same as the `ContextMenuOutcome::Event` arm
+                    // below.
+                    self.close_message_dialog(backend);
+                    return Reaction::Redraw
+                        .merge(sink.dispatch(&UiEvent::MessageDialogResolved(choice), None));
+                }
+                MessageDialogEvent::Consumed => return Reaction::Redraw,
+                MessageDialogEvent::Ignored => {}
+            }
+        }
+
         // A `"menu_bar"` extra's dropdown and a context-menu popup both own
         // a full modal-input state machine that must see every event before
         // the rest of this function's own routing — matching
@@ -335,27 +382,6 @@ impl InteractionEngine {
             }
             ContextMenuOutcome::Consumed => return Reaction::Redraw,
             ContextMenuOutcome::Ignored => {}
-        }
-
-        // An open message dialog is modal — it must see every event before
-        // the rest of this function's own hit-testing/routing, mirroring
-        // `ctx_menu`'s own ordering just above. `MessageDialogController::handle`
-        // reports `Ignored` immediately when nothing is open, so this is
-        // safe to run unconditionally.
-        if let Some(dialog) = self.dialog.as_mut() {
-            match dialog.handle(&event, &*backend) {
-                MessageDialogEvent::Resolved(choice) => {
-                    // The dialog is closing regardless of what `sink`
-                    // itself returns — force the repaint that takes it off
-                    // screen, same as the `ContextMenuOutcome::Event` arm
-                    // above.
-                    self.close_message_dialog(backend);
-                    return Reaction::Redraw
-                        .merge(sink.dispatch(&UiEvent::MessageDialogResolved(choice), None));
-                }
-                MessageDialogEvent::Consumed => return Reaction::Redraw,
-                MessageDialogEvent::Ignored => {}
-            }
         }
 
         // A move while a divider drag is armed becomes the drag itself —
@@ -813,6 +839,90 @@ mod tests {
         assert!(
             backend.modal_stack_handle().borrow().top().is_none(),
             "resolving the dialog must pop its ModalStack entry"
+        );
+    }
+
+    /// Opening a message dialog while a context-menu popup is already
+    /// open closes the popup: paint order puts the dialog on top
+    /// (`render_dialog` runs after `render_ctx_menu`), and [`Self::handle`]
+    /// now checks the dialog first, so a popup left open underneath would
+    /// be unreachable input it still held precedence over. Pins the fix
+    /// for the "both stay open, the popup keeps event priority" defect.
+    #[test]
+    fn open_message_dialog_closes_an_open_context_menu_popup() {
+        use quadraui::backend::{MessageDialogButton, MessageDialogOptions};
+        use quadraui::{ContextMenu, ContextMenuItem, Key, NamedKey};
+
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+
+        {
+            let (backend, app) = driver.parts_mut();
+            let menu = ContextMenu {
+                id: WidgetId::new("popup"),
+                items: vec![ContextMenuItem {
+                    id: Some(WidgetId::new("copy")),
+                    label: quadraui::types::StyledText::plain("Copy"),
+                    ..Default::default()
+                }],
+                selected_idx: 0,
+                bg: None,
+                placement: quadraui::ContextMenuPlacement::AnchorPoint,
+            };
+            app.engine
+                .ctx_menu_mut()
+                .open(menu, Point::new(1.0, 1.0), backend);
+            assert!(
+                app.engine.ctx_menu_mut().is_open(),
+                "the popup must be open before the dialog opens"
+            );
+        }
+
+        let opts = MessageDialogOptions {
+            title: "Heads up".to_string(),
+            body: "Something happened.".to_string(),
+            buttons: vec![MessageDialogButton {
+                id: WidgetId::new("ok"),
+                label: "OK".to_string(),
+                is_default: true,
+                is_cancel: false,
+            }],
+            severity: None,
+        };
+        {
+            let (backend, app) = driver.parts_mut();
+            app.engine.open_message_dialog(opts, backend);
+            assert!(
+                !app.engine.ctx_menu_mut().is_open(),
+                "opening the dialog must close the popup painted underneath it"
+            );
+        }
+        driver.render();
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert_eq!(
+            dispatched.len(),
+            1,
+            "Enter must resolve the dialog, not reach the already-closed popup: {:?}",
+            dispatched
+        );
+        assert!(
+            matches!(
+                dispatched[0].0,
+                UiEvent::MessageDialogResolved(id) if id == WidgetId::new("ok")
+            ),
+            "expected MessageDialogResolved(ok), not a context-menu event: {:?}",
+            dispatched[0]
         );
     }
 }

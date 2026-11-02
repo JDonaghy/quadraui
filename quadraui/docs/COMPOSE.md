@@ -440,6 +440,19 @@ if let MessageDialogEvent::Resolved(choice) = dialog.handle(&event, backend) {
 (`examples/common/message_dialog_app.rs`). Also driven internally by
 `crate::tui::services`'s message-dialog degrade path.
 
+**Anchored-overlay slot (a binding's own engine):** push `bounds(backend)`
+onto `Backend::modal_stack_handle()` when the dialog opens and pop it when
+it closes, pairing each `open`/`handle`-resolved/explicit-dismiss with
+exactly one push/pop — `quadraui-binding-core`'s `InteractionEngine` does
+this for `open_message_dialog`/`close_message_dialog`, and routes the
+dialog's own `handle` call ahead of any other overlay (menu-bar dropdown,
+context-menu popup) so hit-test precedence matches paint order (the
+dialog paints last, on top of everything else). The next overlay primitive
+on the same slot (`Tooltip`/`Completions`/`Float`/`RichTextPopup`/`Toast`)
+should follow the identical shape: one `bounds()` method recomputed from
+the same layout `render` paints, one push/pop pair, and a `handle` check
+placed ahead of whatever it visually sits on top of.
+
 ---
 
 ## `notify_or_toast` — `src/compose/notification.rs`

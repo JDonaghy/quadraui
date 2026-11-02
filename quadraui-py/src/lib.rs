@@ -3034,32 +3034,46 @@ impl QuiApp {
     /// `body`/`buttons`/`severity`, painting it immediately so
     /// `screen()`/`screen_contains()` reflect it without a separate render
     /// step — the "one call" shape `show_context_menu` already has, reusing
-    /// the same `InteractionEngine`-owned anchored-overlay routing C3's
-    /// context menu added: `handle` checks the open dialog before any
-    /// other UI routing, so it intercepts every event while open.
+    /// the same `InteractionEngine`-owned anchored-overlay routing the
+    /// context menu uses: `handle` checks the open dialog before the
+    /// menu-bar dropdown and context-menu popup, so it intercepts every
+    /// `KeyPressed`/`MouseDown` while open — opening a dialog also closes
+    /// an already-open dropdown/popup, so there is nothing left underneath
+    /// to contend for those two event kinds. `MouseUp`, `MouseMoved`,
+    /// wheel and `CharTyped` still fall through to the widgets behind the
+    /// dialog, since [`quadraui::compose::MessageDialogController::handle`]
+    /// only looks at `KeyPressed`/`MouseDown`.
     ///
-    /// `buttons` is a list of dicts shaped like the in-canvas `Dialog`
-    /// primitive's own `buttons` field: `{"id": str, "label": str,
+    /// `buttons` is a non-empty list of dicts shaped like the in-canvas
+    /// `Dialog` primitive's own `buttons` field: `{"id": str, "label": str,
     /// "is_default": bool, "is_cancel": bool}` (`is_default`/`is_cancel`
-    /// default to `False`). `severity` is one of `"info"`, `"question"`,
+    /// default to `False`). `tint` is accepted for shape compatibility with
+    /// `Dialog.buttons` but not yet honored by this surface — passing a
+    /// non-`None` `tint` raises `InvalidDescriptorError` rather than
+    /// silently dropping it. `severity` is one of `"info"`, `"question"`,
     /// `"warning"`, `"error"`, or `None` for no severity tint.
     ///
-    /// Left/Right and Tab/Shift+Tab cycle keyboard focus among the
-    /// buttons; Enter activates the focused one (seeded on the first
-    /// `is_default` button, or the first button); Escape resolves to the
-    /// first `is_cancel` button, falling back to the first `is_default`
-    /// one. Either way — and a click on any button — dispatches
-    /// `UiEvent::MessageDialogResolved(id)` to the registered handler and
-    /// closes the dialog, the same round trip
-    /// `show_context_menu_then_clicking_an_item_emits_context_menu_item_activated`
+    /// Left/Right cycle keyboard focus among the buttons; Enter activates
+    /// the focused one (seeded on the first `is_default` button, or the
+    /// first button); Escape resolves to the first `is_cancel` button,
+    /// falling back to the first `is_default` one. Either way — and a
+    /// click on any button — dispatches `UiEvent::MessageDialogResolved(id)`
+    /// to the registered handler and closes the dialog, the same round
+    /// trip `show_context_menu_then_clicking_an_item_emits_context_menu_item_activated`
     /// exercises for a context menu. A click anywhere else on the dialog
     /// (or outside it) is swallowed rather than falling through to
     /// whatever is behind it — [`Dialog`][quadraui::Dialog]'s own "modal
-    /// overlay — intercept all clicks" contract.
+    /// overlay — intercept all clicks" contract. Tab/Shift+Tab do **not**
+    /// reach the dialog's own focus cycling under `QuiApp`: both are
+    /// claimed upstream, before `handle` ever runs, by the generic
+    /// tab-stop intercept whenever any widget behind the dialog is
+    /// focusable (`tab_stops()` reflects those widgets, never the dialog's
+    /// buttons) — use Left/Right instead.
     ///
     /// Calling this again while a dialog from an earlier call is still
     /// open replaces it with the new one silently — `MessageDialogResolved`
-    /// does not fire for the one it replaced.
+    /// does not fire for the one it replaced. Call `dismiss_message_dialog`
+    /// to close the open dialog without resolving it at all.
     ///
     /// Call from top-level script code only, never from inside the
     /// registered event handler or render callback — see
@@ -3086,6 +3100,19 @@ impl QuiApp {
                     "show_message_dialog: invalid buttons: {err}"
                 ))
             })?;
+        if buttons.is_empty() {
+            return Err(InvalidDescriptorError::new_err(
+                "show_message_dialog: buttons must not be empty — a dialog with no buttons \
+                 can never be resolved by Enter or Escape",
+            ));
+        }
+        if let Some(tinted) = buttons.iter().find(|b| b.tint.is_some()) {
+            return Err(InvalidDescriptorError::new_err(format!(
+                "show_message_dialog: button {:?} sets tint, which this surface does not \
+                 honor yet — omit tint or leave it None",
+                tinted.id.as_str()
+            )));
+        }
         let severity = severity.map(|s| parse_dialog_severity(&s)).transpose()?;
         let opts = MessageDialogOptions {
             title,
@@ -3107,6 +3134,25 @@ impl QuiApp {
             app.driver.render();
             take_pending_error(app.driver.app_mut())?;
             Ok(())
+        })
+    }
+
+    /// Closes the open message dialog (if any) without resolving it —
+    /// `UiEvent::MessageDialogResolved` does not fire. Returns whether a
+    /// dialog was open to close. The only way to clear a dialog from
+    /// top-level script code without driving it through input; mirrors
+    /// `show_message_dialog`'s own "call from top-level script code only"
+    /// restriction and re-renders so `screen()` reflects the dismissal
+    /// immediately.
+    fn dismiss_message_dialog(&mut self) -> PyResult<bool> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            let closed = app_logic.engine.close_message_dialog(backend);
+            if closed {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(closed)
         })
     }
 
@@ -6319,20 +6365,7 @@ def handle(event):
     #[test]
     fn show_context_menu_then_clicking_an_item_emits_context_menu_item_activated() {
         Python::attach(|py| {
-            let locals = PyDict::new(py);
-            py.run(
-                c"received = []\ndef handle(event):\n    received.append(event)\n",
-                Some(&locals),
-                Some(&locals),
-            )
-            .expect("python source must execute");
-            let handle: Py<PyAny> = locals
-                .get_item("handle")
-                .expect("dict lookup")
-                .expect("handle must be defined")
-                .unbind();
-
-            let mut app = QuiApp::new(40, 20, Some(handle), None).expect("valid dimensions");
+            let (mut app, locals) = app_recording_events(py);
 
             let items_any = py
                 .eval(
@@ -6399,9 +6432,10 @@ def handle(event):
         });
     }
 
-    /// Builds the `(app, locals)` pair a `show_message_dialog` test drives:
-    /// a fresh `QuiApp` with a Python handler that appends every event it
-    /// receives into `locals["received"]`.
+    /// Builds the `(app, locals)` pair a `show_context_menu`/
+    /// `show_message_dialog` test drives: a fresh `QuiApp` with a Python
+    /// handler that appends every event it receives into
+    /// `locals["received"]`.
     fn app_recording_events(py: Python<'_>) -> (QuiApp, Bound<'_, PyDict>) {
         let locals = PyDict::new(py);
         py.run(
@@ -6467,6 +6501,10 @@ def handle(event):
             // `find_bounds` reports — `button_bounds.y` itself (the rect's
             // own top edge) is already inside it, but `+ 0.5` would land
             // exactly on that rect's exclusive bottom edge and miss.
+            // `button_bounds.height` is always `1.0` here regardless (one
+            // text row), not the continuous `DialogLayout` rect's own
+            // height, so `+ height * 0.5` lands on that same excluded
+            // boundary instead of fixing it.
             let click = UiEvent::MouseDown {
                 widget: None,
                 button: MouseButton::Left,
@@ -6580,6 +6618,237 @@ def handle(event):
                 .extract()
                 .expect("MessageDialogResolved carries the chosen button's id as a string");
             assert_eq!(resolved_id, "save");
+        });
+    }
+
+    /// Opening a message dialog while a `"menu_bar"` extra's dropdown is
+    /// open closes the dropdown first: paint order puts the dialog on top
+    /// of the bar (`render_dialog` runs after `sync_menu_bar`), so without
+    /// this, the dropdown would be stuck open but invisible underneath,
+    /// and `handle` would route a click/Enter to it (`MenuActivated`)
+    /// instead of to the dialog it paints on top of, since `handle`
+    /// previously checked the dropdown before the dialog. Pins the fix:
+    /// the dropdown's "Open" item vanishes the moment the dialog opens,
+    /// and Enter resolves the dialog rather than activating the hidden
+    /// menu item.
+    #[test]
+    fn show_message_dialog_closes_an_open_menu_bar_dropdown_and_claims_input() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'menu_bar': {
+        'id': 'bar:main',
+        'items': [
+            {'id': 'menu:file', 'label': '&File', 'disabled': False, 'submenu': [
+                {'id': 'item:open', 'label': {'spans': [{'text': 'Open', 'fg': None, 'bg': None}]}},
+            ]},
+        ],
+        'open_item': None,
+        'focused_item': None,
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+
+            let bar_bounds = app
+                .driver
+                .find_bounds("File")
+                .expect("the File label must be on screen");
+            let open_click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bar_bounds.x + 0.5, bar_bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let open_click_any =
+                pythonize::pythonize(py, &open_click).expect("UiEvent must pythonize");
+            app.push_event(
+                open_click_any
+                    .cast::<PyDict>()
+                    .expect("MouseDown must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+            assert!(
+                app.screen_contains("Open").expect("render must not raise"),
+                "the dropdown must be open before the dialog opens"
+            );
+
+            let buttons_any = py
+                .eval(
+                    c"[{'id': 'ok', 'label': 'OK', 'is_default': True}]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+            app.show_message_dialog(
+                "Heads up".to_string(),
+                "Something happened.".to_string(),
+                buttons,
+                None,
+            )
+            .expect("show_message_dialog must open the dialog");
+
+            assert!(
+                !app.screen_contains("Open").expect("render must not raise"),
+                "opening the dialog must close the dropdown painted underneath it"
+            );
+            assert!(
+                app.screen_contains("OK").expect("render must not raise"),
+                "the dialog's own button must be painted"
+            );
+
+            let enter = UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            };
+            let enter_any = pythonize::pythonize(py, &enter).expect("UiEvent must pythonize");
+            app.push_event(
+                enter_any
+                    .cast::<PyDict>()
+                    .expect("KeyPressed must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "Enter must resolve the dialog, not reach the already-closed dropdown"
+            );
+            let resolved = received_list
+                .get_item(0)
+                .expect("item must exist")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                resolved
+                    .get_item("MessageDialogResolved")
+                    .is_ok_and(|v| v.is_some()),
+                "Enter must dispatch MessageDialogResolved, not MenuActivated"
+            );
+        });
+    }
+
+    /// `show_message_dialog` rejects an empty `buttons` list: a dialog
+    /// with nothing to activate can never be resolved by Enter or Escape,
+    /// and would otherwise swallow every `MouseDown` forever with no way
+    /// to dismiss it.
+    #[test]
+    fn show_message_dialog_rejects_empty_buttons() {
+        Python::attach(|py| {
+            let (mut app, _locals) = app_recording_events(py);
+            let empty = PyList::empty(py);
+            let err = app
+                .show_message_dialog("Title".to_string(), "Body".to_string(), &empty, None)
+                .expect_err("an empty buttons list must be rejected");
+            assert!(err.is_instance_of::<InvalidDescriptorError>(py));
+        });
+    }
+
+    /// `show_message_dialog` rejects a button with a non-`None` `tint`
+    /// rather than silently dropping it: this surface shares
+    /// `MessageDialogButton`'s id/label/default/cancel shape with native
+    /// alerts, which have no tint concept at all, so a caller relying on
+    /// tint being honored must find out immediately.
+    #[test]
+    fn show_message_dialog_rejects_button_tint() {
+        Python::attach(|py| {
+            let (mut app, _locals) = app_recording_events(py);
+            let buttons_any = py
+                .eval(
+                    c"[{'id': 'delete', 'label': 'Delete', 'is_default': True, \
+                       'tint': {'r': 255, 'g': 0, 'b': 0, 'a': 255}}]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+            let err = app
+                .show_message_dialog("Title".to_string(), "Body".to_string(), buttons, None)
+                .expect_err("a tinted button must be rejected");
+            assert!(err.is_instance_of::<InvalidDescriptorError>(py));
+        });
+    }
+
+    /// `dismiss_message_dialog` closes an open dialog without resolving
+    /// it — no `MessageDialogResolved` is dispatched — and returns `False`
+    /// when nothing was open to close.
+    #[test]
+    fn dismiss_message_dialog_closes_without_resolving() {
+        Python::attach(|py| {
+            let (mut app, locals) = app_recording_events(py);
+
+            assert!(
+                !app.dismiss_message_dialog().expect("must not raise"),
+                "nothing is open yet"
+            );
+
+            let buttons_any = py
+                .eval(
+                    c"[{'id': 'ok', 'label': 'OK', 'is_default': True}]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+            app.show_message_dialog("Title".to_string(), "Body".to_string(), buttons, None)
+                .expect("show_message_dialog must open the dialog");
+            assert!(app.screen_contains("OK").expect("render must not raise"));
+
+            assert!(
+                app.dismiss_message_dialog().expect("must not raise"),
+                "a dialog was open to close"
+            );
+            assert!(!app.screen_contains("OK").expect("render must not raise"));
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                0,
+                "dismiss_message_dialog must not dispatch MessageDialogResolved"
+            );
         });
     }
 }

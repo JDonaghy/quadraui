@@ -1187,3 +1187,100 @@ def test_show_context_menu_escape_dismisses_without_item_activation():
     app.run(1)
 
     assert received == ["ContextMenuDismissed"]
+
+
+def test_show_message_dialog_rejects_empty_buttons():
+    # A dialog with no buttons can never be resolved by Enter or Escape,
+    # and would swallow every click forever with no dismiss surface.
+    app = QuiApp(40, 20)
+    with pytest.raises(InvalidDescriptorError):
+        app.show_message_dialog("Title", "Body", [])
+
+
+def test_show_message_dialog_rejects_button_tint():
+    # `tint` is part of the in-canvas `Dialog.buttons` shape this surface
+    # otherwise mirrors, but `show_message_dialog` doesn't honor it yet --
+    # a caller setting it must get a loud error, not a silently ignored
+    # field.
+    app = QuiApp(40, 20)
+    with pytest.raises(InvalidDescriptorError):
+        app.show_message_dialog(
+            "Title",
+            "Body",
+            [
+                {
+                    "id": "delete",
+                    "label": "Delete",
+                    "is_default": True,
+                    "tint": {"r": 255, "g": 0, "b": 0, "a": 255},
+                }
+            ],
+        )
+
+
+def test_dismiss_message_dialog_closes_without_resolving():
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    assert app.dismiss_message_dialog() is False
+
+    app.show_message_dialog("Title", "Body", _dialog_buttons())
+    assert app.screen_contains("Save")
+
+    assert app.dismiss_message_dialog() is True
+    assert not app.screen_contains("Save")
+    assert received == []
+
+
+def test_show_message_dialog_closes_an_open_menu_bar_dropdown():
+    # Paint order puts the dialog on top of the menu bar's dropdown
+    # (`render_dialog` runs after `sync_menu_bar`); `handle` now routes
+    # the dialog ahead of the menu bar too, and `show_message_dialog`
+    # closes any open dropdown so nothing is left underneath holding
+    # input precedence it no longer has paint precedence for.
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.insert_extra(
+        "menu_bar",
+        {
+            "id": "bar:main",
+            "items": [
+                {
+                    "id": "menu:file",
+                    "label": "&File",
+                    "disabled": False,
+                    "submenu": [
+                        {
+                            "id": "item:open",
+                            "label": {"spans": [{"text": "Open", "fg": None, "bg": None}]},
+                        }
+                    ],
+                }
+            ],
+            "open_item": None,
+            "focused_item": None,
+        },
+    )
+
+    row, col = _locate(app, "File")
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": col + 0.5, "y": row + 0.5}, "modifiers": {}}}
+    )
+    app.run(1)
+    assert app.screen_contains("Open"), "the dropdown must be open before the dialog opens"
+
+    app.show_message_dialog("Heads up", "Something happened.", [
+        {"id": "ok", "label": "OK", "is_default": True},
+    ])
+
+    assert not app.screen_contains("Open"), "the dialog must close the dropdown underneath it"
+    assert app.screen_contains("OK")
+
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    assert received == [{"MessageDialogResolved": "ok"}]
