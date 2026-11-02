@@ -269,14 +269,32 @@ jobs:
     # and exists purely to produce the uploaded artifact.
     # Non-blocking regardless: a real failure here should be fixed by
     # filing/looking at the issue it names, not by retrying the merge.
+    #
+    # `continue-on-error: true` folds a non-zero *step* exit into a job
+    # conclusion of `success`, so a genuine capture bug never reaches the
+    # merge gate. The one conclusion it CANNOT fold is `cancelled`, which
+    # is what `timeout-minutes` produces when the job runs long. This job
+    # does only a `cargo run` (one cold build + the capture), yet the
+    # blocking `macos` job above fits a cold build plus test + clippy +
+    # the gallery check/test + conformance + a Homebrew gtk4 install +
+    # cross-backend parity inside 40 minutes — so the capture's own cold
+    # build comfortably fits the same budget, and a 20-minute ceiling was
+    # merely clipping it mid-build and reporting a `cancelled` the merge
+    # gate reads as a hard failure. Match the blocking job's 40 minutes.
+    #
+    # `cache-on-failure: true` lets a run that still fails or is cut short
+    # persist its partial build cache, so the auto-rerun starts warm
+    # instead of repeating the same cold build from scratch.
     name: gallery capture (macos)
     runs-on: macos-latest
     continue-on-error: true
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Capture every registered demo (macos backend)
         run: |
           mkdir -p target/gallery-capture
