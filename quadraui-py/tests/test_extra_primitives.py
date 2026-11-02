@@ -541,6 +541,132 @@ def test_insert_extra_form_renders_mixed_fields_with_label_position_and_validati
     assert app.screen_contains("[x]")
 
 
+def test_form_toggle_click_routes_through_form_controller():
+    # `FormEvent::ButtonClicked` was never emitted anywhere -- `"form"`
+    # painted via `Form`'s own plain, non-interactive `ExtraPaint::paint`
+    # with no hit-testing/routing at all. A click on a `Toggle` field now
+    # resolves through the cached `FormController`
+    # (`InteractionEngine::sync_forms`/`handle`'s own dispatch), the same
+    # `FormEvent::ToggleChanged` a `Form`-embedding host driving
+    # `FormController` directly would get.
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "form",
+        {
+            "id": "settings",
+            "fields": [
+                {
+                    "id": "wrap",
+                    "label": {"spans": [{"text": "Word wrap", "fg": None, "bg": None}]},
+                    "kind": {"Toggle": {"value": False}},
+                },
+            ],
+        },
+    )
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+
+    assert received[0]["FocusChanged"] == "settings"
+    widget_id, form_event = received[1]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"ToggleChanged": {"id": "wrap", "value": True}}
+
+
+def test_form_button_click_emits_button_clicked():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "form",
+        {
+            "id": "settings",
+            "fields": [
+                {
+                    "id": "save",
+                    "label": {"spans": [{"text": "Save", "fg": None, "bg": None}]},
+                    "kind": "Button",
+                },
+            ],
+        },
+    )
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+
+    assert received[0]["FocusChanged"] == "settings"
+    widget_id, form_event = received[1]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"ButtonClicked": {"id": "save"}}
+
+
+def test_form_text_field_click_then_typing_routes_through_form_controller():
+    # Clicking a `TextInput` field focuses it inside the form
+    # (`FormEvent::FocusChanged`, which the host echoes back onto
+    # `Form.focused_field` the same way `FormController`'s own module doc
+    # describes); typing afterwards must then resolve against THAT
+    # field, not fall through as a raw `KeyPressed`.
+    app = QuiApp(40, 20)
+    state = {"name": "", "focused_field": None}
+
+    def render():
+        return {
+            "form": {
+                "id": "settings",
+                "focused_field": state["focused_field"],
+                "fields": [
+                    {
+                        "id": "name",
+                        "label": {"spans": [{"text": "Name", "fg": None, "bg": None}]},
+                        "kind": {"TextInput": {"value": state["name"]}},
+                    },
+                ],
+            }
+        }
+
+    app.set_render(render)
+    app.screen()
+
+    received = []
+
+    def handler(event):
+        received.append(event)
+        if "Form" not in event:
+            return
+        _, form_event = event["Form"]
+        if "TextInputChanged" in form_event:
+            state["name"] = form_event["TextInputChanged"]["value"]
+        if "FocusChanged" in form_event:
+            state["focused_field"] = form_event["FocusChanged"]["id"]
+
+    app.set_handler(handler)
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 6.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    assert received[0]["FocusChanged"] == "settings"
+    widget_id, form_event = received[1]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"FocusChanged": {"id": "name"}}
+
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Char": "A"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "settings"
+    assert form_event == {"TextInputChanged": {"id": "name", "value": "A"}}
+    assert state["name"] == "A"
+
+
 def test_render_callback_flat_dict_still_works_with_extra_key():
     app = QuiApp(40, 20)
 

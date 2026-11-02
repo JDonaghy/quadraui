@@ -128,12 +128,32 @@ impl ExtraPaint for Image {
 }
 
 impl ExtraPaint for Form {
+    /// The bare, non-interactive paint this trait's own `paint` always
+    /// does for every extra — `crate::engine::InteractionEngine::sync_forms`
+    /// repaints on top of it with the real [`quadraui::compose::FormController`]
+    /// state (scroll offset, in-progress edits, ...) once wired, the same
+    /// "paint plain first, then repaint interactive on top" sequencing
+    /// `crate::engine::InteractionEngine::sync_menu_bar` already uses for
+    /// `"menu_bar"`.
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_form(area, self);
     }
 
     fn id(&self) -> WidgetId {
         self.id
+    }
+
+    /// Whole-area bounds check, like [`TextInput::hit_test`] above — a
+    /// click's precise field-level routing is
+    /// `crate::engine::InteractionEngine::handle`'s own `FormController`
+    /// dispatch, which resolves it via `FormController`'s own internal
+    /// layout rather than this trait's `bool`-only answer.
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
     }
 }
 

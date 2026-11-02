@@ -14,13 +14,13 @@ use std::collections::HashMap;
 
 use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
-    ContextMenuController, ContextMenuOutcome, MenuDef, MenuEvent, MenuSystem,
-    MessageDialogController, MessageDialogEvent,
+    ContextMenuController, ContextMenuOutcome, FormController, FormControllerEvent, MenuDef,
+    MenuEvent, MenuSystem, MessageDialogController, MessageDialogEvent,
 };
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{
-    wheel_row_delta, Backend, DataTableEvent, EditOp, InteractionState, MenuBar, Modifiers, Rect,
-    TextDisplayEvent, UiEvent, WidgetId,
+    wheel_row_delta, Backend, DataTableEvent, EditOp, Form, InteractionState, MenuBar, Modifiers,
+    Rect, TextDisplayEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -121,6 +121,23 @@ pub struct InteractionEngine {
     /// on every `MouseUp`, same as [`Self::active_drag`]/[`Self::scrollbar_drag`]/
     /// [`Self::column_drag`].
     chrome_pressed: RefCell<HashMap<WidgetId, WidgetId>>,
+    /// One [`FormController`] per `"form"` extra painted this (or a prior)
+    /// frame, keyed by the extra's own id — rebuilt from [`Self::sync_forms`]
+    /// every render so a submit/button click, toggle, or keystroke inside
+    /// it resolves through the SAME field-level routing a `Form`-embedding
+    /// host would get from driving `FormController` directly, instead of
+    /// staying paint-only. An entry survives across frames (unlike
+    /// [`Self::menu_system`]'s single instance) since, unlike `"menu_bar"`/
+    /// `"find_replace"`, nothing about `Form` makes it a singleton overlay —
+    /// a frame can legitimately paint more than one, each under its own id.
+    form_controllers: RefCell<HashMap<WidgetId, FormController>>,
+    /// The absolute bounds [`Self::sync_forms`] most recently painted each
+    /// [`Self::form_controllers`] entry into, read by
+    /// [`InteractionEngine::handle`] so a routed event's position
+    /// resolves against the same `rect` the paint pass used (`FormController::handle`
+    /// does its own position-relative hit-testing internally, unlike this
+    /// engine's `hit_map`-based primitives).
+    form_rects: RefCell<HashMap<WidgetId, Rect>>,
 }
 
 impl InteractionEngine {
@@ -322,6 +339,51 @@ impl InteractionEngine {
         *self.menu_bar_rect.borrow_mut() = Some(area);
     }
 
+    /// Repaints every `"form"` extra painted this frame through its own
+    /// cached [`FormController`] (creating one the first time an id is
+    /// seen), so the form shows [`FormController`]'s own richer,
+    /// stateful rendering (its live scroll offset, in-progress text/date
+    /// edit overlay, ...) instead of just [`quadraui::Form`]'s own
+    /// plain, non-interactive [`crate::extra_paint::ExtraPaint::paint`] —
+    /// the same "paint after everything else, from the stateful
+    /// controller instead of the bare descriptor" pattern
+    /// [`Self::sync_menu_bar`] already uses for `"menu_bar"`. Call once
+    /// per render, after the extras loop in `draw_bands`/`paint_leaf`
+    /// already painted the plain bar. Unlike `sync_menu_bar`'s
+    /// single `"menu_bar"` instance, every `"form"` extra painted this
+    /// frame gets its own entry, keyed by its own id — a `"form"` is not
+    /// a singleton overlay the way `"menu_bar"`/`"find_replace"` are.
+    /// A cached entry whose id wasn't painted this frame is dropped, so a
+    /// form that stops rendering doesn't keep answering events forever.
+    pub fn sync_forms(&self, backend: &mut dyn Backend, hits: &[PaintedHit]) {
+        let mut seen = Vec::new();
+        for hit in hits {
+            let PaintedHit::Extra {
+                id, area, extra, ..
+            } = hit
+            else {
+                continue;
+            };
+            let Some(form) = extra_as::<Form>(extra) else {
+                continue;
+            };
+            seen.push(*id);
+            let mut controllers = self.form_controllers.borrow_mut();
+            let controller = controllers
+                .entry(*id)
+                .or_insert_with(|| FormController::new(id.as_str().to_string()));
+            controller.set_form(form.clone());
+            controller.render_and_cache(backend, *area);
+            self.form_rects.borrow_mut().insert(*id, *area);
+        }
+        self.form_controllers
+            .borrow_mut()
+            .retain(|id, _| seen.contains(id));
+        self.form_rects
+            .borrow_mut()
+            .retain(|id, _| seen.contains(id));
+    }
+
     /// The full `event -> hit -> semantic` orchestration: menu-bar/
     /// context-menu routing, divider/scrollbar drag arming and translation,
     /// click-to-focus, focus-scoped key/paste routing, and the raw ->
@@ -439,6 +501,91 @@ impl InteractionEngine {
             }
             ContextMenuOutcome::Consumed => return Reaction::Redraw,
             ContextMenuOutcome::Ignored => {}
+        }
+
+        // A `KeyPressed`/`CharTyped`/`ClipboardPaste` landing on a `"form"`
+        // extra that currently holds engine-level focus routes through
+        // that `Form`'s own cached `FormController` — `FormController::handle`'s
+        // own `has_focus` gate (see its module doc) is what makes this
+        // safe to try unconditionally even when no `"form"` extra is
+        // focused (or none exists this frame): `form_rects`/`form_controllers`
+        // then has no entry for the focused id, or `set_has_focus(true)`
+        // simply enables a gate nothing else reads. Only `FormAction`
+        // replaces `event`; `ScrollChanged`/`Consumed`/`Ignored` never
+        // arise for these three event kinds in `FormController::handle_inner`'s
+        // own match, so there is nothing else to react to here. Tab/
+        // Shift+Tab field cycling inside a form is NOT reachable this way —
+        // `quadraui::runtime::preprocess_event` claims `Tab`/`BackTab`
+        // unconditionally for the app-level tab order whenever `tab_stops()`
+        // is non-empty, before an event ever reaches here.
+        if matches!(
+            event,
+            UiEvent::KeyPressed { .. } | UiEvent::CharTyped(_) | UiEvent::ClipboardPaste(_)
+        ) {
+            if let Some(focused) = backend.focus_manager().focused().copied() {
+                if let Some(rect) = self.form_rects.borrow().get(&focused).copied() {
+                    if let Some(controller) = self.form_controllers.borrow_mut().get_mut(&focused) {
+                        controller.set_has_focus(true);
+                        if let FormControllerEvent::FormAction(form_event) =
+                            controller.handle(&event, backend, rect)
+                        {
+                            event = UiEvent::Form(focused, form_event);
+                        }
+                    }
+                }
+            }
+        }
+
+        // A `MouseDown` lands on at most one `"form"` extra's own `rect`
+        // (`FormController::handle`'s own `click_inner` returns `Ignored`,
+        // with no mutation, for every other one — see its doc), so trying
+        // every cached controller and stopping at the first non-`Ignored`
+        // result is safe regardless of how many `"form"` extras are
+        // painted this frame. This runs ahead of (and independently of)
+        // the generic hit-test/click-to-focus pipeline below, since
+        // `FormController` resolves which FIELD within the form a click
+        // landed on using its own internal layout — the generic pipeline
+        // only ever sees the form AS A WHOLE (one `WidgetId`, via
+        // `ExtraPaint::hit_test`'s whole-area check).
+        if matches!(event, UiEvent::MouseDown { .. }) {
+            let claim = self
+                .form_rects
+                .borrow()
+                .iter()
+                .map(|(id, rect)| (*id, *rect))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .find_map(|(id, rect)| {
+                    let outcome = self
+                        .form_controllers
+                        .borrow_mut()
+                        .get_mut(&id)
+                        .map(|controller| controller.handle(&event, backend, rect))?;
+                    (!matches!(outcome, FormControllerEvent::Ignored)).then_some((id, outcome))
+                });
+            if let Some((id, outcome)) = claim {
+                // Mirrors the generic click-to-focus block below: a click
+                // a `FormController` just claimed also moves engine-level
+                // focus to the form's own id, so the `KeyPressed`/
+                // `CharTyped`/`ClipboardPaste` routing above can find it
+                // on the very next keystroke.
+                let mut focus_reaction = Reaction::Continue;
+                if backend.set_focus(Some(id)) {
+                    focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(id)), None);
+                    if matches!(focus_reaction, Reaction::Exit) {
+                        return focus_reaction;
+                    }
+                }
+                return match outcome {
+                    FormControllerEvent::FormAction(form_event) => focus_reaction.merge(
+                        Reaction::Redraw.merge(sink.dispatch(&UiEvent::Form(id, form_event), None)),
+                    ),
+                    FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => {
+                        focus_reaction.merge(Reaction::Redraw)
+                    }
+                    FormControllerEvent::Ignored => unreachable!("filtered out above"),
+                };
+            }
         }
 
         // Chrome-bar (`Toolbar`/`StatusBar`/`ActivityBar`) hover bookkeeping,

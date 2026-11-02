@@ -30,6 +30,16 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   commit/cancel to `FormEvent::ComboBoxTextChanged`/`HighlightChanged`/
   `Committed`/`Cancelled`; and a `DatePicker`'s `Enter` to
   `FormEvent::DateChanged`.
+- A `"form"` extra is now hit-testable and a tab stop, and is routed
+  through its own cached `FormController` instead of staying paint-only:
+  a click on a `Toggle`/`Button`/text field, or a keystroke while a field
+  inside it has focus, resolves through `FormController`'s own
+  field-level dispatch and emits the matching `Form` event
+  (`ToggleChanged`, `ButtonClicked`, `TextInputChanged`, `FocusChanged`,
+  ...) — `FormEvent::ButtonClicked` was previously never emitted by any
+  path. `Tab`/`Shift`+`Tab` field cycling inside a form is not yet
+  reachable this way (the app-level tab order claims it first); a click
+  still moves field focus directly.
 - `QuiApp.viewport()`, `line_height()`, `char_width()`,
   `list_char_width()`, `chrome_line_height()`, `scrollbar_reserve()`,
   `scales_text_rows()`, `snap_height(h)`, `measure_text(text, role)`, and
