@@ -56,6 +56,20 @@ itself. ``config`` is a ``dict`` (``"title"``, ``"panels"``, ``"position"``,
 ``"bottom_panel"``, ...); sidebar show/hide/resize and bottom-panel tab
 switching are handled by the shell chrome itself and reported back via
 ``set_on_shell_event``/``set_on_bottom_panel_event``.
+
+``QuiApp.theme()``/``set_theme(overrides)`` and ``style()``/``set_style(overrides)``
+read and partially override the backend's colour palette and non-colour
+geometry tokens; ``overrides`` only needs to name the fields being changed
+-- everything else keeps its current value. ``set_nerd_fonts(enabled)``/
+``nerd_fonts_enabled()``, ``set_editor_font(family, size_pt)``,
+``set_ui_font(font_desc)``, ``register_font_from_memory(bytes)``,
+``set_nerd_font_fallback(family)``, ``has_font_family(family)``, and
+``set_caret_shape(shape)`` configure fonts and the hardware caret. All of
+these take effect immediately and are replayed onto a real backend a later
+``run_tui``/``run_native`` call constructs. A handler can react to a
+``SystemThemeChanged`` event by recording it and calling ``set_theme``
+once ``step``/``run`` returns (not from inside the handler itself -- the
+same restriction as mutating any other ``QuiApp`` state mid-callback).
 """
 
 from ._quadraui import (
