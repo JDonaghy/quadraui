@@ -1,6 +1,8 @@
-"""Black-box coverage for `QuiApp.waker()` / `QuiAppWaker.post`/`.wake`:
-event injection from a background thread into the headless `step`/`run`
-loop, delivered as a `{"User": value}` event without crashing or exiting.
+"""Black-box coverage for `QuiApp.waker()` / `QuiAppWaker.post`/`.wake`/
+`.post_after`/`.wake_after`: event injection from a background thread (or,
+for the `_after` variants, a delayed spawned one) into the headless
+`step`/`run` loop, delivered as a `{"User": value}` event without crashing
+or exiting.
 
 `UiEvent::User`'s `Serialize` always errors -- it carries an opaque,
 in-process-only payload with no wire shape -- so these tests also exercise
@@ -15,6 +17,7 @@ Run against a built wheel/extension, e.g.:
 """
 
 import threading
+import time
 
 from quadraui import QuiApp
 
@@ -96,3 +99,30 @@ def test_multiple_posts_are_delivered_in_order():
     app.run(1)
 
     assert received == [1, 2, 3]
+
+
+def test_waker_post_after_does_not_deliver_before_its_delay_elapses():
+    app = QuiApp(10, 10)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    app.waker().post_after(200, "delayed")
+    # Nothing has had time to fire the spawned timer thread yet.
+    app.step()
+    assert received == []
+
+    time.sleep(0.4)
+    app.step()
+    assert received == [{"User": "delayed"}]
+
+
+def test_waker_wake_after_delivers_user_none_once_the_delay_elapses():
+    app = QuiApp(10, 10)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    app.waker().wake_after(50)
+    time.sleep(0.3)
+    app.step()
+
+    assert received == [{"User": None}]
