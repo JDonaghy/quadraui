@@ -9,42 +9,99 @@
 
 use quadraui::primitives::scrollbar::ThumbDrag;
 use quadraui::{
-    DataTableLayout, Point, Rect, Scrollbar, SplitHit, SplitLayout, TabBarHit, TreePath, WidgetId,
+    DataTableLayout, Point, Rect, Scrollbar, SplitDirection, SplitHit, SplitLayout,
+    SplitTreeLayout, TabBarHit, TreePath, WidgetId,
 };
 
 use crate::hit::PaintedHit;
 
 /// A divider drag in progress: armed by the binding's own event handler on a
-/// `MouseDown` landing on `HitDetail::SplitDivider`, and cleared on the
-/// matching `MouseUp`. `layout` is the `Split`'s own layout as painted the
-/// frame the drag started, snapshotted rather than re-read each move so a
-/// drag stays anchored to the geometry the user actually grabbed even if a
-/// handler-driven re-render shifts the divider under the cursor mid-drag.
-pub struct ActiveDrag {
-    pub tree: WidgetId,
-    pub layout: SplitLayout,
+/// `MouseDown` landing on `HitDetail::SplitDivider` (a two-pane
+/// [`quadraui::Split`]) or `HitDetail::SplitTreeDivider` (one divider of a
+/// [`quadraui::SplitTree`]), and cleared on the matching `MouseUp`. Either
+/// variant snapshots the layout as painted the frame the drag started,
+/// rather than re-reading it each move, so a drag stays anchored to the
+/// geometry the user actually grabbed even if a handler-driven re-render
+/// shifts the divider under the cursor mid-drag.
+pub enum ActiveDrag {
+    Split {
+        tree: WidgetId,
+        layout: SplitLayout,
+    },
+    SplitTree {
+        tree: WidgetId,
+        split_index: usize,
+        layout: SplitTreeLayout,
+    },
 }
 
 impl ActiveDrag {
-    /// The ratio `point` (in the same absolute frame as `layout`) implies
-    /// along this split's axis, clamped to `[0.0, 1.0]`. Falls back to the
-    /// layout's own already-resolved ratio when the split has no room to
-    /// drag in (e.g. a pane collapsed to zero by its own `first_min`/
-    /// `second_min`), rather than dividing by zero.
-    pub fn ratio_at(&self, point: Point) -> f32 {
-        let divider = self.layout.divider_bounds;
-        let bounds = self.layout.bounds;
-        let vertical_divider = divider.width < divider.height;
-        let (total, offset, divider_thickness) = if vertical_divider {
-            (bounds.width, point.x - bounds.x, divider.width)
-        } else {
-            (bounds.height, point.y - bounds.y, divider.height)
-        };
-        let available = (total - divider_thickness).max(0.0);
-        if available <= 0.0 {
-            return self.layout.resolved_ratio;
+    /// The tree/split this drag is resizing — the `widget`
+    /// `UiEvent::SplitDividerDragged::tree` should carry.
+    pub fn tree(&self) -> WidgetId {
+        match self {
+            ActiveDrag::Split { tree, .. } | ActiveDrag::SplitTree { tree, .. } => *tree,
         }
-        (offset / available).clamp(0.0, 1.0)
+    }
+
+    /// The `UiEvent::SplitDividerDragged::split_index` this drag should
+    /// carry — always `0` for a two-pane `Split` (it has exactly one
+    /// divider, with no pre-order addressing of its own), or the dragged
+    /// divider's own `SplitTreeDivider::split_index` for a `SplitTree`.
+    pub fn split_index(&self) -> usize {
+        match self {
+            ActiveDrag::Split { .. } => 0,
+            ActiveDrag::SplitTree { split_index, .. } => *split_index,
+        }
+    }
+
+    /// The ratio `point` (in the same absolute frame as the snapshotted
+    /// layout) implies along this divider's axis, clamped to `[0.0, 1.0]`.
+    /// Falls back to the divider's own already-resolved ratio when it has
+    /// no room to drag in (e.g. a pane collapsed to zero by its own
+    /// `first_min`/`second_min`, or a `SplitTree` node whose parent
+    /// shrank to nothing), rather than dividing by zero.
+    pub fn ratio_at(&self, point: Point) -> f32 {
+        match self {
+            ActiveDrag::Split { layout, .. } => {
+                let divider = layout.divider_bounds;
+                let bounds = layout.bounds;
+                let vertical_divider = divider.width < divider.height;
+                let (total, offset, divider_thickness) = if vertical_divider {
+                    (bounds.width, point.x - bounds.x, divider.width)
+                } else {
+                    (bounds.height, point.y - bounds.y, divider.height)
+                };
+                let available = (total - divider_thickness).max(0.0);
+                if available <= 0.0 {
+                    return layout.resolved_ratio;
+                }
+                (offset / available).clamp(0.0, 1.0)
+            }
+            ActiveDrag::SplitTree {
+                layout,
+                split_index,
+                ..
+            } => {
+                let Some(divider) = layout
+                    .dividers
+                    .iter()
+                    .find(|d| d.split_index == *split_index)
+                else {
+                    return 0.5;
+                };
+                let axis_point = match divider.direction {
+                    SplitDirection::Horizontal => point.x,
+                    SplitDirection::Vertical => point.y,
+                };
+                let available = (divider.axis_size - divider.thickness).max(0.0);
+                if available <= 0.0 {
+                    return ((divider.position - divider.axis_start) / divider.axis_size.max(1.0))
+                        .clamp(0.0, 1.0);
+                }
+                ((axis_point - divider.axis_start) / available).clamp(0.0, 1.0)
+            }
+        }
     }
 }
 
@@ -65,6 +122,18 @@ pub fn find_split_layout(
             matches!(layout.hit_test(point.x, point.y), SplitHit::Divider(hit_id) if hit_id == id)
                 .then(|| layout.clone())
         }
+        _ => None,
+    })
+}
+
+/// Re-finds the [`SplitTreeLayout`] painted under id `id`, so a `MouseDown`
+/// landing on `HitDetail::SplitTreeDivider` can snapshot it into an
+/// [`ActiveDrag::SplitTree`] — mirrors [`find_split_layout`], minus the
+/// re-run hit-test: unlike [`PaintedHit::Split`], [`PaintedHit::SplitTree`]
+/// already stores its own id directly.
+pub fn find_split_tree_layout(hit_map: &[PaintedHit], id: WidgetId) -> Option<SplitTreeLayout> {
+    hit_map.iter().rev().find_map(|hit| match hit {
+        PaintedHit::SplitTree { id: hit_id, layout } if *hit_id == id => Some(layout.clone()),
         _ => None,
     })
 }

@@ -7,9 +7,10 @@
 use std::rc::Rc;
 
 use quadraui::{
-    ButtonHit, ButtonLayout, DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, Point,
-    PressZone, Rect, Scrollbar, SplitHit, SplitLayout, TabBarHit, TabBarLayout, TextDisplayHit,
-    TextDisplayLayout, TreePath, TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    ButtonHit, ButtonLayout, DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, PanelHit,
+    PanelLayout, Point, PressZone, Rect, Scrollbar, SidebarPanelHit, SidebarPanelLayout, SplitHit,
+    SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout, TextDisplayHit, TextDisplayLayout,
+    TreePath, TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -109,6 +110,36 @@ pub enum PaintedHit {
     /// `WidgetId` only matters once a hit is found — carried by
     /// `SplitHit`'s own variants, not stored here.
     Split { layout: SplitLayout },
+    /// A [`quadraui::SplitTree`] node's layout, in the ABSOLUTE frame
+    /// (matching [`Self::Split`]). `id` is the tree's own host-supplied id
+    /// — unlike `SplitHit`, [`SplitTreeLayout::hit_test_divider`] only
+    /// resolves to a `split_index`, not an id, so it's carried alongside
+    /// the layout here instead. Divider-only: a hit anywhere else in the
+    /// tree's bounds (a leaf's content, or the gap between leaves) is left
+    /// to whatever [`crate::layout::LayoutNode::SplitTree`]'s own
+    /// per-leaf content paints underneath, which `crate::render::paint_layout`
+    /// pushes AFTER this entry so it wins the reverse-paint-order check
+    /// first.
+    SplitTree {
+        id: WidgetId,
+        layout: SplitTreeLayout,
+    },
+    /// A [`quadraui::Panel`]'s chrome layout, in the ABSOLUTE frame
+    /// (matching [`Self::Split`]). `id` is the panel's own id; a
+    /// `PanelHit::Action`/`PanelHit::TitleBar` resolves to its OWN id
+    /// (the action button's, or the panel's), same convention `SplitHit`'s
+    /// variants use. `PanelHit::Content` is left to the panel's own
+    /// content subtree, pushed after this entry by
+    /// `crate::render::paint_layout`'s `LayoutNode::Panel` arm.
+    Panel { id: WidgetId, layout: PanelLayout },
+    /// A [`quadraui::SidebarPanel`]'s chrome layout, in the ABSOLUTE frame.
+    /// Mirrors [`Self::Panel`]: a `SidebarPanelHit::ToolbarButton` resolves
+    /// to the clicked button's own id; `SidebarPanelHit::Content` is left
+    /// to the content subtree pushed after this entry.
+    SidebarPanel {
+        id: WidgetId,
+        layout: SidebarPanelLayout,
+    },
     /// One additive primitive (anything registered in a binding's own
     /// `EXTRA_PRIMITIVES` decode table),
     /// painted by `draw_bands`'s extras loop or by a
@@ -181,6 +212,26 @@ pub enum HitDetail {
     SplitFirstPane,
     SplitSecondPane,
     SplitDivider,
+    /// Landed on a [`quadraui::SplitTree`] divider — `split_index` is the
+    /// pre-order index of the `SplitTree::Split` node being resized (see
+    /// [`quadraui::SplitTreeDivider::split_index`]). Arms a drag in the
+    /// binding's own event handler, mirroring `SplitDivider`'s
+    /// [`crate::drag::ActiveDrag`] handling.
+    SplitTreeDivider {
+        split_index: usize,
+    },
+    /// Landed on a [`quadraui::Panel`]'s title-bar action button. `id`
+    /// resolves to the matched hit returned alongside this detail as the
+    /// action button's own id (`PanelAction::id`), same as a plain
+    /// `Button` click.
+    PanelAction,
+    /// Landed on a [`quadraui::Panel`]'s title bar (not an action button).
+    /// `id` resolves to the panel's own id.
+    PanelTitleBar,
+    /// Landed on a [`quadraui::SidebarPanel`]'s toolbar button. `id`
+    /// resolves to the matched hit returned alongside this detail as the
+    /// clicked button's own id, same as `PanelAction`.
+    SidebarPanelToolbarButton,
     /// Landed before the thumb on a tree's vertical scrollbar track
     /// (page-up zone). Handled directly in the binding's own event handler, which
     /// replaces the raw click with `UiEvent::ScrollOffsetChanged` — never
@@ -354,6 +405,29 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 SplitHit::SecondPane(id) => return Some((id, HitDetail::SplitSecondPane)),
                 SplitHit::Divider(id) => return Some((id, HitDetail::SplitDivider)),
                 SplitHit::Outside => {}
+            },
+            PaintedHit::SplitTree { id, layout } => {
+                // Exact-band test (zero tolerance) — matches `PaintedHit::Split`'s
+                // own `divider_bounds.contains` convention: the divider's own
+                // `thickness` already IS the backend's native hit band (1 cell
+                // TUI, a few px GTK/macOS/win), so no extra forgiveness is added
+                // here.
+                if let Some(split_index) = layout.hit_test_divider(point, 0.0) {
+                    return Some((*id, HitDetail::SplitTreeDivider { split_index }));
+                }
+            }
+            PaintedHit::Panel { layout, .. } => match layout.hit_test(point.x, point.y) {
+                PanelHit::Action(action_id) => return Some((action_id, HitDetail::PanelAction)),
+                PanelHit::TitleBar(panel_id) => return Some((panel_id, HitDetail::PanelTitleBar)),
+                PanelHit::Content(_) | PanelHit::Outside => {}
+            },
+            PaintedHit::SidebarPanel { layout, .. } => match layout.hit_test(point.x, point.y) {
+                SidebarPanelHit::ToolbarButton(button_id) => {
+                    return Some((button_id, HitDetail::SidebarPanelToolbarButton))
+                }
+                SidebarPanelHit::ToolbarEmpty
+                | SidebarPanelHit::Content { .. }
+                | SidebarPanelHit::Empty => {}
             },
             PaintedHit::Extra {
                 id,
