@@ -100,6 +100,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -130,14 +131,14 @@ use quadraui::{
     BottomPanelEvent, BottomPanelTab, Button, Canvas, Chart, Color, ColorDepth, ComboBox,
     CommandCenter, CommandLine, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTable,
     DatePicker, Decoration, DialogButton, DialogSeverity, DiffView, Editor, EditorCursorShape,
-    FindReplacePanel, FontRole, Form, GlobalShortcutId, Image, Key, ListView, MenuBar,
-    MessageDialogButton, MessageDialogOptions, MessageList, Minimap, Modifiers, MouseButton,
-    MultiSectionView, NumberInput, Palette, Panel, PanelDefinition, PipelineView, Point,
-    ProgressBar, RadioGroup, Reaction, Rect, RgbaImage, ScrollView, Scrollbar, ShellApp,
-    ShellConfig, ShellContext, ShellPosition, SidebarPanel, Spinner, Split, SplitDirection,
-    SplitTree, StatusBar, Style, StyledSpan, Switch, TabBar, TabBarSegment, TabItem, Terminal,
-    TextDisplay, TextDisplayLine, TextInput, Theme, Toolbar, TreeView, UiEvent, UserPayload,
-    WidgetId,
+    FileDialogOptions, FindReplacePanel, FontRole, Form, GlobalShortcutId, Image, Key, ListView,
+    MenuBar, MessageDialogButton, MessageDialogOptions, MessageList, Minimap, Modifiers,
+    MouseButton, MultiSectionView, Notification, NumberInput, Palette, Panel, PanelDefinition,
+    PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect, RgbaImage, ScrollView, Scrollbar,
+    ShellApp, ShellConfig, ShellContext, ShellPosition, SidebarPanel, Spinner, Split,
+    SplitDirection, SplitTree, StatusBar, Style, StyledSpan, Switch, TabBar, TabBarSegment,
+    TabItem, Terminal, TextDisplay, TextDisplayLine, TextInput, Theme, Toolbar, TreeView, UiEvent,
+    UserPayload, WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -4846,6 +4847,267 @@ impl QuiApp {
             };
             Ok(Some((ratatui_rgb(style.fg), ratatui_rgb(style.bg))))
         })
+    }
+
+    // ─── Platform services ───────────────────────────────────────────────
+    //
+    // Every method below resolves `quadraui::PlatformServices` off this
+    // `QuiApp`'s own headless `TuiBackend` -- the same "never off whatever
+    // backend a `run_native` call opened" restriction
+    // `register_global_shortcut`'s doc above explains, for the same reason:
+    // `run_native` moves this app's `PyAppLogic` into a brand-new GTK/macOS/
+    // Win backend by value and leaves this `QuiApp` no handle back to it.
+    // `TuiPlatformServices` (`quadraui::tui::services`) is a genuine,
+    // non-stub implementation for every method here -- see that module's
+    // doc for exactly what each one does on a terminal (a real opener
+    // shell-out, a real BEL, a nested draw-and-read loop over a `compose`
+    // controller for the three dialogs/picker).
+
+    /// Queues scripted input for the next nested dialog/picker loop a
+    /// `show_file_open_dialog`/`show_file_save_dialog`/`show_folder_dialog`
+    /// call drives -- [`quadraui::tui::testing::TuiDriver::queue_dialog_events`].
+    /// `events` decodes the same way `push_event`'s single dict does, one
+    /// [`UiEvent`] per list entry. With nothing queued, the very first
+    /// event the nested loop synthesizes is Escape, so an un-driven dialog
+    /// call resolves to `None` (cancelled) rather than hanging -- queue a
+    /// script here first when a test wants a real confirmed path/choice
+    /// instead.
+    fn queue_dialog_events(&mut self, events: &Bound<'_, PyList>) -> PyResult<()> {
+        let events: Vec<UiEvent> = pythonize::depythonize(events.as_any()).map_err(|err| {
+            InvalidDescriptorError::new_err(format!(
+                "queue_dialog_events: invalid descriptor: {err}"
+            ))
+        })?;
+        self.guarded(|app| {
+            app.driver.queue_dialog_events(events);
+            Ok(())
+        })
+    }
+
+    /// Opens a file-open picker -- [`quadraui::PlatformServices::show_file_open_dialog`].
+    /// On the headless `TuiBackend` this drives
+    /// [`quadraui::compose::FilePickerController`] through a nested
+    /// draw-and-read loop fed by [`Self::queue_dialog_events`] (or Escape
+    /// immediately, with nothing queued). Returns the confirmed path, or
+    /// `None` on cancel. `filters` is a list of `(label, [ext, ...])`
+    /// pairs, e.g. `[("Rust", ["rs"])]`.
+    #[pyo3(signature = (title=None, initial_dir=None, filters=None))]
+    fn show_file_open_dialog(
+        &mut self,
+        title: Option<String>,
+        initial_dir: Option<String>,
+        filters: Option<Vec<(String, Vec<String>)>>,
+    ) -> PyResult<Option<String>> {
+        self.guarded(|app| {
+            let opts = FileDialogOptions {
+                title,
+                initial_dir: initial_dir.map(PathBuf::from),
+                initial_filename: None,
+                filters: filters.unwrap_or_default(),
+            };
+            Ok(app
+                .driver
+                .backend()
+                .services()
+                .show_file_open_dialog(opts)
+                .map(|p| p.display().to_string()))
+        })
+    }
+
+    /// Opens a file-save picker -- [`quadraui::PlatformServices::show_file_save_dialog`].
+    /// Same nested-loop/`queue_dialog_events` story as
+    /// [`Self::show_file_open_dialog`]; `initial_filename` seeds the
+    /// picker's query field.
+    #[pyo3(signature = (title=None, initial_dir=None, initial_filename=None, filters=None))]
+    fn show_file_save_dialog(
+        &mut self,
+        title: Option<String>,
+        initial_dir: Option<String>,
+        initial_filename: Option<String>,
+        filters: Option<Vec<(String, Vec<String>)>>,
+    ) -> PyResult<Option<String>> {
+        self.guarded(|app| {
+            let opts = FileDialogOptions {
+                title,
+                initial_dir: initial_dir.map(PathBuf::from),
+                initial_filename,
+                filters: filters.unwrap_or_default(),
+            };
+            Ok(app
+                .driver
+                .backend()
+                .services()
+                .show_file_save_dialog(opts)
+                .map(|p| p.display().to_string()))
+        })
+    }
+
+    /// Opens a directory picker -- [`quadraui::PlatformServices::show_folder_open_dialog`].
+    /// Same nested-loop/`queue_dialog_events` story as
+    /// [`Self::show_file_open_dialog`], but drives
+    /// [`quadraui::compose::FolderPickerController`] instead of
+    /// `FilePickerController`.
+    #[pyo3(signature = (title=None, initial_dir=None))]
+    fn show_folder_dialog(
+        &mut self,
+        title: Option<String>,
+        initial_dir: Option<String>,
+    ) -> PyResult<Option<String>> {
+        self.guarded(|app| {
+            let opts = FileDialogOptions {
+                title,
+                initial_dir: initial_dir.map(PathBuf::from),
+                initial_filename: None,
+                filters: Vec::new(),
+            };
+            Ok(app
+                .driver
+                .backend()
+                .services()
+                .show_folder_open_dialog(opts)
+                .map(|p| p.display().to_string()))
+        })
+    }
+
+    /// Dispatches a system notification --
+    /// [`quadraui::PlatformServices::send_notification`]. On the headless
+    /// `TuiBackend` this is a genuine best-effort degrade (an OSC 9/777
+    /// escape sequence plus a native `osascript`/`notify-send` spawn where
+    /// available), not a no-op -- see `quadraui::tui::services`'s module
+    /// doc's "Notifications" section. Fire-and-forget: there is no return
+    /// value to assert on, and no error this binding can observe.
+    #[pyo3(signature = (title, body, urgent=false, silent=false, tag=None))]
+    fn send_notification(
+        &mut self,
+        title: String,
+        body: String,
+        urgent: bool,
+        silent: bool,
+        tag: Option<String>,
+    ) -> PyResult<()> {
+        self.guarded(|app| {
+            let mut n = Notification::new(title, body).with_silent(silent);
+            if let Some(tag) = tag {
+                n = n.with_tag(tag);
+            }
+            n.urgent = urgent;
+            app.driver.backend().services().send_notification(n);
+            Ok(())
+        })
+    }
+
+    /// Opens `url` in the platform's default browser --
+    /// [`quadraui::PlatformServices::open_url_result`] (the fallible twin
+    /// of `open_url`, used here so a genuine failure raises instead of
+    /// being silently swallowed). On the headless `TuiBackend` this shells
+    /// out to `xdg-open`/`open`/`cmd /c start`, falling back to an OSC 8
+    /// hyperlink -- see `quadraui::tui::services`'s module doc's "URL
+    /// opening" section. Raises `InternalError` only when neither leg
+    /// reached anything.
+    fn open_url(&mut self, url: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .open_url_result(url)
+                .map_err(|err| InternalError::new_err(format!("open_url: {err:?}")))
+        })
+    }
+
+    /// Reveals `path` in the platform's file manager with it selected --
+    /// [`quadraui::PlatformServices::reveal_in_file_manager`]. On the
+    /// headless `TuiBackend` this reaches the desktop session underneath
+    /// the terminal (`open -R` / Explorer `/select,` / D-Bus `ShowItems`,
+    /// falling back to opening the parent directory) -- a terminal itself
+    /// has no file-manager window, but the session running it usually
+    /// does. Raises `InternalError` when no such session is reachable.
+    fn reveal_in_file_manager(&mut self, path: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .reveal_in_file_manager(Path::new(path))
+                .map_err(|err| InternalError::new_err(format!("reveal_in_file_manager: {err:?}")))
+        })
+    }
+
+    /// Opens `path` with the platform's default handler for its type --
+    /// [`quadraui::PlatformServices::open_path`]. Distinct from
+    /// [`Self::open_url`]: this takes a filesystem path, not a URL. Same
+    /// shell-out story as `open_url` on the headless `TuiBackend`. Raises
+    /// `InternalError` when no opener is reachable.
+    fn open_path(&mut self, path: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .open_path(Path::new(path))
+                .map_err(|err| InternalError::new_err(format!("open_path: {err:?}")))
+        })
+    }
+
+    /// Moves `path` to the platform trash/recycle bin --
+    /// [`quadraui::PlatformServices::move_to_trash`]. Genuinely full
+    /// support on the headless `TuiBackend`, not a degrade -- the
+    /// cross-platform `trash` crate needs only a filesystem, no live
+    /// desktop session. Raises `InternalError` on a real filesystem
+    /// failure.
+    fn move_to_trash(&mut self, path: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .move_to_trash(Path::new(path))
+                .map_err(|err| InternalError::new_err(format!("move_to_trash: {err:?}")))
+        })
+    }
+
+    /// Rings the terminal bell -- [`quadraui::PlatformServices::beep`].
+    /// Writes BEL (`\x07`) to both stdout and (Unix) `/dev/tty`; harmless
+    /// under `pytest`'s captured stdout, but not itself observable from a
+    /// driver test -- a terminal bell is this method's own "manual
+    /// verification" story.
+    fn beep(&mut self) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .beep()
+                .map_err(|err| InternalError::new_err(format!("beep: {err:?}")))
+        })
+    }
+
+    /// The OS-level light/dark preference, accent colour, and
+    /// high-contrast setting, as a `{"dark": bool, "accent": ... or None,
+    /// "high_contrast": bool, "reduce_motion": bool}` dict --
+    /// [`quadraui::PlatformServices::system_theme`]. On the headless
+    /// `TuiBackend` this is an environment-only heuristic
+    /// (`$COLORFGBG`, parsed the same way `quadraui::tui::caps::detect_system_theme`
+    /// does) -- `accent` is always `None` and `high_contrast`/
+    /// `reduce_motion` are always `False` there, since no terminal exposes
+    /// either signal. Raises `InternalError` when `$COLORFGBG` is unset or
+    /// unparseable -- a terminal that never sets it genuinely gives no
+    /// signal to report.
+    fn system_theme(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.guarded(|app| {
+            let theme = app
+                .driver
+                .backend()
+                .services()
+                .system_theme()
+                .map_err(|err| InternalError::new_err(format!("system_theme: {err:?}")))?;
+            pythonize::pythonize(py, &theme)
+                .map(|v| v.unbind())
+                .map_err(|err| InternalError::new_err(format!("system_theme: {err}")))
+        })
+    }
+
+    /// This app's platform identifier -- [`quadraui::PlatformServices::platform_name`].
+    /// Always `"tui"` here: every method on this page resolves services
+    /// off this `QuiApp`'s own headless `TuiBackend`, never a native
+    /// `run_native` window (see this section's own header doc).
+    fn platform_name(&mut self) -> PyResult<&'static str> {
+        self.guarded(|app| Ok(app.driver.backend().services().platform_name()))
     }
 }
 
