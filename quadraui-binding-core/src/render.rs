@@ -128,6 +128,10 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
                 scrollbar,
                 scroll_offset: tree.scroll_offset,
                 viewport_rows,
+                editing: tree
+                    .rows
+                    .iter()
+                    .find_map(|row| row.edit.clone().map(|edit| (row.path.clone(), edit))),
             });
         }
     }
@@ -398,6 +402,10 @@ pub fn paint_leaf(
                 scrollbar,
                 scroll_offset: tree.scroll_offset,
                 viewport_rows,
+                editing: tree
+                    .rows
+                    .iter()
+                    .find_map(|row| row.edit.clone().map(|edit| (row.path.clone(), edit))),
             });
         }
         LeafDescriptor::DataTable(data_table) => {

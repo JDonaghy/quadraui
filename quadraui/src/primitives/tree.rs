@@ -1229,6 +1229,28 @@ pub enum TreeEvent {
     /// selection as flattened-row indices; use [`selected_paths_for_indices`]
     /// to map those indices back to `TreePath`s before emitting this event.
     SelectionSet { paths: Vec<TreePath> },
+    /// A keystroke was applied to the row at `path`'s [`TreeRow::edit`] —
+    /// a character typed/deleted, or the cursor/selection moved. `text`,
+    /// `cursor`, and `selection_anchor` are the new [`TreeRowEditState`]
+    /// fields; an app's handler writes them back onto that row's `edit` so
+    /// the next render paints the caret where this keystroke left it,
+    /// mirroring `FormEvent::TextInputChanged`'s "fires every keystroke"
+    /// shape but — unlike that event — carrying the cursor/selection too,
+    /// since there is no separate per-widget cursor cache for a tree
+    /// rename to fall back on.
+    RowRenameChanged {
+        path: TreePath,
+        text: String,
+        cursor: usize,
+        selection_anchor: Option<usize>,
+    },
+    /// Enter was pressed while renaming the row at `path`: the app should
+    /// apply `text` as the row's new name and clear `edit` back to `None`.
+    RowRenameCommitted { path: TreePath, text: String },
+    /// Escape was pressed while renaming the row at `path`: the app should
+    /// discard the in-progress text and clear `edit` back to `None`
+    /// without renaming anything.
+    RowRenameCancelled { path: TreePath },
 }
 
 /// Maps flattened-row indices (as produced by

@@ -16,6 +16,7 @@ use crate::drag::{tab_bar_for_right_segment, tree_row_path};
 use crate::extra_paint::extra_as;
 use crate::hit::{HitDetail, PaintedHit};
 use crate::text_input::{text_input_key_event, TextCursorState};
+use crate::tree_edit::tree_row_rename_key_event;
 
 /// Up/Down navigation for a focused `DataTable`: moves the current row
 /// selection by one, clamped to `[0, total_rows - 1]` and starting at row 0
@@ -213,13 +214,22 @@ pub fn focus_scoped_key_event(
     hit_map
         .iter()
         .find_map(|hit| match hit {
-            PaintedHit::Tree { id, .. } if *id == focused => Some(UiEvent::Tree(
-                *id,
-                TreeEvent::KeyPressed {
-                    key: key.clone(),
-                    modifiers,
-                },
-            )),
+            PaintedHit::Tree { id, editing, .. } if *id == focused => {
+                if let Some((path, edit)) = editing {
+                    if let Some(ev) =
+                        tree_row_rename_key_event(*id, path, edit, raw_key, &modifiers)
+                    {
+                        return Some(ev);
+                    }
+                }
+                Some(UiEvent::Tree(
+                    *id,
+                    TreeEvent::KeyPressed {
+                        key: key.clone(),
+                        modifiers,
+                    },
+                ))
+            }
             PaintedHit::List { id, .. } if *id == focused => Some(UiEvent::List(
                 *id,
                 ListViewEvent::KeyPressed {

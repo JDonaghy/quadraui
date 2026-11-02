@@ -121,13 +121,14 @@ use quadraui::wheel_row_delta;
 #[cfg(test)]
 use quadraui::NamedKey;
 use quadraui::{
-    ActivityBar, AppLogic, Backend, BoardModel, Button, Chart, ComboBox, CommandCenter,
+    ActivityBar, AppLogic, Backend, BoardModel, Button, Chart, Color, ComboBox, CommandCenter,
     CommandLine, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTable, DatePicker,
     DialogButton, DialogSeverity, DiffView, Form, Image, Key, ListView, MenuBar,
     MessageDialogButton, MessageDialogOptions, MessageList, Minimap, Modifiers, MultiSectionView,
     NumberInput, Palette, Panel, PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect,
     Scrollbar, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StatusBar, Switch, TabBar,
-    TabItem, TextDisplay, TextInput, Toolbar, TreeView, UiEvent, UserPayload, WidgetId,
+    TabBarSegment, TabItem, TextDisplay, TextInput, Toolbar, TreeView, UiEvent, UserPayload,
+    WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -1319,21 +1320,31 @@ fn split_tree_node_from_dict(
     )))
 }
 
-/// Decodes a `"tabs"` node: `{"id", "tabs", "selected", "closable"}`, where
-/// `"tabs"` is a non-empty `list` of `{"id", "title", "content", "closable"}`
-/// entries and `"selected"` is the index of the entry whose `"content"`
-/// paints beneath the strip this frame. `"content"` is a full child node
-/// dict, recursively decoded by [`layout_node_from_dict`], so a tab may hold
-/// any primitive or nested row/column/split — giving a per-tab instance by
-/// construction rather than a single shared slot.
+/// Decodes a `"tabs"` node: `{"id", "tabs", "selected", "closable",
+/// "scroll_offset", "right_segments", "active_accent", "compact"}`, where
+/// `"tabs"` is a non-empty `list` of `{"id", "title", "content", "closable",
+/// "is_dirty", "is_preview"}` entries and `"selected"` is the index of the
+/// entry whose `"content"` paints beneath the strip this frame. `"content"`
+/// is a full child node dict, recursively decoded by [`layout_node_from_dict`],
+/// so a tab may hold any primitive or nested row/column/split — giving a
+/// per-tab instance by construction rather than a single shared slot.
 ///
 /// The strip-level `"closable"` (default `true`) gates whether *any* tab in
 /// this strip draws a close `×` at all — maps to [`TabBar::show_tab_close`].
 /// A per-tab `"closable"` (default `true`) then opts that one tab out even
-/// when the strip allows it — maps to [`TabItem::is_closable`]. Clicking a
-/// drawn close button reaches the handler as
-/// `UiEvent::TabBar(id, TabBarEvent::TabClosed { index })`, synthesized by
-/// [`semantic_event_for_hit`] the same way a tab click becomes
+/// when the strip allows it — maps to [`TabItem::is_closable`]. A per-tab
+/// `"is_dirty"` (default `false`) swaps that tab's close glyph for the
+/// unsaved-changes dot, and `"is_preview"` (default `false`) marks it a
+/// preview (single-click, replaced-on-next-open) tab — both map to the
+/// identically named [`TabItem`] fields the standalone `tab_bar` leaf
+/// already accepts. The strip-level `"scroll_offset"` (default `0`),
+/// `"right_segments"` (default `[]`, each `{"text", "width_cells", "id",
+/// "is_active"}` decoded into a [`TabBarSegment`]), `"active_accent"`
+/// (default `None`, an `{"r", "g", "b", "a"}` dict decoded into a
+/// [`Color`]), and `"compact"` (default `false`) map to the identically
+/// named [`TabBar`] fields. Clicking a drawn close button reaches the
+/// handler as `UiEvent::TabBar(id, TabBarEvent::TabClosed { index })`,
+/// synthesized by [`semantic_event_for_hit`] the same way a tab click becomes
 /// `TabActivated`.
 fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutTabs> {
     let id: String = match dict.get_item("id")? {
@@ -1417,10 +1428,28 @@ fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
             })?,
             _ => true,
         };
+        let is_dirty: bool = match entry_dict.get_item("is_dirty")? {
+            Some(value) if !value.is_none() => value.extract().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} tab {tab_id:?} \"is_dirty\" must be a bool"
+                ))
+            })?,
+            _ => false,
+        };
+        let is_preview: bool = match entry_dict.get_item("is_preview")? {
+            Some(value) if !value.is_none() => value.extract().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} tab {tab_id:?} \"is_preview\" must be a bool"
+                ))
+            })?,
+            _ => false,
+        };
 
         items.push(TabItem {
             label: title,
             is_closable,
+            is_dirty,
+            is_preview,
             ..Default::default()
         });
         entries.push(LayoutTabEntry {
@@ -1460,16 +1489,58 @@ fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<Layou
         })?,
         _ => true,
     };
+    let scroll_offset: usize = match dict.get_item("scroll_offset")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: tabs {id:?} \"scroll_offset\" must be an integer"
+            ))
+        })?,
+        _ => 0,
+    };
+    let right_segments: Vec<TabBarSegment> = match dict.get_item("right_segments")? {
+        Some(value) if !value.is_none() => {
+            let list = value.cast::<PyList>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} \"right_segments\" must be a list"
+                ))
+            })?;
+            pythonize::depythonize(list.as_any()).map_err(|err| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} invalid \"right_segments\": {err}"
+                ))
+            })?
+        }
+        _ => Vec::new(),
+    };
+    let active_accent: Option<Color> = match dict.get_item("active_accent")? {
+        Some(value) if !value.is_none() => {
+            let accent_dict = value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: tabs {id:?} \"active_accent\" must be a dict"
+                ))
+            })?;
+            Some(decode(what, accent_dict)?)
+        }
+        _ => None,
+    };
+    let compact: bool = match dict.get_item("compact")? {
+        Some(value) if !value.is_none() => value.extract().map_err(|_| {
+            InvalidDescriptorError::new_err(format!(
+                "{what}: tabs {id:?} \"compact\" must be a bool"
+            ))
+        })?,
+        _ => false,
+    };
 
     Ok(LayoutTabs {
         tab_bar: TabBar {
             id: WidgetId::new(id),
             tabs: items,
-            scroll_offset: 0,
-            right_segments: Vec::new(),
-            active_accent: None,
+            scroll_offset,
+            right_segments,
+            active_accent,
             show_tab_close,
-            compact: false,
+            compact,
         },
         entries,
         selected,
@@ -4353,6 +4424,71 @@ def handle(event):
         });
     }
 
+    /// A `tabs` node's per-tab `"is_dirty"` and strip-level
+    /// `"right_segments"` reach the painted `TabBar` the same way they
+    /// already do for the standalone `tab_bar` leaf: a dirty tab's close
+    /// glyph becomes the unsaved-changes dot, and a right segment's own
+    /// text paints in the strip even though it carries no tab content of
+    /// its own.
+    #[test]
+    fn tabs_node_renders_a_dirty_marker_and_right_segments_supplied_from_python() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+def render():
+    return {'tabs': {
+        'id': 'tabs:main',
+        'selected': 0,
+        'right_segments': [
+            {'text': 'SEGTXT', 'width_cells': 6, 'id': None, 'is_active': False},
+        ],
+        'tabs': [
+            {
+                'id': 'tab:a', 'title': 'Alpha', 'is_dirty': True,
+                'content': {'id': 'text:a', 'text_display': {
+                    'id': 'text:a',
+                    'lines': [{'spans': [{'text': 'AlphaBody', 'fg': None, 'bg': None}]}],
+                }},
+            },
+            {
+                'id': 'tab:b', 'title': 'Beta',
+                'content': {'id': 'text:b', 'text_display': {
+                    'id': 'text:b',
+                    'lines': [{'spans': [{'text': 'BetaBody', 'fg': None, 'bg': None}]}],
+                }},
+            },
+        ],
+    }}
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+
+            let mut app = QuiApp::new(60, 20, None, Some(render)).expect("valid dimensions");
+
+            assert!(
+                app.screen_contains("Alpha").expect("render must not raise"),
+                "the dirty tab's title must still render"
+            );
+            assert!(
+                app.screen_contains("●").expect("render must not raise"),
+                "a dirty tab's close glyph must be the unsaved-changes dot, not '×'"
+            );
+            assert!(
+                app.screen_contains("SEGTXT")
+                    .expect("render must not raise"),
+                "the strip-level right segment's own text must be painted"
+            );
+        });
+    }
+
     /// `MouseDown`'s own `widget` field arrives `None` on the wire; once a
     /// frame has painted a `button` leaf, dispatching a `MouseDown` at that
     /// button's painted position fills `widget` in with the button's id and
@@ -5285,6 +5421,182 @@ def handle(event):
                 path,
                 vec![0],
                 "the toggled row's own path (the first, branch row) must be reported"
+            );
+        });
+    }
+
+    /// A key pressed while the focused tree's row is mid-rename
+    /// (`TreeRow::edit` is `Some`) is replaced by the semantic
+    /// `UiEvent::Tree(RowRenameChanged/Committed/Cancelled)` it stands for,
+    /// not the tree's raw `KeyPressed` — so a Python handler can write the
+    /// reported `text`/`cursor`/`selection_anchor` straight back onto the
+    /// row's `edit` without reimplementing cursor math itself.
+    #[test]
+    fn key_pressed_during_a_tree_row_rename_emits_semantic_rename_events() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'tree': {
+        'id': 'tree:main',
+        'rows': [{
+            'path': [0], 'indent': 0, 'icon': None,
+            'text': {'spans': [{'text': 'file.txt', 'fg': None, 'bg': None}]},
+            'badge': None, 'is_expanded': None,
+            'edit': {'text': 'fi', 'cursor': 2, 'selection_anchor': None, 'placeholder': None},
+        }],
+        'selection_mode': 'Single', 'selected_path': [0],
+        'style': {
+            'indent': 2, 'show_chevrons': True,
+            'chevron_expanded': 'v', 'chevron_collapsed': '>',
+        },
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let screen = app.screen().expect("render must not raise");
+            assert!(
+                screen.contains("fi"),
+                "the in-progress rename text must be painted"
+            );
+
+            fn extract_received<'py>(locals: &Bound<'py, PyDict>) -> Bound<'py, PyList> {
+                locals
+                    .get_item("received")
+                    .expect("dict lookup")
+                    .expect("received must be defined")
+                    .cast_into::<PyList>()
+                    .expect("received must be a list")
+            }
+
+            fn tree_event<'py>(event_dict: &Bound<'py, PyDict>) -> (String, Bound<'py, PyDict>) {
+                let payload = event_dict
+                    .get_item("Tree")
+                    .expect("dict lookup")
+                    .expect("a rename key must dispatch a Tree event")
+                    .cast_into::<PyTuple>()
+                    .expect("Tree must pythonize to a (id, event) tuple");
+                let widget: String = payload
+                    .get_item(0)
+                    .expect("first element")
+                    .extract()
+                    .expect("the tree's own id must be a string");
+                let inner = payload
+                    .get_item(1)
+                    .expect("second element")
+                    .cast_into::<PyDict>()
+                    .expect("the inner TreeEvent must pythonize to a dict");
+                (widget, inner)
+            }
+
+            // Tab focuses the tree (its only tab stop).
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Tab),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            assert_eq!(
+                extract_received(&locals).len(),
+                1,
+                "Tab must emit exactly one event"
+            );
+
+            // Typing 'x' at cursor 2 of \"fi\" must insert it there, not
+            // reimplement the insert in Python -- the reported `text` is
+            // already \"fix\" with `cursor` advanced to 3.
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Char('x'),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            let received_list = extract_received(&locals);
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the rename keystroke must emit one more event"
+            );
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let (widget, inner) = tree_event(&event_dict);
+            assert_eq!(widget, "tree:main");
+            let changed = inner
+                .get_item("RowRenameChanged")
+                .expect("dict lookup")
+                .expect("a rename keystroke must carry RowRenameChanged, not raw KeyPressed")
+                .cast_into::<PyDict>()
+                .expect("RowRenameChanged payload must be a dict");
+            let text: String = changed
+                .get_item("text")
+                .expect("dict lookup")
+                .expect("text key must be present")
+                .extract()
+                .expect("text must be a string");
+            assert_eq!(
+                text, "fix",
+                "the typed char must land at the cursor, not corrupt the text"
+            );
+            let cursor: usize = changed
+                .get_item("cursor")
+                .expect("dict lookup")
+                .expect("cursor key must be present")
+                .extract()
+                .expect("cursor must be an int");
+            assert_eq!(cursor, 3, "the cursor must advance past the inserted char");
+
+            // Enter commits the rename with the (unchanged by this event)
+            // current text.
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            let received_list = extract_received(&locals);
+            assert_eq!(received_list.len(), 3, "Enter must emit one more event");
+            let event_dict = received_list
+                .get_item(2)
+                .expect("third item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let (_, inner) = tree_event(&event_dict);
+            let committed = inner
+                .get_item("RowRenameCommitted")
+                .expect("dict lookup")
+                .expect("Enter during a rename must carry RowRenameCommitted")
+                .cast_into::<PyDict>()
+                .expect("RowRenameCommitted payload must be a dict");
+            let text: String = committed
+                .get_item("text")
+                .expect("dict lookup")
+                .expect("text key must be present")
+                .extract()
+                .expect("text must be a string");
+            assert_eq!(
+                text, "fi",
+                "Enter commits the text the row's edit state still holds"
             );
         });
     }

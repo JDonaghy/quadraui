@@ -9,7 +9,7 @@ use std::rc::Rc;
 use quadraui::{
     ButtonHit, ButtonLayout, DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, Point,
     PressZone, Rect, Scrollbar, SplitHit, SplitLayout, TabBarHit, TabBarLayout, TreePath,
-    TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -43,7 +43,13 @@ pub enum PaintedHit {
     /// `Scrollbar`'s `thumb_len` alone can't be inverted back to it once
     /// `min_thumb_len` clamping has applied). Both feed the scrollbar
     /// drag/page/wheel math in the binding's own event handler without needing to
-    /// re-borrow the `TreeView` or re-touch the backend.
+    /// re-borrow the `TreeView` or re-touch the backend. `editing` is the
+    /// path and edit state of whichever row currently has `TreeRow::edit`
+    /// set (`None` when no row is mid-rename), read by
+    /// [`crate::semantic::focus_scoped_key_event`] so a key pressed while
+    /// that row is being renamed is resolved by
+    /// [`crate::tree_row_rename_key_event`] instead of falling straight
+    /// through to the tree's raw `TreeEvent::KeyPressed`.
     Tree {
         id: WidgetId,
         area: Rect,
@@ -52,6 +58,7 @@ pub enum PaintedHit {
         scrollbar: Option<Scrollbar>,
         scroll_offset: usize,
         viewport_rows: usize,
+        editing: Option<(TreePath, TreeRowEditState)>,
     },
     List {
         id: WidgetId,
