@@ -75,6 +75,47 @@ def test_text_display_wheel_scroll_emits_scrolled():
     assert text_display_event == {"Scrolled": {"new_offset": 1}}
 
 
+def test_text_display_with_title_wheel_scroll_emits_scrolled():
+    # Every backend's text-display layout lays the body out from `0.0` and
+    # leaves the title row to be painted separately above it, so a hit on
+    # the *last* visible body row (one row lower than an untitled display's
+    # own last row) is the regression shape: before the hit-test accounted
+    # for the title's body offset, a wheel notch there missed the layout
+    # entirely and no `Scrolled` event was emitted at all.
+    app = QuiApp(40, 20)
+    app.insert_text_display(
+        {
+            "id": "text:1",
+            "title": {"spans": [{"text": "Logs", "fg": None, "bg": None}]},
+            "lines": [
+                {"spans": [{"text": f"Line {i}", "fg": None, "bg": None}]}
+                for i in range(5)
+            ],
+            "auto_scroll": False,
+        }
+    )
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {
+            "Scroll": {
+                "delta": {"x": 0.0, "y": -1.0},
+                # y=2.0: one row for the title, one more for the first body
+                # line, landing on the last body row the 3-line band leaves
+                # room for once the title has taken its own row.
+                "position": {"x": 1.0, "y": 2.0},
+            }
+        }
+    )
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, text_display_event = received[0]["TextDisplay"]
+    assert widget_id == "text:1"
+    assert text_display_event == {"Scrolled": {"new_offset": 1}}
+
+
 def test_insert_list():
     app = QuiApp(40, 20)
     app.insert_list(

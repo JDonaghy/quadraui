@@ -70,8 +70,9 @@ pub trait ExtraPaint: std::any::Any {
     /// landed on.
     ///
     /// Default: ignores `interaction` and forwards to [`ExtraPaint::paint`]
-    /// with no clickable children — correct for every extra but the three
-    /// above, none of which have per-child click targets of their own.
+    /// with no clickable children — correct for every extra except
+    /// `Toolbar`, `StatusBar` and `ActivityBar`, each of which overrides
+    /// this to report its own per-child click targets.
     fn paint_chrome(
         &self,
         backend: &mut dyn Backend,
@@ -349,10 +350,12 @@ impl ExtraPaint for ActivityBar {
         self.id
     }
 
-    /// `ActivityBar` has no `InteractionState`-keyed hover of its own yet —
     /// [`quadraui::Backend::draw_activity_bar`] takes a positional
-    /// `hovered_idx: Option<usize>` instead, so `interaction` is unused
-    /// here; only the clickable-item hit regions are new. Row spans
+    /// `hovered_idx: Option<usize>` — a flat index into
+    /// [`quadraui::ActivityBarLayout::visible_items`], not a [`WidgetId`] —
+    /// so `interaction.hovered()` is first resolved against a no-paint
+    /// [`quadraui::Backend::activity_bar_layout`] call to recover that
+    /// index before the real paint. Row spans
     /// ([`quadraui::ActivityBarRowHit::y_start`]/`y_end`) are relative to
     /// `area`'s own top edge, so they're shifted by `area.x`/`area.y`
     /// before being recorded — [`crate::hit::PaintedHit::Extra::chrome_hits`]
@@ -363,9 +366,19 @@ impl ExtraPaint for ActivityBar {
         area: Rect,
         interaction: &InteractionState,
     ) -> Vec<(Rect, WidgetId)> {
-        let _ = interaction;
+        let hovered_idx = interaction.hovered().and_then(|hovered_id| {
+            backend
+                .activity_bar_layout(area, self)
+                .iter()
+                .position(|row| row.id == *hovered_id)
+        });
+        // `ActivityBarRowHit` carries only `y_start`/`y_end` — no x/width of
+        // its own — so `area.width` is the only width the `Backend` trait
+        // exposes for this row; it matches what `draw_bands` actually fills
+        // the row's background with (a full-band-width horizontal strip in
+        // the fixed-slot layout), not a narrower vertical-strip assumption.
         backend
-            .draw_activity_bar(area, self, None)
+            .draw_activity_bar(area, self, hovered_idx)
             .into_iter()
             .map(|row| {
                 (
