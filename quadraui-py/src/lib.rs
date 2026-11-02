@@ -3065,6 +3065,13 @@ impl QuiApp {
     /// registered event handler or render callback — see
     /// `show_context_menu`'s own doc for why (the same PyO3 runtime-borrow
     /// wall applies here).
+    ///
+    /// This is the modal `Dialog` corner of the in-canvas overlay family
+    /// only. Tooltip/Completions/Float/RichTextPopup have no binding
+    /// surface yet, and the non-modal `Toast` overlay (app-owned toast
+    /// list, keyboard-focus cursor rather than a blocking popup) needs a
+    /// differently-shaped surface than this "one call, blocks input
+    /// until resolved" method and isn't wired here either.
     #[pyo3(signature = (title, body, buttons, severity=None))]
     fn show_message_dialog(
         &mut self,
