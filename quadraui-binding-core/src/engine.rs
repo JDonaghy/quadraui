@@ -29,9 +29,9 @@ use crate::text_input::{text_input_insert_event, TextCursorState};
 /// landed on a specific sub-area, its [`HitDetail`]) to the binding's own
 /// user-code callback, and reporting back the [`quadraui::Reaction`] that
 /// callback produced. A binding implements this once, around its own
-/// handler-invocation machinery (Python's `Py<PyAny>::call1`, a JS
-/// function value, ...) — everything upstream of this call is identical
-/// for every binding and lives in [`InteractionEngine::handle`] instead.
+/// handler-invocation machinery (a Python callable, a JS function value,
+/// ...) — everything upstream of this call is identical for every binding
+/// and lives in [`InteractionEngine::handle`] instead.
 pub trait EventSink {
     fn dispatch(&mut self, event: &UiEvent, hit_detail: Option<&HitDetail>) -> quadraui::Reaction;
 }
