@@ -27,8 +27,8 @@ pub struct TextCursorState {
 /// Resolves a key focused on a standalone [`TextInput`] extra into the
 /// [`FormEvent`] it should produce: `Enter` always commits and drops the
 /// cached cursor for `id` (this primitive has no multiline mode to
-/// special-case — a Python app that wants a literal newline needs a
-/// different key, since `Enter` here always means "done"), a Ctrl/Cmd+letter
+/// special-case — an app that wants a literal newline needs a different
+/// key, since `Enter` here always means "done"), a Ctrl/Cmd+letter
 /// chord passes through unclaimed so a host's accelerator still fires, and
 /// every other key goes through [`EditOp::from_key`]/[`TextEditor::apply`].
 /// Returns `None` when the key isn't one [`EditOp::from_key`] recognizes, or
@@ -71,9 +71,9 @@ pub fn clamp_cursor(line: usize, col: usize, lines: &[String]) -> (usize, usize)
 /// Applies `op` to a [`TextEditor`] seeded from `text_input`'s current text
 /// but from the *cached* cursor/selection for `id` in `text_cursors` — not
 /// the descriptor's own `cursor_line`/`cursor_col`, which is only ever the
-/// position Python last echoed back (typically 0/0, since
-/// `FormEvent::TextInputChanged`/`Committed` carry no cursor for a host to
-/// echo). This is what lets a multi-character edit land at the right
+/// position the binding's own event handler last echoed back (typically
+/// 0/0, since `FormEvent::TextInputChanged`/`Committed` carry no cursor for
+/// a host to echo). This is what lets a multi-character edit land at the right
 /// position: without it, every keystroke would restart from the same
 /// snapshot position and (for anything but a single appended character)
 /// corrupt the text. The resulting cursor/selection is written back to
@@ -83,8 +83,8 @@ pub fn clamp_cursor(line: usize, col: usize, lines: &[String]) -> (usize, usize)
 /// `self.text_edit = Some(TextEditState { .. })`, including its
 /// degenerate-anchor cleanup for a no-op selection extend. Selection
 /// (`Shift`+arrows, `SelectAll`) and undo/redo are tracked here the same
-/// way, but a selecting/undoing op is otherwise unreachable from Python
-/// today: nothing in this module currently calls [`EditOp::from_key`] with
+/// way, but a selecting/undoing op is otherwise unreachable through any
+/// binding today: nothing in this module currently calls [`EditOp::from_key`] with
 /// `extend: true` or produces `EditOp::Undo`/`Redo`, since `Shift`+arrow
 /// falls through [`EditOp::from_key`] unclaimed. Returns `None` when the
 /// resulting text is unchanged (a pure cursor move, or a key

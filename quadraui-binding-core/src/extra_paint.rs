@@ -17,24 +17,26 @@ use quadraui::{
 
 /// Paints one additive primitive descriptor painted outside the six fixed
 /// slots above. Implemented once per primitive type (see the `impl`s just
-/// below) so that registering a kind in [`EXTRA_PRIMITIVES`] never needs a
-/// central match arm.
+/// below) so that registering a kind in a binding's own `EXTRA_PRIMITIVES`
+/// decode table never needs a central match arm.
 ///
 /// [`ExtraPaint::id`] is mechanical (`self.id`) on every impl and backs the
-/// [`PaintedHit::Extra`] entry pushed for this descriptor. [`ExtraPaint::hit_test`]
-/// and [`ExtraPaint::tab_stop`] default to "not interactive", which most
-/// additive primitives keep; [`Switch`] and [`TextInput`] override both to
+/// [`crate::hit::PaintedHit::Extra`] entry pushed for this descriptor.
+/// [`ExtraPaint::hit_test`] and [`ExtraPaint::tab_stop`] default to "not
+/// interactive", which most additive primitives keep; [`quadraui::Switch`]
+/// and [`quadraui::TextInput`] override both to
 /// route pointer and keyboard focus through their own `layout`/`hit_test`.
-/// This trait only gets a hit/focus to Python with `widget` set — the
-/// per-kind semantic event synthesis that turns it into a `FormEvent`
-/// (toggling the switch's value, editing the text input, ...) lives in
-/// `semantic_event_for_hit`, `focus_scoped_key_event`,
+/// This trait only gets a hit/focus to the binding's own event handler with
+/// `widget` set — the per-kind semantic event synthesis that turns it into a
+/// `FormEvent` (toggling the switch's value, editing the text input, ...)
+/// lives in `semantic_event_for_hit`, `focus_scoped_key_event`,
 /// `text_input_key_event` and `text_input_insert_event`, below.
 pub trait ExtraPaint: std::any::Any {
     fn paint(&self, backend: &mut dyn Backend, area: Rect);
 
     /// The widget id this descriptor paints under, used to populate
-    /// [`PaintedHit::Extra`] without threading a leaf-tree address through.
+    /// [`crate::hit::PaintedHit::Extra`] without threading a leaf-tree
+    /// address through.
     fn id(&self) -> WidgetId;
 
     /// Whether `point` lands on an interactive region of this descriptor,
@@ -42,7 +44,8 @@ pub trait ExtraPaint: std::any::Any {
     /// `point` itself is in — no translation, matching `Button`/`Split`'s
     /// own layout convention). `false` by default: most additive
     /// primitives are pure display and a miss here lets
-    /// [`hit_test_painted`] fall through to whatever painted behind them.
+    /// [`crate::hit::hit_test_painted`] fall through to whatever painted
+    /// behind them.
     fn hit_test(&self, area: Rect, point: Point) -> bool {
         let _ = (area, point);
         false
@@ -57,11 +60,12 @@ pub trait ExtraPaint: std::any::Any {
 }
 
 /// Recovers the concrete descriptor (`Switch`, `TextInput`, ...) kept alive
-/// behind the `Rc<dyn ExtraPaint>` in a [`PaintedHit::Extra`] entry, via
+/// behind the `Rc<dyn ExtraPaint>` in a [`crate::hit::PaintedHit::Extra`] entry, via
 /// trait-upcasting coercion to [`ExtraPaint`]'s `std::any::Any` supertrait.
-/// Used by [`semantic_event_for_hit`] and the binding's own event handler to route a
-/// hit/key to the matched extra's own semantics (`Switch::click`,
-/// `TextEditor::apply`, ...) instead of leaving every extra paint-only.
+/// Used by [`crate::semantic::semantic_event_for_hit`] and the binding's own
+/// event handler to route a hit/key to the matched extra's own semantics
+/// (`Switch::click`, `TextEditor::apply`, ...) instead of leaving every
+/// extra paint-only.
 pub fn extra_as<T: 'static>(extra: &Rc<dyn ExtraPaint>) -> Option<&T> {
     (extra.as_ref() as &dyn std::any::Any).downcast_ref::<T>()
 }
@@ -392,7 +396,8 @@ impl ExtraPaint for Scrollbar {
 }
 
 /// The additive primitive kind names, in the same registration order
-/// `quadraui-py`'s own `EXTRA_PRIMITIVES` decode table uses. [`draw_bands`]
+/// `quadraui-py`'s own `EXTRA_PRIMITIVES` decode table uses.
+/// [`crate::render::draw_bands`]
 /// iterates this (rather than the `extra` slot `HashMap` itself) so the
 /// paint order a frame produces is deterministic, independent of the map's
 /// iteration order.

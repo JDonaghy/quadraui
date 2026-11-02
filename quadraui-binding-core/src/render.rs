@@ -60,7 +60,7 @@ pub struct RenderRefs<'a> {
     pub data_table: Option<&'a DataTable>,
     pub tab_bar: Option<&'a TabBar>,
     /// Additive primitive slots, keyed by kind name. Painted after the six
-    /// fixed bands above, in [`EXTRA_PRIMITIVES`] order.
+    /// fixed bands above, in a binding's own `EXTRA_PRIMITIVES` order.
     pub extra: &'a HashMap<String, Rc<dyn ExtraPaint>>,
 }
 
@@ -207,10 +207,11 @@ pub fn paint_layout(
         LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf, hits),
         LayoutNode::Split(split) => {
             // `split.split.first_min`/`second_min` are decoded as portable
-            // line counts (see `layout_split_from_dict`); scale them into
+            // line counts (see a binding's own split decode, e.g.
+            // `layout_split_from_dict` in `quadraui-py`); scale them into
             // the backend's native unit here, right before painting, so
             // every backend gets a minimum pane size of the same visual
-            // weight from the same Python-supplied number.
+            // weight from the same binding-supplied number.
             let line_height = backend.line_height();
             let native_split = Split {
                 first_min: split.split.first_min * line_height,
@@ -304,9 +305,9 @@ pub fn tree_viewport_rows(backend: &mut dyn Backend, rect: Rect, tree: &TreeView
 /// vertical scrollbar when one is needed, and returns `(content_rect,
 /// scrollbar, viewport_rows)` so the caller can hit-test against the SAME
 /// geometry that was actually painted (mirrors
-/// [`crate::compose::TreeController::split_rect`] in `quadraui`, minus its
-/// drag/selection state) and drive drag/page/wheel scrolling without
-/// re-touching the backend.
+/// `quadraui::compose::TreeController::split_rect`, minus its drag/selection
+/// state) and drive drag/page/wheel scrolling without re-touching the
+/// backend.
 ///
 /// On a backend that paints its own scrollbar overlay inside `draw_tree`
 /// ([`Backend::tree_paints_own_scrollbar`] — GTK, macOS, Win), `tree` is

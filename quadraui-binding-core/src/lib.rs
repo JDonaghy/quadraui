@@ -13,9 +13,10 @@
 //! `event -> hit -> semantic -> render` engine with real Rust types, and
 //! supplies only a callback boundary back into user code — every binding
 //! inherits this engine's behavior (including its bug fixes) for free.
-#![allow(rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links)]
+#![allow(rustdoc::private_intra_doc_links)]
 
 pub mod drag;
+pub mod engine;
 pub mod extra_paint;
 pub mod hit;
 pub mod layout;
@@ -25,6 +26,7 @@ pub mod text_input;
 
 pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree_scroll_state};
 pub use drag::{ActiveDrag, ScrollbarDrag};
+pub use engine::{EventSink, InteractionEngine};
 pub use extra_paint::{extra_as, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
 pub use hit::{event_position, hit_test_painted, set_event_widget};
 pub use hit::{HitDetail, PaintedHit};
@@ -35,6 +37,3 @@ pub use render::{tree_viewport_rows, RenderFrame, RenderRefs};
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
 pub use text_input::{apply_text_input_edit, clamp_cursor, text_input_insert_event};
 pub use text_input::{text_input_key_event, TextCursorState};
-
-#[cfg(test)]
-mod tests;

@@ -101,22 +101,21 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use pyo3::types::{PyDict, PyList};
 
-use quadraui::compose::{
-    ContextMenuController, ContextMenuOutcome, MenuDef, MenuEvent, MenuSystem,
-};
+#[cfg(test)]
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
 #[cfg(test)]
+use quadraui::wheel_row_delta;
+#[cfg(test)]
 use quadraui::NamedKey;
 use quadraui::{
-    wheel_row_delta, ActivityBar, AppLogic, Backend, BoardModel, Button, Chart, ComboBox,
-    CommandCenter, CommandLine, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTable,
-    DatePicker, DiffView, EditOp, Form, Image, Key, ListView, MenuBar, MessageList, Minimap,
-    Modifiers, MultiSectionView, NumberInput, Palette, Panel, PipelineView, Point, ProgressBar,
-    RadioGroup, Reaction, Rect, Scrollbar, SidebarPanel, Spinner, Split, SplitDirection, SplitTree,
-    StatusBar, Switch, TabBar, TabItem, TextDisplay, TextInput, Toolbar, TreeView, UiEvent,
-    WidgetId,
+    ActivityBar, AppLogic, Backend, BoardModel, Button, Chart, ComboBox, CommandCenter,
+    CommandLine, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTable, DatePicker,
+    DiffView, Form, Image, Key, ListView, MenuBar, MessageList, Minimap, Modifiers,
+    MultiSectionView, NumberInput, Palette, Panel, PipelineView, Point, ProgressBar, RadioGroup,
+    Reaction, Rect, Scrollbar, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StatusBar,
+    Switch, TabBar, TabItem, TextDisplay, TextInput, Toolbar, TreeView, UiEvent, WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -125,13 +124,12 @@ use quadraui::{
 // bare names (rather than a `qbc::` path prefix) so this file's own call
 // sites, most of which predate the crate split, need no further change.
 use quadraui_binding_core::{
-    draw_bands, event_position, extra_as, find_split_layout, focus_scoped_key_event,
-    hit_test_painted, paint_layout, semantic_event_for_hit, set_event_widget,
-    text_input_insert_event, tree_scroll_state, ActiveDrag, ExtraPaint, HitDetail, LayoutLeaf,
+    draw_bands, paint_layout, EventSink, ExtraPaint, HitDetail, InteractionEngine, LayoutLeaf,
     LayoutNode, LayoutPanel, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry,
-    LayoutTabs, LeafDescriptor, PaintedHit, RenderFrame, RenderRefs, ScrollbarDrag,
-    TextCursorState, LEAF_KIND_KEYS,
+    LayoutTabs, LeafDescriptor, RenderFrame, RenderRefs, LEAF_KIND_KEYS,
 };
+#[cfg(test)]
+use quadraui_binding_core::{tree_scroll_state, EXTRA_PRIMITIVE_KINDS};
 
 create_exception!(
     _quadraui,
@@ -315,66 +313,15 @@ struct PyAppLogic {
     /// clone keeps observing writes `handle`/`tick` make to the moved
     /// original for as long as the native loop runs.
     pending_error: Rc<RefCell<Option<PyErr>>>,
-    /// Every primitive this app painted this frame, in paint order, as a
-    /// [`PaintedHit`] carrying its id and the hit-testable layout its
-    /// backend `draw_*` call returned. Rebuilt from scratch at the start of
-    /// every [`AppLogic::render`] call and read by [`handle`] to translate
-    /// an incoming pointer event's screen coordinates into the `WidgetId`
-    /// (and finer [`HitDetail`]) it landed on, before forwarding it to the
-    /// registered Python handler.
-    ///
-    /// `RefCell` rather than a plain field because `render` takes `&self`
-    /// (every backend's `AppLogic::render` is called through a shared
-    /// reference — see `AppLogic::AreaId`/`render`'s signature below), so
-    /// mutating this during paint needs interior mutability even though
-    /// `handle`/`tick` otherwise only ever need `&mut self`.
-    hit_map: RefCell<Vec<PaintedHit>>,
-    /// Armed by a `MouseDown` landing on a split divider (per [`hit_map`]'s
-    /// [`PaintedHit::Split`] hit-testing) and cleared on the matching
-    /// `MouseUp`. While armed, [`handle`] turns every `MouseMoved` into a
-    /// synthesized `UiEvent::SplitDividerDragged` instead of forwarding the
-    /// raw move, so a Python handler never has to recompute split geometry
-    /// itself to support divider dragging.
-    active_drag: RefCell<Option<ActiveDrag>>,
-    /// Armed by a `MouseDown` landing on `HitDetail::TreeScrollbarThumb`
-    /// (per [`hit_map`]'s [`PaintedHit::Tree`] hit-testing) and cleared on
-    /// the matching `MouseUp`. While armed, [`handle`] turns every
-    /// `MouseMoved` into a synthesized `UiEvent::ScrollOffsetChanged`
-    /// instead of forwarding the raw move, mirroring [`active_drag`]'s
-    /// divider-drag handling for the tree's own scrollbar thumb.
-    scrollbar_drag: RefCell<Option<ScrollbarDrag>>,
-    /// Per-`TextInput` cursor/selection state, keyed by `WidgetId`, that
-    /// survives across keystrokes the way `compose::FormController`'s own
-    /// `text_edit: Option<TextEditState>` does (`form_controller.rs:974-995`).
-    /// [`apply_text_input_edit`] is a one-shot [`TextEditor`] per call — its
-    /// `TextInput` argument is only ever an immutable snapshot a render
-    /// callback just returned — so without this cache every keystroke would
-    /// restart from that snapshot's `cursor_line`/`cursor_col` (0/0 unless
-    /// the app happens to echo a cursor back onto the descriptor, which
-    /// `FormEvent::TextInputChanged`/`Committed` carry no way to do). Cleared
-    /// implicitly by simply not being consulted once a widget stops being
-    /// focused or falls out of the hit map; a stale entry for a since-shrunk
-    /// `lines` is clamped back on lookup (see [`clamp_cursor`]).
-    text_cursors: RefCell<HashMap<WidgetId, TextCursorState>>,
-    /// Owns the in-window dropdown behind a `"menu_bar"` extra: the
-    /// open/close/keyboard-nav/submenu state machine that turns a click on
-    /// a top-level item into an open dropdown and a selection into
-    /// `UiEvent::MenuActivated`. `RefCell` because [`AppLogic::render`]
-    /// takes `&self` but must still refresh [`MenuSystem::set_menus`] from
-    /// the current frame's `MenuBar` descriptor before painting the
-    /// dropdown overlay — the same reason [`Self::hit_map`] needs one.
-    menu_system: RefCell<MenuSystem>,
-    /// The absolute bounds of the `"menu_bar"` extra [`Self::render`] most
-    /// recently painted, read by [`handle`][AppLogic::handle] to call
-    /// [`MenuSystem::handle`] with the same `bar_rect` the paint pass used.
-    /// `None` whenever no `"menu_bar"` extra was present that frame.
-    menu_bar_rect: RefCell<Option<Rect>>,
-    /// Owns the state behind `QuiApp::show_context_menu`: which popup (if
-    /// any) is open and routes its mouse/keyboard navigation and dismissal.
-    /// A plain field (not `RefCell`) since every mutating call reaches it
-    /// through `&mut self` — [`handle`][AppLogic::handle] itself, or
-    /// `QuiApp::show_context_menu` via `TuiDriver::parts_mut`'s `&mut A`.
-    ctx_menu: ContextMenuController,
+    /// The language-neutral `event -> hit -> semantic` orchestration engine
+    /// (hit map, divider/scrollbar drag state, text-input cursor cache,
+    /// menu-bar/context-menu controllers) this binding is a thin PyO3 leaf
+    /// over — see `quadraui_binding_core::engine`'s module doc.
+    /// [`AppLogic::render`] feeds it this frame's painted hits via
+    /// [`InteractionEngine::set_hits`]; [`handle`] forwards to
+    /// [`InteractionEngine::handle`] with a [`PyEventSink`] that bridges
+    /// back into the registered Python handler.
+    engine: InteractionEngine,
 }
 
 impl PyAppLogic {
@@ -501,9 +448,9 @@ impl AppLogic for PyAppLogic {
                 },
                 &mut hits,
             );
-            self.sync_menu_bar(backend, &hits);
-            self.ctx_menu.render(backend);
-            *self.hit_map.borrow_mut() = hits;
+            self.engine.sync_menu_bar(backend, &hits);
+            self.engine.render_ctx_menu(backend);
+            self.engine.set_hits(hits);
             return;
         };
         match render_output_from_callback(callback, &self.pending_error) {
@@ -515,362 +462,36 @@ impl AppLogic for PyAppLogic {
             }
             None => {}
         }
-        self.sync_menu_bar(backend, &hits);
-        self.ctx_menu.render(backend);
-        *self.hit_map.borrow_mut() = hits;
+        self.engine.sync_menu_bar(backend, &hits);
+        self.engine.render_ctx_menu(backend);
+        self.engine.set_hits(hits);
     }
 
-    /// Derives this frame's tab stops directly from the hit map `render`
-    /// just painted, in paint order. `Split` carries no `WidgetId` and is
-    /// not a focusable leaf, so it is skipped; `Extra` is a tab stop only
-    /// when its descriptor opts in via [`ExtraPaint::tab_stop`] (currently
-    /// [`Switch`] and [`TextInput`]); every other variant yields its id and
-    /// bounding `Rect`.
+    /// Delegates to [`InteractionEngine::tab_stops`], which derives this
+    /// frame's tab stops directly from the hit map `render` just fed it via
+    /// [`InteractionEngine::set_hits`].
     fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
-        self.hit_map
-            .borrow()
-            .iter()
-            .filter_map(|hit| match hit {
-                PaintedHit::Button { id, layout } => Some((*id, layout.bounds)),
-                PaintedHit::Tree { id, area, .. }
-                | PaintedHit::List { id, area, .. }
-                | PaintedHit::DataTable { id, area, .. }
-                | PaintedHit::TabBar { id, area, .. } => Some((*id, *area)),
-                PaintedHit::Split { .. } => None,
-                PaintedHit::Extra { id, area, extra } => extra.tab_stop().then_some((*id, *area)),
-            })
-            .collect()
+        self.engine.tab_stops()
     }
 
-    fn handle(&mut self, mut event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+    /// The thin PyO3 leaf around [`InteractionEngine::handle`]: an app with
+    /// no registered handler skips the engine entirely (so an app that
+    /// never calls `set_handler` never pays for any of this engine's
+    /// state), otherwise this wraps the registered Python handler in a
+    /// [`PyEventSink`] and forwards everything else to the engine, which
+    /// owns the full `event -> hit -> semantic` orchestration (menu-bar/
+    /// context-menu routing, divider/scrollbar drag, click-to-focus,
+    /// focus-scoped key/paste routing, and semantic event substitution).
+    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         let Some(handler) = self.handler.as_ref() else {
             return Reaction::Continue;
         };
-        let render_callback_present = self.render_callback.is_some();
-
-        // A `MouseUp` always ends an armed divider/scrollbar drag, even
-        // when the menu-bar/context-menu routing just below reports the
-        // same event `Consumed` (e.g. a dropdown-item click, or the
-        // outside-click that dismisses an open dropdown/popup) and returns
-        // before reaching the `MouseUp` check that used to sit after that
-        // routing — leaving a drag armed across the dismissal otherwise.
-        if matches!(event, UiEvent::MouseUp { .. }) {
-            *self.active_drag.borrow_mut() = None;
-            *self.scrollbar_drag.borrow_mut() = None;
-        }
-
-        // A `"menu_bar"` extra's dropdown and a `QuiApp::show_context_menu`
-        // popup both own a full modal-input state machine that must see
-        // every event before the rest of this function's own routing —
-        // matching `MenuSystem::handle`/`ContextMenuController::handle`'s
-        // own doc ("call this before other UI routing"). Each reports
-        // `Ignored` immediately when nothing of theirs is open/relevant, so
-        // this is safe to run unconditionally even for an app with neither
-        // a menu bar nor an open context menu.
-        let mut menu_reaction = Reaction::Continue;
-        if let Some(bar_rect) = *self.menu_bar_rect.borrow() {
-            let was_open = self.menu_system.borrow().is_open();
-            let menu_event = self
-                .menu_system
-                .borrow_mut()
-                .handle(&event, backend, bar_rect);
-            match menu_event {
-                MenuEvent::Activated(id) => {
-                    // Activation already closed the dropdown in
-                    // `menu_system`'s own state; force the repaint that
-                    // takes it off screen regardless of what the Python
-                    // handler itself returns (mirrors `focus_reaction.merge`
-                    // below).
-                    return Reaction::Redraw.merge(self.dispatch_event(
-                        handler,
-                        &UiEvent::MenuActivated(id),
-                        None,
-                        render_callback_present,
-                    ));
-                }
-                // Navigation/highlight only — nothing for Python to react
-                // to, just a repaint so the new open/selected state shows.
-                // Exception: a `MouseMoved` with no dropdown open before or
-                // after this call only updated which top-level label is
-                // hover-highlighted — it isn't "consuming" the move in any
-                // sense a divider/scrollbar drag or Python's own handler
-                // would care about, so let it keep flowing through the
-                // rest of this function instead of swallowing it here;
-                // this call's own repaint need folds into whatever
-                // `Reaction` that routing ends up producing.
-                MenuEvent::StateChanged | MenuEvent::Consumed => {
-                    let hover_only_on_closed_bar = !was_open
-                        && !self.menu_system.borrow().is_open()
-                        && matches!(event, UiEvent::MouseMoved { .. });
-                    if hover_only_on_closed_bar {
-                        menu_reaction = Reaction::Redraw;
-                    } else {
-                        return Reaction::Redraw;
-                    }
-                }
-                MenuEvent::Ignored => {}
-            }
-        }
-        match self.ctx_menu.handle(&event, backend) {
-            ContextMenuOutcome::Event(ev) => {
-                // Same reasoning as the `MenuEvent::Activated` arm above:
-                // activation/dismissal already closed the popup in
-                // `ctx_menu`'s own state, so force the repaint regardless
-                // of what the Python handler returns.
-                return Reaction::Redraw.merge(self.dispatch_event(
-                    handler,
-                    &ev,
-                    None,
-                    render_callback_present,
-                ));
-            }
-            ContextMenuOutcome::Consumed => return Reaction::Redraw,
-            ContextMenuOutcome::Ignored => {}
-        }
-
-        // A move while a divider drag is armed becomes the drag itself —
-        // checked before the hit-test below, since `MouseMoved` has no
-        // `widget` field for `event_position`/`set_event_widget` to touch.
-        // A move while a tree scrollbar thumb drag is armed instead becomes
-        // a `ScrollOffsetChanged`, mirroring the divider case; the two
-        // drags are mutually exclusive, so only one of these branches ever
-        // fires for a given move.
-        if let UiEvent::MouseMoved { position, .. } = &event {
-            if let Some(drag) = self.active_drag.borrow().as_ref() {
-                let new_ratio = drag.ratio_at(*position);
-                event = UiEvent::SplitDividerDragged {
-                    tree: drag.tree,
-                    split_index: 0,
-                    new_ratio,
-                };
-            } else if let Some(drag) = self.scrollbar_drag.borrow().as_ref() {
-                if let Some(new_offset) = drag.drag.offset_at(position.y) {
-                    let new_offset = new_offset.round() as usize;
-                    event = UiEvent::ScrollOffsetChanged {
-                        widget: drag.widget,
-                        new_offset,
-                    };
-                }
-            }
-        }
-
-        // A plain `KeyPressed` (Tab/Shift+Tab already claimed upstream by
-        // `preprocess_event` once `tab_stops` is non-empty) is routed to
-        // whichever leaf currently holds focus, wrapped into that leaf's
-        // own `KeyPressed` variant so Python sees a focus-scoped event
-        // instead of a backend-global one.
-        if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
-            if let Some(focused) = backend.focus_manager().focused().copied() {
-                event = focus_scoped_key_event(
-                    focused,
-                    key,
-                    *modifiers,
-                    &self.hit_map.borrow(),
-                    &self.text_cursors,
-                );
-            }
-        }
-
-        // IME/compose and clipboard-paste text has no `KeyPressed` of its
-        // own to route through `focus_scoped_key_event` above — resolve it
-        // the same way, directly against whichever `TextInput` extra
-        // currently holds focus.
-        if let UiEvent::CharTyped(ch) = &event {
-            if let Some(focused) = backend.focus_manager().focused().copied() {
-                if let Some(form_event) = text_input_insert_event(
-                    focused,
-                    &self.hit_map.borrow(),
-                    EditOp::InsertChar(*ch),
-                    &self.text_cursors,
-                ) {
-                    event = form_event;
-                }
-            }
-        }
-        if let UiEvent::ClipboardPaste(text) = &event {
-            if let Some(focused) = backend.focus_manager().focused().copied() {
-                if let Some(form_event) = text_input_insert_event(
-                    focused,
-                    &self.hit_map.borrow(),
-                    EditOp::InsertText(text.clone()),
-                    &self.text_cursors,
-                ) {
-                    event = form_event;
-                }
-            }
-        }
-
-        let hit = event_position(&event)
-            .and_then(|position| hit_test_painted(&self.hit_map.borrow(), position));
-        if let Some((id, _)) = hit {
-            set_event_widget(&mut event, id);
-        }
-
-        // A wheel `Scroll` landing anywhere over a tree (its rows, its
-        // chevrons, or its scrollbar) replaces the raw event outright with
-        // the `ScrollOffsetChanged` it resolves to — never dispatched
-        // alongside it — mirroring the `MouseDown`/`DoubleClick` semantic
-        // replacement below, including suppressing the `"hit"` attachment
-        // via `scroll_translated`, below. A tree with nothing to scroll
-        // (all rows fit the viewport) has no scrollbar, so
-        // `tree_scroll_state` returns `None` and the raw `Scroll` passes
-        // through untouched.
-        let mut scroll_translated = false;
-        if let UiEvent::Scroll { delta, .. } = &event {
-            if let Some((id, detail)) = &hit {
-                let over_tree = matches!(
-                    detail,
-                    HitDetail::TreeRow { .. }
-                        | HitDetail::TreeChevron { .. }
-                        | HitDetail::TreeScrollbarThumb
-                        | HitDetail::TreeScrollbarTrackBefore
-                        | HitDetail::TreeScrollbarTrackAfter
-                );
-                if over_tree {
-                    if let Some((_, total_rows, viewport_rows, scroll_offset)) =
-                        tree_scroll_state(&self.hit_map.borrow(), *id)
-                    {
-                        let max_offset = total_rows.saturating_sub(viewport_rows);
-                        let rows = wheel_row_delta(delta.y, 1.0);
-                        let new_offset = scroll_by_clamped(scroll_offset, rows, max_offset);
-                        event = UiEvent::ScrollOffsetChanged {
-                            widget: *id,
-                            new_offset,
-                        };
-                        scroll_translated = true;
-                    }
-                }
-            }
-        }
-
-        // A `MouseDown` (or a bare `DoubleClick` pushed without the
-        // `MouseDown`/`MouseUp` pair that precedes one on a real backend —
-        // a host synthesizing clicks, e.g. a test, does this) landing on a
-        // focusable painted leaf moves keyboard focus there first — matching
-        // every native backend's click-to-focus convention — and, if that
-        // actually changed the focused widget, dispatches a `FocusChanged`
-        // event to Python ahead of the click event itself. Its `Reaction` is
-        // combined with the main dispatch's below (via `Reaction::merge`)
-        // rather than returned on its own, so a non-`Continue` result from
-        // the `FocusChanged` handler (e.g. a `Redraw`) never suppresses the
-        // click event that follows it.
-        let mut focus_reaction = Reaction::Continue;
-        if let Some((id, _)) = &hit {
-            if matches!(
-                event,
-                UiEvent::MouseDown { .. } | UiEvent::DoubleClick { .. }
-            ) {
-                let is_focusable = AppLogic::tab_stops(self, ())
-                    .iter()
-                    .any(|(tid, _)| tid == id);
-                if is_focusable && backend.set_focus(Some(*id)) {
-                    focus_reaction = self.dispatch_event(
-                        handler,
-                        &UiEvent::FocusChanged(Some(*id)),
-                        None,
-                        render_callback_present,
-                    );
-                    if matches!(focus_reaction, Reaction::Exit) {
-                        return focus_reaction;
-                    }
-                }
-            }
-        }
-
-        // A `MouseDown`/`DoubleClick` either arms a divider drag or, for a
-        // tab/tree-row/tree-chevron/list-item/data-table-row/data-table-header
-        // hit, is replaced outright by the semantic event it stands for — in
-        // which case the raw `MouseDown`/`DoubleClick` (and its `"hit"` dict)
-        // never reaches Python at all.
-        let mut attach_hit = hit.is_some() && !scroll_translated;
-        if let Some((id, detail)) = &hit {
-            let modifiers_and_double_click = match &event {
-                UiEvent::MouseDown { modifiers, .. } => Some((*modifiers, false)),
-                UiEvent::DoubleClick { .. } => Some((Modifiers::default(), true)),
-                _ => None,
-            };
-            if let Some((modifiers, double_click)) = modifiers_and_double_click {
-                if !double_click && matches!(detail, HitDetail::SplitDivider) {
-                    if let UiEvent::MouseDown { position, .. } = &event {
-                        if let Some(layout) =
-                            find_split_layout(&self.hit_map.borrow(), *position, *id)
-                        {
-                            *self.active_drag.borrow_mut() = Some(ActiveDrag { tree: *id, layout });
-                        }
-                    }
-                } else if !double_click && matches!(detail, HitDetail::TreeScrollbarThumb) {
-                    // A press on the thumb itself arms a drag (consumed by
-                    // the `MouseMoved` branch above on later moves) rather
-                    // than scrolling immediately — matching
-                    // `compose::TreeController::click_scrollbar`'s
-                    // `PressZone::Thumb` arm. The raw `MouseDown` (and its
-                    // `"hit"` dict) stops here either way, so this never
-                    // falls through to row selection.
-                    if let UiEvent::MouseDown { position, .. } = &event {
-                        if let Some((scrollbar, total_rows, viewport_rows, scroll_offset)) =
-                            tree_scroll_state(&self.hit_map.borrow(), *id)
-                        {
-                            let max_offset = total_rows.saturating_sub(viewport_rows);
-                            if max_offset > 0 {
-                                *self.scrollbar_drag.borrow_mut() = Some(ScrollbarDrag {
-                                    widget: *id,
-                                    drag: ThumbDrag::begin(
-                                        position.y,
-                                        scroll_offset as f32,
-                                        scrollbar.travel(),
-                                        max_offset as f32,
-                                    ),
-                                });
-                            }
-                        }
-                    }
-                    attach_hit = false;
-                } else if !double_click
-                    && matches!(
-                        detail,
-                        HitDetail::TreeScrollbarTrackBefore | HitDetail::TreeScrollbarTrackAfter
-                    )
-                {
-                    // A press on the track pages by one viewport, matching
-                    // `click_scrollbar`'s `PressZone::Before`/`After` arms
-                    // (`page_scroll`). Never falls through to row selection.
-                    if let Some((_, total_rows, viewport_rows, scroll_offset)) =
-                        tree_scroll_state(&self.hit_map.borrow(), *id)
-                    {
-                        let max_offset = total_rows.saturating_sub(viewport_rows);
-                        let page = if matches!(detail, HitDetail::TreeScrollbarTrackBefore) {
-                            -(viewport_rows as isize)
-                        } else {
-                            viewport_rows as isize
-                        };
-                        let new_offset = scroll_by_clamped(scroll_offset, page, max_offset);
-                        event = UiEvent::ScrollOffsetChanged {
-                            widget: *id,
-                            new_offset,
-                        };
-                    }
-                    attach_hit = false;
-                } else if let Some(semantic) = semantic_event_for_hit(
-                    *id,
-                    detail,
-                    modifiers,
-                    double_click,
-                    &self.hit_map.borrow(),
-                ) {
-                    event = semantic;
-                    attach_hit = false;
-                }
-            }
-        }
-
-        let hit_detail = if attach_hit {
-            hit.as_ref().map(|(_, detail)| detail)
-        } else {
-            None
+        let mut sink = PyEventSink {
+            handler,
+            pending_error: &self.pending_error,
+            render_callback_present: self.render_callback.is_some(),
         };
-        let event_reaction =
-            self.dispatch_event(handler, &event, hit_detail, render_callback_present);
-        menu_reaction.merge(focus_reaction).merge(event_reaction)
+        self.engine.handle(event, backend, &mut sink)
     }
 
     fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
@@ -888,25 +509,28 @@ impl AppLogic for PyAppLogic {
     }
 }
 
-impl PyAppLogic {
-    /// Pythonizes `event` (attaching `hit_detail` under the `"hit"` key when
-    /// present), calls the registered Python handler with it, and translates
-    /// the handler's return value into a [`Reaction`]. Shared by the main
-    /// event dispatch and the synthetic `FocusChanged` dispatch click-to-focus
-    /// sends ahead of it, so both go through identical error handling.
-    fn dispatch_event(
-        &self,
-        handler: &Py<PyAny>,
-        event: &UiEvent,
-        hit_detail: Option<&HitDetail>,
-        render_callback_present: bool,
-    ) -> Reaction {
+/// Bridges [`quadraui_binding_core::EventSink`] to this binding's
+/// registered Python event handler: pythonizes `event` (attaching
+/// `hit_detail` under the `"hit"` key when present), calls the handler, and
+/// translates its return value into a [`Reaction`]. [`InteractionEngine::handle`]
+/// calls this once per dispatched event (twice for a `MouseDown`/
+/// `DoubleClick` that also changes focus: once for the synthetic
+/// `FocusChanged`, once for the click itself), so every call site goes
+/// through identical error handling.
+struct PyEventSink<'a> {
+    handler: &'a Py<PyAny>,
+    pending_error: &'a Rc<RefCell<Option<PyErr>>>,
+    render_callback_present: bool,
+}
+
+impl EventSink for PyEventSink<'_> {
+    fn dispatch(&mut self, event: &UiEvent, hit_detail: Option<&HitDetail>) -> Reaction {
         Python::attach(|py| {
             let payload = match pythonize::pythonize(py, event) {
                 Ok(value) => value,
                 Err(err) => {
                     record_error(
-                        &self.pending_error,
+                        self.pending_error,
                         InternalError::new_err(format!("failed to pythonize event: {err}")),
                     );
                     return Reaction::Exit;
@@ -917,13 +541,13 @@ impl PyAppLogic {
                     Ok(dict) => match pythonize::pythonize(py, detail) {
                         Ok(detail_value) => {
                             if let Err(err) = dict.set_item("hit", detail_value) {
-                                record_error(&self.pending_error, err);
+                                record_error(self.pending_error, err);
                                 return Reaction::Exit;
                             }
                         }
                         Err(err) => {
                             record_error(
-                                &self.pending_error,
+                                self.pending_error,
                                 InternalError::new_err(format!(
                                     "failed to pythonize hit detail: {err}"
                                 )),
@@ -933,7 +557,7 @@ impl PyAppLogic {
                     },
                     Err(_) => {
                         record_error(
-                            &self.pending_error,
+                            self.pending_error,
                             InternalError::new_err(
                                 "failed to attach hit detail: pythonized event payload was not a dict"
                                     .to_string(),
@@ -943,75 +567,14 @@ impl PyAppLogic {
                     }
                 }
             }
-            match handler.call1(py, (payload,)) {
-                Ok(result) => reaction_for_callback(result.bind(py), render_callback_present),
+            match self.handler.call1(py, (payload,)) {
+                Ok(result) => reaction_for_callback(result.bind(py), self.render_callback_present),
                 Err(err) => {
-                    record_error(&self.pending_error, err);
+                    record_error(self.pending_error, err);
                     Reaction::Exit
                 }
             }
         })
-    }
-
-    /// Rebuilds [`Self::menu_system`]'s menu list from this frame's
-    /// `"menu_bar"` extra (if any) and paints its dropdown/submenu popups on
-    /// top of the plain bar `hits` already recorded, then remembers the
-    /// bar's absolute bounds in [`Self::menu_bar_rect`] for `handle` to
-    /// reuse. A no-op (and clears `menu_bar_rect`) when no `"menu_bar"`
-    /// extra was painted this frame. Call once per [`AppLogic::render`],
-    /// after `hits` is fully built — the extras loop in `draw_bands`/
-    /// `paint_leaf` already painted the plain, non-interactive bar via
-    /// [`MenuBar`]'s own `ExtraPaint::paint`; this repaints it with
-    /// `menu_system`'s own open/focused state (and the dropdown, when one
-    /// is open) layered on top, the same "paint after everything else"
-    /// contract [`ContextMenuController::render`] documents for itself.
-    /// Repaints this frame's `"menu_bar"` extra (if any) through
-    /// `menu_system` instead of its own descriptor, and records
-    /// `menu_bar_rect` so [`Self::handle`] knows where to hit-test. Only the
-    /// *first* `"menu_bar"` extra painted this frame is wired up this
-    /// way — a second one in the same frame still paints (via
-    /// `paint_leaf`'s normal `Extra` path) but is not interactive.
-    ///
-    /// `menu_system.render` draws from `MenuSystem`'s own open/focused/id
-    /// state (see `MenuSystem::build_menu_bar`), not the descriptor's
-    /// `open_item`/`focused_item`/`id` fields — those are overridden, so a
-    /// Python app that sets them declaratively (e.g. to render a pressed
-    /// visual) has no effect once the bar is interactive.
-    fn sync_menu_bar(&self, backend: &mut dyn Backend, hits: &[PaintedHit]) {
-        let found = hits.iter().find_map(|hit| match hit {
-            PaintedHit::Extra { area, extra, .. } => {
-                extra_as::<MenuBar>(extra).map(|menu_bar| (*area, menu_bar))
-            }
-            _ => None,
-        });
-        let Some((area, menu_bar)) = found else {
-            // The `"menu_bar"` extra is gone from this frame (the app
-            // stopped rendering one, or swapped it for something else).
-            // Close any dropdown first so the `"menu-system-dropdown"`
-            // entry `MenuSystem::open_menu` pushed onto the modal stack
-            // gets popped — otherwise it leaks, and the dropdown would
-            // silently reappear (with nothing to hit-test it) if the
-            // extra ever comes back.
-            if self.menu_system.borrow().is_open() {
-                self.menu_system.borrow_mut().close(backend);
-            }
-            *self.menu_bar_rect.borrow_mut() = None;
-            return;
-        };
-        let menus: Vec<MenuDef> = menu_bar
-            .items
-            .iter()
-            .map(|item| MenuDef {
-                id: item.id,
-                label: item.label.clone(),
-                disabled: item.disabled,
-                items: item.submenu.clone().unwrap_or_default(),
-            })
-            .collect();
-        let mut menu_system = self.menu_system.borrow_mut();
-        menu_system.set_menus(menus);
-        menu_system.render(backend, area);
-        *self.menu_bar_rect.borrow_mut() = Some(area);
     }
 }
 
@@ -3138,7 +2701,8 @@ impl QuiApp {
         self.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
             app_logic
-                .ctx_menu
+                .engine
+                .ctx_menu_mut()
                 .open(menu, Point::new(position.0, position.1), backend);
             app.driver.render();
             take_pending_error(app.driver.app_mut())?;
@@ -3359,6 +2923,23 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use super::*;
     use quadraui::{ButtonMask, MouseButton, ScrollDelta};
+
+    /// `quadraui_binding_core::EXTRA_PRIMITIVE_KINDS` is a hand-maintained
+    /// list of this binding's own `EXTRA_PRIMITIVES` decode table's keys,
+    /// in the same order — `draw_bands`'s extras loop iterates the former
+    /// to paint deterministically, so a kind registered in the latter
+    /// without a matching entry here would decode and store fine but never
+    /// get painted. This guards the two from drifting apart.
+    #[test]
+    fn extra_primitive_kinds_matches_extra_primitives_key_order() {
+        assert!(
+            EXTRA_PRIMITIVES
+                .iter()
+                .map(|(kind, _)| *kind)
+                .eq(EXTRA_PRIMITIVE_KINDS.iter().copied()),
+            "EXTRA_PRIMITIVE_KINDS must list EXTRA_PRIMITIVES' keys in the same order"
+        );
+    }
 
     /// A Rust panic raised from inside `guarded`'s body is caught and
     /// re-raised as `PanicError`, and poisons the app so a later call
@@ -5575,7 +5156,7 @@ def handle(event):
             app.screen_contains("Row00").expect("render must not raise"),
             "the top row must be painted before any scroll"
         );
-        let hit_map = app.driver.app().hit_map.borrow();
+        let hit_map = app.driver.app().engine.hit_map();
         tree_scroll_state(&hit_map, WidgetId::new("tree:main"))
             .expect("a 30-row tree in a 10-row viewport must paint a scrollbar")
     }

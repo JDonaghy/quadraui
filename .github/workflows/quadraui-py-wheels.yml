@@ -31,6 +31,7 @@ on:
     branches: [main, develop]
     paths:
       - "quadraui-py/**"
+      - "quadraui-binding-core/**"
       - "quadraui/src/**"
       - "quadraui/Cargo.toml"
       - ".github/workflows/quadraui-py-wheels.yml"
@@ -38,6 +39,7 @@ on:
     branches: [main, develop]
     paths:
       - "quadraui-py/**"
+      - "quadraui-binding-core/**"
       - "quadraui/src/**"
       - "quadraui/Cargo.toml"
       - ".github/workflows/quadraui-py-wheels.yml"
