@@ -5,7 +5,14 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Language-neutral interaction wiring (hit testing, semantic event synthesis, text-input/drag controllers, the retained descriptor model and render->frame assembly) shared by every native quadraui binding. Carries no language-specific dependency -- a binding crate (quadraui-py today, quadraui-node next) supplies only descriptor decode and a callback boundary around this engine."
+description = """\
+Language-neutral interaction wiring (hit testing, semantic event synthesis, \
+text-input/drag controllers, the retained descriptor model, the event -> \
+hit -> semantic -> render engine, and render->frame assembly) shared by \
+every native quadraui binding. Carries no language-specific dependency -- a \
+binding crate (quadraui-py today, quadraui-node next) supplies only \
+descriptor decode and a callback boundary around this engine.\
+"""
 
 [dependencies]
 # `tui` is unconditional for the same reason `quadraui-py` pulls it in

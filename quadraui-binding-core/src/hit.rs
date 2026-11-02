@@ -74,8 +74,10 @@ pub enum PaintedHit {
     /// `WidgetId` only matters once a hit is found — carried by
     /// `SplitHit`'s own variants, not stored here.
     Split { layout: SplitLayout },
-    /// One additive primitive (anything registered in [`EXTRA_PRIMITIVES`]),
-    /// painted by `draw_bands`'s extras loop or by a [`LeafDescriptor::Extra`]
+    /// One additive primitive (anything registered in a binding's own
+    /// `EXTRA_PRIMITIVES` decode table),
+    /// painted by `draw_bands`'s extras loop or by a
+    /// [`crate::layout::LeafDescriptor::Extra`]
     /// leaf. `area` is the ABSOLUTE rect it was painted into — the same frame
     /// [`ExtraPaint::hit_test`] expects, so no translation is needed before
     /// calling it (matching `Button`/`Switch`'s own layout convention: no
@@ -91,9 +93,9 @@ pub enum PaintedHit {
 
 /// The sub-region of a primitive an incoming pointer event landed on,
 /// attached to the enriched event's `"hit"` key (alongside `widget`, the
-/// primitive's own id) so a Python handler can react to "row 3" or "the
-/// divider" without re-deriving hit geometry itself.
-#[derive(serde::Serialize)]
+/// primitive's own id) so the binding's own event handler can react to
+/// "row 3" or "the divider" without re-deriving hit geometry itself.
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HitDetail {
     ButtonBody,
@@ -143,11 +145,12 @@ pub enum HitDetail {
     /// `TreeScrollbarTrackBefore`.
     TreeScrollbarTrackAfter,
     /// Landed on an additive primitive's interactive region (currently
-    /// [`Switch`] and [`TextInput`]). Carries no sub-region detail yet —
-    /// just enough for [the binding's own event handler] to set `widget` and attach
-    /// this as `hit`, so a Python handler sees the click reached the
-    /// primitive. Per-kind sub-region detail (e.g. which combo-box row) is
-    /// a later, separate extension of this variant.
+    /// [`quadraui::Switch`] and [`quadraui::TextInput`]). Carries no
+    /// sub-region detail yet —
+    /// just enough for the binding's own event handler to set `widget` and
+    /// attach this as `hit`, so it sees the click reached the primitive.
+    /// Per-kind sub-region detail (e.g. which combo-box row) is a later,
+    /// separate extension of this variant.
     ExtraBody,
 }
 
@@ -274,7 +277,8 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
 /// The screen position to hit-test against [`PaintedHit`]s, for the one
 /// `event` variants whose own `widget` field this module enriches. `None`
 /// for every other variant (e.g. `MouseMoved`, `MouseEntered`, key events),
-/// which [the binding's own event handler] forwards to Python exactly as received.
+/// which the binding's own event handler forwards to user code exactly as
+/// received.
 pub fn event_position(event: &UiEvent) -> Option<Point> {
     match event {
         UiEvent::MouseDown { position, .. }

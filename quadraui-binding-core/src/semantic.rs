@@ -20,8 +20,8 @@ use crate::text_input::{text_input_key_event, TextCursorState};
 /// The semantic [`UiEvent`] a click on `detail` (within primitive `id`)
 /// stands for, if any — the set the binding's own event handler synthesizes so a tab
 /// click, tab close-button click, tree-row/chevron click, list-item click,
-/// data-table-row/header click, or tab-bar button click reaches a Python
-/// handler as the same shape it would get by pushing that event directly
+/// data-table-row/header click, or tab-bar button click reaches the
+/// binding's own event handler as the same shape it would get by pushing that event directly
 /// (`UiEvent::TabBar`/`UiEvent::Tree`/`UiEvent::List`/`UiEvent::DataTable`),
 /// rather than only as a raw `MouseDown`/`DoubleClick` plus a `"hit"` dict
 /// the handler would have to re-interpret itself. `double_click` selects
@@ -29,12 +29,13 @@ use crate::text_input::{text_input_key_event, TextCursorState};
 /// (e.g. `TreeEvent::RowClicked` vs `RowDoubleClicked`,
 /// `ListViewEvent::SelectionChanged` vs `ItemActivated`). `None` for every
 /// other `HitDetail` — a data-table header divider or a split divider
-/// (handled separately, via [`ActiveDrag`], since either spans a drag rather
-/// than a single click), a tab-bar scroll-left/right arrow (no semantic
+/// (handled separately, via [`crate::drag::ActiveDrag`], since either spans
+/// a drag rather than a single click), a tab-bar scroll-left/right arrow (no semantic
 /// event exists for it), or a modified list-item click (see the `ListItem`
 /// arm below, which loses the gesture if folded into
 /// `ListViewEvent::SelectionChanged`) — for which the raw
-/// `MouseDown`/`DoubleClick` and its `"hit"` dict reach Python unchanged.
+/// `MouseDown`/`DoubleClick` and its `"hit"` dict reach the binding's own
+/// event handler unchanged.
 /// [`HitDetail::ExtraBody`] resolves against the matched extra's own click
 /// semantics (currently [`Switch::click`]); an extra with no recognized
 /// click behavior still falls through to the raw `MouseDown`.
@@ -88,10 +89,10 @@ pub fn semantic_event_for_hit(
                 // Ctrl/Shift/Cmd click (a multi-select gesture) can't be
                 // represented by it without losing which gesture it was.
                 // Leaving the raw `MouseDown` (with its `"hit"` dict still
-                // attached, since this returns `None`) lets a Python handler
-                // read `event["modifiers"]` and `event["hit"]["index"]` and
-                // compute the selection itself, the same way it would for any
-                // other modified click.
+                // attached, since this returns `None`) lets the binding's
+                // own event handler read `event["modifiers"]` and
+                // `event["hit"]["index"]` and compute the selection itself,
+                // the same way it would for any other modified click.
                 None
             }
         }
@@ -113,7 +114,7 @@ pub fn semantic_event_for_hit(
                 // the descriptor's own `id` at its default and reuse it
                 // across leaves, so only the tree-address hit id is
                 // guaranteed unique. Renamed rather than destructured as
-                // `id` so the two can't silently shadow each other again.
+                // `id` so the two can't silently shadow each other.
                 let SwitchEvent::Toggled {
                     id: _switch_id,
                     value,
@@ -164,8 +165,8 @@ pub fn key_to_focus_string(key: &Key) -> String {
 /// focused, wrapping it into that leaf's own semantic `KeyPressed` variant.
 /// `DataTable` and `Button` have no such variant, so a key focused on one
 /// of them passes through as the original `UiEvent::KeyPressed` unchanged;
-/// the same happens when `focused` names a leaf no longer present in this
-/// frame's hit map (for example a tree that scrolled out of the render).
+/// the same happens when `focused` names a leaf absent from this frame's
+/// hit map (for example a tree that scrolled out of the render).
 pub fn focus_scoped_key_event(
     focused: WidgetId,
     raw_key: &Key,

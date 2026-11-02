@@ -83,7 +83,7 @@ pub struct LayoutSidebarPanel {
 /// geometry tree (every leaf position holding a synthetic, internal-only
 /// `WidgetId`) paired with `leaves`, the matching content subtree for each
 /// leaf position in the same pre-order [`SplitTree::leaf_ids`] would
-/// produce. [`paint_layout`]'s `LayoutNode::SplitTree` arm zips
+/// produce. [`crate::render::paint_layout`]'s `LayoutNode::SplitTree` arm zips
 /// `SplitTreeLayout::leaves`' resolved rects back against `leaves` by
 /// position — the synthetic ids in `tree` are never user-facing and never
 /// checked for uniqueness; `id` is the node's own user-supplied id instead.
@@ -95,9 +95,10 @@ pub struct LayoutSplitTree {
 
 /// One id-addressable primitive inside a layout tree, decoded from a
 /// `{"id": ..., "<kind>": <descriptor>}` dict. `id` is unique across the
-/// whole tree ([`validate_unique_leaf_ids`]), so a kind may appear more
-/// than once (e.g. two `data_table`s side by side) with each instance
-/// still addressable on its own.
+/// whole tree (a binding's own layout decode, e.g. `validate_unique_leaf_ids`
+/// in `quadraui-py`, checks this), so a kind may appear more than once
+/// (e.g. two `data_table`s side by side) with each instance still
+/// addressable on its own.
 pub struct LayoutLeaf {
     pub id: String,
     pub descriptor: LeafDescriptor,
@@ -112,15 +113,16 @@ pub enum LeafDescriptor {
     Tree(TreeView),
     DataTable(DataTable),
     TabBar(TabBar),
-    /// Any additive primitive kind registered in [`EXTRA_PRIMITIVES`].
-    /// Unlike the six variants above, a new additive kind never adds a new
-    /// `LeafDescriptor` variant — it routes through this one.
+    /// Any additive primitive kind registered in a binding's own
+    /// `EXTRA_PRIMITIVES` decode table. Unlike the six variants above, a
+    /// new additive kind never adds a new `LeafDescriptor` variant — it
+    /// routes through this one.
     Extra(Rc<dyn ExtraPaint>),
 }
 
 /// The descriptor keys a layout tree leaf dict may carry, one per
-/// [`LeafDescriptor`] variant — the same names [`RenderFrame::from_dict`]
-/// uses for its flat slots.
+/// [`LeafDescriptor`] variant — the same names a binding's own flat-slot
+/// decode (`render_frame_from_dict` in `quadraui-py`) uses for its slots.
 pub const LEAF_KIND_KEYS: [&str; 6] = [
     "button",
     "text_display",

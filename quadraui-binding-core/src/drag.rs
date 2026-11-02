@@ -48,9 +48,10 @@ impl ActiveDrag {
 /// Re-finds the [`SplitLayout`] whose divider `id` claims at `point`, so a
 /// `MouseDown` landing on `HitDetail::SplitDivider` can snapshot it into an
 /// [`ActiveDrag`]. Re-runs the hit-test (rather than trusting
-/// [`hit_test_painted`]'s already-discarded match) because `PaintedHit::Split`
-/// never stores its own id — only `SplitHit`'s variants carry one — so the id
-/// has to be recovered the same way `hit_test_painted` found it the first time.
+/// [`crate::hit::hit_test_painted`]'s already-discarded match) because
+/// `PaintedHit::Split` never stores its own id — only `SplitHit`'s variants
+/// carry one — so the id has to be recovered the same way
+/// [`crate::hit::hit_test_painted`] found it the first time.
 pub fn find_split_layout(
     hit_map: &[PaintedHit],
     point: Point,
