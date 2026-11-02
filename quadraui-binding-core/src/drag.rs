@@ -57,11 +57,17 @@ impl ActiveDrag {
 
     /// The ratio `point` (in the same absolute frame as the snapshotted
     /// layout) implies along this divider's axis, clamped to `[0.0, 1.0]`.
-    /// Falls back to the divider's own already-resolved ratio when it has
-    /// no room to drag in (e.g. a pane collapsed to zero by its own
-    /// `first_min`/`second_min`, or a `SplitTree` node whose parent
-    /// shrank to nothing), rather than dividing by zero.
-    pub fn ratio_at(&self, point: Point) -> f32 {
+    /// For a two-pane [`ActiveDrag::Split`], falls back to the divider's
+    /// own already-resolved ratio when it has no room to drag in (e.g. a
+    /// pane collapsed to zero by its own `first_min`/`second_min`), rather
+    /// than dividing by zero. For an [`ActiveDrag::SplitTree`], returns
+    /// `None` instead — a `SplitTreeDivider` carries no equivalent
+    /// already-resolved ratio to fall back to, so the caller leaves the
+    /// drag a no-op for that move rather than dividing by zero or
+    /// snapping to a magic ratio. Also returns `None` when `split_index`
+    /// names a divider the snapshotted layout no longer has — unreachable
+    /// today, since the index came from a hit test on this same snapshot.
+    pub fn ratio_at(&self, point: Point) -> Option<f32> {
         match self {
             ActiveDrag::Split { layout, .. } => {
                 let divider = layout.divider_bounds;
@@ -74,32 +80,34 @@ impl ActiveDrag {
                 };
                 let available = (total - divider_thickness).max(0.0);
                 if available <= 0.0 {
-                    return layout.resolved_ratio;
+                    return Some(layout.resolved_ratio);
                 }
-                (offset / available).clamp(0.0, 1.0)
+                Some((offset / available).clamp(0.0, 1.0))
             }
             ActiveDrag::SplitTree {
                 layout,
                 split_index,
                 ..
             } => {
-                let Some(divider) = layout
+                let divider = layout
                     .dividers
                     .iter()
-                    .find(|d| d.split_index == *split_index)
-                else {
-                    return 0.5;
-                };
+                    .find(|d| d.split_index == *split_index)?;
+                if divider.axis_size <= 0.0 {
+                    return None;
+                }
                 let axis_point = match divider.direction {
                     SplitDirection::Horizontal => point.x,
                     SplitDirection::Vertical => point.y,
                 };
-                let available = (divider.axis_size - divider.thickness).max(0.0);
-                if available <= 0.0 {
-                    return ((divider.position - divider.axis_start) / divider.axis_size.max(1.0))
-                        .clamp(0.0, 1.0);
-                }
-                ((axis_point - divider.axis_start) / available).clamp(0.0, 1.0)
+                // Matches `dispatch_mouse_moved`'s own `DragTarget::SplitDivider`
+                // conversion (`quadraui/src/dispatch.rs`): divide the cursor's
+                // offset from the divider's axis start by the FULL parent
+                // span, not the span minus the divider's own thickness — so
+                // the same physical drag yields the same ratio through this
+                // binding as through a Rust app driving the primitive
+                // directly.
+                Some(((axis_point - divider.axis_start) / divider.axis_size).clamp(0.0, 1.0))
             }
         }
     }

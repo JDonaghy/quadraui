@@ -344,7 +344,7 @@ pub fn paint_layout(
         LayoutNode::Panel(panel_node) => {
             let layout = backend.draw_panel(area, &panel_node.panel);
             // Pushed before recursing into content, same reasoning as
-            // `LayoutNode::Split`'s own push below: a descendant primitive's
+            // `LayoutNode::Split`'s own push above: a descendant primitive's
             // more specific hit wins over this chrome hit (title bar /
             // action button) only when nothing inside `content_bounds`
             // claims the point first.

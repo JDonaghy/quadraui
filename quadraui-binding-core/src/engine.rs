@@ -474,12 +474,13 @@ impl InteractionEngine {
         // of these branches ever fires for a given move.
         if let UiEvent::MouseMoved { position, .. } = &event {
             if let Some(drag) = self.active_drag.borrow().as_ref() {
-                let new_ratio = drag.ratio_at(*position);
-                event = UiEvent::SplitDividerDragged {
-                    tree: drag.tree(),
-                    split_index: drag.split_index(),
-                    new_ratio,
-                };
+                if let Some(new_ratio) = drag.ratio_at(*position) {
+                    event = UiEvent::SplitDividerDragged {
+                        tree: drag.tree(),
+                        split_index: drag.split_index(),
+                        new_ratio,
+                    };
+                }
             } else if let Some(drag) = self.scrollbar_drag.borrow().as_ref() {
                 if let Some(new_offset) = drag.drag.offset_at(position.y) {
                     let new_offset = new_offset.round() as usize;
@@ -791,6 +792,7 @@ mod tests {
     };
 
     use super::{EventSink, InteractionEngine};
+    use crate::drag::find_split_tree_layout;
     use crate::hit::HitDetail;
     use crate::layout::{LayoutLeaf, LayoutNode, LayoutPanel, LayoutSplitTree, LeafDescriptor};
     use crate::render::{draw_bands, paint_layout, RenderRefs};
@@ -1548,9 +1550,17 @@ mod tests {
     fn dragging_a_split_tree_divider_changes_the_ratio() {
         use quadraui::SplitDirection;
 
+        // Ratio 0.6 (not the more obvious 0.5) so the resolved divider
+        // `position` has a fractional part under `0.5` — `first_w` then
+        // rounds DOWN to the Button leaf's own painted width, so the leaf
+        // doesn't also claim the divider's painted cell the way it would
+        // at a dead-even tie (`width * 0.5` on an even width rounds UP,
+        // per `f32::round`'s ties-away-from-zero rule, which is a
+        // pre-existing, separate leaf/divider hit-box overlap this test
+        // isn't about).
         let tree = quadraui::SplitTree::split(
             SplitDirection::Horizontal,
-            0.5,
+            0.6,
             quadraui::SplitTree::leaf(WidgetId::new("left-btn")),
             quadraui::SplitTree::leaf(WidgetId::new("right-btn")),
         );
@@ -1559,20 +1569,40 @@ mod tests {
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
-        let mut driver = TuiDriver::new(logic, 41, 10);
+        // The module's usual 40-cell-wide viewport — deliberately even, so
+        // the divider's resolved `position` is fractional and the click
+        // below exercises the truncate-to-painted-cell path
+        // `hit_test_painted`'s `PaintedHit::SplitTree` arm needs (an odd
+        // width like 41 lands the divider on an exact integer and would
+        // hide a regression there).
+        let mut driver = TuiDriver::new(logic, 40, 10);
         driver.render();
 
-        // A 41-cell-wide viewport with the TUI's 1-cell-thick divider puts
-        // a ratio-0.5 divider's own band at x in [20.0, 21.0) —
-        // (41 - 1) * 0.5 == 20.0.
+        // Read the divider's own painted geometry back off the hit map
+        // (the `data_table_geometry` pattern) instead of hand-deriving the
+        // click column, so the test can't drift from what was actually
+        // painted.
+        let layout = {
+            let hits = driver.app().engine.hit_map();
+            find_split_tree_layout(&hits, WidgetId::new("tree"))
+                .expect("split tree should have painted a hit")
+        };
+        let divider = &layout.dividers[0];
+        assert!(
+            divider.position.fract() > 0.0,
+            "expected a fractional divider position on an even-width viewport, got {}",
+            divider.position
+        );
+        let divider_cell = divider.cell_position() as f32;
+
         driver.dispatch(UiEvent::MouseDown {
             widget: None,
             button: MouseButton::Left,
-            position: Point::new(20.0, 0.0),
+            position: Point::new(divider_cell, 0.0),
             modifiers: Modifiers::default(),
         });
         driver.dispatch(UiEvent::MouseMoved {
-            position: Point::new(30.0, 0.0),
+            position: Point::new(divider_cell + 10.0, 0.0),
             buttons: quadraui::ButtonMask {
                 left: true,
                 right: false,
@@ -1592,9 +1622,13 @@ mod tests {
         let (split_index, new_ratio) = dragged
             .unwrap_or_else(|| panic!("expected a SplitDividerDragged event: {:?}", dispatched));
         assert_eq!(split_index, 0);
+        // ratio = (cursor_axis - axis_start) / axis_size, the same
+        // `dispatch_mouse_moved` conversion `drag.rs`'s `ActiveDrag::SplitTree::ratio_at`
+        // now mirrors: (19 + 10 - 0) / 40 == 0.725.
+        let expected_ratio = (divider_cell + 10.0 - divider.axis_start) / divider.axis_size;
         assert!(
-            (new_ratio - 0.75).abs() < 0.001,
-            "expected a ratio around 0.75, got {new_ratio}"
+            (new_ratio - expected_ratio).abs() < 0.001,
+            "expected a ratio around {expected_ratio}, got {new_ratio}"
         );
     }
 
@@ -1640,11 +1674,11 @@ mod tests {
     }
 
     /// Clicking a `Panel` title-bar action button must set the raw
-    /// `MouseDown`'s `widget` to the action's own id — proving
-    /// `crate::render::paint_layout`'s `LayoutNode::Panel` arm now records
-    /// its chrome layout as a [`crate::hit::PaintedHit::Panel`] instead of
-    /// discarding it, same as every other primitive's own hit-test
-    /// coverage in this module.
+    /// `MouseDown`'s `widget` to the action's own id — exercising
+    /// `crate::render::paint_layout`'s `LayoutNode::Panel` arm, which
+    /// records the panel's chrome layout as a [`crate::hit::PaintedHit::Panel`]
+    /// so this hit resolves instead of being dropped, same as every other
+    /// primitive's own hit-test coverage in this module.
     #[test]
     fn clicking_a_panel_action_button_sets_the_click_widget_to_its_id() {
         use quadraui::{Panel, PanelAction, StyledText};
@@ -1687,6 +1721,142 @@ mod tests {
                 UiEvent::MouseDown { widget: Some(id), .. } if *id == WidgetId::new("close")
             )),
             "expected a MouseDown with widget=close: {:?}",
+            dispatched
+        );
+    }
+
+    /// Clicking a `Panel`'s title bar away from its action buttons (the
+    /// collapse affordance — `PanelHit::TitleBar` is the only collapse hit
+    /// the primitive exposes) must set the raw `MouseDown`'s `widget` to
+    /// the panel's own id.
+    #[test]
+    fn clicking_a_panel_title_bar_sets_the_click_widget_to_the_panel_id() {
+        use quadraui::{Panel, StyledText};
+
+        let panel = Panel {
+            id: WidgetId::new("outer"),
+            title: Some(StyledText::plain("Explorer")),
+            actions: vec![],
+            accent: None,
+            collapsed: false,
+        };
+        let logic = PanelLogic {
+            panel,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 10);
+        driver.render();
+
+        // Row 0 away from any action button (there are none here) is the
+        // title bar itself.
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(1.0, 0.0),
+            modifiers: Modifiers::default(),
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::MouseDown { widget: Some(id), .. } if *id == WidgetId::new("outer")
+            )),
+            "expected a MouseDown with widget=outer: {:?}",
+            dispatched
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single `quadraui::SidebarPanel`
+    /// node with a toolbar, for the toolbar-button-click coverage below.
+    struct SidebarPanelLogic {
+        sidebar_panel: quadraui::SidebarPanel,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for SidebarPanelLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let node = crate::layout::LayoutNode::SidebarPanel(crate::layout::LayoutSidebarPanel {
+                sidebar_panel: self.sidebar_panel.clone(),
+                content: Box::new(LayoutNode::Leaf(LayoutLeaf {
+                    id: "body".to_string(),
+                    descriptor: LeafDescriptor::Button(Button::new(
+                        WidgetId::new("body-btn"),
+                        "Body",
+                    )),
+                })),
+            });
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Clicking a `SidebarPanel`'s toolbar button must set the raw
+    /// `MouseDown`'s `widget` to the button's own id — exercising
+    /// `crate::render::paint_layout`'s `LayoutNode::SidebarPanel` arm,
+    /// which records the panel's chrome layout as a
+    /// [`crate::hit::PaintedHit::SidebarPanel`] so this hit resolves
+    /// instead of being dropped.
+    #[test]
+    fn clicking_a_sidebar_panel_toolbar_button_sets_the_click_widget_to_its_id() {
+        use quadraui::{SidebarPanel, Toolbar, ToolbarButton};
+
+        let sidebar_panel = SidebarPanel {
+            id: WidgetId::new("sb"),
+            toolbar: Some(Toolbar::new(WidgetId::new("sb:toolbar")).with_buttons(vec![
+                ToolbarButton::Action {
+                    id: WidgetId::new("refine"),
+                    label: "Refine".to_string(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                },
+            ])),
+            toolbar_height: None,
+        };
+        let logic = SidebarPanelLogic {
+            sidebar_panel,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 10);
+        driver.render();
+
+        // The lone button starts at the toolbar's own x=0, row 0.
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(1.0, 0.0),
+            modifiers: Modifiers::default(),
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::MouseDown { widget: Some(id), .. } if *id == WidgetId::new("refine")
+            )),
+            "expected a MouseDown with widget=refine: {:?}",
             dispatched
         );
     }
