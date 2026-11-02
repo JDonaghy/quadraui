@@ -84,16 +84,24 @@ pub enum PaintedHit {
         layout: TabBarLayout,
     },
     /// `area` is the absolute rect this display was painted into;
-    /// `layout` is in the LOCAL frame relative to `area`'s origin (same
-    /// convention as [`Self::Tree`]/[`Self::List`]/[`Self::DataTable`]).
-    /// `total_lines` and `viewport_lines` (the row capacity at a zero
-    /// scroll offset, snapshotted the same way [`Self::Tree`]'s own
-    /// `viewport_rows` is) feed the wheel-scroll `max_offset` clamp in
-    /// `InteractionEngine::handle` without re-touching the backend.
+    /// `layout` is in a frame relative to `area`'s origin **shifted down by
+    /// `body_offset`** — unlike [`Self::Tree`]/[`Self::List`]/[`Self::DataTable`],
+    /// whose layouts include their own title row, every backend's
+    /// `text_display_layout` lays the body out from `0.0` and leaves the
+    /// title row (when `TextDisplay::title.is_some()`) to be painted
+    /// separately above it. `body_offset` is that row's height (one
+    /// `Backend::line_height`, or `0.0` when there's no title), so a
+    /// hit-test must subtract `area`'s origin AND `body_offset` before
+    /// calling `layout.hit_test`. `total_lines` and `viewport_lines` (the
+    /// row capacity at a zero scroll offset, snapshotted the same way
+    /// [`Self::Tree`]'s own `viewport_rows` is) feed the wheel-scroll
+    /// `max_offset` clamp in `InteractionEngine::handle` without
+    /// re-touching the backend.
     TextDisplay {
         id: WidgetId,
         area: Rect,
         layout: TextDisplayLayout,
+        body_offset: f32,
         total_lines: usize,
         viewport_lines: usize,
     },
@@ -316,12 +324,16 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 }
             }
             PaintedHit::TextDisplay {
-                id, area, layout, ..
+                id,
+                area,
+                layout,
+                body_offset,
+                ..
             } => {
                 if !area.contains(point) {
                     continue;
                 }
-                match layout.hit_test(point.x - area.x, point.y - area.y) {
+                match layout.hit_test(point.x - area.x, point.y - area.y - body_offset) {
                     TextDisplayHit::Line(line) => {
                         return Some((*id, HitDetail::TextDisplayLine { line }))
                     }

@@ -107,9 +107,9 @@ pub struct InteractionEngine {
     /// precedence [`Self::ctx_menu`] already has.
     dialog: Option<MessageDialogController>,
     /// Per-bar hovered child, keyed by the chrome-bar extra's own id
-    /// (`Toolbar`'s button, `StatusBar`'s segment) — updated on every
-    /// `MouseMoved` via [`chrome_hover_hit`] and read back by
-    /// [`Self::chrome_interaction`] so `render` paints real hover state
+    /// (`Toolbar`'s button, `StatusBar`'s segment, `ActivityBar`'s item) —
+    /// updated on every `MouseMoved` via [`chrome_hover_hit`] and read back
+    /// by [`Self::chrome_interaction`] so `render` paints real hover state
     /// instead of `InteractionState::default()`. A bar absent from this
     /// map has nothing hovered.
     chrome_hover: RefCell<HashMap<WidgetId, WidgetId>>,
@@ -431,18 +431,27 @@ impl InteractionEngine {
             ContextMenuOutcome::Ignored => {}
         }
 
-        // Chrome-bar (`Toolbar`/`StatusBar`) hover bookkeeping, read back by
-        // `chrome_interaction` so `render` paints real hover state. Handled
-        // directly via `chrome_hover_hit` rather than the `hit`/`hit_test_painted`
-        // computed below, since `event_position` never resolves a position
-        // for `MouseMoved` (enriching its own `widget` field isn't this
-        // module's job) — so `hit_test_painted` never runs for it either.
+        // Chrome-bar (`Toolbar`/`StatusBar`/`ActivityBar`) hover bookkeeping,
+        // read back by `chrome_interaction` so `render` paints real hover
+        // state. Handled directly via `chrome_hover_hit` rather than the
+        // `hit`/`hit_test_painted` computed below, since `event_position`
+        // never resolves a position for `MouseMoved` (enriching its own
+        // `widget` field isn't this module's job) — so `hit_test_painted`
+        // never runs for it either. A hover transition folds a `Redraw`
+        // into `menu_reaction` (merged into the final `Reaction` below) —
+        // otherwise a slot-based `insert_*` host with no render-callback
+        // promotion (unlike `quadraui-py`'s `reaction_for_callback`) would
+        // record the new hovered child and never actually repaint it.
         if let UiEvent::MouseMoved { position, .. } = &event {
             let chrome_hit = chrome_hover_hit(&self.hit_map.borrow(), *position);
             let mut hover = self.chrome_hover.borrow_mut();
+            let before = hover.clone();
             hover.retain(|bar, _| chrome_hit.map(|(hit_bar, _)| hit_bar) == Some(*bar));
             if let Some((bar, action)) = chrome_hit {
                 hover.insert(bar, action);
+            }
+            if *hover != before {
+                menu_reaction = menu_reaction.merge(Reaction::Redraw);
             }
         }
 
@@ -1277,6 +1286,176 @@ mod tests {
                     if *id == WidgetId::new("table")
             )),
             "expected RowSelected {{ idx: 1 }}: {:?}",
+            dispatched
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single `TextDisplay`, for the
+    /// titled-display hit-test/wheel-scroll coverage below — mirrors
+    /// [`DataTableLogic`], swapping the data-table band for a text-display
+    /// one.
+    struct TextDisplayLogic {
+        text_display: quadraui::TextDisplay,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for TextDisplayLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: None,
+                    text_display: Some(&self.text_display),
+                    list: None,
+                    tree: None,
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Builds a titled, 5-line `TextDisplay` (more lines than the fixed
+    /// 3-line band can show once the title row eats into it) and drives it
+    /// through a [`TuiDriver`] — the regression shape for the body-offset
+    /// bug: every backend's `text_display_layout` lays the body out from
+    /// `0.0` and leaves the title row to be painted separately above it
+    /// (see [`crate::hit::PaintedHit::TextDisplay`]'s own doc), so a hit
+    /// test that only subtracts `area`'s origin (not also the title row's
+    /// height) misreads which body line a click/scroll landed on.
+    fn titled_text_display_driver() -> TuiDriver<TextDisplayLogic> {
+        use quadraui::{StyledSpan, StyledText, TextDisplay, TextDisplayLine};
+
+        let text_display = TextDisplay {
+            id: WidgetId::new("log"),
+            lines: (0..5)
+                .map(|i| TextDisplayLine {
+                    spans: vec![StyledSpan::plain(format!("line {i}"))],
+                    decoration: Default::default(),
+                    timestamp: None,
+                })
+                .collect(),
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: Some(StyledText::plain("Logs")),
+            show_scrollbar: false,
+        };
+        let logic = TextDisplayLogic {
+            text_display,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 40, 10)
+    }
+
+    /// The painted `TextDisplay`'s own area/body-offset/viewport-line-count,
+    /// read back the same way [`data_table_geometry`] reads a table's — so
+    /// a test aims at exact geometry instead of hardcoding how many rows
+    /// the fixed-slot band leaves for the body.
+    fn text_display_geometry(driver: &TuiDriver<TextDisplayLogic>) -> (Rect, f32, usize, usize) {
+        let hits = driver.app().engine.hit_map();
+        hits.iter()
+            .find_map(|hit| match hit {
+                crate::hit::PaintedHit::TextDisplay {
+                    area,
+                    body_offset,
+                    total_lines,
+                    viewport_lines,
+                    ..
+                } => Some((*area, *body_offset, *total_lines, *viewport_lines)),
+                _ => None,
+            })
+            .expect("text display should have painted a hit")
+    }
+
+    /// A click on the title row of a titled `TextDisplay` must NOT resolve
+    /// to `TextDisplayLine { line: 0 }` — the body-local layout's line 0
+    /// sits one row below the title, so a hit at the title's own screen
+    /// position has to miss the layout entirely (translated to a negative
+    /// local y) rather than silently reading as the first body line.
+    #[test]
+    fn click_on_titled_text_display_title_row_does_not_resolve_as_body_line_zero() {
+        let mut driver = titled_text_display_driver();
+        let (area, body_offset, _, _) = text_display_geometry(&driver);
+        assert!(
+            body_offset > 0.0,
+            "a titled display must report a body offset"
+        );
+        let title_point = Point::new(area.x + 1.0, area.y);
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: title_point,
+            modifiers: Modifiers::default(),
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        let hit_body_line_zero = dispatched
+            .iter()
+            .any(|(_, hit)| matches!(hit, Some(HitDetail::TextDisplayLine { line: 0 })));
+        assert!(
+            !hit_body_line_zero,
+            "a click on the title row must not be misread as body line 0: {:?}",
+            dispatched
+        );
+    }
+
+    /// A wheel notch over the bottom-most visible body row of a titled
+    /// `TextDisplay` must emit `TextDisplayEvent::Scrolled`. Before the
+    /// body-offset fix, that row's screen position translated to a local y
+    /// past every `hit_regions` entry (the layout only covers
+    /// `viewport_lines` rows starting at `0.0`), so the hit test missed
+    /// entirely and the wheel event fell through untranslated.
+    #[test]
+    fn wheel_scroll_over_titled_text_display_bottom_row_emits_scrolled() {
+        use quadraui::TextDisplayEvent;
+
+        let mut driver = titled_text_display_driver();
+        let (area, body_offset, total_lines, viewport_lines) = text_display_geometry(&driver);
+        assert!(
+            total_lines > viewport_lines,
+            "the display must have more lines than fit, or there's nothing to scroll"
+        );
+        let bottom_row_point = Point::new(
+            area.x + 1.0,
+            area.y + body_offset + (viewport_lines as f32 - 0.5),
+        );
+
+        driver.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: quadraui::ScrollDelta::new(0.0, -1.0),
+            position: bottom_row_point,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::TextDisplay(id, TextDisplayEvent::Scrolled { new_offset: 1 })
+                    if *id == WidgetId::new("log")
+            )),
+            "expected TextDisplay(Scrolled {{ new_offset: 1 }}): {:?}",
             dispatched
         );
     }

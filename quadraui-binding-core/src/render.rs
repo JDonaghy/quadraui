@@ -193,8 +193,10 @@ pub fn draw_bands(
 /// [`tree_viewport_rows`] for the same reason: [`quadraui::TextDisplayLayout::visible_lines`]
 /// at `td`'s ACTUAL offset can be shorter near the end of a long buffer, so
 /// the wheel-scroll `max_offset` clamp needs the viewport's true line
-/// capacity instead. Paints into a scratch clone, never disturbing the
-/// real paint below.
+/// capacity instead. Only queries `Backend::text_display_layout` against a
+/// scratch clone — paints nothing — so `draw_text_display_hit` calling it
+/// after its own real `text_display_layout` call means every frame lays
+/// out `td` twice.
 fn text_display_viewport_lines(backend: &mut dyn Backend, rect: Rect, td: &TextDisplay) -> usize {
     let mut shadow = td.clone();
     shadow.scroll_offset = 0;
@@ -219,10 +221,16 @@ fn draw_text_display_hit(
     backend.draw_text_display(area, td);
     let layout = backend.text_display_layout(area, td);
     let viewport_lines = text_display_viewport_lines(backend, area, td);
+    let body_offset = if td.title.is_some() {
+        backend.line_height()
+    } else {
+        0.0
+    };
     PaintedHit::TextDisplay {
         id,
         area,
         layout,
+        body_offset,
         total_lines: td.lines.len(),
         viewport_lines,
     }
