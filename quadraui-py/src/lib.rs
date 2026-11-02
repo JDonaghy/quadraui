@@ -114,21 +114,23 @@ use pyo3::types::{PyDict, PyList};
 
 #[cfg(test)]
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
-use quadraui::tui::testing::TuiDriver;
+use quadraui::tui::testing::{driver_with_shell, TuiDriver};
 use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
 #[cfg(test)]
 use quadraui::wheel_row_delta;
 #[cfg(test)]
 use quadraui::NamedKey;
 use quadraui::{
-    ActivityBar, AppLogic, Backend, BoardModel, Button, Chart, Color, ComboBox, CommandCenter,
-    CommandLine, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTable, DatePicker,
-    DialogButton, DialogSeverity, DiffView, Form, Image, Key, ListView, MenuBar,
-    MessageDialogButton, MessageDialogOptions, MessageList, Minimap, Modifiers, MultiSectionView,
-    NumberInput, Palette, Panel, PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect,
-    RgbaImage, Scrollbar, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StatusBar,
-    Switch, TabBar, TabBarSegment, TabItem, TextDisplay, TextInput, Toolbar, TreeView, UiEvent,
-    UserPayload, WidgetId,
+    mouse_down, mouse_up, ActivityBar, AppLogic, AppShellEvent, AppShellLayout, Backend,
+    BackendWidget, BoardModel, BottomPanelConfig, BottomPanelEvent, BottomPanelTab, Button, Chart,
+    Color, ComboBox, CommandCenter, CommandLine, ContextMenu, ContextMenuItem,
+    ContextMenuPlacement, DataTable, DatePicker, Decoration, DialogButton, DialogSeverity,
+    DiffView, Form, Image, Key, ListView, MenuBar, MessageDialogButton, MessageDialogOptions,
+    MessageList, Minimap, Modifiers, MouseButton, MultiSectionView, NumberInput, Palette, Panel,
+    PanelDefinition, PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect, RgbaImage,
+    Scrollbar, ShellApp, ShellConfig, ShellContext, ShellPosition, SidebarPanel, Spinner, Split,
+    SplitDirection, SplitTree, StatusBar, StyledSpan, Switch, TabBar, TabBarSegment, TabItem,
+    TextDisplay, TextDisplayLine, TextInput, Toolbar, TreeView, UiEvent, UserPayload, WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -709,6 +711,827 @@ impl EventSink for PyEventSink<'_> {
                 }
             }
         })
+    }
+}
+
+// ── ShellApp / `QuiApp.run_shell` ──────────────────────────────────────────
+//
+// `ShellApp`/`ShellConfig` (`quadraui::shell`) and the tabbed
+// `BottomPanelConfig` (`quadraui::compose::bottom_panel`) give an app a
+// VS Code-style frame — activity bar, sidebar, optional bottom-panel tab
+// strip — around its own content, with the chrome interaction (panel
+// switching, sidebar show/hide/resize, bottom-panel tab clicks) handled
+// entirely inside `quadraui::shell_adapter::ShellAdapter` before anything
+// reaches this binding. `run_shell` below is this binding's counterpart to
+// `QuiApp::new`: it decodes a `ShellConfig` from a Python `dict` (there is
+// no `Deserialize` impl on `ShellConfig`/`PanelDefinition`/
+// `BottomPanelConfig` upstream — `shell_config_from_dict` below reads the
+// handful of fields this binding supports field-by-field instead, the same
+// style every other `*_from_dict` helper in this file already uses),
+// builds a [`PyShellApp`] around the registered Python callbacks, and
+// drives it headlessly via `quadraui::tui::testing::driver_with_shell` —
+// the exact stack `quadraui::tui::shell_runner::run_with_shell` uses for a
+// real terminal, minus the live event loop.
+//
+// `driver_with_shell` returns `TuiDriver<impl AppLogic>`: an opaque,
+// per-call-site type with no name this file could give a struct field.
+// [`QuiShellApp`] stores a `Box<dyn ErasedShellDriver>` instead — the
+// blanket impl just below type-erases any `TuiDriver<A>` behind the narrow
+// surface `QuiShellApp` actually needs, so `Box::new(driver) as Box<dyn
+// ErasedShellDriver>` type-checks at the one call site that knows the
+// concrete (opaque) type, with nothing to name anywhere else.
+//
+// `ShellAdapter`'s own `app: A` field is `pub(crate)` to `quadraui` — not
+// reachable from this crate even through `TuiDriver::app_mut()` — so
+// `PyShellApp` cannot be reached back out through the driver the way
+// `QuiApp::set_handler` reaches `PyAppLogic` via `self.driver.app_mut()`.
+// `ShellState` is the side-channel around that: `QuiShellApp` and the
+// `PyShellApp` moved into the driver each hold their own `Rc` clone of the
+// same `RefCell<ShellState>`, so `QuiShellApp::set_handler` et al. mutate
+// it directly, independent of the driver.
+
+/// Registered Python callbacks + the last callback-raised error for one
+/// [`QuiShellApp`] session. Shared (via `Rc<RefCell<_>>`) between the
+/// [`QuiShellApp`] a caller holds and the [`PyShellApp`] moved into its
+/// driver — see this module's "ShellApp / `QuiApp.run_shell`" doc for why
+/// a side channel is needed at all.
+#[derive(Default)]
+struct ShellState {
+    /// Invoked with the pythonized event for every event [`PyShellApp::handle`]
+    /// receives — i.e. every event the shell chrome itself didn't consume
+    /// (see [`crate::ShellApp::handle`]'s doc). `None` leaves such events
+    /// unhandled, same as a plain `QuiApp` with no `set_handler` call.
+    handler: Option<Py<PyAny>>,
+    /// Invoked with no arguments whenever [`PyShellApp::tick`] fires with no
+    /// event queued, mirroring [`QuiApp::set_tick_handler`].
+    on_tick: Option<Py<PyAny>>,
+    /// Invoked with no arguments once per frame; its return value, if a
+    /// `list[str]`, becomes the lines of a single-line-per-entry
+    /// `TextDisplay` painted into [`crate::AppShellLayout::main_content_bounds`].
+    /// `None` paints nothing into the main content area — the shell chrome
+    /// (activity bar, sidebar, bottom-panel tab strip) still renders either
+    /// way, since that is `AppShell`'s own unconditional chrome paint, not
+    /// part of [`crate::ShellApp::render_content`].
+    render_content: Option<Py<PyAny>>,
+    /// Invoked with one pythonized `AppShellEvent` dict (see
+    /// [`app_shell_event_to_py`]) whenever [`crate::ShellApp::on_shell_event_ctx`]
+    /// fires — a panel switch, the sidebar being hidden/resized, the bottom
+    /// panel being resized/hidden, or a bottom-item (no-panel) activity-bar
+    /// click.
+    on_shell_event: Option<Py<PyAny>>,
+    /// Invoked with one pythonized `BottomPanelEvent` dict (see
+    /// [`bottom_panel_event_to_py`]) whenever [`crate::ShellApp::on_bottom_panel_event`]
+    /// fires — a tab activated, a tab closed, maximise toggled, or a
+    /// drag-resize. Only ever fires when `run_shell`'s `config` included a
+    /// `"bottom_panel"` entry.
+    on_bottom_panel_event: Option<Py<PyAny>>,
+    /// Set by any of the callbacks above when the Python callable they
+    /// invoke raises. [`QuiShellApp::step_once`] takes this and re-raises it
+    /// out of `step`/`run`, mirroring [`PyAppLogic::pending_error`].
+    pending_error: Option<PyErr>,
+}
+
+impl ShellState {
+    /// Records `err` as this session's pending error, but only if no
+    /// earlier error already claimed the slot — mirrors [`record_error`]'s
+    /// "first error wins" contract for [`PyAppLogic::pending_error`].
+    fn record_error(&mut self, err: PyErr) {
+        if self.pending_error.is_none() {
+            self.pending_error = Some(err);
+        }
+    }
+}
+
+/// Pythonizes one [`AppShellEvent`] as an externally-tagged `dict`, e.g.
+/// `{"PanelChanged": {"panel_id": "panel:explorer"}}` or
+/// `{"SidebarHidden": None}` — the same shape `pythonize::pythonize` would
+/// give a `#[derive(Serialize)]` enum, hand-built here since `AppShellEvent`
+/// has no such derive upstream (see this module's "ShellApp /
+/// `QuiApp.run_shell`" doc for why this binding doesn't add one).
+fn app_shell_event_to_py<'py>(
+    py: Python<'py>,
+    event: &AppShellEvent,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    match event {
+        AppShellEvent::PanelChanged { panel_id } => {
+            let inner = PyDict::new(py);
+            inner.set_item("panel_id", panel_id.as_str())?;
+            dict.set_item("PanelChanged", inner)?;
+        }
+        AppShellEvent::SidebarHidden => dict.set_item("SidebarHidden", py.None())?,
+        AppShellEvent::SidebarResized { new_width } => {
+            let inner = PyDict::new(py);
+            inner.set_item("new_width", new_width)?;
+            dict.set_item("SidebarResized", inner)?;
+        }
+        AppShellEvent::BottomPanelResized { new_height } => {
+            let inner = PyDict::new(py);
+            inner.set_item("new_height", new_height)?;
+            dict.set_item("BottomPanelResized", inner)?;
+        }
+        AppShellEvent::BottomPanelHidden => dict.set_item("BottomPanelHidden", py.None())?,
+        AppShellEvent::BottomItemClicked { id } => {
+            let inner = PyDict::new(py);
+            inner.set_item("id", id.as_str())?;
+            dict.set_item("BottomItemClicked", inner)?;
+        }
+        AppShellEvent::Consumed => dict.set_item("Consumed", py.None())?,
+        AppShellEvent::Ignored => dict.set_item("Ignored", py.None())?,
+    }
+    Ok(dict)
+}
+
+/// Pythonizes one [`BottomPanelEvent`] as an externally-tagged `dict`, e.g.
+/// `{"TabActivated": "bp:terminal"}` or `{"MaximiseToggled": None}` — see
+/// [`app_shell_event_to_py`]'s doc for why this is hand-built rather than
+/// derived.
+fn bottom_panel_event_to_py<'py>(
+    py: Python<'py>,
+    event: &BottomPanelEvent,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    match event {
+        BottomPanelEvent::TabActivated(id) => dict.set_item("TabActivated", id)?,
+        BottomPanelEvent::TabClosed(id) => dict.set_item("TabClosed", id)?,
+        BottomPanelEvent::MaximiseToggled => dict.set_item("MaximiseToggled", py.None())?,
+        BottomPanelEvent::Resized(height) => dict.set_item("Resized", height)?,
+    }
+    Ok(dict)
+}
+
+/// `WidgetId` string `quadraui::compose::bottom_panel::BottomPanelController::build_tab_bar`
+/// gives the `TabBar` it paints — fixed, not per-config, so
+/// [`QuiShellApp::bottom_panel_tab_center`] can name it directly.
+const BOTTOM_PANEL_TABS_WIDGET_ID: &str = "bottom-panel:tabs";
+
+/// Minimal [`BackendWidget`] painted into a `run_shell` bottom-panel tab's
+/// body: a single line naming the tab's own id. Bottom-panel tabs built
+/// from `run_shell`'s `"bottom_panel"` config have no Python-registered
+/// per-tab content callback (out of scope for this first cut — see
+/// [`QuiApp::run_shell`]'s doc), but [`BottomPanelTab::content`] still
+/// requires *some* [`BackendWidget`], and painting the active tab's id
+/// makes "which tab is active" visible on the rendered screen — useful for
+/// a driver test to assert on, instead of an invisible no-op.
+struct StaticTabContent(String);
+
+impl BackendWidget for StaticTabContent {
+    fn render(&self, backend: &mut dyn Backend, rect: Rect) {
+        let td = TextDisplay {
+            id: WidgetId::new(format!("shell:bottom_panel:{}", self.0)),
+            lines: vec![TextDisplayLine {
+                spans: vec![StyledSpan::plain(self.0.clone())],
+                decoration: Decoration::Normal,
+                timestamp: None,
+            }],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        backend.draw_text_display(rect, &td);
+    }
+}
+
+/// The [`ShellApp`] [`QuiApp::run_shell`] drives: a thin bridge from its
+/// four hooks to the Python callables held in a shared [`ShellState`] —
+/// see this module's "ShellApp / `QuiApp.run_shell`" doc for why the state
+/// is held this way rather than reachable back out through the driver.
+struct PyShellApp {
+    state: Rc<RefCell<ShellState>>,
+}
+
+impl PyShellApp {
+    /// Clones out the registered callback named by `pick`, if any, without
+    /// holding the `RefCell` borrow across the call into Python that
+    /// follows. `pick` is a plain field-accessor closure (`|s| &s.handler`,
+    /// ...) rather than a method name, since `ShellState`'s callback fields
+    /// aren't behind a common accessor trait.
+    fn callback(&self, pick: impl FnOnce(&ShellState) -> &Option<Py<PyAny>>) -> Option<Py<PyAny>> {
+        Python::attach(|py| {
+            pick(&self.state.borrow())
+                .as_ref()
+                .map(|cb| cb.clone_ref(py))
+        })
+    }
+}
+
+impl ShellApp for PyShellApp {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+        let Some(callback) = self.callback(|s| &s.render_content) else {
+            return;
+        };
+        let bounds = layout.main_content_bounds;
+        Python::attach(|py| match callback.call0(py) {
+            Ok(result) => {
+                if let Ok(lines) = result.extract::<Vec<String>>(py) {
+                    let td = TextDisplay {
+                        id: WidgetId::new("shell:content"),
+                        lines: lines
+                            .into_iter()
+                            .map(|text| TextDisplayLine {
+                                spans: vec![StyledSpan::plain(text)],
+                                decoration: Decoration::Normal,
+                                timestamp: None,
+                            })
+                            .collect(),
+                        scroll_offset: 0,
+                        auto_scroll: false,
+                        max_lines: 0,
+                        has_focus: false,
+                        title: None,
+                        show_scrollbar: false,
+                    };
+                    backend.draw_text_display(bounds, &td);
+                }
+            }
+            Err(err) => self.state.borrow_mut().record_error(err),
+        });
+    }
+
+    fn handle(
+        &mut self,
+        event: UiEvent,
+        _backend: &mut dyn Backend,
+        _ctx: &ShellContext,
+    ) -> Reaction {
+        let Some(callback) = self.callback(|s| &s.handler) else {
+            return Reaction::Continue;
+        };
+        let render_content_present = self.state.borrow().render_content.is_some();
+        Python::attach(|py| {
+            let payload = match pythonize::pythonize(py, &event) {
+                Ok(value) => value,
+                Err(err) => {
+                    self.state
+                        .borrow_mut()
+                        .record_error(InternalError::new_err(format!(
+                            "failed to pythonize event: {err}"
+                        )));
+                    return Reaction::Exit;
+                }
+            };
+            match callback.call1(py, (payload,)) {
+                Ok(result) if matches!(event, UiEvent::WindowClose) => {
+                    reaction_from_window_close_return(result.bind(py), render_content_present)
+                }
+                Ok(result) => reaction_for_callback(result.bind(py), render_content_present),
+                Err(err) => {
+                    self.state.borrow_mut().record_error(err);
+                    Reaction::Exit
+                }
+            }
+        })
+    }
+
+    fn on_shell_event_ctx(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
+        let Some(callback) = self.callback(|s| &s.on_shell_event) else {
+            return;
+        };
+        Python::attach(|py| {
+            let payload = match app_shell_event_to_py(py, event) {
+                Ok(value) => value,
+                Err(err) => {
+                    self.state.borrow_mut().record_error(err);
+                    return;
+                }
+            };
+            if let Err(err) = callback.call1(py, (payload,)) {
+                self.state.borrow_mut().record_error(err);
+            }
+        });
+    }
+
+    fn on_bottom_panel_event(&mut self, event: &BottomPanelEvent) {
+        let Some(callback) = self.callback(|s| &s.on_bottom_panel_event) else {
+            return;
+        };
+        Python::attach(|py| {
+            let payload = match bottom_panel_event_to_py(py, event) {
+                Ok(value) => value,
+                Err(err) => {
+                    self.state.borrow_mut().record_error(err);
+                    return;
+                }
+            };
+            if let Err(err) = callback.call1(py, (payload,)) {
+                self.state.borrow_mut().record_error(err);
+            }
+        });
+    }
+
+    fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+        let Some(callback) = self.callback(|s| &s.on_tick) else {
+            return Reaction::Continue;
+        };
+        let render_content_present = self.state.borrow().render_content.is_some();
+        Python::attach(|py| match callback.call0(py) {
+            Ok(result) => reaction_for_callback(result.bind(py), render_content_present),
+            Err(err) => {
+                self.state.borrow_mut().record_error(err);
+                Reaction::Exit
+            }
+        })
+    }
+}
+
+/// Narrow, dyn-safe surface of [`TuiDriver`] that [`QuiShellApp`] needs —
+/// see this module's "ShellApp / `QuiApp.run_shell`" doc for why
+/// `QuiShellApp` stores `Box<dyn ErasedShellDriver>` instead of a bare
+/// `TuiDriver<_>` field.
+trait ErasedShellDriver {
+    fn dispatch(&mut self, event: UiEvent) -> Reaction;
+    fn pump_user_events(&mut self) -> Reaction;
+    fn tick(&mut self) -> Reaction;
+    fn resize(&mut self, width: u16, height: u16);
+    fn exited(&self) -> bool;
+    fn screen(&self) -> String;
+    fn screen_contains(&self, needle: &str) -> bool;
+    fn find(&self, needle: &str) -> Option<(f32, f32)>;
+    fn tab_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)>;
+}
+
+impl<A: AppLogic> ErasedShellDriver for TuiDriver<A> {
+    fn dispatch(&mut self, event: UiEvent) -> Reaction {
+        self.dispatch(event)
+    }
+
+    fn pump_user_events(&mut self) -> Reaction {
+        self.pump_user_events()
+    }
+
+    fn tick(&mut self) -> Reaction {
+        self.tick()
+    }
+
+    fn resize(&mut self, width: u16, height: u16) {
+        self.resize(width, height)
+    }
+
+    fn exited(&self) -> bool {
+        self.exited()
+    }
+
+    fn screen(&self) -> String {
+        self.screen()
+    }
+
+    fn screen_contains(&self, needle: &str) -> bool {
+        self.screen_contains(needle)
+    }
+
+    fn find(&self, needle: &str) -> Option<(f32, f32)> {
+        self.find(needle)
+    }
+
+    fn tab_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
+        self.tab_center(bar, tab_idx)
+    }
+}
+
+/// Reads `dict[key]` as a `String`, raising `InvalidDescriptorError` if
+/// present but not a string. `None` (not an error) when `key` is absent or
+/// explicitly `None`. Shared by every `*_from_dict` helper in the
+/// `run_shell` section below.
+fn dict_str(what: &str, dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<String>> {
+    match dict.get_item(key)? {
+        Some(value) if !value.is_none() => value.extract().map(Some).map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: {key:?} must be a string"))
+        }),
+        _ => Ok(None),
+    }
+}
+
+/// [`dict_str`], but raises `InvalidDescriptorError` when `key` is absent
+/// or `None` instead of returning `Ok(None)`.
+fn dict_required_str(what: &str, dict: &Bound<'_, PyDict>, key: &str) -> PyResult<String> {
+    dict_str(what, dict, key)?
+        .ok_or_else(|| InvalidDescriptorError::new_err(format!("{what}: missing required {key:?}")))
+}
+
+/// Reads `dict[key]` as an `f32`, raising `InvalidDescriptorError` if
+/// present but not a number. `None` when `key` is absent or `None`.
+fn dict_f32(what: &str, dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<f32>> {
+    match dict.get_item(key)? {
+        Some(value) if !value.is_none() => value.extract().map(Some).map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: {key:?} must be a number"))
+        }),
+        _ => Ok(None),
+    }
+}
+
+/// Reads `dict[key]` as a `bool`, raising `InvalidDescriptorError` if
+/// present but not a bool. `None` when `key` is absent or `None`.
+fn dict_bool(what: &str, dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<bool>> {
+    match dict.get_item(key)? {
+        Some(value) if !value.is_none() => value.extract().map(Some).map_err(|_| {
+            InvalidDescriptorError::new_err(format!("{what}: {key:?} must be a bool"))
+        }),
+        _ => Ok(None),
+    }
+}
+
+/// Decodes one panel dict (`{"id", "icon", "tooltip", "title"}`, all but
+/// `"id"` optional) into a [`PanelDefinition`] — one entry of `run_shell`'s
+/// `"panels"`/`"bottom_items"` lists.
+fn panel_definition_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<PanelDefinition> {
+    let id = dict_required_str(what, dict, "id")?;
+    let icon = dict_str(what, dict, "icon")?.unwrap_or_default();
+    let tooltip = dict_str(what, dict, "tooltip")?.unwrap_or_default();
+    let title = dict_str(what, dict, "title")?.unwrap_or_else(|| id.clone());
+    Ok(PanelDefinition {
+        id: WidgetId::new(id),
+        icon,
+        tooltip,
+        title,
+    })
+}
+
+/// Decodes a `list` of panel dicts via [`panel_definition_from_dict`].
+fn panel_list_from_value(what: &str, value: &Bound<'_, PyAny>) -> PyResult<Vec<PanelDefinition>> {
+    let list = value
+        .cast::<PyList>()
+        .map_err(|_| InvalidDescriptorError::new_err(format!("{what}: panels must be a list")))?;
+    list.iter()
+        .map(|item| {
+            let item_dict = item.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!("{what}: each panel must be a dict"))
+            })?;
+            panel_definition_from_dict(what, item_dict)
+        })
+        .collect()
+}
+
+/// [`panel_list_from_value`] applied to `dict[key]`, defaulting to an empty
+/// list when `key` is absent or `None`.
+fn panel_list_from_dict(
+    what: &str,
+    dict: &Bound<'_, PyDict>,
+    key: &str,
+) -> PyResult<Vec<PanelDefinition>> {
+    match dict.get_item(key)? {
+        Some(value) if !value.is_none() => panel_list_from_value(what, &value),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// Decodes one bottom-panel-tab dict (`{"id", "label", "closable",
+/// "badge"}`, all but `"id"` optional) into a [`BottomPanelTab`], with its
+/// content set to a [`StaticTabContent`] naming the tab's own id — see that
+/// type's doc for why.
+fn bottom_panel_tab_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<BottomPanelTab> {
+    let id = dict_required_str(what, dict, "id")?;
+    let label = dict_str(what, dict, "label")?.unwrap_or_else(|| id.clone());
+    let closable = dict_bool(what, dict, "closable")?.unwrap_or(false);
+    let badge = dict_str(what, dict, "badge")?;
+    Ok(BottomPanelTab {
+        content: Box::new(StaticTabContent(id.clone())),
+        id,
+        label,
+        closable,
+        badge,
+    })
+}
+
+/// Decodes `run_shell`'s `"bottom_panel"` dict (`{"tabs", "active_tab_id",
+/// "maximised", "height_fraction"}`, all optional except at least one tab)
+/// into a [`BottomPanelConfig`]. `"active_tab_id"` falls back to the first
+/// tab's id, mirroring [`BottomPanelConfig::active_tab_id`]'s own
+/// "unknown id falls back to the first tab" contract.
+fn bottom_panel_config_from_dict(
+    what: &str,
+    dict: &Bound<'_, PyDict>,
+) -> PyResult<BottomPanelConfig> {
+    let tabs = match dict.get_item("tabs")? {
+        Some(value) if !value.is_none() => {
+            let list = value.cast::<PyList>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!(
+                    "{what}: bottom_panel \"tabs\" must be a list"
+                ))
+            })?;
+            list.iter()
+                .map(|item| {
+                    let item_dict = item.cast::<PyDict>().map_err(|_| {
+                        InvalidDescriptorError::new_err(format!(
+                            "{what}: each bottom_panel tab must be a dict"
+                        ))
+                    })?;
+                    bottom_panel_tab_from_dict(what, item_dict)
+                })
+                .collect::<PyResult<Vec<_>>>()?
+        }
+        _ => Vec::new(),
+    };
+    let active_tab_id = dict_str(what, dict, "active_tab_id")?
+        .or_else(|| tabs.first().map(|tab| tab.id.clone()))
+        .unwrap_or_default();
+    let maximised = dict_bool(what, dict, "maximised")?.unwrap_or(false);
+    let height_fraction = dict_f32(what, dict, "height_fraction")?.unwrap_or(0.3);
+    Ok(BottomPanelConfig {
+        tabs,
+        active_tab_id,
+        maximised,
+        height_fraction,
+    })
+}
+
+/// Decodes `run_shell`'s `config` dict into a [`ShellConfig`]. There is no
+/// `Deserialize` impl on `ShellConfig`/`PanelDefinition`/`BottomPanelConfig`
+/// upstream, so this reads the subset of `ShellConfig`'s builder surface
+/// this binding supports field-by-field, the same `*_from_dict` style every
+/// other decode helper in this file uses, rather than depending on one.
+/// Recognized keys: `"title"` (required), `"panels"`, `"bottom_items"`,
+/// `"position"` (`"left"`/`"right"`), `"sidebar_visible"`,
+/// `"default_sidebar_width"`, `"min_sidebar_width"`, `"max_sidebar_width"`,
+/// `"activity_bar_width"`, `"has_title_bar"` + `"title_bar_height_lh"`,
+/// `"has_status_bar"`, `"has_command_line"`, `"has_bottom_panel"` +
+/// `"bottom_panel_height_lh"` (the bare, untabbed region), and
+/// `"bottom_panel"` (a tabbed [`BottomPanelConfig`], see
+/// [`bottom_panel_config_from_dict`]). Any other key is silently ignored.
+fn shell_config_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<ShellConfig> {
+    let what = "run_shell";
+    let title = dict_required_str(what, dict, "title")?;
+    let panels = panel_list_from_dict(what, dict, "panels")?;
+    let mut config = ShellConfig::new(title, panels);
+
+    let bottom_items = panel_list_from_dict(what, dict, "bottom_items")?;
+    if !bottom_items.is_empty() {
+        config = config.with_bottom_items(bottom_items);
+    }
+
+    if let Some(position) = dict_str(what, dict, "position")? {
+        let position = match position.as_str() {
+            "left" => ShellPosition::Left,
+            "right" => ShellPosition::Right,
+            other => {
+                return Err(InvalidDescriptorError::new_err(format!(
+                    "{what}: \"position\" must be \"left\" or \"right\", got {other:?}"
+                )));
+            }
+        };
+        config = config.with_position(position);
+    }
+
+    if let Some(visible) = dict_bool(what, dict, "sidebar_visible")? {
+        config = config.with_sidebar_visible(visible);
+    }
+    if let Some(width) = dict_f32(what, dict, "default_sidebar_width")? {
+        config.default_sidebar_width = width;
+    }
+    if let Some(width) = dict_f32(what, dict, "min_sidebar_width")? {
+        config.min_sidebar_width = width;
+    }
+    if let Some(width) = dict_f32(what, dict, "max_sidebar_width")? {
+        config.max_sidebar_width = width;
+    }
+    if let Some(width) = dict_f32(what, dict, "activity_bar_width")? {
+        config = config.with_activity_bar_width(width);
+    }
+    if dict_bool(what, dict, "has_title_bar")?.unwrap_or(false) {
+        let height = dict_f32(what, dict, "title_bar_height_lh")?.unwrap_or(1.5);
+        config = config.with_title_bar(height);
+    }
+    if dict_bool(what, dict, "has_status_bar")?.unwrap_or(false) {
+        config = config.with_status_bar();
+    }
+    if dict_bool(what, dict, "has_command_line")?.unwrap_or(false) {
+        config = config.with_command_line();
+    }
+    if dict_bool(what, dict, "has_bottom_panel")?.unwrap_or(false) {
+        let height = dict_f32(what, dict, "bottom_panel_height_lh")?.unwrap_or(10.0);
+        config = config.with_bottom_panel(height);
+    }
+    if let Some(bp_value) = dict.get_item("bottom_panel")? {
+        if !bp_value.is_none() {
+            let bp_dict = bp_value.cast::<PyDict>().map_err(|_| {
+                InvalidDescriptorError::new_err(format!("{what}: \"bottom_panel\" must be a dict"))
+            })?;
+            config = config.with_bottom_panel_config(bottom_panel_config_from_dict(what, bp_dict)?);
+        }
+    }
+
+    Ok(config)
+}
+
+/// Takes and returns this session's pending callback-raised error, if any
+/// — the `ShellState` counterpart to [`take_pending_error`].
+fn take_pending_shell_error(state: &Rc<RefCell<ShellState>>) -> PyResult<()> {
+    if let Some(err) = state.borrow_mut().pending_error.take() {
+        return Err(err);
+    }
+    Ok(())
+}
+
+/// Headless [`ShellApp`]-backed app: an AppShell (activity bar + sidebar +
+/// optional bottom-panel tab strip) around Python-registered content and
+/// event handlers. Built by [`QuiApp::run_shell`] — there is no public
+/// constructor on this type itself, mirroring how `QuiApp::run_native`'s
+/// `NativeAppLogic` is only ever reached through `run_native`.
+///
+/// `unsendable` for the same reason as [`QuiApp`]: it wraps a `TuiDriver`,
+/// whose TUI backend handle is `Rc`/`RefCell`-based and not `Send`.
+#[pyclass(module = "quadraui", unsendable)]
+struct QuiShellApp {
+    driver: Box<dyn ErasedShellDriver>,
+    state: Rc<RefCell<ShellState>>,
+    /// Mirrors [`QuiApp::pending_events`] — queued by `push_event`/
+    /// `push_key_event`, drained one per `step_once` call.
+    pending_events: VecDeque<UiEvent>,
+    /// Mirrors [`QuiApp::poisoned`].
+    poisoned: bool,
+}
+
+#[pymethods]
+impl QuiShellApp {
+    /// Registers `handler` as the callable invoked (with the pythonized
+    /// event payload) for every event the shell chrome itself didn't
+    /// consume. Replaces any previously registered handler.
+    fn set_handler(&mut self, handler: Py<PyAny>) {
+        self.state.borrow_mut().handler = Some(handler);
+    }
+
+    /// Registers `handler` as the no-argument callable invoked by
+    /// `step`/`run` whenever it advances with no event queued. Replaces any
+    /// previously registered tick handler.
+    fn set_tick_handler(&mut self, handler: Py<PyAny>) {
+        self.state.borrow_mut().on_tick = Some(handler);
+    }
+
+    /// Registers `callback` as the no-argument render callback invoked once
+    /// per frame; its return value, if a `list[str]`, becomes the lines of
+    /// a `TextDisplay` painted into the shell's main content area. Replaces
+    /// any previously registered content callback.
+    fn set_render_content(&mut self, callback: Py<PyAny>) {
+        self.state.borrow_mut().render_content = Some(callback);
+    }
+
+    /// Registers `callback` as the callable invoked with one pythonized
+    /// `AppShellEvent` dict (see [`app_shell_event_to_py`]) whenever a
+    /// panel switch, sidebar show/hide/resize, or bottom-panel resize/hide
+    /// occurs.
+    fn set_on_shell_event(&mut self, callback: Py<PyAny>) {
+        self.state.borrow_mut().on_shell_event = Some(callback);
+    }
+
+    /// Registers `callback` as the callable invoked with one pythonized
+    /// `BottomPanelEvent` dict (see [`bottom_panel_event_to_py`]) whenever
+    /// the bottom-panel tab strip is interacted with. Only ever fires when
+    /// this app's `config` included a `"bottom_panel"` entry.
+    fn set_on_bottom_panel_event(&mut self, callback: Py<PyAny>) {
+        self.state.borrow_mut().on_bottom_panel_event = Some(callback);
+    }
+
+    /// Decodes `descriptor` into a `UiEvent` and queues it for the next
+    /// `step`/`run` call. Raises `InvalidDescriptorError` on a shape
+    /// mismatch.
+    fn push_event(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<()> {
+        let event: UiEvent = decode("push_event", descriptor)?;
+        self.pending_events.push_back(event);
+        Ok(())
+    }
+
+    /// Queues a synthetic `KeyPressed` event for the character with
+    /// Unicode code point `ch`, no modifiers held, not a repeat. Raises
+    /// `InvalidCharError` if `ch` isn't a valid Unicode scalar value.
+    fn push_key_event(&mut self, ch: u32) -> PyResult<()> {
+        let ch = char::from_u32(ch).ok_or_else(|| {
+            InvalidCharError::new_err(format!("invalid Unicode code point: {ch}"))
+        })?;
+        self.pending_events.push_back(UiEvent::KeyPressed {
+            key: Key::Char(ch),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        Ok(())
+    }
+
+    /// Queues a synthetic `MouseDown` + `MouseUp` left-click at `(x, y)`,
+    /// in the backend's native (cell) units — the same coordinates
+    /// `AppShellLayout`'s bounds (as pythonized by `set_on_shell_event`'s
+    /// payloads and this binding's own `find`) are expressed in. Use this
+    /// to drive sidebar-toggle / panel-switch / bottom-panel-tab clicks
+    /// from Python without hand-building two raw `push_event` dicts.
+    fn push_click(&mut self, x: f32, y: f32) {
+        self.pending_events
+            .push_back(mouse_down(MouseButton::Left, x, y, Modifiers::default()));
+        self.pending_events
+            .push_back(mouse_up(MouseButton::Left, x, y));
+    }
+
+    /// Resizes the underlying cell grid to `width`x`height`. Raises
+    /// `InvalidDimensionsError` if either is zero.
+    fn resize(&mut self, width: u16, height: u16) -> PyResult<()> {
+        if width == 0 || height == 0 {
+            return Err(InvalidDimensionsError::new_err(
+                "width and height must both be non-zero",
+            ));
+        }
+        self.guarded(|app| {
+            app.driver.resize(width, height);
+            Ok(())
+        })
+    }
+
+    /// Advances the runner by one step, mirroring [`QuiApp::step`]'s
+    /// queued-event / tick order (`run_shell` apps have no waker/`User`
+    /// event path, so there is no posted-value step to interleave).
+    /// Returns `True` if still running, `False` once exited. Re-raises
+    /// whatever exception a registered callback raised while handling this
+    /// step.
+    fn step(&mut self) -> PyResult<bool> {
+        self.guarded(|app| app.step_once())
+    }
+
+    /// Runs up to `max_steps` steps (default 1), releasing the GIL for the
+    /// duration of the Rust loop and re-acquiring it only for each
+    /// individual callback — mirrors [`QuiApp::run`].
+    #[pyo3(signature = (max_steps=1))]
+    fn run(&mut self, py: Python<'_>, max_steps: u32) -> PyResult<bool> {
+        let steps = max_steps.max(1);
+        let wrapped = AssertUngil(self);
+        py.detach(move || {
+            let app = wrapped;
+            let mut running = true;
+            for _ in 0..steps {
+                running = app.0.guarded(|app| app.step_once())?;
+                if !running {
+                    break;
+                }
+            }
+            Ok(running)
+        })
+    }
+
+    /// Returns the currently rendered screen as plain text, one line per
+    /// row, mirroring `TuiDriver::screen`.
+    fn screen(&self) -> String {
+        self.driver.screen()
+    }
+
+    /// Whether `needle` appears anywhere in the currently rendered screen.
+    fn screen_contains(&self, needle: &str) -> bool {
+        self.driver.screen_contains(needle)
+    }
+
+    /// The `(x, y)` cell position of the first occurrence of `needle` in
+    /// the currently rendered screen, or `None` if it isn't present.
+    fn find(&self, needle: &str) -> Option<(f32, f32)> {
+        self.driver.find(needle)
+    }
+
+    /// The `(x, y)` cell position of the center of bottom-panel tab
+    /// `tab_idx` (`0` = first tab, in `config["bottom_panel"]["tabs"]`
+    /// order), or `None` if this app's `config` had no `"bottom_panel"`, or
+    /// `tab_idx` is out of range or scrolled out of view. A tab's label can
+    /// repeat elsewhere on screen (or coincide with another tab's), so this
+    /// resolves against the tab bar's own cached layout — the same
+    /// disambiguation [`Self::find`]'s doc warns a text needle can't give —
+    /// rather than `find(label)`.
+    fn bottom_panel_tab_center(&self, tab_idx: usize) -> Option<(f32, f32)> {
+        self.driver
+            .tab_center(&WidgetId::new(BOTTOM_PANEL_TABS_WIDGET_ID), tab_idx)
+    }
+}
+
+impl QuiShellApp {
+    /// Mirrors [`QuiApp::guarded`]: catches a Rust panic instead of letting
+    /// it unwind across the PyO3 boundary, poisoning this app on one.
+    fn guarded<T>(&mut self, body: impl FnOnce(&mut Self) -> PyResult<T>) -> PyResult<T> {
+        if self.poisoned {
+            return Err(PoisonedError::new_err(
+                "this QuiShellApp is poisoned by an earlier caught panic and can no longer be used",
+            ));
+        }
+        match panic::catch_unwind(AssertUnwindSafe(|| body(self))) {
+            Ok(result) => result,
+            Err(payload) => {
+                self.poisoned = true;
+                Err(PanicError::new_err(panic_message(&*payload)))
+            }
+        }
+    }
+
+    /// Mirrors [`QuiApp::step_once`], minus the `User`/waker path `run_shell`
+    /// apps don't have.
+    fn step_once(&mut self) -> PyResult<bool> {
+        if self.driver.exited() {
+            return Ok(false);
+        }
+        match self.pending_events.pop_front() {
+            Some(event) => {
+                self.driver.dispatch(event);
+            }
+            None => {
+                self.driver.pump_user_events();
+                if !self.driver.exited() {
+                    self.driver.tick();
+                }
+            }
+        }
+        take_pending_shell_error(&self.state)?;
+        Ok(!self.driver.exited())
     }
 }
 
@@ -2160,6 +2983,78 @@ impl QuiApp {
         })
     }
 
+    /// Builds a [`QuiShellApp`]: a headless VS Code-style app frame
+    /// (activity bar + sidebar + optional bottom-panel tab strip) around
+    /// Python-registered content and event handlers, on a `width`x`height`
+    /// cell grid.
+    ///
+    /// `config` is a `dict` decoded into a `quadraui::ShellConfig` by
+    /// [`shell_config_from_dict`] — see that function's doc for the
+    /// recognized keys. `on_event`, `render_content`, `on_shell_event`,
+    /// `on_bottom_panel_event`, and `on_tick`, if given, are registered
+    /// exactly as the matching `QuiShellApp.set_*` method would right
+    /// after construction.
+    ///
+    /// This is a separate class ([`QuiShellApp`], not a mode switch on this
+    /// `QuiApp`) rather than an instance method: a plain `QuiApp` wraps a
+    /// fixed `TuiDriver<PyAppLogic>`, and `run_shell` drives a different
+    /// `AppLogic` (`quadraui::shell_adapter::ShellAdapter<PyShellApp>`,
+    /// erased behind `Box<dyn ErasedShellDriver>` since
+    /// `driver_with_shell` returns an unnameable `TuiDriver<impl AppLogic>`)
+    /// — there is no shared driver field a mode switch could flip between
+    /// the two without turning every existing `QuiApp` method into a
+    /// mode-dispatching wrapper.
+    ///
+    /// Raises `InvalidDimensionsError` if `width`/`height` is zero, or
+    /// `InvalidDescriptorError` if `config` doesn't decode.
+    #[staticmethod]
+    #[pyo3(signature = (
+        width,
+        height,
+        config,
+        on_event=None,
+        render_content=None,
+        on_shell_event=None,
+        on_bottom_panel_event=None,
+        on_tick=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn run_shell(
+        width: u16,
+        height: u16,
+        config: &Bound<'_, PyDict>,
+        on_event: Option<Py<PyAny>>,
+        render_content: Option<Py<PyAny>>,
+        on_shell_event: Option<Py<PyAny>>,
+        on_bottom_panel_event: Option<Py<PyAny>>,
+        on_tick: Option<Py<PyAny>>,
+    ) -> PyResult<QuiShellApp> {
+        if width == 0 || height == 0 {
+            return Err(InvalidDimensionsError::new_err(
+                "width and height must both be non-zero",
+            ));
+        }
+        let shell_config = shell_config_from_dict(config)?;
+        let state = Rc::new(RefCell::new(ShellState {
+            handler: on_event,
+            on_tick,
+            render_content,
+            on_shell_event,
+            on_bottom_panel_event,
+            pending_error: None,
+        }));
+        let app = PyShellApp {
+            state: state.clone(),
+        };
+        let driver = driver_with_shell(app, shell_config, width, height);
+        Ok(QuiShellApp {
+            driver: Box::new(driver),
+            state,
+            pending_events: VecDeque::new(),
+            poisoned: false,
+        })
+    }
+
     /// Registers `handler` as the callable invoked (with the pythonized
     /// event payload) for every event drained by `step`/`run`. Replaces any
     /// previously registered handler.
@@ -3526,6 +4421,7 @@ impl QuiApp {
 fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QuiApp>()?;
     m.add_class::<QuiAppWaker>()?;
+    m.add_class::<QuiShellApp>()?;
     let py = m.py();
     m.add("QuadrauiError", py.get_type::<QuadrauiError>())?;
     m.add(
@@ -3577,7 +4473,7 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quadraui::{ButtonMask, MouseButton, ScrollDelta};
+    use quadraui::{ButtonMask, ScrollDelta};
 
     /// `quadraui_binding_core::EXTRA_PRIMITIVE_KINDS` is a hand-maintained
     /// list of this binding's own `EXTRA_PRIMITIVES` decode table's keys,
