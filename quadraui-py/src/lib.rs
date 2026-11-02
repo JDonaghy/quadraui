@@ -2932,9 +2932,20 @@ impl QuiApp {
     /// Reads the current clipboard contents as `(width, height, pixels)`,
     /// where `pixels` is a straight (non-premultiplied) RGBA8 buffer,
     /// row-major top-to-bottom left-to-right, exactly `width * height * 4`
-    /// bytes. `None` on an empty / non-image clipboard, an unsupported
-    /// backend (TUI's only remote-reachable channel, OSC 52, has no image
-    /// form), or a platform error reading it.
+    /// bytes.
+    ///
+    /// `None` collapses three different [`BackendError`]s this binding
+    /// cannot tell apart from here: an empty / non-image clipboard
+    /// (`PlatformFailure`, since `arboard` reports "nothing to read" the
+    /// same way it reports a real platform error), and a backend with no
+    /// image clipboard channel at all (`Unsupported` — always true on
+    /// TUI, whose only remote-reachable channel, OSC 52, has no image
+    /// form). Unlike [`QuiApp::clipboard_write_image`], this is a plain
+    /// probe ("is there an image to read") rather than a demand ("put
+    /// this image there"), so a caller checking before falling back to
+    /// `clipboard_read_text` sees one uniform "nothing" result instead of
+    /// having to catch an exception just to tell `Unsupported` apart from
+    /// "clipboard happens to be empty".
     fn clipboard_read_image(&mut self) -> PyResult<Option<(u32, u32, Vec<u8>)>> {
         self.guarded(|app| {
             Ok(app
@@ -2955,7 +2966,19 @@ impl QuiApp {
     /// has no image clipboard channel.
     fn clipboard_write_image(&mut self, width: u32, height: u32, pixels: Vec<u8>) -> PyResult<()> {
         self.guarded(|app| {
-            let expected = width as usize * height as usize * 4;
+            // `checked_mul` rather than a plain `*`: an adversarial
+            // `width`/`height` (e.g. `2**31`) overflows `usize` on a 32-bit
+            // target and wraps silently in a release build, which would let
+            // a zero-length `pixels` buffer slip past the length check
+            // below instead of being rejected here.
+            let expected = (width as usize)
+                .checked_mul(height as usize)
+                .and_then(|n| n.checked_mul(4))
+                .ok_or_else(|| {
+                    InvalidDimensionsError::new_err(format!(
+                        "width * height * 4 overflows (width={width}, height={height})"
+                    ))
+                })?;
             if pixels.len() != expected {
                 return Err(InvalidDimensionsError::new_err(format!(
                     "pixels must be exactly width * height * 4 bytes ({expected}), got {}",
@@ -2990,8 +3013,10 @@ impl QuiApp {
 
     /// Reads the list of file paths currently on the clipboard (a
     /// Finder/Explorer copy), as a list of their string representations.
-    /// `None` on an empty list or an unsupported backend (TUI has no
-    /// file-list clipboard channel).
+    ///
+    /// `None` collapses an empty list and a backend with no file-list
+    /// clipboard channel at all (TUI) into one result, for the same
+    /// reason [`QuiApp::clipboard_read_image`] does — see its doc.
     fn clipboard_read_file_list(&mut self) -> PyResult<Option<Vec<String>>> {
         self.guarded(|app| {
             Ok(app

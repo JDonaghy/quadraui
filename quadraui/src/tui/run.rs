@@ -722,13 +722,6 @@ where
                 // `AreaId`. Multi-area runners (GTK) pass the AreaId for
                 // whichever surface is repainting.
                 app.render(b, A::AreaId::default());
-                // After app.render: paint the focus-ring convention
-                // so it overlays on top of the widget's own
-                // content, same ordering as the selection-highlight
-                // overlay below.
-                if let Some(rect) = focus_ring_rect {
-                    b.draw_focus_ring(rect);
-                }
             });
             // Clear any `underline_color` ConPTY would misparse as
             // blink/faint before any further
@@ -738,9 +731,28 @@ where
             // through each rasteriser, is the chosen choke point.
             backend.strip_unsupported_underline_colors(frame.buffer_mut());
             // After app.render: overlay selection highlight on the rendered
-            // buffer. Done outside enter_frame_scope so the closure lifetime
-            // doesn't conflict with the frame borrow.
+            // buffer, BEFORE the focus ring below. Done outside
+            // enter_frame_scope so the closure lifetime doesn't conflict
+            // with the frame borrow. Ordered ahead of the ring (not after,
+            // as the ring's own `AppLogic::render`-adjacent paint might
+            // suggest) because the focused widget's tab-stop rect and an
+            // active text selection's bounds are the same rect for a
+            // focused `TextDisplay` (its tab stop is its whole painted
+            // area); caching the selection's text after the ring had
+            // already overwritten those cells with border glyphs made
+            // Ctrl-C copy the ring's glyphs instead of the selected text.
+            // The ring still paints last, so what's on screen is unchanged
+            // either way — only `cached_selection_text`'s correctness
+            // depends on this order.
             backend.apply_selection_highlight(frame.buffer_mut());
+            // Paint the focus-ring convention so it overlays on top of the
+            // widget's own content and the selection highlight above —
+            // via `draw_focus_ring_on_buffer` rather than the
+            // `enter_frame_scope`-bound `Backend::draw_focus_ring`, since
+            // this runs after that scope has already ended.
+            if let Some(rect) = focus_ring_rect {
+                backend.draw_focus_ring_on_buffer(frame.buffer_mut(), rect);
+            }
             // Apply the editor cursor position cached by `draw_editor`.
             // `Backend::draw_editor` only has the buffer,
             // not the `Frame`, so it stashes the position on `TuiBackend`

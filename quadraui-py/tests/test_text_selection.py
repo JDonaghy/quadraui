@@ -113,8 +113,14 @@ def test_ctrl_c_with_active_selection_emits_text_copied():
 
     copied = [event["TextCopied"] for event in received if "TextCopied" in event]
     assert len(copied) == 1, received
-    assert isinstance(copied[0], str)
-    assert copied[0] != ""
+    # TUI's copy path reads the live cell buffer, not the descriptor's
+    # `lines` -- it extracts exactly what was painted at the selected
+    # screen cells. Drag anchor (0, 0) to focus (0, 1) selects all of row 0
+    # (`anchor_col .. region_end_col`) and just column 0 of row 1
+    # (`region_start_col .. focus_col + 1`) per `text_selection_line_range`'s
+    # line-wise rules, so the copied text is row 0 in full plus row 1's
+    # first character.
+    assert copied[0] == "Line 0\nL"
 
 
 def test_ctrl_c_without_selection_does_not_emit_text_copied():

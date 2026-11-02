@@ -769,6 +769,38 @@ impl TuiBackend {
         self.core.cancel_text_selection_drag(&mut drag_state);
     }
 
+    /// Paints the focus ring directly onto `buf`, for the one caller
+    /// (`tui::run::paint_frame`) that needs it drawn AFTER
+    /// [`Self::apply_selection_highlight`] rather than before.
+    ///
+    /// [`Backend::draw_focus_ring`] (the trait method `AppLogic::render`'s
+    /// own `enter_frame_scope` closure calls) fetches the frame via
+    /// [`Self::current_frame_mut`], which only resolves inside that scope
+    /// — so it necessarily paints the ring immediately after `app.render`,
+    /// before the selection highlight overlay runs. When the focused
+    /// widget's tab-stop rect is the same rect as an active text
+    /// selection (true for any focused `TextDisplay`, whose tab stop is
+    /// its whole painted area — see `InteractionEngine::tab_stops`), that
+    /// ordering means the ring's border glyphs overwrite the selected
+    /// text in the live buffer BEFORE `apply_selection_highlight` reads
+    /// it, corrupting what Ctrl-C copies without changing anything
+    /// visible (the ring would have painted over those cells regardless
+    /// of ordering). This twin lets the caller paint the ring after
+    /// highlighting instead — same paint logic and the same
+    /// `"chrome:focus-ring"` zone registration as the trait method, just
+    /// reached via a buffer already in hand instead of the frame-scope
+    /// pointer.
+    pub(crate) fn draw_focus_ring_on_buffer(
+        &mut self,
+        buf: &mut ratatui::buffer::Buffer,
+        rect: QRect,
+    ) {
+        let theme = self.current_theme;
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::draw_focus_ring(buf, area, &theme);
+        self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
+    }
+
     /// Invert (highlight) the cells in the ratatui buffer that fall
     /// within the active text selection range, and cache the extracted
     /// text in `self.cached_selection_text`.

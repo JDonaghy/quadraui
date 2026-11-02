@@ -104,6 +104,12 @@ def test_clipboard_write_image_rejects_a_mismatched_pixel_buffer():
 
 
 def test_clipboard_write_html_raises_internal_error_on_unsupported_backend():
+    # `alt_text` exists so a text-only clipboard COULD degrade to writing
+    # it via `write_text` instead of failing outright -- quadraui's "TUI is
+    # a first-class backend" rule points that way. That degrade belongs in
+    # `quadraui::tui::services::TuiClipboard` itself, not here; this test
+    # locks in today's actual behavior (the trait's `Unsupported` default)
+    # and will need rewriting once TUI grows that fallback.
     app = QuiApp(40, 20)
     with pytest.raises(InternalError):
         app.clipboard_write_html("<b>hi</b>", "hi")
