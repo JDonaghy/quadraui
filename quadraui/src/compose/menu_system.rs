@@ -152,8 +152,49 @@ impl MenuSystem {
         self.open_item.is_some()
     }
 
+    /// Replace the menu definitions. If a dropdown (or nested submenu) is
+    /// currently open, any level whose index no longer resolves against
+    /// `menus` is dropped so every direct `self.menus[idx]` index elsewhere
+    /// in this type stays panic-free — e.g. a host rebuilding `menus` from
+    /// per-frame application data (`quadraui-py`'s `sync_menu_bar`) may
+    /// hand this a shorter list while the previous frame's dropdown is
+    /// still open.
     pub fn set_menus(&mut self, menus: Vec<MenuDef>) {
         self.menus = menus;
+        self.clamp_open_state();
+    }
+
+    /// Drop `open_item`/`submenu_path` levels that no longer have a
+    /// corresponding entry in `self.menus`, leaving the rest of the open
+    /// state (what's left of `submenu_path`, `dropdown_selected`,
+    /// `submenu_selected`) untouched — those are display-only selection
+    /// hints compared by equality, not used to index, so a stale value is
+    /// harmless. Does not touch the modal stack; callers that need the
+    /// `dropdown_id` entry popped too should call [`Self::close`].
+    fn clamp_open_state(&mut self) {
+        let Some(open_idx) = self.open_item else {
+            return;
+        };
+        if open_idx >= self.menus.len() {
+            self.open_item = None;
+            self.focused_item = None;
+            self.submenu_path.clear();
+            self.submenu_selected.clear();
+            return;
+        }
+        let mut items = &self.menus[open_idx].items;
+        let mut valid_depth = self.submenu_path.len();
+        for (depth, &path_idx) in self.submenu_path.iter().enumerate() {
+            match items.get(path_idx).and_then(|item| item.submenu.as_ref()) {
+                Some(sub) => items = sub,
+                None => {
+                    valid_depth = depth;
+                    break;
+                }
+            }
+        }
+        self.submenu_path.truncate(valid_depth);
+        self.submenu_selected.truncate(valid_depth);
     }
 
     pub fn close(&mut self, backend: &mut dyn Backend) {
@@ -1687,6 +1728,65 @@ mod tests {
             items: vec![action("a", "A")],
         }]);
         assert_eq!(ms.menus.len(), 1);
+    }
+
+    /// A shorter `set_menus` call while a top-level dropdown is open must
+    /// close it rather than leave `open_item` pointing past the end of the
+    /// new list — `dropdown_layout`/`build_dropdown` index `self.menus`
+    /// directly, so a stale out-of-range `open_item` would panic.
+    #[test]
+    fn set_menus_closes_dropdown_left_pointing_past_the_new_list() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let backend = MockBackend::new();
+        ms.open_item = Some(2); // "Help" — the last menu, dropped below
+        ms.focused_item = Some(2);
+
+        ms.set_menus(vec![MenuDef {
+            id: WidgetId::new("file"),
+            label: "&File".into(),
+            disabled: false,
+            items: vec![action("new", "New File")],
+        }]);
+
+        assert_eq!(ms.open_item, None);
+        assert_eq!(ms.focused_item, None);
+        assert!(ms.dropdown_layout(&backend, bar_rect()).is_none());
+    }
+
+    /// Shrinking the open menu's own item list so a deeper submenu's
+    /// `submenu_path` entry no longer resolves must drop that entry (and
+    /// anything nested under it) rather than leave it dangling —
+    /// `items_at_depth`/`dropdown_stack` walk `submenu_path` against the
+    /// new items and would otherwise be handed a stale index.
+    #[test]
+    fn set_menus_truncates_submenu_path_left_pointing_past_new_items() {
+        let mut ms = MenuSystem::new(vec![MenuDef {
+            id: WidgetId::new("file"),
+            label: "&File".into(),
+            disabled: false,
+            items: vec![{
+                let mut item = action("export", "Export");
+                item.submenu = Some(vec![action("png", "PNG"), action("svg", "SVG")]);
+                item
+            }],
+        }]);
+        let backend = MockBackend::new();
+        ms.open_item = Some(0);
+        ms.submenu_path = vec![0]; // "Export"'s submenu is open
+
+        // New "File" menu's one item has no submenu at all, so depth-0 of
+        // the old `submenu_path` no longer resolves.
+        ms.set_menus(vec![MenuDef {
+            id: WidgetId::new("file"),
+            label: "&File".into(),
+            disabled: false,
+            items: vec![action("new", "New File")],
+        }]);
+
+        assert_eq!(ms.open_item, Some(0));
+        assert!(ms.submenu_path.is_empty());
+        assert!(ms.dropdown_layout(&backend, bar_rect()).is_some());
+        assert!(ms.dropdown_stack(&backend, bar_rect()).len() <= 1);
     }
 
     #[test]
