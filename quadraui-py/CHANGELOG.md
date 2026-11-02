@@ -21,6 +21,15 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   `TextEditor` session (including its undo history) across keystrokes
   instead of a fresh, empty one every call, so a selection extended with
   `Shift`+arrows, or an edit undone/redone, is actually reachable.
+- `number_input`, `combo_box`, `date_picker`, and `radio_group` extras are
+  now hit-testable and tab stops, with their own keyboard/`click`
+  semantics routed into `Form` events instead of staying paint-only: a
+  `NumberInput` stepper click or `Up`/`Down` key resolves to
+  `FormEvent::TextInputChanged`/`Committed`; `RadioGroup`'s arrow keys to
+  `FormEvent::SegmentedControlChanged`; a `ComboBox`'s typing/navigation/
+  commit/cancel to `FormEvent::ComboBoxTextChanged`/`HighlightChanged`/
+  `Committed`/`Cancelled`; and a `DatePicker`'s `Enter` to
+  `FormEvent::DateChanged`.
 - `QuiApp.viewport()`, `line_height()`, `char_width()`,
   `list_char_width()`, `chrome_line_height()`, `scrollbar_reserve()`,
   `scales_text_rows()`, `snap_height(h)`, `measure_text(text, role)`, and

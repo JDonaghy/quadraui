@@ -31,7 +31,7 @@ use crate::extra_paint::extra_as;
 use crate::hit::{
     chrome_hover_hit, event_position, hit_test_painted, set_event_widget, HitDetail, PaintedHit,
 };
-use crate::semantic::{focus_scoped_key_event, semantic_event_for_hit};
+use crate::semantic::{focus_scoped_key_event, number_input_click_event, semantic_event_for_hit};
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
 
 /// The one binding-specific step [`InteractionEngine::handle`] cannot do
@@ -682,6 +682,22 @@ impl InteractionEngine {
                             quadraui::TextInputMeasure::from_metrics(&backend.measure()),
                             &self.text_editors,
                         );
+                    }
+                }
+                // A click resolving to a `NumberInput` stepper
+                // (increment/decrement) replaces the raw click outright —
+                // unlike the `TextInput` caret placement just above, this
+                // DOES swap `event`, so it must run before the
+                // `semantic_event_for_hit` branch below reads `detail`
+                // (which returns `None` for a `NumberInput` `ExtraBody`
+                // hit regardless, so letting it still run afterwards for
+                // the same hit is harmless, not a double-dispatch risk).
+                if !double_click && matches!(detail, HitDetail::ExtraBody) {
+                    if let Some(number_input_event) = event_position(&event).and_then(|position| {
+                        number_input_click_event(&self.hit_map.borrow(), *id, position)
+                    }) {
+                        event = number_input_event;
+                        attach_hit = false;
                     }
                 }
                 if !double_click && matches!(detail, HitDetail::SplitDivider) {

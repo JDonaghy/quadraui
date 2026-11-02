@@ -320,6 +320,183 @@ def test_insert_extra_date_picker_renders_header():
     assert app.screen_contains("2024-03")
 
 
+def test_number_input_stepper_click_increments_and_decrements_the_value():
+    # `NumberInput::layout` needs no backend metrics (its stepper column
+    # is a fixed width), so -- unlike `RadioGroup`/`ComboBox`/`DatePicker`
+    # below, which only get coarse click-to-focus -- a click precisely
+    # resolving to the increment/decrement half of the stepper column
+    # replaces the raw click outright with the `ValueChanged` it stands
+    # for, translated into `FormEvent::TextInputChanged` (`NumberInput`
+    # has no `FormEvent` slot of its own).
+    app = QuiApp(40, 20)
+    app.insert_extra("number_input", {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0})
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 38.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    assert received[0]["FocusChanged"] == "ni:1"
+    widget_id, form_event = received[1]["Form"]
+    assert widget_id == "ni:1"
+    assert form_event == {"TextInputChanged": {"id": "ni:1", "value": "43"}}
+
+    received.clear()
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 38.0, "y": 2.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    assert len(received) == 1, "already focused -- no second FocusChanged"
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "ni:1"
+    assert form_event == {"TextInputChanged": {"id": "ni:1", "value": "41"}}
+
+
+def test_number_input_up_key_increments_the_focused_value():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "number_input",
+        {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0, "focused": True},
+    )
+    received = _click_events(app, 1.0, 1.0)
+    assert received[0]["FocusChanged"] == "ni:1"
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Up"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "ni:1"
+    assert form_event == {"TextInputChanged": {"id": "ni:1", "value": "43"}}
+
+
+def test_radio_group_arrow_key_changes_the_selection():
+    # `RadioGroupEvent::SelectionChanged` has no `FormEvent` slot of its
+    # own either -- it's translated into `SegmentedControlChanged`, which
+    # carries the exact same `{ id, selected_idx }` shape.
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "radio_group",
+        {
+            "id": "rg:1",
+            "options": [
+                {"id": "opt:a", "label": "Alpha"},
+                {"id": "opt:b", "label": "Beta"},
+            ],
+            "focused": True,
+        },
+    )
+    received = _click_events(app, 1.0, 1.0)
+    assert received[0]["FocusChanged"] == "rg:1"
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Down"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "rg:1"
+    assert form_event == {"SegmentedControlChanged": {"id": "rg:1", "selected_idx": 0}}
+
+
+def test_combo_box_typing_filters_then_enter_commits():
+    # Every `ComboBoxEvent` shape has a dedicated `FormEvent` variant
+    # already (`Form`'s own `FieldKind::ComboBox` embeds the same
+    # primitive), so typing and `Enter` carry straight through. A render
+    # callback echoes `ComboBoxTextChanged`'s `value` back as `text` --
+    # same echo-loop contract `_focused_text_input_app` exercises for
+    # `text_input` -- so `Enter`'s own `ComboBoxEvent::commit` reads the
+    # just-typed text rather than the field's initial, empty one.
+    app = QuiApp(40, 20)
+    state = {"text": ""}
+
+    def render():
+        return {
+            "combo_box": {
+                "id": "cb:1",
+                "options": ["alpha", "beta"],
+                "text": state["text"],
+                "focused": True,
+            }
+        }
+
+    app.set_render(render)
+    app.screen()
+    received = _click_events(app, 1.0, 1.0)
+    assert received[0]["FocusChanged"] == "cb:1"
+
+    received = []
+
+    def handler(event):
+        received.append(event)
+        if "Form" not in event:
+            return
+        _, form_event = event["Form"]
+        if "ComboBoxTextChanged" in form_event:
+            state["text"] = form_event["ComboBoxTextChanged"]["value"]
+
+    app.set_handler(handler)
+    app.push_event(
+        {"KeyPressed": {"key": {"Char": "a"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "cb:1"
+    assert form_event == {"ComboBoxTextChanged": {"id": "cb:1", "value": "a"}}
+
+    received.clear()
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "cb:1"
+    assert form_event == {"ComboBoxCommitted": {"id": "cb:1", "value": "a"}}
+
+
+def test_date_picker_enter_confirms_the_focused_day():
+    # Only `DatePickerEvent::DateSelected` has a matching `FormEvent` slot
+    # (`DateChanged`, which already carries the same `CalendarDate`
+    # shape) -- `Enter` confirms the focused day.
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "date_picker",
+        {
+            "id": "dp:1",
+            "visible_month": {"year": 2024, "month": 3, "day": 1},
+            "focused": {"year": 2024, "month": 3, "day": 15},
+            "locale": {"first_weekday": "Sunday", "format": "Iso8601"},
+            "has_focus": True,
+        },
+    )
+    received = _click_events(app, 1.0, 1.0)
+    assert received[0]["FocusChanged"] == "dp:1"
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "dp:1"
+    assert form_event == {
+        "DateChanged": {"id": "dp:1", "value": {"year": 2024, "month": 3, "day": 15}}
+    }
+
+
 def test_insert_extra_form_renders_mixed_fields_with_label_position_and_validation():
     # Acceptance criterion: a `Form` with mixed field kinds plus a
     # `label_position` override and a field `validation` state decodes
