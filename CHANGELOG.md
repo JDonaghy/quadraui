@@ -131,6 +131,14 @@ only a push to `main` runs this workflow.
   `InvalidDescriptorError`. `quadraui-py` also gains
   `QuiApp::dismiss_message_dialog`, closing the open dialog (if any)
   without resolving it.
+- `FindReplacePanel` derives `Serialize`/`Deserialize`, so it can be decoded
+  from a binding's own wire format like every other primitive descriptor.
+- `quadraui-py` gains five additive primitive kinds for `insert_extra`/the
+  `render` callback's layout tree: `"editor"` (`Editor`), `"terminal"`
+  (`Terminal`), `"canvas"` (`Canvas`), `"scroll_view"` (`ScrollView`), and
+  `"find_replace"` (`FindReplacePanel`). All five paint, and all but `canvas`
+  take part in the hit map (click-to-focus plus a `MouseDown`/`Scroll`'s
+  `widget` resolving to them) the same way `switch`/`text_input` already do.
 
 ### Changed
 - TUI: on a kitty-keyboard-capable terminal, a chord whose key is a shifted

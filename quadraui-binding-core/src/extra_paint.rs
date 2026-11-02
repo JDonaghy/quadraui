@@ -8,11 +8,11 @@
 use std::rc::Rc;
 
 use quadraui::{
-    ActivityBar, Backend, BoardModel, Chart, ComboBox, CommandCenter, CommandLine,
-    CompletionItemMeasure, DatePicker, DiffView, Form, Image, InteractionState, MenuBar,
-    MessageList, Minimap, MultiSectionView, NumberInput, Palette, PipelineView, Point, ProgressBar,
-    RadioGroup, Rect, Scrollbar, Spinner, StatusBar, StatusBarHit, Switch, SwitchHit, TextInput,
-    TextRegion, Toolbar, WidgetId,
+    ActivityBar, Backend, BoardModel, Canvas, Chart, ComboBox, CommandCenter, CommandLine,
+    CompletionItemMeasure, DatePicker, DiffView, Editor, FindReplacePanel, Form, Image,
+    InteractionState, MenuBar, MessageList, Minimap, MultiSectionView, NumberInput, Palette,
+    PipelineView, Point, ProgressBar, RadioGroup, Rect, ScrollAxis, ScrollView, Scrollbar, Spinner,
+    StatusBar, StatusBarHit, Switch, SwitchHit, Terminal, TextInput, TextRegion, Toolbar, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -542,13 +542,164 @@ impl ExtraPaint for Scrollbar {
     }
 }
 
+impl ExtraPaint for Editor {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        let _ = backend.draw_editor(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    /// Whole-area bounds check, same limitation [`TextInput::hit_test`]
+    /// documents above: this trait has no backend-metrics parameter to
+    /// resolve a click to a buffer line/column via
+    /// [`quadraui::Editor::layout`]'s own `cell_width`/`line_height`
+    /// arguments, so any click inside `area` counts as landing on the
+    /// editor. A host that wants `Editor::layout(..).hit_test(..)`'s
+    /// buffer-position/gutter/scrollbar detail re-derives it from the
+    /// enriched `MouseDown`'s position plus its own metrics.
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
+    }
+}
+
+impl ExtraPaint for Terminal {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_terminal(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    /// Whole-area bounds check — same shape as [`Editor::hit_test`]:
+    /// resolving a click to a specific cell is [`quadraui::Terminal`]'s own
+    /// `layout(..).hit_test(..)`, which a host calls itself once it has the
+    /// enriched `MouseDown` position, since mouse/keyboard interaction is
+    /// deliberately outside this paint-snapshot primitive (see the module
+    /// doc on `quadraui::Terminal`). This still gives click-to-focus so the
+    /// app can route subsequent key presses to the live PTY.
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
+    }
+}
+
+impl ExtraPaint for Canvas {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        let _ = backend.draw_canvas(area, self);
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    /// Matches [`quadraui::CanvasLayout::hit_test`]'s own "inside these
+    /// bounds at all" answer (see [`quadraui::CanvasHit`]'s doc) — `Canvas`
+    /// has no sub-regions of its own, so there is nothing finer to resolve
+    /// here.
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+}
+
+impl ExtraPaint for ScrollView {
+    /// `ScrollView` carries no backend painter of its own (module doc: "no
+    /// backend painter lives here" — a host clips/paints its own content
+    /// inside the viewport this descriptor describes). The one thing this
+    /// leaf still paints is the scrollbar indicator itself, via
+    /// [`quadraui::ScrollView::scrollbar`], in a fixed `line_height`-wide
+    /// strip along the scrolling axis's trailing edge — the same
+    /// cell-width convention `Tree`'s/`List`'s own TUI vertical-scrollbar
+    /// track uses. [`quadraui::ScrollView::scrollbar`] returns `None` when
+    /// there's nothing to scroll, so a `ScrollView` whose content fits its
+    /// viewport paints nothing at all.
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        let line_height = backend.line_height();
+        let track = match self.axis {
+            ScrollAxis::Vertical => Rect::new(
+                area.x + area.width - line_height,
+                area.y,
+                line_height,
+                area.height,
+            ),
+            ScrollAxis::Horizontal => Rect::new(
+                area.x,
+                area.y + area.height - line_height,
+                area.width,
+                line_height,
+            ),
+        };
+        if let Some(scrollbar) = self.scrollbar(track, line_height) {
+            backend.draw_scrollbar(track, &scrollbar);
+        }
+    }
+
+    fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    /// Whole-area bounds check: a wheel `Scroll` or click landing anywhere
+    /// inside the viewport counts as targeting this `ScrollView`, so the
+    /// enriched event's `widget` resolves to it — a host applies
+    /// `ScrollView::handle_wheel`/`handle_key` itself against the position/
+    /// key it already receives on that enriched event.
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
+    }
+}
+
+impl ExtraPaint for FindReplacePanel {
+    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
+        backend.draw_find_replace(area, self);
+    }
+
+    /// `FindReplacePanel` carries no `id` field of its own — it is a
+    /// singleton overlay anchored to the active editor group (module doc:
+    /// "the inline find/replace panel that anchors at top-right of the
+    /// active editor group"), so only one instance is ever live at a time,
+    /// the same way the `"find_replace"` slot in a binding's own
+    /// `EXTRA_PRIMITIVES` decode table admits only one active value. A
+    /// fixed sentinel id is therefore enough to address it in
+    /// [`crate::hit::PaintedHit::Extra`] without adding a field to the
+    /// descriptor itself.
+    fn id(&self) -> WidgetId {
+        WidgetId::new("find_replace")
+    }
+
+    /// Whole-area bounds check, same limitation [`Editor::hit_test`]
+    /// documents: resolving a click to one of [`quadraui::FindReplacePanel::hit_regions`]'s
+    /// char-cell targets needs `content_origin`/`char_width`/`line_height`
+    /// that this trait has no parameter for — [`quadraui::FindReplacePanel::hit_test`]
+    /// is still available to a host that has those metrics in hand.
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
+    }
+}
+
 /// The additive primitive kind names, in the same registration order
 /// `quadraui-py`'s own `EXTRA_PRIMITIVES` decode table uses.
 /// [`crate::render::draw_bands`]
 /// iterates this (rather than the `extra` slot `HashMap` itself) so the
 /// paint order a frame produces is deterministic, independent of the map's
 /// iteration order.
-pub const EXTRA_PRIMITIVE_KINDS: [&str; 25] = [
+pub const EXTRA_PRIMITIVE_KINDS: [&str; 30] = [
     "progress",
     "spinner",
     "image",
@@ -574,4 +725,9 @@ pub const EXTRA_PRIMITIVE_KINDS: [&str; 25] = [
     "command_center",
     "palette",
     "scrollbar",
+    "editor",
+    "terminal",
+    "canvas",
+    "scroll_view",
+    "find_replace",
 ];
