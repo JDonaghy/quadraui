@@ -319,6 +319,30 @@ struct PyAppLogic {
     /// instead of forwarding the raw move, mirroring [`active_drag`]'s
     /// divider-drag handling for the tree's own scrollbar thumb.
     scrollbar_drag: RefCell<Option<ScrollbarDrag>>,
+    /// Per-`TextInput` cursor/selection state, keyed by `WidgetId`, that
+    /// survives across keystrokes the way `compose::FormController`'s own
+    /// `text_edit: Option<TextEditState>` does (`form_controller.rs:974-995`).
+    /// [`apply_text_input_edit`] is a one-shot [`TextEditor`] per call — its
+    /// `TextInput` argument is only ever an immutable snapshot a render
+    /// callback just returned — so without this cache every keystroke would
+    /// restart from that snapshot's `cursor_line`/`cursor_col` (0/0 unless
+    /// the app happens to echo a cursor back onto the descriptor, which
+    /// `FormEvent::TextInputChanged`/`Committed` carry no way to do). Cleared
+    /// implicitly by simply not being consulted once a widget stops being
+    /// focused or falls out of the hit map; a stale entry for a since-shrunk
+    /// `lines` is clamped back on lookup (see [`clamp_cursor`]).
+    text_cursors: RefCell<HashMap<WidgetId, TextCursorState>>,
+}
+
+/// One [`TextInput`]'s cached cursor/selection, read and written by
+/// [`apply_text_input_edit`] around each [`TextEditor::apply`] call so the
+/// position survives across the keystrokes that produced it — see
+/// [`PyAppLogic::text_cursors`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct TextCursorState {
+    line: usize,
+    col: usize,
+    anchor: Option<(usize, usize)>,
 }
 
 impl PyAppLogic {
@@ -464,8 +488,8 @@ impl AppLogic for PyAppLogic {
     /// just painted, in paint order. `Split` carries no `WidgetId` and is
     /// not a focusable leaf, so it is skipped; `Extra` is a tab stop only
     /// when its descriptor opts in via [`ExtraPaint::tab_stop`] (currently
-    /// just [`Switch`]); every other variant yields its id and bounding
-    /// `Rect`.
+    /// [`Switch`] and [`TextInput`]); every other variant yields its id and
+    /// bounding `Rect`.
     fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
         self.hit_map
             .borrow()
@@ -525,7 +549,13 @@ impl AppLogic for PyAppLogic {
         // instead of a backend-global one.
         if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
             if let Some(focused) = backend.focus_manager().focused().copied() {
-                event = focus_scoped_key_event(focused, key, *modifiers, &self.hit_map.borrow());
+                event = focus_scoped_key_event(
+                    focused,
+                    key,
+                    *modifiers,
+                    &self.hit_map.borrow(),
+                    &self.text_cursors,
+                );
             }
         }
 
@@ -539,6 +569,7 @@ impl AppLogic for PyAppLogic {
                     focused,
                     &self.hit_map.borrow(),
                     EditOp::InsertChar(*ch),
+                    &self.text_cursors,
                 ) {
                     event = form_event;
                 }
@@ -550,6 +581,7 @@ impl AppLogic for PyAppLogic {
                     focused,
                     &self.hit_map.borrow(),
                     EditOp::InsertText(text.clone()),
+                    &self.text_cursors,
                 ) {
                     event = form_event;
                 }
@@ -938,12 +970,12 @@ enum HitDetail {
     /// (page-down zone). Handled directly in `PyAppLogic::handle`, same as
     /// `TreeScrollbarTrackBefore`.
     TreeScrollbarTrackAfter,
-    /// Landed on an additive primitive's interactive region (currently only
-    /// [`Switch`]). Carries no sub-region detail yet — just enough for
-    /// [`PyAppLogic::handle`] to set `widget` and attach this as `hit`, so a
-    /// Python handler sees the click reached the primitive. Per-kind
-    /// sub-region detail (e.g. which combo-box row) is a later, separate
-    /// extension of this variant.
+    /// Landed on an additive primitive's interactive region (currently
+    /// [`Switch`] and [`TextInput`]). Carries no sub-region detail yet —
+    /// just enough for [`PyAppLogic::handle`] to set `widget` and attach
+    /// this as `hit`, so a Python handler sees the click reached the
+    /// primitive. Per-kind sub-region detail (e.g. which combo-box row) is
+    /// a later, separate extension of this variant.
     ExtraBody,
 }
 
@@ -1304,7 +1336,16 @@ fn semantic_event_for_hit(
                 id: hit_id, extra, ..
             } if *hit_id == id => {
                 let switch = extra_as::<Switch>(extra)?;
-                let SwitchEvent::Toggled { id, value } = switch.click()?;
+                // Route the matched hit id, not the descriptor's embedded
+                // `SwitchEvent::Toggled::id` — a render callback may leave
+                // the descriptor's own `id` at its default and reuse it
+                // across leaves, so only the tree-address hit id is
+                // guaranteed unique. Renamed rather than destructured as
+                // `id` so the two can't silently shadow each other again.
+                let SwitchEvent::Toggled {
+                    id: _switch_id,
+                    value,
+                } = switch.click()?;
                 Some(UiEvent::Form(id, FormEvent::ToggleChanged { id, value }))
             }
             _ => None,
@@ -1358,6 +1399,7 @@ fn focus_scoped_key_event(
     raw_key: &Key,
     modifiers: Modifiers,
     hit_map: &[PaintedHit],
+    text_cursors: &RefCell<HashMap<WidgetId, TextCursorState>>,
 ) -> UiEvent {
     let fallback = UiEvent::KeyPressed {
         key: raw_key.clone(),
@@ -1391,12 +1433,20 @@ fn focus_scoped_key_event(
             )),
             PaintedHit::Extra { id, extra, .. } if *id == focused => {
                 if let Some(text_input) = extra_as::<TextInput>(extra) {
-                    return text_input_key_event(*id, text_input, raw_key, modifiers);
+                    return text_input_key_event(*id, text_input, raw_key, modifiers, text_cursors);
                 }
                 if let Some(switch) = extra_as::<Switch>(extra) {
-                    let SwitchEvent::Toggled { id, value } =
-                        switch.handle_key(raw_key, &modifiers)?;
-                    return Some(UiEvent::Form(id, FormEvent::ToggleChanged { id, value }));
+                    // Route the matched hit id (`*id`), not the
+                    // descriptor's embedded `SwitchEvent::Toggled::id` —
+                    // see the identical comment in `semantic_event_for_hit`.
+                    let SwitchEvent::Toggled {
+                        id: _switch_id,
+                        value,
+                    } = switch.handle_key(raw_key, &modifiers)?;
+                    return Some(UiEvent::Form(
+                        *id,
+                        FormEvent::ToggleChanged { id: *id, value },
+                    ));
                 }
                 None
             }
@@ -1406,20 +1456,24 @@ fn focus_scoped_key_event(
 }
 
 /// Resolves a key focused on a standalone [`TextInput`] extra into the
-/// [`FormEvent`] it should produce: `Enter` always commits (this primitive
-/// has no multiline mode to special-case), a Ctrl/Cmd+letter chord passes
-/// through unclaimed so a host's accelerator still fires, and every other
-/// key goes through [`EditOp::from_key`]/[`TextEditor::apply`]. Returns
-/// `None` when the key isn't one [`EditOp::from_key`] recognizes, or when
-/// applying it doesn't actually change the text — the caller then falls
-/// through to the raw `KeyPressed` fallback.
+/// [`FormEvent`] it should produce: `Enter` always commits and drops the
+/// cached cursor for `id` (this primitive has no multiline mode to
+/// special-case — a Python app that wants a literal newline needs a
+/// different key, since `Enter` here always means "done"), a Ctrl/Cmd+letter
+/// chord passes through unclaimed so a host's accelerator still fires, and
+/// every other key goes through [`EditOp::from_key`]/[`TextEditor::apply`].
+/// Returns `None` when the key isn't one [`EditOp::from_key`] recognizes, or
+/// when applying it doesn't actually change the text — the caller then
+/// falls through to the raw `KeyPressed` fallback.
 fn text_input_key_event(
     id: WidgetId,
     text_input: &TextInput,
     key: &Key,
     modifiers: Modifiers,
+    text_cursors: &RefCell<HashMap<WidgetId, TextCursorState>>,
 ) -> Option<UiEvent> {
     if matches!(key, Key::Named(NamedKey::Enter)) {
+        text_cursors.borrow_mut().remove(&id);
         return Some(UiEvent::Form(
             id,
             FormEvent::TextInputCommitted {
@@ -1432,18 +1486,84 @@ fn text_input_key_event(
         return None;
     }
     let op = EditOp::from_key(key, modifiers)?;
-    apply_text_input_edit(id, text_input, op)
+    apply_text_input_edit(id, text_input, op, text_cursors)
 }
 
-/// Applies `op` to a scratch [`TextEditor`] seeded from `text_input`'s
-/// current state, returning the [`FormEvent::TextInputChanged`] the edit
-/// produced, or `None` if the resulting text is unchanged (a pure cursor
-/// move, or a key `EditOp::from_key` mapped to a no-op).
-fn apply_text_input_edit(id: WidgetId, text_input: &TextInput, op: EditOp) -> Option<UiEvent> {
+/// Clamps a cached (or descriptor-seeded) cursor position to `lines`' actual
+/// bounds, so a stale cache entry left over from a longer previous value (or
+/// a `cursor_col`/`cursor_line` the host set past end-of-line) can never
+/// index out of range once handed to [`TextEditor`].
+fn clamp_cursor(line: usize, col: usize, lines: &[String]) -> (usize, usize) {
+    let line = line.min(lines.len().saturating_sub(1));
+    let col = col.min(lines.get(line).map_or(0, |l| l.chars().count()));
+    (line, col)
+}
+
+/// Applies `op` to a [`TextEditor`] seeded from `text_input`'s current text
+/// but from the *cached* cursor/selection for `id` in `text_cursors` — not
+/// the descriptor's own `cursor_line`/`cursor_col`, which is only ever the
+/// position Python last echoed back (typically 0/0, since
+/// `FormEvent::TextInputChanged`/`Committed` carry no cursor for a host to
+/// echo). This is what lets a multi-character edit land at the right
+/// position: without it, every keystroke would restart from the same
+/// snapshot position and (for anything but a single appended character)
+/// corrupt the text. The resulting cursor/selection is written back to
+/// `text_cursors` unconditionally — even when the text itself didn't
+/// change, e.g. a pure cursor move — so the *next* keystroke continues from
+/// it; this mirrors `compose::FormController::handle_text_op`'s
+/// `self.text_edit = Some(TextEditState { .. })`, including its
+/// degenerate-anchor cleanup for a no-op selection extend. Selection
+/// (`Shift`+arrows, `SelectAll`) and undo/redo are tracked here the same
+/// way, but a selecting/undoing op is otherwise unreachable from Python
+/// today: nothing in this module currently calls [`EditOp::from_key`] with
+/// `extend: true` or produces `EditOp::Undo`/`Redo`, since `Shift`+arrow
+/// falls through [`EditOp::from_key`] unclaimed. Returns `None` when the
+/// resulting text is unchanged (a pure cursor move, or a key
+/// `EditOp::from_key` mapped to a no-op) — the caller then falls through to
+/// the raw `KeyPressed` fallback.
+fn apply_text_input_edit(
+    id: WidgetId,
+    text_input: &TextInput,
+    op: EditOp,
+    text_cursors: &RefCell<HashMap<WidgetId, TextCursorState>>,
+) -> Option<UiEvent> {
     let before = text_input.lines.join("\n");
-    let mut editor = TextEditor::new(text_input.clone());
+    let cached = text_cursors.borrow().get(&id).copied();
+    let (seed_line, seed_col) = cached
+        .map(|c| (c.line, c.col))
+        .unwrap_or((text_input.cursor_line, text_input.cursor_col));
+    let (seed_line, seed_col) = clamp_cursor(seed_line, seed_col, &text_input.lines);
+    let seed_anchor = cached
+        .and_then(|c| c.anchor)
+        .map(|(al, ac)| clamp_cursor(al, ac, &text_input.lines));
+
+    let mut input = text_input.clone();
+    input.cursor_line = seed_line;
+    input.cursor_col = seed_col;
+    let mut editor = TextEditor::new(input);
+    editor.set_selection_anchor(seed_anchor);
     editor.apply(op);
     let after = editor.lines.join("\n");
+
+    let new_line = editor.cursor_line;
+    let new_col = editor.cursor_col;
+    // `TextEditor::apply`'s `MoveLeft`/`MoveRight`/etc with `extend: true`
+    // can leave a degenerate `anchor == cursor` selection in place for a
+    // no-op extend; left uncleared, the next keystroke would see a phantom
+    // one-character-wide selection. See
+    // `compose::FormController::handle_text_op`'s identical cleanup.
+    let new_anchor = editor
+        .selection_anchor()
+        .filter(|a| *a != (new_line, new_col));
+    text_cursors.borrow_mut().insert(
+        id,
+        TextCursorState {
+            line: new_line,
+            col: new_col,
+            anchor: new_anchor,
+        },
+    );
+
     if after == before {
         return None;
     }
@@ -1461,12 +1581,13 @@ fn text_input_insert_event(
     focused: WidgetId,
     hit_map: &[PaintedHit],
     op: EditOp,
+    text_cursors: &RefCell<HashMap<WidgetId, TextCursorState>>,
 ) -> Option<UiEvent> {
     let text_input = hit_map.iter().find_map(|hit| match hit {
         PaintedHit::Extra { id, extra, .. } if *id == focused => extra_as::<TextInput>(extra),
         _ => None,
     })?;
-    apply_text_input_edit(focused, text_input, op)
+    apply_text_input_edit(focused, text_input, op, text_cursors)
 }
 
 /// One descriptor reference per slot, borrowed either from `PyAppLogic`'s
@@ -2072,12 +2193,14 @@ const LEAF_KIND_KEYS: [&str; 6] = [
 ///
 /// [`ExtraPaint::id`] is mechanical (`self.id`) on every impl and backs the
 /// [`PaintedHit::Extra`] entry pushed for this descriptor. [`ExtraPaint::hit_test`]
-/// and [`ExtraPaint::tab_stop`] default to "not interactive" so the 24
-/// pure-display primitives keep today's behavior unchanged; [`Switch`]
-/// overrides both to route pointer and keyboard focus through its existing
-/// `layout`/`hit_test`. Per-kind semantic event synthesis (toggling the
-/// switch's value, etc.) is a separate, later step — this trait only gets a
-/// hit to Python with `widget` set.
+/// and [`ExtraPaint::tab_stop`] default to "not interactive", which most
+/// additive primitives keep; [`Switch`] and [`TextInput`] override both to
+/// route pointer and keyboard focus through their own `layout`/`hit_test`.
+/// This trait only gets a hit/focus to Python with `widget` set — the
+/// per-kind semantic event synthesis that turns it into a `FormEvent`
+/// (toggling the switch's value, editing the text input, ...) lives in
+/// `semantic_event_for_hit`, `focus_scoped_key_event`,
+/// `text_input_key_event` and `text_input_insert_event`, below.
 trait ExtraPaint: std::any::Any {
     fn paint(&self, backend: &mut dyn Backend, area: Rect);
 

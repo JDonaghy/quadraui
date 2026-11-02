@@ -709,29 +709,76 @@ def test_clicking_a_switch_routes_a_hit_with_widget_set():
     assert form_event == {"ToggleChanged": {"id": "settings:wrap", "value": True}}
 
 
-def test_text_input_char_typed_and_paste_produce_form_events():
-    # Click focuses the `text_input` first (it's a tab stop, like `Switch`),
-    # then a `CharTyped` and a `ClipboardPaste` are each resolved against the
-    # currently-focused widget's current descriptor snapshot, producing a
-    # `Form`/`TextInputChanged` carrying the edited value and leaving the
-    # cursor position implicit in that value. The two edits are independent:
-    # each is computed from the original `insert_extra` snapshot, since
-    # nothing re-renders between them -- a real host would call
-    # `insert_extra` again with the new value before the next keystroke.
-    app = QuiApp(40, 20)
-    app.insert_extra("text_input", {"id": "ti:1", "lines": ["hello"], "cursor_col": 5})
+def _focused_text_input_app(initial_value, cursor_col=None):
+    """Builds a `QuiApp` with a single, already-focused `text_input`
+    extra wired to the "echo loop" a real host runs: a render callback
+    always reflects `state["value"]`, and the returned `handler` (already
+    registered) writes every `TextInputChanged`/`TextInputCommitted`
+    event's `value` back into it. `TuiDriver::dispatch` re-renders inline
+    whenever a handler's `Reaction` says to (promoted to `Redraw` on every
+    non-exit return once a render callback is registered), so this happens
+    before the *next* pushed event is dispatched -- exactly the timing a
+    live app gets.
 
+    `cursor_col`, if given, is baked into the render callback and so stays
+    fixed at its initial value across every subsequent render: real
+    `FormEvent::TextInputChanged`/`Committed` carry no cursor for a host to
+    echo, so this reproduces that honestly rather than cheating a correct
+    cursor back in. Returns `(app, state, received)`; `received`
+    accumulates every event the handler saw, in order.
+    """
+    app = QuiApp(40, 20)
+    state = {"value": initial_value}
+
+    def render():
+        descriptor = {"id": "ti:1", "lines": [state["value"]]}
+        if cursor_col is not None:
+            descriptor["cursor_col"] = cursor_col
+        return {"text_input": descriptor}
+
+    app.set_render(render)
+    # `set_render` itself never repaints -- force the first render so the
+    # hit map actually reflects this descriptor before the click below.
+    app.screen()
     focus_and_click = _click_events(app, 1.0, 1.0)
     assert focus_and_click[0]["FocusChanged"] == "ti:1"
 
     received = []
-    app.set_handler(lambda event: received.append(event))
+
+    def handler(event):
+        received.append(event)
+        if "Form" not in event:
+            return
+        _, form_event = event["Form"]
+        changed = form_event.get("TextInputChanged") or form_event.get(
+            "TextInputCommitted"
+        )
+        if changed is not None:
+            state["value"] = changed["value"]
+
+    app.set_handler(handler)
+    return app, state, received
+
+
+def test_text_input_char_typed_and_paste_produce_form_events():
+    # The host echoes each `TextInputChanged` back as `lines`, but never
+    # learns the resulting cursor position (the event carries none) --
+    # the render callback keeps reporting the ORIGINAL `cursor_col: 5`
+    # every frame. The paste must still land after the "!" the first edit
+    # produced ("hello! world"), not at the stale `cursor_col: 5` the
+    # descriptor keeps reporting (which would insert before the "!",
+    # yielding "hello world!") -- proving the cursor used for the second
+    # edit comes from `apply_text_input_edit`'s own cache, not the
+    # descriptor.
+    app, state, received = _focused_text_input_app("hello", cursor_col=5)
+
     app.push_event({"CharTyped": "!"})
     app.run(1)
     assert len(received) == 1
     widget_id, form_event = received[0]["Form"]
     assert widget_id == "ti:1"
     assert form_event == {"TextInputChanged": {"id": "ti:1", "value": "hello!"}}
+    assert state["value"] == "hello!"
 
     received.clear()
     app.push_event({"ClipboardPaste": " world"})
@@ -739,7 +786,150 @@ def test_text_input_char_typed_and_paste_produce_form_events():
     assert len(received) == 1
     widget_id, form_event = received[0]["Form"]
     assert widget_id == "ti:1"
-    assert form_event == {"TextInputChanged": {"id": "ti:1", "value": "hello world"}}
+    assert form_event == {"TextInputChanged": {"id": "ti:1", "value": "hello! world"}}
+
+
+def test_text_input_multiple_char_typed_appends_in_order():
+    # Typing "a", "b", "c" in sequence -- each landing after the host's
+    # echo of the previous keystroke re-renders -- must append each
+    # character after the last: "a", "ab", "abc". Without a cursor cache,
+    # every keystroke lands at column 0 of whatever the host just echoed,
+    # producing "a", "ba", "cba" instead.
+    app, state, received = _focused_text_input_app("")
+
+    for ch in "abc":
+        app.push_event({"CharTyped": ch})
+    app.run(3)
+
+    values = [
+        form_event["TextInputChanged"]["value"]
+        for _, form_event in (e["Form"] for e in received)
+    ]
+    assert values == ["a", "ab", "abc"]
+    assert state["value"] == "abc"
+
+
+def test_text_input_backspace_deletes_at_cached_cursor():
+    # `Backspace` right after a `CharTyped` must delete the character the
+    # cached cursor says it's after (the "!" just inserted), landing back
+    # on "hi" -- not on a stale pre-edit cursor position.
+    app, state, received = _focused_text_input_app("hi", cursor_col=2)
+
+    app.push_event({"CharTyped": "!"})
+    app.push_event(
+        {
+            "KeyPressed": {
+                "key": {"Named": "Backspace"},
+                "modifiers": {},
+                "repeat": False,
+            }
+        }
+    )
+    app.run(2)
+
+    values = [
+        form_event["TextInputChanged"]["value"]
+        for _, form_event in (e["Form"] for e in received)
+    ]
+    assert values == ["hi!", "hi"]
+    assert state["value"] == "hi"
+
+
+def test_text_input_ctrl_letter_passes_through_unclaimed():
+    # A Ctrl+letter chord on a focused text input is a host accelerator,
+    # not a character to insert -- it must reach Python as the raw
+    # `KeyPressed`, not a `Form`/`TextInputChanged`.
+    app, _state, received = _focused_text_input_app("hi")
+
+    app.push_event(
+        {
+            "KeyPressed": {
+                "key": {"Char": "s"},
+                "modifiers": {"ctrl": True},
+                "repeat": False,
+            }
+        }
+    )
+    app.run(1)
+
+    assert len(received) == 1
+    assert "KeyPressed" in received[0]
+    assert received[0]["KeyPressed"]["key"] == {"Char": "s"}
+
+
+def test_text_input_arrow_key_falls_through_as_raw_key_pressed():
+    # `Left`/`Right`/etc move the cursor but never change the text, so
+    # `apply_text_input_edit` reports no change and the caller falls back
+    # to the plain `KeyPressed` -- the cursor move itself is still cached
+    # (exercised by the backspace-after-typing test above landing in the
+    # right place), but nothing `Form`-shaped reaches Python for it.
+    app, _state, received = _focused_text_input_app("hi")
+
+    app.push_event(
+        {
+            "KeyPressed": {
+                "key": {"Named": "Left"},
+                "modifiers": {},
+                "repeat": False,
+            }
+        }
+    )
+    app.run(1)
+
+    assert len(received) == 1
+    assert "KeyPressed" in received[0]
+    assert received[0]["KeyPressed"]["key"] == {"Named": "Left"}
+
+
+def test_disabled_switch_click_falls_through_with_hit_attached():
+    # `Switch::tab_stop` is unconditionally `true` (disabled means inert,
+    # not unfocusable), so the click still focuses it first -- but
+    # `Switch::click` returns `None` when `disabled`, so
+    # `semantic_event_for_hit` yields no semantic event for the click
+    # itself: the raw `MouseDown` (with its `"hit"` dict) reaches Python
+    # unchanged instead of being replaced by a `Form` event.
+    app = QuiApp(40, 20)
+    app.insert_extra("switch", {"id": "sw:1", "disabled": True})
+
+    received = _click_events(app, 1.0, 1.0)
+
+    assert len(received) == 2
+    assert received[0]["FocusChanged"] == "sw:1"
+    click_event = received[1]
+    assert "Form" not in click_event
+    assert click_event["MouseDown"]["widget"] == "sw:1"
+    assert click_event["hit"] == {"kind": "extra_body"}
+
+
+def test_clicking_a_switch_inside_a_layout_tree_leaf_uses_the_leaf_id():
+    # A render-callback leaf's own tree-address `id` ("leaf:1") and the
+    # `Switch` descriptor it wraps' embedded `id` ("sw:embedded") can
+    # legitimately differ -- `paint_leaf` keys `PaintedHit::Extra` by the
+    # leaf id specifically because a render callback may reuse the same
+    # descriptor id across leaves. Both the click-to-focus `FocusChanged`
+    # and the `Form`/`ToggleChanged` it emits must therefore agree on
+    # "leaf:1", not fall back to the descriptor's own "sw:embedded".
+    app = QuiApp(40, 20)
+
+    def render():
+        return {
+            "row": [
+                {"id": "leaf:1", "switch": {"id": "sw:embedded", "value": False}},
+            ]
+        }
+
+    app.set_render(render)
+    # `set_render` itself never repaints -- force the first render so the
+    # hit map actually reflects this leaf before the click below.
+    app.screen()
+
+    received = _click_events(app, 1.0, 1.0)
+
+    assert len(received) == 2
+    assert received[0]["FocusChanged"] == "leaf:1"
+    widget_id, form_event = received[1]["Form"]
+    assert widget_id == "leaf:1"
+    assert form_event == {"ToggleChanged": {"id": "leaf:1", "value": True}}
 
 
 def test_text_input_enter_commits_current_value():
