@@ -538,6 +538,17 @@ impl AppLogic for PyAppLogic {
         };
         let render_callback_present = self.render_callback.is_some();
 
+        // A `MouseUp` always ends an armed divider/scrollbar drag, even
+        // when the menu-bar/context-menu routing just below reports the
+        // same event `Consumed` (e.g. a dropdown-item click, or the
+        // outside-click that dismisses an open dropdown/popup) and returns
+        // before reaching the `MouseUp` check that used to sit after that
+        // routing — leaving a drag armed across the dismissal otherwise.
+        if matches!(event, UiEvent::MouseUp { .. }) {
+            *self.active_drag.borrow_mut() = None;
+            *self.scrollbar_drag.borrow_mut() = None;
+        }
+
         // A `"menu_bar"` extra's dropdown and a `QuiApp::show_context_menu`
         // popup both own a full modal-input state machine that must see
         // every event before the rest of this function's own routing —
@@ -546,29 +557,62 @@ impl AppLogic for PyAppLogic {
         // `Ignored` immediately when nothing of theirs is open/relevant, so
         // this is safe to run unconditionally even for an app with neither
         // a menu bar nor an open context menu.
+        let mut menu_reaction = Reaction::Continue;
         if let Some(bar_rect) = *self.menu_bar_rect.borrow() {
-            match self
+            let was_open = self.menu_system.borrow().is_open();
+            let menu_event = self
                 .menu_system
                 .borrow_mut()
-                .handle(&event, backend, bar_rect)
-            {
+                .handle(&event, backend, bar_rect);
+            match menu_event {
                 MenuEvent::Activated(id) => {
-                    return self.dispatch_event(
+                    // Activation already closed the dropdown in
+                    // `menu_system`'s own state; force the repaint that
+                    // takes it off screen regardless of what the Python
+                    // handler itself returns (mirrors `focus_reaction.merge`
+                    // below).
+                    return Reaction::Redraw.merge(self.dispatch_event(
                         handler,
                         &UiEvent::MenuActivated(id),
                         None,
                         render_callback_present,
-                    );
+                    ));
                 }
                 // Navigation/highlight only — nothing for Python to react
                 // to, just a repaint so the new open/selected state shows.
-                MenuEvent::StateChanged | MenuEvent::Consumed => return Reaction::Redraw,
+                // Exception: a `MouseMoved` with no dropdown open before or
+                // after this call only updated which top-level label is
+                // hover-highlighted — it isn't "consuming" the move in any
+                // sense a divider/scrollbar drag or Python's own handler
+                // would care about, so let it keep flowing through the
+                // rest of this function instead of swallowing it here;
+                // this call's own repaint need folds into whatever
+                // `Reaction` that routing ends up producing.
+                MenuEvent::StateChanged | MenuEvent::Consumed => {
+                    let hover_only_on_closed_bar = !was_open
+                        && !self.menu_system.borrow().is_open()
+                        && matches!(event, UiEvent::MouseMoved { .. });
+                    if hover_only_on_closed_bar {
+                        menu_reaction = Reaction::Redraw;
+                    } else {
+                        return Reaction::Redraw;
+                    }
+                }
                 MenuEvent::Ignored => {}
             }
         }
         match self.ctx_menu.handle(&event, backend) {
             ContextMenuOutcome::Event(ev) => {
-                return self.dispatch_event(handler, &ev, None, render_callback_present);
+                // Same reasoning as the `MenuEvent::Activated` arm above:
+                // activation/dismissal already closed the popup in
+                // `ctx_menu`'s own state, so force the repaint regardless
+                // of what the Python handler returns.
+                return Reaction::Redraw.merge(self.dispatch_event(
+                    handler,
+                    &ev,
+                    None,
+                    render_callback_present,
+                ));
             }
             ContextMenuOutcome::Consumed => return Reaction::Redraw,
             ContextMenuOutcome::Ignored => {}
@@ -598,10 +642,6 @@ impl AppLogic for PyAppLogic {
                     };
                 }
             }
-        }
-        if matches!(event, UiEvent::MouseUp { .. }) {
-            *self.active_drag.borrow_mut() = None;
-            *self.scrollbar_drag.borrow_mut() = None;
         }
 
         // A plain `KeyPressed` (Tab/Shift+Tab already claimed upstream by
@@ -820,7 +860,7 @@ impl AppLogic for PyAppLogic {
         };
         let event_reaction =
             self.dispatch_event(handler, &event, hit_detail, render_callback_present);
-        focus_reaction.merge(event_reaction)
+        menu_reaction.merge(focus_reaction).merge(event_reaction)
     }
 
     fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
@@ -915,6 +955,18 @@ impl PyAppLogic {
     /// `menu_system`'s own open/focused state (and the dropdown, when one
     /// is open) layered on top, the same "paint after everything else"
     /// contract [`ContextMenuController::render`] documents for itself.
+    /// Repaints this frame's `"menu_bar"` extra (if any) through
+    /// `menu_system` instead of its own descriptor, and records
+    /// `menu_bar_rect` so [`Self::handle`] knows where to hit-test. Only the
+    /// *first* `"menu_bar"` extra painted this frame is wired up this
+    /// way — a second one in the same frame still paints (via
+    /// `paint_leaf`'s normal `Extra` path) but is not interactive.
+    ///
+    /// `menu_system.render` draws from `MenuSystem`'s own open/focused/id
+    /// state (see `MenuSystem::build_menu_bar`), not the descriptor's
+    /// `open_item`/`focused_item`/`id` fields — those are overridden, so a
+    /// Python app that sets them declaratively (e.g. to render a pressed
+    /// visual) has no effect once the bar is interactive.
     fn sync_menu_bar(&self, backend: &mut dyn Backend, hits: &[PaintedHit]) {
         let found = hits.iter().find_map(|hit| match hit {
             PaintedHit::Extra { area, extra, .. } => {
@@ -923,6 +975,16 @@ impl PyAppLogic {
             _ => None,
         });
         let Some((area, menu_bar)) = found else {
+            // The `"menu_bar"` extra is gone from this frame (the app
+            // stopped rendering one, or swapped it for something else).
+            // Close any dropdown first so the `"menu-system-dropdown"`
+            // entry `MenuSystem::open_menu` pushed onto the modal stack
+            // gets popped — otherwise it leaks, and the dropdown would
+            // silently reappear (with nothing to hit-test it) if the
+            // extra ever comes back.
+            if self.menu_system.borrow().is_open() {
+                self.menu_system.borrow_mut().close(backend);
+            }
             *self.menu_bar_rect.borrow_mut() = None;
             return;
         };
@@ -939,7 +1001,6 @@ impl PyAppLogic {
         let mut menu_system = self.menu_system.borrow_mut();
         menu_system.set_menus(menus);
         menu_system.render(backend, area);
-        drop(menu_system);
         *self.menu_bar_rect.borrow_mut() = Some(area);
     }
 }
@@ -4673,10 +4734,13 @@ impl QuiApp {
     ///
     /// Selecting an item surfaces as `UiEvent::ContextMenuItemActivated`
     /// to the registered handler on a later dispatched event; dismissing
-    /// (Escape, a click outside, or a second call to this method) surfaces
-    /// as `UiEvent::ContextMenuDismissed`. Both arrive through the normal
+    /// with Escape or a click outside surfaces as
+    /// `UiEvent::ContextMenuDismissed`. Both arrive through the normal
     /// `handle` pipeline exactly like any other `UiEvent` — there is no
-    /// separate callback for them.
+    /// separate callback for them. Calling this again while a popup from
+    /// an earlier call is still open replaces it with the new one
+    /// silently — `ContextMenuDismissed` does not fire for the one it
+    /// replaced.
     ///
     /// Call this from top-level script code (e.g. after `step`/`step_once`
     /// returns, having seen a raw `MouseDown { button: Right, .. }` land

@@ -109,6 +109,13 @@ only a push to `main` runs this workflow.
   glyph plus `shift` has to match the shifted glyph instead.
 
 ### Fixed
+- `compose::MenuSystem::set_menus` no longer leaves `open_item`/`submenu_path`
+  pointing past the end of a shorter menu list it was just handed — it now
+  closes the dropdown (or drops the dangling submenu level) itself. Fixes a
+  panic reachable from `quadraui-py`: a Python app whose menu bar shrinks
+  while a dropdown is open fed `set_menus` a list too short to host the
+  previously-open index, and `MenuSystem::dropdown_layout`/`build_dropdown`
+  indexed it directly.
 - TUI: a shifted-symbol key (`:`, `!`, `%`, `?`, `|`, `~`, `@`, `#`, …) on a
   kitty-keyboard-capable terminal (iTerm2 with "Report modifiers using CSI u",
   kitty, WezTerm, foot, Alacritty) now reaches consumers as the glyph the user

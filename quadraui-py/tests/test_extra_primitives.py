@@ -1005,3 +1005,110 @@ def test_clicking_a_display_only_extra_attaches_no_hit():
 
     assert event["MouseDown"]["widget"] is None
     assert "hit" not in event
+
+
+def _locate(app, needle):
+    """Scans the plain-text `screen()` dump for `needle` and returns the
+    `(row, col)` of its first occurrence -- no bounds/position pymethod is
+    exposed to Python, so this is the black-box way to turn a painted
+    label into click coordinates (same technique
+    `test_layout_containers.py`'s `divider_column` uses)."""
+    for row, line in enumerate(app.screen().splitlines()):
+        col = line.find(needle)
+        if col != -1:
+            return row, col
+    raise AssertionError(f"{needle!r} not found on screen")
+
+
+def _popup_items():
+    return [
+        {"id": "copy", "label": {"spans": [{"text": "Copy", "fg": None, "bg": None}]}},
+        {"id": "paste", "label": {"spans": [{"text": "Paste", "fg": None, "bg": None}]}},
+    ]
+
+
+def test_show_context_menu_called_from_python_then_clicking_an_item_round_trips():
+    # Exercises `QuiApp.show_context_menu` through PyO3's own argument
+    # conversion (a real Python `list` of `dict`s and a `tuple` position),
+    # not a direct in-process Rust call -- the popup opens, paints its
+    # first item, and clicking it dispatches `ContextMenuItemActivated`
+    # carrying the clicked item's id.
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    app.show_context_menu(_popup_items(), (2.0, 2.0))
+    assert app.screen_contains("Copy")
+
+    row, col = _locate(app, "Copy")
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": col + 0.5, "y": row + 0.5}, "modifiers": {}}}
+    )
+    app.run(1)
+
+    assert received == [{"ContextMenuItemActivated": "copy"}]
+
+
+def test_show_context_menu_accepts_integer_position():
+    # `position` is typed `(f32, f32)`; a Python caller passing a tuple of
+    # `int`s (the natural thing to write for a `MouseDown`'s integer-ish
+    # cell coordinates) must convert cleanly rather than raising.
+    app = QuiApp(40, 20)
+    app.show_context_menu(_popup_items(), (2, 2))
+    assert app.screen_contains("Copy")
+
+
+def test_right_click_then_show_context_menu_activation_round_trip():
+    # The acceptance path: a raw right-click `MouseDown` reaches the
+    # registered handler undisturbed (there is no built-in right-click ->
+    # popup wiring), top-level script code sees it and calls
+    # `show_context_menu` itself -- per the method's own doc, never from
+    # inside the handler -- and the resulting popup's item-click round
+    # trips through `ContextMenuItemActivated` exactly like the
+    # directly-opened case above.
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    app.push_event(
+        {"MouseDown": {"button": "Right", "position": {"x": 3.0, "y": 3.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    assert received == [
+        {
+            "MouseDown": {
+                "widget": None,
+                "button": "Right",
+                "position": {"x": 3.0, "y": 3.0},
+                "modifiers": {"shift": False, "ctrl": False, "alt": False, "cmd": False},
+            }
+        }
+    ]
+    received.clear()
+
+    app.show_context_menu(_popup_items(), (3.0, 3.0))
+    row, col = _locate(app, "Copy")
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": col + 0.5, "y": row + 0.5}, "modifiers": {}}}
+    )
+    app.run(1)
+
+    assert received == [{"ContextMenuItemActivated": "copy"}]
+
+
+def test_show_context_menu_escape_dismisses_without_item_activation():
+    # Escape closes the popup via `ContextMenuDismissed` -- the other half
+    # of the method's documented dismissal contract, distinct from an item
+    # activation and carrying no payload (pythonizes to the bare variant
+    # name, like any other unit `UiEvent`).
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    app.show_context_menu(_popup_items(), (2.0, 2.0))
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Escape"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    assert received == ["ContextMenuDismissed"]
