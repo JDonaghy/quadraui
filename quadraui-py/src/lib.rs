@@ -102,6 +102,7 @@ use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use pyo3::create_exception;
@@ -149,6 +150,29 @@ use quadraui_binding_core::{tree_scroll_state, EXTRA_PRIMITIVE_KINDS};
 /// nested `Arc<Mutex<Arc<dyn Fn(...) + Send + Sync>>>` spelling under
 /// `-D warnings`.
 type SharedWaker = Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>;
+
+/// Restores a [`SharedWaker`] cell to its previous value when dropped —
+/// used by [`QuiApp::run_tui`] around its `current_waker` swap so the
+/// restore runs whether `py.detach`'s pump loop returns normally *or*
+/// panics and unwinds through this scope. Without it, a panic there would
+/// poison the app (via [`QuiApp::guarded`]'s `catch_unwind`) but leave
+/// `current_waker` pointing at this dropped `TuiRunner`'s backend; most
+/// `QuiApp` methods then immediately raise `PoisonedError` and never touch
+/// it again, but [`QuiApp::waker`] bypasses `guarded` by design (see its
+/// own poisoned check) and would otherwise still hand out a handle whose
+/// `post`/`wake` silently post into a queue nothing drains anymore.
+struct RestoreWakerOnDrop<'a> {
+    current_waker: &'a SharedWaker,
+    previous: Option<Arc<dyn Fn(UserPayload) + Send + Sync>>,
+}
+
+impl Drop for RestoreWakerOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            *self.current_waker.lock().unwrap_or_else(|e| e.into_inner()) = previous;
+        }
+    }
+}
 
 create_exception!(
     _quadraui,
@@ -435,6 +459,28 @@ fn reaction_for_callback(value: &Bound<'_, PyAny>, render_callback_present: bool
     }
 }
 
+/// Maps a registered handler's return value to a [`Reaction`] for a
+/// `WindowClose` dispatch specifically — the opposite default from
+/// [`reaction_from_return`]. A `WindowClose` handler's job is to decide
+/// whether the window may close, so the no-opinion case (no explicit
+/// `return`, i.e. `None` — by far the common case for a handler that just
+/// logs or ignores the event, like `examples/file_manager.py`'s quit
+/// wrapper) must let the close proceed, exactly like having no handler
+/// registered at all; only an explicit `return True` vetoes it and leaves
+/// the window open. Checked with `extract::<bool>`, so a non-`bool` return
+/// (an int, a string, any other "truthy" value) does not accidentally veto
+/// a close the author never meant to block.
+fn reaction_from_window_close_return(
+    value: &Bound<'_, PyAny>,
+    render_callback_present: bool,
+) -> Reaction {
+    match value.extract::<bool>() {
+        Ok(true) if render_callback_present => Reaction::Redraw,
+        Ok(true) => Reaction::Continue,
+        _ => Reaction::Exit,
+    }
+}
+
 /// Records `err` into `pending_error`, but only if no earlier error in the
 /// same dispatch already claimed the slot. Without this, a handler raise
 /// (recorded first) followed by the render callback also raising while
@@ -624,6 +670,13 @@ impl EventSink for PyEventSink<'_> {
                 }
             }
             match self.handler.call1(py, (payload,)) {
+                // `WindowClose` is the one event whose no-opinion default
+                // (no explicit `return`, i.e. `None`) must let the close
+                // proceed rather than continue — see
+                // `reaction_from_window_close_return`'s doc.
+                Ok(result) if matches!(event, UiEvent::WindowClose) => {
+                    reaction_from_window_close_return(result.bind(py), self.render_callback_present)
+                }
                 Ok(result) => reaction_for_callback(result.bind(py), self.render_callback_present),
                 Err(err) => {
                     record_error(self.pending_error, err);
@@ -1657,10 +1710,13 @@ fn render_output_from_callback(
 /// macOS, the "×"/Alt-F4 close on Windows) unless the dispatched handler
 /// returns `Reaction::Exit` — exactly the "confirm/veto a close" contract a
 /// registered Python handler needs to implement an "unsaved changes?"
-/// prompt: returning `True`/`None` (the default — see
-/// [`reaction_from_return`]) vetoes the close and leaves the window open,
-/// returning `False` (or raising) confirms it. This wrapper calls through
-/// to the inner `PyAppLogic::handle` first and, for `WindowClose`
+/// prompt: returning an explicit `True` (see
+/// [`reaction_from_window_close_return`]) vetoes the close and leaves the
+/// window open; returning `None` (the default — no explicit `return`,
+/// the common case for a handler with no opinion about closing, like
+/// `examples/file_manager.py`'s quit wrapper), `False`, or raising confirms
+/// it, the same as having no handler registered at all. This wrapper calls
+/// through to the inner `PyAppLogic::handle` first and, for `WindowClose`
 /// specifically, returns exactly what that call produced with no override —
 /// `PyAppLogic::handle` already does the right thing when a handler is
 /// registered. The one case this wrapper *does* override is `WindowClose`
@@ -1826,14 +1882,26 @@ struct QuiApp {
     /// `TuiBackend`, drained by [`QuiApp::step_once`]'s `pump_user_events`
     /// call; `run_tui` swaps this to the live `TuiRunner`'s own backend's
     /// waker for the duration of its pump loop, so a `QuiAppWaker` obtained
-    /// either before or during that call keeps delivering to whichever
-    /// loop is actually running. `run_native` does not swap this: a window
+    /// before that call keeps delivering to the live terminal loop once it
+    /// starts, rather than only to the dormant headless driver (`run_tui`
+    /// blocks the Python thread that calls it and `QuiApp` is `unsendable`,
+    /// so there is no reachable way to call `waker()` *during* the call —
+    /// only before it). `run_native` does not swap this: a window
     /// opened via `run_native` has no `Backend::waker`-reachable accessor
     /// on `GtkRunner`/`MacRunner`/`WinRunner` today, so a `QuiAppWaker`
     /// obtained while a native window is open still points at the dormant
-    /// headless backend — a post made then queues harmlessly and is only
-    /// delivered once the window closes and `step`/`run` resumes driving
-    /// the headless driver again.
+    /// headless backend — a post made then queues rather than being lost,
+    /// and is only delivered once the window closes and `step`/`run`
+    /// resumes driving the headless driver again. That queue
+    /// (`UserEventQueue`, an unbounded `VecDeque`) is not actually free to
+    /// leave filling, though: each queued post holds a strong `Py<PyAny>`
+    /// reference, so a background thread posting periodically for a long
+    /// `run_native` session accumulates Python objects for the window's
+    /// whole lifetime and delivers the entire backlog in one burst on the
+    /// first `step`/`run` call after it closes. An app that posts during a
+    /// native window's lifetime and cares about that backlog should drain
+    /// it with repeated `step()` calls right after `run_native` returns,
+    /// or avoid posting while the window is open.
     ///
     /// A `Mutex` rather than a bare field: [`QuiAppWaker`] must be
     /// `Send + Sync` so a background thread can hold and call it, which
@@ -1879,6 +1947,41 @@ impl QuiAppWaker {
     /// event.
     fn wake(&self, py: Python<'_>) {
         self.post(py.None());
+    }
+
+    /// Schedules `post(value)` to run `delay_ms` milliseconds from now, on a
+    /// spawned background thread that sleeps for that long and then
+    /// delivers — the Python-level equivalent of
+    /// [`Backend::request_frame_in`]'s "the app itself knows it
+    /// wants to be woken again in `delay`" timer contract. `Backend`'s own
+    /// `request_frame_in` isn't reachable from Python at all: it lives on
+    /// the live `Backend` passed to [`AppLogic::handle`]/`tick`, and this
+    /// binding has no object to hand that reference to Python through (and
+    /// no way to reach it from a background thread, since it is `&self`/
+    /// `&mut self`-shaped, not `Send`) — see [`QuiApp::waker`]'s doc for the
+    /// same "no reachable handle" story for `run_tui`/`run_native`. This
+    /// method reuses the already-`Send + Sync` waker machinery instead: it
+    /// re-locks the current waker only once `delay_ms` has elapsed, so a
+    /// call made before `run_tui` starts still lands in the live terminal
+    /// loop if the delay elapses after it starts, exactly like an immediate
+    /// `post` would mid-run. Returns immediately; does not block the
+    /// calling thread. Equivalent in effect to pairing `threading.Timer` (or
+    /// `asyncio`'s `call_later`) with `post` from plain Python — provided
+    /// here directly so the common "run_tick again in N ms" case needs no
+    /// import beyond `quadraui` itself.
+    fn post_after(&self, delay_ms: u64, value: Py<PyAny>) {
+        let shared = Arc::clone(&self.0);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(delay_ms));
+            let waker = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            waker(UserPayload::new(value));
+        });
+    }
+
+    /// Equivalent to `post_after(delay_ms, None)` — see [`Self::wake`]'s doc
+    /// for why a payload-free wake is useful on its own.
+    fn wake_after(&self, py: Python<'_>, delay_ms: u64) {
+        self.post_after(delay_ms, py.None());
     }
 }
 
@@ -2030,8 +2133,22 @@ impl QuiApp {
     /// constructor argument) rather than trying to call it from that
     /// thread, which would hit the same cross-thread restriction `QuiApp`
     /// itself has.
-    fn waker(&self) -> QuiAppWaker {
-        QuiAppWaker(self.current_waker.clone())
+    ///
+    /// Raises `PoisonedError` on a poisoned app (an earlier caught panic —
+    /// see [`QuiApp::guarded`]) rather than handing out a handle anyway:
+    /// every other `QuiApp` method routes through `guarded`, which already
+    /// refuses a poisoned app, and this is the one direct `&self` read of
+    /// `current_waker` that would otherwise skip that check — a handle
+    /// obtained from it would silently post into whatever queue
+    /// `current_waker` last pointed at, with nothing left running to drain
+    /// it.
+    fn waker(&self) -> PyResult<QuiAppWaker> {
+        if self.poisoned {
+            return Err(PoisonedError::new_err(
+                "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
+            ));
+        }
+        Ok(QuiAppWaker(self.current_waker.clone()))
     }
 
     /// Resizes the underlying cell grid to `width`x`height`.
@@ -2047,21 +2164,27 @@ impl QuiApp {
         })
     }
 
-    /// Advances the runner by one step: dispatches the oldest queued event,
-    /// or ticks the app if none is queued. Returns `True` if the app is
-    /// still running afterwards, `False` once it has exited. Re-raises
-    /// whatever exception a registered handler/tick callback raised while
-    /// handling this step.
+    /// Advances the runner by one step: dispatches the oldest event queued
+    /// by `push_event`/`push_key_event`, or — if none is queued — drains and
+    /// dispatches every value a [`QuiAppWaker::post`]/`::wake` call delivered
+    /// since the last step as a `{"User": value}` event, then ticks if
+    /// still nothing was dispatched. A `push_event`/`push_key_event` call
+    /// always takes priority over a pending `post`/`wake`, so a steady
+    /// stream of pushed events can delay (but never drop) a posted value.
+    /// Returns `True` if the app is still running afterwards, `False` once
+    /// it has exited. Re-raises whatever exception a registered
+    /// handler/tick callback raised while handling this step.
     fn step(&mut self) -> PyResult<bool> {
         self.guarded(|app| app.step_once())
     }
 
     /// Runs up to `max_steps` steps (default 1), releasing the GIL for the
     /// duration of the Rust loop and re-acquiring it only for each
-    /// individual handler/tick callback. Stops early once the app exits.
-    /// Returns `True` if still running afterwards, `False` once exited.
-    /// Re-raises whatever exception a registered handler/tick callback
-    /// raised during any step.
+    /// individual handler/tick callback. Each step follows the same
+    /// queued-event / posted-`User`-event / tick order as [`QuiApp::step`].
+    /// Stops early once the app exits. Returns `True` if still running
+    /// afterwards, `False` once exited. Re-raises whatever exception a
+    /// registered handler/tick callback raised during any step.
     #[pyo3(signature = (max_steps=1))]
     fn run(&mut self, py: Python<'_>, max_steps: u32) -> PyResult<bool> {
         let steps = max_steps.max(1);
@@ -2207,11 +2330,14 @@ impl QuiApp {
     /// GTK's own `apply_reaction` does, so the window closes and
     /// `WinRunner::pump` reports `StepOutcome::Exited` on the very next call,
     /// breaking the loop below with no extra flag required. `WindowClose`
-    /// closes the window on every backend only when no handler is
-    /// registered at all (or the registered one itself returns
-    /// `Reaction::Exit` — see [`NativeAppLogic`]'s own doc): a registered
-    /// handler can veto the close by returning anything else, e.g. to show
-    /// an "unsaved changes?" prompt and let the user decide.
+    /// closes the window on every backend by default — with no handler
+    /// registered at all, or with one registered that returns `None`
+    /// (no explicit `return`, the common case for a handler with no
+    /// opinion about closing) or `False`. Only an explicit `return True`
+    /// vetoes the close and leaves the window open, e.g. to show an
+    /// "unsaved changes?" prompt and let the user decide — see
+    /// [`NativeAppLogic`]'s own doc and
+    /// [`reaction_from_window_close_return`].
     ///
     /// That `WindowClose` case returning control to Python (rather than
     /// AppKit terminating the interpreter) is a *timing* property worth
@@ -2626,6 +2752,10 @@ impl QuiApp {
                 &mut *app.current_waker.lock().unwrap_or_else(|e| e.into_inner()),
                 runner.backend().waker(),
             );
+            let _restore_waker = RestoreWakerOnDrop {
+                current_waker: &app.current_waker,
+                previous: Some(previous_waker),
+            };
             let wrapped = AssertUngil((runner, loop_error));
             let setup_result: io::Result<()> = py.detach(move || {
                 let wrapped = wrapped;
@@ -2654,7 +2784,7 @@ impl QuiApp {
                 }
                 Ok(())
             });
-            *app.current_waker.lock().unwrap_or_else(|e| e.into_inner()) = previous_waker;
+            drop(_restore_waker);
             if let Some(err) = tui_error.borrow_mut().take() {
                 return Err(err);
             }
@@ -3147,6 +3277,27 @@ mod tests {
         });
     }
 
+    /// `waker()` raises `PoisonedError` on a poisoned app rather than
+    /// handing out a handle anyway: unlike every other `QuiApp` method, it
+    /// doesn't route through `guarded`, so it needs its own explicit
+    /// poisoned check (see its doc).
+    #[test]
+    fn waker_raises_poisoned_error_on_a_poisoned_app() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(10, 10, None, None).expect("valid dimensions");
+
+            let panicked: PyResult<()> = app.guarded(|_| panic!("boom"));
+            panicked.expect_err("a caught panic must surface as an error");
+            assert!(app.poisoned);
+
+            let err = match app.waker() {
+                Ok(_) => panic!("a poisoned app must not hand out a waker"),
+                Err(err) => err,
+            };
+            assert!(err.is_instance_of::<PoisonedError>(py));
+        });
+    }
+
     /// A `QuiAppWaker::post` call from a genuine background OS thread
     /// delivers its value as a `{"User": value}` event the next time
     /// `step` drains `pump_user_events`, without crashing or exiting the
@@ -3173,7 +3324,7 @@ mod tests {
             (handler, locals.unbind())
         });
         let mut app = QuiApp::new(10, 10, Some(handler), None).expect("valid width/height/handler");
-        let waker = app.waker();
+        let waker = app.waker().expect("app is not poisoned");
 
         let value = Python::attach(|py| 42_i32.into_pyobject(py).expect("int").into_any().unbind());
         std::thread::spawn(move || {
@@ -3468,13 +3619,25 @@ mod tests {
         });
     }
 
+    /// Builds a [`NativeAppLogic`] wrapping `inner`, on whichever native
+    /// feature is enabled — a thin helper so the `WindowClose`-only tests
+    /// below (none of which exercise the macOS-only non-`WindowClose`
+    /// downgrade) can run on `gtk`/`win` too, not just `macos`.
+    #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
+    fn native_app_logic_for_window_close(inner: PyAppLogic) -> NativeAppLogic {
+        NativeAppLogic {
+            inner,
+            #[cfg(all(feature = "macos", not(feature = "gtk")))]
+            exit_requested: Rc::new(Cell::new(false)),
+        }
+    }
+
     /// A registered handler returning `True` (the "stay" answer — see
-    /// [`reaction_from_return`]) vetoes a `WindowClose`: `NativeAppLogic`
-    /// must return exactly what the handler produced, not force
-    /// `Reaction::Exit`, and must not go through the macOS-only
-    /// non-`WindowClose` downgrade either (`exit_requested` stays unset —
-    /// nothing here is asking to exit at all).
-    #[cfg(all(feature = "macos", not(feature = "gtk")))]
+    /// [`reaction_from_window_close_return`]) vetoes a `WindowClose`:
+    /// `NativeAppLogic` must return exactly what the handler produced, not
+    /// force `Reaction::Exit`. This branch of `NativeAppLogic::handle` has
+    /// nothing macOS-specific about it, so this runs on `gtk`/`win` too.
+    #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
     #[test]
     fn native_app_logic_window_close_handler_veto_stays_open() {
         Python::attach(|py| {
@@ -3486,11 +3649,7 @@ mod tests {
                 handler: Some(handler),
                 ..Default::default()
             };
-            let exit_requested = Rc::new(Cell::new(false));
-            let logic = NativeAppLogic {
-                inner,
-                exit_requested: exit_requested.clone(),
-            };
+            let logic = native_app_logic_for_window_close(inner);
             let mut driver = TuiDriver::new(logic, 10, 10);
 
             let reaction = driver.dispatch(UiEvent::WindowClose);
@@ -3500,20 +3659,13 @@ mod tests {
                 Reaction::Continue,
                 "a handler returning True must veto the close"
             );
-            assert!(
-                !exit_requested.get(),
-                "a vetoed close never asked to exit at all"
-            );
         });
     }
 
     /// A registered handler returning `False` (the "confirm" answer)
     /// confirms a `WindowClose`: `NativeAppLogic` returns the handler's own
-    /// `Reaction::Exit` unchanged, still without going through the
-    /// macOS-only downgrade (`exit_requested` stays unset — `run_native`'s
-    /// native runner tears the window down for this case directly, not via
-    /// that flag).
-    #[cfg(all(feature = "macos", not(feature = "gtk")))]
+    /// `Reaction::Exit` unchanged.
+    #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
     #[test]
     fn native_app_logic_window_close_handler_confirm_exits() {
         Python::attach(|py| {
@@ -3525,19 +3677,44 @@ mod tests {
                 handler: Some(handler),
                 ..Default::default()
             };
-            let exit_requested = Rc::new(Cell::new(false));
-            let logic = NativeAppLogic {
-                inner,
-                exit_requested: exit_requested.clone(),
-            };
+            let logic = native_app_logic_for_window_close(inner);
             let mut driver = TuiDriver::new(logic, 10, 10);
 
             let reaction = driver.dispatch(UiEvent::WindowClose);
 
             assert_eq!(reaction, Reaction::Exit);
-            assert!(
-                !exit_requested.get(),
-                "WindowClose exits through the normal path, not the flag"
+        });
+    }
+
+    /// A registered handler that returns `None` (no explicit `return` —
+    /// the common case for a handler with no opinion about closing, the
+    /// same shape `examples/file_manager.py`'s quit wrapper uses) must
+    /// *not* veto the close: the window stays closable by the window
+    /// manager's own ×/Alt-F4/close button even though a handler is
+    /// registered, exactly as if no handler had been registered at all.
+    /// See [`reaction_from_window_close_return`]'s doc for why this is the
+    /// opposite default from every other event.
+    #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
+    #[test]
+    fn native_app_logic_window_close_handler_no_opinion_exits_by_default() {
+        Python::attach(|py| {
+            let handler = py
+                .eval(c"lambda event: None", None, None)
+                .expect("lambda literal")
+                .unbind();
+            let inner = PyAppLogic {
+                handler: Some(handler),
+                ..Default::default()
+            };
+            let logic = native_app_logic_for_window_close(inner);
+            let mut driver = TuiDriver::new(logic, 10, 10);
+
+            let reaction = driver.dispatch(UiEvent::WindowClose);
+
+            assert_eq!(
+                reaction,
+                Reaction::Exit,
+                "a handler with no opinion about closing must not veto it"
             );
         });
     }
@@ -3545,20 +3722,15 @@ mod tests {
     /// With no handler registered at all, `WindowClose` still forces
     /// `Reaction::Exit` — the default for an app that never opted into
     /// vetoing a close.
-    #[cfg(all(feature = "macos", not(feature = "gtk")))]
+    #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
     #[test]
     fn native_app_logic_window_close_with_no_handler_exits_by_default() {
-        let exit_requested = Rc::new(Cell::new(false));
-        let logic = NativeAppLogic {
-            inner: PyAppLogic::default(),
-            exit_requested: exit_requested.clone(),
-        };
+        let logic = native_app_logic_for_window_close(PyAppLogic::default());
         let mut driver = TuiDriver::new(logic, 10, 10);
 
         let reaction = driver.dispatch(UiEvent::WindowClose);
 
         assert_eq!(reaction, Reaction::Exit);
-        assert!(!exit_requested.get());
     }
 
     /// A render callback returning `{"row": [...]}` lays its children out

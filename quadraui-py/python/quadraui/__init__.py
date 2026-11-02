@@ -24,7 +24,22 @@ and ``InvalidAppIdError``.
 which is pinned to the thread that created it, this handle is safe to pass
 to a background thread so it can call ``post(value)``/``wake()`` to deliver
 a value back into the app's event stream as a ``{"User": value}`` event
-and wake whichever loop currently owns it, without exiting.
+and wake whichever loop currently owns it, without exiting. Its
+``post_after(delay_ms, value)``/``wake_after(delay_ms)`` schedule the same
+delivery after a delay, from any thread, as a lightweight stand-in for a
+timer.
+
+``run_native()`` dispatches a ``"WindowClose"`` event to a registered
+handler when the window manager's close button (or Alt-F4, or the red
+traffic-light button on macOS) asks to close the window, same as any other
+event -- and unlike every other event, its default is to let the close
+proceed: a handler that returns ``None`` (no explicit ``return``) or
+``False`` does not block it, same as having no handler registered at all.
+Only an explicit ``return True`` vetoes the close and leaves the window
+open, e.g. to show an "unsaved changes?" prompt first. A terminal opened
+via ``run_tui()`` has no close button to dispatch this for; quitting there
+is entirely up to whatever keystroke a registered handler chooses to raise
+on.
 """
 
 from ._quadraui import (
