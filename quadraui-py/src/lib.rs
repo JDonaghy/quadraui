@@ -126,9 +126,9 @@ use quadraui::{
     DialogButton, DialogSeverity, DiffView, Form, Image, Key, ListView, MenuBar,
     MessageDialogButton, MessageDialogOptions, MessageList, Minimap, Modifiers, MultiSectionView,
     NumberInput, Palette, Panel, PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect,
-    Scrollbar, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StatusBar, Switch, TabBar,
-    TabBarSegment, TabItem, TextDisplay, TextInput, Toolbar, TreeView, UiEvent, UserPayload,
-    WidgetId,
+    RgbaImage, Scrollbar, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StatusBar,
+    Switch, TabBar, TabBarSegment, TabItem, TextDisplay, TextInput, Toolbar, TreeView, UiEvent,
+    UserPayload, WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -2910,6 +2910,103 @@ impl QuiApp {
     /// on an empty / non-text clipboard, or a platform error reading it.
     fn clipboard_read_text(&mut self) -> PyResult<Option<String>> {
         self.guarded(|app| Ok(app.clipboard_backend().services().clipboard().read_text()))
+    }
+
+    /// Reads the X11/Wayland PRIMARY selection — the platform convention
+    /// behind middle-click paste, distinct from `clipboard_read_text`'s
+    /// CLIPBOARD selection (populated by an explicit copy). `None` on
+    /// every backend but GTK on Linux/BSD, the only one with a PRIMARY
+    /// selection concept — including here, since `clipboard_backend`
+    /// always wraps the headless `TuiBackend` regardless of which
+    /// `run_native` backend (if any) is active.
+    fn clipboard_read_primary_selection(&mut self) -> PyResult<Option<String>> {
+        self.guarded(|app| {
+            Ok(app
+                .clipboard_backend()
+                .services()
+                .clipboard()
+                .read_primary_selection())
+        })
+    }
+
+    /// Reads the current clipboard contents as `(width, height, pixels)`,
+    /// where `pixels` is a straight (non-premultiplied) RGBA8 buffer,
+    /// row-major top-to-bottom left-to-right, exactly `width * height * 4`
+    /// bytes. `None` on an empty / non-image clipboard, an unsupported
+    /// backend (TUI's only remote-reachable channel, OSC 52, has no image
+    /// form), or a platform error reading it.
+    fn clipboard_read_image(&mut self) -> PyResult<Option<(u32, u32, Vec<u8>)>> {
+        self.guarded(|app| {
+            Ok(app
+                .clipboard_backend()
+                .services()
+                .clipboard()
+                .read_image()
+                .ok()
+                .map(|img| (img.width, img.height, img.pixels)))
+        })
+    }
+
+    /// Writes `pixels` (straight RGBA8, row-major top-to-bottom
+    /// left-to-right) to the system clipboard as an image. Raises
+    /// `InvalidDimensionsError` if `pixels` isn't exactly
+    /// `width * height * 4` bytes long, and `InternalError` if the backend
+    /// itself rejects the write — including `Unsupported` on TUI, which
+    /// has no image clipboard channel.
+    fn clipboard_write_image(&mut self, width: u32, height: u32, pixels: Vec<u8>) -> PyResult<()> {
+        self.guarded(|app| {
+            let expected = width as usize * height as usize * 4;
+            if pixels.len() != expected {
+                return Err(InvalidDimensionsError::new_err(format!(
+                    "pixels must be exactly width * height * 4 bytes ({expected}), got {}",
+                    pixels.len()
+                )));
+            }
+            app.clipboard_backend()
+                .services()
+                .clipboard()
+                .write_image(&RgbaImage {
+                    width,
+                    height,
+                    pixels,
+                })
+                .map_err(|err| InternalError::new_err(format!("clipboard_write_image: {err:?}")))
+        })
+    }
+
+    /// Writes `html` to the system clipboard, with `alt_text` as the
+    /// plain-text fallback a paste target that only understands text falls
+    /// back to. Raises `InternalError` on failure, including
+    /// `Unsupported` on TUI, which has no HTML clipboard channel.
+    fn clipboard_write_html(&mut self, html: &str, alt_text: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            app.clipboard_backend()
+                .services()
+                .clipboard()
+                .write_html(html, alt_text)
+                .map_err(|err| InternalError::new_err(format!("clipboard_write_html: {err:?}")))
+        })
+    }
+
+    /// Reads the list of file paths currently on the clipboard (a
+    /// Finder/Explorer copy), as a list of their string representations.
+    /// `None` on an empty list or an unsupported backend (TUI has no
+    /// file-list clipboard channel).
+    fn clipboard_read_file_list(&mut self) -> PyResult<Option<Vec<String>>> {
+        self.guarded(|app| {
+            Ok(app
+                .clipboard_backend()
+                .services()
+                .clipboard()
+                .read_file_list()
+                .ok()
+                .map(|paths| {
+                    paths
+                        .into_iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect()
+                }))
+        })
     }
 
     /// Inserts a `Button` descriptor from a Python dict, returning its slot
