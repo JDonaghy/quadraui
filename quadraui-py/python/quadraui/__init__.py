@@ -18,7 +18,14 @@ Python callback raised, which passes through unchanged) is a
 ``UnknownSlotError``, ``InvalidDimensionsError``, ``InvalidCharError``,
 ``PanicError``, ``PoisonedError``, ``InternalError``,
 ``NativeAlreadyRunError``, ``NoDisplayError``, ``NotOnMainThreadError``,
-and ``InvalidAppIdError``.
+``InvalidAppIdError``, and ``InvalidFontRoleError``.
+
+``QuiApp.viewport()``, ``line_height()``, ``char_width()``,
+``list_char_width()``, ``chrome_line_height()``, ``scrollbar_reserve()``,
+``scales_text_rows()``, ``snap_height(h)``, ``measure_text(text, role)``,
+and ``backend_caps()`` expose the headless backend's own layout metrics and
+declared capabilities, so an app can size and scroll content against real
+measurements instead of a hardcoded guess.
 
 ``QuiApp.waker()`` returns a ``QuiAppWaker`` -- unlike ``QuiApp`` itself,
 which is pinned to the thread that created it, this handle is safe to pass
@@ -57,6 +64,7 @@ from ._quadraui import (
     InvalidCharError,
     InvalidDescriptorError,
     InvalidDimensionsError,
+    InvalidFontRoleError,
     NativeAlreadyRunError,
     NoDisplayError,
     NotOnMainThreadError,
@@ -87,4 +95,5 @@ __all__ = [
     "NoDisplayError",
     "NotOnMainThreadError",
     "InvalidAppIdError",
+    "InvalidFontRoleError",
 ]
