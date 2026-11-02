@@ -982,6 +982,16 @@ pub enum UiEvent {
     /// open-menu state can ignore this variant.
     ContextMenuDismissed,
 
+    // ── In-canvas modal overlays ─────────────────────────────────────────
+    /// An in-canvas message/alert/confirm [`crate::Dialog`] opened via
+    /// [`crate::compose::MessageDialogController`] was resolved — the user
+    /// activated one of its buttons by click, Enter, or Escape resolving to
+    /// the cancel/default button. Carries that button's own `WidgetId`
+    /// ([`crate::backend::MessageDialogChoice`]) — the same shape
+    /// [`Self::ContextMenuItemActivated`] carries for a context-menu
+    /// selection.
+    MessageDialogResolved(WidgetId),
+
     // ── Tray / status-bar icon ──────────────────────────────────────────
     /// The user clicked the app's tray/status-bar icon
     /// ([`crate::backend::TrayService::set_icon`]) with no menu currently

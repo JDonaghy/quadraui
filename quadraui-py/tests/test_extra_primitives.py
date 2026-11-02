@@ -1027,6 +1027,81 @@ def _popup_items():
     ]
 
 
+def _dialog_buttons():
+    return [
+        {"id": "save", "label": "Save", "is_default": True},
+        {"id": "cancel", "label": "Cancel", "is_cancel": True},
+    ]
+
+
+def test_show_message_dialog_called_from_python_then_clicking_a_button_round_trips():
+    # Exercises `QuiApp.show_message_dialog` through PyO3's own argument
+    # conversion (real Python `list`s of `dict`s), not a direct in-process
+    # Rust call -- the dialog opens, paints its buttons, and clicking one
+    # dispatches `MessageDialogResolved` carrying the clicked button's id,
+    # then dismisses.
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    app.show_message_dialog("Unsaved changes", "Do you want to save?", _dialog_buttons())
+    assert app.screen_contains("Save")
+
+    row, col = _locate(app, "Save")
+    # Only `col` gets the usual `+ 0.5` nudge: the dialog box is vertically
+    # centered in this (even-height) viewport against an (odd-height) box,
+    # so every row's continuous-coordinate button rect sits a half-cell
+    # above the integer `row` `_locate` reports -- `row` itself (the
+    # rect's own top edge) is already inside it, but `row + 0.5` would
+    # land exactly on that rect's exclusive bottom edge and miss.
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": col + 0.5, "y": row}, "modifiers": {}}}
+    )
+    app.run(1)
+
+    assert received == [{"MessageDialogResolved": "save"}]
+    assert not app.screen_contains("Save")
+
+
+def test_show_message_dialog_enter_resolves_the_default_button():
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    app.show_message_dialog("Unsaved changes", "Do you want to save?", _dialog_buttons())
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    assert received == [{"MessageDialogResolved": "save"}]
+
+
+def test_show_message_dialog_escape_resolves_the_cancel_button():
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(lambda event: received.append(event))
+
+    app.show_message_dialog("Unsaved changes", "Do you want to save?", _dialog_buttons())
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Escape"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(1)
+
+    assert received == [{"MessageDialogResolved": "cancel"}]
+
+
+def test_show_message_dialog_with_severity_paints_and_rejects_unknown_severity():
+    app = QuiApp(40, 20)
+    app.show_message_dialog(
+        "Unsaved changes", "Do you want to save?", _dialog_buttons(), "warning"
+    )
+    assert app.screen_contains("Save")
+
+    with pytest.raises(InvalidDescriptorError):
+        app.show_message_dialog("Title", "Body", _dialog_buttons(), "critical")
+
+
 def test_show_context_menu_called_from_python_then_clicking_an_item_round_trips():
     # Exercises `QuiApp.show_context_menu` through PyO3's own argument
     # conversion (a real Python `list` of `dict`s and a `tuple` position),

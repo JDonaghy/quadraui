@@ -12,8 +12,10 @@
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 
+use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
     ContextMenuController, ContextMenuOutcome, MenuDef, MenuEvent, MenuSystem,
+    MessageDialogController, MessageDialogEvent,
 };
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{wheel_row_delta, Backend, EditOp, MenuBar, Modifiers, Rect, UiEvent, WidgetId};
@@ -83,6 +85,11 @@ pub struct InteractionEngine {
     /// which popup (if any) is open and routes its mouse/keyboard navigation
     /// and dismissal.
     ctx_menu: ContextMenuController,
+    /// Owns the state behind a binding's own `show_message_dialog` surface:
+    /// the open in-canvas [`Dialog`][quadraui::Dialog] (if any), tracked on
+    /// the backend's [`quadraui::ModalStack`] for the same hit-test
+    /// precedence [`Self::ctx_menu`] already has.
+    dialog: Option<MessageDialogController>,
 }
 
 impl InteractionEngine {
@@ -116,6 +123,48 @@ impl InteractionEngine {
     /// paint pass and [`InteractionEngine::sync_menu_bar`].
     pub fn render_ctx_menu(&self, backend: &mut dyn Backend) {
         self.ctx_menu.render(backend);
+    }
+
+    /// Whether a message dialog opened via [`Self::open_message_dialog`]
+    /// is currently open.
+    pub fn dialog_open(&self) -> bool {
+        self.dialog.is_some()
+    }
+
+    /// Opens an in-canvas message/alert/confirm dialog built from `opts`,
+    /// pushing its bounds onto the backend's [`quadraui::ModalStack`] (via
+    /// [`quadraui::Backend::modal_stack_handle`]) so other modal-aware code
+    /// gets the same hit-test precedence an open context menu already has.
+    /// Replaces (and pops) any dialog already open. Call from a binding's
+    /// own `show_message_dialog` surface, mirroring
+    /// [`Self::ctx_menu_mut`]'s `.open(...)` call.
+    pub fn open_message_dialog(&mut self, opts: MessageDialogOptions, backend: &mut dyn Backend) {
+        self.close_message_dialog(backend);
+        let controller = MessageDialogController::new(opts);
+        let id = controller.dialog().id;
+        let bounds = controller.bounds(backend);
+        backend.modal_stack_handle().borrow_mut().push(id, bounds);
+        self.dialog = Some(controller);
+    }
+
+    /// Closes the open message dialog (if any), popping its
+    /// [`quadraui::ModalStack`] entry. A no-op if nothing is open.
+    fn close_message_dialog(&mut self, backend: &mut dyn Backend) {
+        if let Some(open) = self.dialog.take() {
+            backend
+                .modal_stack_handle()
+                .borrow_mut()
+                .pop(&open.dialog().id);
+        }
+    }
+
+    /// Paints the open message dialog (if any) on top of whatever this
+    /// frame already painted. Call once per render, after the binding's own
+    /// paint pass — same contract as [`Self::render_ctx_menu`].
+    pub fn render_dialog(&self, backend: &mut dyn Backend) {
+        if let Some(dialog) = &self.dialog {
+            dialog.render(backend);
+        }
     }
 
     /// Derives this frame's tab stops directly from the hit map
@@ -286,6 +335,27 @@ impl InteractionEngine {
             }
             ContextMenuOutcome::Consumed => return Reaction::Redraw,
             ContextMenuOutcome::Ignored => {}
+        }
+
+        // An open message dialog is modal — it must see every event before
+        // the rest of this function's own hit-testing/routing, mirroring
+        // `ctx_menu`'s own ordering just above. `MessageDialogController::handle`
+        // reports `Ignored` immediately when nothing is open, so this is
+        // safe to run unconditionally.
+        if let Some(dialog) = self.dialog.as_mut() {
+            match dialog.handle(&event, &*backend) {
+                MessageDialogEvent::Resolved(choice) => {
+                    // The dialog is closing regardless of what `sink`
+                    // itself returns — force the repaint that takes it off
+                    // screen, same as the `ContextMenuOutcome::Event` arm
+                    // above.
+                    self.close_message_dialog(backend);
+                    return Reaction::Redraw
+                        .merge(sink.dispatch(&UiEvent::MessageDialogResolved(choice), None));
+                }
+                MessageDialogEvent::Consumed => return Reaction::Redraw,
+                MessageDialogEvent::Ignored => {}
+            }
         }
 
         // A move while a divider drag is armed becomes the drag itself —
@@ -586,6 +656,7 @@ mod tests {
                 },
                 &mut hits,
             );
+            self.engine.render_dialog(backend);
             self.engine.set_hits(hits);
         }
 
@@ -654,6 +725,94 @@ mod tests {
         assert!(
             dispatched[1].1.is_some(),
             "a button has no semantic click substitution, so the raw click keeps its hit"
+        );
+    }
+
+    /// A message dialog opened via [`InteractionEngine::open_message_dialog`]
+    /// intercepts an Enter keypress before any of the rest of
+    /// [`InteractionEngine::handle`]'s own routing runs (the painted
+    /// `Button` behind it never sees the key), dispatches
+    /// `UiEvent::MessageDialogResolved` with the default button's id, and
+    /// pops its [`quadraui::ModalStack`] entry on resolution — the same
+    /// "owns every event while open, closes cleanly on resolve" contract
+    /// this module's own context-menu coverage already proves for
+    /// `ctx_menu`. The click path (hit-testing the dialog's own button
+    /// layout) is covered black-box, through the real PyO3 boundary, by
+    /// `quadraui-py`'s `show_message_dialog_then_clicking_a_button_emits_message_dialog_resolved`.
+    #[test]
+    fn open_message_dialog_then_pressing_enter_resolves_the_default_button_and_pops_the_modal_stack(
+    ) {
+        use quadraui::backend::{MessageDialogButton, MessageDialogOptions};
+        use quadraui::{Key, NamedKey};
+
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+
+        let opts = MessageDialogOptions {
+            title: "Unsaved changes".to_string(),
+            body: "Save before closing?".to_string(),
+            buttons: vec![
+                MessageDialogButton {
+                    id: WidgetId::new("save"),
+                    label: "Save".to_string(),
+                    is_default: true,
+                    is_cancel: false,
+                },
+                MessageDialogButton {
+                    id: WidgetId::new("cancel"),
+                    label: "Cancel".to_string(),
+                    is_default: false,
+                    is_cancel: true,
+                },
+            ],
+            severity: None,
+        };
+        {
+            let (backend, app) = driver.parts_mut();
+            app.engine.open_message_dialog(opts, backend);
+            assert!(
+                backend.modal_stack_handle().borrow().top().is_some(),
+                "opening the dialog must push a ModalStack entry"
+            );
+        }
+        driver.render();
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert_eq!(
+                dispatched.len(),
+                1,
+                "resolving the dialog dispatches exactly one event: {:?}",
+                dispatched
+            );
+            assert!(
+                matches!(
+                    dispatched[0].0,
+                    UiEvent::MessageDialogResolved(id) if id == WidgetId::new("save")
+                ),
+                "expected MessageDialogResolved(save): {:?}",
+                dispatched[0]
+            );
+        }
+
+        let (backend, app) = driver.parts_mut();
+        assert!(
+            !app.engine.dialog_open(),
+            "the dialog must close once resolved"
+        );
+        assert!(
+            backend.modal_stack_handle().borrow().top().is_none(),
+            "resolving the dialog must pop its ModalStack entry"
         );
     }
 }
