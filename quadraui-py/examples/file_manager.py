@@ -357,8 +357,21 @@ class FileManager:
         self.open: list[Node] = []      # folder nodes shown as tabs, in order
         self.active_tab = 0             # index into self.open
         self.message = ""               # transient status hint
+        # `_tree_capacity` needs these, but `_render` -- which calls it --
+        # cannot query them live: `QuiApp`'s constructor below renders frame
+        # 0 synchronously, before `self.app` itself exists to query, and
+        # every later render runs from inside an active `self.app` call
+        # (`step`/`screen`/`screen_contains`), which cannot be re-entered.
+        # These placeholders cover that first render; overwritten with the
+        # real measured values from `self.app` right after it exists.
+        self._line_height = 1.0
+        self._chrome_line_height = 1.0
+        self._viewport_height = float(height)
         self.app = QuiApp(width, height, render=self._render)
         self.app.set_handler(self._handle)
+        self._line_height = self.app.line_height()
+        self._chrome_line_height = self.app.chrome_line_height()
+        self._viewport_height = self.app.viewport()[1]
 
     # --- navigation helpers --------------------------------------------------
 
@@ -379,13 +392,15 @@ class FileManager:
         self.cursor = nodes[max(0, min(len(nodes) - 1, i + delta))]
 
     def _tree_capacity(self) -> int:
-        """Painted tree rows that fit: the frame height less the three chrome
-        lines above/below the tree -- the toolbar row, the outer split's
-        divider, and the bottom status line. An estimate (the real terminal
-        may differ from the configured height, like the status-bar pinning in
-        `_render`); erring one row short only scrolls a touch early, never
-        hides the cursor."""
-        return max(1, self.height - 3)
+        """Painted tree rows that fit: the app's measured viewport height
+        less the three chrome rows above/below the tree -- the toolbar row,
+        the outer split's divider, and the bottom status line -- each
+        `chrome_line_height` tall, converted into tree-row units via
+        `line_height`. Reads the cached metrics `__init__` measured from
+        `self.app` itself (`viewport`/`line_height`/`chrome_line_height`)
+        rather than guessing from the constructor's `height` argument."""
+        chrome_rows = 3 * self._chrome_line_height / self._line_height
+        return max(1, int(self._viewport_height / self._line_height - chrome_rows))
 
     def _scroll_to_cursor(self, cursor_index: int, row_count: int) -> None:
         """Advance `scroll` so the cursor row stays within the painted window,

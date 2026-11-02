@@ -122,15 +122,16 @@ use quadraui::wheel_row_delta;
 use quadraui::NamedKey;
 use quadraui::{
     mouse_down, mouse_up, ActivityBar, AppLogic, AppShellEvent, AppShellLayout, Backend,
-    BackendWidget, BoardModel, BottomPanelConfig, BottomPanelEvent, BottomPanelTab, Button, Chart,
-    Color, ComboBox, CommandCenter, CommandLine, ContextMenu, ContextMenuItem,
-    ContextMenuPlacement, DataTable, DatePicker, Decoration, DialogButton, DialogSeverity,
-    DiffView, Form, Image, Key, ListView, MenuBar, MessageDialogButton, MessageDialogOptions,
-    MessageList, Minimap, Modifiers, MouseButton, MultiSectionView, NumberInput, Palette, Panel,
-    PanelDefinition, PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect, RgbaImage,
-    Scrollbar, ShellApp, ShellConfig, ShellContext, ShellPosition, SidebarPanel, Spinner, Split,
-    SplitDirection, SplitTree, StatusBar, StyledSpan, Switch, TabBar, TabBarSegment, TabItem,
-    TextDisplay, TextDisplayLine, TextInput, Toolbar, TreeView, UiEvent, UserPayload, WidgetId,
+    BackendCaps, BackendWidget, BoardModel, BottomPanelConfig, BottomPanelEvent, BottomPanelTab,
+    Button, Chart, Color, ColorDepth, ComboBox, CommandCenter, CommandLine, ContextMenu,
+    ContextMenuItem, ContextMenuPlacement, DataTable, DatePicker, Decoration, DialogButton,
+    DialogSeverity, DiffView, FontRole, Form, Image, Key, ListView, MenuBar, MessageDialogButton,
+    MessageDialogOptions, MessageList, Minimap, Modifiers, MouseButton, MultiSectionView,
+    NumberInput, Palette, Panel, PanelDefinition, PipelineView, Point, ProgressBar, RadioGroup,
+    Reaction, Rect, RgbaImage, Scrollbar, ShellApp, ShellConfig, ShellContext, ShellPosition,
+    SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StatusBar, StyledSpan, Switch, TabBar,
+    TabBarSegment, TabItem, TextDisplay, TextDisplayLine, TextInput, Toolbar, TreeView, UiEvent,
+    UserPayload, WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -295,6 +296,14 @@ create_exception!(
     instead of letting GLib's own `g_application_id_is_valid` assertion \
     trip an uncatchable `GLib-GIO-CRITICAL` once the id reaches \
     `Application::builder()`."
+);
+
+create_exception!(
+    _quadraui,
+    InvalidFontRoleError,
+    QuadrauiError,
+    "`measure_text`'s `role` argument was neither \"chrome\" nor \
+    \"editor\" -- the only two `FontRole` variants a caller can name."
 );
 
 /// Slot id of the app's `Button` descriptor.
@@ -4286,6 +4295,143 @@ impl QuiApp {
             Ok(app.driver.screen_contains(needle))
         })
     }
+
+    // ─── Metrics & capabilities ─────────────────────────────────────────
+    //
+    // Every method below reads this `QuiApp`'s own headless `TuiBackend` --
+    // the same one `step`/`run`/`screen` always render against, regardless
+    // of whether `run_native` currently has a native window open (see the
+    // `driver` field's doc on `run_tui`/`run_native` not sharing a driver).
+    // A layout computation that calls these alongside `insert_*`/the
+    // render callback -- both of which only ever run against this same
+    // headless backend too -- gets numbers that agree with what `screen`/
+    // `screen_contains` actually show, on every platform this binding
+    // builds for.
+
+    /// This app's current viewport as `(width, height, scale)`, in cells
+    /// -- [`Backend::viewport`]. `scale` is always `1.0` on the headless
+    /// `TuiBackend`. Matches the `width`/`height` this app was constructed
+    /// (or last `resize`d) with.
+    fn viewport(&mut self) -> PyResult<(f32, f32, f32)> {
+        self.guarded(|app| {
+            let vp = app.driver.backend().viewport();
+            Ok((vp.width, vp.height, vp.scale))
+        })
+    }
+
+    /// Height of one standard text row, in the headless backend's native
+    /// units -- [`Backend::line_height`]. Always `1.0` (one terminal
+    /// cell); a layout computation multiplies this instead of hardcoding
+    /// a row height, so the same arithmetic reads correctly against any
+    /// backend's real metrics.
+    fn line_height(&mut self) -> PyResult<f32> {
+        self.guarded(|app| Ok(app.driver.backend().line_height()))
+    }
+
+    /// Approximate monospace character width, in the headless backend's
+    /// native units -- [`Backend::char_width`]. Always `1.0` (one
+    /// terminal cell).
+    fn char_width(&mut self) -> PyResult<f32> {
+        self.guarded(|app| Ok(app.driver.backend().char_width()))
+    }
+
+    /// The advance `draw_list` actually paints `ListView` row text with --
+    /// [`Backend::list_char_width`]. Not always the same as `char_width`
+    /// on a pixel backend, whose chrome font can differ from its editor
+    /// font; use this instead of `char_width` when budgeting text for a
+    /// list row.
+    fn list_char_width(&mut self) -> PyResult<f32> {
+        self.guarded(|app| Ok(app.driver.backend().list_char_width()))
+    }
+
+    /// Line height of the chrome / UI font -- [`Backend::chrome_line_height`].
+    /// Equal to `line_height` on the headless backend (one font for the
+    /// whole cell grid); use this instead of `line_height` when sizing
+    /// chrome rows (toolbars, status bars, tab strips) on a backend with
+    /// a separate chrome font.
+    fn chrome_line_height(&mut self) -> PyResult<f32> {
+        self.guarded(|app| Ok(app.driver.backend().chrome_line_height()))
+    }
+
+    /// Width this backend reserves for its own native scrollbar overlay
+    /// alongside scrollable content -- [`Backend::scrollbar_reserve`].
+    /// Always `0.0` on the headless backend, which has no overlay
+    /// scrollbar chrome.
+    fn scrollbar_reserve(&mut self) -> PyResult<f32> {
+        self.guarded(|app| Ok(app.driver.backend().scrollbar_reserve()))
+    }
+
+    /// Whether this backend can render individual text rows at a larger
+    /// font size -- [`Backend::scales_text_rows`]. Always `False` on the
+    /// headless backend, a fixed-cell grid where a terminal cell can't
+    /// grow.
+    fn scales_text_rows(&mut self) -> PyResult<bool> {
+        self.guarded(|app| Ok(app.driver.backend().scales_text_rows()))
+    }
+
+    /// Snaps a proposed height, in the same units as `line_height`, to
+    /// what this backend will actually paint -- [`Backend::snap_height`].
+    /// Identity on the headless backend, whose cell grid has no sub-row
+    /// resolution to snap away.
+    fn snap_height(&mut self, h: f32) -> PyResult<f32> {
+        self.guarded(|app| Ok(app.driver.backend().snap_height(h)))
+    }
+
+    /// Real `(width, height)`, in the headless backend's native units, of
+    /// `text` rendered in `role`'s font -- [`Backend::measure_text`].
+    /// `role` is `"chrome"` (the default) or `"editor"`; the headless
+    /// backend returns the same cell-count width (height always `1.0`)
+    /// for either, since a terminal has one font by definition -- see
+    /// [`FontRole`]'s doc. Raises `InvalidFontRoleError` for any other
+    /// `role` value.
+    #[pyo3(signature = (text, role="chrome"))]
+    fn measure_text(&mut self, text: &str, role: &str) -> PyResult<(f32, f32)> {
+        let role = match role {
+            "chrome" => FontRole::Chrome,
+            "editor" => FontRole::Editor,
+            other => {
+                return Err(InvalidFontRoleError::new_err(format!(
+                    "measure_text: unknown role {other:?}; expected \"chrome\" or \"editor\""
+                )))
+            }
+        };
+        self.guarded(|app| Ok(app.driver.backend().measure_text(text, role)))
+    }
+
+    /// This backend's declared capabilities -- [`Backend::backend_caps`]
+    /// -- as a `dict` of capability name to whether it's declared. Covers
+    /// every name in [`BackendCaps::vocabulary`] (`"mouse"`, `"scroll"`,
+    /// `"drag"`, `"text_selection"`, `"native_menu"`, `"window_chrome"`,
+    /// `"pointer_cursor"`, `"ime"`, `"file_dialogs"`, `"folder_dialogs"`,
+    /// `"native_dialogs"`, `"notifications"`, `"app_font_registration"`,
+    /// `"window_control"`, `"tray"`, `"generic_font_families"`) plus three
+    /// fields that vocabulary excludes because they aren't plain
+    /// capability-presence booleans: `"kitty_keyboard"` and
+    /// `"sgr_pixel_mouse"` (bools, terminal input-protocol support) and
+    /// `"color_depth"` (one of `"ansi16"`, `"indexed256"`, `"true_color"`).
+    fn backend_caps(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        self.guarded(|app| {
+            let caps = app.driver.backend().backend_caps();
+            let dict = PyDict::new(py);
+            for name in BackendCaps::vocabulary() {
+                dict.set_item(name, caps.has(name))?;
+            }
+            dict.set_item("kitty_keyboard", caps.kitty_keyboard)?;
+            dict.set_item("sgr_pixel_mouse", caps.sgr_pixel_mouse)?;
+            dict.set_item("color_depth", color_depth_name(caps.color_depth))?;
+            Ok(dict.unbind())
+        })
+    }
+}
+
+/// Snake-cased name for a [`ColorDepth`] variant, as reported by
+/// [`QuiApp::backend_caps`]'s `"color_depth"` entry.
+fn color_depth_name(depth: ColorDepth) -> &'static str {
+    match depth {
+        ColorDepth::Ansi16 => "ansi16",
+        ColorDepth::Indexed256 => "indexed256",
+        ColorDepth::TrueColor => "true_color",
+    }
 }
 
 /// Takes and re-raises any error a render callback recorded during the
@@ -4448,6 +4594,10 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<NotOnMainThreadError>(),
     )?;
     m.add("InvalidAppIdError", py.get_type::<InvalidAppIdError>())?;
+    m.add(
+        "InvalidFontRoleError",
+        py.get_type::<InvalidFontRoleError>(),
+    )?;
     // Which native *feature* (if any) this build was compiled with — `gtk`
     // wins over `macos`, and both win over `win`, when more than one is
     // enabled (see `run_native`'s doc). This is a build configuration
