@@ -125,6 +125,16 @@ pub struct MenuSystem {
     submenu_selected: Vec<usize>,
 }
 
+/// An empty menu bar with nothing registered — equivalent to `MenuSystem::new(Vec::new())`.
+/// Lets a host struct derive `Default` for a field that only grows real
+/// menus once a `MenuBar` descriptor shows up (see `quadraui-py`'s
+/// `PyAppLogic::menu_system`).
+impl Default for MenuSystem {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
 impl MenuSystem {
     pub fn new(menus: Vec<MenuDef>) -> Self {
         Self {

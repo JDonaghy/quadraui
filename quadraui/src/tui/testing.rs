@@ -670,6 +670,18 @@ impl<A: AppLogic> TuiDriver<A> {
         self.core.backend()
     }
 
+    /// Disjoint mutable access to both the backend this driver renders
+    /// through and the `AppLogic` it drives — for host code that needs to
+    /// call a `&mut dyn Backend` method (e.g.
+    /// [`crate::compose::ContextMenuController::open`]) and mutate
+    /// `AppLogic`-owned controller state in the same call, outside
+    /// [`Self::dispatch`]/[`Self::tick`] where both are normally threaded
+    /// through together. Mirrors [`Self::backend`]/[`Self::app_mut`]'s
+    /// read-only/app-only halves.
+    pub fn parts_mut(&mut self) -> (&mut TuiBackend, &mut A) {
+        self.core.parts_mut()
+    }
+
     /// The `(x, y)` position `Terminal::draw` last applied to the
     /// underlying `TestBackend` via `Frame::set_cursor_position` —
     /// reflecting [`super::run::render_frame`]'s `take_last_cursor_position`

@@ -59,6 +59,14 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `compose::MenuSystem` gains a `Default` impl (equivalent to
+  `MenuSystem::new(Vec::new())`) and `tui::testing::TuiDriver` gains
+  `parts_mut(&mut self) -> (&mut TuiBackend, &mut A)`, disjoint mutable
+  access to both the backend and the `AppLogic` it drives. Both back
+  `quadraui-py`'s menu-bar/context-menu binding, which needs to hold a
+  `MenuSystem` field with no menus yet and to call
+  `compose::ContextMenuController::open` (which takes `&mut dyn Backend`)
+  while also mutating the app's own controller state in the same call.
 - `Backend` gains `set_focus(&mut self, id: Option<WidgetId>) -> bool`, so a
   click landing on a focusable widget can move keyboard focus to it instead
   of leaving focus wherever Tab/Shift+Tab last left it. `quadraui-py`'s
