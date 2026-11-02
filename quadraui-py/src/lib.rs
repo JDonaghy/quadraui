@@ -119,6 +119,10 @@ use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
 #[cfg(test)]
 use quadraui::wheel_row_delta;
 #[cfg(test)]
+use quadraui::AcceleratorScope;
+#[cfg(test)]
+use quadraui::KeyBinding;
+#[cfg(test)]
 use quadraui::NamedKey;
 use quadraui::{
     mouse_down, mouse_up, Accelerator, AcceleratorId, ActivityBar, AppLogic, AppShellEvent,
@@ -377,6 +381,17 @@ struct PyAppLogic {
     /// [`InteractionEngine::handle`] with a [`PyEventSink`] that bridges
     /// back into the registered Python handler.
     engine: InteractionEngine,
+    /// Registered via `QuiApp::register_accelerator`, removed via
+    /// `QuiApp::unregister_accelerator`. Kept here (not just applied
+    /// directly to the live headless `TuiBackend`) so this whole
+    /// `PyAppLogic` — moved by value into a real `TuiRunner`/`GtkRunner`/
+    /// `MacRunner`/`WinRunner` once `run_tui`/`run_native` is called —
+    /// carries its accelerators with it; [`AppLogic::setup`] below replays
+    /// every entry onto whichever backend that runner just constructed.
+    /// Keyed by [`AcceleratorId`] so re-registering the same id replaces
+    /// its previous binding/scope/label wholesale, matching
+    /// `QuiApp::register_accelerator`'s documented contract.
+    accelerators: HashMap<AcceleratorId, Accelerator>,
 }
 
 impl PyAppLogic {
@@ -526,6 +541,23 @@ fn parse_dialog_severity(value: &str) -> PyResult<DialogSeverity> {
 
 impl AppLogic for PyAppLogic {
     type AreaId = ();
+
+    /// Replays every accelerator `QuiApp::register_accelerator` has
+    /// recorded in [`Self::accelerators`] onto `backend` --
+    /// [`Backend::register_accelerator`] -- so a chord registered before
+    /// `run_tui`/`run_native` moved this `PyAppLogic` into a freshly
+    /// constructed `TuiBackend`/`GtkBackend`/`MacBackend`/`WinBackend`
+    /// still fires on that live backend, not just on the dormant headless
+    /// one `QuiApp::step`/`run` drive directly. Every real runner
+    /// (`TuiRunner::new_with`, `GtkRunner`'s `activate`, `MacRunner::new`,
+    /// `WinRunner::new_with`) calls `app.setup(&mut backend)` right after
+    /// building its backend and before the first frame, so this hook
+    /// reaches all four.
+    fn setup(&mut self, backend: &mut dyn Backend) {
+        for acc in self.accelerators.values() {
+            backend.register_accelerator(acc);
+        }
+    }
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut hits = Vec::new();
@@ -4425,20 +4457,39 @@ impl QuiApp {
 
     // ─── Accelerators & global shortcuts ─────────────────────────────────
 
-    /// Registers `descriptor` (decoded as an [`Accelerator`]) on this
-    /// app's own backend -- [`Backend::register_accelerator`] -- so a
+    /// Registers `descriptor` (decoded as an [`Accelerator`]) so a
     /// matching native key event fires `UiEvent::Accelerator(id,
     /// modifiers)` (see `push_event`'s `{"Accelerator": [id, modifiers]}`
     /// shape) instead of a plain `KeyPressed`. Re-registering the same
     /// `descriptor["id"]` replaces its previous binding/scope/label
-    /// wholesale. Registers on the exact backend `step`/`run` dispatch
-    /// through, so a chord pressed via `push_key_event` right after this
-    /// call fires.
+    /// wholesale.
+    ///
+    /// `descriptor` requires all four keys -- `"id"`, `"binding"`,
+    /// `"scope"`, and `"label"` (pass `None` for no display label; it is
+    /// not defaulted, so omitting the key raises `InvalidDescriptorError`
+    /// rather than falling back to `None`).
+    ///
+    /// Only `{"scope": "Global"}` actually fires today --
+    /// [`Backend::register_accelerator`]'s matcher
+    /// (`BackendCore::match_keypress`) skips any accelerator whose scope
+    /// is `Widget`/`Mode`, since the backend has no focus/mode context of
+    /// its own to resolve those against. A descriptor with a non-`Global`
+    /// scope is accepted without error and then silently never fires.
+    ///
+    /// Takes effect immediately on this app's own live backend -- a
+    /// chord pushed via `push_event` right after this call (not
+    /// `push_key_event`, which hardcodes no modifiers and so can only
+    /// ever match an unmodified binding) fires on the very next
+    /// `step`/`run` -- and is also replayed onto whichever real backend
+    /// `run_tui`/`run_native` goes on to construct, via this app's
+    /// [`AppLogic::setup`] impl, so a chord registered before either
+    /// call still fires once the terminal/window is live.
     fn register_accelerator(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<()> {
         self.guarded(|app| {
             let acc: Accelerator = decode("register_accelerator", descriptor)?;
-            let (backend, _) = app.driver.parts_mut();
+            let (backend, app_logic) = app.driver.parts_mut();
             backend.register_accelerator(&acc);
+            app_logic.accelerators.insert(acc.id.clone(), acc);
             Ok(())
         })
     }
@@ -4448,8 +4499,10 @@ impl QuiApp {
     /// registered, or was already unregistered.
     fn unregister_accelerator(&mut self, id: &str) -> PyResult<()> {
         self.guarded(|app| {
-            let (backend, _) = app.driver.parts_mut();
-            backend.unregister_accelerator(&AcceleratorId::new(id));
+            let id = AcceleratorId::new(id);
+            let (backend, app_logic) = app.driver.parts_mut();
+            backend.unregister_accelerator(&id);
+            app_logic.accelerators.remove(&id);
             Ok(())
         })
     }
@@ -4464,14 +4517,24 @@ impl QuiApp {
     /// Returns an opaque handle (a plain Python `int`) to pass back to
     /// [`Self::unregister_global_shortcut`].
     ///
-    /// Raises `InternalError` on every backend this binding ships today --
-    /// no in-tree `PlatformServices` override claims a real OS hotkey API
-    /// yet, so every backend inherits this trait method's `Unsupported`
-    /// default. This is a seam a Python app can already call against; the
-    /// success path has no automated coverage here and needs manual
-    /// verification once a backend (GTK's `org.freedesktop.portal.
+    /// Resolves [`quadraui::PlatformServices`] off this `QuiApp`'s own
+    /// headless `TuiBackend` -- the one `step`/`run` drive directly --
+    /// never off whatever backend a `run_native` call opened; `run_native`
+    /// moves this app's `PyAppLogic` into a brand-new GTK/macOS/Win
+    /// backend by value and has no handle back to it for this method to
+    /// resolve services against. This is headless-only, independent of
+    /// whether `run_native`'s window is currently open. It makes no
+    /// practical difference today, since every in-tree
+    /// `PlatformServices` override inherits
+    /// [`quadraui::PlatformServices::register_global_shortcut`]'s
+    /// `Unsupported` default regardless of which backend resolves it --
+    /// but the day a backend (GTK's `org.freedesktop.portal.
     /// GlobalShortcuts`, Win32 `RegisterHotKey`, Cocoa
-    /// `RegisterEventHotKey`) implements it for real.
+    /// `RegisterEventHotKey`) implements a real OS hotkey call, this
+    /// method still won't reach it while a native window is open. This is
+    /// a seam a Python app can already call against; the success path has
+    /// no automated coverage here and needs manual verification once a
+    /// backend implements one for real.
     fn register_global_shortcut(
         &mut self,
         py: Python<'_>,
@@ -4495,8 +4558,8 @@ impl QuiApp {
 
     /// Releases a shortcut returned by [`Self::register_global_shortcut`]
     /// -- [`quadraui::PlatformServices::unregister_global_shortcut`]. See
-    /// that method's doc for why this raises `InternalError` on every
-    /// backend this binding ships today.
+    /// that method's doc for why this is headless-only and raises
+    /// `InternalError` on every in-tree backend.
     fn unregister_global_shortcut(&mut self, py: Python<'_>, id: Py<PyAny>) -> PyResult<()> {
         self.guarded(|app| {
             let id: GlobalShortcutId = pythonize::depythonize(id.bind(py)).map_err(|err| {
@@ -4514,8 +4577,8 @@ impl QuiApp {
 
     /// Releases every currently registered global shortcut --
     /// [`quadraui::PlatformServices::unregister_all_global_shortcuts`].
-    /// See [`Self::register_global_shortcut`]'s doc for why this raises
-    /// `InternalError` on every backend this binding ships today.
+    /// See [`Self::register_global_shortcut`]'s doc for why this is
+    /// headless-only and raises `InternalError` on every in-tree backend.
     fn unregister_all_global_shortcuts(&mut self) -> PyResult<()> {
         self.guarded(|app| {
             app.driver
@@ -4996,6 +5059,88 @@ mod tests {
                 InternalError::new_err("first").to_string()
             );
             let _ = py;
+        });
+    }
+
+    /// A `PyAppLogic` carrying a `QuiApp::register_accelerator`-populated
+    /// `accelerators` map still fires `UiEvent::Accelerator` once moved,
+    /// by value, into a brand-new `TuiDriver`/backend -- exactly the
+    /// `std::mem::take(app.driver.app_mut())` + fresh-backend-construction
+    /// sequence `run_tui`/`run_native` perform. Regression test for the
+    /// gap where `register_accelerator` only ever touched the live
+    /// headless backend directly, so a chord registered before either
+    /// real run path silently never fired once that path built its own
+    /// backend. `TuiDriver::new` calls `AppLogic::setup` exactly like
+    /// `TuiRunner::new_with`/`GtkRunner`/`MacRunner`/`WinRunner` do, so
+    /// exercising it here covers the hook all four real runners share.
+    #[test]
+    fn accelerator_registered_before_setup_fires_on_a_freshly_built_backend() {
+        let (handler, locals) = Python::attach(|py| {
+            let locals = PyDict::new(py);
+            locals
+                .set_item("received", PyList::empty(py))
+                .expect("set received");
+            let handler = py
+                .eval(
+                    c"lambda event: received.append(event)",
+                    Some(&locals),
+                    Some(&locals),
+                )
+                .expect("lambda literal")
+                .unbind();
+            (handler, locals.unbind())
+        });
+
+        let mut accelerators = HashMap::new();
+        let acc = Accelerator {
+            id: AcceleratorId::new("app.save"),
+            binding: KeyBinding::Save,
+            scope: AcceleratorScope::Global,
+            label: None,
+        };
+        accelerators.insert(acc.id.clone(), acc);
+        let inner = PyAppLogic {
+            handler: Some(handler),
+            accelerators,
+            ..Default::default()
+        };
+
+        // Stands in for `run_tui`/`run_native`'s fresh backend
+        // construction: `TuiDriver::new` calls `app.setup(&mut backend)`
+        // on this *just-moved* `PyAppLogic`, against a backend that has
+        // never seen `register_accelerator` called on it directly.
+        let mut driver = TuiDriver::new(inner, 10, 10);
+
+        let reaction = driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Char('s'),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            repeat: false,
+        });
+        assert_ne!(
+            reaction,
+            Reaction::Exit,
+            "dispatching the registered chord must not exit the app"
+        );
+
+        Python::attach(|py| {
+            let locals = locals.bind(py);
+            let received: Bound<'_, PyList> = locals
+                .get_item("received")
+                .expect("received key lookup")
+                .expect("received must be set")
+                .extract()
+                .expect("received must be a list");
+            assert_eq!(received.len(), 1, "exactly one event must be delivered");
+            let event = received.get_item(0).expect("one item");
+            let dict: Bound<'_, PyDict> = event.extract().expect("event must be a dict");
+            assert!(
+                dict.contains("Accelerator").expect("contains check"),
+                "the chord must surface as an Accelerator event, not a plain \
+                KeyPressed: got {dict:?}"
+            );
         });
     }
 

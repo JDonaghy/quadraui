@@ -23,3 +23,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   against measured values instead of a hardcoded guess.
 - `InvalidFontRoleError`, raised by `measure_text` when its `role` argument
   isn't `"chrome"` or `"editor"`.
+- `QuiApp.register_accelerator(descriptor)` / `unregister_accelerator(id)`
+  expose `Backend::register_accelerator`/`unregister_accelerator` from the
+  `quadraui` core crate, so a declared chord fires `UiEvent::Accelerator`
+  instead of a plain `KeyPressed` — registered on this app's own live
+  backend immediately, and replayed onto whichever real backend
+  `run_tui`/`run_native` goes on to construct.
+- `QuiApp.register_global_shortcut(descriptor)` /
+  `unregister_global_shortcut(id)` / `unregister_all_global_shortcuts()`
+  expose `quadraui::PlatformServices`'s OS-wide hotkey seam — headless-only
+  for now, and raising `InternalError` until an in-tree backend implements
+  a real OS hotkey call.
