@@ -108,8 +108,14 @@ only a push to `main` runs this workflow.
   "one call" anchored-overlay surface `show_context_menu` already has:
   it opens a `MessageDialogController` behind `InteractionEngine`, which
   routes every event to it (and pops its `ModalStack` entry on
-  resolution) before any other UI routing runs, mirroring
-  `ctx_menu`'s own ordering.
+  resolution) ahead of the menu-bar dropdown and context-menu popup,
+  matching the dialog's own paint-on-top order — opening a dialog also
+  closes either of those if one happens to be open underneath it.
+  `show_message_dialog` rejects an empty `buttons` list and a button
+  with a non-`None` `tint` (not yet honored by this surface) with
+  `InvalidDescriptorError`. `quadraui-py` also gains
+  `QuiApp::dismiss_message_dialog`, closing the open dialog (if any)
+  without resolving it.
 
 ### Changed
 - TUI: on a kitty-keyboard-capable terminal, a chord whose key is a shifted
