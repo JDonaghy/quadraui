@@ -70,10 +70,10 @@ pub use host::NativeExitPolicy;
 pub use host::{
     callback_reaction, callback_reaction_for_render, caret_shape, click_down_up_events,
     color_depth_name, dialog_severity, font_role, key_pressed_event, merge_overrides,
-    panic_message, render_overlays, step_driver, text_display_from_lines, theme_color_value,
-    toast_corner, window_close_reaction, BindingHost, ErasedShellDriver, OverrideError,
-    WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY,
-    SLOT_TREE,
+    panic_message, pointer_shape, render_overlays, resize_edge, step_driver,
+    text_display_from_lines, theme_color_value, toast_corner, window_close_reaction, BindingHost,
+    ErasedShellDriver, OverrideError, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST,
+    SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 pub use layout::{validate_unique_leaf_ids, LayoutLeaf, LayoutNode, LayoutPanel};
 pub use layout::{LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry, LayoutTabs};

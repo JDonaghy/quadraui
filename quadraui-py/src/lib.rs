@@ -98,12 +98,15 @@
 //! coverage (`step`/`run`, and `run_tui` for its own duration).
 //!
 //! [`QuiApp::actions`] returns a [`QuiAppActions`] — the handler-side
-//! escape hatch for the nine overlay/OS-call methods this module doc's
-//! "cannot call back into `QuiApp`" note above otherwise rules out from
-//! inside a handler: `show_message_dialog`, `show_context_menu`,
-//! `show_toast`, `show_tooltip`, `send_notification`, `open_path`,
-//! `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`. Each
-//! method on it decodes and queues the same
+//! escape hatch for the overlay/OS-call/window-control methods this
+//! module doc's "cannot call back into `QuiApp`" note above otherwise
+//! rules out from inside a handler: `show_message_dialog`,
+//! `show_context_menu`, `show_toast`, `show_tooltip`, `send_notification`,
+//! `open_path`, `reveal_in_file_manager`, `move_to_trash`,
+//! `restore_from_trash`, `set_title`, `set_document_edited`,
+//! `set_represented_filename`, `set_tray_icon`, `set_tray_tooltip`,
+//! `set_tray_menu`, `set_cursor`. Each method on it decodes and queues the
+//! same
 //! action its `QuiApp` namesake would apply immediately;
 //! [`PyAppLogic::handle`]/[`PyAppLogic::tick`] drain that queue via
 //! [`flush_deferred_actions`] right after the dispatch that queued it
@@ -142,6 +145,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use pyo3::types::{PyDict, PyList};
 
+use quadraui::backend::TrayService;
 #[cfg(test)]
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
@@ -164,10 +168,11 @@ use quadraui::NamedKey;
 use quadraui::Scrollbar;
 use quadraui::{
     Accelerator, AcceleratorId, AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps,
-    BottomPanelEvent, Completions, ContextMenuItem, DialogButton, DialogSeverity,
-    FileDialogOptions, Float, FloatMeasure, GlobalShortcutId, MessageDialogOptions, Notification,
-    Point, Reaction, Rect, RgbaImage, RichTextPopup, ShellApp, ShellConfig, ShellContext, Toast,
-    ToastCorner, Tooltip, UiEvent, UserPayload, WidgetId,
+    BackendError, BottomPanelEvent, Completions, ContextMenu, ContextMenuItem,
+    ContextMenuPlacement, DialogButton, DialogSeverity, FileDialogOptions, Float, FloatMeasure,
+    GlobalShortcutId, ImageSource, MessageDialogOptions, Notification, Point, PointerShape,
+    Reaction, Rect, RgbaImage, RichTextPopup, ServiceResult, ShellApp, ShellConfig, ShellContext,
+    Toast, ToastCorner, Tooltip, UiEvent, UserPayload, WidgetId, WindowControl,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -182,10 +187,10 @@ use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
     callback_reaction, caret_shape, click_down_up_events, color_depth_name, decode_extra_primitive,
     dialog_severity, draw_bands, font_role, key_pressed_event, merge_overrides,
-    message_dialog_options_from_buttons, paint_layout, panic_message, render_overlays, step_driver,
-    text_display_from_lines, theme_color_value, toast_corner, window_close_reaction, BindingHost,
-    ErasedShellDriver, EventSink, HitDetail, InteractionEngine, OverrideError, RenderOutput,
-    WindowCloseHandling,
+    message_dialog_options_from_buttons, paint_layout, panic_message, pointer_shape,
+    render_overlays, step_driver, text_display_from_lines, theme_color_value, toast_corner,
+    window_close_reaction, BindingHost, ErasedShellDriver, EventSink, HitDetail, InteractionEngine,
+    OverrideError, RenderOutput, WindowCloseHandling,
 };
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`)
@@ -362,10 +367,12 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 
 /// One action a [`QuiAppActions`] method recorded, already decoded and
 /// validated, waiting for [`flush_deferred_actions`] to apply it. Each
-/// variant mirrors one of the nine `QuiApp` methods [`QuiAppActions`]'s own
+/// variant mirrors one of the `QuiApp` methods [`QuiAppActions`]'s own
 /// doc names (`show_message_dialog`, `show_context_menu`, `show_toast`,
 /// `show_tooltip`, `send_notification`, `open_path`,
-/// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`) —
+/// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
+/// `set_title`, `set_document_edited`, `set_represented_filename`,
+/// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`) —
 /// carrying exactly the already-decoded arguments the matching `QuiApp`
 /// method passes to the same underlying `quadraui`/`quadraui_binding_core`
 /// call, so applying one is a direct call with no further decoding or
@@ -380,6 +387,13 @@ enum DeferredAction {
     RevealInFileManager(PathBuf),
     MoveToTrash(PathBuf),
     RestoreFromTrash(PathBuf),
+    Title(String),
+    DocumentEdited(bool),
+    RepresentedFilename(Option<PathBuf>),
+    TrayIcon(ImageSource),
+    TrayTooltip(String),
+    TrayMenu(Vec<ContextMenuItem>),
+    Cursor(PointerShape),
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
@@ -541,6 +555,65 @@ fn parse_dialog_severity(what: &str, value: &str) -> PyResult<DialogSeverity> {
 /// [`parse_dialog_severity`] error-mapping shape.
 fn parse_toast_corner(what: &str, value: &str) -> PyResult<ToastCorner> {
     toast_corner(value).map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
+}
+
+/// Decodes `QuiApp::set_cursor`'s `shape`/`edge` strings into a
+/// [`PointerShape`] via [`quadraui_binding_core::pointer_shape`], the same
+/// [`parse_dialog_severity`] error-mapping shape.
+fn parse_pointer_shape(what: &str, shape: &str, edge: Option<&str>) -> PyResult<PointerShape> {
+    pointer_shape(shape, edge)
+        .map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
+}
+
+/// Applies `f` to `backend`'s [`WindowControl`] surface, folding
+/// [`Backend::window`] returning `None` (no window at all, or not
+/// constructed yet) into the same [`BackendError::Unsupported`] a missing
+/// method on a real window already reports -- the same fold
+/// `quadraui/examples/common/window_control_demo.rs`'s `describe` helper
+/// uses, so a caller sees one uniform error shape for either case.
+fn with_window<T>(
+    backend: &mut dyn Backend,
+    f: impl FnOnce(&mut dyn WindowControl) -> ServiceResult<T>,
+) -> ServiceResult<T> {
+    match backend.window() {
+        Some(window) => f(window),
+        None => Err(BackendError::Unsupported),
+    }
+}
+
+/// [`with_window`]'s [`TrayService`] counterpart -- folds [`Backend::tray`]
+/// returning `None` into [`BackendError::Unsupported`].
+fn with_tray<T>(
+    backend: &mut dyn Backend,
+    f: impl FnOnce(&mut dyn TrayService) -> ServiceResult<T>,
+) -> ServiceResult<T> {
+    match backend.tray() {
+        Some(tray) => f(tray),
+        None => Err(BackendError::Unsupported),
+    }
+}
+
+/// Maps a [`ServiceResult`] failure to `InternalError`, prefixed with
+/// `what` -- the same shape `open_path`/`move_to_trash`/... already use
+/// for `PlatformServices`' own `ServiceResult`-returning methods.
+fn service_result(what: &str, result: ServiceResult<()>) -> PyResult<()> {
+    result.map_err(|err| InternalError::new_err(format!("{what}: {err:?}")))
+}
+
+/// Builds a [`ContextMenu`] from `items` -- the same construction
+/// [`quadraui_binding_core::InteractionEngine::open_context_menu`] uses for
+/// a right-click context menu, reused here for [`TrayService::set_menu`],
+/// which takes a `&ContextMenu` rather than a bare item list.
+fn tray_menu(items: Vec<ContextMenuItem>) -> ContextMenu {
+    let mut menu = ContextMenu {
+        id: WidgetId::new("qui-tray-menu"),
+        items,
+        selected_idx: 0,
+        bg: None,
+        placement: ContextMenuPlacement::AnchorPoint,
+    };
+    menu.selected_idx = menu.first_selectable();
+    menu
 }
 
 impl AppLogic for PyAppLogic {
@@ -1501,12 +1574,14 @@ impl QuiAppWaker {
 }
 
 /// A handle, returned by [`QuiApp::actions`], that queues exactly the
-/// overlay/OS-call methods `QuiApp` itself restricts to top-level script
-/// code — `show_message_dialog`, `show_context_menu`, `show_toast`,
-/// `show_tooltip`, `send_notification`, `open_path`,
-/// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash` — so a
-/// registered event handler can request one of them without re-entering
-/// `QuiApp`'s own PyO3 cell.
+/// overlay/OS-call/window-control methods `QuiApp` itself restricts to
+/// top-level script code — `show_message_dialog`, `show_context_menu`,
+/// `show_toast`, `show_tooltip`, `send_notification`, `open_path`,
+/// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
+/// `set_title`, `set_document_edited`, `set_represented_filename`,
+/// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor` — so
+/// a registered event handler can request one of them without
+/// re-entering `QuiApp`'s own PyO3 cell.
 ///
 /// A handler already holds `QuiApp`'s one mutable borrow for the whole
 /// dispatch that invoked it (the same wall `show_message_dialog`'s own doc
@@ -1672,6 +1747,82 @@ impl QuiAppActions {
             .push_back(DeferredAction::RestoreFromTrash(PathBuf::from(path)));
         Ok(())
     }
+
+    /// Queues a [`DeferredAction::Title`] — same argument as
+    /// `QuiApp::set_title`.
+    fn set_title(&self, title: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Title(title.to_string()));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::DocumentEdited`] — same argument as
+    /// `QuiApp::set_document_edited`.
+    fn set_document_edited(&self, edited: bool) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::DocumentEdited(edited));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::RepresentedFilename`] — same argument as
+    /// `QuiApp::set_represented_filename`.
+    #[pyo3(signature = (path=None))]
+    fn set_represented_filename(&self, path: Option<&str>) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::RepresentedFilename(path.map(PathBuf::from)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::TrayIcon`] — same argument, same
+    /// decoding, as `QuiApp::set_tray_icon`.
+    fn set_tray_icon(&self, icon: &Bound<'_, PyAny>) -> PyResult<()> {
+        let icon: ImageSource = pythonize::depythonize(icon).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_tray_icon: invalid icon: {err}"))
+        })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::TrayIcon(icon));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::TrayTooltip`] — same argument as
+    /// `QuiApp::set_tray_tooltip`.
+    fn set_tray_tooltip(&self, tooltip: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::TrayTooltip(tooltip.to_string()));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::TrayMenu`] — same argument, same
+    /// decoding, as `QuiApp::set_tray_menu`.
+    fn set_tray_menu(&self, items: &Bound<'_, PyList>) -> PyResult<()> {
+        let items: Vec<ContextMenuItem> =
+            pythonize::depythonize(items.as_any()).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("set_tray_menu: invalid items: {err}"))
+            })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::TrayMenu(items));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::Cursor`] — same arguments, same
+    /// decoding, as `QuiApp::set_cursor`. Unlike `QuiApp::set_cursor`,
+    /// this has no return value: whether the glyph was actually applied
+    /// is only observable synchronously, and a deferred action by
+    /// definition isn't applied until after this call returns.
+    #[pyo3(signature = (shape, edge=None))]
+    fn set_cursor(&self, shape: &str, edge: Option<&str>) -> PyResult<()> {
+        let shape = parse_pointer_shape("set_cursor", shape, edge)?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Cursor(shape));
+        Ok(())
+    }
 }
 
 /// Applies every action queued on `app_logic.deferred_actions` directly
@@ -1750,6 +1901,59 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
                         InternalError::new_err(format!("restore_from_trash: {err:?}")),
                     );
                 }
+            }
+            DeferredAction::Title(title) => {
+                if let Err(err) = with_window(backend, |w| w.set_title(&title)) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("set_title: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::DocumentEdited(edited) => {
+                if let Err(err) = with_window(backend, |w| w.set_document_edited(edited)) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("set_document_edited: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::RepresentedFilename(path) => {
+                if let Err(err) =
+                    with_window(backend, |w| w.set_represented_filename(path.as_deref()))
+                {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("set_represented_filename: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::TrayIcon(icon) => {
+                if let Err(err) = with_tray(backend, |t| t.set_icon(icon)) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("set_tray_icon: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::TrayTooltip(tooltip) => {
+                if let Err(err) = with_tray(backend, |t| t.set_tooltip(&tooltip)) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("set_tray_tooltip: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::TrayMenu(items) => {
+                if let Err(err) = with_tray(backend, |t| t.set_menu(&tray_menu(items))) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("set_tray_menu: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::Cursor(shape) => {
+                backend.set_cursor(shape);
             }
         }
     }
@@ -3610,6 +3814,133 @@ impl QuiApp {
                     InternalError::new_err(format!("unregister_all_global_shortcuts: {err:?}"))
                 })
         })
+    }
+
+    // ─── Window control, tray & pointer cursor ───────────────────────────
+    //
+    // Every method below resolves `WindowControl`/`TrayService` off this
+    // `QuiApp`'s own headless `TuiBackend` -- never a `run_native` window --
+    // via `with_window`/`with_tray`'s `Backend::window`/`Backend::tray`
+    // fold. `TuiBackend` genuinely implements `set_title` (OSC 0/2) and
+    // reports `Err(BackendError::Unsupported)` -- surfaced here as
+    // `InternalError` -- for every other `WindowControl` method, for
+    // `tray()` itself (always `None` on a terminal), and `set_cursor`
+    // (always returns `False`, no native pointer concept) -- see
+    // `quadraui::backend`'s `WindowControl`/`TrayService`/
+    // `Backend::set_cursor` docs for why those specific gaps are
+    // structural, not "not implemented yet". A `run_native` window built
+    // with the `gtk`/`macos`/`win` feature backs every one of these for
+    // real; call the matching method on [`QuiAppActions`] (via
+    // [`Self::actions`]) from inside a registered handler/tick/render
+    // callback instead of these, for the same re-entrant-borrow reason
+    // `show_message_dialog`'s own doc describes.
+
+    /// Sets the window title -- [`WindowControl::set_title`]. On the
+    /// headless `TuiBackend` this emits the OSC 0/2 terminal escape
+    /// sequence (crossterm's `SetTitle`) to retitle the terminal
+    /// emulator's tab/window -- genuinely applied, not a no-op.
+    fn set_title(&mut self, title: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            service_result(
+                "set_title",
+                with_window(app.driver.parts_mut().0, |w| w.set_title(title)),
+            )
+        })
+    }
+
+    /// Marks the window's document as having unsaved changes (`True`) or
+    /// clean (`False`) -- [`WindowControl::set_document_edited`]. Raises
+    /// `InternalError` on every in-tree backend except a macOS
+    /// `run_native` window, which has no reachable equivalent from this
+    /// headless app.
+    fn set_document_edited(&mut self, edited: bool) -> PyResult<()> {
+        self.guarded(|app| {
+            service_result(
+                "set_document_edited",
+                with_window(app.driver.parts_mut().0, |w| w.set_document_edited(edited)),
+            )
+        })
+    }
+
+    /// Associates the window with the file at `path` (or clears the
+    /// association when `None`) -- [`WindowControl::set_represented_filename`].
+    /// Same macOS-only story as [`Self::set_document_edited`].
+    #[pyo3(signature = (path=None))]
+    fn set_represented_filename(&mut self, path: Option<&str>) -> PyResult<()> {
+        self.guarded(|app| {
+            service_result(
+                "set_represented_filename",
+                with_window(app.driver.parts_mut().0, |w| {
+                    w.set_represented_filename(path.map(Path::new))
+                }),
+            )
+        })
+    }
+
+    /// Sets (or replaces) the tray icon's image -- [`TrayService::set_icon`].
+    /// `icon` is an [`ImageSource`] dict, e.g. `{"Path": "/path/to.png"}` or
+    /// `{"Bytes": b"..."}` -- the same externally-tagged shape
+    /// `quadraui::ImageSource`'s derived `Deserialize` accepts. Raises
+    /// `InternalError` on every in-tree backend except a `gtk`/`macos`/
+    /// `win` `run_native` window: TUI has no tray/status-bar concept at all
+    /// ([`Backend::tray`] stays `None` there permanently).
+    fn set_tray_icon(&mut self, icon: &Bound<'_, PyAny>) -> PyResult<()> {
+        let icon: ImageSource = pythonize::depythonize(icon).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_tray_icon: invalid icon: {err}"))
+        })?;
+        self.guarded(|app| {
+            service_result(
+                "set_tray_icon",
+                with_tray(app.driver.parts_mut().0, |t| t.set_icon(icon)),
+            )
+        })
+    }
+
+    /// Sets the tray icon's hover tooltip text -- [`TrayService::set_tooltip`].
+    /// Same tray-less-on-TUI story as [`Self::set_tray_icon`].
+    fn set_tray_tooltip(&mut self, tooltip: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            service_result(
+                "set_tray_tooltip",
+                with_tray(app.driver.parts_mut().0, |t| t.set_tooltip(tooltip)),
+            )
+        })
+    }
+
+    /// Attaches (or replaces) the tray icon's right-click/click menu --
+    /// [`TrayService::set_menu`]. `items` decodes the same way
+    /// `show_context_menu`'s own `items` argument does -- a list of
+    /// [`ContextMenuItem`] dicts; an activated entry fires
+    /// `UiEvent::ContextMenuItemActivated` the same way a right-click
+    /// context menu's does. Same tray-less-on-TUI story as
+    /// [`Self::set_tray_icon`].
+    fn set_tray_menu(&mut self, items: &Bound<'_, PyList>) -> PyResult<()> {
+        let items: Vec<ContextMenuItem> =
+            pythonize::depythonize(items.as_any()).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("set_tray_menu: invalid items: {err}"))
+            })?;
+        self.guarded(|app| {
+            service_result(
+                "set_tray_menu",
+                with_tray(app.driver.parts_mut().0, |t| t.set_menu(&tray_menu(items))),
+            )
+        })
+    }
+
+    /// Hints the OS mouse-pointer glyph -- [`Backend::set_cursor`]. `shape`
+    /// is one of `"default"`, `"resize"` (requires `edge`), `"text"`,
+    /// `"pointer"`, `"grab"`, `"grabbing"`, `"crosshair"`, `"wait"`,
+    /// `"not_allowed"`, `"col_resize"`, `"row_resize"`; `edge` (only
+    /// meaningful for `"resize"`) is one of `"north"`, `"south"`,
+    /// `"east"`, `"west"`, `"north_east"`, `"north_west"`, `"south_east"`,
+    /// `"south_west"`. Returns whether the pointer glyph was actually
+    /// applied -- `False` on the headless `TuiBackend`, which has no
+    /// native pointer concept at all, same as [`Backend::set_cursor`]'s
+    /// own "no window yet" case on a windowed backend.
+    #[pyo3(signature = (shape, edge=None))]
+    fn set_cursor(&mut self, shape: &str, edge: Option<&str>) -> PyResult<bool> {
+        let shape = parse_pointer_shape("set_cursor", shape, edge)?;
+        self.guarded(|app| Ok(app.driver.parts_mut().0.set_cursor(shape)))
     }
 
     // ─── Theme, style & fonts ────────────────────────────────────────────

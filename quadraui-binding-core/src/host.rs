@@ -702,6 +702,54 @@ pub fn caret_shape(value: &str) -> Result<quadraui::EditorCursorShape, String> {
     }
 }
 
+/// Decodes a friendly lowercase word into a [`quadraui::ResizeEdge`] — the
+/// vocabulary [`pointer_shape`]'s `edge` argument accepts for the `"resize"`
+/// shape.
+pub fn resize_edge(value: &str) -> Result<quadraui::ResizeEdge, String> {
+    match value {
+        "north" => Ok(quadraui::ResizeEdge::North),
+        "south" => Ok(quadraui::ResizeEdge::South),
+        "east" => Ok(quadraui::ResizeEdge::East),
+        "west" => Ok(quadraui::ResizeEdge::West),
+        "north_east" => Ok(quadraui::ResizeEdge::NorthEast),
+        "north_west" => Ok(quadraui::ResizeEdge::NorthWest),
+        "south_east" => Ok(quadraui::ResizeEdge::SouthEast),
+        "south_west" => Ok(quadraui::ResizeEdge::SouthWest),
+        other => Err(format!(
+            "unknown edge {other:?}; expected one of \"north\", \"south\", \"east\", \"west\", \
+             \"north_east\", \"north_west\", \"south_east\", \"south_west\""
+        )),
+    }
+}
+
+/// Decodes a friendly lowercase word (plus, for `"resize"` only, an `edge`
+/// decoded via [`resize_edge`]) into a [`quadraui::PointerShape`] — the
+/// vocabulary a binding's own `set_cursor`-style surface accepts. `edge` is
+/// required when `value` is `"resize"` and ignored otherwise.
+pub fn pointer_shape(value: &str, edge: Option<&str>) -> Result<quadraui::PointerShape, String> {
+    match value {
+        "default" => Ok(quadraui::PointerShape::Default),
+        "resize" => {
+            let edge = edge.ok_or_else(|| "shape \"resize\" requires an edge".to_string())?;
+            resize_edge(edge).map(quadraui::PointerShape::Resize)
+        }
+        "text" => Ok(quadraui::PointerShape::Text),
+        "pointer" => Ok(quadraui::PointerShape::Pointer),
+        "grab" => Ok(quadraui::PointerShape::Grab),
+        "grabbing" => Ok(quadraui::PointerShape::Grabbing),
+        "crosshair" => Ok(quadraui::PointerShape::Crosshair),
+        "wait" => Ok(quadraui::PointerShape::Wait),
+        "not_allowed" => Ok(quadraui::PointerShape::NotAllowed),
+        "col_resize" => Ok(quadraui::PointerShape::ColResize),
+        "row_resize" => Ok(quadraui::PointerShape::RowResize),
+        other => Err(format!(
+            "unknown shape {other:?}; expected one of \"default\", \"resize\", \"text\", \
+             \"pointer\", \"grab\", \"grabbing\", \"crosshair\", \"wait\", \"not_allowed\", \
+             \"col_resize\", \"row_resize\""
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
