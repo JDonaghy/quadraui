@@ -1,11 +1,16 @@
 // Black-box coverage for the in-canvas modal-overlay primitives wired onto
-// `InteractionEngine`'s own anchored-overlay slot (the one
-// `showMessageDialog`/`showContextMenu` already use, covered in
-// `qui_app.test.ts`/`callbacks.test.ts`): `showToast`/`dismissToast`,
+// `InteractionEngine`'s own anchored-overlay slot: `showContextMenu`,
+// `showMessageDialog`/`dismissMessageDialog`, `showToast`/`dismissToast`,
 // `showTooltip`/`hideTooltip`, `showCompletions`/`dismissCompletions`,
 // `showFloat`/`dismissFloat`, and
 // `showRichTextPopup`/`dismissRichTextPopup` -- a port of
-// `quadraui-py/tests/test_overlay_primitives.py`.
+// `quadraui-py/tests/test_overlay_primitives.py` and
+// `quadraui-py/tests/test_extra_primitives.py`'s `show_message_dialog`/
+// `show_context_menu` cases. `QuiAppActions.showMessageDialog`
+// (`tests/callbacks.test.ts`) is a different method on a different class --
+// it queues through the deferred-action queue for use from inside a
+// handler -- so it covers neither `QuiApp.showMessageDialog` nor
+// `QuiApp.showContextMenu`/`dismissMessageDialog` directly.
 //
 // Run against a built addon, e.g.:
 //
@@ -44,6 +49,106 @@ function escape(app: any) {
   });
   app.run(1);
 }
+
+// ── Context menu ─────────────────────────────────────────────────────────
+
+function contextMenuItems() {
+  return [
+    { id: "copy", label: { spans: [{ text: "Copy", fg: null, bg: null }] } },
+    { id: "paste", label: { spans: [{ text: "Paste", fg: null, bg: null }] } },
+  ];
+}
+
+test("showContextMenu then clicking an item activates it", () => {
+  const app = new QuiApp(40, 20);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+
+  app.showContextMenu(contextMenuItems(), { x: 2.0, y: 2.0 });
+  assert.ok(app.screenContains("Copy"));
+
+  const [row, col] = locate(app, "Copy");
+  click(app, row, col);
+
+  assert.deepEqual(received, [{ ContextMenuItemActivated: "copy" }]);
+});
+
+test("showContextMenu escape dismisses without item activation", () => {
+  const app = new QuiApp(40, 20);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+
+  app.showContextMenu(contextMenuItems(), { x: 2.0, y: 2.0 });
+  escape(app);
+
+  // A unit `UiEvent` variant (no payload) encodes as the bare variant name,
+  // not `{ ContextMenuDismissed: null }`.
+  assert.deepEqual(received, ["ContextMenuDismissed"]);
+  assert.ok(!app.screenContains("Copy"));
+});
+
+// ── Message dialog ───────────────────────────────────────────────────────
+
+function dialogButtons() {
+  return [
+    { id: "save", label: "Save", is_default: true },
+    { id: "cancel", label: "Cancel", is_cancel: true },
+  ];
+}
+
+test("showMessageDialog then clicking a button resolves it", () => {
+  const app = new QuiApp(40, 20);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+
+  app.showMessageDialog("Unsaved changes", "Do you want to save?", dialogButtons());
+  assert.ok(app.screenContains("Save"));
+
+  const [row, col] = locate(app, "Save");
+  click(app, row, col);
+
+  assert.deepEqual(received, [{ MessageDialogResolved: "save" }]);
+  assert.ok(!app.screenContains("Save"));
+});
+
+test("showMessageDialog enter resolves the default button", () => {
+  const app = new QuiApp(40, 20);
+  const received: unknown[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+
+  app.showMessageDialog("Unsaved changes", "Do you want to save?", dialogButtons());
+  app.pushEvent({
+    KeyPressed: { key: { Named: "Enter" }, modifiers: {}, repeat: false },
+  });
+  app.run(1);
+
+  assert.deepEqual(received, [{ MessageDialogResolved: "save" }]);
+});
+
+test("showMessageDialog rejects an empty buttons array", () => {
+  const app = new QuiApp(40, 20);
+  assert.throws(
+    () => app.showMessageDialog("Title", "Body", []),
+    /InvalidDescriptorError/,
+  );
+});
+
+test("showMessageDialog rejects an unknown severity", () => {
+  const app = new QuiApp(40, 20);
+  assert.throws(
+    () => app.showMessageDialog("Title", "Body", dialogButtons(), "critical"),
+    /InvalidDescriptorError/,
+  );
+});
+
+test("dismissMessageDialog closes without resolving", () => {
+  const app = new QuiApp(40, 20);
+  assert.equal(app.dismissMessageDialog(), false);
+
+  app.showMessageDialog("Title", "Body", dialogButtons());
+  assert.equal(app.dismissMessageDialog(), true);
+  assert.ok(!app.screenContains("Save"));
+});
 
 // ── Toast ────────────────────────────────────────────────────────────────
 

@@ -33,15 +33,21 @@ impl QuiApp {
     /// `{r, g, b[, a]}` object.
     #[napi(js_name = "setTheme")]
     pub fn set_theme(&mut self, env: Env, overrides: Object) -> Result<()> {
-        let keys = object_keys(&overrides)?;
+        self.check_not_dispatching()?;
+        let keys = Object::keys(&overrides)?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
             let theme = merge_overrides(backend.theme(), keys, |key| {
-                let val: Unknown = overrides
-                    .get(key)
-                    .map_err(|err| err.reason)?
-                    .expect("key was read from overrides' own keys above");
-                let json = to_descriptor_value(val)?;
+                let json = match overrides.get::<Unknown>(key).map_err(|err| err.reason)? {
+                    Some(val) => to_descriptor_value(val)?,
+                    // `Object::keys` can report an own key whose value is
+                    // JS `undefined` (napi's `Object::get` surfaces that as
+                    // `None`, not `Some(<undefined>)`) -- mirrors
+                    // `to_descriptor_value`'s own `Undefined | Null =>
+                    // JsonValue::Null` rather than panicking on an
+                    // assumption the JS object model doesn't actually hold.
+                    None => JsonValue::Null,
+                };
                 theme_color_value(key, json)
             })
             .map_err(|err| override_error_to_js("setTheme", err))?;
@@ -66,15 +72,17 @@ impl QuiApp {
     /// the same way [`Self::set_theme`] merges `Theme` fields.
     #[napi(js_name = "setStyle")]
     pub fn set_style(&mut self, env: Env, overrides: Object) -> Result<()> {
-        let keys = object_keys(&overrides)?;
+        self.check_not_dispatching()?;
+        let keys = Object::keys(&overrides)?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
             let style = merge_overrides(backend.style(), keys, |key| {
-                let val: Unknown = overrides
-                    .get(key)
-                    .map_err(|err| err.reason)?
-                    .expect("key was read from overrides' own keys above");
-                to_descriptor_value(val)
+                match overrides.get::<Unknown>(key).map_err(|err| err.reason)? {
+                    Some(val) => to_descriptor_value(val),
+                    // See `setTheme`'s matching arm for why `Object::get`
+                    // can report `None` for one of `Object::keys`' own keys.
+                    None => Ok(JsonValue::Null),
+                }
             })
             .map_err(|err| override_error_to_js("setStyle", err))?;
             backend.set_style(style);
@@ -179,6 +187,7 @@ impl QuiApp {
     /// but not something a driver test can observe landing anywhere.
     #[napi(js_name = "setCaretShape")]
     pub fn set_caret_shape(&mut self, env: Env, shape: String) -> Result<()> {
+        self.check_not_dispatching()?;
         let shape = caret_shape(&shape)
             .map_err(|err| invalid_descriptor_error(format!("setCaretShape: {err}")))?;
         self.guarded(env, |app| {
@@ -186,15 +195,6 @@ impl QuiApp {
             Ok(())
         })
     }
-}
-
-/// `overrides`' own keys, as `String`s, in iteration order --
-/// [`merge_overrides`]'s `keys` argument, decoded once so its per-key
-/// `value_for` closure can look each one's value back up in `overrides`
-/// only after [`merge_overrides`] has confirmed that key actually names a
-/// field of `T` -- the napi-rs analog of `quadraui-py`'s own `dict_keys`.
-fn object_keys(overrides: &Object) -> Result<Vec<String>> {
-    Object::keys(overrides)
 }
 
 /// Maps a [`merge_overrides`] failure to this binding's own tagged-message

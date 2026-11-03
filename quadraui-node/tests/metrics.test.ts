@@ -59,7 +59,7 @@ test("measureText counts display width in cells", () => {
 
 test("measureText rejects an unknown role", () => {
   const app = new QuiApp(10, 10);
-  assert.throws(() => app.measureText("hello", "bogus"), /InvalidDescriptorError/);
+  assert.throws(() => app.measureText("hello", "bogus"), /InvalidFontRoleError/);
 });
 
 test("backendCaps reports the headless tui vocabulary", () => {

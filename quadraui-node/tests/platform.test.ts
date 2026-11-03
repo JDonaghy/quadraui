@@ -7,11 +7,15 @@
 // Every one of these resolves `quadraui::PlatformServices` off this
 // `QuiApp`'s own headless `TuiBackend`, so every assertion below is
 // reachable with no real terminal, no real desktop session, and no native
-// dialog. `sendNotification`/`openUrl`/`revealInFileManager`/`openPath`/
-// `beep` are fire-and-forget native effects with no assertable return
-// value; this file only proves they're callable and don't raise on an
-// obviously-benign input -- their actual visible effect needs a human at a
-// real terminal, noted in this PR's SMOKE_TESTS instead of asserted here.
+// dialog. `sendNotification` and `beep` are fire-and-forget native effects
+// with no assertable return value; this file only proves they're callable
+// and don't raise on an obviously-benign input -- their actual visible
+// effect needs a human at a real terminal to confirm. `openUrl`/
+// `revealInFileManager`/`openPath` have a real, unsuppressible side effect
+// (launching a browser/file manager), so calling them is left out of this
+// automated suite entirely -- same gap as `quadraui-py`'s own
+// `test_platform_services.py` -- and goes on the manual smoke-test
+// checklist instead.
 // `moveToTrash` has a directly observable filesystem effect (the file
 // disappears), so this file asserts on that instead of only "didn't
 // raise". `restoreFromTrash`'s round trip is platform-dependent -- see
@@ -26,13 +30,24 @@
 //
 //     npm run build:debug
 //     npm test
-const { test } = require("node:test");
+const { test, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
 const { QuiApp } = require("../js/index.ts");
+
+// `tmpDir()` callers never need to clean up individually -- every directory
+// it creates is removed once by this file's own `after` hook, the
+// `node:test` analog of pytest's `tmp_path` fixture cleanup.
+const createdTmpDirs: string[] = [];
+
+after(() => {
+  for (const dir of createdTmpDirs) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function keyChar(ch: string) {
   return {
@@ -65,7 +80,9 @@ function keyEscape() {
 }
 
 function tmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "quadraui-node-platform-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "quadraui-node-platform-"));
+  createdTmpDirs.push(dir);
+  return dir;
 }
 
 // ─── Folder picker ──────────────────────────────────────────────────────
@@ -273,8 +290,9 @@ test("restoreFromTrash's documented platform split", (t: any) => {
 });
 
 test("restoreFromTrash on a path never trashed raises", () => {
+  const dir = tmpDir();
   const app = new QuiApp(10, 10);
   assert.throws(() =>
-    app.restoreFromTrash("/tmp/quadraui-1932-never-trashed-does-not-exist.txt"),
+    app.restoreFromTrash(path.join(dir, "never-trashed-does-not-exist.txt")),
   );
 });

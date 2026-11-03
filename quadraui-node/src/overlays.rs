@@ -28,6 +28,7 @@ impl QuiApp {
     /// still open replaces it with the new one silently.
     #[napi(js_name = "showContextMenu")]
     pub fn show_context_menu(&mut self, env: Env, items: Unknown, position: Unknown) -> Result<()> {
+        self.check_not_dispatching()?;
         let items: Vec<ContextMenuItem> = decode_direct(env, "showContextMenu", items)?;
         let position: Point = decode_direct(env, "showContextMenu", position)?;
         self.guarded(env, |app| {
@@ -56,6 +57,7 @@ impl QuiApp {
         buttons: Unknown,
         severity: Option<String>,
     ) -> Result<()> {
+        self.check_not_dispatching()?;
         let buttons: Vec<DialogButton> = decode_direct(env, "showMessageDialog", buttons)?;
         let severity = severity
             .map(|s| {
@@ -99,6 +101,7 @@ impl QuiApp {
     /// closes it directly with no event.
     #[napi(js_name = "showToast")]
     pub fn show_toast(&mut self, env: Env, toast: Unknown, corner: Option<String>) -> Result<()> {
+        self.check_not_dispatching()?;
         let toast: Toast = decode_direct(env, "showToast", toast)?;
         let corner = corner
             .map(|c| {
@@ -136,6 +139,7 @@ impl QuiApp {
     /// app handles auto-dismisses it; call `hideTooltip` to dismiss sooner.
     #[napi(js_name = "showTooltip")]
     pub fn show_tooltip(&mut self, env: Env, tooltip: Unknown, anchor: Unknown) -> Result<()> {
+        self.check_not_dispatching()?;
         let tooltip: quadraui::Tooltip = decode_direct(env, "showTooltip", tooltip)?;
         let anchor: Rect = decode_direct(env, "showTooltip", anchor)?;
         self.guarded(env, |app| {
@@ -172,6 +176,7 @@ impl QuiApp {
         completions: Unknown,
         cursor: Unknown,
     ) -> Result<()> {
+        self.check_not_dispatching()?;
         let completions: quadraui::Completions =
             decode_direct(env, "showCompletions", completions)?;
         let cursor: Point = decode_direct(env, "showCompletions", cursor)?;
@@ -208,6 +213,7 @@ impl QuiApp {
     /// event; a non-focusable hint float never claims Escape.
     #[napi(js_name = "showFloat")]
     pub fn show_float(&mut self, env: Env, float: Unknown, width: f64, height: f64) -> Result<()> {
+        self.check_not_dispatching()?;
         let float: quadraui::Float = decode_direct(env, "showFloat", float)?;
         let measure = FloatMeasure::new(width as f32, height as f32);
         self.guarded(env, |app| {
@@ -247,6 +253,7 @@ impl QuiApp {
         popup: Unknown,
         anchor: Unknown,
     ) -> Result<()> {
+        self.check_not_dispatching()?;
         let popup: quadraui::RichTextPopup = decode_direct(env, "showRichTextPopup", popup)?;
         let anchor: Point = decode_direct(env, "showRichTextPopup", anchor)?;
         self.guarded(env, |app| {

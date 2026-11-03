@@ -87,6 +87,7 @@ impl QuiApp {
         height: u32,
         pixels: Vec<u8>,
     ) -> Result<()> {
+        self.check_not_dispatching()?;
         // `checked_mul` rather than a plain `*`: an adversarial
         // `width`/`height` overflows `usize` on a 32-bit target and wraps
         // silently in a release build, which would let a too-short `pixels`

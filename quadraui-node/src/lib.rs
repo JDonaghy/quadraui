@@ -20,17 +20,22 @@
 //! `insertImage`/`clearExtra`. The remaining mechanical method groups each
 //! get their own sibling module, every one a thin leaf over the same
 //! `BindingHost`/`InteractionEngine`/`Backend`/`PlatformServices` surface
-//! `quadraui-py` already wraps: [`clipboard`] (`Clipboard`), [`overlays`]
+//! `quadraui-py` already wraps: `clipboard` (`Clipboard`), `overlays`
 //! (`InteractionEngine`'s toast/tooltip/completions/float/rich-text-popup
-//! overlays), [`metrics`] (`Backend`'s measurement/capability surface),
-//! [`theme`] (theme/style/font configuration), [`accelerators`]
-//! (accelerators & global shortcuts), and [`platform`] (file dialogs,
+//! overlays), `metrics` (`Backend`'s measurement/capability surface),
+//! `theme` (theme/style/font configuration), `accelerators`
+//! (accelerators & global shortcuts), and `platform` (file dialogs,
 //! notifications, URL/path opening, trash, beep, system theme, platform
-//! identity).
+//! identity). Each is declared `mod` rather than `pub mod` -- every method
+//! it adds to `QuiApp` is still part of this crate's public napi surface
+//! (`#[napi] impl QuiApp` blocks across modules all extend the one exported
+//! type), only the Rust-level module path is private, so the names above
+//! are plain code spans rather than intra-doc links `cargo doc` could
+//! resolve.
 //!
 //! **Callback bridge.** [`NodeEventSink`] is the napi-rs analog of
 //! `quadraui-py`'s `PyEventSink`: it converts a dispatched [`UiEvent`] to a
-//! JS value via `Env::to_js_value` (replacing `pythonize::pythonize`),
+//! JS value via [`encode_via_json`] (replacing `pythonize::pythonize`),
 //! attaches a painted hit's [`HitDetail`] under the event payload's `"hit"`
 //! key the same way, calls the registered JS handler as a plain synchronous
 //! `Function::call` (it runs inside a step the leaf itself invokes -- no
@@ -65,9 +70,10 @@
 //! decode medium a given entry point needs:
 //! - [`decode_direct`] hands napi's own `Env::from_js_value` (gated behind
 //!   this crate's `serde-json` feature on the `napi` dependency) straight to
-//!   a derived `Deserialize` type -- the six fixed primitive slots and
-//!   `pushEvent`'s `UiEvent`, neither of which carries a byte-string or
-//!   float field at risk of the two pre-checks below.
+//!   a derived `Deserialize` type -- the six fixed primitive slots and every
+//!   overlay's own descriptor shape, none of which carries a byte-string/
+//!   float field at risk of the two pre-checks below, or a nested
+//!   newtype-struct identifier (see [`decode_via_json`]).
 //! - [`decode_via_core`] first materializes the JS value into one
 //!   [`serde_json::Value`] via [`to_descriptor_value`], then hands `&value`
 //!   to a kind-dispatched core decoder (`decode_extra_primitive` today;
@@ -90,6 +96,20 @@
 //!   two deltas `quadraui_binding_core::wire::materialize` keeps versus
 //!   `serde_json::Value`'s own `Deserialize` impl, applied here against
 //!   napi's JS object model instead of pythonize's.
+//! - [`decode_via_json`] also materializes through [`to_descriptor_value`],
+//!   like [`decode_via_core`], but then hands the resulting
+//!   [`serde_json::Value`] to `T`'s own derived `Deserialize` directly
+//!   (`serde_json::from_value`) instead of a core decoder -- the napi-3
+//!   `Deserializer`'s `deserialize_newtype_struct` workaround for a
+//!   standalone one-field tuple-struct identifier
+//!   ([`quadraui::AcceleratorId`], [`quadraui::GlobalShortcutId`]), which
+//!   `decode_direct`'s `Env::from_js_value` can't decode directly.
+//! - [`encode_via_json`] mirrors the decode side for the opposite direction:
+//!   materializes `T` into one [`serde_json::Value`] via `serde_json::to_value`
+//!   first, then converts that to a JS value via `Env::to_js_value`, working
+//!   around napi 3's own `Serializer` discarding the enum-variant tag a plain
+//!   `Env::to_js_value` on `T` directly would need. Every call site handing a
+//!   `quadraui`/`quadraui_binding_core` value to JS goes through this.
 //! - Either path's failure becomes a JS `Error` tagged `InvalidDescriptorError`
 //!   in its message via [`invalid_descriptor_error`] -- napi-rs has no
 //!   custom-exception-class mechanism at the FFI boundary the way PyO3's
@@ -503,7 +523,7 @@ fn render_output_from_callback(
 }
 
 /// Bridges [`EventSink`] to this binding's registered JS event handler:
-/// converts `event` to a JS value via `Env::to_js_value` (napi-rs's analog
+/// converts `event` to a JS value via [`encode_via_json`] (napi-rs's analog
 /// of `pythonize::pythonize`), attaching `hit_detail` under the `"hit"` key
 /// when present, calls the handler, and translates its return value into a
 /// [`Reaction`] -- the napi-rs analog of `quadraui-py`'s `PyEventSink`.
@@ -704,6 +724,14 @@ fn invalid_dimensions_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("InvalidDimensionsError: {detail}"))
 }
 
+/// Mirrors [`invalid_descriptor_error`] for a `role` string that isn't one
+/// of [`font_role`]'s recognized names -- [`QuiApp::measure_text`]'s own
+/// check -- the napi-rs analog of `quadraui-py`'s `InvalidFontRoleError`
+/// exception subclass.
+fn invalid_font_role_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("InvalidFontRoleError: {detail}"))
+}
+
 /// Mirrors [`invalid_descriptor_error`] for a `QuiApp` method called
 /// re-entrantly from inside a registered event handler/tick/render
 /// callback's own JS call stack -- see [`QuiApp::check_not_dispatching`]'s
@@ -715,8 +743,9 @@ fn reentrant_call_error(detail: impl std::fmt::Display) -> Error {
 /// Decodes `descriptor` straight into `T` via napi's own
 /// `Env::from_js_value` -- the napi-rs analog of `quadraui-py`'s
 /// `pythonize::depythonize`, for any descriptor type that derives
-/// `Deserialize` with no byte-string/non-finite-float field at risk (the
-/// six fixed primitive slots, `pushEvent`'s `UiEvent`).
+/// `Deserialize` with no byte-string/non-finite-float field, and no
+/// newtype-struct-identifier field (see [`decode_via_json`]), at risk (the
+/// six fixed primitive slots, every overlay's own descriptor shape).
 fn decode_direct<T: DeserializeOwned>(env: Env, what: &str, descriptor: Unknown) -> Result<T> {
     env.from_js_value(descriptor)
         .map_err(|err| invalid_descriptor_error(format!("{what}: {err}")))
@@ -783,8 +812,14 @@ fn decode_via_core<T>(
 /// decodes the same input correctly. Every other scalar/struct/enum shape
 /// `Env::from_js_value` already decodes correctly (see [`decode_direct`]),
 /// so this is reserved for exactly the newtype-struct-identifier case --
-/// today, [`quadraui::Accelerator`] (its own `id` field is one) and
-/// `GlobalShortcutId` itself.
+/// [`quadraui::Accelerator`] (its own `id` field is one) and
+/// `GlobalShortcutId` itself, plus every descriptor that can carry one of
+/// those nested inside it: [`Self::register_accelerator`] and
+/// [`Self::register_global_shortcut`]/[`Self::unregister_global_shortcut`]
+/// decode directly, while `pushEvent`'s [`UiEvent`] and
+/// `queueDialogEvents`' `Vec<UiEvent>` need it for exactly
+/// [`UiEvent::Accelerator`]'s `AcceleratorId` field and
+/// [`UiEvent::GlobalShortcut`]'s `GlobalShortcutId` field.
 fn decode_via_json<T: DeserializeOwned>(what: &str, descriptor: Unknown) -> Result<T> {
     let value = to_descriptor_value(descriptor)
         .map_err(|detail| invalid_descriptor_error(format!("{what}: {detail}")))?;
@@ -1393,11 +1428,15 @@ impl QuiApp {
 
     /// Queues a [`UiEvent`] decoded from a JS object, drained one per
     /// `step`/`run` call the same way a `pushKeyEvent`-queued event is.
-    /// Raises `InvalidDescriptorError` on a shape mismatch.
+    /// Raises `InvalidDescriptorError` on a shape mismatch. Goes through
+    /// [`decode_via_json`] rather than [`decode_direct`] because `UiEvent`
+    /// carries two variants ([`UiEvent::Accelerator`],
+    /// [`UiEvent::GlobalShortcut`]) whose payload is a newtype-struct
+    /// identifier ([`quadraui::AcceleratorId`], [`quadraui::GlobalShortcutId`]).
     #[napi(js_name = "pushEvent")]
-    pub fn push_event(&mut self, env: Env, descriptor: Unknown) -> Result<()> {
+    pub fn push_event(&mut self, descriptor: Unknown) -> Result<()> {
         self.check_not_dispatching()?;
-        let event: UiEvent = decode_direct(env, "pushEvent", descriptor)?;
+        let event: UiEvent = decode_via_json("pushEvent", descriptor)?;
         self.pending_events.push_back(event);
         Ok(())
     }

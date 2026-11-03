@@ -104,8 +104,9 @@ impl QuiApp {
         text: String,
         role: Option<String>,
     ) -> Result<(f64, f64)> {
+        self.check_not_dispatching()?;
         let role = font_role(role.as_deref().unwrap_or("chrome"))
-            .map_err(|err| invalid_descriptor_error(format!("measureText: {err}")))?;
+            .map_err(|err| invalid_font_role_error(format!("measureText: {err}")))?;
         self.guarded(env, |app| {
             let (w, h) = app.driver.backend().measure_text(&text, role);
             Ok((w as f64, h as f64))
