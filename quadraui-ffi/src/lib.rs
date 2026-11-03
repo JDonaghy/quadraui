@@ -7,7 +7,12 @@
 //! `DataTable`, `TabBar`), one descriptor per type — but the boundary itself
 //! is meant to be shippable: every entry point is panic-guarded, every
 //! failure maps to a documented integer code, and every pointer handed out
-//! has a stated owner.
+//! has a stated owner. The six-slot model and its band painter are
+//! [`quadraui_binding_core::BindingHost`] and
+//! [`quadraui_binding_core::draw_bands`] — the same language-neutral slot
+//! store and painter `quadraui-py` is a leaf over — so this crate decodes
+//! JSON into `quadraui`'s own descriptor types and leaves the slot
+//! bookkeeping and layout to that shared crate.
 //!
 //! The original, larger half of this surface runs on the headless `tui`
 //! backend ([`quadraui::tui::testing::TuiDriver`]), so a consumer gets a real
@@ -159,9 +164,10 @@ use quadraui::paths::{self, AppPathKind};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{StepOutcome, TuiRunner};
 use quadraui::{
-    AppLogic, Backend, Button, DataTable, Key, ListView, ListViewHit, Modifiers, NamedKey, Point,
-    Reaction, Rect, TabBar, TextDisplay, TreeView, UiEvent, Viewport,
+    AppLogic, Backend, Button, DataTable, InteractionState, Key, ListView, ListViewHit, Modifiers,
+    NamedKey, Point, Reaction, Rect, TabBar, TextDisplay, TreeView, UiEvent, Viewport,
 };
+use quadraui_binding_core::{draw_bands, panic_message, BindingHost};
 
 /// The call succeeded. Also the "continue" step result of [`qui_step`].
 pub const QUI_OK: i32 = 0;
@@ -314,15 +320,10 @@ impl AbiResult for () {
 /// Turns a caught panic payload into [`QUI_ERR_PANIC`] plus a last-error
 /// message naming the entry point and, when the payload is a string (the
 /// shape `panic!`, `assert!` and `unwrap` all produce), the panic's own
-/// message.
+/// message — the ABI-specific error-code wrapper around
+/// [`quadraui_binding_core::panic_message`]'s shared payload decode.
 fn record_panic(name: &str, payload: &(dyn Any + Send)) -> i32 {
-    let detail = if let Some(text) = payload.downcast_ref::<&'static str>() {
-        (*text).to_owned()
-    } else if let Some(text) = payload.downcast_ref::<String>() {
-        text.clone()
-    } else {
-        "<non-string panic payload>".to_owned()
-    };
+    let detail = panic_message(payload);
     fail(
         QUI_ERR_PANIC,
         format!("{name}: caught a Rust panic at the ABI boundary: {detail}"),
@@ -482,42 +483,24 @@ fn reaction_from_code(code: i32) -> Reaction {
     }
 }
 
-/// The [`AppLogic`] the C side drives: a bag of optional descriptors plus
-/// the host's callbacks.
+/// The [`AppLogic`] the C side drives: a thin leaf around
+/// [`BindingHost`] — the same six-fixed-slot model `quadraui-py` is a leaf
+/// over — plus the host's callbacks. This crate exposes only the six fixed
+/// slots over the C ABI, so [`BindingHost::extra_slots`] and the
+/// backend-settings replay fields stay empty/unused here.
 struct FfiApp {
-    button: Option<Button>,
-    text_display: Option<TextDisplay>,
-    list: Option<ListView>,
-    tree: Option<TreeView>,
-    data_table: Option<DataTable>,
-    tab_bar: Option<TabBar>,
+    host: BindingHost,
     vtable: QuiVTable,
 }
 
 impl FfiApp {
     fn slot_occupied(&self, slot: i32) -> bool {
-        match slot {
-            QUI_SLOT_BUTTON => self.button.is_some(),
-            QUI_SLOT_TEXT_DISPLAY => self.text_display.is_some(),
-            QUI_SLOT_LIST => self.list.is_some(),
-            QUI_SLOT_TREE => self.tree.is_some(),
-            QUI_SLOT_DATA_TABLE => self.data_table.is_some(),
-            QUI_SLOT_TAB_BAR => self.tab_bar.is_some(),
-            _ => false,
-        }
+        self.host.slot_occupied(i64::from(slot))
     }
 
     /// Empties one slot, returning whether it held anything.
     fn clear_slot(&mut self, slot: i32) -> bool {
-        match slot {
-            QUI_SLOT_BUTTON => self.button.take().is_some(),
-            QUI_SLOT_TEXT_DISPLAY => self.text_display.take().is_some(),
-            QUI_SLOT_LIST => self.list.take().is_some(),
-            QUI_SLOT_TREE => self.tree.take().is_some(),
-            QUI_SLOT_DATA_TABLE => self.data_table.take().is_some(),
-            QUI_SLOT_TAB_BAR => self.tab_bar.take().is_some(),
-            _ => false,
-        }
+        self.host.clear_slot(i64::from(slot))
     }
 }
 
@@ -551,49 +534,14 @@ impl AppLogic for FfiApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         panic_hook_for_tests();
-        let viewport = backend.viewport();
-        let mut y = 0.0_f32;
-        let mut next_band = |height: f32| -> Option<Rect> {
-            let remaining = viewport.height - y;
-            if remaining <= 0.0 {
-                return None;
-            }
-            let band_height = height.min(remaining);
-            let rect = Rect::new(0.0, y, viewport.width, band_height);
-            y += band_height;
-            Some(rect)
-        };
-
-        if let Some(button) = &self.button {
-            if let Some(rect) = next_band(3.0) {
-                backend.draw_button(rect, button);
-            }
-        }
-        if let Some(text_display) = &self.text_display {
-            if let Some(rect) = next_band(3.0) {
-                backend.draw_text_display(rect, text_display);
-            }
-        }
-        if let Some(list) = &self.list {
-            if let Some(rect) = next_band(4.0) {
-                backend.draw_list(rect, list);
-            }
-        }
-        if let Some(tree) = &self.tree {
-            if let Some(rect) = next_band(4.0) {
-                backend.draw_tree(rect, tree);
-            }
-        }
-        if let Some(data_table) = &self.data_table {
-            if let Some(rect) = next_band(4.0) {
-                backend.draw_data_table(rect, data_table, None);
-            }
-        }
-        if let Some(tab_bar) = &self.tab_bar {
-            if let Some(rect) = next_band(3.0) {
-                backend.draw_tab_bar_layout(rect, tab_bar, None);
-            }
-        }
+        // `draw_bands` is the one band painter every native binding shares
+        // (`quadraui-py`'s `PyAppLogic::render` included); this crate has no
+        // hit-testing feature of its own, so the painted hits it collects
+        // are discarded rather than fed to an `InteractionEngine`.
+        let mut hits = Vec::new();
+        draw_bands(backend, self.host.render_refs(), &mut hits, &|_| {
+            InteractionState::default()
+        });
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
@@ -666,12 +614,7 @@ pub unsafe extern "C" fn qui_app_new(width: u16, height: u16, vtable: QuiVTable)
             return std::ptr::null_mut();
         }
         let app = FfiApp {
-            button: None,
-            text_display: None,
-            list: None,
-            tree: None,
-            data_table: None,
-            tab_bar: None,
+            host: BindingHost::default(),
             vtable,
         };
         Box::into_raw(Box::new(QuiApp {
@@ -742,7 +685,7 @@ unsafe fn insert_descriptor(
         macro_rules! decode_into {
             ($ty:ty, $field:ident) => {
                 match serde_json::from_str::<$ty>(text) {
-                    Ok(decoded) => app.driver.app_mut().$field = Some(decoded),
+                    Ok(decoded) => app.driver.app_mut().host.$field = Some(decoded),
                     Err(err) => {
                         return fail_i64(
                             QUI_ERR_INVALID_JSON,
