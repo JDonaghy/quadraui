@@ -627,6 +627,8 @@ impl AppLogic for PyAppLogic {
                 &chrome_interaction,
             );
             self.engine.sync_menu_bar(backend, &hits);
+            self.engine.sync_forms(backend, &hits);
+            self.engine.sync_text_input_carets(backend, &hits);
             self.engine.render_ctx_menu(backend);
             self.engine.render_dialog(backend);
             self.engine.set_hits(hits);
@@ -644,6 +646,8 @@ impl AppLogic for PyAppLogic {
             None => {}
         }
         self.engine.sync_menu_bar(backend, &hits);
+        self.engine.sync_forms(backend, &hits);
+        self.engine.sync_text_input_carets(backend, &hits);
         self.engine.render_ctx_menu(backend);
         self.engine.render_dialog(backend);
         self.engine.set_hits(hits);

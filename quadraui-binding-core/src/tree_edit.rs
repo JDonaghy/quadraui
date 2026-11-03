@@ -2,7 +2,7 @@
 //! (`TreeRow::edit`): turns a raw key into the next
 //! [`TreeRowEditState`] it should hold, so a binding doesn't have to
 //! reimplement cursor/selection math itself for every keystroke. Unlike
-//! [`crate::text_input::TextCursorState`], no per-widget cache is needed
+//! [`crate::text_input::TextEditorCache`], no per-widget cache is needed
 //! here — the rename's cursor/selection round-trips through
 //! `TreeEvent::RowRenameChanged` and back onto the row's own `edit` field,
 //! since that event (unlike `FormEvent::TextInputChanged`) carries them.

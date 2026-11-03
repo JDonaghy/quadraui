@@ -10,9 +10,10 @@ use std::rc::Rc;
 use quadraui::{
     ActivityBar, Backend, BoardModel, Canvas, Chart, ComboBox, CommandCenter, CommandLine,
     CompletionItemMeasure, DatePicker, DiffView, Editor, FindReplacePanel, Form, Image,
-    InteractionState, MenuBar, MessageList, Minimap, MultiSectionView, NumberInput, Palette,
-    PipelineView, Point, ProgressBar, RadioGroup, Rect, ScrollAxis, ScrollView, Scrollbar, Spinner,
-    StatusBar, StatusBarHit, Switch, SwitchHit, Terminal, TextInput, TextRegion, Toolbar, WidgetId,
+    InteractionState, MenuBar, MessageList, Minimap, MultiSectionView, NumberInput, NumberInputHit,
+    Palette, PipelineView, Point, ProgressBar, RadioGroup, Rect, ScrollAxis, ScrollView, Scrollbar,
+    Spinner, StatusBar, StatusBarHit, Switch, SwitchHit, Terminal, TextInput, TextRegion, Toolbar,
+    WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -127,12 +128,32 @@ impl ExtraPaint for Image {
 }
 
 impl ExtraPaint for Form {
+    /// The bare, non-interactive paint this trait's own `paint` always
+    /// does for every extra — `crate::engine::InteractionEngine::sync_forms`
+    /// repaints on top of it with the real [`quadraui::compose::FormController`]
+    /// state (scroll offset, in-progress edits, ...) once wired, the same
+    /// "paint plain first, then repaint interactive on top" sequencing
+    /// `crate::engine::InteractionEngine::sync_menu_bar` already uses for
+    /// `"menu_bar"`.
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_form(area, self);
     }
 
     fn id(&self) -> WidgetId {
         self.id
+    }
+
+    /// Whole-area bounds check, like [`TextInput::hit_test`] above — a
+    /// click's precise field-level routing is
+    /// `crate::engine::InteractionEngine::handle`'s own `FormController`
+    /// dispatch, which resolves it via `FormController`'s own internal
+    /// layout rather than this trait's `bool`-only answer.
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
     }
 }
 
@@ -147,9 +168,12 @@ impl ExtraPaint for TextInput {
 
     /// Whole-area bounds check: [`ExtraPaint::hit_test`] has no
     /// backend-metrics parameter to resolve a click to a specific
-    /// character column, so any click inside `area` counts as landing on
-    /// the input (focus/caret placement stays coarse until a metrics-aware
-    /// hit-test is threaded through).
+    /// character column, so this only ever decides whether a click landed
+    /// on the input at all — `InteractionEngine::handle`'s own
+    /// `HitDetail::ExtraBody` arm has `Backend::measure()` in hand at the
+    /// click site and threads it through `text_input_click_event` for the
+    /// metrics-aware part (resolving which character column, and placing
+    /// the caret there).
     fn hit_test(&self, area: Rect, point: Point) -> bool {
         area.contains(point)
     }
@@ -166,6 +190,25 @@ impl ExtraPaint for RadioGroup {
 
     fn id(&self) -> WidgetId {
         self.id
+    }
+
+    /// Whole-area bounds check: [`ExtraPaint::hit_test`]'s own signature
+    /// has no parameter for the per-option `measure` closure
+    /// [`quadraui::RadioGroup::layout`] needs (unlike
+    /// [`NumberInput::hit_test`]'s fixed stepper column). That alone
+    /// doesn't rule out resolving a click to a specific option —
+    /// `InteractionEngine::handle`'s own click site has a real `backend`
+    /// (and so real metrics) in hand, the same way it does for
+    /// [`TextInput::hit_test`]'s equivalent limitation — it just isn't
+    /// wired there yet, so a click still only focuses the whole group;
+    /// `Up`/`Down`/`Left`/`Right` move the selection once focused via
+    /// [`ExtraPaint::tab_stop`].
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
     }
 }
 
@@ -195,6 +238,21 @@ impl ExtraPaint for NumberInput {
 
     fn id(&self) -> WidgetId {
         self.id
+    }
+
+    /// Precise, not whole-area, unlike [`TextInput::hit_test`] above:
+    /// [`quadraui::NumberInput::layout`] needs no backend metrics (its
+    /// stepper column is a fixed `STEPPER_WIDTH`), so the real
+    /// increment/decrement/text-area regions are resolvable here, which is
+    /// what lets a stepper click be routed precisely (see
+    /// `crate::engine::InteractionEngine::handle`'s own `NumberInput`
+    /// click arm) instead of only coarse click-to-focus.
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        self.layout(area).hit_test(point) != NumberInputHit::Outside
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
     }
 }
 
@@ -228,6 +286,23 @@ impl ExtraPaint for ComboBox {
 
     fn id(&self) -> WidgetId {
         self.id
+    }
+
+    /// Whole-area bounds check, same limitation [`RadioGroup::hit_test`]
+    /// documents: resolving a click to the field or a specific filtered
+    /// dropdown item needs the backend's `line_height` [`ExtraPaint::paint`]
+    /// uses to build [`quadraui::ComboBox::layout`]'s `field_bounds`/
+    /// `measure_item`, which this trait's `hit_test` has no parameter for
+    /// — `InteractionEngine::handle` has that `backend` in hand at the
+    /// click site, same as it does for `TextInput`, so this is not wired
+    /// yet rather than impossible. Typing, `Up`/`Down`/`Enter`/`Escape`
+    /// still work once focused via [`ExtraPaint::tab_stop`].
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
     }
 }
 
@@ -265,6 +340,22 @@ impl ExtraPaint for DatePicker {
 
     fn id(&self) -> WidgetId {
         self.id
+    }
+
+    /// Whole-area bounds check, same limitation [`RadioGroup::hit_test`]
+    /// documents: resolving a click to a prev/next control or a specific
+    /// day cell needs the backend's `line_height` [`ExtraPaint::paint`]
+    /// uses to derive the grid's `cell_width`/`cell_height`, which this
+    /// trait's `hit_test` has no parameter for — not wired yet rather than
+    /// impossible, same caveat. `Left`/`Right`/`Up`/`Down`/`PageUp`/
+    /// `PageDown`/`Enter` navigation still works once focused via
+    /// [`ExtraPaint::tab_stop`].
+    fn hit_test(&self, area: Rect, point: Point) -> bool {
+        area.contains(point)
+    }
+
+    fn tab_stop(&self) -> bool {
+        true
     }
 }
 
