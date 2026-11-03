@@ -4326,6 +4326,32 @@ pub trait PlatformServices {
         Err(BackendError::Unsupported)
     }
 
+    /// Restore `path` from the platform trash/recycle bin back to its
+    /// original location — the inverse of [`Self::move_to_trash`], for an
+    /// "Undo" affordance on a delete-confirm toast.
+    ///
+    /// Default: `Err(BackendError::Unsupported)`, same placeholder
+    /// reasoning as [`Self::reveal_in_file_manager`]. TUI, GTK, and
+    /// Win-GUI override it with the same real implementation
+    /// ([`crate::desktop::restore_from_trash`]): on Windows and on Linux
+    /// (or any other freedesktop.org trash-spec environment), the
+    /// cross-platform `trash` crate's `os_limited` module can list what's
+    /// in the trash and restore a specific item by its original path —
+    /// again needing only a filesystem, no live desktop/window-server
+    /// session, so TUI gets the same full support `move_to_trash` already
+    /// does there. **macOS does not override this one** and keeps the
+    /// default `Unsupported`: `trash`'s `os_limited` module is gated to
+    /// `target_os = "windows"` and freedesktop-ish Unix only (see that
+    /// crate's own `lib.rs`) — macOS's trash-item lookup has no
+    /// programmatic listing/restore API behind it, only the one-way
+    /// `-trashItemAtURL:resultingItemURL:error:` call `move_to_trash`
+    /// already uses, so there is nothing honest to implement there; this
+    /// stays a real, reportable gap rather than a faked success.
+    fn restore_from_trash(&self, path: &Path) -> ServiceResult<()> {
+        let _ = path;
+        Err(BackendError::Unsupported)
+    }
+
     /// Ring the terminal bell / play the system alert sound — Electron's
     /// `shell.beep`.
     ///

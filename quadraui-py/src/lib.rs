@@ -98,11 +98,12 @@
 //! coverage (`step`/`run`, and `run_tui` for its own duration).
 //!
 //! [`QuiApp::actions`] returns a [`QuiAppActions`] — the handler-side
-//! escape hatch for the six overlay/OS-call methods this module doc's
+//! escape hatch for the seven overlay/OS-call methods this module doc's
 //! "cannot call back into `QuiApp`" note above otherwise rules out from
 //! inside a handler: `show_message_dialog`, `show_context_menu`,
-//! `show_toast`, `open_path`, `reveal_in_file_manager`, `move_to_trash`.
-//! Each method on it decodes and queues the same action its `QuiApp`
+//! `show_toast`, `open_path`, `reveal_in_file_manager`, `move_to_trash`,
+//! `restore_from_trash`. Each method on it decodes and queues the same
+//! action its `QuiApp`
 //! namesake would apply immediately; `step`/`run` and the `run_tui` pump
 //! loop drain that queue via [`flush_deferred_actions`] right after the
 //! dispatch that queued it finishes, applying each action as a direct
@@ -358,13 +359,13 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 
 /// One action a [`QuiAppActions`] method recorded, already decoded and
 /// validated, waiting for [`flush_deferred_actions`] to apply it. Each
-/// variant mirrors one of the six `QuiApp` methods [`QuiAppActions`]'s own
+/// variant mirrors one of the seven `QuiApp` methods [`QuiAppActions`]'s own
 /// doc names (`show_message_dialog`, `show_context_menu`, `show_toast`,
-/// `open_path`, `reveal_in_file_manager`, `move_to_trash`) — carrying
-/// exactly the already-decoded arguments the matching `QuiApp` method
-/// passes to the same underlying `quadraui`/`quadraui_binding_core` call,
-/// so applying one is a direct call with no further decoding or validation
-/// left to do.
+/// `open_path`, `reveal_in_file_manager`, `move_to_trash`,
+/// `restore_from_trash`) — carrying exactly the already-decoded arguments
+/// the matching `QuiApp` method passes to the same underlying
+/// `quadraui`/`quadraui_binding_core` call, so applying one is a direct
+/// call with no further decoding or validation left to do.
 enum DeferredAction {
     MessageDialog(MessageDialogOptions),
     ContextMenu(Vec<ContextMenuItem>, Point),
@@ -372,6 +373,7 @@ enum DeferredAction {
     OpenPath(PathBuf),
     RevealInFileManager(PathBuf),
     MoveToTrash(PathBuf),
+    RestoreFromTrash(PathBuf),
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
@@ -1467,9 +1469,9 @@ impl QuiAppWaker {
 /// A handle, returned by [`QuiApp::actions`], that queues exactly the
 /// overlay/OS-call methods `QuiApp` itself restricts to top-level script
 /// code — `show_message_dialog`, `show_context_menu`, `show_toast`,
-/// `open_path`, `reveal_in_file_manager`, `move_to_trash` — so a registered
-/// event handler can request one of them without re-entering `QuiApp`'s own
-/// PyO3 cell.
+/// `open_path`, `reveal_in_file_manager`, `move_to_trash`,
+/// `restore_from_trash` — so a registered event handler can request one of
+/// them without re-entering `QuiApp`'s own PyO3 cell.
 ///
 /// A handler already holds `QuiApp`'s one mutable borrow for the whole
 /// dispatch that invoked it (the same wall `show_message_dialog`'s own doc
@@ -1589,6 +1591,15 @@ impl QuiAppActions {
             .push_back(DeferredAction::MoveToTrash(PathBuf::from(path)));
         Ok(())
     }
+
+    /// Queues a [`DeferredAction::RestoreFromTrash`] — same argument as
+    /// `QuiApp::restore_from_trash`.
+    fn restore_from_trash(&self, path: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::RestoreFromTrash(PathBuf::from(path)));
+        Ok(())
+    }
 }
 
 /// Applies every action queued on `app_logic.deferred_actions` directly
@@ -1598,10 +1609,11 @@ impl QuiAppActions {
 /// (never through another PyO3 method call on `QuiApp` itself, which is
 /// exactly the re-entrant call a [`QuiAppActions`] method queued this
 /// action to avoid). A failing `open_path`/`reveal_in_file_manager`/
-/// `move_to_trash` records its error on `app_logic.pending_error`, the same
-/// cell `handle`/`tick`/a render callback already use to report a failure
-/// back out of `step`/`run`/`run_tui`, rather than being dropped silently
-/// or panicking a loop with no caller around to catch it.
+/// `move_to_trash`/`restore_from_trash` records its error on
+/// `app_logic.pending_error`, the same cell `handle`/`tick`/a render
+/// callback already use to report a failure back out of
+/// `step`/`run`/`run_tui`, rather than being dropped silently or panicking
+/// a loop with no caller around to catch it.
 ///
 /// Returns whether anything was applied, so a caller only pays for an
 /// extra repaint when a queued action actually changed something visible.
@@ -1642,6 +1654,14 @@ fn flush_deferred_actions(backend: &mut TuiBackend, app_logic: &mut PyAppLogic) 
                     record_error(
                         &app_logic.pending_error,
                         InternalError::new_err(format!("move_to_trash: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::RestoreFromTrash(path) => {
+                if let Err(err) = backend.services().restore_from_trash(&path) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("restore_from_trash: {err:?}")),
                     );
                 }
             }
@@ -1874,8 +1894,9 @@ impl QuiApp {
 
     /// Returns a [`QuiAppActions`] handle: an object a registered event
     /// handler can call `show_message_dialog`/`show_context_menu`/
-    /// `show_toast`/`open_path`/`reveal_in_file_manager`/`move_to_trash` on
-    /// instead of this `QuiApp` itself, since the handler already holds
+    /// `show_toast`/`open_path`/`reveal_in_file_manager`/`move_to_trash`/
+    /// `restore_from_trash` on instead of this `QuiApp` itself, since the
+    /// handler already holds
     /// this app's one mutable borrow for the whole dispatch that invoked
     /// it and a direct call on `self` from there raises "already
     /// borrowed" — see [`QuiAppActions`]'s own doc for the full story and
@@ -3934,6 +3955,29 @@ impl QuiApp {
                 .services()
                 .move_to_trash(Path::new(path))
                 .map_err(|err| InternalError::new_err(format!("move_to_trash: {err:?}")))
+        })
+    }
+
+    /// Restores `path` from the platform trash/recycle bin back to its
+    /// original location -- [`quadraui::PlatformServices::restore_from_trash`],
+    /// the inverse of [`Self::move_to_trash`]. Full support on the headless
+    /// `TuiBackend` built for Windows or Linux (any freedesktop.org
+    /// trash-spec host) -- same filesystem-only story as `move_to_trash`
+    /// there. Raises `InternalError` both on a real filesystem failure and
+    /// when no trashed item matches `path` (nothing to restore), or when
+    /// built for macOS, where no programmatic trash listing/restore API
+    /// exists to delegate to.
+    ///
+    /// Same handler restriction as `reveal_in_file_manager` — call
+    /// [`QuiAppActions::restore_from_trash`] (via [`QuiApp::actions`]) from
+    /// a handler instead.
+    fn restore_from_trash(&mut self, path: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .restore_from_trash(Path::new(path))
+                .map_err(|err| InternalError::new_err(format!("restore_from_trash: {err:?}")))
         })
     }
 

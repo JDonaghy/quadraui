@@ -846,6 +846,13 @@ impl PlatformServices for MacPlatformServices {
         crate::desktop::move_to_trash(path)
     }
 
+    // `restore_from_trash` is deliberately not overridden here: the `trash`
+    // crate's `os_limited` module — the only part able to list/restore a
+    // specific trashed item — is gated to Windows and freedesktop-ish Unix
+    // only, so macOS keeps `PlatformServices::restore_from_trash`'s honest
+    // `Err(BackendError::Unsupported)` default. See that trait method's own
+    // doc for the full reasoning.
+
     /// `NSBeep` — a bare AppKit C function, not a method on
     /// any object, so unlike every other AppKit call in this module it
     /// needs no `MainThreadMarker`/receiver of its own.

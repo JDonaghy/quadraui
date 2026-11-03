@@ -158,6 +158,15 @@ only a push to `main` runs this workflow.
   `"find_replace"` (`FindReplacePanel`). All five paint, and all but `canvas`
   take part in the hit map (click-to-focus plus a `MouseDown`/`Scroll`'s
   `widget` resolving to them) the same way `switch`/`text_input` already do.
+- `PlatformServices` gains `restore_from_trash(&self, path: &Path) ->
+  ServiceResult<()>`, the inverse of `move_to_trash` — restores `path` from
+  the platform trash/recycle bin back to its original location, for an
+  "Undo" affordance on a delete-confirm toast. Defaults to
+  `Err(BackendError::Unsupported)`; `tui`/`gtk`/`win` override it with a real
+  implementation backed by the cross-platform `trash` crate's `os_limited`
+  module (full support on TUI, same as `move_to_trash`). `macos` keeps the
+  `Unsupported` default — `os_limited` has no macOS implementation, so there
+  is nothing honest to override there.
 
 ### Changed
 - TUI: on a kitty-keyboard-capable terminal, a chord whose key is a shifted

@@ -14,12 +14,20 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 - `QuiApp.actions()` returns a `QuiAppActions` handle a registered event
   handler can call `show_message_dialog`/`show_context_menu`/`show_toast`/
-  `open_path`/`reveal_in_file_manager`/`move_to_trash` on without hitting
-  the "already borrowed" PyO3 runtime error a direct call on `app` itself
-  raises from inside a handler. Each method queues the already-decoded
-  action instead of applying it immediately; `step`/`run` and the
-  `run_tui` pump loop apply it right after the dispatch that queued it
-  finishes. Not yet wired into `run_native`'s `gtk`/`macos`/`win` loops.
+  `open_path`/`reveal_in_file_manager`/`move_to_trash`/`restore_from_trash`
+  on without hitting the "already borrowed" PyO3 runtime error a direct
+  call on `app` itself raises from inside a handler. Each method queues
+  the already-decoded action instead of applying it immediately;
+  `step`/`run` and the `run_tui` pump loop apply it right after the
+  dispatch that queued it finishes. Not yet wired into `run_native`'s
+  `gtk`/`macos`/`win` loops.
+- `QuiApp.restore_from_trash(path)` restores `path` from the platform
+  trash/recycle bin back to its original location — the inverse of
+  `QuiApp.move_to_trash`, for an "Undo" affordance on a delete-confirm
+  toast. Raises `InternalError` on a real filesystem failure, when no
+  trashed item matches `path`, or when built for macOS (no programmatic
+  trash listing/restore API there — see
+  `quadraui::PlatformServices::restore_from_trash`'s doc).
 - A click on a focused `text_input` extra now places the caret under the
   click (`EditOp::SetCursor`, resolved via `TextInput::layout`'s own
   metrics-aware hit-test) instead of only moving keyboard focus there,

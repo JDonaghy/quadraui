@@ -1907,6 +1907,17 @@ impl PlatformServices for TuiPlatformServices {
         crate::desktop::move_to_trash(path)
     }
 
+    /// [`crate::desktop::restore_from_trash`] — full support on a TUI
+    /// built for Windows or a freedesktop.org trash-spec Unix (the same
+    /// filesystem-only path `move_to_trash` already has there); an honest
+    /// `Err(BackendError::Unsupported)` on a TUI built for macOS, since
+    /// that function's own doc explains the `trash` crate's `os_limited`
+    /// module — the only part able to list/restore a specific item — has
+    /// no macOS implementation to delegate to.
+    fn restore_from_trash(&self, path: &Path) -> ServiceResult<()> {
+        crate::desktop::restore_from_trash(path)
+    }
+
     /// BEL (`\x07`), written to both stdout and (Unix) `/dev/tty` for the
     /// same reliability reason [`TuiClipboard::write_text`]'s OSC 52 leg
     /// writes to both: stdout may be redirected away from

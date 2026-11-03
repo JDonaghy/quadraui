@@ -8,11 +8,13 @@ own headless `TuiBackend` (never a `run_native` window), so every assertion
 below is reachable with no real terminal, no real desktop session, and no
 native dialog -- the same "auto / headless oracle" story the issue tracking
 this file explains. `send_notification`/`open_url`/`reveal_in_file_manager`/
-`open_path`/`move_to_trash`/`beep` are fire-and-forget native effects with no
-assertable return value; this file only proves they're callable and don't
-raise on an obviously-benign input -- their actual visible effect needs a
-human at a real terminal, noted in this PR's SMOKE_TESTS instead of asserted
-here.
+`open_path`/`beep` are fire-and-forget native effects with no assertable
+return value; this file only proves they're callable and don't raise on an
+obviously-benign input -- their actual visible effect needs a human at a
+real terminal, noted in this PR's SMOKE_TESTS instead of asserted here.
+`move_to_trash`/`restore_from_trash` are the two exceptions: both have a
+directly observable filesystem effect (the file disappears, then
+reappears), so this file asserts on that instead of only "didn't raise".
 
 Run against a built wheel/extension, e.g.:
 
@@ -189,3 +191,24 @@ def test_move_to_trash_moves_a_real_file(tmp_path):
     app.move_to_trash(str(victim))
 
     assert not victim.exists()
+
+
+def test_restore_from_trash_puts_the_file_back(tmp_path):
+    victim = tmp_path / "doomed.txt"
+    victim.write_text("bye")
+    app = QuiApp(10, 10)
+
+    app.move_to_trash(str(victim))
+    assert not victim.exists()
+
+    app.restore_from_trash(str(victim))
+
+    assert victim.exists()
+    assert victim.read_text() == "bye"
+
+
+def test_restore_from_trash_on_a_path_never_trashed_raises():
+    app = QuiApp(10, 10)
+
+    with pytest.raises(Exception):
+        app.restore_from_trash("/tmp/quadraui-1924-never-trashed-does-not-exist.txt")

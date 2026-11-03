@@ -376,6 +376,84 @@ pub(crate) fn move_to_trash(path: &std::path::Path) -> crate::backend::ServiceRe
     })
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// restore_from_trash
+// ─────────────────────────────────────────────────────────────────────
+
+/// Restore `path` from the platform trash/recycle bin back to its
+/// original location — the inverse of [`move_to_trash`] above, shared by
+/// every `PlatformServices::restore_from_trash` override that has one
+/// (`tui`/`gtk`/`win::services`; macOS deliberately has none — see
+/// [`crate::backend::PlatformServices::restore_from_trash`]'s doc for
+/// why).
+///
+/// Unlike [`move_to_trash`], this one genuinely *is* Windows/Linux-only:
+/// `trash`'s `os_limited` module — the only part of that crate able to
+/// list what's in the trash and restore a specific item back out of it —
+/// is `#[cfg]`-gated to `target_os = "windows"` and freedesktop-ish Unix
+/// (`all(unix, not(macos), not(ios), not(android))`) in the crate's own
+/// `lib.rs`; there is no third branch to add here, only an honest
+/// `Unsupported` on every other target this function might still get
+/// compiled for (a `tui`/`gtk` build running on macOS, say — the feature
+/// gate below says nothing about the host it ends up built on).
+///
+/// Looks up every [`trash::TrashItem`] whose `original_path()` matches
+/// `path` and restores the most recently trashed one (`time_deleted`'s
+/// max) — the one an "Undo" affordance right after a `move_to_trash` call
+/// almost always means, even if the same path was trashed more than once
+/// in this session.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    all(feature = "win", any(target_os = "windows", test))
+))]
+pub(crate) fn restore_from_trash(path: &std::path::Path) -> crate::backend::ServiceResult<()> {
+    #[cfg(any(
+        target_os = "windows",
+        all(
+            unix,
+            not(target_os = "macos"),
+            not(target_os = "ios"),
+            not(target_os = "android")
+        )
+    ))]
+    {
+        let items = trash::os_limited::list().map_err(|e| {
+            crate::backend::BackendError::PlatformFailure {
+                context: format!("trash::os_limited::list: {e}"),
+            }
+        })?;
+        let item = items
+            .into_iter()
+            .filter(|item| item.original_path() == path)
+            .max_by_key(|item| item.time_deleted)
+            .ok_or_else(|| crate::backend::BackendError::PlatformFailure {
+                context: format!(
+                    "restore_from_trash: no trashed item found for {}",
+                    path.display()
+                ),
+            })?;
+        trash::os_limited::restore_all([item]).map_err(|e| {
+            crate::backend::BackendError::PlatformFailure {
+                context: format!("trash::os_limited::restore_all: {e}"),
+            }
+        })
+    }
+    #[cfg(not(any(
+        target_os = "windows",
+        all(
+            unix,
+            not(target_os = "macos"),
+            not(target_os = "ios"),
+            not(target_os = "android")
+        )
+    )))]
+    {
+        let _ = path;
+        Err(crate::backend::BackendError::Unsupported)
+    }
+}
+
 #[cfg(all(
     test,
     any(
@@ -440,6 +518,72 @@ mod move_to_trash_tests {
         ));
         assert!(!path.exists());
         assert!(move_to_trash(&path).is_err());
+    }
+}
+
+#[cfg(all(test, any(feature = "tui", feature = "gtk", feature = "win")))]
+mod restore_from_trash_tests {
+    use super::*;
+
+    /// Real round trip against this host's actual trash/recycle bin:
+    /// [`move_to_trash`] followed by [`restore_from_trash`] must put the
+    /// same content back at the original path. Skips gracefully (rather
+    /// than failing) when either OS call fails in this environment — same
+    /// posture as `move_to_trash_tests`'s own round-trip test, for the
+    /// identical "no live desktop/trash session" reason.
+    #[allow(clippy::print_stderr)]
+    #[test]
+    fn restore_from_trash_puts_the_file_back_after_move_to_trash() {
+        let path = std::env::temp_dir().join(format!(
+            "quadraui-1924-restore-from-trash-test-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"quadraui#1924").expect("write temp file");
+
+        if let Err(e) = move_to_trash(&path) {
+            eprintln!(
+                "skipping: move_to_trash failed in this environment ({e:?}) — \
+                 likely no live desktop/trash session"
+            );
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+
+        if let Err(e) = restore_from_trash(&path) {
+            eprintln!(
+                "skipping: restore_from_trash failed in this environment ({e:?}) — \
+                 likely no live desktop/trash session"
+            );
+            return;
+        }
+
+        assert!(
+            path.exists(),
+            "the original path must exist again once restore_from_trash succeeds"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap_or_default(),
+            b"quadraui#1924",
+            "the restored file must carry its original content"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A path that was never trashed is a real, reportable failure — not
+    /// silently `Ok(())` — matching [`move_to_trash`]'s own
+    /// never-existed-path test just above.
+    #[test]
+    fn restore_from_trash_on_a_path_never_trashed_reports_a_failure() {
+        let path = std::env::temp_dir().join(format!(
+            "quadraui-1924-never-trashed-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        assert!(!path.exists());
+        assert!(restore_from_trash(&path).is_err());
     }
 }
 

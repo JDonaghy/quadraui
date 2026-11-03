@@ -30,6 +30,8 @@
 //! - `p` — `open_path` that same temp file with its default handler
 //! - `x` — write a second temp file and `move_to_trash` it —
 //!   check the Recycle Bin afterward
+//! - `y` — write a third temp file, `move_to_trash` it, then immediately
+//!   `restore_from_trash` it — the file should exist again afterward
 //! - `b` — `beep`
 //! - `d` — `displays`/`cursor_screen_point`: prints every connected monitor
 //!   (bounds, work area, scale, primary) and the current cursor position to
@@ -244,6 +246,24 @@ impl AppLogic for PlatformServicesDemo {
                 match backend.services().move_to_trash(&path) {
                     Ok(()) => eprintln!("move_to_trash: moved {path:?} to the Recycle Bin"),
                     Err(e) => eprintln!("move_to_trash FAILED: {e:?}"),
+                }
+                Reaction::Continue
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('y'),
+                ..
+            } => {
+                let path = scratch_file("restore");
+                if let Err(e) = backend.services().move_to_trash(&path) {
+                    eprintln!("move_to_trash FAILED (nothing to restore): {e:?}");
+                } else {
+                    match backend.services().restore_from_trash(&path) {
+                        Ok(()) => eprintln!(
+                            "restore_from_trash: restored {path:?} — exists again: {}",
+                            path.exists()
+                        ),
+                        Err(e) => eprintln!("restore_from_trash FAILED: {e:?}"),
+                    }
                 }
                 Reaction::Continue
             }
