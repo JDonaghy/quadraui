@@ -9,10 +9,11 @@
 //! macOS doesn't).
 //!
 //! Also covers the four `shell.*`-style methods
-//! (`reveal_in_file_manager`, `open_path`, `move_to_trash`, `beep`) —
-//! each has a real, visible side effect (a file manager window opens; the
-//! default app for a file launches; a temp file disappears from disk; a
-//! sound plays), which is why these are manual controls here
+//! (`reveal_in_file_manager`, `open_path`, `move_to_trash`, `beep`) plus
+//! `move_to_trash`'s inverse, `restore_from_trash` — each has a real,
+//! visible side effect (a file manager window opens; the default app for
+//! a file launches; a temp file disappears from disk then reappears;
+//! a sound plays), which is why these are manual controls here
 //! rather than automated `#[cfg(test)]` assertions in `gtk::services`
 //! itself (see that module's own tests for the pieces that *are* safe to
 //! assert on headlessly).
@@ -28,6 +29,8 @@
 //! - `o` — `open_path` that same temp file with its default handler
 //! - `t` — write a second temp file and `move_to_trash` it — check
 //!   your trash/recycle bin afterward
+//! - `u` — write a third temp file, `move_to_trash` it, then immediately
+//!   `restore_from_trash` it — the file should exist again afterward
 //! - `b` — `beep`
 //! - `d` — `displays`/`cursor_screen_point`: prints every
 //!   connected display (bounds, work area, scale, primary) and the
@@ -119,6 +122,24 @@ impl AppLogic for PlatformServicesDemo {
                 match backend.services().move_to_trash(&path) {
                     Ok(()) => eprintln!("move_to_trash: moved {path:?} to the trash"),
                     Err(e) => eprintln!("move_to_trash FAILED: {e:?}"),
+                }
+                Reaction::Continue
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('u'),
+                ..
+            } => {
+                let path = scratch_file("restore");
+                if let Err(e) = backend.services().move_to_trash(&path) {
+                    eprintln!("move_to_trash FAILED (nothing to restore): {e:?}");
+                } else {
+                    match backend.services().restore_from_trash(&path) {
+                        Ok(()) => eprintln!(
+                            "restore_from_trash: restored {path:?} — exists again: {}",
+                            path.exists()
+                        ),
+                        Err(e) => eprintln!("restore_from_trash FAILED: {e:?}"),
+                    }
                 }
                 Reaction::Continue
             }

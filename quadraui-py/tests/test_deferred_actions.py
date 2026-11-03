@@ -1,6 +1,7 @@
 """Black-box coverage for `QuiApp.actions()`'s `QuiAppActions` handle: the
 way a registered event handler queues `show_message_dialog`/`show_toast`/
-`open_path`/`reveal_in_file_manager`/`move_to_trash` (the methods `QuiApp`
+`open_path`/`reveal_in_file_manager`/`move_to_trash`/`restore_from_trash`
+(the methods `QuiApp`
 itself restricts to top-level script code, since a handler already holds
 this app's one mutable borrow for the whole dispatch that invoked it) and
 has it applied right after that dispatch finishes, instead of raising
@@ -76,6 +77,31 @@ def test_move_to_trash_queued_from_a_handler_actually_moves_the_file(tmp_path):
     app.run(1)
 
     assert not victim.exists()
+
+
+def test_restore_from_trash_queued_from_a_handler_actually_restores_the_file(
+    tmp_path,
+):
+    victim = tmp_path / "doomed.txt"
+    victim.write_text("bye")
+    app = QuiApp(10, 10)
+    actions = app.actions()
+
+    # Trash it first via a direct `QuiApp` call (no handler borrow in play
+    # yet at this point), then queue the restore from inside a handler --
+    # exactly the undo-toast shape `restore_from_trash` exists for.
+    app.move_to_trash(str(victim))
+    assert not victim.exists()
+
+    def on_event(_event):
+        actions.restore_from_trash(str(victim))
+
+    app.set_handler(on_event)
+    app.push_key_event(ord("a"))
+    app.run(1)
+
+    assert victim.exists()
+    assert victim.read_text() == "bye"
 
 
 def test_multiple_actions_queued_from_one_dispatch_all_apply():

@@ -1126,6 +1126,7 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
     ("reveal_in_file_manager", ServiceHonesty::AlwaysReal),
     ("open_path", ServiceHonesty::AlwaysReal),
     ("move_to_trash", ServiceHonesty::AlwaysReal),
+    ("restore_from_trash", ServiceHonesty::AlwaysReal),
     ("beep", ServiceHonesty::AlwaysReal),
     // `system_theme` returns `ServiceResult<SystemTheme>`
     // directly — same reasoning as `open_url_result` just above: the
