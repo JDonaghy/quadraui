@@ -1,9 +1,11 @@
-//! The `ExtraPaint` trait and one impl per additive primitive — the
-//! paint/hit-test logic for every primitive painted outside the six fixed
+//! The `ExtraPaint` trait, one impl per additive primitive, and the
+//! `extra_primitives!` table decoding each one — the paint/hit-test and
+//! wire-decode logic for every primitive painted outside the six fixed
 //! slots (`Button`/`TextDisplay`/`List`/`Tree`/`DataTable`/`TabBar`).
 //! Registering a further additive primitive needs exactly one impl here
-//! plus one entry in a binding's own decode registry (`EXTRA_PRIMITIVES` in
-//! `quadraui-py`) — no enum variant, no central match arm.
+//! plus one appended line in the `extra_primitives!` table at the bottom
+//! of this file — no enum variant, no central match arm, and no second
+//! decode registry in a binding to keep in lockstep with it.
 
 use std::rc::Rc;
 
@@ -784,41 +786,85 @@ impl ExtraPaint for FindReplacePanel {
     }
 }
 
-/// The additive primitive kind names, in the same registration order
-/// `quadraui-py`'s own `EXTRA_PRIMITIVES` decode table uses.
-/// [`crate::render::draw_bands`]
-/// iterates this (rather than the `extra` slot `HashMap` itself) so the
-/// paint order a frame produces is deterministic, independent of the map's
-/// iteration order.
-pub const EXTRA_PRIMITIVE_KINDS: [&str; 30] = [
-    "progress",
-    "spinner",
-    "image",
-    "form",
-    "text_input",
-    "number_input",
-    "combo_box",
-    "date_picker",
-    "radio_group",
-    "switch",
-    "chart",
-    "message_list",
-    "board",
-    "pipeline_view",
-    "minimap",
-    "multi_section_view",
-    "diff_view",
-    "activity_bar",
-    "toolbar",
-    "menu_bar",
-    "status_bar",
-    "command_line",
-    "command_center",
-    "palette",
-    "scrollbar",
-    "editor",
-    "terminal",
-    "canvas",
-    "scroll_view",
-    "find_replace",
-];
+/// Counts its `literal` arguments at compile time — the array-length
+/// companion `extra_primitives!` needs so [`EXTRA_PRIMITIVE_KINDS`]'s
+/// size tracks the table below with no hand-maintained length to drift.
+macro_rules! extra_primitive_count {
+    () => (0usize);
+    ($head:literal $(, $tail:literal)* $(,)?) => (1usize + extra_primitive_count!($($tail),*));
+}
+
+/// Generates [`EXTRA_PRIMITIVE_KINDS`] and [`decode_extra_primitive`] from
+/// one `"kind" => Type` table — the single source of truth a further
+/// additive primitive needs (plus that type's own [`ExtraPaint`] impl
+/// above): one appended line here, no separate decode registry to keep in
+/// lockstep with it the way a binding's own `EXTRA_PRIMITIVES` table used
+/// to need [`EXTRA_PRIMITIVE_KINDS`] to mirror by hand.
+macro_rules! extra_primitives {
+    ($( $kind:literal => $ty:ty ),+ $(,)?) => {
+        /// The additive primitive kind names, in [`decode_extra_primitive`]'s
+        /// dispatch order. [`crate::render::draw_bands`] iterates this
+        /// (rather than the `extra` slot `HashMap` itself) so the paint
+        /// order a frame produces is deterministic, independent of the
+        /// map's iteration order.
+        pub const EXTRA_PRIMITIVE_KINDS: [&str; extra_primitive_count!($($kind),+)] =
+            [$($kind),+];
+
+        /// Decodes one additive primitive descriptor, dispatched by `kind`
+        /// through the same table [`EXTRA_PRIMITIVE_KINDS`] names — the
+        /// core counterpart of a binding's own `EXTRA_PRIMITIVES` decode
+        /// registry (`quadraui-py`'s `insert_extra`/`insert_progress`/...
+        /// and its layout-tree leaf/render-frame decode all route through
+        /// this). Returns a [`crate::DecodeError`] naming every registered
+        /// kind when `kind` isn't one of them.
+        pub fn decode_extra_primitive<'de, D: serde::Deserializer<'de>>(
+            what: &str,
+            kind: &str,
+            deserializer: D,
+        ) -> Result<Rc<dyn ExtraPaint>, crate::DecodeError> {
+            match kind {
+                $(
+                    $kind => Ok(Rc::new(crate::decode_value::<$ty, D>(what, deserializer)?)
+                        as Rc<dyn ExtraPaint>),
+                )+
+                _ => Err(crate::DecodeError(format!(
+                    "{what}: unknown additive primitive kind {kind:?} (expected one of {:?})",
+                    EXTRA_PRIMITIVE_KINDS
+                ))),
+            }
+        }
+    };
+}
+
+extra_primitives! {
+    "progress" => ProgressBar,
+    "spinner" => Spinner,
+    "image" => Image,
+    "form" => Form,
+    "text_input" => TextInput,
+    "number_input" => NumberInput,
+    "combo_box" => ComboBox,
+    "date_picker" => DatePicker,
+    "radio_group" => RadioGroup,
+    "switch" => Switch,
+    "chart" => Chart,
+    "message_list" => MessageList,
+    "board" => BoardModel,
+    "pipeline_view" => PipelineView,
+    "minimap" => Minimap,
+    "multi_section_view" => MultiSectionView,
+    "diff_view" => DiffView,
+    "activity_bar" => ActivityBar,
+    "toolbar" => Toolbar,
+    "menu_bar" => MenuBar,
+    "status_bar" => StatusBar,
+    "command_line" => CommandLine,
+    "command_center" => CommandCenter,
+    "palette" => Palette,
+    "scrollbar" => Scrollbar,
+    "editor" => Editor,
+    "terminal" => Terminal,
+    "canvas" => Canvas,
+    "scroll_view" => ScrollView,
+    "find_replace" => FindReplacePanel,
+}

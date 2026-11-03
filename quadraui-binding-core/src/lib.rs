@@ -25,11 +25,44 @@ pub mod render;
 pub mod semantic;
 pub mod text_input;
 pub mod tree_edit;
+pub mod wire;
+
+/// A wire-decode failure from any decoder in [`wire`] or
+/// [`extra_paint::decode_extra_primitive`] — the core counterpart of a
+/// binding's own descriptor-decode exception (`quadraui-py`'s
+/// `InvalidDescriptorError`). Carries a human-readable `"{what}: ..."`
+/// message in the same shape every decoder in this crate produces, so a
+/// binding can surface it unchanged (just mapped to its own exception
+/// type) rather than reformatting it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodeError(pub String);
+
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for DecodeError {}
+
+/// Deserializes `deserializer` into `T`, wrapping any failure as a
+/// [`DecodeError`] whose message names `what` — the shared tail every
+/// per-kind decoder in this crate (`wire::decode_layout_node`,
+/// `extra_paint::decode_extra_primitive`, ...) reduces to once it has a
+/// concrete type and a `serde::Deserializer` in hand.
+pub(crate) fn decode_value<'de, T, D>(what: &str, deserializer: D) -> Result<T, DecodeError>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    T::deserialize(deserializer)
+        .map_err(|err| DecodeError(format!("{what}: invalid descriptor: {err}")))
+}
 
 pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree_scroll_state};
 pub use drag::{ActiveDrag, ScrollbarDrag};
 pub use engine::{message_dialog_options_from_buttons, EventSink, InteractionEngine};
-pub use extra_paint::{extra_as, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
+pub use extra_paint::{decode_extra_primitive, extra_as, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
 pub use hit::{event_position, hit_test_painted, set_event_widget};
 pub use hit::{HitDetail, PaintedHit};
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
@@ -42,11 +75,16 @@ pub use host::{
     WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY,
     SLOT_TREE,
 };
-pub use layout::{LayoutLeaf, LayoutNode, LayoutPanel, LayoutSidebarPanel, LayoutSplit};
-pub use layout::{LayoutSplitTree, LayoutTabEntry, LayoutTabs, LeafDescriptor, LEAF_KIND_KEYS};
+pub use layout::{validate_unique_leaf_ids, LayoutLeaf, LayoutNode, LayoutPanel};
+pub use layout::{LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry, LayoutTabs};
+pub use layout::{LeafDescriptor, LEAF_KIND_KEYS};
 pub use render::{draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf, split_rects};
 pub use render::{tree_viewport_rows, RenderFrame, RenderRefs};
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
 pub use text_input::{apply_text_input_edit, clamp_cursor, text_input_click_event};
 pub use text_input::{text_input_insert_event, text_input_key_event, TextEditorCache};
 pub use tree_edit::tree_row_rename_key_event;
+pub use wire::{
+    decode_layout_node, decode_render_output, decode_shell_config, RenderOutput, StaticTabContent,
+    LAYOUT_NODE_KEYS,
+};

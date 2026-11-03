@@ -6,6 +6,7 @@
 //! module owns what the decoded shape looks like and how it paints
 //! ([`crate::render::paint_layout`]).
 
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use quadraui::{
@@ -14,6 +15,7 @@ use quadraui::{
 };
 
 use crate::extra_paint::ExtraPaint;
+use crate::DecodeError;
 
 /// One node of a render callback's layout tree: a `Row`/`Column` container
 /// holding child nodes, a `Leaf` wrapping one id-addressable primitive
@@ -95,10 +97,10 @@ pub struct LayoutSplitTree {
 
 /// One id-addressable primitive inside a layout tree, decoded from a
 /// `{"id": ..., "<kind>": <descriptor>}` dict. `id` is unique across the
-/// whole tree (a binding's own layout decode, e.g. `validate_unique_leaf_ids`
-/// in `quadraui-py`, checks this), so a kind may appear more than once
-/// (e.g. two `data_table`s side by side) with each instance still
-/// addressable on its own.
+/// whole tree ([`validate_unique_leaf_ids`] checks this, called by
+/// [`crate::wire::decode_render_output`] after decoding a tree), so a kind
+/// may appear more than once (e.g. two `data_table`s side by side) with
+/// each instance still addressable on its own.
 pub struct LayoutLeaf {
     pub id: String,
     pub descriptor: LeafDescriptor,
@@ -121,8 +123,8 @@ pub enum LeafDescriptor {
 }
 
 /// The descriptor keys a layout tree leaf dict may carry, one per
-/// [`LeafDescriptor`] variant — the same names a binding's own flat-slot
-/// decode (`render_frame_from_dict` in `quadraui-py`) uses for its slots.
+/// [`LeafDescriptor`] variant — the same names [`crate::render::RenderFrame`]'s
+/// own flat-slot `Deserialize` impl uses for its slots.
 pub const LEAF_KIND_KEYS: [&str; 6] = [
     "button",
     "text_display",
@@ -131,3 +133,84 @@ pub const LEAF_KIND_KEYS: [&str; 6] = [
     "data_table",
     "tab_bar",
 ];
+
+/// Walks `node` collecting every leaf and split `id` into one namespace,
+/// returning a [`DecodeError`] on the first repeat. A unique id per
+/// leaf/split lets host code address one instance unambiguously even when a
+/// kind appears more than once, and keeps a split's id from silently
+/// shadowing a leaf's. Only ever called against a just-decoded render
+/// callback tree, so every message is labeled `"render"` rather than
+/// threading a `what` parameter through.
+pub fn validate_unique_leaf_ids(node: &LayoutNode) -> Result<(), DecodeError> {
+    fn walk(node: &LayoutNode, seen: &mut HashSet<String>) -> Result<(), DecodeError> {
+        match node {
+            LayoutNode::Row(children) | LayoutNode::Column(children) => {
+                for child in children {
+                    walk(child, seen)?;
+                }
+                Ok(())
+            }
+            LayoutNode::Leaf(leaf) => {
+                if !seen.insert(leaf.id.clone()) {
+                    return Err(DecodeError(format!(
+                        "render: duplicate leaf id {:?}",
+                        leaf.id
+                    )));
+                }
+                Ok(())
+            }
+            LayoutNode::Split(split) => {
+                let id = split.split.id.as_str().to_owned();
+                if !seen.insert(id.clone()) {
+                    return Err(DecodeError(format!("render: duplicate leaf id {id:?}")));
+                }
+                walk(&split.first, seen)?;
+                walk(&split.second, seen)
+            }
+            LayoutNode::Tabs(tabs) => {
+                let id = tabs.tab_bar.id.as_str().to_owned();
+                if !seen.insert(id.clone()) {
+                    return Err(DecodeError(format!("render: duplicate leaf id {id:?}")));
+                }
+                for entry in &tabs.entries {
+                    if !seen.insert(entry.id.clone()) {
+                        return Err(DecodeError(format!(
+                            "render: duplicate leaf id {:?}",
+                            entry.id
+                        )));
+                    }
+                    walk(&entry.content, seen)?;
+                }
+                Ok(())
+            }
+            LayoutNode::Panel(panel_node) => {
+                let id = panel_node.panel.id.as_str().to_owned();
+                if !seen.insert(id.clone()) {
+                    return Err(DecodeError(format!("render: duplicate leaf id {id:?}")));
+                }
+                walk(&panel_node.content, seen)
+            }
+            LayoutNode::SidebarPanel(sidebar_node) => {
+                let id = sidebar_node.sidebar_panel.id.as_str().to_owned();
+                if !seen.insert(id.clone()) {
+                    return Err(DecodeError(format!("render: duplicate leaf id {id:?}")));
+                }
+                walk(&sidebar_node.content, seen)
+            }
+            LayoutNode::SplitTree(split_tree) => {
+                if !seen.insert(split_tree.id.clone()) {
+                    return Err(DecodeError(format!(
+                        "render: duplicate leaf id {:?}",
+                        split_tree.id
+                    )));
+                }
+                for leaf in &split_tree.leaves {
+                    walk(leaf, seen)?;
+                }
+                Ok(())
+            }
+        }
+    }
+    let mut seen = HashSet::new();
+    walk(node, &mut seen)
+}
