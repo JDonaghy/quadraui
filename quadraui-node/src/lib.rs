@@ -17,7 +17,16 @@
 //! `setTickHandler`, `setRender`, `actions`), and the descriptor decode
 //! adapter below: the six fixed `insert*` methods, `pushEvent`, and the
 //! additive-primitive `insertExtra`/`insertProgress`/`insertSpinner`/
-//! `insertImage`/`clearExtra`.
+//! `insertImage`/`clearExtra`. The remaining mechanical method groups each
+//! get their own sibling module, every one a thin leaf over the same
+//! `BindingHost`/`InteractionEngine`/`Backend`/`PlatformServices` surface
+//! `quadraui-py` already wraps: [`clipboard`] (`Clipboard`), [`overlays`]
+//! (`InteractionEngine`'s toast/tooltip/completions/float/rich-text-popup
+//! overlays), [`metrics`] (`Backend`'s measurement/capability surface),
+//! [`theme`] (theme/style/font configuration), [`accelerators`]
+//! (accelerators & global shortcuts), and [`platform`] (file dialogs,
+//! notifications, URL/path opening, trash, beep, system theme, platform
+//! identity).
 //!
 //! **Callback bridge.** [`NodeEventSink`] is the napi-rs analog of
 //! `quadraui-py`'s `PyEventSink`: it converts a dispatched [`UiEvent`] to a
@@ -108,24 +117,35 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, Button, ContextMenuItem, DataTable, DialogButton, ListView, Notification,
-    Point, Reaction, Rect, TabBar, TextDisplay, Toast, ToastCorner, TreeView, UiEvent, WidgetId,
+    AppLogic, Backend, BackendCaps, Button, ContextMenuItem, DataTable, DialogButton, FloatMeasure,
+    ListView, Notification, Point, Reaction, Rect, RgbaImage, TabBar, TextDisplay, Toast,
+    ToastCorner, TreeView, UiEvent, WidgetId,
 };
 #[cfg(test)]
 use quadraui_binding_core::callback_reaction;
 use quadraui_binding_core::{
-    callback_reaction_for_render, decode_extra_primitive, decode_render_output, dialog_severity,
-    draw_bands, key_pressed_event, message_dialog_options_from_buttons, paint_layout,
-    panic_message, render_overlays, step_driver, toast_corner, window_close_reaction, BindingHost,
-    DecodeError, EventSink, HitDetail, InteractionEngine, RenderOutput, WindowCloseHandling,
-    SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
+    callback_reaction_for_render, caret_shape, color_depth_name, decode_extra_primitive,
+    decode_render_output, dialog_severity, draw_bands, font_role, key_pressed_event,
+    merge_overrides, message_dialog_options_from_buttons, paint_layout, panic_message,
+    render_overlays, step_driver, theme_color_value, toast_corner, window_close_reaction,
+    BindingHost, DecodeError, EventSink, HitDetail, InteractionEngine, OverrideError, RenderOutput,
+    WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY,
+    SLOT_TREE,
 };
 #[cfg(test)]
 use quadraui_binding_core::{decode_layout_node, LayoutNode};
+
+mod accelerators;
+mod clipboard;
+mod metrics;
+mod overlays;
+mod platform;
+mod theme;
 
 /// A callback registered via `setHandler`/`setTickHandler`/`setRender`,
 /// stored across calls as a [`FunctionRef`] -- napi-rs's own reference type
@@ -500,13 +520,10 @@ struct NodeEventSink<'a> {
 
 impl EventSink for NodeEventSink<'_> {
     fn dispatch(&mut self, event: &UiEvent, hit_detail: Option<&HitDetail>) -> Reaction {
-        let payload: Unknown<'static> = match self.env.to_js_value(event) {
+        let payload: Unknown<'static> = match encode_via_json(self.env, "dispatch", event) {
             Ok(value) => value,
             Err(err) => {
-                record_error(
-                    self.pending_error,
-                    invalid_descriptor_error(format!("failed to convert event to JS: {err}")),
-                );
+                record_error(self.pending_error, err);
                 return Reaction::Exit;
             }
         };
@@ -558,9 +575,7 @@ fn attach_hit(env: Env, payload: Unknown<'static>, detail: &HitDetail) -> Result
         ValueType::Object => {
             // SAFETY: just confirmed `payload` is a JS object.
             let mut obj: Object = unsafe { payload.cast() }?;
-            let hit_value: Unknown<'static> = env.to_js_value(detail).map_err(|err| {
-                invalid_descriptor_error(format!("failed to convert hit detail to JS: {err}"))
-            })?;
+            let hit_value = encode_via_json(env, "attach_hit", detail)?;
             obj.set("hit", hit_value)?;
             Ok(obj.to_unknown())
         }
@@ -681,6 +696,14 @@ fn internal_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("InternalError: {detail}"))
 }
 
+/// Mirrors [`invalid_descriptor_error`] for a byte buffer whose length
+/// doesn't match the `width`/`height` it's supposed to encode --
+/// [`QuiApp::clipboard_write_image`]'s own check -- the napi-rs analog of
+/// `quadraui-py`'s `InvalidDimensionsError` exception subclass.
+fn invalid_dimensions_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("InvalidDimensionsError: {detail}"))
+}
+
 /// Mirrors [`invalid_descriptor_error`] for a `QuiApp` method called
 /// re-entrantly from inside a registered event handler/tick/render
 /// callback's own JS call stack -- see [`QuiApp::check_not_dispatching`]'s
@@ -699,6 +722,34 @@ fn decode_direct<T: DeserializeOwned>(env: Env, what: &str, descriptor: Unknown)
         .map_err(|err| invalid_descriptor_error(format!("{what}: {err}")))
 }
 
+/// Converts `value` to a JS value by materializing it through a plain
+/// [`serde_json::Value`] first, rather than handing it straight to
+/// `Env::to_js_value` -- the encode-direction counterpart of
+/// [`decode_via_core`]'s own materialize-first shape, needed for a
+/// different reason: napi 3's own `Serializer` impl
+/// (`napi::js_values::ser`) builds the right `{"VariantName": ...}`
+/// wrapper for `serialize_tuple_variant`/`serialize_struct_variant` but
+/// then discards it, returning the un-tagged inner value instead --
+/// verified empirically (a multi-field tuple variant or any struct variant,
+/// e.g. [`UiEvent::CompletionItemActivated`] or
+/// `quadraui_binding_core::HitDetail::TreeRow`, reaches a registered
+/// handler with its own tag missing entirely). [`serde_json::Value`]'s own
+/// `Serialize` impl never calls those two `Serializer` methods -- by the
+/// time `value` has been folded into a `Value` tree, there is no more
+/// enum-variant information left to tag, only plain maps/arrays/scalars,
+/// which `Env::to_js_value` converts correctly. Every call site that hands
+/// a `quadraui`/`quadraui_binding_core` value to JS goes through this
+/// rather than `Env::to_js_value` directly, so a future field or variant
+/// addition on either side of that boundary is covered by construction
+/// instead of needing this same bug rediscovered per call site.
+fn encode_via_json<T: Serialize>(env: Env, what: &str, value: &T) -> Result<Unknown<'static>> {
+    let json = serde_json::to_value(value).map_err(|err| {
+        invalid_descriptor_error(format!("{what}: failed to convert to JSON: {err}"))
+    })?;
+    env.to_js_value(&json)
+        .map_err(|err| invalid_descriptor_error(format!("{what}: failed to convert to JS: {err}")))
+}
+
 /// Decodes `descriptor` by first materializing it into one
 /// [`serde_json::Value`] via [`to_descriptor_value`], then handing `&value`
 /// to `core` -- the shared tail of every kind-dispatched decoder this crate
@@ -711,6 +762,33 @@ fn decode_via_core<T>(
     let value = to_descriptor_value(descriptor)
         .map_err(|detail| invalid_descriptor_error(format!("{what}: {detail}")))?;
     core(&value).map_err(invalid_descriptor_error)
+}
+
+/// Decodes `descriptor` by first materializing it into one
+/// [`serde_json::Value`] via [`to_descriptor_value`], then deserializing
+/// through `serde_json::Value`'s own `Deserializer` impl rather than
+/// `Env::from_js_value` directly -- works around a gap in napi 3's own
+/// `Deserializer` (`napi::js_values::de::De`): every method it doesn't
+/// implement by hand, including `deserialize_newtype_struct`, forwards
+/// straight to `deserialize_any` via serde's `forward_to_deserialize_any!`
+/// macro, so a standalone one-field tuple struct with no other way to be
+/// constructed from outside `quadraui` itself ([`quadraui::AcceleratorId`],
+/// [`quadraui::GlobalShortcutId`] -- deliberately opaque identifiers, see
+/// either type's own doc) fails to decode from the bare JS string/number
+/// its single field would otherwise come from, with a confusing "invalid
+/// type: string ..., expected tuple struct ..." (verified empirically).
+/// `serde_json::Value`'s own `Deserializer` implements
+/// `deserialize_newtype_struct` the standard way (forwarding to
+/// `visit_newtype_struct` without first collapsing to a scalar), so it
+/// decodes the same input correctly. Every other scalar/struct/enum shape
+/// `Env::from_js_value` already decodes correctly (see [`decode_direct`]),
+/// so this is reserved for exactly the newtype-struct-identifier case --
+/// today, [`quadraui::Accelerator`] (its own `id` field is one) and
+/// `GlobalShortcutId` itself.
+fn decode_via_json<T: DeserializeOwned>(what: &str, descriptor: Unknown) -> Result<T> {
+    let value = to_descriptor_value(descriptor)
+        .map_err(|detail| invalid_descriptor_error(format!("{what}: {detail}")))?;
+    serde_json::from_value(value).map_err(|err| invalid_descriptor_error(format!("{what}: {err}")))
 }
 
 /// Converts a JS value into a [`serde_json::Value`] tree -- this crate's
