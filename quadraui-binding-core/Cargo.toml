@@ -30,10 +30,13 @@ win = ["quadraui/win"]
 # directly and has no language-specific feature of its own to gate it behind.
 quadraui = { path = "../quadraui", features = ["tui"] }
 serde = { version = "1.0", features = ["derive"] }
-# Only used as the merge medium for `host::merge_overrides`: a binding
-# serializes its backend's current `Theme`/`Style` to a `serde_json::Value`,
-# splices in just the override keys the caller named, then deserializes the
-# merged value back -- letting a caller override one field without
-# restating every one of `Theme`'s ~70 colour fields. `serde` alone can't do
-# a partial merge; it only converts a whole value in one direction at a time.
+# The decode medium for every entry point in `wire.rs` (via `wire::materialize`,
+# a `serde_json::Value`-producing `Visitor` with two deltas from `Value`'s own
+# -- see that function's doc) and the merge medium for `host::merge_overrides`:
+# a binding serializes its backend's current `Theme`/`Style` to a
+# `serde_json::Value`, splices in just the override keys the caller named,
+# then deserializes the merged value back -- letting a caller override one
+# field without restating every one of `Theme`'s ~70 colour fields. `serde`
+# alone can't do a partial merge; it only converts a whole value in one
+# direction at a time.
 serde_json = "1.0"
