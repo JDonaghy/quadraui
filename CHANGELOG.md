@@ -59,6 +59,17 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `UiEvent` gains three variants routing the remaining in-canvas overlay
+  primitives' interactive regions through the same anchored-overlay slot
+  `MessageDialogResolved`/`ContextMenuItemActivated` already use:
+  `ToastActionClicked(WidgetId)` (a `Toast` action button),
+  `CompletionItemActivated(WidgetId, usize)` (a `Completions` item, by
+  popup id + index), and `RichTextLinkClicked(WidgetId, String)` (a
+  `RichTextPopup` link, by popup id + URL). `quadraui-binding-core`'s
+  `InteractionEngine` gains the matching `show_toast`/`dismiss_toast`,
+  `show_tooltip`/`hide_tooltip`, `show_completions`/`dismiss_completions`,
+  `show_float`/`dismiss_float`, and `show_rich_text_popup`/
+  `dismiss_rich_text_popup` surfaces, exposed on `quadraui-py`'s `QuiApp`.
 - `compose::MenuSystem` gains a `Default` impl (equivalent to
   `MenuSystem::new(Vec::new())`) and `tui::testing::TuiDriver` gains
   `parts_mut(&mut self) -> (&mut TuiBackend, &mut A)`, disjoint mutable

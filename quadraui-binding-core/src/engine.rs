@@ -19,8 +19,12 @@ use quadraui::compose::{
 };
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{
-    wheel_row_delta, Backend, DataTableEvent, EditOp, Form, InteractionState, MenuBar, Modifiers,
-    Rect, TextDisplayEvent, TextInput, UiEvent, WidgetId,
+    wheel_row_delta, Backend, CompletionItemMeasure, Completions, CompletionsHit,
+    CompletionsLayout, DataTableEvent, EditOp, Float, FloatLayout, FloatMeasure, Form,
+    InteractionState, Key, MenuBar, Modifiers, NamedKey, Point, Rect, RichTextPopup,
+    RichTextPopupHit, RichTextPopupLayout, RichTextPopupMeasure, TextDisplayEvent, TextInput,
+    Toast, ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout,
+    TooltipMeasure, UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -33,6 +37,29 @@ use crate::hit::{
 };
 use crate::semantic::{focus_scoped_key_event, number_input_click_event, semantic_event_for_hit};
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
+
+/// `backend.viewport()`, as a `(0, 0)`-origin [`Rect`] — the shape every
+/// anchored-overlay layout call here (`Tooltip`/`Completions`/`Float`/
+/// `RichTextPopup`/`ToastOverlay`) takes as its own viewport-clamp
+/// argument.
+fn viewport_rect(backend: &dyn Backend) -> Rect {
+    let viewport = backend.viewport();
+    Rect::new(0.0, 0.0, viewport.width, viewport.height)
+}
+
+/// `Reaction::Continue`, unless a tooltip auto-dismissed earlier in the
+/// same [`InteractionEngine::handle`] call, in which case the redraw that
+/// takes it off screen still has to happen — the same reasoning
+/// `InteractionEngine::handle`'s own `tooltip_dismissed` local documents,
+/// applied to an early `return` that would otherwise skip past the final
+/// `Reaction` merge entirely.
+fn continue_or_tooltip_redraw(tooltip_dismissed: bool) -> quadraui::Reaction {
+    if tooltip_dismissed {
+        quadraui::Reaction::Redraw
+    } else {
+        quadraui::Reaction::Continue
+    }
+}
 
 /// The one binding-specific step [`InteractionEngine::handle`] cannot do
 /// itself: handing a resolved [`UiEvent`] (and, for a pointer event that
@@ -147,6 +174,39 @@ pub struct InteractionEngine {
     /// walks this instead, so the invariant "at most one claims a given
     /// click" is reproducible rather than merely usually true.
     form_order: RefCell<Vec<WidgetId>>,
+    /// Owns the state behind a binding's own `show_toast`/`dismiss_toast`
+    /// surface: the toasts currently showing, oldest first, and which
+    /// corner they stack in. Non-modal (see [`quadraui::primitives::toast`]'s
+    /// module doc) — unlike [`Self::dialog`], this never claims the
+    /// [`quadraui::ModalStack`] or blocks input on its own; [`Self::handle`]
+    /// only intercepts a click that lands on a toast's own dismiss/action
+    /// region.
+    toasts: Vec<Toast>,
+    /// Which corner [`Self::toasts`] stacks in — set by the most recent
+    /// [`Self::show_toast`] call.
+    toast_corner: ToastCorner,
+    /// Owns the state behind a binding's own `show_tooltip`/`hide_tooltip`
+    /// surface: the open [`Tooltip`] (if any) and the anchor rect it was
+    /// shown against. Non-interactive (see [`Self::render_tooltip`]'s doc)
+    /// — [`Self::handle`] only ever clears it as a side effect of the next
+    /// click/key, never routes a hit against it.
+    tooltip: Option<(Tooltip, Rect)>,
+    /// Owns the state behind a binding's own `show_completions`/
+    /// `dismiss_completions` surface: the open [`Completions`] popup (if
+    /// any) and the cursor position it was anchored to.
+    completions: Option<(Completions, Point)>,
+    /// Owns the state behind a binding's own `show_float`/`dismiss_float`
+    /// surface: the open [`Float`] (if any) and the caller-supplied
+    /// [`FloatMeasure`] its layout was resolved from. Pushed onto the
+    /// backend's [`quadraui::ModalStack`] while open, mirroring
+    /// [`Self::dialog`] — see [`quadraui::primitives::float`]'s own
+    /// "Stacking" doc section for why a `Float` needs this even though it
+    /// is otherwise non-blocking chrome.
+    float: Option<(Float, FloatMeasure)>,
+    /// Owns the state behind a binding's own `show_rich_text_popup`/
+    /// `dismiss_rich_text_popup` surface: the open [`RichTextPopup`] (if
+    /// any) and the anchor position it was shown against.
+    rich_text_popup: Option<(RichTextPopup, Point)>,
 }
 
 impl InteractionEngine {
@@ -261,6 +321,256 @@ impl InteractionEngine {
     pub fn render_dialog(&self, backend: &mut dyn Backend) {
         if let Some(dialog) = &self.dialog {
             dialog.render(backend);
+        }
+    }
+
+    // ── Toast ────────────────────────────────────────────────────────
+
+    /// Shows `toast` in `corner`, stacking it among whatever toasts are
+    /// already showing. Replaces (keeps the position of, but refreshes
+    /// the content of) any existing toast with the same
+    /// [`quadraui::types::WidgetId`]. `corner` applies to the whole
+    /// stack, so showing a second toast in a different corner moves
+    /// every toast — including ones already showing — to the new
+    /// corner; apps that want toasts in two corners at once need two
+    /// separate `WidgetId`-disjoint calls per frame, same caveat
+    /// [`quadraui::ToastOverlay`]'s own single-`corner` field carries.
+    pub fn show_toast(&mut self, toast: Toast, corner: ToastCorner) {
+        self.toasts.retain(|t| t.id != toast.id);
+        self.toasts.push(toast);
+        self.toast_corner = corner;
+    }
+
+    /// Removes the toast with this id, if showing. Returns whether one
+    /// was removed. Exposed so a binding's own `dismiss_toast` surface
+    /// can close a toast programmatically (e.g. after its own auto-expire
+    /// timer fires) in addition to the dismiss `×`
+    /// [`Self::handle`] already routes.
+    pub fn dismiss_toast(&mut self, id: WidgetId) -> bool {
+        let before = self.toasts.len();
+        self.toasts.retain(|t| t.id != id);
+        self.toasts.len() != before
+    }
+
+    fn toast_overlay(&self) -> ToastOverlay {
+        ToastOverlay {
+            id: WidgetId::new("qui-toast-stack"),
+            corner: self.toast_corner,
+            toasts: self.toasts.clone(),
+            focus: None,
+        }
+    }
+
+    /// Paints every showing toast, stacked in [`Self::toast_corner`], on
+    /// top of whatever this frame already painted. Call once per render,
+    /// after every other `render_*` on this engine — a toast notification
+    /// reads as "always on top" (VS Code convention), so it paints over
+    /// an open dialog/popup/float too. A no-op when no toast is showing.
+    pub fn render_toast(&self, backend: &mut dyn Backend) {
+        if self.toasts.is_empty() {
+            return;
+        }
+        let overlay = self.toast_overlay();
+        backend.draw_toast_overlay(viewport_rect(backend), &overlay);
+    }
+
+    /// Recomputes the same [`quadraui::ToastStackLayout`]
+    /// [`Self::render_toast`] just painted, for [`Self::handle`]'s click
+    /// routing — the "one layout fn, two callers" pattern
+    /// [`MessageDialogController::layout`] already follows for `Dialog`.
+    fn toast_layout(&self, backend: &dyn Backend) -> ToastStackLayout {
+        backend.toast_stack_layout(viewport_rect(backend), &self.toast_overlay())
+    }
+
+    // ── Tooltip ──────────────────────────────────────────────────────
+
+    /// Shows `tooltip` anchored against `anchor` (the rect of whatever
+    /// widget it describes, in the backend's ABSOLUTE frame). Replaces
+    /// any tooltip already showing.
+    pub fn show_tooltip(&mut self, tooltip: Tooltip, anchor: Rect) {
+        self.tooltip = Some((tooltip, anchor));
+    }
+
+    /// Hides the open tooltip (if any). Returns whether one was open.
+    /// [`Self::handle`] already does this automatically on the next
+    /// click/key — see that method's doc — so apps only need this for an
+    /// explicit "hide now" (e.g. the hovered widget itself changed).
+    pub fn hide_tooltip(&mut self) -> bool {
+        self.tooltip.take().is_some()
+    }
+
+    fn tooltip_layout(
+        &self,
+        backend: &dyn Backend,
+        tooltip: &Tooltip,
+        anchor: Rect,
+    ) -> TooltipLayout {
+        let m = backend.measure();
+        let n_lines = tooltip.text.lines().count().max(1);
+        let longest = tooltip.text.lines().map(str::len).max().unwrap_or(0);
+        let measure = TooltipMeasure::new(
+            m.char_width * (longest as f32 + 4.0),
+            m.line_height * (n_lines as f32 + 2.0),
+        );
+        tooltip.layout(anchor, viewport_rect(backend), measure, m.line_height)
+    }
+
+    /// Paints the open tooltip (if any) on top of whatever this frame
+    /// already painted. Tooltips are non-interactive
+    /// ([`quadraui::Backend::draw_tooltip`]'s own doc — "no hit data
+    /// returned"), so unlike every other `render_*` here there is
+    /// nothing for [`Self::handle`] to hit-test against it; the only
+    /// input routing it gets is the auto-dismiss [`Self::handle`]
+    /// performs on the next click/key.
+    pub fn render_tooltip(&self, backend: &mut dyn Backend) {
+        if let Some((tooltip, anchor)) = &self.tooltip {
+            let layout = self.tooltip_layout(backend, tooltip, *anchor);
+            backend.draw_tooltip(tooltip, &layout);
+        }
+    }
+
+    // ── Completions ──────────────────────────────────────────────────
+
+    /// Shows `completions` anchored at `cursor` (the caret position in
+    /// the backend's ABSOLUTE frame). Replaces any popup already open.
+    pub fn show_completions(&mut self, completions: Completions, cursor: Point) {
+        self.completions = Some((completions, cursor));
+    }
+
+    /// Closes the open completions popup (if any) without reporting a
+    /// selection. Returns whether one was open.
+    pub fn dismiss_completions(&mut self) -> bool {
+        self.completions.take().is_some()
+    }
+
+    fn completions_layout(
+        &self,
+        backend: &dyn Backend,
+        completions: &Completions,
+        cursor: Point,
+    ) -> CompletionsLayout {
+        let m = backend.measure();
+        completions.layout(
+            cursor.x,
+            cursor.y,
+            m.line_height,
+            viewport_rect(backend),
+            m.char_width * 30.0,
+            m.line_height * 8.0,
+            |_| CompletionItemMeasure::new(m.line_height),
+        )
+    }
+
+    /// Paints the open completions popup (if any) on top of whatever
+    /// this frame already painted. Call once per render, before
+    /// [`Self::render_dialog`] (which [`Self::handle`] checks before
+    /// this popup's own hit-test): an app that somehow has both open at
+    /// once gets the dialog on top, both visually and for input —
+    /// "hit precedence agrees with paint order" either way, same
+    /// invariant [`Self::dialog`]'s own doc calls out.
+    pub fn render_completions(&self, backend: &mut dyn Backend) {
+        if let Some((completions, cursor)) = &self.completions {
+            let layout = self.completions_layout(backend, completions, *cursor);
+            backend.draw_completions(completions, &layout);
+        }
+    }
+
+    // ── Float ────────────────────────────────────────────────────────
+
+    /// Opens `float` at `measure`'s size, pushing its resolved bounds
+    /// onto the backend's [`quadraui::ModalStack`] via
+    /// [`quadraui::ModalStack::push_float`] so other modal-aware code
+    /// gets the same hit-test precedence [`Self::dialog`] already has.
+    /// Replaces (and pops) any float already open. **Content is not
+    /// this call's concern** — same as [`quadraui::Backend::draw_float`]
+    /// itself, the host paints whatever belongs in
+    /// [`quadraui::FloatLayout::content_bounds`] through its own normal
+    /// render path after this call's `render_float` runs.
+    pub fn show_float(&mut self, float: Float, measure: FloatMeasure, backend: &mut dyn Backend) {
+        self.close_float(backend);
+        let layout = float.layout(viewport_rect(backend), measure);
+        backend
+            .modal_stack_handle()
+            .borrow_mut()
+            .push_float(&float, layout.bounds);
+        self.float = Some((float, measure));
+    }
+
+    /// Closes the open float (if any), popping its
+    /// [`quadraui::ModalStack`] entry. Returns whether one was open.
+    pub fn dismiss_float(&mut self, backend: &mut dyn Backend) -> bool {
+        self.close_float(backend)
+    }
+
+    fn close_float(&mut self, backend: &mut dyn Backend) -> bool {
+        match self.float.take() {
+            Some((float, _)) => {
+                backend.modal_stack_handle().borrow_mut().pop(&float.id);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn float_layout(
+        &self,
+        backend: &dyn Backend,
+        float: &Float,
+        measure: FloatMeasure,
+    ) -> FloatLayout {
+        float.layout(viewport_rect(backend), measure)
+    }
+
+    /// Paints the open float's chrome (if any) on top of whatever this
+    /// frame already painted. Call once per render. Paints chrome only —
+    /// see [`Self::show_float`]'s doc — the host paints its own content
+    /// into the returned bounds' `content_bounds` separately.
+    pub fn render_float(&self, backend: &mut dyn Backend) {
+        if let Some((float, measure)) = &self.float {
+            let layout = self.float_layout(backend, float, *measure);
+            backend.draw_float(float, &layout);
+        }
+    }
+
+    // ── RichTextPopup ────────────────────────────────────────────────
+
+    /// Shows `popup` anchored at `anchor` (typically the top-left of the
+    /// editor cell it describes, in the backend's ABSOLUTE frame).
+    /// Replaces any popup already open.
+    pub fn show_rich_text_popup(&mut self, popup: RichTextPopup, anchor: Point) {
+        self.rich_text_popup = Some((popup, anchor));
+    }
+
+    /// Closes the open rich-text popup (if any) without reporting a link
+    /// click. Returns whether one was open.
+    pub fn dismiss_rich_text_popup(&mut self) -> bool {
+        self.rich_text_popup.take().is_some()
+    }
+
+    fn rich_text_popup_layout(
+        &self,
+        backend: &dyn Backend,
+        popup: &RichTextPopup,
+        anchor: Point,
+    ) -> RichTextPopupLayout {
+        let m = backend.measure();
+        let measure = RichTextPopupMeasure::new(m.char_width * 30.0, m.line_height)
+            .with_scale_rows(backend.scales_text_rows());
+        popup.layout(
+            anchor.x,
+            anchor.y,
+            viewport_rect(backend),
+            measure,
+            |_, start, end| m.char_width * (end - start) as f32,
+        )
+    }
+
+    /// Paints the open rich-text popup (if any) on top of whatever this
+    /// frame already painted. Call once per render.
+    pub fn render_rich_text_popup(&self, backend: &mut dyn Backend) {
+        if let Some((popup, anchor)) = &self.rich_text_popup {
+            let layout = self.rich_text_popup_layout(backend, popup, *anchor);
+            backend.draw_rich_text_popup(popup, &layout);
         }
     }
 
@@ -506,6 +816,14 @@ impl InteractionEngine {
     ) -> quadraui::Reaction {
         use quadraui::Reaction;
 
+        // Set when a tooltip auto-dismisses below — merged into the final
+        // `Reaction` (and threaded through `continue_or_tooltip_redraw`
+        // for the handful of early `return`s further down whose own
+        // outcome is "nothing changed") so the redraw that takes the
+        // tooltip off screen always happens, regardless of which path
+        // through this function the event takes.
+        let mut tooltip_dismissed = false;
+
         // A `MouseUp` always ends an armed divider/scrollbar drag, even
         // when the menu-bar/context-menu routing just below reports the
         // same event `Consumed` (e.g. a dropdown-item click, or the
@@ -535,6 +853,55 @@ impl InteractionEngine {
             }
         }
 
+        // A tooltip is non-interactive chrome, not a modal-input state
+        // machine — it never claims a click/key for itself, so this is a
+        // side effect rather than an early return. Clearing it here (on
+        // every `MouseDown`/`KeyPressed`, before anything else below gets
+        // a chance to consume the event) is what "route dismissal" means
+        // for a primitive with [`Self::render_tooltip`]'s "no hit data
+        // returned" contract: the next interaction anywhere always hides
+        // it, same as a native tooltip's hover-out behaviour.
+        if matches!(
+            event,
+            UiEvent::MouseDown { .. } | UiEvent::KeyPressed { .. }
+        ) && self.hide_tooltip()
+        {
+            // Not returned directly — `tooltip_dismissed` is merged into
+            // the final `Reaction` below, so a click that both dismisses
+            // the tooltip and goes on to do something else (e.g. focus a
+            // button) still redraws for the dismissal even when nothing
+            // else would have.
+            tooltip_dismissed = true;
+        }
+
+        // An open toast stack is non-modal (unlike every overlay below)
+        // but still paints on top of everything else this frame
+        // (`render_toast` runs last of all `render_*` on this engine —
+        // see its own doc), so a click on its dismiss `×`/action region
+        // must claim the event before any of the modal overlays below
+        // get a chance to, same "hit precedence agrees with paint order"
+        // invariant `Self::dialog`'s own doc calls out. A click that
+        // misses every toast (`ToastHit::Empty`) falls through
+        // unconsumed to the modal/content routing below, since a toast
+        // in a screen corner essentially never overlaps anything else
+        // painted there.
+        if !self.toasts.is_empty() {
+            if let UiEvent::MouseDown { position, .. } = &event {
+                match self.toast_layout(backend).hit_test(position.x, position.y) {
+                    ToastHit::Dismiss(id) => {
+                        self.dismiss_toast(id);
+                        return Reaction::Redraw;
+                    }
+                    ToastHit::Action(action_id) => {
+                        return Reaction::Redraw
+                            .merge(sink.dispatch(&UiEvent::ToastActionClicked(action_id), None));
+                    }
+                    ToastHit::Body(_) => return continue_or_tooltip_redraw(tooltip_dismissed),
+                    ToastHit::Empty => {}
+                }
+            }
+        }
+
         // An open message dialog is modal and painted on top of everything
         // else this frame (`render_dialog` runs after `sync_menu_bar`/
         // `render_ctx_menu`), so it must see every event before the
@@ -559,6 +926,112 @@ impl InteractionEngine {
                 }
                 MessageDialogEvent::Consumed => return Reaction::Redraw,
                 MessageDialogEvent::Ignored => {}
+            }
+        }
+
+        // An open completions popup claims Escape (dismiss) and a
+        // `MouseDown` landing anywhere — on an item (reports the
+        // activation), elsewhere inside the popup (swallowed — it's
+        // still "on the popup"), or outside it (dismisses, same as a
+        // context-menu's click-outside). Checked after the dialog (so an
+        // open dialog keeps its own higher hit precedence if an app ever
+        // has both open) but before the menu-bar/context-menu routing
+        // below, matching [`Self::render_completions`]'s "before
+        // `Self::render_dialog`" paint-order doc.
+        if let Some((completions, cursor)) = self.completions.clone() {
+            match &event {
+                UiEvent::KeyPressed {
+                    key: Key::Named(NamedKey::Escape),
+                    ..
+                } => {
+                    self.dismiss_completions();
+                    return Reaction::Redraw;
+                }
+                UiEvent::MouseDown { position, .. } => {
+                    let layout = self.completions_layout(backend, &completions, cursor);
+                    match layout.hit_test(position.x, position.y) {
+                        CompletionsHit::Item(idx) => {
+                            self.dismiss_completions();
+                            return Reaction::Redraw.merge(sink.dispatch(
+                                &UiEvent::CompletionItemActivated(completions.id, idx),
+                                None,
+                            ));
+                        }
+                        CompletionsHit::Inert => {
+                            return continue_or_tooltip_redraw(tooltip_dismissed)
+                        }
+                        CompletionsHit::Empty => {
+                            self.dismiss_completions();
+                            return Reaction::Redraw;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // An open rich-text popup claims Escape (dismiss) and a
+        // `MouseDown` the same way completions does above: a link hit
+        // reports the click, any other in-bounds hit is swallowed, and a
+        // miss dismisses the popup.
+        if let Some((popup, anchor)) = self.rich_text_popup.clone() {
+            match &event {
+                UiEvent::KeyPressed {
+                    key: Key::Named(NamedKey::Escape),
+                    ..
+                } => {
+                    self.dismiss_rich_text_popup();
+                    return Reaction::Redraw;
+                }
+                UiEvent::MouseDown { position, .. } => {
+                    let layout = self.rich_text_popup_layout(backend, &popup, anchor);
+                    match layout.hit_test(position.x, position.y) {
+                        RichTextPopupHit::Link(idx) => {
+                            let url = popup
+                                .links
+                                .get(idx)
+                                .map(|l| l.url.clone())
+                                .unwrap_or_default();
+                            return Reaction::Redraw.merge(
+                                sink.dispatch(&UiEvent::RichTextLinkClicked(popup.id, url), None),
+                            );
+                        }
+                        RichTextPopupHit::Outside => {
+                            self.dismiss_rich_text_popup();
+                            return Reaction::Redraw;
+                        }
+                        RichTextPopupHit::Char(..)
+                        | RichTextPopupHit::ScrollbarTrack
+                        | RichTextPopupHit::ScrollbarThumb
+                        | RichTextPopupHit::Body => {
+                            return continue_or_tooltip_redraw(tooltip_dismissed)
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // An open float claims Escape (dismiss) only when it is
+        // focusable — a non-focusable hint float never steals keys, same
+        // distinction [`quadraui::ModalStack::top_focusable`]'s own doc
+        // draws. It does NOT claim mouse clicks here: its content is
+        // painted by the host, not this engine (see `Self::show_float`'s
+        // doc), so a click anywhere near it has to keep flowing through
+        // the normal hit-map routing below for that content to ever
+        // receive it.
+        if let Some((float, _)) = &self.float {
+            if float.focusable
+                && matches!(
+                    &event,
+                    UiEvent::KeyPressed {
+                        key: Key::Named(NamedKey::Escape),
+                        ..
+                    }
+                )
+            {
+                self.dismiss_float(backend);
+                return Reaction::Redraw;
             }
         }
 
@@ -1155,7 +1628,15 @@ impl InteractionEngine {
             None
         };
         let event_reaction = sink.dispatch(&event, hit_detail);
-        menu_reaction.merge(focus_reaction).merge(event_reaction)
+        let tooltip_reaction = if tooltip_dismissed {
+            Reaction::Redraw
+        } else {
+            Reaction::Continue
+        };
+        tooltip_reaction
+            .merge(menu_reaction)
+            .merge(focus_reaction)
+            .merge(event_reaction)
     }
 }
 
