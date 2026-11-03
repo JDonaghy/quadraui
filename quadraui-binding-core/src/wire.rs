@@ -214,7 +214,7 @@ fn must_be_dict<'a>(what: &str, value: &'a Value, suffix: &str) -> Result<&'a Va
     if value.is_object() {
         Ok(value)
     } else {
-        Err(DecodeError(format!("{what}: {suffix} must be a dict")))
+        Err(DecodeError(format!("{what}: {suffix} must be an object")))
     }
 }
 
@@ -224,7 +224,7 @@ fn must_be_dict<'a>(what: &str, value: &'a Value, suffix: &str) -> Result<&'a Va
 fn required_dict<'a>(value: &'a Value, key: &str, context: &str) -> Result<&'a Value, DecodeError> {
     match obj_get(value, key) {
         Some(v) if v.is_object() => Ok(v),
-        Some(_) => Err(DecodeError(format!("{context} {key:?} must be a dict"))),
+        Some(_) => Err(DecodeError(format!("{context} {key:?} must be an object"))),
         None => Err(DecodeError(format!(
             "{context} is missing required {key:?}"
         ))),
@@ -241,7 +241,7 @@ fn required_list<'a>(
     match obj_get(value, key) {
         Some(v) => v
             .as_array()
-            .ok_or_else(|| DecodeError(format!("{context} {key:?} must be a list"))),
+            .ok_or_else(|| DecodeError(format!("{context} {key:?} must be an array"))),
         None => Err(DecodeError(format!(
             "{context} is missing required {key:?}"
         ))),
@@ -415,12 +415,12 @@ fn layout_node_from_value(what: &str, value: &Value) -> Result<LayoutNode, Decod
 fn layout_children_from_value(what: &str, value: &Value) -> Result<Vec<LayoutNode>, DecodeError> {
     let list = value
         .as_array()
-        .ok_or_else(|| DecodeError(format!("{what}: row/column children must be a list")))?;
+        .ok_or_else(|| DecodeError(format!("{what}: row/column children must be an array")))?;
     list.iter()
         .map(|child| {
             if !child.is_object() {
                 return Err(DecodeError(format!(
-                    "{what}: each row/column child must be a dict"
+                    "{what}: each row/column child must be an object"
                 )));
             }
             layout_node_from_value(what, child)
@@ -608,7 +608,7 @@ fn layout_tabs_from_value(what: &str, value: &Value) -> Result<LayoutTabs, Decod
     let mut entries = Vec::with_capacity(tabs_list.len());
     for entry in tabs_list {
         if !entry.is_object() {
-            return Err(DecodeError(format!("{context} each tab must be a dict")));
+            return Err(DecodeError(format!("{context} each tab must be an object")));
         }
         let tab_id = required_str(entry, "id", &format!("{context} tab"))?;
         let tab_context = format!("{context} tab {tab_id:?}");
@@ -649,7 +649,7 @@ fn layout_tabs_from_value(what: &str, value: &Value) -> Result<LayoutTabs, Decod
         Some(v) => {
             if !v.is_array() {
                 return Err(DecodeError(format!(
-                    "{context} \"right_segments\" must be a list"
+                    "{context} \"right_segments\" must be an array"
                 )));
             }
             serde_json::from_value(v.clone()).map_err(|err| {
@@ -805,7 +805,7 @@ fn slot_entry<T: serde::de::DeserializeOwned>(
         Some(v) => {
             if !v.is_object() {
                 return Err(DecodeError(format!(
-                    "{what}: {key:?} must be a dict or None"
+                    "{what}: {key:?} must be an object or null"
                 )));
             }
             Ok(Some(decode_value(what, v)?))
@@ -828,7 +828,7 @@ fn extra_slot_entry(
         Some(v) => {
             if !v.is_object() {
                 return Err(DecodeError(format!(
-                    "{what}: {kind:?} must be a dict or None"
+                    "{what}: {kind:?} must be an object or null"
                 )));
             }
             Ok(Some(decode_extra_primitive(what, kind, v)?))
@@ -926,11 +926,11 @@ fn panel_definition_from_value(what: &str, value: &Value) -> Result<PanelDefinit
 fn panel_list_from_value(what: &str, value: &Value) -> Result<Vec<PanelDefinition>, DecodeError> {
     let list = value
         .as_array()
-        .ok_or_else(|| DecodeError(format!("{what}: panels must be a list")))?;
+        .ok_or_else(|| DecodeError(format!("{what}: panels must be an array")))?;
     list.iter()
         .map(|item| {
             if !item.is_object() {
-                return Err(DecodeError(format!("{what}: each panel must be a dict")));
+                return Err(DecodeError(format!("{what}: each panel must be an object")));
             }
             panel_definition_from_value(what, item)
         })
@@ -979,13 +979,13 @@ fn bottom_panel_config_from_value(
     let tabs = match obj_get(value, "tabs") {
         Some(v) => {
             let list = v.as_array().ok_or_else(|| {
-                DecodeError(format!("{what}: bottom_panel \"tabs\" must be a list"))
+                DecodeError(format!("{what}: bottom_panel \"tabs\" must be an array"))
             })?;
             list.iter()
                 .map(|item| {
                     if !item.is_object() {
                         return Err(DecodeError(format!(
-                            "{what}: each bottom_panel tab must be a dict"
+                            "{what}: each bottom_panel tab must be an object"
                         )));
                     }
                     bottom_panel_tab_from_value(what, item)
@@ -1076,7 +1076,7 @@ fn shell_config_from_value(value: &Value) -> Result<ShellConfig, DecodeError> {
     if let Some(bp_value) = obj_get(value, "bottom_panel") {
         if !bp_value.is_object() {
             return Err(DecodeError(format!(
-                "{what}: \"bottom_panel\" must be a dict"
+                "{what}: \"bottom_panel\" must be an object"
             )));
         }
         config = config.with_bottom_panel_config(bottom_panel_config_from_value(what, bp_value)?);
