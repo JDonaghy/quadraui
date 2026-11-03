@@ -1,0 +1,28 @@
+{
+  "name": "@quadraui/node",
+  "version": "0.1.0",
+  "private": true,
+  "description": "napi-rs bindings: insert quadraui descriptors from JavaScript/TypeScript and render them headlessly.",
+  "license": "MIT OR Apache-2.0",
+  "type": "commonjs",
+  "main": "js/index.ts",
+  "types": "js/index.ts",
+  "files": [
+    "js/index.ts",
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "test": "node --test tests/*.test.ts"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3"
+  },
+  "napi": {
+    "binaryName": "quadraui-node",
+    "packageName": "@quadraui/node"
+  }
+}
