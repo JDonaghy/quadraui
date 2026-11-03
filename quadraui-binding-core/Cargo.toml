@@ -4,6 +4,11 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+# Every binding leaf (quadraui-py, quadraui-ffi, quadraui-node) lives in this
+# workspace and reaches this crate via a path dependency, so no registry
+# publish is needed. If a leaf is ever extracted into its own repo, see
+# `quadraui/docs/decisions/BINDING_CORE_PUBLISH_POLICY.md` for the two
+# options (crates.io publish vs. a pinned git dependency) and flip this then.
 publish = false
 description = """\
 Language-neutral interaction wiring (hit testing, semantic event synthesis, \
