@@ -59,6 +59,14 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `tui::TuiRunner` gains `parts_mut(&mut self) -> (&mut TuiBackend, &mut A)`,
+  disjoint mutable access to both the backend and the `AppLogic` it drives
+  — for host code running inside `run_tui`/`run_native` that needs to call a
+  `&mut dyn Backend` method (e.g. `compose::ContextMenuController::open`) and
+  mutate `AppLogic`-owned controller state in the same call, outside the
+  `step`/`pump` path where both are normally threaded through together.
+  Mirrors `tui::testing::TuiDriver::parts_mut`'s shape for the headless
+  driver, backing `quadraui-py`'s handler-safe deferred-action queue.
 - `UiEvent` gains three variants routing the remaining in-canvas overlay
   primitives' interactive regions through the same anchored-overlay slot
   `MessageDialogResolved`/`ContextMenuItemActivated` already use:
