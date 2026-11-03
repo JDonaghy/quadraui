@@ -98,11 +98,12 @@
 //! coverage (`step`/`run`, and `run_tui` for its own duration).
 //!
 //! [`QuiApp::actions`] returns a [`QuiAppActions`] — the handler-side
-//! escape hatch for the seven overlay/OS-call methods this module doc's
+//! escape hatch for the nine overlay/OS-call methods this module doc's
 //! "cannot call back into `QuiApp`" note above otherwise rules out from
 //! inside a handler: `show_message_dialog`, `show_context_menu`,
-//! `show_toast`, `open_path`, `reveal_in_file_manager`, `move_to_trash`,
-//! `restore_from_trash`. Each method on it decodes and queues the same
+//! `show_toast`, `show_tooltip`, `send_notification`, `open_path`,
+//! `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`. Each
+//! method on it decodes and queues the same
 //! action its `QuiApp` namesake would apply immediately;
 //! [`PyAppLogic::handle`]/[`PyAppLogic::tick`] drain that queue via
 //! [`flush_deferred_actions`] right after the dispatch that queued it
@@ -361,17 +362,20 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 
 /// One action a [`QuiAppActions`] method recorded, already decoded and
 /// validated, waiting for [`flush_deferred_actions`] to apply it. Each
-/// variant mirrors one of the seven `QuiApp` methods [`QuiAppActions`]'s own
+/// variant mirrors one of the nine `QuiApp` methods [`QuiAppActions`]'s own
 /// doc names (`show_message_dialog`, `show_context_menu`, `show_toast`,
-/// `open_path`, `reveal_in_file_manager`, `move_to_trash`,
-/// `restore_from_trash`) — carrying exactly the already-decoded arguments
-/// the matching `QuiApp` method passes to the same underlying
-/// `quadraui`/`quadraui_binding_core` call, so applying one is a direct
-/// call with no further decoding or validation left to do.
+/// `show_tooltip`, `send_notification`, `open_path`,
+/// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`) —
+/// carrying exactly the already-decoded arguments the matching `QuiApp`
+/// method passes to the same underlying `quadraui`/`quadraui_binding_core`
+/// call, so applying one is a direct call with no further decoding or
+/// validation left to do.
 enum DeferredAction {
     MessageDialog(MessageDialogOptions),
     ContextMenu(Vec<ContextMenuItem>, Point),
     Toast(Toast, ToastCorner),
+    Tooltip(Tooltip, Rect),
+    Notification(Notification),
     OpenPath(PathBuf),
     RevealInFileManager(PathBuf),
     MoveToTrash(PathBuf),
@@ -1499,9 +1503,10 @@ impl QuiAppWaker {
 /// A handle, returned by [`QuiApp::actions`], that queues exactly the
 /// overlay/OS-call methods `QuiApp` itself restricts to top-level script
 /// code — `show_message_dialog`, `show_context_menu`, `show_toast`,
-/// `open_path`, `reveal_in_file_manager`, `move_to_trash`,
-/// `restore_from_trash` — so a registered event handler can request one of
-/// them without re-entering `QuiApp`'s own PyO3 cell.
+/// `show_tooltip`, `send_notification`, `open_path`,
+/// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash` — so a
+/// registered event handler can request one of them without re-entering
+/// `QuiApp`'s own PyO3 cell.
 ///
 /// A handler already holds `QuiApp`'s one mutable borrow for the whole
 /// dispatch that invoked it (the same wall `show_message_dialog`'s own doc
@@ -1595,6 +1600,43 @@ impl QuiAppActions {
         Ok(())
     }
 
+    /// Queues a [`DeferredAction::Tooltip`] — same arguments, same
+    /// decoding, as `QuiApp::show_tooltip`.
+    fn show_tooltip(
+        &self,
+        tooltip: &Bound<'_, PyDict>,
+        anchor: (f32, f32, f32, f32),
+    ) -> PyResult<()> {
+        let tooltip: Tooltip = decode("show_tooltip", tooltip)?;
+        let anchor = Rect::new(anchor.0, anchor.1, anchor.2, anchor.3);
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Tooltip(tooltip, anchor));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::Notification`] — same arguments, same
+    /// decoding, as `QuiApp::send_notification`.
+    #[pyo3(signature = (title, body, urgent=false, silent=false, tag=None))]
+    fn send_notification(
+        &self,
+        title: String,
+        body: String,
+        urgent: bool,
+        silent: bool,
+        tag: Option<String>,
+    ) -> PyResult<()> {
+        let mut n = Notification::new(title, body).with_silent(silent);
+        if let Some(tag) = tag {
+            n = n.with_tag(tag);
+        }
+        n.urgent = urgent;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Notification(n));
+        Ok(())
+    }
+
     /// Queues a [`DeferredAction::OpenPath`] — same argument as
     /// `QuiApp::open_path`.
     fn open_path(&self, path: &str) -> PyResult<()> {
@@ -1670,6 +1712,12 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
             }
             DeferredAction::Toast(toast, corner) => {
                 app_logic.engine.show_toast(toast, corner);
+            }
+            DeferredAction::Tooltip(tooltip, anchor) => {
+                app_logic.engine.show_tooltip(tooltip, anchor);
+            }
+            DeferredAction::Notification(notification) => {
+                backend.services().send_notification(notification);
             }
             DeferredAction::OpenPath(path) => {
                 if let Err(err) = backend.services().open_path(&path) {
@@ -1932,9 +1980,9 @@ impl QuiApp {
 
     /// Returns a [`QuiAppActions`] handle: an object a registered event
     /// handler can call `show_message_dialog`/`show_context_menu`/
-    /// `show_toast`/`open_path`/`reveal_in_file_manager`/`move_to_trash`/
-    /// `restore_from_trash` on instead of this `QuiApp` itself, since the
-    /// handler already holds
+    /// `show_toast`/`show_tooltip`/`send_notification`/`open_path`/
+    /// `reveal_in_file_manager`/`move_to_trash`/`restore_from_trash` on
+    /// instead of this `QuiApp` itself, since the handler already holds
     /// this app's one mutable borrow for the whole dispatch that invoked
     /// it and a direct call on `self` from there raises "already
     /// borrowed" — see [`QuiAppActions`]'s own doc for the full story and

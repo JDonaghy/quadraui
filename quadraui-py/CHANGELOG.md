@@ -14,9 +14,10 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 - `QuiApp.actions()` returns a `QuiAppActions` handle a registered event
   handler can call `show_message_dialog`/`show_context_menu`/`show_toast`/
-  `open_path`/`reveal_in_file_manager`/`move_to_trash`/`restore_from_trash`
-  on without hitting the "already borrowed" PyO3 runtime error a direct
-  call on `app` itself raises from inside a handler. Each method queues
+  `show_tooltip`/`send_notification`/`open_path`/`reveal_in_file_manager`/
+  `move_to_trash`/`restore_from_trash` on without hitting the "already
+  borrowed" PyO3 runtime error a direct call on `app` itself raises from
+  inside a handler. Each method queues
   the already-decoded action instead of applying it immediately;
   `PyAppLogic::handle`/`tick` apply it right after the dispatch that
   queued it finishes, against whichever live backend that dispatch was
