@@ -18,9 +18,11 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   on without hitting the "already borrowed" PyO3 runtime error a direct
   call on `app` itself raises from inside a handler. Each method queues
   the already-decoded action instead of applying it immediately;
-  `step`/`run` and the `run_tui` pump loop apply it right after the
-  dispatch that queued it finishes. Not yet wired into `run_native`'s
-  `gtk`/`macos`/`win` loops.
+  `PyAppLogic::handle`/`tick` apply it right after the dispatch that
+  queued it finishes, against whichever live backend that dispatch was
+  given — the headless driver for `step`/`run`, the live terminal for
+  `run_tui`, and the live window for `run_native`'s `gtk`/`macos`/`win`
+  loops alike.
 - `QuiApp.restore_from_trash(path)` restores `path` from the platform
   trash/recycle bin back to its original location — the inverse of
   `QuiApp.move_to_trash`, for an "Undo" affordance on a delete-confirm
