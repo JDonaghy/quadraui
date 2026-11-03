@@ -2,21 +2,24 @@
 //! terminal and native-window runners that take it over.
 //!
 //! The language-neutral hit testing, semantic event synthesis, text-input/
-//! focus/drag controllers, retained descriptor model, and render -> frame
-//! assembly this binding drives all live in `quadraui_binding_core` (see
-//! that crate's module doc) — this file is the PyO3 leaf around it: Python
-//! `dict` decode (`insert_*`, [`render_frame_from_dict`],
-//! `layout_node_from_dict`), [`PyAppLogic`]'s callback bridge, and the
-//! `QuiApp` surface below.
+//! focus/drag controllers, retained descriptor model, render -> frame
+//! assembly, and descriptor wire decode (layout trees, render frames,
+//! additive-primitive descriptors, `run_shell`'s `ShellConfig`) this
+//! binding drives all live in `quadraui_binding_core` (see that crate's
+//! module doc) — this file is the PyO3 leaf around it: `depythonize` a
+//! Python `dict` into a `pythonize::Depythonizer`, hand that to the core
+//! decoder, and map its `DecodeError` to `InvalidDescriptorError`, plus
+//! [`PyAppLogic`]'s callback bridge and the `QuiApp` surface below.
 //!
 //! [`QuiApp`] wraps a `quadraui::tui::testing::TuiDriver` running an
 //! in-crate [`AppLogic`] that holds one optional descriptor per core
 //! primitive (button, text display, list, tree, data table, tab bar), plus
 //! any number of additive primitives (`insert_extra`/`insert_progress`/
-//! `insert_spinner`/`insert_image`) registered in [`EXTRA_PRIMITIVES`] —
-//! see that constant's doc for why registering a further additive
-//! primitive never touches the six fixed slots. Each `insert_*` method
-//! takes a Python `dict`, decodes it into the matching descriptor type via
+//! `insert_spinner`/`insert_image`) registered in
+//! `quadraui_binding_core::extra_paint`'s `extra_primitives!` table — see
+//! that macro's doc for why registering a further additive primitive never
+//! touches the six fixed slots. Each `insert_*` method takes a Python
+//! `dict`, decodes it into the matching descriptor type via
 //! [`pythonize::depythonize`], stores it in that primitive's slot, and
 //! re-renders immediately so `screen()`/`screen_contains()` reflect it
 //! without a separate step.
@@ -104,7 +107,9 @@
 #[allow(unused_imports)]
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -138,17 +143,14 @@ use quadraui::Modifiers;
 use quadraui::MouseButton;
 #[cfg(test)]
 use quadraui::NamedKey;
+#[cfg(test)]
+use quadraui::Scrollbar;
 use quadraui::{
-    Accelerator, AcceleratorId, ActivityBar, AppLogic, AppShellEvent, AppShellLayout, Backend,
-    BackendCaps, BackendWidget, BoardModel, BottomPanelConfig, BottomPanelEvent, BottomPanelTab,
-    Canvas, Chart, Color, ComboBox, CommandCenter, CommandLine, Completions, ContextMenuItem,
-    DatePicker, DialogButton, DialogSeverity, DiffView, Editor, FileDialogOptions,
-    FindReplacePanel, Float, FloatMeasure, Form, GlobalShortcutId, Image, MenuBar, MessageList,
-    Minimap, MultiSectionView, Notification, NumberInput, Palette, Panel, PanelDefinition,
-    PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect, RgbaImage, RichTextPopup,
-    ScrollView, Scrollbar, ShellApp, ShellConfig, ShellContext, ShellPosition, SidebarPanel,
-    Spinner, Split, SplitDirection, SplitTree, StatusBar, Switch, TabBar, TabBarSegment, TabItem,
-    Terminal, TextInput, Toast, ToastCorner, Toolbar, Tooltip, UiEvent, UserPayload, WidgetId,
+    Accelerator, AcceleratorId, AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps,
+    BottomPanelEvent, Completions, ContextMenuItem, DialogButton, DialogSeverity,
+    FileDialogOptions, Float, FloatMeasure, GlobalShortcutId, Notification, Point, Reaction, Rect,
+    RgbaImage, RichTextPopup, ShellApp, ShellConfig, ShellContext, Toast, ToastCorner, Tooltip,
+    UiEvent, UserPayload, WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -156,19 +158,18 @@ use quadraui::{
 // `quadraui-binding-core/src/lib.rs`'s module doc. Imported under their
 // bare names (rather than a `qbc::` path prefix) so this file's own call
 // sites, most of which predate the crate split, need no further change.
+#[cfg(test)]
+use quadraui_binding_core::tree_scroll_state;
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
-    callback_reaction, caret_shape, click_down_up_events, color_depth_name, dialog_severity,
-    draw_bands, font_role, key_pressed_event, merge_overrides, message_dialog_options_from_buttons,
-    paint_layout, panic_message, render_overlays, step_driver, text_display_from_lines,
-    theme_color_value, toast_corner, window_close_reaction, BindingHost, ErasedShellDriver,
-    EventSink, ExtraPaint, HitDetail, InteractionEngine, LayoutLeaf, LayoutNode, LayoutPanel,
-    LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry, LayoutTabs, LeafDescriptor,
-    OverrideError, RenderFrame, WindowCloseHandling, LEAF_KIND_KEYS,
+    callback_reaction, caret_shape, click_down_up_events, color_depth_name, decode_extra_primitive,
+    dialog_severity, draw_bands, font_role, key_pressed_event, merge_overrides,
+    message_dialog_options_from_buttons, paint_layout, panic_message, render_overlays, step_driver,
+    text_display_from_lines, theme_color_value, toast_corner, window_close_reaction, BindingHost,
+    ErasedShellDriver, EventSink, HitDetail, InteractionEngine, OverrideError, RenderOutput,
+    WindowCloseHandling,
 };
-#[cfg(test)]
-use quadraui_binding_core::{tree_scroll_state, EXTRA_PRIMITIVE_KINDS};
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`)
 /// between a [`QuiApp`] and every [`QuiAppWaker`] handed out by
@@ -846,26 +847,6 @@ fn bottom_panel_event_to_py<'py>(
 /// [`QuiShellApp::bottom_panel_tab_center`] can name it directly.
 const BOTTOM_PANEL_TABS_WIDGET_ID: &str = "bottom-panel:tabs";
 
-/// Minimal [`BackendWidget`] painted into a `run_shell` bottom-panel tab's
-/// body: a single line naming the tab's own id. Bottom-panel tabs built
-/// from `run_shell`'s `"bottom_panel"` config have no Python-registered
-/// per-tab content callback (out of scope for this first cut — see
-/// [`QuiApp::run_shell`]'s doc), but [`BottomPanelTab::content`] still
-/// requires *some* [`BackendWidget`], and painting the active tab's id
-/// makes "which tab is active" visible on the rendered screen — useful for
-/// a driver test to assert on, instead of an invisible no-op.
-struct StaticTabContent(String);
-
-impl BackendWidget for StaticTabContent {
-    fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-        let td = text_display_from_lines(
-            WidgetId::new(format!("shell:bottom_panel:{}", self.0)),
-            vec![self.0.clone()],
-        );
-        backend.draw_text_display(rect, &td);
-    }
-}
-
 /// The [`ShellApp`] [`QuiApp::run_shell`] drives: a thin bridge from its
 /// four hooks to the Python callables held in a shared [`ShellState`] —
 /// see this module's "ShellApp / `QuiApp.run_shell`" doc for why the state
@@ -992,228 +973,17 @@ impl ShellApp for PyShellApp {
     }
 }
 
-/// Reads `dict[key]` as a `String`, raising `InvalidDescriptorError` if
-/// present but not a string. `None` (not an error) when `key` is absent or
-/// explicitly `None`. Shared by every `*_from_dict` helper in the
-/// `run_shell` section below.
-fn dict_str(what: &str, dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<String>> {
-    match dict.get_item(key)? {
-        Some(value) if !value.is_none() => value.extract().map(Some).map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: {key:?} must be a string"))
-        }),
-        _ => Ok(None),
-    }
-}
-
-/// [`dict_str`], but raises `InvalidDescriptorError` when `key` is absent
-/// or `None` instead of returning `Ok(None)`.
-fn dict_required_str(what: &str, dict: &Bound<'_, PyDict>, key: &str) -> PyResult<String> {
-    dict_str(what, dict, key)?
-        .ok_or_else(|| InvalidDescriptorError::new_err(format!("{what}: missing required {key:?}")))
-}
-
-/// Reads `dict[key]` as an `f32`, raising `InvalidDescriptorError` if
-/// present but not a number. `None` when `key` is absent or `None`.
-fn dict_f32(what: &str, dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<f32>> {
-    match dict.get_item(key)? {
-        Some(value) if !value.is_none() => value.extract().map(Some).map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: {key:?} must be a number"))
-        }),
-        _ => Ok(None),
-    }
-}
-
-/// Reads `dict[key]` as a `bool`, raising `InvalidDescriptorError` if
-/// present but not a bool. `None` when `key` is absent or `None`.
-fn dict_bool(what: &str, dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<bool>> {
-    match dict.get_item(key)? {
-        Some(value) if !value.is_none() => value.extract().map(Some).map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: {key:?} must be a bool"))
-        }),
-        _ => Ok(None),
-    }
-}
-
-/// Decodes one panel dict (`{"id", "icon", "tooltip", "title"}`, all but
-/// `"id"` optional) into a [`PanelDefinition`] — one entry of `run_shell`'s
-/// `"panels"`/`"bottom_items"` lists.
-fn panel_definition_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<PanelDefinition> {
-    let id = dict_required_str(what, dict, "id")?;
-    let icon = dict_str(what, dict, "icon")?.unwrap_or_default();
-    let tooltip = dict_str(what, dict, "tooltip")?.unwrap_or_default();
-    let title = dict_str(what, dict, "title")?.unwrap_or_else(|| id.clone());
-    Ok(PanelDefinition {
-        id: WidgetId::new(id),
-        icon,
-        tooltip,
-        title,
-    })
-}
-
-/// Decodes a `list` of panel dicts via [`panel_definition_from_dict`].
-fn panel_list_from_value(what: &str, value: &Bound<'_, PyAny>) -> PyResult<Vec<PanelDefinition>> {
-    let list = value
-        .cast::<PyList>()
-        .map_err(|_| InvalidDescriptorError::new_err(format!("{what}: panels must be a list")))?;
-    list.iter()
-        .map(|item| {
-            let item_dict = item.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: each panel must be a dict"))
-            })?;
-            panel_definition_from_dict(what, item_dict)
-        })
-        .collect()
-}
-
-/// [`panel_list_from_value`] applied to `dict[key]`, defaulting to an empty
-/// list when `key` is absent or `None`.
-fn panel_list_from_dict(
-    what: &str,
-    dict: &Bound<'_, PyDict>,
-    key: &str,
-) -> PyResult<Vec<PanelDefinition>> {
-    match dict.get_item(key)? {
-        Some(value) if !value.is_none() => panel_list_from_value(what, &value),
-        _ => Ok(Vec::new()),
-    }
-}
-
-/// Decodes one bottom-panel-tab dict (`{"id", "label", "closable",
-/// "badge"}`, all but `"id"` optional) into a [`BottomPanelTab`], with its
-/// content set to a [`StaticTabContent`] naming the tab's own id — see that
-/// type's doc for why.
-fn bottom_panel_tab_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<BottomPanelTab> {
-    let id = dict_required_str(what, dict, "id")?;
-    let label = dict_str(what, dict, "label")?.unwrap_or_else(|| id.clone());
-    let closable = dict_bool(what, dict, "closable")?.unwrap_or(false);
-    let badge = dict_str(what, dict, "badge")?;
-    Ok(BottomPanelTab {
-        content: Box::new(StaticTabContent(id.clone())),
-        id,
-        label,
-        closable,
-        badge,
-    })
-}
-
-/// Decodes `run_shell`'s `"bottom_panel"` dict (`{"tabs", "active_tab_id",
-/// "maximised", "height_fraction"}`, all optional except at least one tab)
-/// into a [`BottomPanelConfig`]. `"active_tab_id"` falls back to the first
-/// tab's id, mirroring [`BottomPanelConfig::active_tab_id`]'s own
-/// "unknown id falls back to the first tab" contract.
-fn bottom_panel_config_from_dict(
-    what: &str,
-    dict: &Bound<'_, PyDict>,
-) -> PyResult<BottomPanelConfig> {
-    let tabs = match dict.get_item("tabs")? {
-        Some(value) if !value.is_none() => {
-            let list = value.cast::<PyList>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: bottom_panel \"tabs\" must be a list"
-                ))
-            })?;
-            list.iter()
-                .map(|item| {
-                    let item_dict = item.cast::<PyDict>().map_err(|_| {
-                        InvalidDescriptorError::new_err(format!(
-                            "{what}: each bottom_panel tab must be a dict"
-                        ))
-                    })?;
-                    bottom_panel_tab_from_dict(what, item_dict)
-                })
-                .collect::<PyResult<Vec<_>>>()?
-        }
-        _ => Vec::new(),
-    };
-    let active_tab_id = dict_str(what, dict, "active_tab_id")?
-        .or_else(|| tabs.first().map(|tab| tab.id.clone()))
-        .unwrap_or_default();
-    let maximised = dict_bool(what, dict, "maximised")?.unwrap_or(false);
-    let height_fraction = dict_f32(what, dict, "height_fraction")?.unwrap_or(0.3);
-    Ok(BottomPanelConfig {
-        tabs,
-        active_tab_id,
-        maximised,
-        height_fraction,
-    })
-}
-
-/// Decodes `run_shell`'s `config` dict into a [`ShellConfig`]. There is no
-/// `Deserialize` impl on `ShellConfig`/`PanelDefinition`/`BottomPanelConfig`
-/// upstream, so this reads the subset of `ShellConfig`'s builder surface
-/// this binding supports field-by-field, the same `*_from_dict` style every
-/// other decode helper in this file uses, rather than depending on one.
-/// Recognized keys: `"title"` (required), `"panels"`, `"bottom_items"`,
-/// `"position"` (`"left"`/`"right"`), `"sidebar_visible"`,
-/// `"default_sidebar_width"`, `"min_sidebar_width"`, `"max_sidebar_width"`,
-/// `"activity_bar_width"`, `"has_title_bar"` + `"title_bar_height_lh"`,
-/// `"has_status_bar"`, `"has_command_line"`, `"has_bottom_panel"` +
-/// `"bottom_panel_height_lh"` (the bare, untabbed region), and
-/// `"bottom_panel"` (a tabbed [`BottomPanelConfig`], see
-/// [`bottom_panel_config_from_dict`]). Any other key is silently ignored.
+/// Decodes `run_shell`'s `config` dict into a [`ShellConfig`] via the
+/// language-neutral decoder in `quadraui_binding_core`, mapping its
+/// `DecodeError` to `InvalidDescriptorError`. There is no `Deserialize`
+/// impl on `ShellConfig`/`PanelDefinition`/`BottomPanelConfig` upstream, so
+/// that decoder reads the subset of `ShellConfig`'s builder surface this
+/// binding supports field-by-field instead of depending on one — see its
+/// own doc for the recognized key vocabulary.
 fn shell_config_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<ShellConfig> {
-    let what = "run_shell";
-    let title = dict_required_str(what, dict, "title")?;
-    let panels = panel_list_from_dict(what, dict, "panels")?;
-    let mut config = ShellConfig::new(title, panels);
-
-    let bottom_items = panel_list_from_dict(what, dict, "bottom_items")?;
-    if !bottom_items.is_empty() {
-        config = config.with_bottom_items(bottom_items);
-    }
-
-    if let Some(position) = dict_str(what, dict, "position")? {
-        let position = match position.as_str() {
-            "left" => ShellPosition::Left,
-            "right" => ShellPosition::Right,
-            other => {
-                return Err(InvalidDescriptorError::new_err(format!(
-                    "{what}: \"position\" must be \"left\" or \"right\", got {other:?}"
-                )));
-            }
-        };
-        config = config.with_position(position);
-    }
-
-    if let Some(visible) = dict_bool(what, dict, "sidebar_visible")? {
-        config = config.with_sidebar_visible(visible);
-    }
-    if let Some(width) = dict_f32(what, dict, "default_sidebar_width")? {
-        config.default_sidebar_width = width;
-    }
-    if let Some(width) = dict_f32(what, dict, "min_sidebar_width")? {
-        config.min_sidebar_width = width;
-    }
-    if let Some(width) = dict_f32(what, dict, "max_sidebar_width")? {
-        config.max_sidebar_width = width;
-    }
-    if let Some(width) = dict_f32(what, dict, "activity_bar_width")? {
-        config = config.with_activity_bar_width(width);
-    }
-    if dict_bool(what, dict, "has_title_bar")?.unwrap_or(false) {
-        let height = dict_f32(what, dict, "title_bar_height_lh")?.unwrap_or(1.5);
-        config = config.with_title_bar(height);
-    }
-    if dict_bool(what, dict, "has_status_bar")?.unwrap_or(false) {
-        config = config.with_status_bar();
-    }
-    if dict_bool(what, dict, "has_command_line")?.unwrap_or(false) {
-        config = config.with_command_line();
-    }
-    if dict_bool(what, dict, "has_bottom_panel")?.unwrap_or(false) {
-        let height = dict_f32(what, dict, "bottom_panel_height_lh")?.unwrap_or(10.0);
-        config = config.with_bottom_panel(height);
-    }
-    if let Some(bp_value) = dict.get_item("bottom_panel")? {
-        if !bp_value.is_none() {
-            let bp_dict = bp_value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: \"bottom_panel\" must be a dict"))
-            })?;
-            config = config.with_bottom_panel_config(bottom_panel_config_from_dict(what, bp_dict)?);
-        }
-    }
-
-    Ok(config)
+    let mut de = pythonize::Depythonizer::from_object(dict.as_any());
+    quadraui_binding_core::decode_shell_config(&mut de)
+        .map_err(|err| InvalidDescriptorError::new_err(err.0))
 }
 
 /// Takes and returns this session's pending callback-raised error, if any
@@ -1416,1052 +1186,25 @@ impl QuiShellApp {
     }
 }
 
-/// Decodes a render callback's returned `dict` into a [`RenderFrame`],
-/// raising `InvalidDescriptorError` if it isn't a `dict`, if an entry isn't
-/// a `dict`/`None`, or if an entry's shape doesn't match its slot's
-/// descriptor type. The exact recognized key set is `"button"`,
-/// `"text_display"`, `"list"`, `"tree"`, `"data_table"`, `"tab_bar"` — one
-/// per fixed slot, same names `insert_*`'s Rust-side `what` argument uses —
-/// plus any kind registered in [`EXTRA_PRIMITIVES`] for an additive
-/// primitive. Any other key (including a near-miss typo like `"tabbar"`)
-/// is ignored rather than rejected, so a render callback built against a
-/// future slot set stays forward-compatible with this one.
-///
-/// A free function rather than an inherent `RenderFrame::from_dict` method
-/// — `RenderFrame` is defined in `quadraui-binding-core`, so only that
-/// crate may add inherent impls for it (Rust's orphan rule).
-fn render_frame_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<RenderFrame> {
-    let mut extra = HashMap::new();
-    for (kind, _) in EXTRA_PRIMITIVES {
-        if let Some(value) = decode_extra_slot_entry(RENDER_CALLBACK_WHAT, dict, kind)? {
-            extra.insert(kind.to_string(), value);
-        }
-    }
-    Ok(RenderFrame {
-        button: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "button")?,
-        text_display: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "text_display")?,
-        list: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "list")?,
-        tree: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "tree")?,
-        data_table: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "data_table")?,
-        tab_bar: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "tab_bar")?,
-        extra,
-    })
-}
-
-/// The `what` label passed to [`decode_slot_entry`] for every slot of a
-/// render callback's returned `dict` — identifies the source of a decode
-/// error as "render" (vs. an `insert_*` call) in the raised
-/// `InvalidDescriptorError`'s message.
-const RENDER_CALLBACK_WHAT: &str = "render";
-
-/// Reads and decodes one optional slot entry from a render callback's
-/// returned `dict`: a missing key or a `None` value both mean "draw nothing
-/// in this slot this frame"; anything else must be a `dict` decodable into
-/// `T`.
-fn decode_slot_entry<T: serde::de::DeserializeOwned>(
-    what: &str,
-    dict: &Bound<'_, PyDict>,
-    key: &str,
-) -> PyResult<Option<T>> {
-    match dict.get_item(key)? {
-        Some(value) if !value.is_none() => {
-            let value_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: {key:?} must be a dict or None"))
-            })?;
-            Ok(Some(decode(what, value_dict)?))
-        }
-        _ => Ok(None),
-    }
-}
-
-/// Reads and decodes one optional additive primitive slot entry, keyed by
-/// `kind` (one registered in [`EXTRA_PRIMITIVES`]), from a render
-/// callback's returned `dict`. Mirrors [`decode_slot_entry`]'s
-/// missing/`None`/dict-or-error shape, dispatching the decode through
-/// [`decode_extra_primitive`] instead of a single fixed type.
-fn decode_extra_slot_entry(
-    what: &str,
-    dict: &Bound<'_, PyDict>,
-    kind: &str,
-) -> PyResult<Option<Rc<dyn ExtraPaint>>> {
-    match dict.get_item(kind)? {
-        Some(value) if !value.is_none() => {
-            let value_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: {kind:?} must be a dict or None"))
-            })?;
-            Ok(Some(decode_extra_primitive(what, kind, value_dict)?))
-        }
-        _ => Ok(None),
-    }
-}
-
-/// Decodes one additive primitive descriptor from a Python `dict` into its
-/// boxed [`ExtraPaint`] value. Registered per kind in [`EXTRA_PRIMITIVES`].
-type ExtraDecoder = fn(&str, &Bound<'_, PyDict>) -> PyResult<Rc<dyn ExtraPaint>>;
-
-/// The additive primitive registry: one `(kind name, decoder)` entry per
-/// primitive painted outside the six fixed slots above (see
-/// [`LeafDescriptor::Extra`], [`BindingHost::extra_slots`] and
-/// [`QuiApp::insert_extra`]). Registering a further additive primitive is
-/// exactly one appended line here plus that type's [`ExtraPaint`] impl
-/// above — one line for a whole-area primitive, a little layout derivation
-/// for one that needs a measure pass (`NumberInput`, `ComboBox`,
-/// `DatePicker`) — no enum variant, no central match arm, and no length
-/// literal to bump, unlike the six fixed slots' `SLOT_*`/`LeafDescriptor`
-/// machinery.
-const EXTRA_PRIMITIVES: &[(&str, ExtraDecoder)] = &[
-    ("progress", |what, dict| {
-        Ok(Rc::new(decode::<ProgressBar>(what, dict)?))
-    }),
-    ("spinner", |what, dict| {
-        Ok(Rc::new(decode::<Spinner>(what, dict)?))
-    }),
-    ("image", |what, dict| {
-        Ok(Rc::new(decode::<Image>(what, dict)?))
-    }),
-    ("form", |what, dict| {
-        Ok(Rc::new(decode::<Form>(what, dict)?))
-    }),
-    ("text_input", |what, dict| {
-        Ok(Rc::new(decode::<TextInput>(what, dict)?))
-    }),
-    ("number_input", |what, dict| {
-        Ok(Rc::new(decode::<NumberInput>(what, dict)?))
-    }),
-    ("combo_box", |what, dict| {
-        Ok(Rc::new(decode::<ComboBox>(what, dict)?))
-    }),
-    ("date_picker", |what, dict| {
-        Ok(Rc::new(decode::<DatePicker>(what, dict)?))
-    }),
-    ("radio_group", |what, dict| {
-        Ok(Rc::new(decode::<RadioGroup>(what, dict)?))
-    }),
-    ("switch", |what, dict| {
-        Ok(Rc::new(decode::<Switch>(what, dict)?))
-    }),
-    ("chart", |what, dict| {
-        Ok(Rc::new(decode::<Chart>(what, dict)?))
-    }),
-    ("message_list", |what, dict| {
-        Ok(Rc::new(decode::<MessageList>(what, dict)?))
-    }),
-    ("board", |what, dict| {
-        Ok(Rc::new(decode::<BoardModel>(what, dict)?))
-    }),
-    ("pipeline_view", |what, dict| {
-        Ok(Rc::new(decode::<PipelineView>(what, dict)?))
-    }),
-    ("minimap", |what, dict| {
-        Ok(Rc::new(decode::<Minimap>(what, dict)?))
-    }),
-    ("multi_section_view", |what, dict| {
-        Ok(Rc::new(decode::<MultiSectionView>(what, dict)?))
-    }),
-    ("diff_view", |what, dict| {
-        Ok(Rc::new(decode::<DiffView>(what, dict)?))
-    }),
-    ("activity_bar", |what, dict| {
-        Ok(Rc::new(decode::<ActivityBar>(what, dict)?))
-    }),
-    ("toolbar", |what, dict| {
-        Ok(Rc::new(decode::<Toolbar>(what, dict)?))
-    }),
-    ("menu_bar", |what, dict| {
-        Ok(Rc::new(decode::<MenuBar>(what, dict)?))
-    }),
-    ("status_bar", |what, dict| {
-        Ok(Rc::new(decode::<StatusBar>(what, dict)?))
-    }),
-    ("command_line", |what, dict| {
-        Ok(Rc::new(decode::<CommandLine>(what, dict)?))
-    }),
-    ("command_center", |what, dict| {
-        Ok(Rc::new(decode::<CommandCenter>(what, dict)?))
-    }),
-    ("palette", |what, dict| {
-        Ok(Rc::new(decode::<Palette>(what, dict)?))
-    }),
-    ("scrollbar", |what, dict| {
-        Ok(Rc::new(decode::<Scrollbar>(what, dict)?))
-    }),
-    ("editor", |what, dict| {
-        Ok(Rc::new(decode::<Editor>(what, dict)?))
-    }),
-    ("terminal", |what, dict| {
-        Ok(Rc::new(decode::<Terminal>(what, dict)?))
-    }),
-    ("canvas", |what, dict| {
-        Ok(Rc::new(decode::<Canvas>(what, dict)?))
-    }),
-    ("scroll_view", |what, dict| {
-        Ok(Rc::new(decode::<ScrollView>(what, dict)?))
-    }),
-    ("find_replace", |what, dict| {
-        Ok(Rc::new(decode::<FindReplacePanel>(what, dict)?))
-    }),
-];
-
-/// The registered additive primitive kind names, in registration order —
-/// used to spell out "or one of these" in error messages alongside
-/// [`LEAF_KIND_KEYS`].
-fn extra_kind_names() -> Vec<&'static str> {
-    EXTRA_PRIMITIVES.iter().map(|(kind, _)| *kind).collect()
-}
-
-/// Decodes one additive primitive descriptor from a Python dict, dispatched
-/// by `kind` through [`EXTRA_PRIMITIVES`]. Raises `InvalidDescriptorError`
-/// if `kind` isn't registered.
-fn decode_extra_primitive(
-    what: &str,
-    kind: &str,
-    dict: &Bound<'_, PyDict>,
-) -> PyResult<Rc<dyn ExtraPaint>> {
-    let decoder = EXTRA_PRIMITIVES
-        .iter()
-        .find(|(registered, _)| *registered == kind)
-        .map(|(_, decoder)| *decoder)
-        .ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: unknown additive primitive kind {kind:?} (expected one of {:?})",
-                extra_kind_names()
-            ))
-        })?;
-    decoder(what, dict)
-}
-
-/// Decodes one layout tree node from a render callback's returned `dict`:
-/// a `"row"` or `"column"` key holds the container's children, a `"split"`
-/// key holds a two-pane divider ([`layout_split_from_dict`]), a `"tabs"`
-/// key holds a tab strip plus per-tab content ([`layout_tabs_from_dict`]);
-/// any other shape is decoded as a leaf via [`layout_leaf_from_dict`].
-fn layout_node_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutNode> {
-    if let Some(value) = dict.get_item("row")? {
-        if !value.is_none() {
-            return Ok(LayoutNode::Row(layout_children_from_value(what, &value)?));
-        }
-    }
-    if let Some(value) = dict.get_item("column")? {
-        if !value.is_none() {
-            return Ok(LayoutNode::Column(layout_children_from_value(
-                what, &value,
-            )?));
-        }
-    }
-    if let Some(value) = dict.get_item("split")? {
-        if !value.is_none() {
-            let split_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: \"split\" must be a dict"))
-            })?;
-            return Ok(LayoutNode::Split(layout_split_from_dict(what, split_dict)?));
-        }
-    }
-    if let Some(value) = dict.get_item("tabs")? {
-        if !value.is_none() {
-            let tabs_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: \"tabs\" must be a dict"))
-            })?;
-            return Ok(LayoutNode::Tabs(layout_tabs_from_dict(what, tabs_dict)?));
-        }
-    }
-    if let Some(value) = dict.get_item("panel")? {
-        if !value.is_none() {
-            let panel_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: \"panel\" must be a dict"))
-            })?;
-            return Ok(LayoutNode::Panel(layout_panel_from_dict(what, panel_dict)?));
-        }
-    }
-    if let Some(value) = dict.get_item("sidebar_panel")? {
-        if !value.is_none() {
-            let sidebar_panel_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: \"sidebar_panel\" must be a dict"))
-            })?;
-            return Ok(LayoutNode::SidebarPanel(layout_sidebar_panel_from_dict(
-                what,
-                sidebar_panel_dict,
-            )?));
-        }
-    }
-    if let Some(value) = dict.get_item("split_tree")? {
-        if !value.is_none() {
-            let split_tree_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: \"split_tree\" must be a dict"))
-            })?;
-            return Ok(LayoutNode::SplitTree(layout_split_tree_from_dict(
-                what,
-                split_tree_dict,
-            )?));
-        }
-    }
-    Ok(LayoutNode::Leaf(layout_leaf_from_dict(what, dict)?))
-}
-
-/// The orientation strings a `"split"` node's `"orientation"` field accepts
-/// — lowercase, Python-idiomatic spellings, independent of
-/// `quadraui::SplitDirection`'s own (PascalCase, serde-default) wire form.
-const SPLIT_ORIENTATIONS: [&str; 2] = ["horizontal", "vertical"];
-
-/// Decodes a `"split"` node: `{"id", "orientation", "ratio", "first",
-/// "second"}`, with `"first_min"`/`"second_min"` optional (defaulting to
-/// `0.0`). Unlike `quadraui::Split::first_min`/`second_min`, which are in
-/// the backend's native unit, these two fields are portable line counts —
-/// [`paint_layout`]'s `LayoutNode::Split` arm scales them by
-/// `Backend::line_height()` before constructing the `Split` it paints, so a
-/// Python caller names a minimum pane size the same way on every backend.
-/// `"first"`/`"second"` are full child node dicts, recursively decoded by
-/// [`layout_node_from_dict`].
-fn layout_split_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutSplit> {
-    let id: String = match dict.get_item("id")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: split \"id\" must be a string"))
-        })?,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: split is missing required \"id\""
-            )));
-        }
-    };
-
-    let orientation: String = match dict.get_item("orientation")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} \"orientation\" must be a string"
-            ))
-        })?,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} is missing required \"orientation\""
-            )));
-        }
-    };
-    let direction = match orientation.as_str() {
-        "horizontal" => SplitDirection::Horizontal,
-        "vertical" => SplitDirection::Vertical,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} \"orientation\" must be one of {SPLIT_ORIENTATIONS:?}, \
-                 got {orientation:?}"
-            )));
-        }
-    };
-
-    let ratio: f32 = match dict.get_item("ratio")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} \"ratio\" must be a number"
-            ))
-        })?,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} is missing required \"ratio\""
-            )));
-        }
-    };
-
-    let first_min: f32 = match dict.get_item("first_min")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} \"first_min\" must be a number"
-            ))
-        })?,
-        _ => 0.0,
-    };
-    let second_min: f32 = match dict.get_item("second_min")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} \"second_min\" must be a number"
-            ))
-        })?,
-        _ => 0.0,
-    };
-
-    let first = layout_child_node_from_value(what, &id, "first", dict)?;
-    let second = layout_child_node_from_value(what, &id, "second", dict)?;
-
-    Ok(LayoutSplit {
-        split: Split {
-            id: WidgetId::new(id),
-            direction,
-            ratio,
-            first_min,
-            second_min,
-        },
-        first: Box::new(first),
-        second: Box::new(second),
-    })
-}
-
-/// Reads a `"split"` node's required `"first"`/`"second"` child dict and
-/// recursively decodes it via [`layout_node_from_dict`].
-fn layout_child_node_from_value(
-    what: &str,
-    split_id: &str,
-    key: &str,
-    dict: &Bound<'_, PyDict>,
-) -> PyResult<LayoutNode> {
-    let value = dict
-        .get_item(key)?
-        .filter(|v| !v.is_none())
-        .ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: split {split_id:?} is missing required {key:?}"
-            ))
-        })?;
-    let child_dict = value.cast::<PyDict>().map_err(|_| {
-        InvalidDescriptorError::new_err(format!(
-            "{what}: split {split_id:?} {key:?} must be a dict"
-        ))
-    })?;
-    layout_node_from_dict(what, child_dict)
-}
-
-/// Decodes a `"row"`/`"column"` container's children: a `list` of child
-/// dicts, each recursively decoded by [`layout_node_from_dict`].
-fn layout_children_from_value(what: &str, value: &Bound<'_, PyAny>) -> PyResult<Vec<LayoutNode>> {
-    let list = value.cast::<PyList>().map_err(|_| {
-        InvalidDescriptorError::new_err(format!("{what}: row/column children must be a list"))
-    })?;
-    list.iter()
-        .map(|child| {
-            let child_dict = child.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: each row/column child must be a dict"
-                ))
-            })?;
-            layout_node_from_dict(what, child_dict)
-        })
-        .collect()
-}
-
-/// Reads a container node's required single `"content"` child dict and
-/// recursively decodes it via [`layout_node_from_dict`]. Shared by
-/// `"panel"` and `"sidebar_panel"` nodes, which each hold exactly one child
-/// subtree — unlike `"split"`'s two named panes or `"row"`/`"column"`'s list.
-fn layout_required_child_node(
-    what: &str,
-    node_label: &str,
-    node_id: &str,
-    key: &str,
-    dict: &Bound<'_, PyDict>,
-) -> PyResult<LayoutNode> {
-    let value = dict
-        .get_item(key)?
-        .filter(|v| !v.is_none())
-        .ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: {node_label} {node_id:?} is missing required {key:?}"
-            ))
-        })?;
-    let child_dict = value.cast::<PyDict>().map_err(|_| {
-        InvalidDescriptorError::new_err(format!(
-            "{what}: {node_label} {node_id:?} {key:?} must be a dict"
-        ))
-    })?;
-    layout_node_from_dict(what, child_dict)
-}
-
-/// Decodes a `"panel"` node: the chrome dict decoded generically via
-/// `decode::<Panel>` (`title`/`actions`/`accent`/`collapsed`, each
-/// `#[serde(default)]`, so a minimal `{"id": ...}` is enough) plus a
-/// required `"content"` child node, recursively decoded by
-/// [`layout_node_from_dict`]. The `"content"` key is harmless noise to
-/// `decode::<Panel>` itself — `Panel` has no `deny_unknown_fields`.
-fn layout_panel_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutPanel> {
-    let panel: Panel = decode(what, dict)?;
-    let id = panel.id.as_str().to_owned();
-    let content = layout_required_child_node(what, "panel", &id, "content", dict)?;
-    Ok(LayoutPanel {
-        panel,
-        content: Box::new(content),
-    })
-}
-
-/// Decodes a `"sidebar_panel"` node: the chrome dict decoded generically via
-/// `decode::<SidebarPanel>` (optional `toolbar`/`toolbar_height`) plus a
-/// required `"content"` child node, recursively decoded by
-/// [`layout_node_from_dict`].
-fn layout_sidebar_panel_from_dict(
-    what: &str,
-    dict: &Bound<'_, PyDict>,
-) -> PyResult<LayoutSidebarPanel> {
-    let sidebar_panel: SidebarPanel = decode(what, dict)?;
-    let id = sidebar_panel.id.as_str().to_owned();
-    let content = layout_required_child_node(what, "sidebar_panel", &id, "content", dict)?;
-    Ok(LayoutSidebarPanel {
-        sidebar_panel,
-        content: Box::new(content),
-    })
-}
-
-/// Decodes a `"split_tree"` node: `{"id", "root"}`, where `"root"` is
-/// recursively either `{"leaf": <child node dict>}` or `{"split":
-/// {"orientation", "ratio", "first", "second"}}` (the same `"orientation"`
-/// spelling and values as a top-level `"split"` node — see
-/// [`SPLIT_ORIENTATIONS`]). Each `"leaf"` becomes one position in the
-/// `quadraui::SplitTree` geometry built alongside it, addressed by a
-/// synthetic, internal-only id; its decoded content node is pushed onto the
-/// matching [`LayoutSplitTree::leaves`] in the same pre-order, for
-/// [`paint_layout`] to zip back against [`SplitTreeLayout::leaves`]' resolved
-/// rects at paint time.
-fn layout_split_tree_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutSplitTree> {
-    let id: String = match dict.get_item("id")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: split_tree \"id\" must be a string"))
-        })?,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: split_tree is missing required \"id\""
-            )));
-        }
-    };
-
-    let root_value = dict
-        .get_item("root")?
-        .filter(|v| !v.is_none())
-        .ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: split_tree {id:?} is missing required \"root\""
-            ))
-        })?;
-    let root_dict = root_value.cast::<PyDict>().map_err(|_| {
-        InvalidDescriptorError::new_err(format!(
-            "{what}: split_tree {id:?} \"root\" must be a dict"
-        ))
-    })?;
-
-    let mut leaves = Vec::new();
-    let tree = split_tree_node_from_dict(what, &id, root_dict, &mut leaves)?;
-    Ok(LayoutSplitTree { id, tree, leaves })
-}
-
-/// Recursively decodes one node of a `"split_tree"`'s `"root"` tree. A
-/// `{"leaf": <node dict>}` decodes its content via [`layout_node_from_dict`],
-/// pushes it onto `leaves`, and returns a `SplitTree::Leaf` carrying a
-/// synthetic id addressing its position (`"{tree_id}::leaf::{index}"`,
-/// never user-facing, never checked by [`validate_unique_leaf_ids`]). A
-/// `{"split": {...}}` recurses into `"first"`/`"second"` in pre-order,
-/// matching the order [`SplitTreeLayout::leaves`] resolves rects in.
-fn split_tree_node_from_dict(
-    what: &str,
-    tree_id: &str,
-    dict: &Bound<'_, PyDict>,
-    leaves: &mut Vec<LayoutNode>,
-) -> PyResult<SplitTree> {
-    if let Some(value) = dict.get_item("leaf")? {
-        if !value.is_none() {
-            let leaf_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: split_tree {tree_id:?} \"leaf\" must be a dict"
-                ))
-            })?;
-            let content = layout_node_from_dict(what, leaf_dict)?;
-            let placeholder = WidgetId::new(format!("{tree_id}::leaf::{}", leaves.len()));
-            leaves.push(content);
-            return Ok(SplitTree::leaf(placeholder));
-        }
-    }
-    if let Some(value) = dict.get_item("split")? {
-        if !value.is_none() {
-            let split_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: split_tree {tree_id:?} \"split\" must be a dict"
-                ))
-            })?;
-
-            let orientation: String = match split_dict.get_item("orientation")? {
-                Some(v) if !v.is_none() => v.extract().map_err(|_| {
-                    InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split \"orientation\" must be a string"
-                    ))
-                })?,
-                _ => {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split is missing required \"orientation\""
-                    )));
-                }
-            };
-            let direction = match orientation.as_str() {
-                "horizontal" => SplitDirection::Horizontal,
-                "vertical" => SplitDirection::Vertical,
-                _ => {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split \"orientation\" must be one of \
-                         {SPLIT_ORIENTATIONS:?}, got {orientation:?}"
-                    )));
-                }
-            };
-
-            let ratio: f32 = match split_dict.get_item("ratio")? {
-                Some(v) if !v.is_none() => v.extract().map_err(|_| {
-                    InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split \"ratio\" must be a number"
-                    ))
-                })?,
-                _ => {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split is missing required \"ratio\""
-                    )));
-                }
-            };
-
-            let first_value = split_dict
-                .get_item("first")?
-                .filter(|v| !v.is_none())
-                .ok_or_else(|| {
-                    InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split is missing required \"first\""
-                    ))
-                })?;
-            let first_dict = first_value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: split_tree {tree_id:?} split \"first\" must be a dict"
-                ))
-            })?;
-            let first = split_tree_node_from_dict(what, tree_id, first_dict, leaves)?;
-
-            let second_value = split_dict
-                .get_item("second")?
-                .filter(|v| !v.is_none())
-                .ok_or_else(|| {
-                    InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split is missing required \"second\""
-                    ))
-                })?;
-            let second_dict = second_value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: split_tree {tree_id:?} split \"second\" must be a dict"
-                ))
-            })?;
-            let second = split_tree_node_from_dict(what, tree_id, second_dict, leaves)?;
-
-            return Ok(SplitTree::split(direction, ratio, first, second));
-        }
-    }
-    Err(InvalidDescriptorError::new_err(format!(
-        "{what}: split_tree {tree_id:?} node must have a \"leaf\" or \"split\" key"
-    )))
-}
-
-/// Decodes a `"tabs"` node: `{"id", "tabs", "selected", "closable",
-/// "scroll_offset", "right_segments", "active_accent", "compact"}`, where
-/// `"tabs"` is a non-empty `list` of `{"id", "title", "content", "closable",
-/// "is_dirty", "is_preview"}` entries and `"selected"` is the index of the
-/// entry whose `"content"` paints beneath the strip this frame. `"content"`
-/// is a full child node dict, recursively decoded by [`layout_node_from_dict`],
-/// so a tab may hold any primitive or nested row/column/split — giving a
-/// per-tab instance by construction rather than a single shared slot.
-///
-/// The strip-level `"closable"` (default `true`) gates whether *any* tab in
-/// this strip draws a close `×` at all — maps to [`TabBar::show_tab_close`].
-/// A per-tab `"closable"` (default `true`) then opts that one tab out even
-/// when the strip allows it — maps to [`TabItem::is_closable`]. A per-tab
-/// `"is_dirty"` (default `false`) swaps that tab's close glyph for the
-/// unsaved-changes dot, and `"is_preview"` (default `false`) marks it a
-/// preview (single-click, replaced-on-next-open) tab — both map to the
-/// identically named [`TabItem`] fields the standalone `tab_bar` leaf
-/// already accepts. The strip-level `"scroll_offset"` (default `0`),
-/// `"right_segments"` (default `[]`, each `{"text", "width_cells", "id",
-/// "is_active"}` decoded into a [`TabBarSegment`]), `"active_accent"`
-/// (default `None`, an `{"r", "g", "b", "a"}` dict decoded into a
-/// [`Color`]), and `"compact"` (default `false`) map to the identically
-/// named [`TabBar`] fields. Clicking a drawn close button reaches the
-/// handler as `UiEvent::TabBar(id, TabBarEvent::TabClosed { index })`,
-/// synthesized by [`semantic_event_for_hit`] the same way a tab click becomes
-/// `TabActivated`.
-fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutTabs> {
-    let id: String = match dict.get_item("id")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: tabs \"id\" must be a string"))
-        })?,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: tabs is missing required \"id\""
-            )));
-        }
-    };
-
-    let tabs_value = dict
-        .get_item("tabs")?
-        .filter(|v| !v.is_none())
-        .ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: tabs {id:?} is missing required \"tabs\""
-            ))
-        })?;
-    let tabs_list = tabs_value.cast::<PyList>().map_err(|_| {
-        InvalidDescriptorError::new_err(format!("{what}: tabs {id:?} \"tabs\" must be a list"))
-    })?;
-    // An empty `"tabs"` list is a valid empty state (no tab strip entries,
-    // no selected content) rather than an error -- a render callback that
-    // starts with zero tabs (e.g. before any file is open) can still return
-    // a `tabs` node instead of special-casing the empty case itself.
-
-    let mut items = Vec::with_capacity(tabs_list.len());
-    let mut entries = Vec::with_capacity(tabs_list.len());
-    for entry in tabs_list.iter() {
-        let entry_dict = entry.cast::<PyDict>().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: tabs {id:?} each tab must be a dict"))
-        })?;
-
-        let tab_id: String = match entry_dict.get_item("id")? {
-            Some(value) if !value.is_none() => value.extract().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab \"id\" must be a string"
-                ))
-            })?,
-            _ => {
-                return Err(InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab is missing required \"id\""
-                )));
-            }
-        };
-        let title: String = match entry_dict.get_item("title")? {
-            Some(value) if !value.is_none() => value.extract().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab {tab_id:?} \"title\" must be a string"
-                ))
-            })?,
-            _ => {
-                return Err(InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab {tab_id:?} is missing required \"title\""
-                )));
-            }
-        };
-        let content_value = entry_dict
-            .get_item("content")?
-            .filter(|v| !v.is_none())
-            .ok_or_else(|| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab {tab_id:?} is missing required \"content\""
-                ))
-            })?;
-        let content_dict = content_value.cast::<PyDict>().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: tabs {id:?} tab {tab_id:?} \"content\" must be a dict"
-            ))
-        })?;
-        let content = layout_node_from_dict(what, content_dict)?;
-
-        let is_closable: bool = match entry_dict.get_item("closable")? {
-            Some(value) if !value.is_none() => value.extract().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab {tab_id:?} \"closable\" must be a bool"
-                ))
-            })?,
-            _ => true,
-        };
-        let is_dirty: bool = match entry_dict.get_item("is_dirty")? {
-            Some(value) if !value.is_none() => value.extract().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab {tab_id:?} \"is_dirty\" must be a bool"
-                ))
-            })?,
-            _ => false,
-        };
-        let is_preview: bool = match entry_dict.get_item("is_preview")? {
-            Some(value) if !value.is_none() => value.extract().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab {tab_id:?} \"is_preview\" must be a bool"
-                ))
-            })?,
-            _ => false,
-        };
-
-        items.push(TabItem {
-            label: title,
-            is_closable,
-            is_dirty,
-            is_preview,
-            ..Default::default()
-        });
-        entries.push(LayoutTabEntry {
-            id: tab_id,
-            content: Box::new(content),
-        });
-    }
-
-    let selected: usize = match dict.get_item("selected")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: tabs {id:?} \"selected\" must be an integer"
-            ))
-        })?,
-        _ => 0,
-    };
-    // An explicit "selected" is still validated against the tab count when
-    // there are tabs to select; with zero tabs there is nothing to select
-    // and `selected` is ignored (`LayoutNode::Tabs`'s paint arm already
-    // treats an out-of-range/empty `entries.get(selected)` as "no content").
-    if !items.is_empty() && selected >= items.len() {
-        return Err(InvalidDescriptorError::new_err(format!(
-            "{what}: tabs {id:?} \"selected\" index {selected} is out of range for \
-             {len} tab(s)",
-            len = items.len()
-        )));
-    }
-    if let Some(item) = items.get_mut(selected) {
-        item.is_active = true;
-    }
-
-    let show_tab_close: bool = match dict.get_item("closable")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: tabs {id:?} \"closable\" must be a bool"
-            ))
-        })?,
-        _ => true,
-    };
-    let scroll_offset: usize = match dict.get_item("scroll_offset")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: tabs {id:?} \"scroll_offset\" must be an integer"
-            ))
-        })?,
-        _ => 0,
-    };
-    let right_segments: Vec<TabBarSegment> = match dict.get_item("right_segments")? {
-        Some(value) if !value.is_none() => {
-            let list = value.cast::<PyList>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} \"right_segments\" must be a list"
-                ))
-            })?;
-            pythonize::depythonize(list.as_any()).map_err(|err| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} invalid \"right_segments\": {err}"
-                ))
-            })?
-        }
-        _ => Vec::new(),
-    };
-    let active_accent: Option<Color> = match dict.get_item("active_accent")? {
-        Some(value) if !value.is_none() => {
-            let accent_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} \"active_accent\" must be a dict"
-                ))
-            })?;
-            Some(decode(what, accent_dict)?)
-        }
-        _ => None,
-    };
-    let compact: bool = match dict.get_item("compact")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: tabs {id:?} \"compact\" must be a bool"
-            ))
-        })?,
-        _ => false,
-    };
-
-    Ok(LayoutTabs {
-        tab_bar: TabBar {
-            id: WidgetId::new(id),
-            tabs: items,
-            scroll_offset,
-            right_segments,
-            active_accent,
-            show_tab_close,
-            compact,
-        },
-        entries,
-        selected,
-    })
-}
-
-/// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
-/// must be present and a string; exactly one of [`LEAF_KIND_KEYS`] or an
-/// [`EXTRA_PRIMITIVES`] kind must be present and hold a `dict` — a leaf
-/// with two keys from either set (fixed+fixed, fixed+extra, or
-/// extra+extra) is rejected by the single `found` duplicate check shared
-/// across both loops below.
-fn layout_leaf_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutLeaf> {
-    let id: String = match dict.get_item("id")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: leaf \"id\" must be a string"))
-        })?,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: leaf is missing required \"id\""
-            )));
-        }
-    };
-
-    let mut found: Option<LeafDescriptor> = None;
-    for key in LEAF_KIND_KEYS {
-        let Some(value) = dict.get_item(key)? else {
-            continue;
-        };
-        if value.is_none() {
-            continue;
-        }
-        let value_dict = value.cast::<PyDict>().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: leaf {id:?} {key:?} must be a dict"))
-        })?;
-        if found.is_some() {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: leaf {id:?} has more than one descriptor kind"
-            )));
-        }
-        found = Some(match key {
-            "button" => LeafDescriptor::Button(decode(what, value_dict)?),
-            "text_display" => LeafDescriptor::TextDisplay(decode(what, value_dict)?),
-            "list" => LeafDescriptor::List(decode(what, value_dict)?),
-            "tree" => LeafDescriptor::Tree(decode(what, value_dict)?),
-            "data_table" => LeafDescriptor::DataTable(decode(what, value_dict)?),
-            "tab_bar" => LeafDescriptor::TabBar(decode(what, value_dict)?),
-            _ => unreachable!("LEAF_KIND_KEYS is exhaustive"),
-        });
-    }
-    // Additive primitive kinds share the same leaf dict shape and the same
-    // `found` duplicate-detection as the six fixed kinds above; a new
-    // additive primitive only ever adds a line to `EXTRA_PRIMITIVES`, never
-    // a new loop here.
-    for (kind, _) in EXTRA_PRIMITIVES {
-        let Some(value) = dict.get_item(*kind)? else {
-            continue;
-        };
-        if value.is_none() {
-            continue;
-        }
-        let value_dict = value.cast::<PyDict>().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: leaf {id:?} {kind:?} must be a dict"))
-        })?;
-        if found.is_some() {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: leaf {id:?} has more than one descriptor kind"
-            )));
-        }
-        found = Some(LeafDescriptor::Extra(decode_extra_primitive(
-            what, kind, value_dict,
-        )?));
-    }
-
-    let descriptor = found.ok_or_else(|| {
-        InvalidDescriptorError::new_err(format!(
-            "{what}: leaf {id:?} is missing a descriptor (one of {LEAF_KIND_KEYS:?} or {:?})",
-            extra_kind_names()
-        ))
-    })?;
-
-    Ok(LayoutLeaf { id, descriptor })
-}
-
-/// Walks `node` collecting every leaf and split `id` into one namespace,
-/// raising `InvalidDescriptorError` on the first repeat. A unique id per
-/// leaf/split lets host code address one instance unambiguously even when a
-/// kind appears more than once, and keeps a split's id from silently
-/// shadowing a leaf's.
-fn validate_unique_leaf_ids(node: &LayoutNode) -> PyResult<()> {
-    fn walk(node: &LayoutNode, seen: &mut HashSet<String>) -> PyResult<()> {
-        match node {
-            LayoutNode::Row(children) | LayoutNode::Column(children) => {
-                for child in children {
-                    walk(child, seen)?;
-                }
-                Ok(())
-            }
-            LayoutNode::Leaf(leaf) => {
-                if !seen.insert(leaf.id.clone()) {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "render: duplicate leaf id {:?}",
-                        leaf.id
-                    )));
-                }
-                Ok(())
-            }
-            LayoutNode::Split(split) => {
-                let id = split.split.id.as_str().to_owned();
-                if !seen.insert(id.clone()) {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "render: duplicate leaf id {id:?}"
-                    )));
-                }
-                walk(&split.first, seen)?;
-                walk(&split.second, seen)
-            }
-            LayoutNode::Tabs(tabs) => {
-                let id = tabs.tab_bar.id.as_str().to_owned();
-                if !seen.insert(id.clone()) {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "render: duplicate leaf id {id:?}"
-                    )));
-                }
-                for entry in &tabs.entries {
-                    if !seen.insert(entry.id.clone()) {
-                        return Err(InvalidDescriptorError::new_err(format!(
-                            "render: duplicate leaf id {:?}",
-                            entry.id
-                        )));
-                    }
-                    walk(&entry.content, seen)?;
-                }
-                Ok(())
-            }
-            LayoutNode::Panel(panel_node) => {
-                let id = panel_node.panel.id.as_str().to_owned();
-                if !seen.insert(id.clone()) {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "render: duplicate leaf id {id:?}"
-                    )));
-                }
-                walk(&panel_node.content, seen)
-            }
-            LayoutNode::SidebarPanel(sidebar_node) => {
-                let id = sidebar_node.sidebar_panel.id.as_str().to_owned();
-                if !seen.insert(id.clone()) {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "render: duplicate leaf id {id:?}"
-                    )));
-                }
-                walk(&sidebar_node.content, seen)
-            }
-            LayoutNode::SplitTree(split_tree) => {
-                if !seen.insert(split_tree.id.clone()) {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "render: duplicate leaf id {:?}",
-                        split_tree.id
-                    )));
-                }
-                for leaf in &split_tree.leaves {
-                    walk(leaf, seen)?;
-                }
-                Ok(())
-            }
-        }
-    }
-    let mut seen = HashSet::new();
-    walk(node, &mut seen)
-}
-
-/// The decoded shape of a render callback's return value: either the flat
-/// per-slot `dict` ([`RenderFrame`], the pre-layout-tree shape) or a
-/// layout tree ([`LayoutNode`]).
-enum RenderOutput {
-    Flat(Box<RenderFrame>),
-    Tree(LayoutNode),
-}
-
 /// Invokes a registered render callback with no arguments and decodes its
-/// returned `dict` into a [`RenderOutput`]. A `dict` carrying a `"row"`,
-/// `"column"`, `"split"`, `"tabs"`, `"panel"`, `"sidebar_panel"`, or
-/// `"split_tree"` key is parsed as a layout tree; any other `dict` is
-/// parsed as the flat per-slot shape, so a render callback written against
-/// the flat shape keeps working unchanged. On any failure
-/// — the callback raising,
-/// returning something other than a `dict`, or an entry with the wrong
-/// shape — records the error in `pending_error` and returns `None`, leaving
-/// the caller to skip drawing this frame rather than paint a half-decoded
-/// one.
+/// returned `dict` into a [`RenderOutput`] via
+/// [`quadraui_binding_core::decode_render_output`] -- see that function's
+/// doc for the flat-vs-tree sniff this binding's [`RenderOutput`] import
+/// shares with every other binding. On any failure -- the callback
+/// raising, returning something other than a `dict`, or an entry with the
+/// wrong shape -- records the error in `pending_error` and returns `None`,
+/// leaving the caller to skip drawing this frame rather than paint a
+/// half-decoded one.
 ///
-/// Every call site that can trigger a render — `step`/`run`, `screen`,
-/// `screen_contains`, `insert_*`, and `slot_clear` — drains `pending_error`
+/// Every call site that can trigger a render -- `step`/`run`, `screen`,
+/// `screen_contains`, `insert_*`, and `slot_clear` -- drains `pending_error`
 /// after rendering and re-raises it, so a render-callback failure surfaces
 /// the same way a `handle`/`tick` callback failure does no matter which of
 /// those triggered the repaint. `run_tui`/`run_native` additionally break
 /// their loop as soon as `pending_error` is set, since nothing else is
 /// polling it on the Python side while the GIL is detached.
+const RENDER_CALLBACK_WHAT: &str = "render";
+
 fn render_output_from_callback(
     callback: &Py<PyAny>,
     pending_error: &Rc<RefCell<Option<PyErr>>>,
@@ -2486,29 +1229,11 @@ fn render_output_from_callback(
             }
         };
 
-        let is_tree = matches!(dict.get_item("row"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("column"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("split"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("tabs"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("panel"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("sidebar_panel"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("split_tree"), Ok(Some(ref value)) if !value.is_none());
-        if is_tree {
-            let parsed = layout_node_from_dict(RENDER_CALLBACK_WHAT, dict)
-                .and_then(|node| validate_unique_leaf_ids(&node).map(|()| node));
-            return match parsed {
-                Ok(node) => Some(RenderOutput::Tree(node)),
-                Err(err) => {
-                    record_error(pending_error, err);
-                    None
-                }
-            };
-        }
-
-        match render_frame_from_dict(dict) {
-            Ok(frame) => Some(RenderOutput::Flat(Box::new(frame))),
+        let mut de = pythonize::Depythonizer::from_object(dict.as_any());
+        match quadraui_binding_core::decode_render_output(RENDER_CALLBACK_WHAT, &mut de) {
+            Ok(output) => Some(output),
             Err(err) => {
-                record_error(pending_error, err);
+                record_error(pending_error, InvalidDescriptorError::new_err(err.0));
                 None
             }
         }
@@ -3817,18 +2542,19 @@ impl QuiApp {
     }
 
     /// Inserts a descriptor for any additive primitive `kind` registered in
-    /// `EXTRA_PRIMITIVES` (see [`extra_kind_names`] for the current list),
-    /// returning `kind` back. Raises `RuntimeError` if `kind` is already
-    /// occupied — call `clear_extra(kind)` first — and
-    /// `InvalidDescriptorError` if `kind` isn't registered. Lets a consumer
-    /// insert a future additive primitive by name alone, with no new
-    /// pymethod needed on this class.
+    /// `quadraui_binding_core::extra_paint`'s `extra_primitives!` table
+    /// (an `InvalidDescriptorError` raised for an unknown `kind` names
+    /// every registered one), returning `kind` back. Raises `RuntimeError`
+    /// if `kind` is already occupied — call `clear_extra(kind)` first.
+    /// Lets a consumer insert a future additive primitive by name alone,
+    /// with no new pymethod needed on this class.
     fn insert_extra(&mut self, kind: &str, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
         self.store_extra(kind, "insert_extra", descriptor)
     }
 
     /// Empties an additive primitive slot (one registered in
-    /// `EXTRA_PRIMITIVES`), re-rendering so `screen()` no longer shows it.
+    /// `quadraui_binding_core::extra_paint`'s `extra_primitives!` table),
+    /// re-rendering so `screen()` no longer shows it.
     /// Returns whether the slot held anything; an unrecognized `kind`
     /// simply has nothing to clear (unlike `slot_clear`, this never raises
     /// for an unknown key).
@@ -5091,8 +3817,9 @@ impl QuiApp {
     /// then re-render, returning `kind` back for symmetry with the fixed
     /// `insert_*` methods' slot-handle return value. The additive
     /// counterpart to [`Self::insert`] — `kind` is a string (one registered
-    /// in [`EXTRA_PRIMITIVES`]) rather than a fixed `SLOT_*` integer, so a
-    /// new additive primitive never needs a new slot constant.
+    /// in `quadraui_binding_core::extra_paint`'s `extra_primitives!` table)
+    /// rather than a fixed `SLOT_*` integer, so a new additive primitive
+    /// never needs a new slot constant.
     fn store_extra(
         &mut self,
         kind: &str,
@@ -5104,7 +3831,9 @@ impl QuiApp {
                 "{what}: {kind:?} already occupied; call clear_extra({kind:?}) first"
             )));
         }
-        let value = decode_extra_primitive(what, kind, descriptor)?;
+        let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
+        let value = decode_extra_primitive(what, kind, &mut de)
+            .map_err(|err| InvalidDescriptorError::new_err(err.0))?;
         self.guarded(|app| {
             app.driver
                 .app_mut()
@@ -5198,23 +3927,6 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use super::*;
     use quadraui::{ButtonMask, ScrollDelta};
-
-    /// `quadraui_binding_core::EXTRA_PRIMITIVE_KINDS` is a hand-maintained
-    /// list of this binding's own `EXTRA_PRIMITIVES` decode table's keys,
-    /// in the same order — `draw_bands`'s extras loop iterates the former
-    /// to paint deterministically, so a kind registered in the latter
-    /// without a matching entry here would decode and store fine but never
-    /// get painted. This guards the two from drifting apart.
-    #[test]
-    fn extra_primitive_kinds_matches_extra_primitives_key_order() {
-        assert!(
-            EXTRA_PRIMITIVES
-                .iter()
-                .map(|(kind, _)| *kind)
-                .eq(EXTRA_PRIMITIVE_KINDS.iter().copied()),
-            "EXTRA_PRIMITIVE_KINDS must list EXTRA_PRIMITIVES' keys in the same order"
-        );
-    }
 
     /// A Rust panic raised from inside `guarded`'s body is caught and
     /// re-raised as `PanicError`, and poisons the app so a later call

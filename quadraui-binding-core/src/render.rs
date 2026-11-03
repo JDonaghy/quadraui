@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use serde::{Deserialize, Deserializer};
+
 use quadraui::{
     Backend, Button, DataTable, InteractionState, ListView, Rect, Scrollbar, Split, TabBar,
     TextDisplay, TextDisplayLayout, TextRegion, TreeView, WidgetId,
@@ -32,6 +34,23 @@ pub struct RenderFrame {
     pub tab_bar: Option<TabBar>,
     /// Additive primitive slots present in this frame, keyed by kind name.
     pub extra: HashMap<String, Rc<dyn ExtraPaint>>,
+}
+
+/// Decodes a render callback's returned `dict` into a [`RenderFrame`] —
+/// the flat six-slot wire shape (`"button"`, `"text_display"`, `"list"`,
+/// `"tree"`, `"data_table"`, `"tab_bar"`, plus any additive primitive
+/// kind) is a contract of this type, not of any one binding's own decode.
+/// A missing key or a `null` value both mean "draw nothing in this slot
+/// this frame"; every error is labeled `"render"` — the only context a
+/// `RenderFrame` is ever decoded in.
+impl<'de> Deserialize<'de> for RenderFrame {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        crate::wire::render_frame_from_value("render", &value).map_err(serde::de::Error::custom)
+    }
 }
 
 impl RenderFrame {
@@ -328,11 +347,10 @@ pub fn paint_layout(
         LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf, hits, chrome_interaction),
         LayoutNode::Split(split) => {
             // `split.split.first_min`/`second_min` are decoded as portable
-            // line counts (see a binding's own split decode, e.g.
-            // `layout_split_from_dict` in `quadraui-py`); scale them into
-            // the backend's native unit here, right before painting, so
-            // every backend gets a minimum pane size of the same visual
-            // weight from the same binding-supplied number.
+            // line counts (see `crate::wire::decode_layout_node`'s split
+            // decode); scale them into the backend's native unit here,
+            // right before painting, so every backend gets a minimum pane
+            // size of the same visual weight from the same decoded number.
             let line_height = backend.line_height();
             let native_split = Split {
                 first_min: split.split.first_min * line_height,
