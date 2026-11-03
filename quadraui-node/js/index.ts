@@ -28,3 +28,13 @@ const native: typeof import("../index.js") = require("../index.js");
  */
 export type QuiApp = InstanceType<typeof native.QuiApp>;
 exports.QuiApp = native.QuiApp;
+
+/**
+ * A headless `ShellApp`/`ShellConfig`-backed app: an AppShell (activity bar
+ * + sidebar + optional bottom-panel tab strip) around JS-registered
+ * content and event handlers. Built by `QuiApp.runShell(width, height,
+ * config, ...)`, not constructed directly. See the native binding's own
+ * doc comment (`quadraui-node/src/lib.rs`'s `QuiShellApp`) for the full
+ * method list.
+ */
+export type QuiShellApp = InstanceType<typeof native.QuiShellApp>;
