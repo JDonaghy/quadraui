@@ -38,3 +38,51 @@ exports.QuiApp = native.QuiApp;
  * method list.
  */
 export type QuiShellApp = InstanceType<typeof native.QuiShellApp>;
+
+/**
+ * A thread-safe handle, returned by `QuiApp.waker()`, that a background
+ * thread calls `post`/`wake`/`postAfter` on to deliver a value into the
+ * owning `QuiApp`'s event stream. See the native binding's own doc comment
+ * (`quadraui-node/src/lib.rs`'s `QuiAppWaker`) for the full method list.
+ */
+export type QuiAppWaker = InstanceType<typeof native.QuiAppWaker>;
+
+/**
+ * A handle returned by `pump()`: stops the `setInterval` loop it started.
+ * Calling `stop()` more than once, or after the loop already stopped
+ * itself (because `step()` reported the app exited), is a harmless no-op --
+ * `clearInterval` on an already-cleared handle does nothing.
+ */
+export interface PumpHandle {
+  stop(): void;
+}
+
+/**
+ * Drives `app.step()` repeatedly on a timer, cooperatively yielding to the
+ * rest of Node's event loop between calls instead of looping synchronously
+ * -- the JS-side half of the non-blocking run-loop contract `startTui`/
+ * `step` establish on the Rust side (see `quadraui-node/src/lib.rs`'s
+ * module doc's "Live run loop" section). `step()` itself never blocks
+ * (`startTui` moves this app onto a non-blocking `TuiRunner::step`, and the
+ * headless path was always non-blocking), so a `setInterval` cadence here
+ * never starves a concurrent timer/microtask/I/O callback the way a tight
+ * synchronous loop calling `step()` forever would.
+ *
+ * Stops automatically once `step()` reports the app has exited (returns
+ * `false`), or earlier if the returned handle's `stop()` is called.
+ * `intervalMs` defaults to 16 (roughly 60Hz); pass a larger value to trade
+ * input latency for CPU.
+ */
+function pump(app: { step(): boolean }, intervalMs = 16): PumpHandle {
+  const handle = setInterval(() => {
+    if (!app.step()) {
+      clearInterval(handle);
+    }
+  }, intervalMs);
+  return {
+    stop(): void {
+      clearInterval(handle);
+    },
+  };
+}
+exports.pump = pump;

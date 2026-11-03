@@ -153,12 +153,79 @@
 //! [`app_shell_event_to_json`]/[`bottom_panel_event_to_json`] hand-build
 //! the same externally-tagged JSON shape [`encode_via_json`] would give a
 //! derived enum, then convert that through `Env::to_js_value` directly.
+//!
+//! **Live run loop (`startTui`) / waker.** [`QuiApp`] otherwise only ever
+//! drives a headless `quadraui::tui::testing::TuiDriver`. `startTui` is
+//! this crate's one structural departure from `quadraui-py`'s own
+//! `run_tui`/`run_native`: those are *blocking* pump loops that only work
+//! because `py.detach` lets other Python threads run underneath; under
+//! Node a blocking pump would freeze the one libuv reactor the whole
+//! process shares, and a background-thread pump is impossible (every
+//! runner, `BindingHost`, and `InteractionEngine` are `Rc`-based, so
+//! `NodeAppLogic` is `!Send`). `startTui` instead `std::mem::take`s this
+//! app's whole [`NodeAppLogic`] out of [`QuiApp::driver`] into a real
+//! [`TuiRunner`] -- a live terminal takeover -- and stores it on
+//! [`QuiApp::live`]; [`QuiApp::step`]/[`QuiApp::run`] then drive that
+//! [`TuiRunner::step`] non-blocking pass by non-blocking pass instead of
+//! the headless driver's own `step_driver`, exactly as fit for a JS
+//! `setInterval`/`setImmediate` loop (see `js/index.ts`'s `pump` helper) as
+//! the headless path already was. [`QuiApp::check_not_live`] rejects every
+//! configuration method (`setHandler`, `insertButton`, `actions`, ...)
+//! once a live session is running, the same "configure once, up front,
+//! before starting" discipline `quadraui-py`'s own doc describes for
+//! `run_tui`/`run_native` -- there, Python's blocking call makes that
+//! discipline unavoidable; here it has to be an explicit, checked
+//! contract, since control returns to JS after every `step()`. An
+//! `actions()`/`waker()` handle obtained *before* `startTui` keeps working
+//! correctly through the live session regardless (both only ever hold an
+//! `Rc`/`Arc` clone of state that moves, not copies, with the
+//! [`NodeAppLogic`] `startTui` relocates).
+//!
+//! [`QuiApp::waker`] returns a [`QuiAppWaker`] -- unlike `QuiApp` itself,
+//! `Send + Sync`, so a background thread can hold and call it -- wrapping
+//! this app's [`SharedWaker`]: the one [`Backend::waker`] closure currently
+//! reachable, headless until `startTui` swaps it to the live `TuiRunner`'s
+//! own backend's waker for that session's duration (restored the instant
+//! `step` observes [`StepOutcome::Exited`]), mirroring `quadraui-py`'s own
+//! `current_waker`/`QuiAppWaker`. `UserPayload` must be `Send` to cross
+//! that thread boundary, which rules out a raw JS value (`napi::Env`-bound,
+//! single-threaded by construction) the way `quadraui-py`'s own
+//! `Py<PyAny>` payload needs no such care (always `Send + Sync`) --
+//! [`QuiAppWaker::post`] converts its argument through the same
+//! [`to_descriptor_value`] walk every other JS-to-Rust decode in this
+//! crate uses, landing a plain [`serde_json::Value`] (`Send`) in the
+//! [`UserPayload`] instead. [`NodeEventSink::dispatch_user`] is the
+//! encode-direction counterpart: `UiEvent::User`'s own `Serialize` impl
+//! deliberately errors (see [`UserPayload`]'s own doc) on its opaque
+//! payload, so it is special-cased ahead of [`encode_via_json`] the same
+//! way `quadraui-py`'s `PyEventSink::dispatch` special-cases it, recovering
+//! the wrapped `JsonValue` via `UserPayload::downcast_ref` and delivering
+//! `{"User": value}` to the registered handler.
+//!
+//! No `ThreadsafeFunction` is needed to deliver a wake promptly: `TuiBackend`'s
+//! own `waker()` doc already spells out the embedding contract every host
+//! (this one included) gets for free -- a background post lands in a
+//! plain queue `poll_events`/`wait_events` drain unconditionally, with no
+//! way to interrupt an in-progress blocking wait early, so "prompt" means
+//! "observed on the next `step()` call" and a host that wants tighter
+//! latency keeps its own poll cadence short rather than relying on an
+//! early wake. [`QuiAppWaker::post_after`]/`::wake_after` spawn their own
+//! background thread purely to delay *when* the same already-thread-safe
+//! waker closure is called, reusing it rather than adding a second,
+//! TSFN-based notification path whose only addressable gain -- shaving the
+//! few milliseconds between that thread waking and the JS-side `pump`
+//! loop's next tick -- is already covered by `pump`'s own `intervalMs`
+//! knob.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -168,11 +235,12 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
+use quadraui::tui::{RunConfig, StepOutcome, TuiRunner};
 use quadraui::{
     AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps, BottomPanelEvent, Button,
     ContextMenuItem, DataTable, DialogButton, FloatMeasure, ListView, Notification, Point,
     Reaction, Rect, RgbaImage, ShellApp, ShellConfig, ShellContext, TabBar, TextDisplay, Toast,
-    ToastCorner, TreeView, UiEvent, WidgetId,
+    ToastCorner, TreeView, UiEvent, UserPayload, WidgetId,
 };
 #[cfg(test)]
 use quadraui_binding_core::callback_reaction;
@@ -208,6 +276,62 @@ mod theme;
 /// [`bool_from_return`]/[`render_output_from_callback`] rather than
 /// leaning on `Function`'s own typed `Return`.
 type NodeCallback = FunctionRef<Unknown<'static>, Unknown<'static>>;
+
+/// A [`Backend::waker`] closure, shared (and swapped, by [`QuiApp::start_tui`])
+/// between [`QuiApp::driver`]'s headless backend and whichever live
+/// [`LiveRunner`]'s own backend is currently running -- the napi-rs analog
+/// of `quadraui-py`'s own `SharedWaker`. A `Mutex` rather than a bare field:
+/// [`QuiAppWaker`] must be `Send + Sync` so a background thread can hold
+/// and call it, which rules out `Rc<RefCell<_>>`; the lock is only ever
+/// held for the instant of a clone or a swap, never across a call into the
+/// wrapped closure itself.
+type SharedWaker = Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>;
+
+/// The real terminal- or window-backed runner [`QuiApp::start_tui`]/a
+/// future `startNative` moves this app's whole [`NodeAppLogic`] into --
+/// see this module's doc's "Live run loop" section for the overall shape.
+/// Only the TUI variant exists today; a `gtk`/`macos`/`win` variant is
+/// each a separate backend's own follow-on (this crate's `gtk`/`macos`/
+/// `win` Cargo features today only forward to `quadraui`'s/
+/// `quadraui-binding-core`'s same-named feature -- see `Cargo.toml`'s own
+/// comment -- with no napi-visible `startNative` method built on them
+/// yet).
+enum LiveRunner {
+    /// A live terminal takeover via [`TuiRunner`] -- [`QuiApp::start_tui`].
+    Tui(TuiRunner<NodeAppLogic>),
+}
+
+impl LiveRunner {
+    /// Mutable access to whichever variant's own [`NodeAppLogic`] -- the
+    /// napi-rs analog of [`TuiDriver::app_mut`] for a live runner instead
+    /// of the headless driver, needed for the same reason: [`QuiApp::guarded`]
+    /// stashes its live `Env` on it before running its body.
+    fn app_mut(&mut self) -> &mut NodeAppLogic {
+        match self {
+            LiveRunner::Tui(runner) => runner.app_mut(),
+        }
+    }
+
+    /// One non-blocking pass -- [`TuiRunner::step`] for the one variant
+    /// that exists today. Never blocks, mirroring every backend's own
+    /// non-blocking `step()` the issue this module's doc section cites
+    /// names by file and line.
+    fn step(&mut self) -> io::Result<StepOutcome> {
+        match self {
+            LiveRunner::Tui(runner) => runner.step(),
+        }
+    }
+
+    /// This variant's own [`Backend::waker`] closure -- read right after
+    /// construction to swap [`QuiApp::current_waker`] to it, and again
+    /// (via [`QuiApp::driver`]'s headless backend instead) once this
+    /// runner's own `step` reports [`StepOutcome::Exited`].
+    fn waker(&self) -> Arc<dyn Fn(UserPayload) + Send + Sync> {
+        match self {
+            LiveRunner::Tui(runner) => runner.backend().waker(),
+        }
+    }
+}
 
 /// One action a [`QuiAppActions`] method recorded, already decoded and
 /// validated, waiting for [`flush_deferred_actions`] to apply it -- the
@@ -569,6 +693,20 @@ struct NodeEventSink<'a> {
 
 impl EventSink for NodeEventSink<'_> {
     fn dispatch(&mut self, event: &UiEvent, hit_detail: Option<&HitDetail>) -> Reaction {
+        // `UiEvent::User`'s `Serialize` impl deliberately errors (its
+        // payload is an opaque `Arc<dyn Any>` with no wire representation
+        // to invent -- see `quadraui::UserPayload`'s own doc) -- matched
+        // here, before `encode_via_json` ever sees it, so a wake delivered
+        // through `QuiAppWaker::post`/`::wake`/`::postAfter` reaches the
+        // handler as a plain `{"User": value}` object instead of that
+        // error turning into a recorded `InternalError` and
+        // `Reaction::Exit` that silently kills the app the first time
+        // anything wakes it this way. No `hit_detail` ever accompanies a
+        // `User` event (it carries no screen position), so the "hit" key
+        // this function attaches below never applies here.
+        if let UiEvent::User(payload) = event {
+            return self.dispatch_user(payload);
+        }
         let payload: Unknown<'static> = match encode_via_json(self.env, "dispatch", event) {
             Ok(value) => value,
             Err(err) => {
@@ -601,6 +739,49 @@ impl EventSink for NodeEventSink<'_> {
             Ok(result) if matches!(event, UiEvent::WindowClose) => {
                 window_close_reaction(bool_from_return(result), self.render_callback_present)
             }
+            Ok(result) => {
+                callback_reaction_for_render(bool_from_return(result), self.render_callback_present)
+            }
+            Err(err) => {
+                record_error(self.pending_error, err);
+                Reaction::Exit
+            }
+        }
+    }
+}
+
+impl NodeEventSink<'_> {
+    /// Delivers a `UiEvent::User(payload)` as `{"User": value}` instead of
+    /// going through [`encode_via_json`] -- see [`EventSink::dispatch`]'s
+    /// own doc for why this is special-cased ahead of it. [`QuiAppWaker`]
+    /// is this crate's only producer of a [`UserPayload`], always wrapping
+    /// a [`JsonValue`] (see that type's own doc for why `Send` rules out a
+    /// raw JS value), so `downcast_ref::<JsonValue>` recovers it directly;
+    /// any other payload shape (none reachable from this crate today, but
+    /// the same opaque `UserPayload` a native tray/timer wake or a future
+    /// binding sharing this engine could deliver) surfaces as
+    /// `{"User": null}` instead of panicking.
+    fn dispatch_user(&mut self, payload: &UserPayload) -> Reaction {
+        let value = payload
+            .downcast_ref::<JsonValue>()
+            .cloned()
+            .unwrap_or(JsonValue::Null);
+        let wrapped = serde_json::json!({ "User": value });
+        let js_payload: Unknown<'static> = match self.env.to_js_value(&wrapped) {
+            Ok(value) => value,
+            Err(err) => {
+                record_error(self.pending_error, err);
+                return Reaction::Exit;
+            }
+        };
+        let func = match self.handler.borrow_back(&self.env) {
+            Ok(func) => func,
+            Err(err) => {
+                record_error(self.pending_error, err);
+                return Reaction::Exit;
+            }
+        };
+        match func.call(js_payload) {
             Ok(result) => {
                 callback_reaction_for_render(bool_from_return(result), self.render_callback_present)
             }
@@ -767,6 +948,13 @@ fn invalid_font_role_error(detail: impl std::fmt::Display) -> Error {
 /// doc for why napi-rs needs this guard where PyO3 does not.
 fn reentrant_call_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("ReentrantCallError: {detail}"))
+}
+
+/// Mirrors [`invalid_descriptor_error`] for a `QuiApp` method called while
+/// `startTui`/`startNative` is active -- see
+/// [`QuiApp::check_not_live`]'s doc for why.
+fn live_runner_active_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("LiveRunnerActiveError: {detail}"))
 }
 
 /// Decodes `descriptor` straight into `T` via napi's own
@@ -1107,6 +1295,104 @@ impl QuiAppActions {
     }
 }
 
+/// A thread-safe handle, returned by [`QuiApp::waker`], that a background
+/// thread calls `post`/`wake`/`postAfter` on to deliver a value into the
+/// owning [`QuiApp`]'s event stream as a `{"User": value}` event and wake
+/// whichever loop currently owns it -- `step`/`run`'s drain of queued user
+/// events on the next call for the headless path, or promptly (not
+/// waiting for the next terminal/native event) while a live `startTui`/
+/// `startNative` session is running. See this module's doc's "Live run
+/// loop" section and [`QuiApp::waker`]'s own doc for why this needs to be
+/// a separate object rather than a method on `QuiApp` itself -- the
+/// napi-rs analog of `quadraui-py`'s own `QuiAppWaker`.
+///
+/// Safe to call from any thread, at any time, including before the owning
+/// `QuiApp` has run a single step or after it has exited (a post after
+/// exit is simply never observed -- there is no receiver left to drain
+/// it). Ordinary `Send + Sync` Rust state (`SharedWaker` is
+/// `Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>`), unlike `QuiApp`
+/// itself, which napi-rs pins to the thread that created it.
+#[napi]
+pub struct QuiAppWaker(SharedWaker);
+
+impl QuiAppWaker {
+    /// Delivers `value` (already materialized into a `Send`-safe
+    /// [`JsonValue`]) to the owning `QuiApp`, wrapped in a
+    /// [`UserPayload`] -- the plain-Rust core [`Self::post`]'s JS-facing
+    /// decode step calls into, and this crate's own background-thread test
+    /// coverage calls directly, with no live napi `Env` needed (see
+    /// [`Self::post`]'s doc for why a raw JS value can't cross this
+    /// boundary at all).
+    fn post_value(&self, value: JsonValue) {
+        let waker = self.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        waker(UserPayload::new(value));
+    }
+}
+
+#[napi]
+impl QuiAppWaker {
+    /// Delivers `value` to the owning `QuiApp` as a `{"User": value}` event
+    /// and wakes whichever loop currently owns it. `value` is converted
+    /// through [`to_descriptor_value`] (the same JS-to-`JsonValue` walk
+    /// every other decode in this crate uses) *before* this call returns,
+    /// not inside whatever thread eventually delivers it -- `Unknown` is
+    /// bound to the calling JS thread's `Env` and cannot itself cross a
+    /// thread boundary, which is exactly why [`UserPayload`] wraps a plain
+    /// [`JsonValue`] here rather than a raw JS value (see this module's
+    /// doc's "Live run loop" section).
+    #[napi]
+    pub fn post(&self, value: Unknown) -> Result<()> {
+        let value = to_descriptor_value(value)
+            .map_err(|detail| invalid_descriptor_error(format!("post: {detail}")))?;
+        self.post_value(value);
+        Ok(())
+    }
+
+    /// Equivalent to `post(null)`: wakes the owning `QuiApp`'s loop with no
+    /// payload of its own, just to make sure a pending state change (e.g.
+    /// one a background thread just finished mutating through some other,
+    /// already-synchronized channel) is noticed promptly rather than only
+    /// on the next poll-interval timeout or unrelated event.
+    #[napi]
+    pub fn wake(&self) {
+        self.post_value(JsonValue::Null);
+    }
+
+    /// Schedules `post(value)` to run `delayMs` milliseconds from now, on a
+    /// spawned background thread that sleeps for that long and then
+    /// delivers -- the JS-level equivalent of `Backend::request_frame_in`'s
+    /// "the app itself knows it wants to be woken again in `delay`" timer
+    /// contract, reusing this already-`Send + Sync` waker machinery rather
+    /// than needing a `Backend` reference reachable from JS at all (there
+    /// isn't one -- mirrors `quadraui-py`'s own `QuiAppWaker::post_after`
+    /// doc for the same "no reachable handle" story). Returns immediately;
+    /// does not block the calling thread.
+    #[napi(js_name = "postAfter")]
+    pub fn post_after(&self, delay_ms: u32, value: Unknown) -> Result<()> {
+        let value = to_descriptor_value(value)
+            .map_err(|detail| invalid_descriptor_error(format!("postAfter: {detail}")))?;
+        let shared = Arc::clone(&self.0);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(u64::from(delay_ms)));
+            let waker = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            waker(UserPayload::new(value));
+        });
+        Ok(())
+    }
+
+    /// Equivalent to `postAfter(delayMs, null)` -- see [`Self::wake`]'s doc
+    /// for why a payload-free wake is useful on its own.
+    #[napi(js_name = "wakeAfter")]
+    pub fn wake_after(&self, delay_ms: u32) {
+        let shared = Arc::clone(&self.0);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(u64::from(delay_ms)));
+            let waker = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            waker(UserPayload::new(JsonValue::Null));
+        });
+    }
+}
+
 /// A headless quadraui app, driven entirely from JavaScript/TypeScript.
 ///
 /// Construct it with a `width`/`height` cell grid, insert descriptors with
@@ -1146,6 +1432,18 @@ pub struct QuiApp {
     /// see [`QuiApp::check_not_dispatching`] and this struct's own doc for
     /// what this guards against.
     in_dispatch: Cell<bool>,
+    /// The live terminal/window takeover `startTui`/a future `startNative`
+    /// moved this app's whole [`NodeAppLogic`] into, if any -- see this
+    /// module's doc's "Live run loop" section. `None` until `startTui` is
+    /// called, and again once that runner's own `step` observes
+    /// [`StepOutcome::Exited`] (or `stopLive` is called explicitly).
+    live: Option<LiveRunner>,
+    /// The [`Backend::waker`] closure currently reachable through
+    /// [`QuiApp::waker`]'s returned handle -- [`Self::driver`]'s own
+    /// headless backend's waker until [`Self::live`] is `Some`, swapped to
+    /// that live runner's own backend's waker for the duration of its
+    /// session. See [`SharedWaker`]'s own doc.
+    current_waker: SharedWaker,
 }
 
 #[napi]
@@ -1156,11 +1454,14 @@ impl QuiApp {
     pub fn new(width: u16, height: u16) -> Result<Self> {
         let (width, height) = checked_dimensions(width, height)?;
         let driver = TuiDriver::new(NodeAppLogic::default(), width, height);
+        let current_waker = Arc::new(Mutex::new(driver.backend().waker()));
         Ok(QuiApp {
             driver,
             pending_events: VecDeque::new(),
             poisoned: false,
             in_dispatch: Cell::new(false),
+            live: None,
+            current_waker,
         })
     }
 
@@ -1169,6 +1470,7 @@ impl QuiApp {
     #[napi]
     pub fn resize(&mut self, env: Env, width: u16, height: u16) -> Result<()> {
         let (width, height) = checked_dimensions(width, height)?;
+        self.check_not_live()?;
         self.guarded(env, |app| {
             app.driver.resize(width, height);
             Ok(())
@@ -1177,10 +1479,14 @@ impl QuiApp {
 
     /// Queues a synthetic `KeyPressed` event for the character with Unicode
     /// code point `ch`, no modifiers held, not a repeat. Raises if `ch`
-    /// isn't a valid Unicode scalar value.
+    /// isn't a valid Unicode scalar value. Raises `LiveRunnerActiveError`
+    /// while `startTui` is active -- a live [`TuiRunner`] reads real
+    /// terminal input directly, never this app's own [`Self::pending_events`]
+    /// queue, so a synthetic key queued here would simply never be drained.
     #[napi(js_name = "pushKeyEvent")]
     pub fn push_key_event(&mut self, ch: u32) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let ch = char::from_u32(ch)
             .ok_or_else(|| Error::from_reason(format!("invalid Unicode code point: {ch}")))?;
         self.pending_events.push_back(key_pressed_event(ch));
@@ -1213,9 +1519,13 @@ impl QuiApp {
     }
 
     /// Renders the current frame and returns it as a plain-text screen
-    /// dump, one row per line.
+    /// dump, one row per line. Raises `LiveRunnerActiveError` while
+    /// `startTui` is active -- there is no headless frame to dump once this
+    /// app's own `NodeAppLogic` has moved into a live [`TuiRunner`]; look
+    /// at the real terminal instead.
     #[napi]
     pub fn screen(&mut self, env: Env) -> Result<String> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             app.driver.render();
             take_pending_error(app.driver.app_mut())?;
@@ -1224,8 +1534,11 @@ impl QuiApp {
     }
 
     /// Whether `needle` appears anywhere in the current rendered frame.
+    /// Raises `LiveRunnerActiveError` while `startTui` is active -- see
+    /// [`Self::screen`]'s doc.
     #[napi(js_name = "screenContains")]
     pub fn screen_contains(&mut self, env: Env, needle: String) -> Result<bool> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             app.driver.render();
             take_pending_error(app.driver.app_mut())?;
@@ -1236,10 +1549,12 @@ impl QuiApp {
     /// Empties a slot (one of the six fixed primitive slot ids
     /// `quadraui_binding_core` defines -- `SLOT_BUTTON` etc.), re-rendering
     /// so `screen()` no longer shows it. Returns whether the slot held
-    /// anything. Raises if `slot` doesn't name one of the six.
+    /// anything. Raises if `slot` doesn't name one of the six, or
+    /// `LiveRunnerActiveError` while `startTui` is active.
     #[napi(js_name = "slotClear")]
     pub fn slot_clear(&mut self, env: Env, slot: i64) -> Result<bool> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         if !NodeAppLogic::is_known_slot(slot) {
             return Err(Error::from_reason(format!("unknown slot id: {slot}")));
         }
@@ -1259,25 +1574,32 @@ impl QuiApp {
     /// contract (only a literal `true`/`false` return has any effect; a
     /// `WindowClose` event's own default flips the other way, per
     /// `window_close_reaction`'s doc). Raises if called re-entrantly from
-    /// inside an already-live dispatch.
+    /// inside an already-live dispatch, or `LiveRunnerActiveError` once
+    /// `startTui` is active -- call this before `startTui`, same as
+    /// `quadraui-py`'s own discipline for `run_tui`/`run_native`; see this
+    /// module's doc's "Live run loop" section.
     #[napi(js_name = "setHandler")]
     pub fn set_handler(
         &mut self,
         handler: Function<'_, Unknown<'static>, Unknown<'static>>,
     ) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         self.driver.app_mut().handler = Some(handler.create_ref()?);
         Ok(())
     }
 
     /// Registers `handler` as this app's tick handler, called whenever the
-    /// runner advances with no event queued. Raises if called re-entrantly.
+    /// runner advances with no event queued. Raises if called re-entrantly,
+    /// or `LiveRunnerActiveError` once `startTui` is active -- see
+    /// [`Self::set_handler`]'s doc.
     #[napi(js_name = "setTickHandler")]
     pub fn set_tick_handler(
         &mut self,
         handler: Function<'_, Unknown<'static>, Unknown<'static>>,
     ) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         self.driver.app_mut().on_tick = Some(handler.create_ref()?);
         Ok(())
     }
@@ -1287,13 +1609,16 @@ impl QuiApp {
     /// `pushEvent` descriptor is -- a flat map of slot names to descriptors,
     /// or a layout tree (see `quadraui_binding_core::decode_render_output`'s
     /// doc for the flat-vs-tree sniff). Overrides the six fixed `insert*`
-    /// slots for every subsequent render. Raises if called re-entrantly.
+    /// slots for every subsequent render. Raises if called re-entrantly, or
+    /// `LiveRunnerActiveError` once `startTui` is active -- see
+    /// [`Self::set_handler`]'s doc.
     #[napi(js_name = "setRender")]
     pub fn set_render(
         &mut self,
         callback: Function<'_, Unknown<'static>, Unknown<'static>>,
     ) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         self.driver.app_mut().render_callback = Some(callback.create_ref()?);
         Ok(())
     }
@@ -1306,10 +1631,15 @@ impl QuiApp {
     /// top-level script code, before registering a handler that needs it --
     /// see [`QuiAppActions`]'s own doc. Raises if called re-entrantly (not
     /// because sharing the queue is unsafe, but for the same "obtain once,
-    /// up front" discipline every other `QuiApp` method enforces).
+    /// up front" discipline every other `QuiApp` method enforces), or
+    /// `LiveRunnerActiveError` once `startTui` is active -- call this
+    /// before `startTui`; the returned handle keeps working correctly
+    /// through the live session regardless (see this module's doc's "Live
+    /// run loop" section).
     #[napi]
     pub fn actions(&self) -> Result<QuiAppActions> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         Ok(QuiAppActions {
             queue: Rc::clone(&self.driver.app().deferred_actions),
         })
@@ -1443,8 +1773,10 @@ impl QuiApp {
     /// re-rendering so `screen()` no longer shows it. Returns whether the
     /// slot held anything; an unrecognized `kind` simply has nothing to
     /// clear (unlike `slotClear`, this never raises for an unknown key).
+    /// Raises `LiveRunnerActiveError` once `startTui` is active.
     #[napi(js_name = "clearExtra")]
     pub fn clear_extra(&mut self, env: Env, kind: String) -> Result<bool> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let cleared = app.driver.app_mut().clear_extra_slot(&kind);
             if cleared {
@@ -1462,12 +1794,107 @@ impl QuiApp {
     /// carries two variants ([`UiEvent::Accelerator`],
     /// [`UiEvent::GlobalShortcut`]) whose payload is a newtype-struct
     /// identifier ([`quadraui::AcceleratorId`], [`quadraui::GlobalShortcutId`]).
+    /// Raises `LiveRunnerActiveError` once `startTui` is active -- a live
+    /// [`TuiRunner`] drains real terminal input, never this app's own
+    /// [`Self::pending_events`] queue, so a synthetic event queued here
+    /// would simply never be drained; see [`Self::push_key_event`]'s doc.
     #[napi(js_name = "pushEvent")]
     pub fn push_event(&mut self, descriptor: Unknown) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let event: UiEvent = decode_via_json("pushEvent", descriptor)?;
         self.pending_events.push_back(event);
         Ok(())
+    }
+
+    /// Moves this app's whole [`NodeAppLogic`] into a real
+    /// `quadraui::tui::TuiRunner` -- a live terminal takeover, the napi-rs
+    /// analog of `quadraui-py`'s blocking `run_tui`, but non-blocking: this
+    /// call only negotiates the terminal and swaps [`Self::current_waker`]
+    /// to the new live backend's own waker, then returns immediately.
+    /// Drive it forward by calling `step()`/`run()` repeatedly from JS,
+    /// e.g. from a `setInterval`/`setImmediate` loop (see `js/index.ts`'s
+    /// `pump` helper) -- see this module's doc's "Live run loop" section
+    /// for why this must never be a blocking pump the way `quadraui-py`'s
+    /// `run_tui` is.
+    ///
+    /// `mouse` mirrors `quadraui-py`'s own `run_tui(mouse=...)`: `true`
+    /// (the default) captures the mouse for this app's own hit testing;
+    /// pass `false` to leave the terminal's native text selection usable
+    /// instead.
+    ///
+    /// Raises `LiveRunnerActiveError` if a live session is already
+    /// running. Raises `InternalError` if the terminal takeover itself
+    /// fails (no real tty -- see `quadraui-py/tests/test_run_tui.py`'s own
+    /// doc for exactly when that happens), in which case this app's prior
+    /// configuration (handlers, inserted descriptors) is lost the same way
+    /// `quadraui-py`'s `run_tui` loses it on the same failure
+    /// (`std::mem::take` already moved it out before the takeover
+    /// attempt), leaving [`Self::driver`] usable but empty.
+    #[napi(js_name = "startTui")]
+    pub fn start_tui(&mut self, env: Env, mouse: Option<bool>) -> Result<()> {
+        self.check_not_live()?;
+        self.guarded(env, |app| {
+            let app_logic = std::mem::take(app.driver.app_mut());
+            let config = if mouse.unwrap_or(true) {
+                RunConfig::default()
+            } else {
+                RunConfig::no_mouse()
+            };
+            let runner = TuiRunner::new_with(app_logic, config)
+                .map_err(|err| internal_error(format!("startTui: {err}")))?;
+            let live = LiveRunner::Tui(runner);
+            *app.current_waker.lock().unwrap_or_else(|e| e.into_inner()) = live.waker();
+            app.live = Some(live);
+            Ok(())
+        })
+    }
+
+    /// Tears down a live `startTui`/`startNative` session early, without
+    /// waiting for its own `step` to observe [`StepOutcome::Exited`] on its
+    /// own (e.g. the terminal's native close/interrupt) -- the `LiveRunner`
+    /// variant's own `Drop` impl (`TuiRunner`'s restores raw mode/the
+    /// alternate screen) runs as this app's [`Self::live`] is replaced with
+    /// `None`. Returns whether a live session was actually running (`false`
+    /// is not an error -- calling this with no live session active is a
+    /// harmless no-op, matching `slotClear`'s own "nothing to do" shape
+    /// rather than `insertButton`'s "state already there" one).
+    #[napi(js_name = "stopLive")]
+    pub fn stop_live(&mut self, env: Env) -> Result<bool> {
+        self.guarded(env, |app| {
+            let was_live = app.live.take().is_some();
+            if was_live {
+                app.restore_headless_waker();
+            }
+            Ok(was_live)
+        })
+    }
+
+    /// Returns a [`QuiAppWaker`] handle: a thread-safe, `Send + Sync`
+    /// object a background thread can call `post`/`wake`/`postAfter` on to
+    /// deliver a value back into this app's event stream as a
+    /// `{"User": value}` event, waking whichever loop currently owns it --
+    /// see this module's doc's "Live run loop" section and
+    /// [`QuiAppWaker`]'s own doc.
+    ///
+    /// Raises if this app is poisoned (an earlier caught panic -- see
+    /// [`Self::guarded`]) rather than handing out a handle anyway: every
+    /// other `QuiApp` method routes through `guarded`, which already
+    /// refuses a poisoned app, and this is the one direct `&self` read of
+    /// [`Self::current_waker`] that would otherwise skip that check.
+    /// Unlike most other configuration methods, this does **not** raise
+    /// while a live session is running -- [`Self::current_waker`] always
+    /// points at whichever backend (headless or live) is actually current,
+    /// so a handle obtained during a live session still posts into it
+    /// correctly.
+    #[napi]
+    pub fn waker(&self) -> Result<QuiAppWaker> {
+        if self.poisoned {
+            return Err(Error::from_reason(
+                "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
+            ));
+        }
+        Ok(QuiAppWaker(Arc::clone(&self.current_waker)))
     }
 }
 
@@ -1475,7 +1902,9 @@ impl QuiApp {
     /// Shared body of every fixed-slot `insert*` method: reject an
     /// occupied slot, decode `descriptor` into `T` via [`decode_direct`],
     /// store it with `store`, then re-render -- the napi-rs analog of
-    /// `quadraui-py`'s own `insert` helper.
+    /// `quadraui-py`'s own `insert` helper. Raises `LiveRunnerActiveError`
+    /// once `startTui` is active -- see this module's doc's "Live run
+    /// loop" section.
     fn insert_fixed<T: DeserializeOwned>(
         &mut self,
         env: Env,
@@ -1484,6 +1913,7 @@ impl QuiApp {
         store: impl FnOnce(&mut NodeAppLogic, T),
         descriptor: Unknown,
     ) -> Result<i64> {
+        self.check_not_live()?;
         if self.driver.app().slot_occupied(slot) {
             return Err(slot_occupied_error(format!(
                 "{what}: slot already occupied; call slotClear({slot}) first"
@@ -1504,7 +1934,8 @@ impl QuiApp {
     /// [`decode_via_core`], store it, then re-render, returning `kind` back
     /// for symmetry with the fixed `insert*` methods' slot-handle return
     /// value -- the napi-rs analog of `quadraui-py`'s own `store_extra`
-    /// helper.
+    /// helper. Raises `LiveRunnerActiveError` once `startTui` is active --
+    /// see [`Self::insert_fixed`]'s doc.
     fn store_extra(
         &mut self,
         env: Env,
@@ -1512,6 +1943,7 @@ impl QuiApp {
         what: &str,
         descriptor: Unknown,
     ) -> Result<String> {
+        self.check_not_live()?;
         if self.driver.app().extra_occupied(kind) {
             return Err(slot_occupied_error(format!(
                 "{what}: {kind:?} already occupied; call clearExtra({kind:?}) first"
@@ -1550,6 +1982,55 @@ impl QuiApp {
         Ok(())
     }
 
+    /// Raises `LiveRunnerActiveError` if `startTui` (or a future
+    /// `startNative`) is currently running on this app -- see this
+    /// module's doc's "Live run loop" section. Every method that reaches
+    /// into [`Self::driver`] directly (rather than through [`Self::live`])
+    /// calls this first: once `startTui` has moved this app's
+    /// [`NodeAppLogic`] out, mutating or reading [`Self::driver`] again
+    /// would silently touch the emptied, orphaned logic left behind
+    /// instead of the live session actually running, rather than raising
+    /// a clear error. `step`/`run` (which drive [`Self::live`] itself) and
+    /// `waker`/`actions` (which only ever read already-shared `Arc`/`Rc`
+    /// state that keeps working correctly regardless of where the
+    /// [`NodeAppLogic`] it was obtained from now lives) are the exceptions
+    /// and do not call this.
+    fn check_not_live(&self) -> Result<()> {
+        if self.live.is_some() {
+            return Err(live_runner_active_error(
+                "cannot call this method while startTui/startNative is active -- configure \
+                 handlers and descriptors, and obtain actions()/waker() handles, before \
+                 calling startTui/startNative",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Mutable access to whichever [`NodeAppLogic`] is currently driving
+    /// this app -- [`Self::live`]'s own, if a live session is running,
+    /// otherwise [`Self::driver`]'s headless one. [`Self::guarded`] stashes
+    /// its live `Env` on whichever this returns, so a registered handler/
+    /// tick/render callback reached through either [`Self::step_once`] or
+    /// a direct [`Self::driver`] call (gated by [`Self::check_not_live`])
+    /// has one to call back into JS with -- see [`NodeAppLogic::env`]'s
+    /// doc.
+    fn active_app_mut(&mut self) -> &mut NodeAppLogic {
+        match self.live.as_mut() {
+            Some(live) => live.app_mut(),
+            None => self.driver.app_mut(),
+        }
+    }
+
+    /// Points [`Self::current_waker`] back at [`Self::driver`]'s own
+    /// headless backend's waker -- called once a live session's own `step`
+    /// observes [`StepOutcome::Exited`] (or [`Self::stop_live`] tears one
+    /// down early), undoing [`Self::start_tui`]'s swap to that session's
+    /// own backend's waker instead.
+    fn restore_headless_waker(&self) {
+        *self.current_waker.lock().unwrap_or_else(|e| e.into_inner()) =
+            self.driver.backend().waker();
+    }
+
     /// Runs `body` on `self`, catching a Rust panic instead of letting it
     /// propagate as napi-rs's own generic panic-to-`Error` conversion (which
     /// stops the process aborting but does not poison this handle). On
@@ -1559,7 +2040,7 @@ impl QuiApp {
     /// dispatching (see [`Self::check_not_dispatching`]), raises without
     /// running `body` at all -- mirrors `quadraui-py`'s `QuiApp::guarded`,
     /// plus the reentrancy guard PyO3's own runtime borrow check makes
-    /// unnecessary there. `env` is stashed on this app's [`NodeAppLogic`]
+    /// unnecessary there. `env` is stashed on [`Self::active_app_mut`]
     /// before `body` runs, so a registered handler/tick/render callback
     /// `body` reaches (via `step_once`/`driver.render()`) has a live `Env`
     /// to call back into JS with -- see [`NodeAppLogic::env`]'s doc.
@@ -1570,7 +2051,7 @@ impl QuiApp {
                 "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
             ));
         }
-        self.driver.app_mut().env.set(Some(env));
+        self.active_app_mut().env.set(Some(env));
         self.in_dispatch.set(true);
         let result = panic::catch_unwind(AssertUnwindSafe(|| body(self)));
         self.in_dispatch.set(false);
@@ -1585,11 +2066,49 @@ impl QuiApp {
 
     /// Dispatches the oldest queued event, or ticks if none is queued, then
     /// surfaces any pending error a callback recorded while handling it.
-    /// Returns whether the app is still running.
+    /// Returns whether the app is still running. With no live session
+    /// ([`Self::live`] is `None`), drains [`Self::driver`]'s queue/backend
+    /// via [`step_driver`], exactly as before `startTui` existed. With one
+    /// running, instead takes one non-blocking [`LiveRunner::step`] pass
+    /// -- never a blocking `pump`, since that would freeze the one libuv
+    /// reactor this whole process shares (see this module's doc's "Live
+    /// run loop" section) -- and, once that pass reports
+    /// [`StepOutcome::Exited`] (or itself fails), drops [`Self::live`] and
+    /// restores [`Self::current_waker`] to the headless path via
+    /// [`Self::restore_headless_waker`].
     fn step_once(&mut self) -> Result<bool> {
-        let running = step_driver(&mut self.driver, &mut self.pending_events);
-        take_pending_error(self.driver.app_mut())?;
-        Ok(running)
+        let Some(live) = self.live.as_mut() else {
+            let running = step_driver(&mut self.driver, &mut self.pending_events);
+            take_pending_error(self.driver.app_mut())?;
+            return Ok(running);
+        };
+        let step_result = live.step();
+        // Take any callback-raised error before possibly dropping `live`
+        // below -- once dropped, there is no more `NodeAppLogic` left to
+        // read it back off of.
+        let pending = take_pending_error(live.app_mut());
+        let outcome = match step_result {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                self.live = None;
+                self.restore_headless_waker();
+                pending?;
+                return Err(internal_error(format!("step: {err}")));
+            }
+        };
+        pending?;
+        // `StepOutcome` is `#[non_exhaustive]` (today: `Continue`/`Exited`)
+        // -- an equality check against the one variant that needs
+        // teardown, mirroring `quadraui-py`'s own `run_tui`/`run_native`
+        // pump loops, stays correct against a future third variant without
+        // this crate needing a wildcard arm that silently swallows it.
+        if outcome == StepOutcome::Exited {
+            self.live = None;
+            self.restore_headless_waker();
+            Ok(false)
+        } else {
+            Ok(true)
+        }
     }
 }
 
@@ -2316,6 +2835,60 @@ mod tests {
         assert!(!body_ran, "a poisoned app must not run the guarded body");
         assert!(after_poison.is_err(), "a poisoned app must keep erroring");
     }
+
+    /// A [`QuiAppWaker`] wraps its posted value in a [`UserPayload`]
+    /// recoverable via `downcast_ref::<JsonValue>` -- the exact mechanism
+    /// [`NodeEventSink::dispatch_user`] relies on to deliver it to a
+    /// registered handler as `{"User": value}`. Needs no live napi `Env`
+    /// or `QuiApp` at all, unlike the end-to-end test below.
+    #[test]
+    fn user_payload_wraps_a_json_value_round_trippable_via_downcast() {
+        let payload = UserPayload::new(serde_json::json!({"answer": 42}));
+        let recovered = payload
+            .downcast_ref::<JsonValue>()
+            .expect("downcast to the wrapped JsonValue");
+        assert_eq!(recovered, &serde_json::json!({"answer": 42}));
+    }
+
+    /// Posting through a [`QuiAppWaker`] from a background thread must not
+    /// panic or poison the owning app, and the next `step()` must drain
+    /// the delivered `UiEvent::User` without raising -- the napi-rs port
+    /// of `quadraui-py`'s own
+    /// `waker_post_from_a_background_thread_delivers_a_user_event`. No
+    /// handler is registered here (constructing one needs a live napi
+    /// `Env`, not available to a plain `#[test]` -- see
+    /// `null_env_for_test`'s own doc), so this covers the waker/queue
+    /// plumbing end to end rather than the JS-handler delivery itself,
+    /// which [`user_payload_wraps_a_json_value_round_trippable_via_downcast`]
+    /// and `quadraui-node/tests/`'s own black-box coverage exercise
+    /// instead.
+    #[test]
+    fn waker_post_from_a_background_thread_delivers_a_user_event() {
+        let mut app = QuiApp::new(10, 10).expect("valid dimensions");
+        let waker = app.waker().expect("app is not poisoned");
+
+        thread::spawn(move || {
+            waker.post_value(serde_json::json!(42));
+        })
+        .join()
+        .expect("a background thread calling post_value must not panic");
+
+        let running = app
+            .step(null_env_for_test())
+            .expect("step must drain the delivered User event without raising");
+        assert!(running, "delivering a User event must not exit the app");
+    }
+
+    // A `startTui` round trip (success or the no-real-tty failure path) is
+    // deliberately not exercised as an in-process `#[test]` here:
+    // `TuiRunner::new_with`'s very first step is `enable_raw_mode()`,
+    // which -- if this test process happens to have a controlling
+    // terminal at all, which a plain `cargo test` invocation sometimes
+    // does -- would actually raw-mode it instead of failing fast, hanging
+    // or corrupting whatever terminal ran the test suite. `quadraui-py`'s
+    // own `test_run_tui.py` sidesteps exactly this by shelling out to a
+    // detached (`setsid`) subprocess per test; `quadraui-node/tests/`'s
+    // own black-box coverage does the same with `child_process.spawn`.
 
     /// `callback_reaction` (the pure function every callback-return mapping
     /// in this crate goes through -- see [`bool_from_return`]) treats only
