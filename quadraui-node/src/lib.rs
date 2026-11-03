@@ -295,7 +295,14 @@ type SharedWaker = Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>;
 /// `win` Cargo features today only forward to `quadraui`'s/
 /// `quadraui-binding-core`'s same-named feature -- see `Cargo.toml`'s own
 /// comment -- with no napi-visible `startNative` method built on them
-/// yet).
+/// yet). TUI is verified here, on any host, through the black-box
+/// `quadraui-node/tests/live_runner.test.ts` suite; a `startNative`
+/// variant needs its own backend-specific issue verified on that
+/// backend's own capability-lane host (`gtk` on a Linux box with GTK4
+/// installed, `macos`/`win` only on their own platform) -- the same
+/// one-backend-per-issue split `CLAUDE.md`'s own doc describes for
+/// `quadraui` itself, applied here one level down inside this single
+/// crate's own feature table.
 enum LiveRunner {
     /// A live terminal takeover via [`TuiRunner`] -- [`QuiApp::start_tui`].
     Tui(TuiRunner<NodeAppLogic>),
