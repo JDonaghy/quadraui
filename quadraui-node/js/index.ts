@@ -20,10 +20,11 @@ const native: typeof import("../index.js") = require("../index.js");
 /**
  * A headless quadraui app, driven entirely from JavaScript/TypeScript.
  *
- * Construct it with a `width`/`height` cell grid and inspect the rendered
- * frame with `screen()`/`screenContains()`. See the native binding's own
- * doc comment (`quadraui-node/src/lib.rs`'s `QuiApp`) for the full method
- * list and panic/poison behaviour.
+ * Construct it with a `width`/`height` cell grid, insert descriptors with
+ * `insertButton`/`insertTextDisplay`/.../`insertExtra`, and inspect the
+ * rendered frame with `screen()`/`screenContains()`. See the native
+ * binding's own doc comment (`quadraui-node/src/lib.rs`'s `QuiApp`) for the
+ * full method list and panic/poison behaviour.
  */
 export type QuiApp = InstanceType<typeof native.QuiApp>;
 exports.QuiApp = native.QuiApp;

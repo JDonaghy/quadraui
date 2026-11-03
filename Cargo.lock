@@ -2451,6 +2451,8 @@ dependencies = [
  "napi-sys",
  "nohash-hasher",
  "rustc-hash",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3370,6 +3372,8 @@ dependencies = [
  "objc2",
  "quadraui",
  "quadraui-binding-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

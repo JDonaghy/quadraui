@@ -11,12 +11,52 @@
 //! (the six fixed primitive slots, any additive slots, and the
 //! backend-settings replay store) plus a [`quadraui_binding_core::InteractionEngine`]
 //! and a pending-error slot -- the napi-rs analog of `quadraui-py`'s
-//! `PyAppLogic`. Today's surface is the minimal headless one: `new`,
-//! `step`, `run`, `screen`, `screen_contains`, `resize`, `push_key_event`,
-//! `slot_clear`. No JS event handler is registered anywhere yet -- every
-//! dispatched event is accepted with no side effect -- and no `insert_*`
-//! descriptor method exists yet either; both are expected future additions
-//! to this crate's surface, mirroring `quadraui-py`'s own.
+//! `PyAppLogic`. Today's surface is the headless driver loop (`new`, `step`,
+//! `run`, `screen`, `screen_contains`, `resize`, `push_key_event`,
+//! `slot_clear`) plus the descriptor decode adapter below: the six fixed
+//! `insert*` methods, `pushEvent`, and the additive-primitive `insertExtra`/
+//! `insertProgress`/`insertSpinner`/`insertImage`/`clearExtra`. No JS event
+//! handler/render callback is registered anywhere yet -- every dispatched
+//! event is accepted with no side effect -- that is an expected future
+//! addition to this crate's surface, mirroring `quadraui-py`'s own.
+//!
+//! **Descriptor decode adapter.** The napi-rs analog of `quadraui-py`'s
+//! `pythonize::depythonize` path, split by how much of `quadraui_binding_core`'s
+//! decode medium a given entry point needs:
+//! - [`decode_direct`] hands napi's own `Env::from_js_value` (gated behind
+//!   this crate's `serde-json` feature on the `napi` dependency) straight to
+//!   a derived `Deserialize` type -- the six fixed primitive slots and
+//!   `pushEvent`'s `UiEvent`, neither of which carries a byte-string or
+//!   float field at risk of the two pre-checks below.
+//! - [`decode_via_core`] first materializes the JS value into one
+//!   [`serde_json::Value`] via [`to_descriptor_value`], then hands `&value`
+//!   to a kind-dispatched core decoder (`decode_extra_primitive` today;
+//!   `decode_layout_node`/`decode_render_output` are exercised directly
+//!   against a hand-built `serde_json::Value` by this module's own tests,
+//!   with no napi-visible method routing JS input through them yet, since
+//!   no render callback exists to call them from) -- exactly the
+//!   `&serde_json::Value` path `quadraui_binding_core`'s own tests use.
+//!   [`to_descriptor_value`] is this crate's own walk rather than a reuse of
+//!   `quadraui_binding_core::wire`'s private `materialize` visitor (not
+//!   reachable from here) or napi's own `FromNapiValue for serde_json::Value`
+//!   (reachable, but not reused: its array detection is a bare
+//!   `Array.isArray` check, so a `Buffer`/`Uint8Array`/`ArrayBuffer` falls
+//!   through to its generic object branch -- every index becomes a
+//!   *string* map key, not the array `quadraui::ImageSource::Bytes` decodes
+//!   from). It folds a `Buffer`/`Uint8Array`/`ArrayBuffer` into a plain
+//!   array of byte numbers before any object/array branch can see it, and
+//!   rejects a non-finite float (`NaN`/`Infinity`) outright instead of
+//!   letting it alias `null` the way a naive conversion would -- the same
+//!   two deltas `quadraui_binding_core::wire::materialize` keeps versus
+//!   `serde_json::Value`'s own `Deserialize` impl, applied here against
+//!   napi's JS object model instead of pythonize's.
+//! - Either path's failure becomes a JS `Error` tagged `InvalidDescriptorError`
+//!   in its message via [`invalid_descriptor_error`] -- napi-rs has no
+//!   custom-exception-class mechanism at the FFI boundary the way PyO3's
+//!   `create_exception!` does, so the tag lives in the message instead of a
+//!   distinct JS class (`assert.throws(fn, /InvalidDescriptorError/)` on the
+//!   JS side). An already-occupied slot/kind raises [`slot_occupied_error`]
+//!   (tagged `SlotOccupiedError`) before any decode is attempted.
 //!
 //! A Rust panic reaching a driver call is caught at the [`QuiApp::guarded`]
 //! boundary, raised as a JS `Error` instead of unwinding into Node, and
@@ -32,15 +72,24 @@ use std::collections::VecDeque;
 use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
 
-use napi::{Error, Result};
+use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
+use serde::de::DeserializeOwned;
+use serde_json::Value as JsonValue;
+
 use quadraui::tui::testing::TuiDriver;
-use quadraui::{AppLogic, Backend, Reaction, Rect, UiEvent, WidgetId};
-use quadraui_binding_core::{
-    draw_bands, key_pressed_event, panic_message, render_overlays, step_driver, BindingHost,
-    InteractionEngine,
+use quadraui::{
+    AppLogic, Backend, Button, DataTable, ListView, Reaction, Rect, TabBar, TextDisplay, TreeView,
+    UiEvent, WidgetId,
 };
+use quadraui_binding_core::{
+    decode_extra_primitive, draw_bands, key_pressed_event, panic_message, render_overlays,
+    step_driver, BindingHost, DecodeError, InteractionEngine, SLOT_BUTTON, SLOT_DATA_TABLE,
+    SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
+};
+#[cfg(test)]
+use quadraui_binding_core::{decode_layout_node, decode_render_output, LayoutNode, RenderOutput};
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin napi-rs leaf around
 /// [`BindingHost`] (the six fixed primitive slots, any additive slots, and
@@ -77,9 +126,25 @@ impl NodeAppLogic {
         BindingHost::is_known_slot(slot)
     }
 
+    /// Whether `slot` currently holds a descriptor.
+    fn slot_occupied(&self, slot: i64) -> bool {
+        self.host.slot_occupied(slot)
+    }
+
     /// Empties one slot, returning whether it held anything.
     fn clear_slot(&mut self, slot: i64) -> bool {
         self.host.clear_slot(slot)
+    }
+
+    /// Whether `kind` names a currently-occupied additive primitive slot.
+    fn extra_occupied(&self, kind: &str) -> bool {
+        self.host.extra_occupied(kind)
+    }
+
+    /// Empties one additive primitive slot, returning whether it held
+    /// anything.
+    fn clear_extra_slot(&mut self, kind: &str) -> bool {
+        self.host.clear_extra_slot(kind)
     }
 }
 
@@ -149,13 +214,165 @@ fn checked_dimensions(width: u16, height: u16) -> Result<(u16, u16)> {
     Ok((width, height))
 }
 
+// ─── Descriptor decode adapter ──────────────────────────────────────────────
+//
+// See the module doc's "Descriptor decode adapter" section for the overall
+// shape; the functions below are its pieces.
+
+/// Maps a decode failure -- this crate's own JS-value walk
+/// ([`to_descriptor_value`]) or a `quadraui_binding_core` decoder's
+/// [`DecodeError`] -- to a JS `Error` whose message is tagged
+/// `InvalidDescriptorError`, the napi-rs analog of `quadraui-py`'s
+/// `InvalidDescriptorError` exception subclass (see the module doc for why
+/// this crate tags the message instead of raising a distinct JS class).
+fn invalid_descriptor_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("InvalidDescriptorError: {detail}"))
+}
+
+/// Mirrors [`invalid_descriptor_error`] for an already-occupied fixed slot
+/// or additive-primitive kind -- the napi-rs analog of `quadraui-py`'s
+/// `SlotOccupiedError` exception subclass.
+fn slot_occupied_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("SlotOccupiedError: {detail}"))
+}
+
+/// Decodes `descriptor` straight into `T` via napi's own
+/// `Env::from_js_value` -- the napi-rs analog of `quadraui-py`'s
+/// `pythonize::depythonize`, for any descriptor type that derives
+/// `Deserialize` with no byte-string/non-finite-float field at risk (the
+/// six fixed primitive slots, `pushEvent`'s `UiEvent`).
+fn decode_direct<T: DeserializeOwned>(env: Env, what: &str, descriptor: Unknown) -> Result<T> {
+    env.from_js_value(descriptor)
+        .map_err(|err| invalid_descriptor_error(format!("{what}: {err}")))
+}
+
+/// Decodes `descriptor` by first materializing it into one
+/// [`serde_json::Value`] via [`to_descriptor_value`], then handing `&value`
+/// to `core` -- the shared tail of every kind-dispatched decoder this crate
+/// feeds through the same medium `quadraui_binding_core`'s own tests use.
+fn decode_via_core<T>(
+    what: &str,
+    descriptor: Unknown,
+    core: impl FnOnce(&JsonValue) -> std::result::Result<T, DecodeError>,
+) -> Result<T> {
+    let value = to_descriptor_value(descriptor)
+        .map_err(|detail| invalid_descriptor_error(format!("{what}: {detail}")))?;
+    core(&value).map_err(invalid_descriptor_error)
+}
+
+/// Converts a JS value into a [`serde_json::Value`] tree -- this crate's
+/// own walk, not a reuse of `quadraui_binding_core::wire`'s private
+/// `materialize` visitor (not reachable from here) or napi's own
+/// `FromNapiValue for serde_json::Value` (reachable, but not reused -- see
+/// the module doc's "Descriptor decode adapter" section for why). Folds a
+/// `Buffer`/`Uint8Array`/`ArrayBuffer` into a [`JsonValue::Array`] of its
+/// byte values before any object/array branch gets a chance to see it (the
+/// shape `Vec<u8>`'s own `Deserialize` impl expects, so
+/// `quadraui::ImageSource::Bytes` keeps decoding through `{"Bytes": ...}`),
+/// and rejects a non-finite float (`NaN`/`Infinity`) outright rather than
+/// letting it alias `null`.
+///
+/// Every `unsafe { value.cast() }` below immediately follows the
+/// `get_type()`/`is_buffer()`/`is_array()`/... check that proves `value` is
+/// shaped the way the cast target expects.
+fn to_descriptor_value(value: Unknown) -> std::result::Result<JsonValue, String> {
+    match value.get_type().map_err(|err| err.reason)? {
+        ValueType::Undefined | ValueType::Null => Ok(JsonValue::Null),
+        ValueType::Boolean => {
+            // SAFETY: `get_type` just confirmed this value is a JS boolean.
+            let b: bool = unsafe { value.cast() }.map_err(|err| err.reason)?;
+            Ok(JsonValue::Bool(b))
+        }
+        ValueType::Number => {
+            // SAFETY: `get_type` just confirmed this value is a JS number.
+            let n: f64 = unsafe { value.cast() }.map_err(|err| err.reason)?;
+            if !n.is_finite() {
+                return Err(format!("non-finite number {n} is not supported"));
+            }
+            // Mirrors napi's own `De::deserialize_any`: a whole number
+            // decodes as an integer, everything else as a float.
+            Ok(if (n.trunc() - n).abs() < f64::EPSILON {
+                JsonValue::Number((n as i64).into())
+            } else {
+                serde_json::Number::from_f64(n)
+                    .map(JsonValue::Number)
+                    .unwrap_or(JsonValue::Null)
+            })
+        }
+        ValueType::String => {
+            // SAFETY: `get_type` just confirmed this value is a JS string.
+            let s: String = unsafe { value.cast() }.map_err(|err| err.reason)?;
+            Ok(JsonValue::String(s))
+        }
+        ValueType::Object => {
+            if value.is_buffer().map_err(|err| err.reason)? {
+                // SAFETY: `is_buffer` just confirmed this value is a Buffer.
+                let bytes: BufferSlice = unsafe { value.cast() }.map_err(|err| err.reason)?;
+                Ok(bytes_to_value(&bytes))
+            } else if value.is_typedarray().map_err(|err| err.reason)? {
+                // SAFETY: `is_typedarray` just confirmed this value is a
+                // typed array; `Uint8Array::from_napi_value` itself still
+                // rejects one whose element type isn't `Uint8`.
+                let bytes: Uint8Array = unsafe { value.cast() }.map_err(|err| err.reason)?;
+                Ok(bytes_to_value(&bytes))
+            } else if value.is_arraybuffer().map_err(|err| err.reason)? {
+                // SAFETY: `is_arraybuffer` just confirmed this value is an
+                // ArrayBuffer.
+                let bytes: ArrayBuffer = unsafe { value.cast() }.map_err(|err| err.reason)?;
+                Ok(bytes_to_value(&bytes))
+            } else if value.is_array().map_err(|err| err.reason)? {
+                // SAFETY: `is_array` just confirmed this value is a JS array.
+                let arr: Array = unsafe { value.cast() }.map_err(|err| err.reason)?;
+                let mut elements = Vec::with_capacity(arr.len() as usize);
+                for index in 0..arr.len() {
+                    let element: Option<Unknown> = arr.get(index).map_err(|err| err.reason)?;
+                    elements.push(match element {
+                        Some(element) => to_descriptor_value(element)?,
+                        None => JsonValue::Null,
+                    });
+                }
+                Ok(JsonValue::Array(elements))
+            } else {
+                // SAFETY: every other `ValueType::Object` is a plain object.
+                let obj: Object = unsafe { value.cast() }.map_err(|err| err.reason)?;
+                let mut map = serde_json::Map::new();
+                for key in Object::keys(&obj).map_err(|err| err.reason)? {
+                    let property: Option<Unknown> = obj.get(&key).map_err(|err| err.reason)?;
+                    if let Some(property) = property {
+                        map.insert(key, to_descriptor_value(property)?);
+                    }
+                }
+                Ok(JsonValue::Object(map))
+            }
+        }
+        other => Err(format!(
+            "{other:?} cannot be represented as a descriptor value"
+        )),
+    }
+}
+
+/// Folds a byte slice into the [`JsonValue::Array`] of `u8` numbers
+/// `Vec<u8>`'s own `Deserialize` impl expects -- shared by
+/// [`to_descriptor_value`]'s `Buffer`/`Uint8Array`/`ArrayBuffer` branches.
+fn bytes_to_value(bytes: &[u8]) -> JsonValue {
+    JsonValue::Array(
+        bytes
+            .iter()
+            .map(|byte| JsonValue::Number((*byte).into()))
+            .collect(),
+    )
+}
+
 /// A headless quadraui app, driven entirely from JavaScript/TypeScript.
 ///
-/// Construct it with a `width`/`height` cell grid and inspect the rendered
-/// frame with `screen()`/`screenContains()`. No event handler is
-/// registered and no `insert*` descriptor method exists yet, so today's
-/// `QuiApp` only exercises the headless driver's own step/render/resize
-/// loop.
+/// Construct it with a `width`/`height` cell grid, insert descriptors with
+/// `insertButton`/`insertTextDisplay`/`insertList`/`insertTree`/
+/// `insertDataTable`/`insertTabBar`/`insertExtra` (and its typed
+/// convenience wrappers `insertProgress`/`insertSpinner`/`insertImage`),
+/// and inspect the rendered frame with `screen()`/`screenContains()`. No
+/// JS event handler/render callback is registered anywhere yet, so a
+/// `pushEvent`-queued event is accepted with no side effect -- an expected
+/// future addition to this surface, mirroring `quadraui-py`'s own.
 #[napi]
 pub struct QuiApp {
     driver: TuiDriver<NodeAppLogic>,
@@ -266,6 +483,212 @@ impl QuiApp {
                 take_pending_error(app.driver.app_mut())?;
             }
             Ok(cleared)
+        })
+    }
+
+    /// Inserts a `Button` descriptor from a JS object, returning its slot
+    /// handle. Raises `SlotOccupiedError` if the button slot is already
+    /// occupied -- call `slotClear` first.
+    #[napi(js_name = "insertButton")]
+    pub fn insert_button(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.insert_fixed(
+            env,
+            SLOT_BUTTON,
+            "insertButton",
+            |app, value: Button| app.host.button = Some(value),
+            descriptor,
+        )
+    }
+
+    /// Inserts a `TextDisplay` descriptor from a JS object, returning its
+    /// slot handle. Raises `SlotOccupiedError` if the text-display slot is
+    /// already occupied -- call `slotClear` first.
+    #[napi(js_name = "insertTextDisplay")]
+    pub fn insert_text_display(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.insert_fixed(
+            env,
+            SLOT_TEXT_DISPLAY,
+            "insertTextDisplay",
+            |app, value: TextDisplay| app.host.text_display = Some(value),
+            descriptor,
+        )
+    }
+
+    /// Inserts a `ListView` descriptor from a JS object, returning its slot
+    /// handle. Raises `SlotOccupiedError` if the list slot is already
+    /// occupied -- call `slotClear` first.
+    #[napi(js_name = "insertList")]
+    pub fn insert_list(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.insert_fixed(
+            env,
+            SLOT_LIST,
+            "insertList",
+            |app, value: ListView| app.host.list = Some(value),
+            descriptor,
+        )
+    }
+
+    /// Inserts a `TreeView` descriptor from a JS object, returning its slot
+    /// handle. Raises `SlotOccupiedError` if the tree slot is already
+    /// occupied -- call `slotClear` first.
+    #[napi(js_name = "insertTree")]
+    pub fn insert_tree(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.insert_fixed(
+            env,
+            SLOT_TREE,
+            "insertTree",
+            |app, value: TreeView| app.host.tree = Some(value),
+            descriptor,
+        )
+    }
+
+    /// Inserts a `DataTable` descriptor from a JS object, returning its
+    /// slot handle. Raises `SlotOccupiedError` if the data-table slot is
+    /// already occupied -- call `slotClear` first.
+    #[napi(js_name = "insertDataTable")]
+    pub fn insert_data_table(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.insert_fixed(
+            env,
+            SLOT_DATA_TABLE,
+            "insertDataTable",
+            |app, value: DataTable| app.host.data_table = Some(value),
+            descriptor,
+        )
+    }
+
+    /// Inserts a `TabBar` descriptor from a JS object, returning its slot
+    /// handle. Raises `SlotOccupiedError` if the tab-bar slot is already
+    /// occupied -- call `slotClear` first.
+    #[napi(js_name = "insertTabBar")]
+    pub fn insert_tab_bar(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        self.insert_fixed(
+            env,
+            SLOT_TAB_BAR,
+            "insertTabBar",
+            |app, value: TabBar| app.host.tab_bar = Some(value),
+            descriptor,
+        )
+    }
+
+    /// Inserts a `ProgressBar` descriptor from a JS object, returning
+    /// `"progress"` back. Raises `SlotOccupiedError` if `"progress"` is
+    /// already occupied -- call `clearExtra("progress")` first. A thin,
+    /// typed-descriptor convenience over [`Self::insert_extra`].
+    #[napi(js_name = "insertProgress")]
+    pub fn insert_progress(&mut self, descriptor: Unknown) -> Result<String> {
+        self.store_extra("progress", "insertProgress", descriptor)
+    }
+
+    /// Inserts a `Spinner` descriptor from a JS object, returning
+    /// `"spinner"` back. Raises `SlotOccupiedError` if `"spinner"` is
+    /// already occupied -- call `clearExtra("spinner")` first. A thin,
+    /// typed-descriptor convenience over [`Self::insert_extra`].
+    #[napi(js_name = "insertSpinner")]
+    pub fn insert_spinner(&mut self, descriptor: Unknown) -> Result<String> {
+        self.store_extra("spinner", "insertSpinner", descriptor)
+    }
+
+    /// Inserts an `Image` descriptor from a JS object, returning `"image"`
+    /// back. Raises `SlotOccupiedError` if `"image"` is already occupied --
+    /// call `clearExtra("image")` first. A thin, typed-descriptor
+    /// convenience over [`Self::insert_extra`].
+    #[napi(js_name = "insertImage")]
+    pub fn insert_image(&mut self, descriptor: Unknown) -> Result<String> {
+        self.store_extra("image", "insertImage", descriptor)
+    }
+
+    /// Inserts a descriptor for any additive primitive `kind` registered in
+    /// `quadraui_binding_core::extra_paint`'s `extra_primitives!` table (an
+    /// `InvalidDescriptorError` raised for an unknown `kind` names every
+    /// registered one), returning `kind` back. Raises `SlotOccupiedError`
+    /// if `kind` is already occupied -- call `clearExtra(kind)` first. Lets
+    /// a consumer insert a future additive primitive by name alone, with no
+    /// new napi method needed on this class.
+    #[napi(js_name = "insertExtra")]
+    pub fn insert_extra(&mut self, kind: String, descriptor: Unknown) -> Result<String> {
+        self.store_extra(&kind, "insertExtra", descriptor)
+    }
+
+    /// Empties an additive primitive slot (one registered in
+    /// `quadraui_binding_core::extra_paint`'s `extra_primitives!` table),
+    /// re-rendering so `screen()` no longer shows it. Returns whether the
+    /// slot held anything; an unrecognized `kind` simply has nothing to
+    /// clear (unlike `slotClear`, this never raises for an unknown key).
+    #[napi(js_name = "clearExtra")]
+    pub fn clear_extra(&mut self, kind: String) -> Result<bool> {
+        self.guarded(|app| {
+            let cleared = app.driver.app_mut().clear_extra_slot(&kind);
+            if cleared {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(cleared)
+        })
+    }
+
+    /// Queues a [`UiEvent`] decoded from a JS object, drained one per
+    /// `step`/`run` call the same way a `pushKeyEvent`-queued event is.
+    /// Raises `InvalidDescriptorError` on a shape mismatch.
+    #[napi(js_name = "pushEvent")]
+    pub fn push_event(&mut self, env: Env, descriptor: Unknown) -> Result<()> {
+        let event: UiEvent = decode_direct(env, "pushEvent", descriptor)?;
+        self.pending_events.push_back(event);
+        Ok(())
+    }
+}
+
+impl QuiApp {
+    /// Shared body of every fixed-slot `insert*` method: reject an
+    /// occupied slot, decode `descriptor` into `T` via [`decode_direct`],
+    /// store it with `store`, then re-render -- the napi-rs analog of
+    /// `quadraui-py`'s own `insert` helper.
+    fn insert_fixed<T: DeserializeOwned>(
+        &mut self,
+        env: Env,
+        slot: i64,
+        what: &str,
+        store: impl FnOnce(&mut NodeAppLogic, T),
+        descriptor: Unknown,
+    ) -> Result<i64> {
+        if self.driver.app().slot_occupied(slot) {
+            return Err(slot_occupied_error(format!(
+                "{what}: slot already occupied; call slotClear({slot}) first"
+            )));
+        }
+        let value: T = decode_direct(env, what, descriptor)?;
+        self.guarded(|app| {
+            store(app.driver.app_mut(), value);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(slot)
+        })
+    }
+
+    /// Shared body of every additive-primitive `insert*` method (including
+    /// the public `insertExtra` method above): reject an already-occupied
+    /// `kind`, decode the JS object through [`decode_extra_primitive`] via
+    /// [`decode_via_core`], store it, then re-render, returning `kind` back
+    /// for symmetry with the fixed `insert*` methods' slot-handle return
+    /// value -- the napi-rs analog of `quadraui-py`'s own `store_extra`
+    /// helper.
+    fn store_extra(&mut self, kind: &str, what: &str, descriptor: Unknown) -> Result<String> {
+        if self.driver.app().extra_occupied(kind) {
+            return Err(slot_occupied_error(format!(
+                "{what}: {kind:?} already occupied; call clearExtra({kind:?}) first"
+            )));
+        }
+        let value = decode_via_core(what, descriptor, |value| {
+            decode_extra_primitive(what, kind, value)
+        })?;
+        self.guarded(|app| {
+            app.driver
+                .app_mut()
+                .host
+                .extra_slots
+                .insert(kind.to_string(), value);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(kind.to_string())
         })
     }
 }
@@ -386,5 +809,53 @@ mod tests {
         });
         assert!(!body_ran, "a poisoned app must not run the guarded body");
         assert!(after_poison.is_err(), "a poisoned app must keep erroring");
+    }
+
+    /// `decode_layout_node` -- one of this crate's kind-dispatched core
+    /// decoders (see the module doc) -- accepts a `&serde_json::Value`
+    /// directly, exactly the medium `quadraui_binding_core`'s own tests
+    /// pass it and the one [`to_descriptor_value`] would materialize a JS
+    /// render-callback return value into once a render callback exists to
+    /// call it from. No live napi `Env` is needed for this path, so it is
+    /// covered here rather than in `quadraui-node/tests/`.
+    #[test]
+    fn decode_layout_node_round_trips_a_row_of_leaves() {
+        let value = serde_json::json!({
+            "row": [
+                {"id": "left", "text_display": {"id": "text:left", "lines": []}},
+                {"id": "right", "text_display": {"id": "text:right", "lines": []}},
+            ]
+        });
+        let node = decode_layout_node("test", &value).expect("valid layout tree");
+        let LayoutNode::Row(children) = node else {
+            panic!("expected a row");
+        };
+        assert_eq!(children.len(), 2);
+    }
+
+    /// `decode_render_output` round-trips a flat render-callback payload
+    /// into [`RenderOutput::Flat`] -- the shape [`to_descriptor_value`]
+    /// would feed it once a render callback exists to call it from. See
+    /// [`decode_layout_node_round_trips_a_row_of_leaves`]'s doc for why this
+    /// needs no live napi `Env`.
+    #[test]
+    fn decode_render_output_round_trips_a_flat_frame() {
+        let value = serde_json::json!({});
+        let output = decode_render_output("test", &value).expect("an empty flat frame is valid");
+        assert!(matches!(output, RenderOutput::Flat(_)));
+    }
+
+    /// A render-callback payload with a `"row"`/`"column"`/... key sniffs
+    /// as the tree shape instead, round-tripping into
+    /// [`RenderOutput::Tree`].
+    #[test]
+    fn decode_render_output_round_trips_a_tree_frame() {
+        let value = serde_json::json!({
+            "column": [
+                {"id": "only", "text_display": {"id": "text:only", "lines": []}},
+            ]
+        });
+        let output = decode_render_output("test", &value).expect("valid tree frame");
+        assert!(matches!(output, RenderOutput::Tree(_)));
     }
 }

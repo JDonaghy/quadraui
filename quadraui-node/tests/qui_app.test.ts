@@ -56,7 +56,8 @@ test("slotClear on an unknown slot id raises", () => {
 
 test("slotClear on a never-occupied known slot returns false", () => {
   const app = new QuiApp(5, 5);
-  // Slot 0 is `SLOT_BUTTON` -- see `quadraui-node/src/lib.rs`'s doc; no
-  // `insert*` method exists yet to occupy it, so this is always a no-op.
+  // Slot 0 is `SLOT_BUTTON` -- see `quadraui-node/src/lib.rs`'s doc; a
+  // never-populated app has nothing in it yet, so this is a no-op. See
+  // `tests/descriptors.test.ts` for `insertButton` occupying/clearing it.
   assert.equal(app.slotClear(0), false);
 });
