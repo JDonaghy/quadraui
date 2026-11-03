@@ -129,16 +129,17 @@ use quadraui::{
     mouse_down, mouse_up, Accelerator, AcceleratorId, ActivityBar, AppLogic, AppShellEvent,
     AppShellLayout, Backend, BackendCaps, BackendWidget, BoardModel, BottomPanelConfig,
     BottomPanelEvent, BottomPanelTab, Button, Canvas, Chart, Color, ColorDepth, ComboBox,
-    CommandCenter, CommandLine, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTable,
-    DatePicker, Decoration, DialogButton, DialogSeverity, DiffView, Editor, EditorCursorShape,
-    FileDialogOptions, FindReplacePanel, FontRole, Form, GlobalShortcutId, Image, Key, ListView,
-    MenuBar, MessageDialogButton, MessageDialogOptions, MessageList, Minimap, Modifiers,
-    MouseButton, MultiSectionView, Notification, NumberInput, Palette, Panel, PanelDefinition,
-    PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect, RgbaImage, ScrollView, Scrollbar,
-    ShellApp, ShellConfig, ShellContext, ShellPosition, SidebarPanel, Spinner, Split,
-    SplitDirection, SplitTree, StatusBar, Style, StyledSpan, Switch, TabBar, TabBarSegment,
-    TabItem, Terminal, TextDisplay, TextDisplayLine, TextInput, Theme, Toolbar, TreeView, UiEvent,
-    UserPayload, WidgetId,
+    CommandCenter, CommandLine, Completions, ContextMenu, ContextMenuItem, ContextMenuPlacement,
+    DataTable, DatePicker, Decoration, DialogButton, DialogSeverity, DiffView, Editor,
+    EditorCursorShape, FileDialogOptions, FindReplacePanel, Float, FloatMeasure, FontRole, Form,
+    GlobalShortcutId, Image, Key, ListView, MenuBar, MessageDialogButton, MessageDialogOptions,
+    MessageList, Minimap, Modifiers, MouseButton, MultiSectionView, Notification, NumberInput,
+    Palette, Panel, PanelDefinition, PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect,
+    RgbaImage, RichTextPopup, ScrollView, Scrollbar, ShellApp, ShellConfig, ShellContext,
+    ShellPosition, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StatusBar, Style,
+    StyledSpan, Switch, TabBar, TabBarSegment, TabItem, Terminal, TextDisplay, TextDisplayLine,
+    TextInput, Theme, Toast, ToastCorner, Toolbar, Tooltip, TreeView, UiEvent, UserPayload,
+    WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -564,6 +565,22 @@ fn parse_dialog_severity(value: &str) -> PyResult<DialogSeverity> {
     }
 }
 
+/// Decodes `QuiApp::show_toast`'s `corner` string into a [`ToastCorner`],
+/// the same friendly-lowercase-word shape [`parse_dialog_severity`]
+/// decodes `severity` with.
+fn parse_toast_corner(value: &str) -> PyResult<ToastCorner> {
+    match value {
+        "bottom_right" => Ok(ToastCorner::BottomRight),
+        "bottom_left" => Ok(ToastCorner::BottomLeft),
+        "top_right" => Ok(ToastCorner::TopRight),
+        "top_left" => Ok(ToastCorner::TopLeft),
+        other => Err(InvalidDescriptorError::new_err(format!(
+            "show_toast: unknown corner {other:?}; expected one of \"bottom_right\", \
+            \"bottom_left\", \"top_right\", \"top_left\""
+        ))),
+    }
+}
+
 impl AppLogic for PyAppLogic {
     type AreaId = ();
 
@@ -630,7 +647,12 @@ impl AppLogic for PyAppLogic {
             self.engine.sync_forms(backend, &hits);
             self.engine.sync_text_input_carets(backend, &hits);
             self.engine.render_ctx_menu(backend);
+            self.engine.render_float(backend);
+            self.engine.render_rich_text_popup(backend);
+            self.engine.render_completions(backend);
             self.engine.render_dialog(backend);
+            self.engine.render_tooltip(backend);
+            self.engine.render_toast(backend);
             self.engine.set_hits(hits);
             return;
         };
@@ -649,7 +671,12 @@ impl AppLogic for PyAppLogic {
         self.engine.sync_forms(backend, &hits);
         self.engine.sync_text_input_carets(backend, &hits);
         self.engine.render_ctx_menu(backend);
+        self.engine.render_float(backend);
+        self.engine.render_rich_text_popup(backend);
+        self.engine.render_completions(backend);
         self.engine.render_dialog(backend);
+        self.engine.render_tooltip(backend);
+        self.engine.render_toast(backend);
         self.engine.set_hits(hits);
     }
 
@@ -4349,6 +4376,221 @@ impl QuiApp {
         self.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
             let closed = app_logic.engine.close_message_dialog(backend);
+            if closed {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(closed)
+        })
+    }
+
+    // ── Remaining in-canvas overlays: Toast / Tooltip / Completions /
+    // Float / RichTextPopup ────────────────────────────────────────────
+    //
+    // Every surface below follows `show_message_dialog`'s own shape: a
+    // plain dict decoded straight into the matching `quadraui` primitive
+    // (`decode::<Toast>`, etc. — see each primitive's own `Deserialize`
+    // derive), routed onto `InteractionEngine`'s own anchored-overlay
+    // slot, re-rendered immediately so `screen()`/`screen_contains()`
+    // reflect the open overlay without a separate step. Call each from
+    // top-level script code only, never from inside the registered event
+    // handler or render callback — same PyO3 runtime-borrow wall
+    // `show_message_dialog`'s own doc explains.
+
+    /// Shows `toast` (a dict matching [`quadraui::Toast`]'s shape — `id`,
+    /// `title`, `body`, `severity`, `actions`, `accent`) stacked in
+    /// `corner` (one of `"bottom_right"` (default), `"bottom_left"`,
+    /// `"top_right"`, `"top_left"`) among whatever toasts are already
+    /// showing. Replaces any existing toast with the same `id`.
+    ///
+    /// A click on an action button dispatches
+    /// `UiEvent::ToastActionClicked(id)` (that action's own id) to the
+    /// registered handler; a click on the dismiss `×` closes the toast
+    /// directly with no event. Toasts are non-modal — unlike
+    /// `show_message_dialog`, they never block input to whatever is
+    /// painted behind them.
+    #[pyo3(signature = (toast, corner=None))]
+    fn show_toast(&mut self, toast: &Bound<'_, PyDict>, corner: Option<String>) -> PyResult<()> {
+        let toast: Toast = decode("show_toast", toast)?;
+        let corner = corner.map(|c| parse_toast_corner(&c)).transpose()?;
+        self.guarded(|app| {
+            app.driver
+                .app_mut()
+                .engine
+                .show_toast(toast, corner.unwrap_or_default());
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Closes the toast with this id, if showing. Returns whether one was
+    /// closed. No event is dispatched — mirrors `dismiss_message_dialog`'s
+    /// "close without resolving" shape.
+    fn dismiss_toast(&mut self, id: String) -> PyResult<bool> {
+        self.guarded(|app| {
+            let closed = app.driver.app_mut().engine.dismiss_toast(WidgetId::new(id));
+            if closed {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(closed)
+        })
+    }
+
+    /// Shows `tooltip` (a dict matching [`quadraui::Tooltip`]'s shape —
+    /// `id`, `text`, `styled_lines`, `placement`, `bg`, `fg`) anchored
+    /// against `anchor`, an `(x, y, width, height)` rect in this app's
+    /// own cell grid. Replaces any tooltip already showing.
+    ///
+    /// Tooltips are non-interactive — see
+    /// [`quadraui::Backend::draw_tooltip`]'s own doc — so there is no
+    /// click/selection event to report. The next `MouseDown` or
+    /// `KeyPressed` this app handles (through `step`/`step_once`/`run`)
+    /// auto-dismisses it; call `hide_tooltip` to dismiss it sooner (e.g.
+    /// the hovered widget itself changed).
+    fn show_tooltip(
+        &mut self,
+        tooltip: &Bound<'_, PyDict>,
+        anchor: (f32, f32, f32, f32),
+    ) -> PyResult<()> {
+        let tooltip: Tooltip = decode("show_tooltip", tooltip)?;
+        let anchor = Rect::new(anchor.0, anchor.1, anchor.2, anchor.3);
+        self.guarded(|app| {
+            app.driver.app_mut().engine.show_tooltip(tooltip, anchor);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Hides the open tooltip (if any). Returns whether one was open.
+    fn hide_tooltip(&mut self) -> PyResult<bool> {
+        self.guarded(|app| {
+            let hidden = app.driver.app_mut().engine.hide_tooltip();
+            if hidden {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(hidden)
+        })
+    }
+
+    /// Shows `completions` (a dict matching [`quadraui::Completions`]'s
+    /// shape — `id`, `items`, `selected_idx`, `scroll_offset`,
+    /// `has_focus`) anchored at `cursor`, an `(x, y)` caret position in
+    /// this app's own cell grid. Replaces any popup already open.
+    ///
+    /// A click on an item dispatches
+    /// `UiEvent::CompletionItemActivated(id, index)` (the popup's own id
+    /// + the chosen item's index into `items`) and closes the popup;
+    /// Escape, or a click outside it, closes it with no event.
+    fn show_completions(
+        &mut self,
+        completions: &Bound<'_, PyDict>,
+        cursor: (f32, f32),
+    ) -> PyResult<()> {
+        let completions: Completions = decode("show_completions", completions)?;
+        let cursor = Point::new(cursor.0, cursor.1);
+        self.guarded(|app| {
+            app.driver
+                .app_mut()
+                .engine
+                .show_completions(completions, cursor);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Closes the open completions popup (if any) without reporting a
+    /// selection. Returns whether one was open.
+    fn dismiss_completions(&mut self) -> PyResult<bool> {
+        self.guarded(|app| {
+            let closed = app.driver.app_mut().engine.dismiss_completions();
+            if closed {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(closed)
+        })
+    }
+
+    /// Opens `float` (a dict matching [`quadraui::Float`]'s shape — `id`,
+    /// `anchor`, `focusable`, `border`, `bg`; see that type's own doc for
+    /// `anchor`'s shape) at `width`x`height` cells.
+    ///
+    /// **Chrome only** — same contract as
+    /// [`quadraui::Backend::draw_float`] itself: this paints the float's
+    /// background/border, nothing else. There is no content surface on
+    /// this binding yet for a host to paint into the resolved
+    /// `content_bounds` — a future issue's concern, not this one's; see
+    /// `quadraui::Float`'s own module doc for the primitive's full
+    /// content contract.
+    ///
+    /// Escape closes a focusable float (`float.focusable`, `true` by
+    /// default) with no event; a non-focusable hint float never claims
+    /// Escape, matching [`quadraui::ModalStack::top_focusable`]'s own
+    /// "never steals keys" doc.
+    fn show_float(&mut self, float: &Bound<'_, PyDict>, width: f32, height: f32) -> PyResult<()> {
+        let float: Float = decode("show_float", float)?;
+        let measure = FloatMeasure::new(width, height);
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            app_logic.engine.show_float(float, measure, backend);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Closes the open float (if any) with no event. Returns whether one
+    /// was open.
+    fn dismiss_float(&mut self) -> PyResult<bool> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            let closed = app_logic.engine.dismiss_float(backend);
+            if closed {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(closed)
+        })
+    }
+
+    /// Shows `popup` (a dict matching [`quadraui::RichTextPopup`]'s shape
+    /// — `id`, `lines`, `line_text`, `max_visible_rows`, `links`, …)
+    /// anchored at `anchor`, an `(x, y)` position in this app's own cell
+    /// grid — typically the top-left of the cell the popup describes.
+    /// Replaces any popup already open.
+    ///
+    /// A click on a link dispatches
+    /// `UiEvent::RichTextLinkClicked(id, url)` (the popup's own id + the
+    /// clicked [`quadraui::RichTextLink::url`]); Escape, or a click
+    /// outside the popup, closes it with no event.
+    fn show_rich_text_popup(
+        &mut self,
+        popup: &Bound<'_, PyDict>,
+        anchor: (f32, f32),
+    ) -> PyResult<()> {
+        let popup: RichTextPopup = decode("show_rich_text_popup", popup)?;
+        let anchor = Point::new(anchor.0, anchor.1);
+        self.guarded(|app| {
+            app.driver
+                .app_mut()
+                .engine
+                .show_rich_text_popup(popup, anchor);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Closes the open rich-text popup (if any) without reporting a link
+    /// click. Returns whether one was open.
+    fn dismiss_rich_text_popup(&mut self) -> PyResult<bool> {
+        self.guarded(|app| {
+            let closed = app.driver.app_mut().engine.dismiss_rich_text_popup();
             if closed {
                 app.driver.render();
                 take_pending_error(app.driver.app_mut())?;

@@ -992,6 +992,51 @@ pub enum UiEvent {
     /// selection.
     MessageDialogResolved(WidgetId),
 
+    /// An action button on an in-canvas [`crate::Toast`] (painted via a
+    /// binding's `show_toast`-style surface, on the same anchored-overlay
+    /// slot `MessageDialogResolved` uses) was clicked. Carries the
+    /// action's own `WidgetId` ([`crate::ToastButton::id`]) — the same
+    /// shape [`Self::ContextMenuItemActivated`] carries for a context-menu
+    /// selection. The dismiss `×` affordance does **not** route through
+    /// this event: it closes the toast directly in the engine that owns
+    /// it, since there is no app-side choice to report the way an action
+    /// click has.
+    ToastActionClicked(WidgetId),
+
+    /// An item in an in-canvas [`crate::Completions`] popup was activated
+    /// by a click or Enter. `.0` is the popup's own `WidgetId`
+    /// ([`crate::Completions::id`]); `.1` is the index into
+    /// [`crate::Completions::items`] that was chosen. Escape, or a click
+    /// outside the popup, dismisses it without dispatching any event —
+    /// mirroring [`Self::ContextMenuDismissed`]'s "no event on plain
+    /// cancel" shape, except even the cancel notification is skipped here
+    /// since a completions popup is reopened fresh on every keystroke
+    /// anyway.
+    CompletionItemActivated(WidgetId, usize),
+
+    /// A clickable link inside an in-canvas [`crate::RichTextPopup`] was
+    /// clicked. `.0` is the popup's own `WidgetId`
+    /// ([`crate::RichTextPopup::id`]); `.1` is the activated
+    /// [`crate::RichTextLink::url`]. Escape, or a click outside the
+    /// popup, dismisses it without dispatching any event, same as
+    /// [`Self::CompletionItemActivated`]'s dismissal shape.
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is **not** `#[non_exhaustive]`; [`Self::ToastActionClicked`],
+    /// [`Self::CompletionItemActivated`] and this variant are new, so an
+    /// exhaustively-matched consumer fails to compile until it adds an
+    /// arm (or a wildcard). Blast-radius grep:
+    ///
+    /// ```text
+    /// $ grep -rn 'ToastActionClicked\|CompletionItemActivated\|RichTextLinkClicked' \
+    ///     ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both; neither consumer names any of
+    /// these three variants, so this lands as a non-breaking addition in
+    /// practice)
+    /// ```
+    RichTextLinkClicked(WidgetId, String),
+
     // ── Tray / status-bar icon ──────────────────────────────────────────
     /// The user clicked the app's tray/status-bar icon
     /// ([`crate::backend::TrayService::set_icon`]) with no menu currently
