@@ -103,13 +103,15 @@
 //! inside a handler: `show_message_dialog`, `show_context_menu`,
 //! `show_toast`, `open_path`, `reveal_in_file_manager`, `move_to_trash`,
 //! `restore_from_trash`. Each method on it decodes and queues the same
-//! action its `QuiApp`
-//! namesake would apply immediately; `step`/`run` and the `run_tui` pump
-//! loop drain that queue via [`flush_deferred_actions`] right after the
-//! dispatch that queued it finishes, applying each action as a direct
-//! Rust call instead of a second PyO3 borrow of `QuiApp` itself. Not
-//! wired for `run_native`'s native loops yet — see [`QuiAppActions`]'s own
-//! doc.
+//! action its `QuiApp` namesake would apply immediately;
+//! [`PyAppLogic::handle`]/[`PyAppLogic::tick`] drain that queue via
+//! [`flush_deferred_actions`] right after the dispatch that queued it
+//! finishes, applying each action as a direct Rust call instead of a
+//! second PyO3 borrow of `QuiApp` itself, against whichever live
+//! [`Backend`] that `handle`/`tick` call was itself given — the headless
+//! driver for `step`/`run`, the live terminal for `run_tui`, and the live
+//! window for `run_native` (`gtk`/`macos`/`win`) alike, since all four
+//! paths call through the same [`AppLogic`] trait methods.
 // Only spelled in this crate's own code inside `run_native`'s real
 // `target_os = "macos"` arm and in `#[cfg(test)]` coverage for the
 // downgrade `NativeExitPolicy` (aliased below as `NativeAppLogic`)
@@ -596,29 +598,57 @@ impl AppLogic for PyAppLogic {
     /// owns the full `event -> hit -> semantic` orchestration (menu-bar/
     /// context-menu routing, divider/scrollbar drag, click-to-focus,
     /// focus-scoped key/paste routing, and semantic event substitution).
+    ///
+    /// Drains [`QuiAppActions`]'s deferred queue via
+    /// [`flush_deferred_actions`] right after dispatch, against this same
+    /// `backend` — whichever live [`Backend`] the caller (headless driver,
+    /// `run_tui`'s terminal, or `run_native`'s window) is driving — and
+    /// folds the result into the returned [`Reaction`] via [`Reaction::merge`]
+    /// so a queued action that actually applied something still gets its
+    /// repaint even when the handler itself returned `Continue`.
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        let Some(handler) = self.handler.as_ref() else {
-            return Reaction::Continue;
+        let reaction = match self.handler.as_ref() {
+            None => Reaction::Continue,
+            Some(handler) => {
+                let mut sink = PyEventSink {
+                    handler,
+                    pending_error: &self.pending_error,
+                    render_callback_present: self.render_callback.is_some(),
+                };
+                self.engine.handle(event, backend, &mut sink)
+            }
         };
-        let mut sink = PyEventSink {
-            handler,
-            pending_error: &self.pending_error,
-            render_callback_present: self.render_callback.is_some(),
-        };
-        self.engine.handle(event, backend, &mut sink)
+        let applied = flush_deferred_actions(backend, self);
+        reaction.merge(if applied {
+            Reaction::Redraw
+        } else {
+            Reaction::Continue
+        })
     }
 
-    fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
-        let Some(on_tick) = self.on_tick.as_ref() else {
-            return Reaction::Continue;
-        };
-        let render_callback_present = self.render_callback.is_some();
-        Python::attach(|py| match on_tick.call0(py) {
-            Ok(result) => reaction_for_callback(result.bind(py), render_callback_present),
-            Err(err) => {
-                record_error(&self.pending_error, err);
-                Reaction::Exit
+    /// Same [`flush_deferred_actions`] drain as [`Self::handle`] — a
+    /// deferred action can be queued from a `tick` callback too, since
+    /// `QuiApp::actions()` is obtained once and shared with whatever
+    /// callback the app registers, not just the event handler.
+    fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
+        let reaction = match self.on_tick.as_ref() {
+            None => Reaction::Continue,
+            Some(on_tick) => {
+                let render_callback_present = self.render_callback.is_some();
+                Python::attach(|py| match on_tick.call0(py) {
+                    Ok(result) => reaction_for_callback(result.bind(py), render_callback_present),
+                    Err(err) => {
+                        record_error(&self.pending_error, err);
+                        Reaction::Exit
+                    }
+                })
             }
+        };
+        let applied = flush_deferred_actions(backend, self);
+        reaction.merge(if applied {
+            Reaction::Redraw
+        } else {
+            Reaction::Continue
         })
     }
 }
@@ -1494,11 +1524,11 @@ impl QuiAppWaker {
 /// handler — the same "obtain once, use from wherever" shape
 /// [`QuiApp::waker`] already has for background-thread delivery.
 ///
-/// `run_native`'s native loops (`gtk`/`macos`/`win`) do not drain this
-/// queue yet: an action queued while a native window is open sits until
-/// the window closes and the headless driver resumes stepping, where it is
-/// then applied against the *headless* backend rather than the window —
-/// not currently wired for native, TUI only for now.
+/// Drained by [`flush_deferred_actions`] from inside
+/// [`PyAppLogic::handle`]/[`PyAppLogic::tick`] themselves, so this applies
+/// equally under `step`/`run`, `run_tui`, and `run_native` (`gtk`/`macos`/
+/// `win`): whichever live [`Backend`] that dispatch was given is the one
+/// each queued action lands on.
 #[pyclass(module = "quadraui", unsendable)]
 struct QuiAppActions {
     queue: Rc<RefCell<VecDeque<DeferredAction>>>,
@@ -1603,21 +1633,29 @@ impl QuiAppActions {
 }
 
 /// Applies every action queued on `app_logic.deferred_actions` directly
-/// against `backend`/`app_logic`, then drops them — called by
-/// `QuiApp::step_once` and `QuiApp::run_tui`'s pump loop right after each
+/// against `backend`/`app_logic`, then drops them — called from
+/// [`PyAppLogic::handle`]/[`PyAppLogic::tick`] themselves, right after each
 /// dispatch, while the caller already holds a plain Rust `&mut` to both
 /// (never through another PyO3 method call on `QuiApp` itself, which is
 /// exactly the re-entrant call a [`QuiAppActions`] method queued this
-/// action to avoid). A failing `open_path`/`reveal_in_file_manager`/
+/// action to avoid). `backend` is `&mut dyn Backend` rather than the
+/// concrete `TuiBackend` precisely so this one function applies equally
+/// whether `handle`/`tick` was called by the headless driver, `run_tui`'s
+/// live terminal, or `run_native`'s live `GtkBackend`/`MacBackend`/
+/// `WinBackend` window — every action this applies
+/// (`InteractionEngine::open_message_dialog`/`open_context_menu`,
+/// `Backend::services()`) is already defined generically over `&mut dyn
+/// Backend`. A failing `open_path`/`reveal_in_file_manager`/
 /// `move_to_trash`/`restore_from_trash` records its error on
 /// `app_logic.pending_error`, the same cell `handle`/`tick`/a render
 /// callback already use to report a failure back out of
-/// `step`/`run`/`run_tui`, rather than being dropped silently or panicking
-/// a loop with no caller around to catch it.
+/// `step`/`run`/`run_tui`/`run_native`, rather than being dropped silently
+/// or panicking a loop with no caller around to catch it.
 ///
-/// Returns whether anything was applied, so a caller only pays for an
-/// extra repaint when a queued action actually changed something visible.
-fn flush_deferred_actions(backend: &mut TuiBackend, app_logic: &mut PyAppLogic) -> bool {
+/// Returns whether anything was applied, so the caller can fold that into
+/// the [`Reaction`] it returns and only pay for an extra repaint when a
+/// queued action actually changed something visible.
+fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic) -> bool {
     let mut applied = false;
     loop {
         let action = app_logic.deferred_actions.borrow_mut().pop_front();
@@ -2534,19 +2572,13 @@ impl QuiApp {
                     if runner.pump(poll_interval)? == StepOutcome::Exited {
                         break;
                     }
-                    // Applies whatever a `QuiAppActions` method queued
-                    // while handling that pump's event/tick, as a direct
-                    // Rust call rather than another `QuiApp` method call —
-                    // see `flush_deferred_actions`'s doc for why that
-                    // distinction is what makes this sound in the first
-                    // place. `request_full_repaint` lets the very next
-                    // `pump` pick the result up without an extra
-                    // non-blocking pass here, which would also re-fire
-                    // `tick`.
-                    let (backend, app_logic) = runner.parts_mut();
-                    if flush_deferred_actions(backend, app_logic) {
-                        runner.backend_mut().request_full_repaint();
-                    }
+                    // `PyAppLogic::handle`/`tick` already drained whatever
+                    // a `QuiAppActions` method queued during this `pump`
+                    // (against this same live terminal backend) and folded
+                    // the result into the `Reaction` it returned, so
+                    // `pump` above already repainted it if needed — no
+                    // separate flush call is needed here.
+                    //
                     // A render callback invoked by this `pump` may have
                     // recorded an unrecoverable error; stop pumping now
                     // rather than looping on a broken app.
@@ -4183,21 +4215,19 @@ impl QuiApp {
     /// Dispatches the oldest queued event (or, if none is queued, drains
     /// and dispatches every event a [`QuiAppWaker::post`]/`::wake` call
     /// queued since the last step as a `UiEvent::User` via
-    /// `TuiDriver::pump_user_events`, then ticks), applies whatever a
-    /// [`QuiAppActions`] method queued during that dispatch via
-    /// [`flush_deferred_actions`], then surfaces any exception a Python
-    /// callback raised while handling any of that. Returns whether the app
-    /// is still running. `pump_user_events` itself already applies
-    /// whichever `Reaction` each drained `User` event produced (repainting
-    /// on `Redraw`, marking the app exited on `Exit`) and is a safe no-op
-    /// when nothing was posted, so it costs nothing to call unconditionally
-    /// ahead of the tick every plain-event-free step already took.
+    /// `TuiDriver::pump_user_events`, then ticks), then surfaces any
+    /// exception a Python callback raised while handling any of that.
+    /// Returns whether the app is still running. `pump_user_events` itself
+    /// already applies whichever `Reaction` each drained `User` event
+    /// produced (repainting on `Redraw`, marking the app exited on `Exit`)
+    /// and is a safe no-op when nothing was posted, so it costs nothing to
+    /// call unconditionally ahead of the tick every plain-event-free step
+    /// already took. [`PyAppLogic::handle`]/[`PyAppLogic::tick`] already
+    /// drain whatever a [`QuiAppActions`] method queued during dispatch
+    /// (via [`flush_deferred_actions`]) and fold that into the `Reaction`
+    /// they return, so `step_driver` above already repainted it if needed.
     fn step_once(&mut self) -> PyResult<bool> {
         let running = step_driver(&mut self.driver, &mut self.pending_events);
-        let (backend, app_logic) = self.driver.parts_mut();
-        if flush_deferred_actions(backend, app_logic) {
-            self.driver.render();
-        }
         take_pending_error(self.driver.app_mut())?;
         Ok(running)
     }
@@ -4633,6 +4663,68 @@ mod tests {
             assert_eq!(backend, Some("win".to_string()));
             #[cfg(not(any(feature = "gtk", feature = "macos", feature = "win")))]
             assert_eq!(backend, None);
+        });
+    }
+
+    /// `PyAppLogic::handle` flushes a `QuiAppActions`-queued action against
+    /// whatever live `Backend` it was given, not just the headless
+    /// `TuiBackend` `step`/`run` drive — `run_native`'s `GtkRunner` calls
+    /// `NativeAppLogic::handle` (which forwards straight to this) with a
+    /// real `GtkBackend`, so a dialog queued mid-dispatch must open on it
+    /// by the time `handle` returns, and the returned `Reaction` must
+    /// upgrade to `Redraw` so the window actually repaints to show it.
+    /// Builds a `GtkBackend` directly rather than opening a real window
+    /// through `GtkRunner`/`run_native` (which needs a display this test
+    /// suite can't assume) — `GtkBackend::new` needs no display itself, the
+    /// same no-window pattern `gtk::backend`'s own tests already use.
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn handle_flushes_a_deferred_action_against_a_real_gtk_backend() {
+        Python::attach(|py| {
+            let mut app_logic = PyAppLogic::default();
+            let actions = QuiAppActions {
+                queue: app_logic.deferred_actions.clone(),
+            };
+            let locals = PyDict::new(py);
+            locals
+                .set_item("actions", Py::new(py, actions).expect("wrap QuiAppActions"))
+                .expect("set actions");
+            py.run(
+                c"def handle(event):\n    actions.show_message_dialog(\
+                  'Title', 'Body', [{'id': 'ok', 'label': 'OK'}], None)\n",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+            app_logic.handler = Some(handle);
+
+            let mut backend = quadraui::gtk::GtkBackend::new();
+            let reaction = app_logic.handle(
+                UiEvent::KeyPressed {
+                    key: Key::Char('a'),
+                    modifiers: Modifiers::default(),
+                    repeat: false,
+                },
+                &mut backend,
+            );
+
+            assert!(
+                app_logic.engine.dialog_open(),
+                "the dialog queued mid-dispatch must be applied against the \
+                live GtkBackend by the time handle returns, not left \
+                pending until some headless driver resumes stepping"
+            );
+            assert_eq!(
+                reaction,
+                Reaction::Redraw,
+                "applying a deferred action must still force a repaint even \
+                though the handler itself returned no explicit reaction"
+            );
         });
     }
 
