@@ -20,11 +20,11 @@ use quadraui::compose::{
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{
     wheel_row_delta, Backend, CompletionItemMeasure, Completions, CompletionsHit,
-    CompletionsLayout, DataTableEvent, EditOp, Float, FloatLayout, FloatMeasure, Form,
-    InteractionState, Key, MenuBar, Modifiers, NamedKey, Point, Rect, RichTextPopup,
-    RichTextPopupHit, RichTextPopupLayout, RichTextPopupMeasure, TextDisplayEvent, TextInput,
-    Toast, ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout,
-    TooltipMeasure, UiEvent, WidgetId,
+    CompletionsLayout, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, EditOp,
+    Float, FloatLayout, FloatMeasure, Form, InteractionState, Key, MenuBar, MessageDialogButton,
+    Modifiers, NamedKey, Point, Rect, RichTextPopup, RichTextPopupHit, RichTextPopupLayout,
+    RichTextPopupMeasure, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit, ToastOverlay,
+    ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -253,6 +253,28 @@ impl InteractionEngine {
     /// `show_context_menu`-style surface to open a popup on.
     pub fn ctx_menu_mut(&mut self) -> &mut ContextMenuController {
         &mut self.ctx_menu
+    }
+
+    /// Builds an anchored [`ContextMenu`] from `items` and opens it at `at`,
+    /// seeding its keyboard selection on the first selectable item — the
+    /// full "build the popup, open it" sequence behind a binding's own
+    /// `show_context_menu` surface, so that surface only has to decode its
+    /// own wire format into `items` before calling this.
+    pub fn open_context_menu(
+        &mut self,
+        items: Vec<ContextMenuItem>,
+        at: Point,
+        backend: &mut dyn Backend,
+    ) {
+        let mut menu = ContextMenu {
+            id: WidgetId::new("qui-context-menu"),
+            items,
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::AnchorPoint,
+        };
+        menu.selected_idx = menu.first_selectable();
+        self.ctx_menu.open(menu, at, backend);
     }
 
     /// Paints the open context-menu popup (if any) on top of whatever this
@@ -1640,6 +1662,50 @@ impl InteractionEngine {
     }
 }
 
+/// Builds a [`MessageDialogOptions`] from a binding's own decoded
+/// `title`/`body`/`buttons`/`severity` arguments, validating `buttons` the
+/// way every binding's own `show_message_dialog`-style surface needs to:
+/// non-empty (a dialog with no buttons can never be resolved by Enter or
+/// Escape) and no button setting `tint` (accepted for shape compatibility
+/// with the in-canvas `Dialog` primitive's own `buttons` field, but not yet
+/// honored by [`MessageDialogController`]). `Err` carries the message a
+/// binding's own "invalid input" error wraps.
+pub fn message_dialog_options_from_buttons(
+    title: String,
+    body: String,
+    buttons: Vec<quadraui::DialogButton>,
+    severity: Option<quadraui::DialogSeverity>,
+) -> Result<MessageDialogOptions, String> {
+    if buttons.is_empty() {
+        return Err(
+            "buttons must not be empty — a dialog with no buttons can never be resolved by \
+             Enter or Escape"
+                .to_string(),
+        );
+    }
+    if let Some(tinted) = buttons.iter().find(|b| b.tint.is_some()) {
+        return Err(format!(
+            "button {:?} sets tint, which this surface does not honor yet — omit tint or \
+             leave it None",
+            tinted.id.as_str()
+        ));
+    }
+    Ok(MessageDialogOptions {
+        title,
+        body,
+        buttons: buttons
+            .into_iter()
+            .map(|b| MessageDialogButton {
+                id: b.id,
+                label: b.label,
+                is_default: b.is_default,
+                is_cancel: b.is_cancel,
+            })
+            .collect(),
+        severity,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -1891,7 +1957,7 @@ mod tests {
     /// "owns every event while open, closes cleanly on resolve" contract
     /// this module's own context-menu coverage already proves for
     /// `ctx_menu`. The click path (hit-testing the dialog's own button
-    /// layout) is covered black-box, through the real PyO3 boundary, by
+    /// layout) is covered black-box, through the real binding boundary, by
     /// `quadraui-py`'s `show_message_dialog_then_clicking_a_button_emits_message_dialog_resolved`.
     #[test]
     fn open_message_dialog_then_pressing_enter_resolves_the_default_button_and_pops_the_modal_stack(

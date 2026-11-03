@@ -34,9 +34,13 @@ crate-type = ["cdylib", "rlib"]
 # already report every failure through a `windows::core::Result` this crate
 # converts to a `String` inline, so there is no raw `windows` crate type to
 # name here the way `macos` needs `objc2::MainThreadMarker`.
-gtk = ["quadraui/gtk"]
-macos = ["quadraui/macos", "dep:objc2"]
-win = ["quadraui/win"]
+# Each one also forwards to `quadraui-binding-core`'s same-named feature,
+# which gates that crate's own `host::NativeExitPolicy` -- the
+# `run_native`-style exit-policy wrapper this crate's `NativeAppLogic` type
+# alias now is.
+gtk = ["quadraui/gtk", "quadraui-binding-core/gtk"]
+macos = ["quadraui/macos", "quadraui-binding-core/macos", "dep:objc2"]
+win = ["quadraui/win", "quadraui-binding-core/win"]
 
 [dependencies]
 # `tui` is unconditional (not under `[features]`) because it already gates
