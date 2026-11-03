@@ -83,7 +83,21 @@ fn edit_op_from_binding(key: &Key, modifiers: Modifiers) -> Option<EditOp> {
         .into_iter()
         .find_map(|binding| {
             let parsed = parse_binding(&binding)?;
-            (parsed.modifiers == modifiers && parsed.key == key_name)
+            // `parse_binding` hard-codes the primary modifier as Ctrl for
+            // these universal bindings (`<C-z>`/`<C-S-z>`/`<C-a>`, i.e.
+            // `cmd: false`), but the same chord on macOS arrives as a real
+            // keypress with `cmd: true, ctrl: false`. Treat Ctrl and Cmd as
+            // one interchangeable "primary" modifier when comparing — the
+            // accelerator-registration path does the equivalent swap via
+            // `macos_universal_binding_modifiers` — while still requiring
+            // Shift and Alt to match exactly, so a wider chord like
+            // `Ctrl+Shift+A` or `Ctrl+Alt+Z` keeps falling through unclaimed.
+            let primary = modifiers.ctrl || modifiers.cmd;
+            let parsed_primary = parsed.modifiers.ctrl || parsed.modifiers.cmd;
+            (primary == parsed_primary
+                && modifiers.shift == parsed.modifiers.shift
+                && modifiers.alt == parsed.modifiers.alt
+                && parsed.key == key_name)
                 .then(|| EditOp::from_key_binding(&binding))?
         })
 }

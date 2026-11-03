@@ -1581,6 +1581,42 @@ def test_text_input_ctrl_a_selects_all_then_typing_replaces_it():
     assert state["value"] == "X"
 
 
+def test_text_input_cmd_a_selects_all_on_macos_chord():
+    # Regression (#1910 fix-round review): on macOS the SelectAll/Undo/Redo
+    # chords arrive with `cmd`, not `ctrl` (`ns_modifier_flags_to_quadraui`
+    # maps a real Cmd into `Modifiers { cmd: true, ctrl: false, .. }`).
+    # `edit_op_from_binding` compares against `parse_binding`'s hard-coded
+    # Ctrl-primary chord, so it must treat Ctrl and Cmd as one interchangeable
+    # primary modifier -- otherwise Cmd+A/Z/Shift+Z silently stop working on
+    # macOS. Mirror of the `ctrl` SelectAll test above with `cmd` in place of
+    # `ctrl`: the SelectAll must still fire, so the next typed char replaces
+    # the whole buffer rather than inserting alongside it.
+    app, state, received = _focused_text_input_app("hello", click_x=7.0)
+
+    app.push_event(
+        {
+            "KeyPressed": {
+                "key": {"Char": "a"},
+                "modifiers": {"cmd": True},
+                "repeat": False,
+            }
+        }
+    )
+    app.run(1)
+    assert len(received) == 1
+    assert received[0]["KeyPressed"]["key"] == {"Char": "a"}
+
+    received.clear()
+    app.push_event({"CharTyped": "X"})
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, form_event = received[0]["Form"]
+    assert widget_id == "ti:1"
+    assert form_event == {"TextInputChanged": {"id": "ti:1", "value": "X"}}
+    assert state["value"] == "X"
+
+
 def test_text_input_ctrl_z_undoes_then_ctrl_shift_z_redoes():
     # `Ctrl+Z`/`Ctrl+Shift+Z` resolve to this primitive's own built-in
     # `EditOp::Undo`/`Redo`, served from the cached `TextEditor`'s own
