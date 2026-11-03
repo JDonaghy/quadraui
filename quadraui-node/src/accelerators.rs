@@ -30,6 +30,7 @@ impl QuiApp {
     /// also replayed by [`BindingHost::setup`] onto any later backend.
     #[napi(js_name = "registerAccelerator")]
     pub fn register_accelerator(&mut self, env: Env, descriptor: Unknown) -> Result<()> {
+        self.check_not_dispatching()?;
         let acc: Accelerator = decode_via_json("registerAccelerator", descriptor)?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
@@ -66,6 +67,7 @@ impl QuiApp {
         env: Env,
         descriptor: Unknown,
     ) -> Result<Unknown<'static>> {
+        self.check_not_dispatching()?;
         let acc: Accelerator = decode_via_json("registerGlobalShortcut", descriptor)?;
         self.guarded(env, |app| {
             let id = app
@@ -82,6 +84,7 @@ impl QuiApp {
     /// -- [`quadraui::PlatformServices::unregister_global_shortcut`].
     #[napi(js_name = "unregisterGlobalShortcut")]
     pub fn unregister_global_shortcut(&mut self, env: Env, id: Unknown) -> Result<()> {
+        self.check_not_dispatching()?;
         let id: GlobalShortcutId = decode_via_json("unregisterGlobalShortcut", id)?;
         self.guarded(env, |app| {
             app.driver

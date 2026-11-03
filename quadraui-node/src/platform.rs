@@ -32,7 +32,8 @@ impl QuiApp {
     /// call resolves to `null` (cancelled) rather than hanging.
     #[napi(js_name = "queueDialogEvents")]
     pub fn queue_dialog_events(&mut self, env: Env, events: Unknown) -> Result<()> {
-        let events: Vec<UiEvent> = decode_direct(env, "queueDialogEvents", events)?;
+        self.check_not_dispatching()?;
+        let events: Vec<UiEvent> = decode_via_json("queueDialogEvents", events)?;
         self.guarded(env, |app| {
             app.driver.queue_dialog_events(events);
             Ok(())

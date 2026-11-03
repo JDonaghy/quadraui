@@ -86,6 +86,25 @@ test("setTheme rejects a malformed hex colour", () => {
   );
 });
 
+test("setTheme rejects an undefined value instead of raising on the app", () => {
+  // `Object.keys` reports `background` as an own key even though its value
+  // is JS `undefined` -- a one-character slip in caller code
+  // (`{ background: maybeUndefinedVar }`). This must raise a normal
+  // `InvalidDescriptorError` the caller can catch, not panic and poison the
+  // `QuiApp` instance for every later call.
+  const app = new QuiApp(20, 5);
+  let caught: any = null;
+  try {
+    app.setTheme({ background: undefined });
+  } catch (err) {
+    caught = err;
+  }
+  assert.match(String(caught), /InvalidDescriptorError/);
+  // The app must still be usable afterwards.
+  app.setTheme({ background: "#112233" });
+  assert.deepEqual((app.theme() as any).background, { r: 17, g: 34, b: 51, a: 255 });
+});
+
 test("setStyle overrides a single token and round trips", () => {
   const app = new QuiApp(20, 5);
   const defaultPadding = (app.style() as any).padding;
@@ -104,6 +123,19 @@ test("setStyle rejects an unknown field", () => {
     () => app.setStyle({ not_a_real_token: 1.0 }),
     /InvalidDescriptorError/,
   );
+});
+
+test("setStyle rejects an undefined value instead of raising on the app", () => {
+  // Same `Object.keys`-reports-an-`undefined`-value gap as `setTheme`, on
+  // `setStyle`'s own merge path.
+  const app = new QuiApp(20, 5);
+  assert.throws(
+    () => app.setStyle({ focus_ring_width: undefined }),
+    /InvalidDescriptorError/,
+  );
+  // The app must still be usable afterwards.
+  app.setStyle({ focus_ring_width: 9.5 });
+  assert.equal((app.style() as any).focus_ring_width, 9.5);
 });
 
 test("nerdFonts round trips through set and get", () => {
