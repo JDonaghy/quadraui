@@ -3255,6 +3255,7 @@ version = "0.0.0"
 dependencies = [
  "cbindgen",
  "quadraui",
+ "quadraui-binding-core",
  "serde_json",
 ]
 
