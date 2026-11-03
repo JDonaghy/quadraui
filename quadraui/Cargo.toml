@@ -111,6 +111,12 @@ rust-version = "1.92.0"
 #   which lives outside this crate dir and so cannot ship here at all).
 #   A consumer of the published crate reaches `quadraui-py` from the root
 #   `README.md`; nothing here is needed to use it.
+# - `docs/decisions/BINDING_CORE_PUBLISH_POLICY.md` — whether the
+#   `publish = false` in-workspace `quadraui-binding-core` crate ever needs
+#   a crates.io release. Same audience as `BINDING_STRATEGY.md` above: it
+#   reasons about this workspace's own path dependencies and a hypothetical
+#   future repo split, and the crate it is about is not published at all, so
+#   a consumer of `quadraui` can neither depend on it nor act on the note.
 #
 # `docs/decisions/` is therefore classified per file, not wholesale.
 # `DECISIONS.md` and `BACKEND_TRAIT_PROPOSAL.md` are *not* in the list
@@ -175,6 +181,7 @@ exclude = [
     "docs/UI_CRATE_DESIGN.md",
     "docs/WEB_BACKEND_PROPOSAL.md",
     "docs/audits/",
+    "docs/decisions/BINDING_CORE_PUBLISH_POLICY.md",
     "docs/decisions/BINDING_STRATEGY.md",
 ]
 
