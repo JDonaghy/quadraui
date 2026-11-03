@@ -19,6 +19,7 @@ pub mod drag;
 pub mod engine;
 pub mod extra_paint;
 pub mod hit;
+pub mod host;
 pub mod layout;
 pub mod render;
 pub mod semantic;
@@ -27,10 +28,20 @@ pub mod tree_edit;
 
 pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree_scroll_state};
 pub use drag::{ActiveDrag, ScrollbarDrag};
-pub use engine::{EventSink, InteractionEngine};
+pub use engine::{message_dialog_options_from_buttons, EventSink, InteractionEngine};
 pub use extra_paint::{extra_as, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
 pub use hit::{event_position, hit_test_painted, set_event_widget};
 pub use hit::{HitDetail, PaintedHit};
+#[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
+pub use host::NativeExitPolicy;
+pub use host::{
+    callback_reaction, callback_reaction_for_render, caret_shape, click_down_up_events,
+    color_depth_name, dialog_severity, font_role, key_pressed_event, merge_overrides,
+    panic_message, render_overlays, step_driver, text_display_from_lines, theme_color_value,
+    toast_corner, window_close_reaction, BindingHost, ErasedShellDriver, OverrideError,
+    WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY,
+    SLOT_TREE,
+};
 pub use layout::{LayoutLeaf, LayoutNode, LayoutPanel, LayoutSidebarPanel, LayoutSplit};
 pub use layout::{LayoutSplitTree, LayoutTabEntry, LayoutTabs, LeafDescriptor, LEAF_KIND_KEYS};
 pub use render::{draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf, split_rects};

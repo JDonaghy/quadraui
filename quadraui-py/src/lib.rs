@@ -93,8 +93,15 @@
 //! stream as a `{"User": value}` event and wake whichever loop currently
 //! owns it, without exiting — see that type's doc for the per-call-path
 //! coverage (`step`/`run`, and `run_tui` for its own duration).
-use std::any::Any;
+// Only spelled in this crate's own code inside `run_native`'s real
+// `target_os = "macos"` arm and in `#[cfg(test)]` coverage for the
+// downgrade `NativeExitPolicy` (aliased below as `NativeAppLogic`)
+// performs on this feature -- genuinely unused on a `macos`-feature,
+// non-Apple-`target_os` build (e.g. `cargo check --features macos` on
+// Linux), which `run_native`'s own non-Apple arm exists to keep buildable
+// without ever opening a real window.
 #[cfg(all(feature = "macos", not(feature = "gtk")))]
+#[allow(unused_imports)]
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -122,24 +129,26 @@ use quadraui::wheel_row_delta;
 #[cfg(test)]
 use quadraui::AcceleratorScope;
 #[cfg(test)]
+use quadraui::Key;
+#[cfg(test)]
 use quadraui::KeyBinding;
+#[cfg(test)]
+use quadraui::Modifiers;
+#[cfg(test)]
+use quadraui::MouseButton;
 #[cfg(test)]
 use quadraui::NamedKey;
 use quadraui::{
-    mouse_down, mouse_up, Accelerator, AcceleratorId, ActivityBar, AppLogic, AppShellEvent,
-    AppShellLayout, Backend, BackendCaps, BackendWidget, BoardModel, BottomPanelConfig,
-    BottomPanelEvent, BottomPanelTab, Button, Canvas, Chart, Color, ColorDepth, ComboBox,
-    CommandCenter, CommandLine, Completions, ContextMenu, ContextMenuItem, ContextMenuPlacement,
-    DataTable, DatePicker, Decoration, DialogButton, DialogSeverity, DiffView, Editor,
-    EditorCursorShape, FileDialogOptions, FindReplacePanel, Float, FloatMeasure, FontRole, Form,
-    GlobalShortcutId, Image, Key, ListView, MenuBar, MessageDialogButton, MessageDialogOptions,
-    MessageList, Minimap, Modifiers, MouseButton, MultiSectionView, Notification, NumberInput,
-    Palette, Panel, PanelDefinition, PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect,
-    RgbaImage, RichTextPopup, ScrollView, Scrollbar, ShellApp, ShellConfig, ShellContext,
-    ShellPosition, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StatusBar, Style,
-    StyledSpan, Switch, TabBar, TabBarSegment, TabItem, Terminal, TextDisplay, TextDisplayLine,
-    TextInput, Theme, Toast, ToastCorner, Toolbar, Tooltip, TreeView, UiEvent, UserPayload,
-    WidgetId,
+    Accelerator, AcceleratorId, ActivityBar, AppLogic, AppShellEvent, AppShellLayout, Backend,
+    BackendCaps, BackendWidget, BoardModel, BottomPanelConfig, BottomPanelEvent, BottomPanelTab,
+    Canvas, Chart, Color, ComboBox, CommandCenter, CommandLine, Completions, ContextMenuItem,
+    DatePicker, DialogButton, DialogSeverity, DiffView, Editor, FileDialogOptions,
+    FindReplacePanel, Float, FloatMeasure, Form, GlobalShortcutId, Image, MenuBar, MessageList,
+    Minimap, MultiSectionView, Notification, NumberInput, Palette, Panel, PanelDefinition,
+    PipelineView, Point, ProgressBar, RadioGroup, Reaction, Rect, RgbaImage, RichTextPopup,
+    ScrollView, Scrollbar, ShellApp, ShellConfig, ShellContext, ShellPosition, SidebarPanel,
+    Spinner, Split, SplitDirection, SplitTree, StatusBar, Switch, TabBar, TabBarSegment, TabItem,
+    Terminal, TextInput, Toast, ToastCorner, Toolbar, Tooltip, UiEvent, UserPayload, WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -147,10 +156,16 @@ use quadraui::{
 // `quadraui-binding-core/src/lib.rs`'s module doc. Imported under their
 // bare names (rather than a `qbc::` path prefix) so this file's own call
 // sites, most of which predate the crate split, need no further change.
+#[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
+use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
-    draw_bands, paint_layout, EventSink, ExtraPaint, HitDetail, InteractionEngine, LayoutLeaf,
-    LayoutNode, LayoutPanel, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry,
-    LayoutTabs, LeafDescriptor, RenderFrame, RenderRefs, LEAF_KIND_KEYS,
+    callback_reaction, caret_shape, click_down_up_events, color_depth_name, dialog_severity,
+    draw_bands, font_role, key_pressed_event, merge_overrides, message_dialog_options_from_buttons,
+    paint_layout, panic_message, render_overlays, step_driver, text_display_from_lines,
+    theme_color_value, toast_corner, window_close_reaction, BindingHost, ErasedShellDriver,
+    EventSink, ExtraPaint, HitDetail, InteractionEngine, LayoutLeaf, LayoutNode, LayoutPanel,
+    LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry, LayoutTabs, LeafDescriptor,
+    OverrideError, RenderFrame, WindowCloseHandling, LEAF_KIND_KEYS,
 };
 #[cfg(test)]
 use quadraui_binding_core::{tree_scroll_state, EXTRA_PRIMITIVE_KINDS};
@@ -315,40 +330,29 @@ create_exception!(
 );
 
 /// Slot id of the app's `Button` descriptor.
-const SLOT_BUTTON: i64 = 0;
+const SLOT_BUTTON: i64 = quadraui_binding_core::SLOT_BUTTON;
 /// Slot id of the app's `TextDisplay` descriptor.
-const SLOT_TEXT_DISPLAY: i64 = 1;
+const SLOT_TEXT_DISPLAY: i64 = quadraui_binding_core::SLOT_TEXT_DISPLAY;
 /// Slot id of the app's `ListView` descriptor.
-const SLOT_LIST: i64 = 2;
+const SLOT_LIST: i64 = quadraui_binding_core::SLOT_LIST;
 /// Slot id of the app's `TreeView` descriptor.
-const SLOT_TREE: i64 = 3;
+const SLOT_TREE: i64 = quadraui_binding_core::SLOT_TREE;
 /// Slot id of the app's `DataTable` descriptor.
-const SLOT_DATA_TABLE: i64 = 4;
+const SLOT_DATA_TABLE: i64 = quadraui_binding_core::SLOT_DATA_TABLE;
 /// Slot id of the app's `TabBar` descriptor.
-const SLOT_TAB_BAR: i64 = 5;
+const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 
-/// The [`AppLogic`] a [`QuiApp`] drives: a bag of optional descriptors, one
-/// per core primitive, painted top-to-bottom in fixed-height bands — unless
-/// `render_callback` is registered, in which case each frame asks it for a
-/// fresh set of descriptors instead of reading these static fields. Beyond
-/// the six fixed slots below, `extra_slots` holds any number of additional,
-/// additive primitives keyed by kind name (see [`EXTRA_PRIMITIVES`]);
-/// adding a new one there never touches the six fixed fields or their
-/// `SLOT_*`/`is_known_slot`/`slot_clear` machinery.
+/// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
+/// [`BindingHost`] (the six fixed primitive slots, any additive slots, and
+/// the backend-settings replay store — see that type's own doc) plus the
+/// Python-specific callback fields below. `render_callback`, when
+/// registered, overrides [`BindingHost`]'s static slots for every render —
+/// each frame asks it for a fresh set of descriptors instead.
 #[derive(Default)]
 struct PyAppLogic {
-    button: Option<Button>,
-    text_display: Option<TextDisplay>,
-    list: Option<ListView>,
-    tree: Option<TreeView>,
-    data_table: Option<DataTable>,
-    tab_bar: Option<TabBar>,
-    /// Additive primitive slots, keyed by kind name (`"progress"`,
-    /// `"spinner"`, `"image"`, ...). Painted after the six fixed bands in
-    /// [`EXTRA_PRIMITIVES`] order. A new kind here is a self-contained add —
-    /// unlike the six fields above, it needs no new field on this struct and
-    /// no new arm on `slot_occupied`/`is_known_slot`/`clear_slot`.
-    extra_slots: HashMap<String, Rc<dyn ExtraPaint>>,
+    /// The host-side slot/replay state this binding is a thin PyO3 leaf
+    /// over — see [`BindingHost`]'s own doc.
+    host: BindingHost,
     /// Registered via `QuiApp::set_handler` / the `on_event` constructor
     /// argument; called with the pythonized event payload for every
     /// dispatched `UiEvent`.
@@ -360,11 +364,10 @@ struct PyAppLogic {
     /// argument; called with no arguments once per frame and expected to
     /// return a `dict` mapping slot names to a descriptor `dict` (or
     /// `None`/omitted to draw nothing in that slot). When set, this
-    /// overrides the static `button`/`text_display`/.../`tab_bar` fields
-    /// above for every render — it is the one way an app's displayed state
-    /// can change after the runner has taken over the event loop, since the
-    /// event handler that mutates that state cannot itself re-borrow this
-    /// `QuiApp` to call `insert_*`.
+    /// overrides [`Self::host`]'s static slots for every render — it is the
+    /// one way an app's displayed state can change after the runner has
+    /// taken over the event loop, since the event handler that mutates that
+    /// state cannot itself re-borrow this `QuiApp` to call `insert_*`.
     render_callback: Option<Py<PyAny>>,
     /// Set by `handle`/`tick` when the Python callback they invoke raises.
     /// `step_once` takes this and re-raises it out of `step`/`run` instead
@@ -385,126 +388,61 @@ struct PyAppLogic {
     /// [`InteractionEngine::handle`] with a [`PyEventSink`] that bridges
     /// back into the registered Python handler.
     engine: InteractionEngine,
-    /// Registered via `QuiApp::register_accelerator`, removed via
-    /// `QuiApp::unregister_accelerator`. Kept here (not just applied
-    /// directly to the live headless `TuiBackend`) so this whole
-    /// `PyAppLogic` — moved by value into a real `TuiRunner`/`GtkRunner`/
-    /// `MacRunner`/`WinRunner` once `run_tui`/`run_native` is called —
-    /// carries its accelerators with it; [`AppLogic::setup`] below replays
-    /// every entry onto whichever backend that runner just constructed.
-    /// Keyed by [`AcceleratorId`] so re-registering the same id replaces
-    /// its previous binding/scope/label wholesale, matching
-    /// `QuiApp::register_accelerator`'s documented contract.
-    accelerators: HashMap<AcceleratorId, Accelerator>,
-    /// Set via `QuiApp::set_theme`, replayed onto a new backend by
-    /// [`AppLogic::setup`] for the same reason `accelerators` is — a
-    /// `run_tui`/`run_native` call moves this whole `PyAppLogic` by value
-    /// into a brand-new backend, which starts back at `Theme::default()`
-    /// unless told otherwise.
-    theme: Option<Theme>,
-    /// Set via `QuiApp::set_style`; replayed the same way as `theme`.
-    style: Option<Style>,
-    /// Set via `QuiApp::set_nerd_fonts`; replayed the same way as `theme`.
-    nerd_fonts: Option<bool>,
-    /// Set via `QuiApp::set_editor_font` as `(family, size_pt)`; replayed
-    /// the same way as `theme`.
-    editor_font: Option<(String, f32)>,
-    /// Set via `QuiApp::set_ui_font`; replayed the same way as `theme`.
-    ui_font: Option<String>,
-    /// Set via `QuiApp::set_nerd_font_fallback`; replayed the same way as
-    /// `theme`.
-    nerd_font_fallback: Option<String>,
-    /// Raw font bytes handed to `QuiApp::register_font_from_memory`, kept
-    /// here so each one can be re-registered onto a new backend in
-    /// registration order, the same replay reasoning as `accelerators`.
-    registered_fonts: Vec<Vec<u8>>,
 }
 
 impl PyAppLogic {
     fn slot_occupied(&self, slot: i64) -> bool {
-        match slot {
-            SLOT_BUTTON => self.button.is_some(),
-            SLOT_TEXT_DISPLAY => self.text_display.is_some(),
-            SLOT_LIST => self.list.is_some(),
-            SLOT_TREE => self.tree.is_some(),
-            SLOT_DATA_TABLE => self.data_table.is_some(),
-            SLOT_TAB_BAR => self.tab_bar.is_some(),
-            _ => false,
-        }
+        self.host.slot_occupied(slot)
     }
 
     /// Whether `slot` names one of this app's fixed primitive slots.
     fn is_known_slot(slot: i64) -> bool {
-        matches!(
-            slot,
-            SLOT_BUTTON
-                | SLOT_TEXT_DISPLAY
-                | SLOT_LIST
-                | SLOT_TREE
-                | SLOT_DATA_TABLE
-                | SLOT_TAB_BAR
-        )
+        BindingHost::is_known_slot(slot)
     }
 
     /// Empties one slot, returning whether it held anything.
     fn clear_slot(&mut self, slot: i64) -> bool {
-        match slot {
-            SLOT_BUTTON => self.button.take().is_some(),
-            SLOT_TEXT_DISPLAY => self.text_display.take().is_some(),
-            SLOT_LIST => self.list.take().is_some(),
-            SLOT_TREE => self.tree.take().is_some(),
-            SLOT_DATA_TABLE => self.data_table.take().is_some(),
-            SLOT_TAB_BAR => self.tab_bar.take().is_some(),
-            _ => false,
-        }
+        self.host.clear_slot(slot)
     }
-}
 
-impl PyAppLogic {
     /// Whether `kind` names a currently-occupied additive primitive slot.
     fn extra_occupied(&self, kind: &str) -> bool {
-        self.extra_slots.contains_key(kind)
+        self.host.extra_occupied(kind)
     }
 
     /// Empties one additive primitive slot, returning whether it held
     /// anything.
     fn clear_extra_slot(&mut self, kind: &str) -> bool {
-        self.extra_slots.remove(kind).is_some()
+        self.host.clear_extra_slot(kind)
     }
 }
 
-/// Maps a registered handler/tick callback's return value to a [`Reaction`]:
-/// returning `False` requests the same exit a raised exception would, with
-/// no exception needed; returning anything else (including the common case
-/// of no explicit `return`, i.e. `None`) continues. Checked with
-/// `extract::<bool>`, which only matches an actual Python `bool` — an int
-/// `0`, an empty string, or any other "falsy" value keeps running rather
-/// than exiting, so only an explicit `return False` opts in.
-fn reaction_from_return(value: &Bound<'_, PyAny>) -> Reaction {
-    match value.extract::<bool>() {
-        Ok(false) => Reaction::Exit,
-        _ => Reaction::Continue,
+impl WindowCloseHandling for PyAppLogic {
+    fn has_window_close_handler(&self) -> bool {
+        self.handler.is_some()
     }
+}
+
+/// Maps a registered handler/tick callback's return value to a [`Reaction`]
+/// via [`callback_reaction`]: returning `False` requests the same exit a
+/// raised exception would, with no exception needed; returning anything
+/// else (including the common case of no explicit `return`, i.e. `None`)
+/// continues. Checked with `extract::<bool>`, which only matches an actual
+/// Python `bool` — an int `0`, an empty string, or any other "falsy" value
+/// keeps running rather than exiting, so only an explicit `return False`
+/// opts in.
+fn reaction_from_return(value: &Bound<'_, PyAny>) -> Reaction {
+    callback_reaction(value.extract::<bool>().ok())
 }
 
 /// Wraps [`reaction_from_return`], promoting an ordinary `Continue` to
 /// `Redraw` whenever `render_callback_present` — i.e. a render callback is
-/// registered on this app.
-///
-/// A render callback only runs when the runner decides a frame needs
-/// repainting (`AppLogic::render` is reached only after an
-/// `EventOutcome::Redraw`/`RedrawAfter`-driven repaint — see
-/// `quadraui::tui::run::TuiRunner::pump` and the GTK/macOS/Windows
-/// equivalents). `PyAppLogic::handle`/`tick` have no way to tell whether a
-/// Python handler's mutation of its own plain-Python state changed
-/// anything visible, so once a render callback is registered every
-/// non-exit dispatch is treated as one that might have — the same
-/// "redraw every frame, let the render callback decide what that looks
-/// like" contract a React/Electron-style `render(state)` callback expects.
-/// Without this, a handler returning `None` (the common case: no explicit
-/// `return`) maps to `Reaction::Continue`, the runner never calls
-/// `AppLogic::render` again, and the render callback never re-runs — the
-/// screen stays frozen at whatever the last repaint drew.
+/// registered on this app. Mirrors [`callback_reaction_for_render`]'s
+/// policy: see that function's doc for why. In short, a Python handler's
+/// mutation of its own plain-Python state can't be observed by
+/// `PyAppLogic::handle`/`tick`, so once a render callback is registered
+/// every non-exit dispatch must be treated as one that might have changed
+/// something visible.
 fn reaction_for_callback(value: &Bound<'_, PyAny>, render_callback_present: bool) -> Reaction {
     match reaction_from_return(value) {
         Reaction::Continue if render_callback_present => Reaction::Redraw,
@@ -513,12 +451,12 @@ fn reaction_for_callback(value: &Bound<'_, PyAny>, render_callback_present: bool
 }
 
 /// Maps a registered handler's return value to a [`Reaction`] for a
-/// `WindowClose` dispatch specifically — the opposite default from
-/// [`reaction_from_return`]. A `WindowClose` handler's job is to decide
-/// whether the window may close, so the no-opinion case (no explicit
-/// `return`, i.e. `None` — by far the common case for a handler that just
-/// logs or ignores the event, like `examples/file_manager.py`'s quit
-/// wrapper) must let the close proceed, exactly like having no handler
+/// `WindowClose` dispatch specifically, via [`window_close_reaction`] — the
+/// opposite default from [`reaction_from_return`]. A `WindowClose` handler's
+/// job is to decide whether the window may close, so the no-opinion case (no
+/// explicit `return`, i.e. `None` — by far the common case for a handler
+/// that just logs or ignores the event, like `examples/file_manager.py`'s
+/// quit wrapper) must let the close proceed, exactly like having no handler
 /// registered at all; only an explicit `return True` vetoes it and leaves
 /// the window open. Checked with `extract::<bool>`, so a non-`bool` return
 /// (an int, a string, any other "truthy" value) does not accidentally veto
@@ -527,11 +465,7 @@ fn reaction_from_window_close_return(
     value: &Bound<'_, PyAny>,
     render_callback_present: bool,
 ) -> Reaction {
-    match value.extract::<bool>() {
-        Ok(true) if render_callback_present => Reaction::Redraw,
-        Ok(true) => Reaction::Continue,
-        _ => Reaction::Exit,
-    }
+    window_close_reaction(value.extract::<bool>().ok(), render_callback_present)
 }
 
 /// Records `err` into `pending_error`, but only if no earlier error in the
@@ -548,81 +482,35 @@ fn record_error(pending_error: &Rc<RefCell<Option<PyErr>>>, err: PyErr) {
 }
 
 /// Decodes `QuiApp::show_message_dialog`'s `severity` string into a
-/// [`DialogSeverity`]. A plain match rather than routing through
-/// `pythonize::depythonize` (as `show_message_dialog`'s `buttons` argument
-/// does) so a caller gets a friendly lowercase word instead of needing to
-/// guess `DialogSeverity`'s exact Rust variant casing.
-fn parse_dialog_severity(value: &str) -> PyResult<DialogSeverity> {
-    match value {
-        "info" => Ok(DialogSeverity::Info),
-        "question" => Ok(DialogSeverity::Question),
-        "warning" => Ok(DialogSeverity::Warning),
-        "error" => Ok(DialogSeverity::Error),
-        other => Err(InvalidDescriptorError::new_err(format!(
-            "show_message_dialog: unknown severity {other:?}; expected one of \
-            \"info\", \"question\", \"warning\", \"error\""
-        ))),
-    }
+/// [`DialogSeverity`] via [`quadraui_binding_core::dialog_severity`],
+/// mapping its `Err` into this binding's own `InvalidDescriptorError`
+/// (prefixed with `what`, the calling method's own name).
+fn parse_dialog_severity(what: &str, value: &str) -> PyResult<DialogSeverity> {
+    dialog_severity(value).map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
 }
 
-/// Decodes `QuiApp::show_toast`'s `corner` string into a [`ToastCorner`],
-/// the same friendly-lowercase-word shape [`parse_dialog_severity`]
-/// decodes `severity` with.
-fn parse_toast_corner(value: &str) -> PyResult<ToastCorner> {
-    match value {
-        "bottom_right" => Ok(ToastCorner::BottomRight),
-        "bottom_left" => Ok(ToastCorner::BottomLeft),
-        "top_right" => Ok(ToastCorner::TopRight),
-        "top_left" => Ok(ToastCorner::TopLeft),
-        other => Err(InvalidDescriptorError::new_err(format!(
-            "show_toast: unknown corner {other:?}; expected one of \"bottom_right\", \
-            \"bottom_left\", \"top_right\", \"top_left\""
-        ))),
-    }
+/// Decodes `QuiApp::show_toast`'s `corner` string into a [`ToastCorner`]
+/// via [`quadraui_binding_core::toast_corner`], the same
+/// [`parse_dialog_severity`] error-mapping shape.
+fn parse_toast_corner(what: &str, value: &str) -> PyResult<ToastCorner> {
+    toast_corner(value).map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
 }
 
 impl AppLogic for PyAppLogic {
     type AreaId = ();
 
-    /// Replays every accelerator `QuiApp::register_accelerator` has
-    /// recorded in [`Self::accelerators`] onto `backend` --
-    /// [`Backend::register_accelerator`] -- so a chord registered before
-    /// `run_tui`/`run_native` moved this `PyAppLogic` into a freshly
-    /// constructed `TuiBackend`/`GtkBackend`/`MacBackend`/`WinBackend`
-    /// still fires on that live backend, not just on the dormant headless
-    /// one `QuiApp::step`/`run` drive directly. Every real runner
-    /// (`TuiRunner::new_with`, `GtkRunner`'s `activate`, `MacRunner::new`,
-    /// `WinRunner::new_with`) calls `app.setup(&mut backend)` right after
-    /// building its backend and before the first frame, so this hook
-    /// reaches all four.
+    /// Replays [`Self::host`]'s accelerators and backend-settings fields
+    /// onto `backend` -- [`BindingHost::setup`] -- so a chord/theme/style/
+    /// font set before `run_tui`/`run_native` moved this `PyAppLogic` into
+    /// a freshly constructed `TuiBackend`/`GtkBackend`/`MacBackend`/
+    /// `WinBackend` still applies to that live backend, not just the
+    /// dormant headless one `QuiApp::step`/`run` drive directly. Every real
+    /// runner (`TuiRunner::new_with`, `GtkRunner`'s `activate`,
+    /// `MacRunner::new`, `WinRunner::new_with`) calls
+    /// `app.setup(&mut backend)` right after building its backend and
+    /// before the first frame, so this hook reaches all four.
     fn setup(&mut self, backend: &mut dyn Backend) {
-        for acc in self.accelerators.values() {
-            backend.register_accelerator(acc);
-        }
-        // Theme/style/font configuration, replayed onto the freshly
-        // constructed backend for the same reason accelerators are above --
-        // see each field's own doc on `PyAppLogic`.
-        if let Some(theme) = self.theme {
-            backend.set_theme(theme);
-        }
-        if let Some(style) = self.style {
-            backend.set_style(style);
-        }
-        if let Some(enabled) = self.nerd_fonts {
-            backend.set_nerd_fonts(enabled);
-        }
-        for bytes in &self.registered_fonts {
-            backend.register_font_from_memory(bytes);
-        }
-        if let Some((family, size_pt)) = &self.editor_font {
-            backend.set_editor_font(family, *size_pt);
-        }
-        if let Some(font_desc) = &self.ui_font {
-            backend.set_ui_font(font_desc);
-        }
-        if let Some(family) = &self.nerd_font_fallback {
-            backend.set_nerd_font_fallback(family);
-        }
+        self.host.setup(backend);
     }
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
@@ -631,29 +519,11 @@ impl AppLogic for PyAppLogic {
         let Some(callback) = self.render_callback.as_ref() else {
             draw_bands(
                 backend,
-                RenderRefs {
-                    button: self.button.as_ref(),
-                    text_display: self.text_display.as_ref(),
-                    list: self.list.as_ref(),
-                    tree: self.tree.as_ref(),
-                    data_table: self.data_table.as_ref(),
-                    tab_bar: self.tab_bar.as_ref(),
-                    extra: &self.extra_slots,
-                },
+                self.host.render_refs(),
                 &mut hits,
                 &chrome_interaction,
             );
-            self.engine.sync_menu_bar(backend, &hits);
-            self.engine.sync_forms(backend, &hits);
-            self.engine.sync_text_input_carets(backend, &hits);
-            self.engine.render_ctx_menu(backend);
-            self.engine.render_float(backend);
-            self.engine.render_rich_text_popup(backend);
-            self.engine.render_completions(backend);
-            self.engine.render_dialog(backend);
-            self.engine.render_tooltip(backend);
-            self.engine.render_toast(backend);
-            self.engine.set_hits(hits);
+            render_overlays(&self.engine, backend, hits);
             return;
         };
         match render_output_from_callback(callback, &self.pending_error) {
@@ -667,17 +537,7 @@ impl AppLogic for PyAppLogic {
             }
             None => {}
         }
-        self.engine.sync_menu_bar(backend, &hits);
-        self.engine.sync_forms(backend, &hits);
-        self.engine.sync_text_input_carets(backend, &hits);
-        self.engine.render_ctx_menu(backend);
-        self.engine.render_float(backend);
-        self.engine.render_rich_text_popup(backend);
-        self.engine.render_completions(backend);
-        self.engine.render_dialog(backend);
-        self.engine.render_tooltip(backend);
-        self.engine.render_toast(backend);
-        self.engine.set_hits(hits);
+        render_overlays(&self.engine, backend, hits);
     }
 
     /// Delegates to [`InteractionEngine::tab_stops`], which derives this
@@ -998,20 +858,10 @@ struct StaticTabContent(String);
 
 impl BackendWidget for StaticTabContent {
     fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-        let td = TextDisplay {
-            id: WidgetId::new(format!("shell:bottom_panel:{}", self.0)),
-            lines: vec![TextDisplayLine {
-                spans: vec![StyledSpan::plain(self.0.clone())],
-                decoration: Decoration::Normal,
-                timestamp: None,
-            }],
-            scroll_offset: 0,
-            auto_scroll: false,
-            max_lines: 0,
-            has_focus: false,
-            title: None,
-            show_scrollbar: false,
-        };
+        let td = text_display_from_lines(
+            WidgetId::new(format!("shell:bottom_panel:{}", self.0)),
+            vec![self.0.clone()],
+        );
         backend.draw_text_display(rect, &td);
     }
 }
@@ -1048,23 +898,7 @@ impl ShellApp for PyShellApp {
         Python::attach(|py| match callback.call0(py) {
             Ok(result) => {
                 if let Ok(lines) = result.extract::<Vec<String>>(py) {
-                    let td = TextDisplay {
-                        id: WidgetId::new("shell:content"),
-                        lines: lines
-                            .into_iter()
-                            .map(|text| TextDisplayLine {
-                                spans: vec![StyledSpan::plain(text)],
-                                decoration: Decoration::Normal,
-                                timestamp: None,
-                            })
-                            .collect(),
-                        scroll_offset: 0,
-                        auto_scroll: false,
-                        max_lines: 0,
-                        has_focus: false,
-                        title: None,
-                        show_scrollbar: false,
-                    };
+                    let td = text_display_from_lines(WidgetId::new("shell:content"), lines);
                     backend.draw_text_display(bounds, &td);
                 }
             }
@@ -1155,60 +989,6 @@ impl ShellApp for PyShellApp {
                 Reaction::Exit
             }
         })
-    }
-}
-
-/// Narrow, dyn-safe surface of [`TuiDriver`] that [`QuiShellApp`] needs —
-/// see this module's "ShellApp / `QuiApp.run_shell`" doc for why
-/// `QuiShellApp` stores `Box<dyn ErasedShellDriver>` instead of a bare
-/// `TuiDriver<_>` field.
-trait ErasedShellDriver {
-    fn dispatch(&mut self, event: UiEvent) -> Reaction;
-    fn pump_user_events(&mut self) -> Reaction;
-    fn tick(&mut self) -> Reaction;
-    fn resize(&mut self, width: u16, height: u16);
-    fn exited(&self) -> bool;
-    fn screen(&self) -> String;
-    fn screen_contains(&self, needle: &str) -> bool;
-    fn find(&self, needle: &str) -> Option<(f32, f32)>;
-    fn tab_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)>;
-}
-
-impl<A: AppLogic> ErasedShellDriver for TuiDriver<A> {
-    fn dispatch(&mut self, event: UiEvent) -> Reaction {
-        self.dispatch(event)
-    }
-
-    fn pump_user_events(&mut self) -> Reaction {
-        self.pump_user_events()
-    }
-
-    fn tick(&mut self) -> Reaction {
-        self.tick()
-    }
-
-    fn resize(&mut self, width: u16, height: u16) {
-        self.resize(width, height)
-    }
-
-    fn exited(&self) -> bool {
-        self.exited()
-    }
-
-    fn screen(&self) -> String {
-        self.screen()
-    }
-
-    fn screen_contains(&self, needle: &str) -> bool {
-        self.screen_contains(needle)
-    }
-
-    fn find(&self, needle: &str) -> Option<(f32, f32)> {
-        self.find(needle)
-    }
-
-    fn tab_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
-        self.tab_center(bar, tab_idx)
     }
 }
 
@@ -1520,11 +1300,7 @@ impl QuiShellApp {
         let ch = char::from_u32(ch).ok_or_else(|| {
             InvalidCharError::new_err(format!("invalid Unicode code point: {ch}"))
         })?;
-        self.pending_events.push_back(UiEvent::KeyPressed {
-            key: Key::Char(ch),
-            modifiers: Modifiers::default(),
-            repeat: false,
-        });
+        self.pending_events.push_back(key_pressed_event(ch));
         Ok(())
     }
 
@@ -1535,10 +1311,7 @@ impl QuiShellApp {
     /// to drive sidebar-toggle / panel-switch / bottom-panel-tab clicks
     /// from Python without hand-building two raw `push_event` dicts.
     fn push_click(&mut self, x: f32, y: f32) {
-        self.pending_events
-            .push_back(mouse_down(MouseButton::Left, x, y, Modifiers::default()));
-        self.pending_events
-            .push_back(mouse_up(MouseButton::Left, x, y));
+        self.pending_events.extend(click_down_up_events(x, y));
     }
 
     /// Resizes the underlying cell grid to `width`x`height`. Raises
@@ -1637,22 +1410,9 @@ impl QuiShellApp {
     /// Mirrors [`QuiApp::step_once`], minus the `User`/waker path `run_shell`
     /// apps don't have.
     fn step_once(&mut self) -> PyResult<bool> {
-        if self.driver.exited() {
-            return Ok(false);
-        }
-        match self.pending_events.pop_front() {
-            Some(event) => {
-                self.driver.dispatch(event);
-            }
-            None => {
-                self.driver.pump_user_events();
-                if !self.driver.exited() {
-                    self.driver.tick();
-                }
-            }
-        }
+        let running = step_driver(&mut *self.driver, &mut self.pending_events);
         take_pending_shell_error(&self.state)?;
-        Ok(!self.driver.exited())
+        Ok(running)
     }
 }
 
@@ -1741,7 +1501,7 @@ type ExtraDecoder = fn(&str, &Bound<'_, PyDict>) -> PyResult<Rc<dyn ExtraPaint>>
 
 /// The additive primitive registry: one `(kind name, decoder)` entry per
 /// primitive painted outside the six fixed slots above (see
-/// [`LeafDescriptor::Extra`], [`PyAppLogic::extra_slots`] and
+/// [`LeafDescriptor::Extra`], [`BindingHost::extra_slots`] and
 /// [`QuiApp::insert_extra`]). Registering a further additive primitive is
 /// exactly one appended line here plus that type's [`ExtraPaint`] impl
 /// above — one line for a whole-area primitive, a little layout derivation
@@ -2757,70 +2517,24 @@ fn render_output_from_callback(
 
 /// Wraps [`PyAppLogic`] for `run_native`'s native runner loop (`GtkRunner`
 /// on the `gtk` feature, `MacRunner` on the `macos` feature, `WinRunner` on
-/// the `win` feature).
+/// the `win` feature) -- [`quadraui_binding_core::NativeExitPolicy`], whose
+/// own doc covers the two corrections it makes to generic `Reaction`
+/// handling: a handler-less `WindowClose` must actually exit (via
+/// [`PyAppLogic`]'s [`WindowCloseHandling`] impl above, which answers
+/// `self.handler.is_some()`), and -- on the `macos` feature without `gtk`
+/// also enabled -- every *other* `Reaction::Exit` downgrades to `Continue`
+/// plus a sticky `exit_requested` flag the `run_native` pump loop below
+/// checks after every `pump` call, so `[NSApp terminate:]` never fires out
+/// from underneath `run_native` and ends the whole OS process before it
+/// could return control (and any caught exception with it) to its caller.
 ///
-/// All three backends' own window-close wiring vetoes the OS close request
-/// ("×"/Alt-F4/window-manager close on GTK, the red traffic-light button on
-/// macOS, the "×"/Alt-F4 close on Windows) unless the dispatched handler
-/// returns `Reaction::Exit` — exactly the "confirm/veto a close" contract a
-/// registered Python handler needs to implement an "unsaved changes?"
-/// prompt: returning an explicit `True` (see
-/// [`reaction_from_window_close_return`]) vetoes the close and leaves the
-/// window open; returning `None` (the default — no explicit `return`,
-/// the common case for a handler with no opinion about closing, like
-/// `examples/file_manager.py`'s quit wrapper), `False`, or raising confirms
-/// it, the same as having no handler registered at all. This wrapper calls
-/// through to the inner `PyAppLogic::handle` first and, for `WindowClose`
-/// specifically, returns exactly what that call produced with no override —
-/// `PyAppLogic::handle` already does the right thing when a handler is
-/// registered. The one case this wrapper *does* override is `WindowClose`
-/// with **no** handler registered at all: `PyAppLogic::handle` then returns
-/// `Reaction::Continue` unconditionally (it never reaches `sink.dispatch` —
-/// see that method's `let Some(handler) = ... else { return
-/// Reaction::Continue }` guard), which would otherwise leave a bare
-/// `run_native()` call with no way to close its own window; this wrapper
-/// forces that one case to `Reaction::Exit` so the window still closes by
-/// default for an app that never opted into vetoing it.
-///
-/// On macOS this `Reaction::Exit` is evaluated by
-/// `QuadraView::evaluate_window_should_close`, which hands AppKit a `bool`
-/// instead of routing through `apply_reaction`'s `Reaction::Exit` branch —
-/// so the window closes on its own without calling `[NSApp terminate:]`,
-/// the same "closes cleanly, returns control to the caller" outcome GTK's
-/// `request_exit()` gives for its own window-close path. That outcome also
-/// depends on a timing property of `MacRunner`: closing the last window
-/// makes AppKit ask `applicationShouldTerminateAfterLastWindowClosed:`,
-/// which answers `true` and would route on to `applicationShouldTerminate:`
-/// and end the process — but `MacRunner::run_one` reads its
-/// `windowWillClose:` latch and reports `StepOutcome::Exited`
-/// *synchronously*, so `run_native`'s pump loop breaks (and `run_native`
-/// returns) before that deferred last-window check ever runs.
-///
-/// On the `macos` feature (with `gtk` not also enabled), this wrapper also
-/// intercepts any *other* `Reaction::Exit` — a registered handler raising,
-/// or explicitly returning `False` (see [`reaction_from_return`]) — before
-/// it reaches `MacRunner`. `apply_reaction`'s own `Reaction::Exit` branch
-/// calls `[NSApp terminate:]`, which ends the whole OS process; `run_native`
-/// would never return and the caller's `except`/`finally` would never run.
-/// Instead, `handle`/`tick` swap that `Reaction::Exit` for `Reaction::Continue`
-/// and set `exit_requested`, which the `run_native` pump loop checks after
-/// every `pump` call and breaks on — so the loop stops, `run_native` returns,
-/// and any pending exception set on [`PyAppLogic::pending_error`] is
-/// re-raised normally, exactly like GTK. The window itself is left open
-/// (not torn down) until the process exits, the same outcome already
-/// documented for a Ctrl-C on this backend.
-///
-/// None of that interception touches AppKit — it is a `Cell<bool>` and a
-/// `matches!` — so the type is compiled (and unit-tested) on a `macos`-feature
-/// build for any `target_os`, not just an Apple one. Only the
-/// `run_native` branch that constructs it is Apple-only, which is why the
-/// non-Apple configuration needs the `dead_code` allowance below.
-///
-/// `win` needs no `exit_requested` field either, for the same reason `gtk`
-/// doesn't: `win::run::dispatch_with`/`tick` already call `DestroyWindow`
-/// directly for *any* `Reaction::Exit`, not just one reached through
-/// `WindowClose` — there is no AppKit-style `[NSApp terminate:]` for this
-/// wrapper to head off.
+/// A registered Python handler's own `WindowClose` opinion (see
+/// [`reaction_from_window_close_return`]: an explicit `True` vetoes the
+/// close and leaves the window open; `None`/`False`/raising confirms it)
+/// reaches the caller untouched either way -- this wrapper only overrides
+/// the no-handler-at-all case, which [`PyAppLogic::handle`] alone would
+/// otherwise map to `Reaction::Continue`, leaving a bare `run_native()`
+/// call with no way to close its own window.
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 #[cfg_attr(
     any(
@@ -2834,62 +2548,7 @@ fn render_output_from_callback(
     ),
     allow(dead_code)
 )]
-struct NativeAppLogic {
-    inner: PyAppLogic,
-    /// Set by `handle`/`tick` when a non-`WindowClose` `Reaction::Exit`
-    /// is intercepted; `run_native`'s pump loop breaks once this is set.
-    /// Only present on the `macos` feature without `gtk` also enabled —
-    /// GTK's own `apply_reaction` and `win`'s `dispatch_with`/`tick`
-    /// already handle `Reaction::Exit` from any event without this
-    /// wrapper's help.
-    #[cfg(all(feature = "macos", not(feature = "gtk")))]
-    exit_requested: Rc<Cell<bool>>,
-}
-
-#[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
-impl AppLogic for NativeAppLogic {
-    type AreaId = ();
-
-    fn render(&self, backend: &mut dyn Backend, area: ()) {
-        self.inner.render(backend, area);
-    }
-
-    fn tab_stops(&self, area: ()) -> Vec<(WidgetId, Rect)> {
-        self.inner.tab_stops(area)
-    }
-
-    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        let is_window_close = matches!(event, UiEvent::WindowClose);
-        // A registered handler's own opinion on `WindowClose` — including a
-        // veto (anything but `Reaction::Exit`) — must reach the caller
-        // untouched; only the no-handler-at-all case gets a forced default.
-        let has_window_close_handler = is_window_close && self.inner.handler.is_some();
-        let reaction = self.inner.handle(event, backend);
-        if is_window_close {
-            return if has_window_close_handler {
-                reaction
-            } else {
-                Reaction::Exit
-            };
-        }
-        #[cfg(all(feature = "macos", not(feature = "gtk")))]
-        if matches!(reaction, Reaction::Exit) {
-            self.exit_requested.set(true);
-            return Reaction::Continue;
-        }
-        reaction
-    }
-
-    fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
-        let reaction = self.inner.tick(backend);
-        #[cfg(all(feature = "macos", not(feature = "gtk")))]
-        if matches!(reaction, Reaction::Exit) {
-            self.exit_requested.set(true);
-            return Reaction::Continue;
-        }
-        reaction
-    }
-}
+type NativeAppLogic = NativeExitPolicy<PyAppLogic>;
 
 /// A headless quadraui app, driven entirely from Python.
 ///
@@ -3069,18 +2728,6 @@ fn decode<T: serde::de::DeserializeOwned>(what: &str, dict: &Bound<'_, PyDict>) 
     })
 }
 
-/// Downcasts a caught panic payload to a human-readable message, mirroring
-/// `quadraui-ffi`'s `record_panic`.
-fn panic_message(payload: &(dyn Any + Send)) -> String {
-    if let Some(text) = payload.downcast_ref::<&'static str>() {
-        (*text).to_owned()
-    } else if let Some(text) = payload.downcast_ref::<String>() {
-        text.clone()
-    } else {
-        "<non-string panic payload>".to_owned()
-    }
-}
-
 #[pymethods]
 impl QuiApp {
     /// Creates a new headless app on a `width`x`height` cell grid.
@@ -3233,11 +2880,7 @@ impl QuiApp {
         let ch = char::from_u32(ch).ok_or_else(|| {
             InvalidCharError::new_err(format!("invalid Unicode code point: {ch}"))
         })?;
-        self.pending_events.push_back(UiEvent::KeyPressed {
-            key: Key::Char(ch),
-            modifiers: Modifiers::default(),
-            repeat: false,
-        });
+        self.pending_events.push_back(key_pressed_event(ch));
         Ok(())
     }
 
@@ -4073,7 +3716,7 @@ impl QuiApp {
             SLOT_BUTTON,
             "insert_button",
             |app, value| {
-                app.button = Some(value);
+                app.host.button = Some(value);
             },
             descriptor,
         )
@@ -4087,7 +3730,7 @@ impl QuiApp {
             SLOT_TEXT_DISPLAY,
             "insert_text_display",
             |app, value| {
-                app.text_display = Some(value);
+                app.host.text_display = Some(value);
             },
             descriptor,
         )
@@ -4101,7 +3744,7 @@ impl QuiApp {
             SLOT_LIST,
             "insert_list",
             |app, value| {
-                app.list = Some(value);
+                app.host.list = Some(value);
             },
             descriptor,
         )
@@ -4115,7 +3758,7 @@ impl QuiApp {
             SLOT_TREE,
             "insert_tree",
             |app, value| {
-                app.tree = Some(value);
+                app.host.tree = Some(value);
             },
             descriptor,
         )
@@ -4129,7 +3772,7 @@ impl QuiApp {
             SLOT_DATA_TABLE,
             "insert_data_table",
             |app, value| {
-                app.data_table = Some(value);
+                app.host.data_table = Some(value);
             },
             descriptor,
         )
@@ -4143,7 +3786,7 @@ impl QuiApp {
             SLOT_TAB_BAR,
             "insert_tab_bar",
             |app, value| {
-                app.tab_bar = Some(value);
+                app.host.tab_bar = Some(value);
             },
             descriptor,
         )
@@ -4238,20 +3881,11 @@ impl QuiApp {
             pythonize::depythonize(items.as_any()).map_err(|err| {
                 InvalidDescriptorError::new_err(format!("show_context_menu: invalid items: {err}"))
             })?;
-        let mut menu = ContextMenu {
-            id: WidgetId::new("qui-context-menu"),
-            items,
-            selected_idx: 0,
-            bg: None,
-            placement: ContextMenuPlacement::AnchorPoint,
-        };
-        menu.selected_idx = menu.first_selectable();
         self.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
             app_logic
                 .engine
-                .ctx_menu_mut()
-                .open(menu, Point::new(position.0, position.1), backend);
+                .open_context_menu(items, Point::new(position.0, position.1), backend);
             app.driver.render();
             take_pending_error(app.driver.app_mut())?;
             Ok(())
@@ -4328,34 +3962,13 @@ impl QuiApp {
                     "show_message_dialog: invalid buttons: {err}"
                 ))
             })?;
-        if buttons.is_empty() {
-            return Err(InvalidDescriptorError::new_err(
-                "show_message_dialog: buttons must not be empty — a dialog with no buttons \
-                 can never be resolved by Enter or Escape",
-            ));
-        }
-        if let Some(tinted) = buttons.iter().find(|b| b.tint.is_some()) {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "show_message_dialog: button {:?} sets tint, which this surface does not \
-                 honor yet — omit tint or leave it None",
-                tinted.id.as_str()
-            )));
-        }
-        let severity = severity.map(|s| parse_dialog_severity(&s)).transpose()?;
-        let opts = MessageDialogOptions {
-            title,
-            body,
-            buttons: buttons
-                .into_iter()
-                .map(|b| MessageDialogButton {
-                    id: b.id,
-                    label: b.label,
-                    is_default: b.is_default,
-                    is_cancel: b.is_cancel,
-                })
-                .collect(),
-            severity,
-        };
+        let severity = severity
+            .map(|s| parse_dialog_severity("show_message_dialog", &s))
+            .transpose()?;
+        let opts =
+            message_dialog_options_from_buttons(title, body, buttons, severity).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("show_message_dialog: {err}"))
+            })?;
         self.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
             app_logic.engine.open_message_dialog(opts, backend);
@@ -4412,7 +4025,9 @@ impl QuiApp {
     #[pyo3(signature = (toast, corner=None))]
     fn show_toast(&mut self, toast: &Bound<'_, PyDict>, corner: Option<String>) -> PyResult<()> {
         let toast: Toast = decode("show_toast", toast)?;
-        let corner = corner.map(|c| parse_toast_corner(&c)).transpose()?;
+        let corner = corner
+            .map(|c| parse_toast_corner("show_toast", &c))
+            .transpose()?;
         self.guarded(|app| {
             app.driver
                 .app_mut()
@@ -4728,15 +4343,8 @@ impl QuiApp {
     /// `role` value.
     #[pyo3(signature = (text, role="chrome"))]
     fn measure_text(&mut self, text: &str, role: &str) -> PyResult<(f32, f32)> {
-        let role = match role {
-            "chrome" => FontRole::Chrome,
-            "editor" => FontRole::Editor,
-            other => {
-                return Err(InvalidFontRoleError::new_err(format!(
-                    "measure_text: unknown role {other:?}; expected \"chrome\" or \"editor\""
-                )))
-            }
-        };
+        let role = font_role(role)
+            .map_err(|err| InvalidFontRoleError::new_err(format!("measure_text: {err}")))?;
         self.guarded(|app| Ok(app.driver.backend().measure_text(text, role)))
     }
 
@@ -4799,7 +4407,7 @@ impl QuiApp {
             let acc: Accelerator = decode("register_accelerator", descriptor)?;
             let (backend, app_logic) = app.driver.parts_mut();
             backend.register_accelerator(&acc);
-            app_logic.accelerators.insert(acc.id.clone(), acc);
+            app_logic.host.accelerators.insert(acc.id.clone(), acc);
             Ok(())
         })
     }
@@ -4812,7 +4420,7 @@ impl QuiApp {
             let id = AcceleratorId::new(id);
             let (backend, app_logic) = app.driver.parts_mut();
             backend.unregister_accelerator(&id);
-            app_logic.accelerators.remove(&id);
+            app_logic.host.accelerators.remove(&id);
             Ok(())
         })
     }
@@ -4930,11 +4538,19 @@ impl QuiApp {
     /// goes on to construct, via [`AppLogic::setup`] -- mirrors
     /// [`Self::register_accelerator`]'s replay contract.
     fn set_theme(&mut self, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+        let keys = dict_keys(overrides)?;
         self.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
-            let theme = merge_theme_overrides("set_theme", backend.theme(), overrides)?;
+            let theme = merge_overrides(backend.theme(), keys, |key| {
+                let val = overrides
+                    .get_item(key)
+                    .map_err(|err| err.to_string())?
+                    .expect("key was read from overrides.keys() above");
+                theme_color_value(key, pyany_to_json(&val)?)
+            })
+            .map_err(|err| override_error_to_py("set_theme", err))?;
             backend.set_theme(theme);
-            app_logic.theme = Some(theme);
+            app_logic.host.theme = Some(theme);
             Ok(())
         })
     }
@@ -4958,13 +4574,19 @@ impl QuiApp {
     /// keys must be real `Style` field names. Replayed onto a later
     /// `run_tui`/`run_native` backend the same way `set_theme` is.
     fn set_style(&mut self, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+        let keys = dict_keys(overrides)?;
         self.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
-            let style = merge_json_overrides("set_style", backend.style(), overrides, |_, val| {
-                pyany_to_json("set_style", val)
-            })?;
+            let style = merge_overrides(backend.style(), keys, |key| {
+                let val = overrides
+                    .get_item(key)
+                    .map_err(|err| err.to_string())?
+                    .expect("key was read from overrides.keys() above");
+                pyany_to_json(&val)
+            })
+            .map_err(|err| override_error_to_py("set_style", err))?;
             backend.set_style(style);
-            app_logic.style = Some(style);
+            app_logic.host.style = Some(style);
             Ok(())
         })
     }
@@ -4977,7 +4599,7 @@ impl QuiApp {
         self.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
             backend.set_nerd_fonts(enabled);
-            app_logic.nerd_fonts = Some(enabled);
+            app_logic.host.nerd_fonts = Some(enabled);
             Ok(())
         })
     }
@@ -4998,7 +4620,7 @@ impl QuiApp {
         self.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
             backend.set_editor_font(family, size_pt);
-            app_logic.editor_font = Some((family.to_string(), size_pt));
+            app_logic.host.editor_font = Some((family.to_string(), size_pt));
             Ok(())
         })
     }
@@ -5010,7 +4632,7 @@ impl QuiApp {
         self.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
             backend.set_ui_font(font_desc);
-            app_logic.ui_font = Some(font_desc.to_string());
+            app_logic.host.ui_font = Some(font_desc.to_string());
             Ok(())
         })
     }
@@ -5026,7 +4648,7 @@ impl QuiApp {
         self.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
             let families = backend.register_font_from_memory(&bytes);
-            app_logic.registered_fonts.push(bytes);
+            app_logic.host.registered_fonts.push(bytes);
             Ok(families)
         })
     }
@@ -5039,7 +4661,7 @@ impl QuiApp {
         self.guarded(|app| {
             let (backend, app_logic) = app.driver.parts_mut();
             backend.set_nerd_font_fallback(family);
-            app_logic.nerd_font_fallback = Some(family.to_string());
+            app_logic.host.nerd_font_fallback = Some(family.to_string());
             Ok(())
         })
     }
@@ -5059,18 +4681,9 @@ impl QuiApp {
     /// method's own doc) -- harmless under `pytest`'s captured stdout, but
     /// not something a driver test can observe landing anywhere.
     fn set_caret_shape(&mut self, shape: &str) -> PyResult<()> {
+        let shape = caret_shape(shape)
+            .map_err(|err| InvalidDescriptorError::new_err(format!("set_caret_shape: {err}")))?;
         self.guarded(|app| {
-            let shape = match shape {
-                "block" => EditorCursorShape::Block,
-                "bar" => EditorCursorShape::Bar,
-                "underline" => EditorCursorShape::Underline,
-                other => {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "set_caret_shape: unknown shape {other:?}; expected \"block\", \"bar\", \
-                         or \"underline\""
-                    )))
-                }
-            };
             app.driver.parts_mut().0.set_caret_shape(shape);
             Ok(())
         })
@@ -5358,86 +4971,37 @@ impl QuiApp {
 }
 
 /// Converts an arbitrary Python value into a [`serde_json::Value`] via
-/// `pythonize::depythonize`, raising `InvalidDescriptorError` on a shape
-/// `serde_json` can't represent. Not itself a validation of any
-/// particular target type — [`merge_json_overrides`]'s caller runs the
-/// merged value through `serde_json::from_value::<T>` afterwards, which is
-/// where a type mismatch (e.g. a string where `Style::padding` wants a
-/// number) actually surfaces.
-fn pyany_to_json(what: &str, value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
-    pythonize::depythonize(value)
-        .map_err(|err| InvalidDescriptorError::new_err(format!("{what}: invalid value: {err}")))
+/// `pythonize::depythonize`. Not itself a validation of any particular
+/// target type — [`merge_overrides`]'s caller runs the merged value through
+/// `serde_json::from_value::<T>` afterwards, which is where a type mismatch
+/// (e.g. a string where `Style::padding` wants a number) actually surfaces.
+/// The `Err` message carries no `what`/field context of its own —
+/// [`override_error_to_py`] adds that once, uniformly, for every
+/// [`OverrideError`] variant [`merge_overrides`] can produce.
+fn pyany_to_json(value: &Bound<'_, PyAny>) -> Result<serde_json::Value, String> {
+    pythonize::depythonize(value).map_err(|err| format!("invalid value: {err}"))
 }
 
-/// [`pyany_to_json`], plus a `"#rrggbb"`/`"#rrggbbaa"` hex-string
-/// convenience for one [`Theme`] colour field — every other shape (a
-/// `{"r":.., "g":.., "b":.., "a":..}` dict, or an `[r, g, b[, a]]`
-/// list/tuple, both of which [`Color`]'s derived `Deserialize` already
-/// accepts) falls through to the generic conversion unchanged.
-fn theme_color_to_json(
-    what: &str,
-    key: &str,
-    value: &Bound<'_, PyAny>,
-) -> PyResult<serde_json::Value> {
-    if let Ok(hex) = value.extract::<String>() {
-        let color = Color::from_hex(&hex).ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: {key:?}: {hex:?} is not a valid \"#rrggbb\"/\"#rrggbbaa\" hex colour"
-            ))
-        })?;
-        return serde_json::to_value(color)
-            .map_err(|err| InternalError::new_err(format!("{what}: {err}")));
+/// Maps a [`merge_overrides`] failure to this binding's own exception
+/// taxonomy, prefixed with `what` (the calling method's own name) exactly
+/// once — every [`OverrideError`] variant's `Display` already omits that
+/// context so it is never doubled up.
+fn override_error_to_py(what: &str, err: OverrideError) -> PyErr {
+    match err {
+        OverrideError::Internal(_) => InternalError::new_err(format!("{what}: {err}")),
+        OverrideError::UnknownField(_)
+        | OverrideError::InvalidValue(_)
+        | OverrideError::Invalid(_) => InvalidDescriptorError::new_err(format!("{what}: {err}")),
     }
-    pyany_to_json(what, value)
 }
 
-/// Merges `overrides` onto `current`'s own JSON representation, field by
-/// field, then deserializes the merged value back into `T` --
-/// [`QuiApp::set_theme`]/[`QuiApp::set_style`]'s shared "override only the
-/// fields you name" mechanism, so a caller never has to restate every
-/// field just to change one. Raises `InvalidDescriptorError` for any
-/// `overrides` key that isn't already a field of `T` (a typo guard — `T`'s
-/// own `Deserialize` would otherwise silently ignore an extra key) or for
-/// a value `to_json` can't convert.
-fn merge_json_overrides<T, F>(
-    what: &str,
-    current: T,
-    overrides: &Bound<'_, PyDict>,
-    to_json: F,
-) -> PyResult<T>
-where
-    T: serde::Serialize + serde::de::DeserializeOwned,
-    F: Fn(&str, &Bound<'_, PyAny>) -> PyResult<serde_json::Value>,
-{
-    let mut value = serde_json::to_value(&current)
-        .map_err(|err| InternalError::new_err(format!("{what}: {err}")))?;
-    let obj = value
-        .as_object_mut()
-        .ok_or_else(|| InternalError::new_err(format!("{what}: expected a JSON object")))?;
-    for (key, val) in overrides.iter() {
-        let key: String = key.extract()?;
-        if !obj.contains_key(&key) {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: {key:?} is not a recognized field"
-            )));
-        }
-        let json = to_json(&key, &val)?;
-        obj.insert(key, json);
-    }
-    serde_json::from_value(value)
-        .map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
-}
-
-/// [`merge_json_overrides`] specialised for [`Theme`], with
-/// [`theme_color_to_json`]'s hex-string convenience.
-fn merge_theme_overrides(
-    what: &str,
-    current: Theme,
-    overrides: &Bound<'_, PyDict>,
-) -> PyResult<Theme> {
-    merge_json_overrides(what, current, overrides, |key, val| {
-        theme_color_to_json(what, key, val)
-    })
+/// `overrides`' own keys, as `String`s, in iteration order —
+/// [`merge_overrides`]'s `keys` argument, decoded once so its per-key
+/// `value_for` closure can look each one's value back up in `overrides`
+/// only after [`merge_overrides`] has confirmed that key actually names a
+/// field of `T`.
+fn dict_keys(overrides: &Bound<'_, PyDict>) -> PyResult<Vec<String>> {
+    overrides.keys().iter().map(|k| k.extract()).collect()
 }
 
 /// `((fg_r, fg_g, fg_b), (bg_r, bg_g, bg_b))` -- [`QuiApp::cell_colors`]'s
@@ -5453,16 +5017,6 @@ fn ratatui_rgb(color: quadraui::tui::testing::Color) -> (u8, u8, u8) {
     match color {
         quadraui::tui::testing::Color::Rgb(r, g, b) => (r, g, b),
         _ => (0, 0, 0),
-    }
-}
-
-/// Snake-cased name for a [`ColorDepth`] variant, as reported by
-/// [`QuiApp::backend_caps`]'s `"color_depth"` entry.
-fn color_depth_name(depth: ColorDepth) -> &'static str {
-    match depth {
-        ColorDepth::Ansi16 => "ansi16",
-        ColorDepth::Indexed256 => "indexed256",
-        ColorDepth::TrueColor => "true_color",
     }
 }
 
@@ -5554,6 +5108,7 @@ impl QuiApp {
         self.guarded(|app| {
             app.driver
                 .app_mut()
+                .host
                 .extra_slots
                 .insert(kind.to_string(), value);
             app.driver.render();
@@ -5574,22 +5129,9 @@ impl QuiApp {
     /// call unconditionally ahead of the tick every plain-event-free step
     /// already took.
     fn step_once(&mut self) -> PyResult<bool> {
-        if self.driver.exited() {
-            return Ok(false);
-        }
-        match self.pending_events.pop_front() {
-            Some(event) => {
-                self.driver.dispatch(event);
-            }
-            None => {
-                self.driver.pump_user_events();
-                if !self.driver.exited() {
-                    self.driver.tick();
-                }
-            }
-        }
+        let running = step_driver(&mut self.driver, &mut self.pending_events);
         take_pending_error(self.driver.app_mut())?;
-        Ok(!self.driver.exited())
+        Ok(running)
     }
 }
 
@@ -5965,7 +5507,10 @@ mod tests {
         accelerators.insert(acc.id.clone(), acc);
         let inner = PyAppLogic {
             handler: Some(handler),
-            accelerators,
+            host: BindingHost {
+                accelerators,
+                ..BindingHost::default()
+            },
             ..Default::default()
         };
 

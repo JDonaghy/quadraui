@@ -14,9 +14,26 @@ binding crate (quadraui-py today, quadraui-node next) supplies only \
 descriptor decode and a callback boundary around this engine.\
 """
 
+[features]
+# Gate `host::NativeExitPolicy`'s own `run_native`-style exit-policy
+# downgrade, which needs to know which native runner a binding is wrapping
+# (see that type's own doc). Forward to `quadraui`'s own same-named feature
+# for the same reason `quadraui-py`'s own `gtk`/`macos`/`win` features do —
+# this crate never calls GTK/AppKit/Win32 APIs directly.
+gtk = ["quadraui/gtk"]
+macos = ["quadraui/macos"]
+win = ["quadraui/win"]
+
 [dependencies]
 # `tui` is unconditional for the same reason `quadraui-py` pulls it in
 # unconditionally: this crate's render/paint path drives `quadraui::Backend`
 # directly and has no language-specific feature of its own to gate it behind.
 quadraui = { path = "../quadraui", features = ["tui"] }
 serde = { version = "1.0", features = ["derive"] }
+# Only used as the merge medium for `host::merge_overrides`: a binding
+# serializes its backend's current `Theme`/`Style` to a `serde_json::Value`,
+# splices in just the override keys the caller named, then deserializes the
+# merged value back -- letting a caller override one field without
+# restating every one of `Theme`'s ~70 colour fields. `serde` alone can't do
+# a partial merge; it only converts a whole value in one direction at a time.
+serde_json = "1.0"
