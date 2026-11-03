@@ -795,11 +795,11 @@ macro_rules! extra_primitive_count {
 }
 
 /// Generates [`EXTRA_PRIMITIVE_KINDS`] and [`decode_extra_primitive`] from
-/// one `"kind" => Type` table — the single source of truth a further
-/// additive primitive needs (plus that type's own [`ExtraPaint`] impl
-/// above): one appended line here, no separate decode registry to keep in
-/// lockstep with it the way a binding's own `EXTRA_PRIMITIVES` table used
-/// to need [`EXTRA_PRIMITIVE_KINDS`] to mirror by hand.
+/// one `"kind" => Type` table — the single source of truth both the kind
+/// list and its decode dispatch share, so a further additive primitive
+/// needs exactly one appended line here (plus that type's own
+/// [`ExtraPaint`] impl above) and never a second table to keep in
+/// lockstep with it.
 macro_rules! extra_primitives {
     ($( $kind:literal => $ty:ty ),+ $(,)?) => {
         /// The additive primitive kind names, in [`decode_extra_primitive`]'s

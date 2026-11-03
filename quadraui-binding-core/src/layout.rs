@@ -138,22 +138,22 @@ pub const LEAF_KIND_KEYS: [&str; 6] = [
 /// returning a [`DecodeError`] on the first repeat. A unique id per
 /// leaf/split lets host code address one instance unambiguously even when a
 /// kind appears more than once, and keeps a split's id from silently
-/// shadowing a leaf's. Only ever called against a just-decoded render
-/// callback tree, so every message is labeled `"render"` rather than
-/// threading a `what` parameter through.
-pub fn validate_unique_leaf_ids(node: &LayoutNode) -> Result<(), DecodeError> {
-    fn walk(node: &LayoutNode, seen: &mut HashSet<String>) -> Result<(), DecodeError> {
+/// shadowing a leaf's. `what` labels the error message the same way every
+/// other decoder in this crate does — [`crate::wire::decode_render_output`]
+/// passes its own caller-supplied label through unchanged.
+pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), DecodeError> {
+    fn walk(what: &str, node: &LayoutNode, seen: &mut HashSet<String>) -> Result<(), DecodeError> {
         match node {
             LayoutNode::Row(children) | LayoutNode::Column(children) => {
                 for child in children {
-                    walk(child, seen)?;
+                    walk(what, child, seen)?;
                 }
                 Ok(())
             }
             LayoutNode::Leaf(leaf) => {
                 if !seen.insert(leaf.id.clone()) {
                     return Err(DecodeError(format!(
-                        "render: duplicate leaf id {:?}",
+                        "{what}: duplicate leaf id {:?}",
                         leaf.id
                     )));
                 }
@@ -162,55 +162,55 @@ pub fn validate_unique_leaf_ids(node: &LayoutNode) -> Result<(), DecodeError> {
             LayoutNode::Split(split) => {
                 let id = split.split.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
-                    return Err(DecodeError(format!("render: duplicate leaf id {id:?}")));
+                    return Err(DecodeError(format!("{what}: duplicate leaf id {id:?}")));
                 }
-                walk(&split.first, seen)?;
-                walk(&split.second, seen)
+                walk(what, &split.first, seen)?;
+                walk(what, &split.second, seen)
             }
             LayoutNode::Tabs(tabs) => {
                 let id = tabs.tab_bar.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
-                    return Err(DecodeError(format!("render: duplicate leaf id {id:?}")));
+                    return Err(DecodeError(format!("{what}: duplicate leaf id {id:?}")));
                 }
                 for entry in &tabs.entries {
                     if !seen.insert(entry.id.clone()) {
                         return Err(DecodeError(format!(
-                            "render: duplicate leaf id {:?}",
+                            "{what}: duplicate leaf id {:?}",
                             entry.id
                         )));
                     }
-                    walk(&entry.content, seen)?;
+                    walk(what, &entry.content, seen)?;
                 }
                 Ok(())
             }
             LayoutNode::Panel(panel_node) => {
                 let id = panel_node.panel.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
-                    return Err(DecodeError(format!("render: duplicate leaf id {id:?}")));
+                    return Err(DecodeError(format!("{what}: duplicate leaf id {id:?}")));
                 }
-                walk(&panel_node.content, seen)
+                walk(what, &panel_node.content, seen)
             }
             LayoutNode::SidebarPanel(sidebar_node) => {
                 let id = sidebar_node.sidebar_panel.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {
-                    return Err(DecodeError(format!("render: duplicate leaf id {id:?}")));
+                    return Err(DecodeError(format!("{what}: duplicate leaf id {id:?}")));
                 }
-                walk(&sidebar_node.content, seen)
+                walk(what, &sidebar_node.content, seen)
             }
             LayoutNode::SplitTree(split_tree) => {
                 if !seen.insert(split_tree.id.clone()) {
                     return Err(DecodeError(format!(
-                        "render: duplicate leaf id {:?}",
+                        "{what}: duplicate leaf id {:?}",
                         split_tree.id
                     )));
                 }
                 for leaf in &split_tree.leaves {
-                    walk(leaf, seen)?;
+                    walk(what, leaf, seen)?;
                 }
                 Ok(())
             }
         }
     }
     let mut seen = HashSet::new();
-    walk(node, &mut seen)
+    walk(what, node, &mut seen)
 }

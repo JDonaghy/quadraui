@@ -1186,25 +1186,28 @@ impl QuiShellApp {
     }
 }
 
+/// The `what` label [`render_output_from_callback`] passes to
+/// [`quadraui_binding_core::decode_render_output`], naming the render
+/// callback in any `InvalidDescriptorError` it raises.
+const RENDER_CALLBACK_WHAT: &str = "render";
+
 /// Invokes a registered render callback with no arguments and decodes its
 /// returned `dict` into a [`RenderOutput`] via
-/// [`quadraui_binding_core::decode_render_output`] -- see that function's
+/// [`quadraui_binding_core::decode_render_output`] — see that function's
 /// doc for the flat-vs-tree sniff this binding's [`RenderOutput`] import
-/// shares with every other binding. On any failure -- the callback
+/// shares with every other binding. On any failure — the callback
 /// raising, returning something other than a `dict`, or an entry with the
-/// wrong shape -- records the error in `pending_error` and returns `None`,
+/// wrong shape — records the error in `pending_error` and returns `None`,
 /// leaving the caller to skip drawing this frame rather than paint a
 /// half-decoded one.
 ///
-/// Every call site that can trigger a render -- `step`/`run`, `screen`,
-/// `screen_contains`, `insert_*`, and `slot_clear` -- drains `pending_error`
+/// Every call site that can trigger a render — `step`/`run`, `screen`,
+/// `screen_contains`, `insert_*`, and `slot_clear` — drains `pending_error`
 /// after rendering and re-raises it, so a render-callback failure surfaces
 /// the same way a `handle`/`tick` callback failure does no matter which of
 /// those triggered the repaint. `run_tui`/`run_native` additionally break
 /// their loop as soon as `pending_error` is set, since nothing else is
 /// polling it on the Python side while the GIL is detached.
-const RENDER_CALLBACK_WHAT: &str = "render";
-
 fn render_output_from_callback(
     callback: &Py<PyAny>,
     pending_error: &Rc<RefCell<Option<PyErr>>>,

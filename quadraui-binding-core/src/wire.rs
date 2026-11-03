@@ -9,18 +9,26 @@
 //! `Deserializer` implementation over its own object model (a Python dict
 //! today, a JS object next) and maps the returned [`crate::DecodeError`]
 //! to its own exception type. Internally, every entry point first
-//! deserializes the whole input into one [`serde_json::Value`] tree (the
-//! same merge medium [`crate::host::merge_overrides`] already uses), then
-//! dispatches against that uniform shape — the dynamically-keyed,
+//! [`materialize`]s the whole input into one [`serde_json::Value`] tree,
+//! then dispatches against that uniform shape — the dynamically-keyed,
 //! "which of these N keys is present" dict shapes a layout tree node or
 //! `ShellConfig` decodes from don't map onto a single `#[derive(Deserialize)]`
 //! struct, but a `serde_json::Value` is cheap to re-inspect by key as many
-//! times as the recursive decode needs.
+//! times as the recursive decode needs. [`materialize`] differs from
+//! `Value`'s own `Deserialize` impl in exactly two ways — see its own doc —
+//! so a byte string and a non-finite float each still round-trip (or fail
+//! loudly) the way a decode straight off the original `Deserializer`
+//! would, instead of silently losing information once `Value` is in the
+//! way. `host::merge_overrides` uses the same crate but its own,
+//! unmodified `Value::deserialize` — its medium is always a backend's own
+//! `Theme`/`Style`, already round-tripped through `serde_json` once on the
+//! way in, never raw binding input.
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use serde::{Deserialize, Deserializer};
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
+use serde::Deserializer;
 use serde_json::Value;
 
 use quadraui::{
@@ -55,6 +63,138 @@ impl BackendWidget for StaticTabContent {
             vec![self.0.clone()],
         );
         backend.draw_text_display(rect, &td);
+    }
+}
+
+// ─── Materializing the input into a `Value` tree ───────────────────────────
+
+/// Materializes `deserializer`'s whole input into one [`serde_json::Value`]
+/// tree — almost `Value::deserialize`, except for the two deltas that keep
+/// a decoder below byte-identical to one that decoded straight off the
+/// original `Deserializer`, with no `Value` hop in between:
+/// - a byte string (Python `bytes`/`bytearray`, which `pythonize` routes to
+///   `deserialize_bytes`/`visit_bytes`) becomes a [`Value::Array`] of `u8`
+///   numbers — the same shape `Vec<u8>`'s own default `Deserialize` impl
+///   produces from a byte string via `deserialize_seq`, so
+///   `quadraui::ImageSource::Bytes(Vec<u8>)` keeps decoding through
+///   `{"Bytes": <bytes>}` rather than being rejected as "invalid
+///   descriptor" by `serde_json::Value`'s own visitor (which has no
+///   `visit_bytes` override).
+/// - a non-finite float (`NaN`/`inf`/`-inf`) is rejected outright instead
+///   of silently becoming [`Value::Null`] the way `serde_json`'s own
+///   visitor does (`Number::from_f64` returns `None` for a non-finite
+///   value, falling back to `Value::Null`) — [`obj_get`]'s "a `null` entry
+///   means the key is absent" convention would otherwise alias a
+///   non-finite value with a field the caller never set.
+///
+/// One accepted narrowing remains versus decoding straight off the
+/// original `Deserializer`: every object key becomes a `String` (matching
+/// `serde_json::Value::Object`'s own `Map<String, Value>` shape), so a
+/// non-string dict key is rejected and a string-spelled-integer key (e.g.
+/// `"3"`) is indistinguishable from the integer `3` once both land in the
+/// same `Value::Object`. The in-tree callers of this module key every
+/// dynamically-typed dict by string already (`"id"`, `"split"`, ...), and
+/// `serde_json::Value` has no representation for a non-string key, so
+/// fully preserving the original key's type would need abandoning
+/// `Value` as the dispatch medium.
+fn materialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Value, D::Error> {
+    deserializer.deserialize_any(ValueVisitor)
+}
+
+/// [`DeserializeSeed`] wrapper so [`ValueVisitor::visit_seq`]/`visit_map`
+/// can recurse into [`materialize`]'s own visitor for each element/value —
+/// `SeqAccess::next_element_seed`/`MapAccess::next_value_seed` take a seed,
+/// not a bare `Visitor`.
+struct ValueSeed;
+
+impl<'de> DeserializeSeed<'de> for ValueSeed {
+    type Value = Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        materialize(deserializer)
+    }
+}
+
+struct ValueVisitor;
+
+impl<'de> Visitor<'de> for ValueVisitor {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a value decodable into a descriptor wire tree")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+        Ok(Value::Bool(v))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+        Ok(Value::Number(v.into()))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+        Ok(Value::Number(v.into()))
+    }
+
+    fn visit_f64<E>(self, v: f64) -> Result<Value, E>
+    where
+        E: serde::de::Error,
+    {
+        if !v.is_finite() {
+            return Err(E::custom(format!("non-finite number {v} is not supported")));
+        }
+        Ok(serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Value, E> {
+        Ok(Value::String(v.to_owned()))
+    }
+
+    fn visit_unit<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_none<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        materialize(deserializer)
+    }
+
+    fn visit_bytes<E>(self, v: &[u8]) -> Result<Value, E> {
+        Ok(Value::Array(
+            v.iter().map(|byte| Value::Number((*byte).into())).collect(),
+        ))
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut vec = Vec::new();
+        while let Some(v) = seq.next_element_seed(ValueSeed)? {
+            vec.push(v);
+        }
+        Ok(Value::Array(vec))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut obj = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let value = map.next_value_seed(ValueSeed)?;
+            obj.insert(key, value);
+        }
+        Ok(Value::Object(obj))
     }
 }
 
@@ -216,7 +356,7 @@ pub fn decode_layout_node<'de, D: Deserializer<'de>>(
     what: &str,
     deserializer: D,
 ) -> Result<LayoutNode, DecodeError> {
-    let value = Value::deserialize(deserializer)
+    let value = materialize(deserializer)
         .map_err(|err| DecodeError(format!("{what}: invalid descriptor: {err}")))?;
     layout_node_from_value(what, &value)
 }
@@ -264,7 +404,14 @@ fn layout_node_from_value(what: &str, value: &Value) -> Result<LayoutNode, Decod
 }
 
 /// Decodes a `"row"`/`"column"` container's children: a `list` of child
-/// dicts, each recursively decoded by [`layout_node_from_value`].
+/// dicts, each recursively decoded by [`layout_node_from_value`]. Accepts
+/// any `[Value::Array]`-shaped input, not only a `list` in the strict
+/// Python-type sense — `materialize`'s own `visit_seq` already folds a
+/// Python `tuple`, `set`, or `frozenset` into the same `Value::Array`
+/// shape, so a tuple or (nondeterministically ordered) set of children is
+/// accepted here too. Tightening that back to "a real `list`" needs a
+/// pyo3-aware check this crate can't make; it would live in a binding's
+/// own decode adapter instead.
 fn layout_children_from_value(what: &str, value: &Value) -> Result<Vec<LayoutNode>, DecodeError> {
     let list = value
         .as_array()
@@ -632,11 +779,11 @@ pub fn decode_render_output<'de, D: Deserializer<'de>>(
     what: &str,
     deserializer: D,
 ) -> Result<RenderOutput, DecodeError> {
-    let value = Value::deserialize(deserializer)
+    let value = materialize(deserializer)
         .map_err(|err| DecodeError(format!("{what}: invalid descriptor: {err}")))?;
     if is_layout_tree(&value) {
         let node = layout_node_from_value(what, &value)?;
-        validate_unique_leaf_ids(&node)?;
+        validate_unique_leaf_ids(what, &node)?;
         Ok(RenderOutput::Tree(node))
     } else {
         Ok(RenderOutput::Flat(Box::new(render_frame_from_value(
@@ -944,7 +1091,7 @@ fn shell_config_from_value(value: &Value) -> Result<ShellConfig, DecodeError> {
 pub fn decode_shell_config<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<ShellConfig, DecodeError> {
-    let value = Value::deserialize(deserializer)
+    let value = materialize(deserializer)
         .map_err(|err| DecodeError(format!("run_shell: invalid descriptor: {err}")))?;
     shell_config_from_value(&value)
 }
@@ -1168,5 +1315,162 @@ mod tests {
             "{}",
             err.0
         );
+    }
+
+    /// A minimal `Deserializer` whose `deserialize_any` calls exactly one
+    /// visitor method -- standing in for a slice of `pythonize`'s own
+    /// `Depythonizer` dispatch (a Python `bytes`/`bytearray` always
+    /// routes to `deserialize_bytes`/`visit_bytes`) without needing a
+    /// live Python interpreter to drive it.
+    struct BytesDeserializer<'a>(&'a [u8]);
+
+    impl<'de> Deserializer<'de> for BytesDeserializer<'_> {
+        type Error = serde::de::value::Error;
+
+        fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+            visitor.visit_bytes(self.0)
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct seq tuple
+            tuple_struct map struct enum identifier ignored_any
+        }
+    }
+
+    /// A minimal `Deserializer` whose `deserialize_any` calls
+    /// `visit_f64` directly -- standing in for `pythonize`'s own
+    /// `deserialize_f64`/`visit_f64` routing for a Python `float`.
+    struct F64Deserializer(f64);
+
+    impl<'de> Deserializer<'de> for F64Deserializer {
+        type Error = serde::de::value::Error;
+
+        fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+            visitor.visit_f64(self.0)
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct seq tuple
+            tuple_struct map struct enum identifier ignored_any
+        }
+    }
+
+    /// A Python `bytes`/`bytearray` value -- which `pythonize` routes
+    /// through `deserialize_bytes`/`visit_bytes`, not `deserialize_seq`
+    /// -- materializes into the same array-of-numbers shape `Vec<u8>`'s
+    /// own `Deserialize` impl expects from a `deserialize_seq` call,
+    /// rather than being rejected (the regression this module's own
+    /// `materialize`, not `serde_json::Value`'s `Deserialize` impl, is
+    /// written to avoid: `serde_json::Value`'s visitor has no
+    /// `visit_bytes` override at all).
+    #[test]
+    fn materializes_bytes_as_a_number_array() {
+        let value = materialize(BytesDeserializer(&[1, 2, 3])).expect("bytes materialize");
+        assert_eq!(value, json!([1, 2, 3]));
+    }
+
+    /// A non-finite float (`NaN`/`inf`/`-inf`) is rejected outright during
+    /// materialization rather than silently becoming `Value::Null` --
+    /// which `obj_get`'s "a `null` entry means the key is absent"
+    /// convention would otherwise alias with a field the caller never
+    /// set.
+    #[test]
+    fn rejects_a_non_finite_float() {
+        let result = materialize(F64Deserializer(f64::NAN));
+        assert!(result.is_err());
+    }
+
+    /// An image leaf's `"Bytes"` source decodes from the same
+    /// array-of-numbers shape `materialize` produces for a Python `bytes`
+    /// value (see `materializes_bytes_as_a_number_array`) -- the full
+    /// decode path the fix in this module protects end to end.
+    #[test]
+    fn decodes_an_image_leaf_with_byte_source() {
+        let value = json!({
+            "id": "img1",
+            "source": {"Bytes": [1, 2, 3]},
+            "intrinsic_size": null,
+            "fit": "Contain",
+            "fallback_text": "",
+        });
+        crate::extra_paint::decode_extra_primitive("test", "image", &value)
+            .expect("valid image with byte source");
+    }
+
+    /// A render callback's flat (pre-layout-tree) `dict` shape decodes
+    /// into a [`RenderFrame`]: a present slot decodes into its type, a
+    /// missing or `null` slot leaves that frame slot empty.
+    #[test]
+    fn decodes_a_flat_render_frame() {
+        let value = json!({
+            "button": {"id": "b1", "label": "Go"},
+            "list": null,
+        });
+        let output = decode_render_output("render", &value).expect("valid flat frame");
+        let RenderOutput::Flat(frame) = output else {
+            panic!("expected a flat frame");
+        };
+        assert!(frame.button.is_some());
+        assert!(frame.list.is_none());
+        assert!(frame.text_display.is_none());
+    }
+
+    /// `run_shell`'s `config` dict applies its documented defaults
+    /// (`height_fraction` 0.3, `title_bar_height_lh` 1.5,
+    /// `bottom_panel_height_lh` 10.0) when a flag is set but its paired
+    /// height isn't given.
+    #[test]
+    fn decode_shell_config_applies_documented_defaults() {
+        let value = json!({
+            "title": "My Shell",
+            "has_title_bar": true,
+            "has_bottom_panel": true,
+        });
+        let config = decode_shell_config(&value).expect("valid shell config");
+        assert_eq!(config.title, "My Shell");
+        assert!(config.has_title_bar);
+        assert_eq!(config.title_bar_height_lh, 1.5);
+        assert!(config.has_bottom_panel);
+        assert_eq!(config.bottom_panel_height_lh, 10.0);
+    }
+
+    /// `run_shell`'s `"position"` key accepts `"left"`/`"right"` and
+    /// rejects anything else.
+    #[test]
+    fn decode_shell_config_validates_position() {
+        let value = json!({"title": "My Shell", "position": "right"});
+        let config = decode_shell_config(&value).expect("valid position");
+        assert_eq!(config.position, ShellPosition::Right);
+
+        let value = json!({"title": "My Shell", "position": "sideways"});
+        let err = err(decode_shell_config(&value));
+        assert!(err.0.contains("must be \"left\" or \"right\""), "{}", err.0);
+    }
+
+    /// `run_shell`'s tabbed `"bottom_panel"` dict applies its own
+    /// documented default `height_fraction` (0.3) and falls back
+    /// `"active_tab_id"` to the first tab when omitted.
+    #[test]
+    fn decode_shell_config_bottom_panel_defaults() {
+        let value = json!({
+            "title": "My Shell",
+            "bottom_panel": {
+                "tabs": [{"id": "t1"}, {"id": "t2"}],
+            },
+        });
+        let config = decode_shell_config(&value).expect("valid bottom_panel");
+        let bottom_panel = config.bottom_panel.expect("bottom_panel is set");
+        assert_eq!(bottom_panel.active_tab_id, "t1");
+        assert_eq!(bottom_panel.height_fraction, 0.3);
+        assert_eq!(bottom_panel.tabs.len(), 2);
+    }
+
+    /// `run_shell`'s `config` dict requires `"title"`.
+    #[test]
+    fn decode_shell_config_requires_title() {
+        let err = err(decode_shell_config(json!({})));
+        assert!(err.0.contains("missing required \"title\""), "{}", err.0);
     }
 }
