@@ -12,6 +12,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `QuiApp.actions()` returns a `QuiAppActions` handle a registered event
+  handler can call `show_message_dialog`/`show_context_menu`/`show_toast`/
+  `open_path`/`reveal_in_file_manager`/`move_to_trash` on without hitting
+  the "already borrowed" PyO3 runtime error a direct call on `app` itself
+  raises from inside a handler. Each method queues the already-decoded
+  action instead of applying it immediately; `step`/`run` and the
+  `run_tui` pump loop apply it right after the dispatch that queued it
+  finishes. Not yet wired into `run_native`'s `gtk`/`macos`/`win` loops.
 - A click on a focused `text_input` extra now places the caret under the
   click (`EditOp::SetCursor`, resolved via `TextInput::layout`'s own
   metrics-aware hit-test) instead of only moving keyboard focus there,

@@ -96,6 +96,19 @@
 //! stream as a `{"User": value}` event and wake whichever loop currently
 //! owns it, without exiting — see that type's doc for the per-call-path
 //! coverage (`step`/`run`, and `run_tui` for its own duration).
+//!
+//! [`QuiApp::actions`] returns a [`QuiAppActions`] — the handler-side
+//! escape hatch for the six overlay/OS-call methods this module doc's
+//! "cannot call back into `QuiApp`" note above otherwise rules out from
+//! inside a handler: `show_message_dialog`, `show_context_menu`,
+//! `show_toast`, `open_path`, `reveal_in_file_manager`, `move_to_trash`.
+//! Each method on it decodes and queues the same action its `QuiApp`
+//! namesake would apply immediately; `step`/`run` and the `run_tui` pump
+//! loop drain that queue via [`flush_deferred_actions`] right after the
+//! dispatch that queued it finishes, applying each action as a direct
+//! Rust call instead of a second PyO3 borrow of `QuiApp` itself. Not
+//! wired for `run_native`'s native loops yet — see [`QuiAppActions`]'s own
+//! doc.
 // Only spelled in this crate's own code inside `run_native`'s real
 // `target_os = "macos"` arm and in `#[cfg(test)]` coverage for the
 // downgrade `NativeExitPolicy` (aliased below as `NativeAppLogic`)
@@ -148,9 +161,9 @@ use quadraui::Scrollbar;
 use quadraui::{
     Accelerator, AcceleratorId, AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps,
     BottomPanelEvent, Completions, ContextMenuItem, DialogButton, DialogSeverity,
-    FileDialogOptions, Float, FloatMeasure, GlobalShortcutId, Notification, Point, Reaction, Rect,
-    RgbaImage, RichTextPopup, ShellApp, ShellConfig, ShellContext, Toast, ToastCorner, Tooltip,
-    UiEvent, UserPayload, WidgetId,
+    FileDialogOptions, Float, FloatMeasure, GlobalShortcutId, MessageDialogOptions, Notification,
+    Point, Reaction, Rect, RgbaImage, RichTextPopup, ShellApp, ShellConfig, ShellContext, Toast,
+    ToastCorner, Tooltip, UiEvent, UserPayload, WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -343,6 +356,24 @@ const SLOT_DATA_TABLE: i64 = quadraui_binding_core::SLOT_DATA_TABLE;
 /// Slot id of the app's `TabBar` descriptor.
 const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 
+/// One action a [`QuiAppActions`] method recorded, already decoded and
+/// validated, waiting for [`flush_deferred_actions`] to apply it. Each
+/// variant mirrors one of the six `QuiApp` methods [`QuiAppActions`]'s own
+/// doc names (`show_message_dialog`, `show_context_menu`, `show_toast`,
+/// `open_path`, `reveal_in_file_manager`, `move_to_trash`) — carrying
+/// exactly the already-decoded arguments the matching `QuiApp` method
+/// passes to the same underlying `quadraui`/`quadraui_binding_core` call,
+/// so applying one is a direct call with no further decoding or validation
+/// left to do.
+enum DeferredAction {
+    MessageDialog(MessageDialogOptions),
+    ContextMenu(Vec<ContextMenuItem>, Point),
+    Toast(Toast, ToastCorner),
+    OpenPath(PathBuf),
+    RevealInFileManager(PathBuf),
+    MoveToTrash(PathBuf),
+}
+
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
 /// [`BindingHost`] (the six fixed primitive slots, any additive slots, and
 /// the backend-settings replay store — see that type's own doc) plus the
@@ -389,6 +420,13 @@ struct PyAppLogic {
     /// [`InteractionEngine::handle`] with a [`PyEventSink`] that bridges
     /// back into the registered Python handler.
     engine: InteractionEngine,
+    /// Actions a [`QuiAppActions`] method queued (typically called from
+    /// inside the registered event handler, mid-dispatch) and not yet
+    /// applied. Drained by [`flush_deferred_actions`] right after the
+    /// dispatch that queued them finishes — see that function's doc for why
+    /// a queued action must be applied as a direct Rust call rather than
+    /// through another `QuiApp` method call.
+    deferred_actions: Rc<RefCell<VecDeque<DeferredAction>>>,
 }
 
 impl PyAppLogic {
@@ -1426,6 +1464,192 @@ impl QuiAppWaker {
     }
 }
 
+/// A handle, returned by [`QuiApp::actions`], that queues exactly the
+/// overlay/OS-call methods `QuiApp` itself restricts to top-level script
+/// code — `show_message_dialog`, `show_context_menu`, `show_toast`,
+/// `open_path`, `reveal_in_file_manager`, `move_to_trash` — so a registered
+/// event handler can request one of them without re-entering `QuiApp`'s own
+/// PyO3 cell.
+///
+/// A handler already holds `QuiApp`'s one mutable borrow for the whole
+/// dispatch that invoked it (the same wall `show_message_dialog`'s own doc
+/// describes), so calling `app.show_message_dialog(...)` straight from
+/// inside a handler raises "already borrowed" — PyO3 refuses a second
+/// borrow of the same cell while the first is still outstanding. Calling
+/// the matching method here instead touches none of that: each method
+/// below decodes and validates its arguments immediately (so a malformed
+/// descriptor still raises synchronously, from the handler's own call) and
+/// records the already-decoded action on a queue shared with the owning
+/// `QuiApp`, rather than applying it right away. `QuiApp::step`/`run` and
+/// the `run_tui` pump loop each drain that queue via
+/// [`flush_deferred_actions`] right after the dispatch that queued an
+/// action finishes, applying it as a direct Rust call rather than another
+/// PyO3 method call — see that function's doc for why that distinction is
+/// what makes this sound.
+///
+/// Call [`QuiApp::actions`] once up front, from top-level script code, and
+/// share the result with whatever closure is registered as the event
+/// handler — the same "obtain once, use from wherever" shape
+/// [`QuiApp::waker`] already has for background-thread delivery.
+///
+/// `run_native`'s native loops (`gtk`/`macos`/`win`) do not drain this
+/// queue yet: an action queued while a native window is open sits until
+/// the window closes and the headless driver resumes stepping, where it is
+/// then applied against the *headless* backend rather than the window —
+/// not currently wired for native, TUI only for now.
+#[pyclass(module = "quadraui", unsendable)]
+struct QuiAppActions {
+    queue: Rc<RefCell<VecDeque<DeferredAction>>>,
+}
+
+#[pymethods]
+impl QuiAppActions {
+    /// Queues a [`DeferredAction::MessageDialog`] — same arguments, same
+    /// decoding, as `QuiApp::show_message_dialog`.
+    #[pyo3(signature = (title, body, buttons, severity=None))]
+    fn show_message_dialog(
+        &self,
+        title: String,
+        body: String,
+        buttons: &Bound<'_, PyList>,
+        severity: Option<String>,
+    ) -> PyResult<()> {
+        let buttons: Vec<DialogButton> =
+            pythonize::depythonize(buttons.as_any()).map_err(|err| {
+                InvalidDescriptorError::new_err(format!(
+                    "show_message_dialog: invalid buttons: {err}"
+                ))
+            })?;
+        let severity = severity
+            .map(|s| parse_dialog_severity("show_message_dialog", &s))
+            .transpose()?;
+        let opts =
+            message_dialog_options_from_buttons(title, body, buttons, severity).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("show_message_dialog: {err}"))
+            })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::MessageDialog(opts));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::ContextMenu`] — same arguments, same
+    /// decoding, as `QuiApp::show_context_menu`.
+    fn show_context_menu(&self, items: &Bound<'_, PyList>, position: (f32, f32)) -> PyResult<()> {
+        let items: Vec<ContextMenuItem> =
+            pythonize::depythonize(items.as_any()).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("show_context_menu: invalid items: {err}"))
+            })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ContextMenu(
+                items,
+                Point::new(position.0, position.1),
+            ));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::Toast`] — same arguments, same decoding,
+    /// as `QuiApp::show_toast`.
+    #[pyo3(signature = (toast, corner=None))]
+    fn show_toast(&self, toast: &Bound<'_, PyDict>, corner: Option<String>) -> PyResult<()> {
+        let toast: Toast = decode("show_toast", toast)?;
+        let corner = corner
+            .map(|c| parse_toast_corner("show_toast", &c))
+            .transpose()?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Toast(toast, corner.unwrap_or_default()));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::OpenPath`] — same argument as
+    /// `QuiApp::open_path`.
+    fn open_path(&self, path: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::OpenPath(PathBuf::from(path)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::RevealInFileManager`] — same argument as
+    /// `QuiApp::reveal_in_file_manager`.
+    fn reveal_in_file_manager(&self, path: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::RevealInFileManager(PathBuf::from(path)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::MoveToTrash`] — same argument as
+    /// `QuiApp::move_to_trash`.
+    fn move_to_trash(&self, path: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::MoveToTrash(PathBuf::from(path)));
+        Ok(())
+    }
+}
+
+/// Applies every action queued on `app_logic.deferred_actions` directly
+/// against `backend`/`app_logic`, then drops them — called by
+/// `QuiApp::step_once` and `QuiApp::run_tui`'s pump loop right after each
+/// dispatch, while the caller already holds a plain Rust `&mut` to both
+/// (never through another PyO3 method call on `QuiApp` itself, which is
+/// exactly the re-entrant call a [`QuiAppActions`] method queued this
+/// action to avoid). A failing `open_path`/`reveal_in_file_manager`/
+/// `move_to_trash` records its error on `app_logic.pending_error`, the same
+/// cell `handle`/`tick`/a render callback already use to report a failure
+/// back out of `step`/`run`/`run_tui`, rather than being dropped silently
+/// or panicking a loop with no caller around to catch it.
+///
+/// Returns whether anything was applied, so a caller only pays for an
+/// extra repaint when a queued action actually changed something visible.
+fn flush_deferred_actions(backend: &mut TuiBackend, app_logic: &mut PyAppLogic) -> bool {
+    let mut applied = false;
+    loop {
+        let action = app_logic.deferred_actions.borrow_mut().pop_front();
+        let Some(action) = action else { break };
+        applied = true;
+        match action {
+            DeferredAction::MessageDialog(opts) => {
+                app_logic.engine.open_message_dialog(opts, backend);
+            }
+            DeferredAction::ContextMenu(items, position) => {
+                app_logic.engine.open_context_menu(items, position, backend);
+            }
+            DeferredAction::Toast(toast, corner) => {
+                app_logic.engine.show_toast(toast, corner);
+            }
+            DeferredAction::OpenPath(path) => {
+                if let Err(err) = backend.services().open_path(&path) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("open_path: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::RevealInFileManager(path) => {
+                if let Err(err) = backend.services().reveal_in_file_manager(&path) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("reveal_in_file_manager: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::MoveToTrash(path) => {
+                if let Err(err) = backend.services().move_to_trash(&path) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("move_to_trash: {err:?}")),
+                    );
+                }
+            }
+        }
+    }
+    applied
+}
+
 /// Wraps a value that is provably safe to move across [`Python::detach`]'s
 /// closure boundary even though it isn't [`Send`].
 ///
@@ -1646,6 +1870,33 @@ impl QuiApp {
             ));
         }
         Ok(QuiAppWaker(self.current_waker.clone()))
+    }
+
+    /// Returns a [`QuiAppActions`] handle: an object a registered event
+    /// handler can call `show_message_dialog`/`show_context_menu`/
+    /// `show_toast`/`open_path`/`reveal_in_file_manager`/`move_to_trash` on
+    /// instead of this `QuiApp` itself, since the handler already holds
+    /// this app's one mutable borrow for the whole dispatch that invoked
+    /// it and a direct call on `self` from there raises "already
+    /// borrowed" — see [`QuiAppActions`]'s own doc for the full story and
+    /// [`flush_deferred_actions`] for when and how a queued action is
+    /// actually applied.
+    ///
+    /// Call this once up front, same restriction [`Self::waker`]'s own doc
+    /// gives for the same reason: `QuiApp` is `unsendable` and blocks the
+    /// calling thread for the whole of `run_tui`/`run_native`, so there is
+    /// no reachable way to call this *during* either — only before.
+    ///
+    /// Raises `PoisonedError` on a poisoned app, mirroring [`Self::waker`].
+    fn actions(&self) -> PyResult<QuiAppActions> {
+        if self.poisoned {
+            return Err(PoisonedError::new_err(
+                "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
+            ));
+        }
+        Ok(QuiAppActions {
+            queue: self.driver.app().deferred_actions.clone(),
+        })
     }
 
     /// Resizes the underlying cell grid to `width`x`height`.
@@ -2262,6 +2513,19 @@ impl QuiApp {
                     if runner.pump(poll_interval)? == StepOutcome::Exited {
                         break;
                     }
+                    // Applies whatever a `QuiAppActions` method queued
+                    // while handling that pump's event/tick, as a direct
+                    // Rust call rather than another `QuiApp` method call —
+                    // see `flush_deferred_actions`'s doc for why that
+                    // distinction is what makes this sound in the first
+                    // place. `request_full_repaint` lets the very next
+                    // `pump` pick the result up without an extra
+                    // non-blocking pass here, which would also re-fire
+                    // `tick`.
+                    let (backend, app_logic) = runner.parts_mut();
+                    if flush_deferred_actions(backend, app_logic) {
+                        runner.backend_mut().request_full_repaint();
+                    }
                     // A render callback invoked by this `pump` may have
                     // recorded an unrecoverable error; stop pumping now
                     // rather than looping on a broken app.
@@ -2600,7 +2864,10 @@ impl QuiApp {
     /// handler or render callback: both already hold this `QuiApp`'s one
     /// mutable borrow for the whole dispatch, so a reentrant call here hits
     /// the same PyO3 runtime-borrow wall `QuiApp.insert_*`/`slot_clear` do —
-    /// see the module doc's "cannot call back into `QuiApp`" note.
+    /// see the module doc's "cannot call back into `QuiApp`" note. From
+    /// inside a handler, call [`QuiAppActions::show_context_menu`] (via
+    /// [`QuiApp::actions`]) instead — see that type's doc for why it can
+    /// succeed where this can't.
     fn show_context_menu(
         &mut self,
         items: &Bound<'_, PyList>,
@@ -2669,7 +2936,9 @@ impl QuiApp {
     /// Call from top-level script code only, never from inside the
     /// registered event handler or render callback — see
     /// `show_context_menu`'s own doc for why (the same PyO3 runtime-borrow
-    /// wall applies here).
+    /// wall applies here). From inside a handler, call
+    /// [`QuiAppActions::show_message_dialog`] (via [`QuiApp::actions`])
+    /// instead.
     ///
     /// This is the modal `Dialog` corner of the in-canvas overlay family
     /// only. Tooltip/Completions/Float/RichTextPopup have no binding
@@ -2751,6 +3020,10 @@ impl QuiApp {
     /// directly with no event. Toasts are non-modal — unlike
     /// `show_message_dialog`, they never block input to whatever is
     /// painted behind them.
+    ///
+    /// Same "top-level script code only" restriction as
+    /// `show_message_dialog`; from inside a handler, call
+    /// [`QuiAppActions::show_toast`] (via [`QuiApp::actions`]) instead.
     #[pyo3(signature = (toast, corner=None))]
     fn show_toast(&mut self, toast: &Bound<'_, PyDict>, corner: Option<String>) -> PyResult<()> {
         let toast: Toast = decode("show_toast", toast)?;
@@ -3609,6 +3882,12 @@ impl QuiApp {
     /// falling back to opening the parent directory) -- a terminal itself
     /// has no file-manager window, but the session running it usually
     /// does. Raises `InternalError` when no such session is reachable.
+    ///
+    /// Like every other `&mut self` method here, calling this from inside
+    /// the registered event handler or render callback hits the same PyO3
+    /// runtime-borrow wall `show_message_dialog`'s own doc describes —
+    /// call [`QuiAppActions::reveal_in_file_manager`] (via
+    /// [`QuiApp::actions`]) from a handler instead.
     fn reveal_in_file_manager(&mut self, path: &str) -> PyResult<()> {
         self.guarded(|app| {
             app.driver
@@ -3624,6 +3903,10 @@ impl QuiApp {
     /// [`Self::open_url`]: this takes a filesystem path, not a URL. Same
     /// shell-out story as `open_url` on the headless `TuiBackend`. Raises
     /// `InternalError` when no opener is reachable.
+    ///
+    /// Same handler restriction as `reveal_in_file_manager` — call
+    /// [`QuiAppActions::open_path`] (via [`QuiApp::actions`]) from a
+    /// handler instead.
     fn open_path(&mut self, path: &str) -> PyResult<()> {
         self.guarded(|app| {
             app.driver
@@ -3640,6 +3923,10 @@ impl QuiApp {
     /// cross-platform `trash` crate needs only a filesystem, no live
     /// desktop session. Raises `InternalError` on a real filesystem
     /// failure.
+    ///
+    /// Same handler restriction as `reveal_in_file_manager` — call
+    /// [`QuiAppActions::move_to_trash`] (via [`QuiApp::actions`]) from a
+    /// handler instead.
     fn move_to_trash(&mut self, path: &str) -> PyResult<()> {
         self.guarded(|app| {
             app.driver
@@ -3852,16 +4139,21 @@ impl QuiApp {
     /// Dispatches the oldest queued event (or, if none is queued, drains
     /// and dispatches every event a [`QuiAppWaker::post`]/`::wake` call
     /// queued since the last step as a `UiEvent::User` via
-    /// `TuiDriver::pump_user_events`, then ticks), then surfaces any
-    /// exception a Python callback raised while handling any of that.
-    /// Returns whether the app is still running. `pump_user_events` itself
-    /// already applies whichever `Reaction` each drained `User` event
-    /// produced (repainting on `Redraw`, marking the app exited on `Exit`)
-    /// and is a safe no-op when nothing was posted, so it costs nothing to
-    /// call unconditionally ahead of the tick every plain-event-free step
-    /// already took.
+    /// `TuiDriver::pump_user_events`, then ticks), applies whatever a
+    /// [`QuiAppActions`] method queued during that dispatch via
+    /// [`flush_deferred_actions`], then surfaces any exception a Python
+    /// callback raised while handling any of that. Returns whether the app
+    /// is still running. `pump_user_events` itself already applies
+    /// whichever `Reaction` each drained `User` event produced (repainting
+    /// on `Redraw`, marking the app exited on `Exit`) and is a safe no-op
+    /// when nothing was posted, so it costs nothing to call unconditionally
+    /// ahead of the tick every plain-event-free step already took.
     fn step_once(&mut self) -> PyResult<bool> {
         let running = step_driver(&mut self.driver, &mut self.pending_events);
+        let (backend, app_logic) = self.driver.parts_mut();
+        if flush_deferred_actions(backend, app_logic) {
+            self.driver.render();
+        }
         take_pending_error(self.driver.app_mut())?;
         Ok(running)
     }
@@ -3873,6 +4165,7 @@ impl QuiApp {
 fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QuiApp>()?;
     m.add_class::<QuiAppWaker>()?;
+    m.add_class::<QuiAppActions>()?;
     m.add_class::<QuiShellApp>()?;
     let py = m.py();
     m.add("QuadrauiError", py.get_type::<QuadrauiError>())?;
@@ -7660,6 +7953,66 @@ def handle(event):
                 .show_message_dialog("Title".to_string(), "Body".to_string(), buttons, None)
                 .expect_err("a tinted button must be rejected");
             assert!(err.is_instance_of::<InvalidDescriptorError>(py));
+        });
+    }
+
+    /// A handler cannot call `app.show_message_dialog(...)` directly — it
+    /// already holds this `QuiApp`'s one mutable borrow for the whole
+    /// dispatch that invoked it, so a reentrant call there raises — but it
+    /// can queue the same request through the `QuiAppActions` handle
+    /// `QuiApp::actions` returns, which touches no borrow of `QuiApp`
+    /// itself. `step` applies the queued dialog via
+    /// `flush_deferred_actions` right after the dispatch that queued it
+    /// finishes, so it is painted by the time `step` returns, with no
+    /// exception raised along the way.
+    #[test]
+    fn handler_queues_show_message_dialog_via_actions_handle_without_reentrant_borrow() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(40, 20, None, None).expect("valid dimensions");
+            let actions = app.actions().expect("app is not poisoned");
+
+            let locals = PyDict::new(py);
+            locals
+                .set_item("actions", Py::new(py, actions).expect("wrap QuiAppActions"))
+                .expect("set actions");
+            py.run(
+                c"def handle(event):\n    actions.show_message_dialog(\
+                  'Title', 'Body', [{'id': 'ok', 'label': 'OK'}], None)\n",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+            app.set_handler(handle);
+
+            app.push_key_event('a' as u32).expect("valid code point");
+            app.step()
+                .expect("queuing via the `actions` handle from inside the handler must not raise");
+
+            assert!(
+                app.screen_contains("Title").expect("render must not raise"),
+                "the deferred dialog must be painted once `step` has applied the queue"
+            );
+        });
+
+        // `handle`'s own `__globals__` is `locals`, and `locals["handle"]` is
+        // `handle` — a reference cycle only Python's cyclic GC (not plain
+        // refcounting) ever breaks, and only once `app`/`locals` above have
+        // already dropped (still inside the `Python::attach` call above) so
+        // neither holds an external reference of its own. Left to run on
+        // its own schedule, that collection could land on a different
+        // test's thread while it holds the GIL and trip the `unsendable`
+        // `QuiAppActions` instance's cross-thread-drop guard even though
+        // nothing here ever truly sent it across threads. Collecting
+        // explicitly, on this thread, right after, avoids that.
+        Python::attach(|py| {
+            py.import("gc")
+                .and_then(|gc| gc.call_method0("collect"))
+                .expect("gc.collect must not raise");
         });
     }
 

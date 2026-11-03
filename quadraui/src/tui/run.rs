@@ -489,6 +489,19 @@ impl<A: AppLogic> TuiRunner<A> {
         &mut self.backend
     }
 
+    /// Disjoint mutable access to both the backend and the `AppLogic` this
+    /// runner drives — for host code that needs to call a `&mut dyn
+    /// Backend` method (e.g. [`crate::compose::ContextMenuController::open`])
+    /// and mutate `AppLogic`-owned controller state in the same call,
+    /// outside [`Self::step`]/[`Self::pump`] where both are normally
+    /// threaded through together. Mirrors [`Self::backend_mut`]/
+    /// [`Self::app_mut`]'s split halves, and
+    /// [`crate::tui::testing::TuiDriver::parts_mut`]'s identical shape for
+    /// the headless driver.
+    pub fn parts_mut(&mut self) -> (&mut TuiBackend, &mut A) {
+        (&mut self.backend, &mut self.app)
+    }
+
     /// One non-blocking pass: repaint if needed, drain whatever events are
     /// already queued (never blocks), dispatch them, tick, and return. See
     /// the type-level doc for the full contract.
