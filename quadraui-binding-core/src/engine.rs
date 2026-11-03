@@ -1686,7 +1686,7 @@ pub fn message_dialog_options_from_buttons(
     if let Some(tinted) = buttons.iter().find(|b| b.tint.is_some()) {
         return Err(format!(
             "button {:?} sets tint, which this surface does not honor yet — omit tint or \
-             leave it None",
+             leave it unset",
             tinted.id.as_str()
         ));
     }
