@@ -1185,6 +1185,25 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_button(Rect::new(0.0, 0.0, area.width, lh), &button);
         },
     },
+    // `draw_button_with_state` is an additive trait default that forwards to
+    // `draw_button`, ignoring the passed `InteractionState`, until a backend
+    // overrides it to tint hover/pressed. This row proves the default reaches
+    // a rasteriser and still paints observable content on every backend.
+    Case {
+        method: "draw_button_with_state",
+        needle: Some("c0btnhv"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let button_id = id("button-hover");
+            let button = Button::new(button_id.clone(), "c0btnhv");
+            let interaction = InteractionState::from_parts(Some(button_id), None);
+            let _ = b.draw_button_with_state(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &button,
+                &interaction,
+            );
+        },
+    },
     Case {
         method: "draw_radio_group",
         needle: Some("c0radio"),
