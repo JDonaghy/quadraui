@@ -77,6 +77,9 @@ fn natural_content_width(field: &FormField) -> usize {
         }
         | FieldKind::PasswordInput {
             value, placeholder, ..
+        }
+        | FieldKind::TextArea {
+            value, placeholder, ..
         } => {
             let shown = if value.is_empty() {
                 placeholder.as_str()
@@ -821,7 +824,7 @@ fn draw_field_slider(buf: &mut Buffer, ctx: &RowCtx, value: f32, min: f32, max: 
         if col < area.width as usize {
             set_cell(buf, area.x + col as u16, y, ']', dim_fg, row_bg);
         }
-        col += 2;
+        col += 3;
         for ch in value_str.chars() {
             if col >= area.width as usize {
                 break;
@@ -1182,6 +1185,9 @@ fn draw_field_text_area(
         row_bg,
         field_fg,
         dim_fg,
+        no_label,
+        control_start,
+        control_width,
         ..
     } = *ctx;
 
@@ -1189,8 +1195,18 @@ fn draw_field_text_area(
     let input_fg = if value.is_empty() { dim_fg } else { field_fg };
     let rows = visible_rows;
 
-    // Paint each row of the text area.
-    let avail_w = (area.width as usize).saturating_sub(2); // inside brackets
+    // Shares `draw_field_text_input`'s bracket/text column split so a
+    // `TextArea` joins the same control column as every other field
+    // kind instead of spanning the full row width over the label.
+    let (bracket_col, text_col) = if no_label {
+        (control_start.saturating_sub(1), control_start)
+    } else {
+        (control_start, control_start + 1)
+    };
+    let closing_col =
+        (control_start + control_width.max(2) - 1).min((area.width as usize).saturating_sub(1));
+    let avail_w = closing_col.saturating_sub(text_col);
+
     let mut chars_iter = shown.chars();
     for row in 0..rows {
         let row_y = y + row as u16;
@@ -1205,11 +1221,16 @@ fn draw_field_text_area(
             }
         }
 
-        // Left bracket on first column.
-        set_cell(buf, area.x, row_y, '[', dim_fg, row_bg);
+        if control_start >= area.width as usize {
+            continue;
+        }
+
+        if bracket_col < area.width as usize {
+            set_cell(buf, area.x + bracket_col as u16, row_y, '[', dim_fg, row_bg);
+        }
 
         // Content characters for this row.
-        let mut col = 1usize;
+        let mut col = text_col;
         for _ in 0..avail_w {
             if let Some(ch) = chars_iter.next() {
                 if col < area.width as usize {
@@ -1221,10 +1242,8 @@ fn draw_field_text_area(
             }
         }
 
-        // Right bracket at last column.
-        let bracket_col = (area.width as usize).saturating_sub(1);
-        if bracket_col < area.width as usize {
-            set_cell(buf, area.x + bracket_col as u16, row_y, ']', dim_fg, row_bg);
+        if closing_col < area.width as usize {
+            set_cell(buf, area.x + closing_col as u16, row_y, ']', dim_fg, row_bg);
         }
     }
 
@@ -1240,7 +1259,7 @@ fn draw_field_text_area(
                 byte += ch.len_utf8();
                 char_idx += 1;
             }
-            let cursor_col = 1 + char_idx;
+            let cursor_col = text_col + char_idx;
             if cursor_col < area.width as usize {
                 let ch = value.chars().nth(char_idx).unwrap_or(' ');
                 set_cell(buf, area.x + cursor_col as u16, y, ch, row_bg, field_fg);
@@ -2394,6 +2413,59 @@ mod tests {
         assert_eq!(
             layout.visible_fields[0].bounds.height, 3.0,
             "TextArea with visible_rows=3 should be 3 cells tall"
+        );
+    }
+
+    #[test]
+    fn textarea_joins_the_shared_control_column_and_does_not_clobber_its_label() {
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("desc"),
+                label: label("Description"),
+                kind: FieldKind::TextArea {
+                    value: "hi".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    visible_rows: 2,
+                },
+                hint: label(""),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 5));
+        draw_form(&mut buf, Rect::new(0, 0, 40, 5), &form, &Theme::default());
+
+        let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(
+            row[1..].starts_with("Description"),
+            "label must still be painted, not clobbered by the control: {row:?}"
+        );
+        // Labels start at column 1 (column 0 is the row's left border);
+        // `control_start` is `label_end + 1` where `label_end = 1 +
+        // col_width` (see `build_row_ctx`) — "Description".len() == 11,
+        // so the control starts at column 13, right after the label,
+        // not at column 0 like the bare `[hi...` a painter that ignores
+        // `control_start` would draw over the label.
+        assert_eq!(
+            cell_char(&buf, 13, 0),
+            '[',
+            "TextArea's control box should start right after the label: {row:?}"
         );
     }
 

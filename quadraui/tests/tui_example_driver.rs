@@ -5754,9 +5754,12 @@ fn form_control_width_fill_stretches_to_the_row_right_edge() {
         .nth(fill.y as usize)
         .unwrap_or_default()
         .to_string();
-    // `Fill`'s closing `]` lands at the last column of a 60-wide row.
+    // `Fill` stretches to the row's right edge, so its closing `]`
+    // lands at the last column of the row, whatever that row's width
+    // happens to be.
+    let last_col = row.chars().count().saturating_sub(1);
     assert_eq!(
-        row.chars().nth(59),
+        row.chars().nth(last_col),
         Some(']'),
         "Fill's box should reach the row's right edge:\n{}",
         driver.screen()
@@ -5775,11 +5778,14 @@ fn form_control_width_fixed_ignores_content_length() {
         .nth(fixed.y as usize)
         .unwrap_or_default()
         .to_string();
-    // `Fixed(20.0)` closes its box at column 28 (the control column
-    // starts at 9, 9 + 20 - 1 = 28), well short of the row's right
-    // edge — unlike `Fill`.
+    // `Fixed(20.0)`'s box spans `[control_start, control_start + 20)`.
+    // `fixed.x` is the value text's column, one past `control_start`
+    // (the `[` cell) — so the closing `]` is 18 columns further right,
+    // whatever column the control column itself starts at.
+    const FIXED_WIDTH: usize = 20;
+    let closing_col = fixed.x as usize + FIXED_WIDTH - 2;
     assert_eq!(
-        row.chars().nth(28),
+        row.chars().nth(closing_col),
         Some(']'),
         "Fixed's box should close at its exact configured width:\n{}",
         driver.screen()
@@ -5798,11 +5804,15 @@ fn form_control_width_content_sizes_to_its_own_value() {
         .nth(content.y as usize)
         .unwrap_or_default()
         .to_string();
-    // `Content` closes its box right after the value text's own natural
-    // width (14 chars + 2 for brackets, starting at column 9: 9 + 16 - 1
-    // = 24), well short of both Fill's and Fixed's closing column.
+    // `Content`'s box is sized to its own value's natural width (the
+    // value's char count + 2 for brackets). `content.x` is the value
+    // text's column, one past `control_start` — the closing `]` lands
+    // `value_len` columns further right, whatever column the control
+    // column itself starts at.
+    let value_len = "sized to value".chars().count();
+    let closing_col = content.x as usize + value_len;
     assert_eq!(
-        row.chars().nth(24),
+        row.chars().nth(closing_col),
         Some(']'),
         "Content's box should close right after its own value:\n{}",
         driver.screen()

@@ -199,10 +199,10 @@ impl ControlWidth {
     /// by `Fill`), and an optional `min_width` floor applied
     /// regardless of mode. Units are whatever the caller measures in
     /// (cells for TUI, pixels for GTK / macOS / Win).
-    pub fn resolve(&self, content_width: f32, available_width: f32, min_width: Option<f32>) -> f32 {
+    pub fn resolve(self, content_width: f32, available_width: f32, min_width: Option<f32>) -> f32 {
         let raw = match self {
             ControlWidth::Fill => available_width,
-            ControlWidth::Fixed(w) => *w,
+            ControlWidth::Fixed(w) => w,
             ControlWidth::Content => content_width,
         };
         raw.max(min_width.unwrap_or(0.0))
@@ -1305,7 +1305,7 @@ mod native_surface_paint {
                         };
                         let box_size = (row_h - 8.0).clamp(10.0, 16.0);
                         let ix = control_start;
-                        {
+                        if available > 0.0 {
                             let iy = row_rect.y + (row_h - box_size) / 2.0;
                             let box_rect = Rect::new(ix, iy, box_size, box_size);
                             if *value {
@@ -1346,28 +1346,30 @@ mod native_surface_paint {
                         cursor,
                         selection_anchor,
                     } => {
-                        let shown = if value.is_empty() { placeholder } else { value };
-                        let control_w = resolved_control_width.resolve(
-                            surface.surface_measure_text(shown).0,
-                            available,
-                            min_control_width,
-                        );
-                        paint_text_input_box(
-                            surface,
-                            row_rect,
-                            control_start,
-                            control_w,
-                            value,
-                            placeholder,
-                            *cursor,
-                            *selection_anchor,
-                            field_fg,
-                            theme.muted_fg,
-                            theme.selection_bg,
-                            theme.accent_fg,
-                            false,
-                            '\0',
-                        );
+                        if available > 0.0 {
+                            let shown = if value.is_empty() { placeholder } else { value };
+                            let control_w = resolved_control_width.resolve(
+                                surface.surface_measure_text(shown).0 + TEXT_BOX_PADDING * 2.0,
+                                available,
+                                min_control_width,
+                            );
+                            paint_text_input_box(
+                                surface,
+                                row_rect,
+                                control_start,
+                                control_w,
+                                value,
+                                placeholder,
+                                *cursor,
+                                *selection_anchor,
+                                field_fg,
+                                theme.muted_fg,
+                                theme.selection_bg,
+                                theme.accent_fg,
+                                false,
+                                '\0',
+                            );
+                        }
                     }
                     FieldKind::PasswordInput {
                         value,
@@ -1375,28 +1377,30 @@ mod native_surface_paint {
                         cursor,
                         mask_char,
                     } => {
-                        let shown = if value.is_empty() { placeholder } else { value };
-                        let control_w = resolved_control_width.resolve(
-                            surface.surface_measure_text(shown).0,
-                            available,
-                            min_control_width,
-                        );
-                        paint_text_input_box(
-                            surface,
-                            row_rect,
-                            control_start,
-                            control_w,
-                            value,
-                            placeholder,
-                            *cursor,
-                            None,
-                            field_fg,
-                            theme.muted_fg,
-                            theme.selection_bg,
-                            theme.accent_fg,
-                            true,
-                            *mask_char,
-                        );
+                        if available > 0.0 {
+                            let shown = if value.is_empty() { placeholder } else { value };
+                            let control_w = resolved_control_width.resolve(
+                                surface.surface_measure_text(shown).0 + TEXT_BOX_PADDING * 2.0,
+                                available,
+                                min_control_width,
+                            );
+                            paint_text_input_box(
+                                surface,
+                                row_rect,
+                                control_start,
+                                control_w,
+                                value,
+                                placeholder,
+                                *cursor,
+                                None,
+                                field_fg,
+                                theme.muted_fg,
+                                theme.selection_bg,
+                                theme.accent_fg,
+                                true,
+                                *mask_char,
+                            );
+                        }
                     }
                     FieldKind::TextArea {
                         value,
@@ -1410,27 +1414,29 @@ mod native_surface_paint {
                         } else {
                             first_line
                         };
-                        let control_w = resolved_control_width.resolve(
-                            surface.surface_measure_text(shown).0,
-                            available,
-                            min_control_width,
-                        );
-                        paint_text_input_box(
-                            surface,
-                            row_rect,
-                            control_start,
-                            control_w,
-                            first_line,
-                            placeholder,
-                            *cursor,
-                            None,
-                            field_fg,
-                            theme.muted_fg,
-                            theme.selection_bg,
-                            theme.accent_fg,
-                            false,
-                            '\0',
-                        );
+                        if available > 0.0 {
+                            let control_w = resolved_control_width.resolve(
+                                surface.surface_measure_text(shown).0 + TEXT_BOX_PADDING * 2.0,
+                                available,
+                                min_control_width,
+                            );
+                            paint_text_input_box(
+                                surface,
+                                row_rect,
+                                control_start,
+                                control_w,
+                                first_line,
+                                placeholder,
+                                *cursor,
+                                None,
+                                field_fg,
+                                theme.muted_fg,
+                                theme.selection_bg,
+                                theme.accent_fg,
+                                false,
+                                '\0',
+                            );
+                        }
                     }
                     FieldKind::Button => {
                         let cap = label_text.clone();
@@ -1477,7 +1483,7 @@ mod native_surface_paint {
                         let text = plain_text(value);
                         let (w, h) = surface.surface_measure_text(&text);
                         let ix = control_start;
-                        {
+                        if available > 0.0 {
                             let iy = row_rect.y + (row_h - h) / 2.0;
                             // Was unconditionally `theme.muted_fg`,
                             // so a focused (`selected_bg`) `ReadOnly` row painted
@@ -1507,7 +1513,7 @@ mod native_surface_paint {
                         );
                         let track_w = (control_w - 8.0 - value_w).max(16.0);
                         let ix = control_start;
-                        {
+                        if available > 0.0 {
                             let track_y = row_rect.y + row_h / 2.0 - 2.0;
                             surface.surface_fill_rect(
                                 Rect::new(ix, track_y, track_w, 4.0),
@@ -1530,7 +1536,7 @@ mod native_surface_paint {
                         let (hw, hh) = surface.surface_measure_text(&hex);
                         let swatch = 12.0_f32;
                         let ix = control_start;
-                        {
+                        if available > 0.0 {
                             let sy = row_rect.y + (row_h - swatch) / 2.0;
                             surface.surface_fill_rect(Rect::new(ix, sy, swatch, swatch), *value);
                             let ty = row_rect.y + (row_h - hh) / 2.0;
@@ -1552,7 +1558,7 @@ mod native_surface_paint {
                         let (cw, ch) = surface.surface_measure_text(&chosen);
                         let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
                         let ix = control_start;
-                        {
+                        if available > 0.0 {
                             let ty = row_rect.y + (row_h - ch) / 2.0;
                             surface.surface_draw_text_run(
                                 Rect::new(ix, ty, cw, ch),
@@ -1654,7 +1660,7 @@ mod native_surface_paint {
                         let text = date.format(picker.locale.format);
                         let (tw, th) = surface.surface_measure_text(&text);
                         let ix = control_start;
-                        {
+                        if available > 0.0 {
                             let ty = row_rect.y + (row_h - th) / 2.0;
                             surface.surface_draw_text_run(
                                 Rect::new(ix, ty, tw, th),
@@ -1671,7 +1677,7 @@ mod native_surface_paint {
                         let (tw, th) = surface.surface_measure_text(&combo.text);
                         let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
                         let ix = control_start;
-                        {
+                        if available > 0.0 {
                             let ty = row_rect.y + (row_h - th) / 2.0;
                             surface.surface_draw_text_run(
                                 Rect::new(ix, ty, tw, th),
@@ -1708,6 +1714,14 @@ mod native_surface_paint {
             }
         }
     }
+
+    /// Horizontal inset (in pixels) between a text input box's stroked
+    /// edge and the value/placeholder run drawn inside it, on each
+    /// side. [`ControlWidth::Content`] callers fold `TEXT_BOX_PADDING *
+    /// 2.0` into the content width they resolve so the box this
+    /// constant sizes always has room for the full run — the painted
+    /// run itself is never clipped.
+    const TEXT_BOX_PADDING: f32 = 8.0;
 
     /// Shared text-input box painter for `TextInput` / `PasswordInput` /
     /// the single-line `TextArea` preview: a stroked box with px padding
@@ -1752,9 +1766,13 @@ mod native_surface_paint {
         // control_width)` — the caller already resolved `control_width`
         // from this field's `ControlWidth` mode, so every field's box
         // starts at the same column and `Fill` stretches it to the
-        // row's right edge instead of hugging the content.
+        // row's right edge instead of hugging the content. For
+        // `Content`, the caller already folded `TEXT_BOX_PADDING * 2.0`
+        // into the resolved width, so the run drawn at `ix +
+        // TEXT_BOX_PADDING` below always has room before this box's
+        // right edge.
         let ix = control_start;
-        let box_right = control_start + control_width.max(16.0);
+        let box_right = control_start + control_width.max(TEXT_BOX_PADDING * 2.0);
 
         surface.surface_stroke_rect(
             Rect::new(ix, row_rect.y + 2.0, (box_right - ix).max(1.0), row_h - 4.0),
@@ -1777,23 +1795,37 @@ mod native_surface_paint {
             let (pw, _) = surface.surface_measure_text(prefix);
             let (sw, _) = surface.surface_measure_text(sel_text);
             surface.surface_fill_rect(
-                Rect::new(ix + 8.0 + pw, row_rect.y + 2.0, sw, row_h - 4.0),
+                Rect::new(
+                    ix + TEXT_BOX_PADDING + pw,
+                    row_rect.y + 2.0,
+                    sw,
+                    row_h - 4.0,
+                ),
                 sel_bg,
             );
-            surface.surface_draw_text_run(Rect::new(ix + 8.0, y, pw, shown_h), prefix, input_fg);
             surface.surface_draw_text_run(
-                Rect::new(ix + 8.0 + pw, y, sw, shown_h),
+                Rect::new(ix + TEXT_BOX_PADDING, y, pw, shown_h),
+                prefix,
+                input_fg,
+            );
+            surface.surface_draw_text_run(
+                Rect::new(ix + TEXT_BOX_PADDING + pw, y, sw, shown_h),
                 sel_text,
                 field_fg,
             );
             surface.surface_draw_text_run(
-                Rect::new(ix + 8.0 + pw + sw, y, shown_w - pw - sw, shown_h),
+                Rect::new(
+                    ix + TEXT_BOX_PADDING + pw + sw,
+                    y,
+                    shown_w - pw - sw,
+                    shown_h,
+                ),
                 suffix,
                 input_fg,
             );
         } else {
             surface.surface_draw_text_run(
-                Rect::new(ix + 8.0, y, shown_w, shown_h),
+                Rect::new(ix + TEXT_BOX_PADDING, y, shown_w, shown_h),
                 shown,
                 input_fg,
             );
@@ -1804,7 +1836,7 @@ mod native_surface_paint {
                 if !value.is_empty() {
                     let prefix = &shown[..snap_to_char_boundary(shown, cur)];
                     let (pw, _) = surface.surface_measure_text(prefix);
-                    let cx = ix + 8.0 + pw;
+                    let cx = ix + TEXT_BOX_PADDING + pw;
                     surface.surface_fill_rect(
                         Rect::new(cx, row_rect.y + 3.0, 1.5, row_h - 6.0),
                         accent_fg,
@@ -1816,7 +1848,7 @@ mod native_surface_paint {
                 let char_pos = value[..snap_to_char_boundary(value, cur)].chars().count();
                 let prefix: String = shown.chars().take(char_pos).collect();
                 let (pw, _) = surface.surface_measure_text(&prefix);
-                let cx = ix + 8.0 + pw;
+                let cx = ix + TEXT_BOX_PADDING + pw;
                 surface.surface_fill_rect(
                     Rect::new(cx, row_rect.y + 3.0, 1.5, row_h - 6.0),
                     accent_fg,
@@ -1830,7 +1862,7 @@ mod native_surface_paint {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::Viewport;
-        use crate::primitives::form::{FormField, ToggleGroupItem};
+        use crate::primitives::form::{ControlWidth, FormField, ToggleGroupItem};
         use crate::primitives::layout_metrics::{form_field_measure, form_row_height, TextMeasure};
         use crate::types::{StyledSpan, WidgetId};
         use crate::Image;
@@ -2055,6 +2087,110 @@ mod native_surface_paint {
                 "a short-labelled field must start its control at the same \
                  shared column as the long-labelled one, not right after its \
                  own label",
+            );
+        }
+
+        fn text_input_field(
+            id: &str,
+            value: &str,
+            control_width: Option<ControlWidth>,
+        ) -> FormField {
+            FormField {
+                id: WidgetId::new(id),
+                label: StyledText::plain("Name"),
+                kind: FieldKind::TextInput {
+                    value: value.to_string(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width,
+                min_control_width: None,
+            }
+        }
+
+        fn form_with_one_field(field: FormField) -> Form {
+            Form {
+                id: WidgetId::new("form"),
+                fields: vec![field],
+                focused_field: None,
+                scroll_offset: 0,
+                has_focus: false,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
+                control_width: Default::default(),
+                min_control_width: None,
+            }
+        }
+
+        /// `ControlWidth::Fixed(20.0)` must stroke an exact 20px box,
+        /// starting at the field's shared control column — the "exact
+        /// width regardless of content" promise `ControlWidth::Fixed`'s
+        /// own doc makes.
+        #[test]
+        fn fixed_control_width_strokes_the_box_at_its_configured_width() {
+            let field = text_input_field("name", "hi", Some(ControlWidth::Fixed(20.0)));
+            let form = form_with_one_field(field);
+
+            let (surface, flayout) = paint_recorded(&form);
+            let vf = &flayout.visible_fields[0];
+            let probe = RecordingSurface::default();
+            let expected_start =
+                left_control_column_start(&form, &form.fields[0], vf.bounds, &probe);
+
+            let stroke = surface
+                .strokes
+                .first()
+                .expect("TextInput paints a stroked box");
+            assert_eq!(
+                stroke.0.x, expected_start,
+                "box starts at the control column"
+            );
+            assert_eq!(
+                stroke.0.width, 20.0,
+                "Fixed(20.0) should stroke an exact 20px box, not {}",
+                stroke.0.width
+            );
+        }
+
+        /// `ControlWidth::Content`'s stroked box must be wide enough to
+        /// hold the full value run inside it: the caller folds
+        /// `TEXT_BOX_PADDING * 2.0` into the content width it resolves,
+        /// so the box always has room for the run drawn at `ix +
+        /// TEXT_BOX_PADDING` — the box's right edge never cuts through
+        /// the value.
+        #[test]
+        fn content_control_width_box_fits_the_full_value_run() {
+            let field = text_input_field("name", "a longer value", Some(ControlWidth::Content));
+            let form = form_with_one_field(field);
+
+            let (surface, _flayout) = paint_recorded(&form);
+
+            let stroke = surface
+                .strokes
+                .first()
+                .expect("TextInput paints a stroked box");
+            let box_right = stroke.0.x + stroke.0.width;
+
+            let run = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "a longer value")
+                .expect("the value is drawn as a text run");
+            let run_right = run.0.x + run.0.width;
+
+            assert!(
+                run_right <= box_right,
+                "value run (right edge {run_right}) must fit inside the stroked \
+                 box (right edge {box_right}), not spill past it"
             );
         }
 
@@ -3442,5 +3578,85 @@ mod tests {
             }
             other => panic!("unexpected kind: {:?}", other),
         }
+    }
+
+    #[test]
+    fn control_width_resolve_picks_the_mode_specific_width() {
+        assert_eq!(ControlWidth::Fill.resolve(10.0, 42.0, None), 42.0);
+        assert_eq!(ControlWidth::Fixed(15.0).resolve(10.0, 42.0, None), 15.0);
+        assert_eq!(ControlWidth::Content.resolve(10.0, 42.0, None), 10.0);
+    }
+
+    #[test]
+    fn control_width_resolve_floors_every_mode_at_min_width() {
+        assert_eq!(ControlWidth::Fill.resolve(10.0, 2.0, Some(30.0)), 30.0);
+        assert_eq!(
+            ControlWidth::Fixed(5.0).resolve(10.0, 42.0, Some(30.0)),
+            30.0
+        );
+        assert_eq!(ControlWidth::Content.resolve(5.0, 42.0, Some(30.0)), 30.0);
+        // A min_width below the mode's own raw value leaves it untouched.
+        assert_eq!(
+            ControlWidth::Fixed(40.0).resolve(10.0, 42.0, Some(30.0)),
+            40.0
+        );
+    }
+
+    fn control_width_test_field(control_width: Option<ControlWidth>) -> FormField {
+        FormField {
+            id: WidgetId::new("f"),
+            label: StyledText::default(),
+            kind: FieldKind::Toggle { value: false },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width,
+            min_control_width: None,
+        }
+    }
+
+    fn control_width_test_form(form_control_width: ControlWidth) -> Form {
+        Form {
+            id: WidgetId::new("form"),
+            fields: vec![],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: form_control_width,
+            min_control_width: None,
+        }
+    }
+
+    #[test]
+    fn resolved_control_width_prefers_the_field_override_over_the_form_default() {
+        let form = control_width_test_form(ControlWidth::Fill);
+        let overridden = control_width_test_field(Some(ControlWidth::Fixed(20.0)));
+        assert_eq!(
+            form.resolved_control_width(&overridden),
+            ControlWidth::Fixed(20.0)
+        );
+
+        let unset = control_width_test_field(None);
+        assert_eq!(form.resolved_control_width(&unset), ControlWidth::Fill);
+    }
+
+    #[test]
+    fn resolved_min_control_width_prefers_the_field_override_over_the_form_default() {
+        let mut form = control_width_test_form(ControlWidth::Fill);
+        form.min_control_width = Some(40.0);
+
+        let mut overridden = control_width_test_field(None);
+        overridden.min_control_width = Some(60.0);
+        assert_eq!(form.resolved_min_control_width(&overridden), Some(60.0));
+
+        let unset = control_width_test_field(None);
+        assert_eq!(form.resolved_min_control_width(&unset), Some(40.0));
     }
 }
