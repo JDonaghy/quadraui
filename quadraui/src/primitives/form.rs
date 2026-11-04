@@ -88,6 +88,8 @@ use serde::{Deserialize, Serialize};
 ///         label_align: None,
 ///         label_width: None,
 ///         tab_index: None,
+///         control_width: None,
+///         min_control_width: None,
 ///     }],
 ///     focused_field: None,
 ///     scroll_offset: 0,
@@ -95,6 +97,8 @@ use serde::{Deserialize, Serialize};
 ///     label_position: Default::default(),
 ///     label_align: Default::default(),
 ///     label_width: None,
+///     control_width: Default::default(),
+///     min_control_width: None,
 /// };
 ///
 /// let layout = form.layout(40.0, 10.0, |_| FormFieldMeasure::new(1.0));
@@ -141,6 +145,68 @@ pub struct Form {
     /// directly.
     #[serde(default)]
     pub label_width: Option<f32>,
+    /// Form-wide default for how a field's control column is sized.
+    /// A [`FormField::control_width`] override, when set, wins over
+    /// this. `Fill` (the default) stretches every field's control to
+    /// the row's right edge, giving every field kind one shared,
+    /// aligned column starting right after the label — use
+    /// [`Form::resolved_control_width`] rather than reading this field
+    /// directly so a per-field override is honored.
+    #[serde(default)]
+    pub control_width: ControlWidth,
+    /// Form-wide floor (cells for TUI, device pixels for GTK / macOS /
+    /// Win) under which a field's resolved control column never
+    /// shrinks, regardless of [`ControlWidth`] mode — guards against a
+    /// `Content`-sized or explicit `Fixed` column too narrow to show
+    /// its value. `None` applies no floor. A
+    /// [`FormField::min_control_width`] override, when set, wins over
+    /// this. Use [`Form::resolved_min_control_width`] rather than
+    /// reading this field directly.
+    #[serde(default)]
+    pub min_control_width: Option<f32>,
+}
+
+/// How a [`FormField`]'s control column (the checkbox / input / slider
+/// / dropdown etc., as opposed to its label) is sized. Set on
+/// [`Form::control_width`] as the form-wide default, or on
+/// [`FormField::control_width`] to override a single field. Every
+/// non-item-based field kind (`Toggle`, `TextInput`, `PasswordInput`,
+/// `TextArea`, `ReadOnly`, `Slider`, `ColorPicker`, `Dropdown`,
+/// `ComboBox`, `DatePicker`, `Button`) starts its control at the same
+/// column, right after the shared label column, regardless of mode —
+/// only the column's *width* changes between modes.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum ControlWidth {
+    /// Stretch the control to fill the row's remaining width after the
+    /// label column — every field's control ends at the same right
+    /// edge. The GUI default.
+    #[default]
+    Fill,
+    /// An exact width: cells for TUI, device pixels for GTK / macOS /
+    /// Win (the same dual-unit convention as
+    /// [`Form::label_width`]/[`FormField::label_width`]).
+    Fixed(f32),
+    /// Size the control to its own natural content — the pre-D1
+    /// behaviour, just repositioned to start right after the label
+    /// instead of hugging the row's right edge.
+    Content,
+}
+
+impl ControlWidth {
+    /// Resolve this mode to a concrete width given the control's
+    /// natural `content_width` (used only by `Content`), the
+    /// `available_width` remaining after the label column (used only
+    /// by `Fill`), and an optional `min_width` floor applied
+    /// regardless of mode. Units are whatever the caller measures in
+    /// (cells for TUI, pixels for GTK / macOS / Win).
+    pub fn resolve(&self, content_width: f32, available_width: f32, min_width: Option<f32>) -> f32 {
+        let raw = match self {
+            ControlWidth::Fill => available_width,
+            ControlWidth::Fixed(w) => *w,
+            ControlWidth::Content => content_width,
+        };
+        raw.max(min_width.unwrap_or(0.0))
+    }
 }
 
 /// Where a field's label renders relative to its input. Set on
@@ -230,6 +296,16 @@ pub struct FormField {
     /// traversal; the plain `Form` primitive does not use it itself.
     #[serde(default)]
     pub tab_index: Option<i32>,
+    /// Overrides the form-wide [`Form::control_width`] for this field
+    /// only. `None` defers to the form's default — read through
+    /// [`Form::resolved_control_width`], never this field directly.
+    #[serde(default)]
+    pub control_width: Option<ControlWidth>,
+    /// Overrides the form-wide [`Form::min_control_width`] for this
+    /// field. `None` defers to the form's default — read through
+    /// [`Form::resolved_min_control_width`].
+    #[serde(default)]
+    pub min_control_width: Option<f32>,
 }
 
 /// The input variant carried by a `FormField`.
@@ -578,6 +654,21 @@ impl Form {
     /// column to the widest label).
     pub fn resolved_label_width(&self, field: &FormField) -> Option<f32> {
         field.label_width.or(self.label_width)
+    }
+
+    /// The effective control-column sizing mode for `field`: its own
+    /// [`FormField::control_width`] override if set, else this form's
+    /// [`Form::control_width`] default.
+    pub fn resolved_control_width(&self, field: &FormField) -> ControlWidth {
+        field.control_width.unwrap_or(self.control_width)
+    }
+
+    /// The effective control-column minimum width for `field`: its own
+    /// [`FormField::min_control_width`] override if set, else this
+    /// form's [`Form::min_control_width`] default, else `None` (no
+    /// floor).
+    pub fn resolved_min_control_width(&self, field: &FormField) -> Option<f32> {
+        field.min_control_width.or(self.min_control_width)
     }
 
     /// Compute the full rendering + hit-test layout for this form.
@@ -1149,6 +1240,17 @@ mod native_surface_paint {
                 let row_rect = content_rect;
                 let row_h = row_rect.height;
                 let input_right = row_rect.x + row_rect.width - 8.0;
+                // Every control starts at the same column, right after
+                // the shared label column (or at the label's own `x`
+                // when there's no label to reserve one), so every
+                // `FieldKind` lines up in one control column instead of
+                // each sitting at its own position. `available` is what
+                // `ControlWidth::Fill` stretches a control's box/track
+                // to.
+                let control_start = if no_label { label_x } else { label_right + 8.0 };
+                let available = (input_right - control_start).max(0.0);
+                let min_control_width = form.resolved_min_control_width(field);
+                let resolved_control_width = form.resolved_control_width(field);
 
                 match &field.kind {
                     FieldKind::Label => {}
@@ -1161,12 +1263,8 @@ mod native_surface_paint {
                             field_fg
                         };
                         let box_size = (row_h - 8.0).clamp(10.0, 16.0);
-                        let ix = if no_label {
-                            label_x
-                        } else {
-                            input_right - box_size
-                        };
-                        if no_label || ix > label_right + 8.0 {
+                        let ix = control_start;
+                        {
                             let iy = row_rect.y + (row_h - box_size) / 2.0;
                             let box_rect = Rect::new(ix, iy, box_size, box_size);
                             if *value {
@@ -1207,12 +1305,17 @@ mod native_surface_paint {
                         cursor,
                         selection_anchor,
                     } => {
+                        let shown = if value.is_empty() { placeholder } else { value };
+                        let control_w = resolved_control_width.resolve(
+                            surface.surface_measure_text(shown).0,
+                            available,
+                            min_control_width,
+                        );
                         paint_text_input_box(
                             surface,
                             row_rect,
-                            label_right,
-                            no_label,
-                            input_right,
+                            control_start,
+                            control_w,
                             value,
                             placeholder,
                             *cursor,
@@ -1231,12 +1334,17 @@ mod native_surface_paint {
                         cursor,
                         mask_char,
                     } => {
+                        let shown = if value.is_empty() { placeholder } else { value };
+                        let control_w = resolved_control_width.resolve(
+                            surface.surface_measure_text(shown).0,
+                            available,
+                            min_control_width,
+                        );
                         paint_text_input_box(
                             surface,
                             row_rect,
-                            label_right,
-                            no_label,
-                            input_right,
+                            control_start,
+                            control_w,
                             value,
                             placeholder,
                             *cursor,
@@ -1256,12 +1364,21 @@ mod native_surface_paint {
                         ..
                     } => {
                         let first_line = value.lines().next().unwrap_or("");
+                        let shown = if first_line.is_empty() {
+                            placeholder.as_str()
+                        } else {
+                            first_line
+                        };
+                        let control_w = resolved_control_width.resolve(
+                            surface.surface_measure_text(shown).0,
+                            available,
+                            min_control_width,
+                        );
                         paint_text_input_box(
                             surface,
                             row_rect,
-                            label_right,
-                            no_label,
-                            input_right,
+                            control_start,
+                            control_w,
                             first_line,
                             placeholder,
                             *cursor,
@@ -1277,6 +1394,13 @@ mod native_surface_paint {
                     FieldKind::Button => {
                         let cap = label_text.clone();
                         let total_w = label_w + 24.0;
+                        // A standalone `Button`'s caption *is*
+                        // `field.label` — unlike every other kind,
+                        // there's no separate column-label/value split,
+                        // so it doesn't participate in the shared
+                        // control column: it keeps its own
+                        // content-sized `<label>` box, right-anchored
+                        // against the row's edge.
                         let ix = if no_label {
                             label_x
                         } else {
@@ -1311,8 +1435,8 @@ mod native_surface_paint {
                     FieldKind::ReadOnly { value } => {
                         let text = plain_text(value);
                         let (w, h) = surface.surface_measure_text(&text);
-                        let ix = if no_label { label_x } else { input_right - w };
-                        if no_label || ix > label_right + 8.0 {
+                        let ix = control_start;
+                        {
                             let iy = row_rect.y + (row_h - h) / 2.0;
                             // Was unconditionally `theme.muted_fg`,
                             // so a focused (`selected_bg`) `ReadOnly` row painted
@@ -1326,14 +1450,23 @@ mod native_surface_paint {
                     FieldKind::Slider {
                         value, min, max, ..
                     } => {
-                        let track_w = 80.0_f32;
                         let range = (max - min).max(f32::EPSILON);
                         let frac = ((value - min) / range).clamp(0.0, 1.0);
                         let value_str = format!("{value:.2}");
                         let (value_w, value_h) = surface.surface_measure_text(&value_str);
-                        let total = track_w + 8.0 + value_w;
-                        let ix = input_right - total;
-                        if ix > label_right + 8.0 {
+                        // `natural_content_width` for `Content` is the
+                        // same `80 (track) + 8 (gap) + value_w` budget
+                        // the track reclaims after resolving — `Fill`/
+                        // `Fixed` grow or shrink the track instead of
+                        // the value text, mirroring the TUI painter.
+                        let control_w = resolved_control_width.resolve(
+                            80.0 + 8.0 + value_w,
+                            available,
+                            min_control_width,
+                        );
+                        let track_w = (control_w - 8.0 - value_w).max(16.0);
+                        let ix = control_start;
+                        {
                             let track_y = row_rect.y + row_h / 2.0 - 2.0;
                             surface.surface_fill_rect(
                                 Rect::new(ix, track_y, track_w, 4.0),
@@ -1355,9 +1488,8 @@ mod native_surface_paint {
                         let hex = format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b);
                         let (hw, hh) = surface.surface_measure_text(&hex);
                         let swatch = 12.0_f32;
-                        let total = swatch + 6.0 + hw;
-                        let ix = input_right - total;
-                        if ix > label_right + 8.0 {
+                        let ix = control_start;
+                        {
                             let sy = row_rect.y + (row_h - swatch) / 2.0;
                             surface.surface_fill_rect(Rect::new(ix, sy, swatch, swatch), *value);
                             let ty = row_rect.y + (row_h - hh) / 2.0;
@@ -1378,9 +1510,8 @@ mod native_surface_paint {
                             .unwrap_or_default();
                         let (cw, ch) = surface.surface_measure_text(&chosen);
                         let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
-                        let total = cw + 4.0 + chev_w;
-                        let ix = input_right - total;
-                        if ix > label_right + 8.0 {
+                        let ix = control_start;
+                        {
                             let ty = row_rect.y + (row_h - ch) / 2.0;
                             surface.surface_draw_text_run(
                                 Rect::new(ix, ty, cw, ch),
@@ -1481,8 +1612,8 @@ mod native_surface_paint {
                         };
                         let text = date.format(picker.locale.format);
                         let (tw, th) = surface.surface_measure_text(&text);
-                        let ix = if no_label { label_x } else { input_right - tw };
-                        if no_label || ix > label_right + 8.0 {
+                        let ix = control_start;
+                        {
                             let ty = row_rect.y + (row_h - th) / 2.0;
                             surface.surface_draw_text_run(
                                 Rect::new(ix, ty, tw, th),
@@ -1498,9 +1629,8 @@ mod native_surface_paint {
                         // field's doc.
                         let (tw, th) = surface.surface_measure_text(&combo.text);
                         let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
-                        let total = tw + 4.0 + chev_w;
-                        let ix = input_right - total;
-                        if ix > label_right + 8.0 {
+                        let ix = control_start;
+                        {
                             let ty = row_rect.y + (row_h - th) / 2.0;
                             surface.surface_draw_text_run(
                                 Rect::new(ix, ty, tw, th),
@@ -1551,9 +1681,8 @@ mod native_surface_paint {
     fn paint_text_input_box(
         surface: &mut dyn PaintSurface,
         row_rect: Rect,
-        label_right: f32,
-        no_label: bool,
-        input_right: f32,
+        control_start: f32,
+        control_width: f32,
         value: &str,
         placeholder: &str,
         cursor: Option<usize>,
@@ -1578,20 +1707,13 @@ mod native_surface_paint {
         let row_h = row_rect.height;
         let (shown_w, shown_h) = surface.surface_measure_text(shown);
 
-        let (ix, _dw, box_right) = if no_label {
-            let ix = row_rect.x + 6.0;
-            let box_r = input_right - 4.0;
-            let avail = (box_r - ix - 8.0).max(0.0);
-            (ix, shown_w.min(avail), box_r)
-        } else {
-            let max_width = (row_rect.width * 0.6).max(80.0);
-            let dw = shown_w.min(max_width);
-            let ix = input_right - dw - 14.0;
-            (ix, dw, ix + 8.0 + dw + 2.0)
-        };
-        if !(no_label || ix > label_right + 8.0) {
-            return;
-        }
+        // The box spans exactly `[control_start, control_start +
+        // control_width)` — the caller already resolved `control_width`
+        // from this field's `ControlWidth` mode, so every field's box
+        // starts at the same column and `Fill` stretches it to the
+        // row's right edge instead of hugging the content.
+        let ix = control_start;
+        let box_right = control_start + control_width.max(16.0);
 
         surface.surface_stroke_rect(
             Rect::new(ix, row_rect.y + 2.0, (box_right - ix).max(1.0), row_h - 4.0),
@@ -1788,6 +1910,8 @@ mod native_surface_paint {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 }],
                 focused_field: None,
                 scroll_offset: 0,
@@ -1795,6 +1919,8 @@ mod native_surface_paint {
                 label_position: Default::default(),
                 label_align: Default::default(),
                 label_width: None,
+                control_width: Default::default(),
+                min_control_width: None,
             }
         }
 
@@ -2543,6 +2669,8 @@ mod native_surface_paint {
                 label_align: Some(LabelAlign::End),
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             });
 
             let (surface, _) = paint_recorded(&form);
@@ -2685,6 +2813,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("line-numbers"),
@@ -2697,6 +2827,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("tabstop"),
@@ -2714,6 +2846,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("save"),
@@ -2726,6 +2860,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("language"),
@@ -2741,6 +2877,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
             ],
             focused_field: Some(WidgetId::new("line-numbers")),
@@ -2749,6 +2887,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let json = serde_json::to_string(&form).unwrap();
         let back: Form = serde_json::from_str(&json).unwrap();
@@ -2821,6 +2961,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -2876,6 +3018,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -2902,6 +3046,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -2950,6 +3096,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -2984,6 +3132,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -3004,6 +3154,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -3017,6 +3169,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -3132,6 +3286,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();

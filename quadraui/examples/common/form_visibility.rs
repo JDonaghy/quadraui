@@ -113,6 +113,8 @@ impl FormVisibilityApp {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("address"),
@@ -130,6 +132,8 @@ impl FormVisibilityApp {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("agree"),
@@ -142,6 +146,8 @@ impl FormVisibilityApp {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("submit"),
@@ -157,6 +163,8 @@ impl FormVisibilityApp {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
         ];
 
@@ -169,6 +177,8 @@ impl FormVisibilityApp {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 

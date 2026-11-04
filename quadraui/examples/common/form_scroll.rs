@@ -73,6 +73,8 @@ impl FormScrollApp {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }];
         fields.extend(self.toggles.iter().enumerate().map(|(i, &val)| FormField {
             id: WidgetId::new(format!("toggle-{i}")),
@@ -85,6 +87,8 @@ impl FormScrollApp {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }));
 
         Form {
@@ -96,6 +100,8 @@ impl FormScrollApp {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 

@@ -1854,6 +1854,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             })
             .collect();
         let form = quadraui::Form {
@@ -1865,6 +1867,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
 
         let logic = FormLogic {

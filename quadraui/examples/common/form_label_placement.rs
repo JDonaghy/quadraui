@@ -93,6 +93,8 @@ impl FormLabelPlacementApp {
             label_align: None,
             label_width: None,
             tab_index: Some(tab_index),
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -117,6 +119,8 @@ impl FormLabelPlacementApp {
             label_align: None,
             label_width: None,
             tab_index: Some(tab_index),
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -150,6 +154,8 @@ impl FormLabelPlacementApp {
             label_position: LabelPosition::Left,
             label_align: LabelAlign::End,
             label_width: Some(14.0),
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 

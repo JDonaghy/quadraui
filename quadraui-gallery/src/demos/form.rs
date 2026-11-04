@@ -63,6 +63,8 @@ impl SearchReplaceState {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("toggles"),
@@ -93,6 +95,8 @@ impl SearchReplaceState {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("replace"),
@@ -110,6 +114,8 @@ impl SearchReplaceState {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("buttons"),
@@ -143,6 +149,8 @@ impl SearchReplaceState {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
             ],
             focused_field: self.focus.current().cloned(),
@@ -151,6 +159,8 @@ impl SearchReplaceState {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -206,6 +216,8 @@ fn scroll_form_from_toggles(toggles: &[bool]) -> Form {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         })
         .collect();
     Form {
@@ -217,6 +229,8 @@ fn scroll_form_from_toggles(toggles: &[bool]) -> Form {
         label_position: Default::default(),
         label_align: Default::default(),
         label_width: None,
+        control_width: Default::default(),
+        min_control_width: None,
     }
 }
 
@@ -259,6 +273,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("line-numbers"),
@@ -271,6 +287,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("name"),
@@ -288,6 +306,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("save"),
@@ -300,6 +320,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("version"),
@@ -314,6 +336,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("font-size"),
@@ -331,6 +355,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("accent"),
@@ -345,6 +371,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("theme"),
@@ -363,6 +391,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("notes"),
@@ -380,6 +410,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("password"),
@@ -397,6 +429,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("scope"),
@@ -412,6 +446,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("flags"),
@@ -430,6 +466,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("actions"),
@@ -449,6 +487,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("toolbar"),
@@ -473,6 +513,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("due-date"),
@@ -488,6 +530,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
         ],
         focused_field: None,
@@ -496,6 +540,8 @@ fn build_all_fields_form() -> Form {
         label_position: Default::default(),
         label_align: Default::default(),
         label_width: None,
+        control_width: Default::default(),
+        min_control_width: None,
     }
 }
 

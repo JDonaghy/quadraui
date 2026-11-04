@@ -192,6 +192,36 @@ test("insertExtra reaches the screen by kind name with no dedicated method", () 
   assert.ok(app.screenContains("Downloading"));
 });
 
+test("insertExtra form with control_width and min_control_width renders without raising", () => {
+  // `Form`/`FormField`'s `control_width`/`min_control_width` are plain
+  // additive `#[serde(default)]` fields, so they decode through the same
+  // generic `insertExtra("form", ...)` path as every other `Form`
+  // descriptor -- no dedicated node binding code needed for this feature.
+  // The narrow `Fixed(4.0)` control is too small for "exactwidth" (10
+  // chars), so without `min_control_width` it would show truncated; the
+  // 14-wide floor on the second field keeps its value intact.
+  const app = new QuiApp(40, 20);
+  app.insertExtra("form", {
+    id: "settings",
+    fields: [
+      {
+        id: "clipped",
+        label: { spans: [{ text: "A", fg: null, bg: null }] },
+        kind: { TextInput: { value: "exactwidth" } },
+        control_width: { Fixed: 4.0 },
+      },
+      {
+        id: "floored",
+        label: { spans: [{ text: "B", fg: null, bg: null }] },
+        kind: { TextInput: { value: "exactwidth" } },
+        control_width: { Fixed: 4.0 },
+        min_control_width: 14.0,
+      },
+    ],
+  });
+  assert.ok(app.screenContains("exactwidth"));
+});
+
 test("insertExtra with an unknown kind raises InvalidDescriptorError", () => {
   const app = new QuiApp(40, 20);
   assert.throws(
