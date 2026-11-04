@@ -38,14 +38,14 @@ mod ai_transcript;
 mod appshell_demo;
 #[path = "../examples/common/bottom_panel_demo.rs"]
 mod bottom_panel_demo;
-#[path = "../examples/common/codicon_tree_demo.rs"]
-mod codicon_tree_demo;
 #[path = "../examples/common/canvas_app.rs"]
 mod canvas_app;
 #[path = "../examples/common/canvas_shapes_app.rs"]
 mod canvas_shapes_app;
 #[path = "../examples/common/caret_shape_demo.rs"]
 mod caret_shape_demo;
+#[path = "../examples/common/codicon_tree_demo.rs"]
+mod codicon_tree_demo;
 // `ChartApp::last_chart_rect` is write-only in the shared example source
 // (see `examples/common/chart_app.rs`) — `examples/common/mod.rs` blankets
 // its whole tree with `#![allow(dead_code)]` when the example binaries
@@ -200,10 +200,10 @@ use bottom_panel_demo::BottomPanelDemo;
 use canvas_app::CanvasApp;
 use canvas_shapes_app::CanvasShapesApp;
 use caret_shape_demo::CaretShapeDemo;
-use codicon_tree_demo::CodiconTreeDemo;
 use chart_app::ChartApp;
 use chat_demo::ChatDemo;
 use clipboard_demo::ClipboardDemo;
+use codicon_tree_demo::CodiconTreeDemo;
 use command_line_selection_demo::CommandLineSelectionDemo;
 use context_menu_style_demo::ContextMenuStyleDemo;
 use controls::ControlsApp;
