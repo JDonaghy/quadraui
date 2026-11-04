@@ -319,43 +319,47 @@ def test_split_honors_first_min_as_a_portable_minimum_pane_size():
 
 def test_row_padding_insets_content_from_the_container_edge():
     # `"padding"`/`"gap"` are siblings of the `"row"` key in the same node
-    # dict, honoured by the shared layout pass -- on TUI a native unit is
-    # one cell, so `padding: 2` must inset the leaf exactly 2 rows/columns
-    # from the top-left corner of a 20x6 screen.
+    # dict, honoured by the shared layout pass. The value is a
+    # surface-native-pixel measurement, exactly like `quadraui.Style.padding`
+    # -- on a cell-grid backend (TUI) it converts into whole cells via
+    # `ceil(px / nominal_cell_px)` (an 8px-wide, 16px-tall nominal cell), not
+    # read as that many cells outright. `padding: 12` therefore insets the
+    # leaf by `ceil(12 / 8) == 2` columns and `ceil(12 / 16) == 1` row from
+    # the top-left corner of a 20x6 screen.
     app = QuiApp(20, 6)
 
     def render():
         return {
             "row": [_text("text:left", "L")],
-            "padding": 2,
+            "padding": 12,
         }
 
     app.set_render(render)
     screen = app.screen()
     lines = screen.splitlines()
     assert lines[0].strip() == "", "no padding rows stay blank"
-    assert lines[1].strip() == ""
-    assert lines[2][:2] == "  ", "padding columns stay blank"
-    assert lines[2].strip() == "L"
+    assert lines[1][:2] == "  ", "padding columns stay blank"
+    assert lines[1].strip() == "L"
 
 
 def test_row_gap_separates_two_children_by_whole_cells():
     # `"gap"` inserts space between adjacent `"row"` children on the main
-    # axis -- two single-column leaves with `gap: 3` land 3 columns apart
-    # rather than touching.
+    # axis, in surface-native pixels -- two single-column leaves with
+    # `gap: 16` land `ceil(16 / 8) == 2` whole TUI columns apart rather
+    # than touching.
     app = QuiApp(20, 3)
 
     def render():
         return {
             "row": [_text("text:left", "L"), _text("text:right", "R")],
-            "gap": 3,
+            "gap": 16,
         }
 
     app.set_render(render)
     line = app.screen().splitlines()[0]
     left_col = line.index("L")
     right_col = line.index("R")
-    assert right_col - left_col >= 3 + 1, line
+    assert right_col - left_col >= 2 + 1, line
 
 
 def test_row_with_no_spacing_keys_still_decodes_the_legacy_array_shape():
