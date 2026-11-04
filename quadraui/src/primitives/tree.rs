@@ -304,36 +304,55 @@ impl TreeView {
         let mut visible_rows: Vec<VisibleTreeRow> = Vec::new();
         let mut hit_regions: Vec<(Rect, TreeViewHit)> = Vec::new();
 
+        // Border insets: 1 cell/pixel on each side when `style.bordered`
+        // is set, reserving room for a decorative frame (e.g. a focus
+        // ring) so it never overwrites row content — mirrors
+        // `ListView::layout`'s `bordered` handling.
+        let (inset_x, inset_y, row_w, rows_h_max) = if self.style.bordered {
+            let iw = (viewport_width - 2.0).max(0.0);
+            let ih = (viewport_height - 2.0).max(0.0);
+            (1.0, 1.0, iw, ih)
+        } else {
+            (0.0, 0.0, viewport_width, viewport_height)
+        };
+
         // Clamp scroll_offset to a valid starting index; we still report
         // the clamped value so the app can write it back and self-correct.
         let resolved_scroll_offset =
             crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.rows.len());
 
-        let mut y = 0.0_f32;
+        let rows_y_end = inset_y + rows_h_max;
+        let mut y = inset_y;
         for i in resolved_scroll_offset..self.rows.len() {
-            if y >= viewport_height {
+            if y >= rows_y_end {
                 break;
             }
             let m = measure_row(i);
             // Clip the last row's height to fit inside the viewport.
-            let remaining = viewport_height - y;
+            let remaining = rows_y_end - y;
             let height = m.height.min(remaining).max(0.0);
             if height <= 0.0 {
                 break;
             }
-            let bounds = Rect::new(0.0, y, viewport_width, height);
+            let bounds = Rect::new(inset_x, y, row_w, height);
             visible_rows.push(VisibleTreeRow { row_idx: i, bounds });
             // Split the hit region into Chevron + Row when the backend
             // supplied a chevron boundary for this branch row.
             let row = &self.rows[i];
             if let (Some(_), Some(chev_x)) = (row.is_expanded, m.chevron_end_x) {
-                let chev_x = chev_x.clamp(0.0, viewport_width);
+                let chev_x = chev_x.clamp(0.0, row_w);
                 if chev_x > 0.0 {
-                    hit_regions.push((Rect::new(0.0, y, chev_x, height), TreeViewHit::Chevron(i)));
+                    hit_regions.push((
+                        Rect::new(inset_x, y, chev_x, height),
+                        TreeViewHit::Chevron(i),
+                    ));
                 }
-                let body_w = (viewport_width - chev_x).max(0.0);
+                let body_w = (row_w - chev_x).max(0.0);
                 if body_w > 0.0 {
-                    hit_regions.push((Rect::new(chev_x, y, body_w, height), TreeViewHit::Row(i)));
+                    hit_regions.push((
+                        Rect::new(inset_x + chev_x, y, body_w, height),
+                        TreeViewHit::Row(i),
+                    ));
                 }
             } else {
                 hit_regions.push((bounds, TreeViewHit::Row(i)));

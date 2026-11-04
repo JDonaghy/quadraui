@@ -167,6 +167,16 @@ only a push to `main` runs this workflow.
   module (full support on TUI, same as `move_to_trash`). `macos` keeps the
   `Unsupported` default — `os_limited` has no macOS implementation, so there
   is nothing honest to override there.
+- `TreeStyle` gains `bordered: bool` (default `false`). When set,
+  `TreeView::layout` reserves a 1-cell/pixel margin on every edge of the
+  viewport for a decorative frame, insetting `visible_rows`/`hit_regions`
+  so painted content and hit-testing stay aligned. The TUI rasteriser
+  (`tui::draw_tree`) paints that margin as a rounded border in
+  `Theme::border_fg`, so a focused, bordered tree's generic focus-ring
+  overlay (`tui::draw_focus_ring`) lands on the border instead of
+  overwriting row 0's content — GTK/macOS/Win don't yet paint a frame in
+  the reserved space (same opt-in-per-backend precedent as
+  `TreeStyle::row_height`).
 
 ### Changed
 - TUI: on a kitty-keyboard-capable terminal, a chord whose key is a shifted
