@@ -988,8 +988,13 @@ pub(crate) mod native_surface_paint {
             surface.surface_push_clip(Rect::new(col_x, rect.y, col_w, header_height));
             let (tw, th) = surface.surface_measure_text_styled(&title, true);
             let text_x = align_text_x(col_x, col_w, tw, col.align);
+            // Centred within `header_height`, which can be much taller than
+            // the title's own measured height on a pixel backend whose
+            // header slot is sized off `Style::row_height` rather than the
+            // chrome font's line height.
+            let text_y = rect.y + (header_height - th).max(0.0) / 2.0;
             surface.surface_draw_text_run_styled(
-                Rect::new(text_x, rect.y, tw.max(1.0), th.max(1.0)),
+                Rect::new(text_x, text_y, tw.max(1.0), th.max(1.0)),
                 &title,
                 theme.foreground,
                 true,

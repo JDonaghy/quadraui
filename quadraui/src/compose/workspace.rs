@@ -272,8 +272,9 @@ pub enum WorkspaceEvent {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorkspaceLayout {
-    /// The tab strip the controller painted — one `line_height` tall,
-    /// flush with the top of the rect it was given.
+    /// The tab strip the controller painted, flush with the top of the
+    /// rect it was given — `Style::tab_height` tall on a pixel backend,
+    /// one `line_height` tall on a cell grid (TUI).
     pub strip_bounds: Rect,
     /// Everything below the strip. The **host** paints the active
     /// document's content here; the controller draws nothing in it.
@@ -692,7 +693,17 @@ impl WorkspaceController {
     ///    event-driven backends, where a queued redraw is unreliable.
     #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
     pub fn render(&mut self, backend: &mut dyn Backend, bounds: Rect) -> WorkspaceLayout {
-        let strip_height = backend.chrome_line_height().min(bounds.height.max(0.0));
+        let lh = backend.chrome_line_height();
+        // On a pixel backend (GUI), the tab strip is sized off
+        // `Style::tab_height` rather than the raw chrome line height; TUI's
+        // cell grid (`lh <= 1.0`) keeps the one-row strip — see
+        // `TabGroupController::render`'s identical split.
+        let strip_height = if lh > 1.0 {
+            lh.max(backend.style().tab_height)
+        } else {
+            lh
+        }
+        .min(bounds.height.max(0.0));
         let strip = Rect::new(bounds.x, bounds.y, bounds.width, strip_height);
         let body = Rect::new(
             bounds.x,
@@ -1616,5 +1627,59 @@ mod tests {
             available_cols: bounds.width as usize,
             correct_scroll_offset: 0,
         });
+    }
+
+    // ── Tab strip height ──────────────────────────────────────────────
+
+    /// On a pixel backend (GUI), the tab strip is sized off
+    /// `Style::tab_height` (35, the default) rather than the raw chrome
+    /// line height.
+    #[test]
+    fn render_strip_height_uses_style_tab_height_on_gui() {
+        let mut ws = ws(&["a", "b"]);
+        let mut backend = crate::testing::RecordingBackend {
+            line_height: 20.0,
+            chrome_line_height: Some(18.0),
+            viewport: crate::Viewport {
+                width: 800.0,
+                height: 600.0,
+                scale: 1.0,
+            },
+            char_width: 8.0,
+            ..Default::default()
+        };
+        let layout = ws.render(&mut backend, Rect::new(0.0, 0.0, 800.0, 600.0));
+        assert_eq!(layout.strip_bounds.height, 35.0);
+    }
+
+    /// `Backend::set_style` overriding `tab_height` changes the painted
+    /// strip height.
+    #[test]
+    fn render_strip_height_follows_a_set_style_override() {
+        let mut ws = ws(&["a", "b"]);
+        let mut backend = crate::testing::RecordingBackend {
+            line_height: 20.0,
+            chrome_line_height: Some(18.0),
+            viewport: crate::Viewport {
+                width: 800.0,
+                height: 600.0,
+                scale: 1.0,
+            },
+            char_width: 8.0,
+            ..Default::default()
+        };
+        backend.set_style(crate::Style::default().with_tab_height(50.0));
+        let layout = ws.render(&mut backend, Rect::new(0.0, 0.0, 800.0, 600.0));
+        assert_eq!(layout.strip_bounds.height, 50.0);
+    }
+
+    /// On a cell grid (TUI), the strip stays exactly one row tall.
+    #[test]
+    fn render_strip_height_ignores_style_tab_height_on_a_cell_grid() {
+        let mut ws = ws(&["a", "b"]);
+        let mut backend = crate::testing::RecordingBackend::new();
+        backend.set_style(crate::Style::default().with_tab_height(50.0));
+        let layout = ws.render(&mut backend, Rect::new(0.0, 0.0, 80.0, 24.0));
+        assert_eq!(layout.strip_bounds.height, 1.0);
     }
 }

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit, ActivityItem};
 use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
 use crate::types::{Color, Icon, WidgetId};
-use crate::{Backend, ButtonMask, InteractionState, MouseButton, Point, Rect, UiEvent};
+use crate::{Backend, ButtonMask, InteractionState, MouseButton, Point, Rect, Style, UiEvent};
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -976,7 +976,11 @@ impl AppShell {
     /// with `Self::render`/`Self::handle`, which pass `backend.snap_height`
     /// directly, for the same `area`/`line_height` on the same backend.
     pub fn layout(&self, area: Rect, line_height: f32) -> AppShellLayout {
-        self.compute_layout(area, line_height, &|h: f32| {
+        // No `&dyn Backend` in hand, so no overridden `Style` to read back
+        // — falls through to `Style::default()`, the same VS Code chrome
+        // metrics `Self::render`/`Self::handle` start from before a host
+        // calls `Backend::set_style`.
+        self.compute_layout(area, line_height, &Style::default(), &|h: f32| {
             if line_height > 1.0 {
                 h
             } else {
@@ -1104,7 +1108,8 @@ impl AppShell {
         // `set_theme` — the same palette every `draw_*` rasteriser call
         // below already paints with — so this chrome tracks the app's actual theme.
         let theme = backend.theme();
-        let layout = self.compute_layout(area, lh, &|h: f32| backend.snap_height(h));
+        let style = backend.style();
+        let layout = self.compute_layout(area, lh, &style, &|h: f32| backend.snap_height(h));
         Self::register_chrome_zones(backend, &layout);
 
         let bar = self.build_activity_bar();
@@ -1171,7 +1176,8 @@ impl AppShell {
     /// is not [`AppShellEvent::Ignored`], the consumer should redraw.
     pub fn handle(&mut self, event: &UiEvent, backend: &dyn Backend, area: Rect) -> AppShellEvent {
         let lh = backend.chrome_line_height();
-        let layout = self.compute_layout(area, lh, &|h: f32| backend.snap_height(h));
+        let style = backend.style();
+        let layout = self.compute_layout(area, lh, &style, &|h: f32| backend.snap_height(h));
 
         match event {
             UiEvent::MouseDown {
@@ -1316,6 +1322,7 @@ impl AppShell {
         &self,
         area: Rect,
         line_height: f32,
+        style: &Style,
         snap: &dyn Fn(f32) -> f32,
     ) -> AppShellLayout {
         // `activity_bar_width_px`, `title_bar_min_px` and
@@ -1326,6 +1333,14 @@ impl AppShell {
         // px fields on that backend so the line-height-multiple fields
         // (`activity_bar_width`, `title_bar_height_lh`, and the implicit
         // `snap(lh)` status-bar fallback) keep driving TUI's layout instead.
+        //
+        // The same threshold also picks the *unset-override* defaults for
+        // `status_h`, `ab_w` and `header_h` below: a pixel backend (GUI)
+        // defaults to the matching VS Code `Style` chrome metric instead of
+        // a `line_height` multiple, while TUI's cell grid keeps the
+        // pre-existing `snap(lh)`/`activity_bar_width`-multiple behaviour
+        // (`Style`'s own tokens are a documented no-op there — see that
+        // module's "Where each token maps on TUI").
         let is_cell_grid = line_height <= 1.0;
         let activity_bar_width_px = self.activity_bar_width_px.filter(|_| !is_cell_grid);
         let title_bar_min_px = self.title_bar_min_px.filter(|_| !is_cell_grid);
@@ -1349,7 +1364,16 @@ impl AppShell {
         };
 
         let status_h = if self.has_status_bar {
-            status_bar_height_px.unwrap_or_else(|| snap(lh))
+            status_bar_height_px.unwrap_or_else(|| {
+                if is_cell_grid {
+                    snap(lh)
+                } else {
+                    // Floored at `lh`, never shrunk below it — a chrome
+                    // font taller than the VS Code default must not be
+                    // clipped against a fixed strip.
+                    snap(lh.max(style.status_bar_height))
+                }
+            })
         } else {
             0.0
         };
@@ -1501,7 +1525,13 @@ impl AppShell {
         // `Toolbar` and `Form` (same shared engine, see those modules), so
         // `row_x_positions` delegates to it under the `layout` feature.
 
-        let ab_w = activity_bar_width_px.unwrap_or_else(|| snap(self.activity_bar_width * lh));
+        let ab_w = activity_bar_width_px.unwrap_or_else(|| {
+            if is_cell_grid {
+                snap(self.activity_bar_width * lh)
+            } else {
+                snap(style.activity_bar_width)
+            }
+        });
         let divider_w = snap(lh * 0.25).clamp(1.0, 4.0);
 
         if !self.sidebar_visible || self.panels.is_empty() {
@@ -1551,7 +1581,16 @@ impl AppShell {
         );
         let remaining = (area.width - ab_w - divider_w).max(0.0);
         let sidebar_w = sidebar_w.min(remaining * 0.8);
-        let header_h = lh;
+        // The sidebar header strip (e.g. "EXPLORER") paints through the
+        // same chrome rendering as a tab strip, so a pixel backend sizes
+        // it off `Style::tab_height` instead of the raw chrome line
+        // height — floored at `lh` so a chrome font taller than the
+        // token isn't clipped; TUI's cell grid keeps the one-row default.
+        let header_h = if is_cell_grid {
+            lh
+        } else {
+            snap(lh.max(style.tab_height))
+        };
 
         let main_w = (area.width - ab_w - sidebar_w - divider_w).max(0.0);
 
@@ -1824,22 +1863,67 @@ mod tests {
         assert_eq!(content.width, header.width);
     }
 
-    // ── Activity bar width ──────────────────────────────────────────
-
-    /// The default activity bar width (4.0 line-heights) tracks
-    /// `line_height`, same as every other chrome dimension.
+    /// On a pixel backend (GUI), the sidebar header strip defaults to
+    /// `Style::tab_height` (35px) instead of the raw chrome line height —
+    /// the same VS Code chrome metric a tab strip uses, since both paint
+    /// the same kind of header row.
     #[test]
-    fn activity_bar_width_tracks_line_height_by_default() {
+    fn layout_visible_sidebar_header_height_defaults_to_tab_height_on_gui() {
         let s = shell();
-        assert_eq!(s.layout(area(), 20.0).activity_bar_bounds.width, 80.0);
-        assert_eq!(s.layout(area(), 10.0).activity_bar_bounds.width, 40.0);
+        let l = s.layout(area(), 20.0);
+        assert_eq!(l.sidebar_header_bounds.unwrap().height, 35.0);
     }
 
-    /// `with_activity_bar_width` overrides the line-height multiple itself
-    /// — e.g. 2.4 lh lands on 48px at lh=20, matching VS Code's 48px bar.
+    /// On the status bar: a pixel backend (GUI) defaults the status bar
+    /// strip to `Style::status_bar_height` (22px) instead of the raw
+    /// chrome line height; TUI's cell grid keeps the one-row default.
     #[test]
-    fn with_activity_bar_width_overrides_the_multiple() {
-        let s = shell().with_activity_bar_width(2.4);
+    fn status_bar_height_defaults_to_style_token_on_gui() {
+        let s = full_chrome_shell();
+        let l = s.layout(area(), 20.0);
+        assert_eq!(l.status_bar_bounds.unwrap().height, 22.0);
+
+        let l_tui = s.layout(area(), 1.0);
+        assert_eq!(l_tui.status_bar_bounds.unwrap().height, 1.0);
+    }
+
+    // ── Activity bar width ──────────────────────────────────────────
+
+    /// On a cell grid (TUI's architecturally-fixed `line_height == 1.0`),
+    /// the default activity bar width (4.0 line-heights) still tracks
+    /// `line_height`, the same as every other chrome dimension — `Style`
+    /// tokens are a documented no-op there.
+    #[test]
+    fn activity_bar_width_tracks_line_height_by_default_on_cell_grid() {
+        let s = shell();
+        assert_eq!(s.layout(area(), 1.0).activity_bar_bounds.width, 4.0);
+    }
+
+    /// `with_activity_bar_width` overrides the line-height multiple used
+    /// on a cell grid — e.g. 3.0 lh at lh=1.0 lands on 3.0 cells.
+    #[test]
+    fn with_activity_bar_width_overrides_the_multiple_on_cell_grid() {
+        let s = shell().with_activity_bar_width(3.0);
+        assert_eq!(s.layout(area(), 1.0).activity_bar_bounds.width, 3.0);
+    }
+
+    /// On a pixel backend (GUI), with neither a px nor line-height-multiple
+    /// override set, the activity bar defaults to `Style::activity_bar_width`
+    /// (48px) instead of scaling with whatever the chrome font's line
+    /// height happens to be — VS Code's own fixed-width bar.
+    #[test]
+    fn activity_bar_width_defaults_to_style_token_on_gui() {
+        let s = shell();
+        assert_eq!(s.layout(area(), 20.0).activity_bar_bounds.width, 48.0);
+        assert_eq!(s.layout(area(), 10.0).activity_bar_bounds.width, 48.0);
+    }
+
+    /// `with_activity_bar_width`'s line-height multiple is a cell-grid-only
+    /// concept: on a pixel backend it has no effect unless paired with
+    /// `with_activity_bar_width_px`, which is the GUI override hook.
+    #[test]
+    fn activity_bar_width_multiplier_has_no_effect_on_gui_alone() {
+        let s = shell().with_activity_bar_width(10.0);
         assert_eq!(s.layout(area(), 20.0).activity_bar_bounds.width, 48.0);
     }
 
@@ -2616,7 +2700,7 @@ mod tests {
     #[test]
     fn resize_drag_updates_width() {
         let mut s = shell();
-        let l = s.compute_layout(area(), 1.0, &|h: f32| h.round());
+        let l = s.compute_layout(area(), 1.0, &Style::default(), &|h: f32| h.round());
         let div = l.divider_bounds.unwrap();
         let _center = div.x + div.width / 2.0;
 
