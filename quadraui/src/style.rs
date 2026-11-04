@@ -223,6 +223,90 @@ pub struct Style {
     /// popup looks identical to before this field existed.
     #[serde(default = "default_backdrop_opacity")]
     pub backdrop_opacity: f32,
+
+    /// Height, in surface-native pixels, of a tab strip row — the
+    /// editor tab bar, the bottom-panel tab row, and a `SidebarPanel`
+    /// header slot all reserve this much height on a pixel backend
+    /// instead of the chrome font's own line height, which is usually
+    /// shorter than VS Code's actual tab height.
+    ///
+    /// **TUI story: no-op.** A terminal tab strip is always exactly one
+    /// cell tall; every caller only reads this field once it has already
+    /// confirmed it is on a pixel backend (`chrome_line_height() > 1.0`),
+    /// so a TUI backend's cell-grid strip never consults it at all.
+    ///
+    /// Default `35.0` — VS Code's own tab bar height.
+    #[serde(default = "default_tab_height")]
+    pub tab_height: f32,
+
+    /// Height, in surface-native pixels, of the status bar strip at the
+    /// bottom of the window.
+    ///
+    /// **TUI story: no-op**, for the same reason as [`Self::tab_height`].
+    ///
+    /// Default `22.0` — VS Code's own status bar height.
+    #[serde(default = "default_status_bar_height")]
+    pub status_bar_height: f32,
+
+    /// Width, in surface-native pixels, of the activity bar column on
+    /// the window's edge.
+    ///
+    /// **TUI story: no-op**, for the same reason as [`Self::tab_height`].
+    ///
+    /// Default `48.0` — VS Code's own activity bar width.
+    #[serde(default = "default_activity_bar_width")]
+    pub activity_bar_width: f32,
+
+    /// Height, in surface-native pixels, of one row in a `List`,
+    /// `TreeView` or `DataTable` — independent of [`Self::control_height`],
+    /// which is the single-line-control metric (buttons, inputs), not a
+    /// multi-row list's own row pitch.
+    ///
+    /// **TUI story: no-op**, for the same reason as [`Self::tab_height`].
+    ///
+    /// Default `22.0` — VS Code's own list/tree row height.
+    #[serde(default = "default_row_height")]
+    pub row_height: f32,
+
+    /// Height, in surface-native pixels, of a toolbar strip — the
+    /// `Toolbar` header slot a `SidebarPanel` reserves above its content.
+    ///
+    /// **TUI story: no-op**, for the same reason as [`Self::tab_height`].
+    ///
+    /// Default `35.0` — VS Code's own toolbar height.
+    #[serde(default = "default_toolbar_height")]
+    pub toolbar_height: f32,
+}
+
+/// `#[serde(default)]` value for [`Style::tab_height`] — a struct
+/// serialized before this field existed deserializes at the VS Code
+/// default, matching [`Style::default`].
+fn default_tab_height() -> f32 {
+    35.0
+}
+
+/// `#[serde(default)]` value for [`Style::status_bar_height`] — see
+/// [`default_tab_height`].
+fn default_status_bar_height() -> f32 {
+    22.0
+}
+
+/// `#[serde(default)]` value for [`Style::activity_bar_width`] — see
+/// [`default_tab_height`].
+fn default_activity_bar_width() -> f32 {
+    48.0
+}
+
+/// `#[serde(default)]` value for [`Style::row_height`] — see
+/// [`default_tab_height`].
+fn default_row_height() -> f32 {
+    22.0
+}
+
+/// `#[serde(default)]` value for [`Style::toolbar_height`] — see
+/// [`default_tab_height`].
+fn default_toolbar_height() -> f32 {
+    35.0
 }
 
 /// `#[serde(default)]` value for [`Style::backdrop_opacity`] — a struct
@@ -242,6 +326,11 @@ impl Default for Style {
             shadow_elevation: 1,
             control_height: 26.0,
             backdrop_opacity: 1.0,
+            tab_height: 35.0,
+            status_bar_height: 22.0,
+            activity_bar_width: 48.0,
+            row_height: 22.0,
+            toolbar_height: 35.0,
         }
     }
 }
@@ -306,6 +395,41 @@ impl Style {
         self.backdrop_opacity = backdrop_opacity;
         self
     }
+
+    /// Set [`Self::tab_height`].
+    #[must_use]
+    pub fn with_tab_height(mut self, tab_height: f32) -> Self {
+        self.tab_height = tab_height;
+        self
+    }
+
+    /// Set [`Self::status_bar_height`].
+    #[must_use]
+    pub fn with_status_bar_height(mut self, status_bar_height: f32) -> Self {
+        self.status_bar_height = status_bar_height;
+        self
+    }
+
+    /// Set [`Self::activity_bar_width`].
+    #[must_use]
+    pub fn with_activity_bar_width(mut self, activity_bar_width: f32) -> Self {
+        self.activity_bar_width = activity_bar_width;
+        self
+    }
+
+    /// Set [`Self::row_height`].
+    #[must_use]
+    pub fn with_row_height(mut self, row_height: f32) -> Self {
+        self.row_height = row_height;
+        self
+    }
+
+    /// Set [`Self::toolbar_height`].
+    #[must_use]
+    pub fn with_toolbar_height(mut self, toolbar_height: f32) -> Self {
+        self.toolbar_height = toolbar_height;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -341,6 +465,69 @@ mod tests {
         assert_eq!(style.border_width, 1.0);
         assert_eq!(style.shadow_elevation, 1);
         assert_eq!(style.control_height, 26.0);
+    }
+
+    /// Pins the VS-Code-matching GUI chrome-metric defaults, so a future
+    /// edit to any of them is a deliberate, reviewed visual change.
+    #[test]
+    fn defaults_match_vs_code_chrome_metrics() {
+        let style = Style::default();
+        assert_eq!(style.tab_height, 35.0);
+        assert_eq!(style.status_bar_height, 22.0);
+        assert_eq!(style.activity_bar_width, 48.0);
+        assert_eq!(style.row_height, 22.0);
+        assert_eq!(style.toolbar_height, 35.0);
+    }
+
+    /// Each chrome-metric `with_*` builder overrides only its own field.
+    #[test]
+    fn chrome_metric_builders_each_override_only_their_own_field() {
+        let defaults = Style::default();
+
+        let tab_height = defaults.with_tab_height(40.0);
+        assert_eq!(tab_height.tab_height, 40.0);
+        assert_eq!(tab_height.status_bar_height, defaults.status_bar_height);
+
+        let status_bar_height = defaults.with_status_bar_height(28.0);
+        assert_eq!(status_bar_height.status_bar_height, 28.0);
+        assert_eq!(
+            status_bar_height.activity_bar_width,
+            defaults.activity_bar_width
+        );
+
+        let activity_bar_width = defaults.with_activity_bar_width(56.0);
+        assert_eq!(activity_bar_width.activity_bar_width, 56.0);
+        assert_eq!(activity_bar_width.row_height, defaults.row_height);
+
+        let row_height = defaults.with_row_height(28.0);
+        assert_eq!(row_height.row_height, 28.0);
+        assert_eq!(row_height.toolbar_height, defaults.toolbar_height);
+
+        let toolbar_height = defaults.with_toolbar_height(40.0);
+        assert_eq!(toolbar_height.toolbar_height, 40.0);
+        assert_eq!(toolbar_height.tab_height, defaults.tab_height);
+    }
+
+    /// A JSON payload serialized before the chrome-metric fields existed
+    /// has no such keys; `#[serde(default = "…")]` must deserialize them
+    /// at the VS Code defaults rather than erroring, so a consumer's
+    /// persisted config from an earlier `quadraui` version keeps loading.
+    #[test]
+    fn deserializing_without_chrome_metrics_defaults_to_vs_code_values() {
+        let json = r#"{
+            "focus_ring_width": 2.0,
+            "padding": 8.0,
+            "corner_radius": 6.0,
+            "border_width": 1.0,
+            "shadow_elevation": 1,
+            "control_height": 26.0
+        }"#;
+        let style: Style = serde_json::from_str(json).expect("deserialize without chrome metrics");
+        assert_eq!(style.tab_height, 35.0);
+        assert_eq!(style.status_bar_height, 22.0);
+        assert_eq!(style.activity_bar_width, 48.0);
+        assert_eq!(style.row_height, 22.0);
+        assert_eq!(style.toolbar_height, 35.0);
     }
 
     /// Every one of these `with_*` builders overrides only its own

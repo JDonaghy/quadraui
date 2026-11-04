@@ -931,6 +931,38 @@ impl MacBackend {
         &self.current_style
     }
 
+    /// Resolve the row pitch `draw_list`/`draw_tree`/`draw_data_table`
+    /// lay their rows out at: `Style::row_height` on a pixel backend
+    /// (`candidate_line_height > 1.0`), unchanged otherwise (a cell grid,
+    /// which never reaches this code on macOS, but kept symmetric with
+    /// the TUI-shared formula other chrome strips use).
+    /// On a pixel backend (`candidate_line_height > 1.0`), never shrinks
+    /// below the font's own metric — a chrome/editor font large enough to
+    /// need more than `Style::row_height` still gets it, so a huge UI
+    /// font size doesn't clip row content against a fixed slot. On a
+    /// cell grid, `Style` tokens are a documented no-op (see that
+    /// module's "Where each token maps on TUI"), so the raw candidate
+    /// passes through unchanged.
+    fn resolved_row_height(&self, candidate_line_height: f64) -> f64 {
+        if candidate_line_height > 1.0 {
+            candidate_line_height.max(self.current_style.row_height as f64)
+        } else {
+            candidate_line_height
+        }
+    }
+
+    /// Resolve a `SidebarPanel`'s default toolbar-header slot height:
+    /// `Style::toolbar_height` on a pixel backend, floored the same way
+    /// [`Self::resolved_row_height`] is — same shape, for the toolbar
+    /// chrome metric instead of the row metric.
+    fn resolved_toolbar_height(&self, candidate_line_height: f64) -> f64 {
+        if candidate_line_height > 1.0 {
+            candidate_line_height.max(self.current_style.toolbar_height as f64)
+        } else {
+            candidate_line_height
+        }
+    }
+
     /// Shared handle to the backend's event queue. The runner clones
     /// this into responder-method closures (when async producers land
     /// alongside #36 notifications).
@@ -2186,7 +2218,7 @@ impl Backend for MacBackend {
         // fix in 7dfbad5e.
         let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.chrome_line_height;
+        let line_height = self.resolved_row_height(self.chrome_line_height);
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::tree::draw_tree(
@@ -2214,7 +2246,7 @@ impl Backend for MacBackend {
         // layer's layout and `list_layout` hit regions.
         let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.chrome_line_height;
+        let line_height = self.resolved_row_height(self.chrome_line_height);
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::list::draw_list(
@@ -2246,7 +2278,7 @@ impl Backend for MacBackend {
         // `chrome_font`, matching `draw_tree`'s comment above.
         let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
+        let line_height = self.resolved_row_height(self.current_line_height);
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::data_table::draw_data_table(
@@ -2281,7 +2313,7 @@ impl Backend for MacBackend {
         );
         let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
+        let line_height = self.resolved_row_height(self.current_line_height);
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::data_table::draw_data_table_with_glyphs(
@@ -2311,7 +2343,7 @@ impl Backend for MacBackend {
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
-            self.current_line_height,
+            self.resolved_row_height(self.current_line_height),
         )
     }
     fn list_hscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
@@ -2327,7 +2359,10 @@ impl Backend for MacBackend {
         if content_px <= visible_px {
             return None;
         }
-        let row_h = self.line_height();
+        // Row pitch must match `draw_list`'s own (`resolved_row_height`
+        // over the chrome metric), or the thumb geometry drifts from the
+        // rows it is meant to track.
+        let row_h = self.resolved_row_height(self.chrome_line_height() as f64) as f32;
         let track = crate::primitives::list::hscrollbar_track(rect, list.bordered, char_w, row_h);
         Some(crate::Scrollbar::horizontal(
             list.id,
@@ -2341,9 +2376,10 @@ impl Backend for MacBackend {
     fn list_vscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
         // macOS ListView vertical-scrollbar rasteriser not yet implemented.
         // Delegate to the primitive's geometry method using pixel units:
-        // each "row" is one line_height tall (the primitive column-width
-        // parameter is reused as row_height here, same as for TUI).
-        let row_h = self.chrome_line_height();
+        // each "row" is `resolved_row_height` tall (the primitive
+        // column-width parameter is reused as row_height here, same as
+        // for TUI) — matches `draw_list`'s own row pitch.
+        let row_h = self.resolved_row_height(self.chrome_line_height() as f64) as f32;
         list.vscrollbar(
             crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height),
             row_h,
@@ -2356,7 +2392,7 @@ impl Backend for MacBackend {
             list,
             rect.width as f64,
             rect.height as f64,
-            self.chrome_line_height,
+            self.resolved_row_height(self.chrome_line_height),
             self.chrome_char_width,
         )
     }
@@ -3354,11 +3390,18 @@ impl Backend for MacBackend {
         super::multi_section_view::mac_msv_metrics(self.chrome_line_height, false)
     }
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
-        super::tree::mac_tree_layout(tree, rect, self.chrome_line_height, &self.chrome_font)
+        super::tree::mac_tree_layout(
+            tree,
+            rect,
+            self.resolved_row_height(self.chrome_line_height),
+            &self.chrome_font,
+        )
     }
     fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<crate::Scrollbar> {
-        let row_h =
-            crate::primitives::layout_metrics::tree_row_pitch(tree, self.chrome_line_height);
+        let row_h = crate::primitives::layout_metrics::tree_row_pitch(
+            tree,
+            self.resolved_row_height(self.chrome_line_height),
+        );
         tree.vscrollbar_with_track_width(
             rect,
             row_h as f32,
@@ -4070,14 +4113,11 @@ impl Backend for MacBackend {
         // content — so this paints through `ChromeSurface` (routes text
         // through `chrome_font`), the same switch
         // `draw_status_bar_interactive` makes. The default header slot
-        // height must be sized off that same `chrome_line_height`
-        // metric: the row paints with `chrome_font`, so sizing it off
-        // `current_line_height` (the editor's, independently-sized,
-        // font pitch) under-reserves the slot whenever the chrome font's
-        // line height exceeds the editor's, clipping the tops of the
-        // toolbar's icon glyphs against the header's own clip rect.
+        // height is `Style::toolbar_height` on a pixel backend — VS
+        // Code's own toolbar height — rather than the raw
+        // `chrome_line_height` metric, which is usually shorter.
         let theme = self.current_theme;
-        let line_height = self.chrome_line_height as f32;
+        let line_height = self.resolved_toolbar_height(self.chrome_line_height) as f32;
         let mut surface = ChromeSurface { backend: self };
         crate::primitives::sidebar_panel::native_surface_paint::paint(
             panel,
@@ -4128,14 +4168,14 @@ impl Backend for MacBackend {
         // No-paint twin of `draw_sidebar_panel_interactive` — must agree
         // with what that method painted, so its header toolbar both
         // measures against `chrome_font` and sizes its default slot
-        // height off `chrome_line_height`, matching
+        // height via `resolved_toolbar_height`, matching
         // `draw_sidebar_panel_interactive` above. `chrome_font` is never
         // `None` (seeded at construction — see its field doc), so there
         // is no "no font installed yet" fallback to guard against here.
         super::sidebar_panel::mac_sidebar_panel_layout(
             panel,
             &self.chrome_font,
-            self.chrome_line_height,
+            self.resolved_toolbar_height(self.chrome_line_height),
             rect.x as f64,
             rect.y as f64,
             rect.width as f64,
@@ -6389,6 +6429,12 @@ mod tests {
         let mut b = MacBackend::new();
         b.current_char_width = 8.0;
         b.current_line_height = 16.0;
+        // The hscrollbar's row pitch now follows `draw_list`'s own
+        // (`resolved_row_height` over the chrome metric, which defaults
+        // to `Style::row_height` on a pixel backend) — not the raw
+        // editor `current_line_height` set above, which this test keeps
+        // only for `track.x`/`track.width`'s char-width-based inset math.
+        let row_h = b.current_style.row_height;
         let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
 
         let flat = bordered_overflow_list(40, 0, false);
@@ -6407,9 +6453,47 @@ mod tests {
         // the border rather than overpainting it.
         assert_eq!(bordered_sb.track.x, 8.0);
         assert_eq!(bordered_sb.track.width, 184.0);
-        assert_eq!(bordered_sb.track.y, 100.0 - 2.0 * 16.0);
+        assert_eq!(bordered_sb.track.y, 100.0 - 2.0 * row_h);
         assert!(bordered_sb.track.x >= rect.x + 8.0);
         assert!(bordered_sb.track.x + bordered_sb.track.width <= rect.x + rect.width - 8.0);
+    }
+
+    // ── Style::row_height governs list/tree/table row pitch ────────────
+
+    /// On a pixel backend, `resolved_row_height` defaults to
+    /// `Style::row_height` (22, the default) rather than the raw chrome
+    /// line height, but never shrinks below it.
+    #[test]
+    fn resolved_row_height_defaults_to_style_token_but_never_shrinks_the_font_metric() {
+        let b = MacBackend::new();
+        assert_eq!(
+            b.resolved_row_height(10.0),
+            b.current_style.row_height as f64
+        );
+        assert_eq!(b.resolved_row_height(40.0), 40.0);
+        // A cell grid (TUI's architectural `1.0`) is a documented no-op.
+        assert_eq!(b.resolved_row_height(1.0), 1.0);
+    }
+
+    /// `Backend::set_style` overriding `row_height` changes the row pitch
+    /// `list_layout` resolves — the acceptance bar for this chrome metric.
+    #[test]
+    fn list_layout_row_pitch_follows_a_set_style_override() {
+        use crate::Backend;
+        let mut b = MacBackend::new();
+        b.chrome_line_height = 10.0;
+        let list = bordered_overflow_list(5, 0, false);
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+
+        let default_layout = b.list_layout(rect, &list);
+        assert_eq!(
+            default_layout.visible_items[0].bounds.height,
+            b.current_style.row_height
+        );
+
+        b.set_style(crate::Style::default().with_row_height(30.0));
+        let overridden_layout = b.list_layout(rect, &list);
+        assert_eq!(overridden_layout.visible_items[0].bounds.height, 30.0);
     }
 
     // ── #802/#961/#962: Minimap/Image must not panic on macOS, and both

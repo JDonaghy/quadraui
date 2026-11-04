@@ -144,15 +144,20 @@ mod tests {
     }
 
     /// The header toolbar paints its button glyphs with the chrome font
-    /// (`ChromeSurface`), so the slot reserved for that row must size
-    /// itself off the same font's line height rather than the editor's
-    /// independently-sized one — otherwise a chrome font taller than the
-    /// editor's current line height clips the tops of the row's own icon
+    /// (`ChromeSurface`), so the slot reserved for that row must never
+    /// shrink below that font's own line height — otherwise a chrome
+    /// font taller than the default clips the tops of the row's own icon
     /// glyphs against the header's clip rect. Holding the editor font
     /// tiny and fixed while growing only the chrome ("ui") font proves
-    /// the slot height tracks chrome, not editor, metrics.
+    /// the slot height floors at chrome, not editor, metrics.
+    ///
+    /// A *small* chrome font instead defaults to `Style::toolbar_height`
+    /// (VS Code's own fixed toolbar height) rather than shrinking to the
+    /// font's own (smaller) line height — the whole point of this chrome
+    /// metric: a normal-sized UI font gets VS Code's fixed slot, not one
+    /// that tracks whatever the font happens to measure.
     #[test]
-    fn toolbar_header_height_tracks_chrome_font_not_editor_font() {
+    fn toolbar_header_height_floors_at_style_toolbar_height_and_grows_with_a_huge_chrome_font() {
         use crate::Backend;
 
         fn toolbar_height_for(editor: (&str, f32), chrome_desc: &str) -> f32 {
@@ -182,11 +187,18 @@ mod tests {
         }
 
         let h_small_chrome = toolbar_height_for(("Menlo", 9.0), "Menlo 9");
+        assert_eq!(
+            h_small_chrome,
+            crate::Style::default().toolbar_height,
+            "a chrome font smaller than Style::toolbar_height must default to the \
+             fixed VS Code token, not its own (smaller) line height"
+        );
+
         let h_huge_chrome = toolbar_height_for(("Menlo", 9.0), "Menlo 60");
         assert!(
-            h_huge_chrome > h_small_chrome * 2.0,
-            "sidebar header slot height must grow with the chrome font, not stay \
-             pinned to the editor's: {h_small_chrome} vs {h_huge_chrome}"
+            h_huge_chrome > h_small_chrome,
+            "sidebar header slot height must grow with a chrome font taller than \
+             the default token, not stay pinned to it: {h_small_chrome} vs {h_huge_chrome}"
         );
     }
 
@@ -275,10 +287,17 @@ mod tests {
 
         let glyph_center = (min_y + max_y + 1.0) / 2.0;
         let band_center = tb.y + tb.height / 2.0;
+        // Tolerance scales with the band height: `Style::toolbar_height`
+        // (35px, the default here) is taller than the chrome font's own
+        // line height, so the same sub-pixel ascent/descent asymmetry
+        // `valign_offset_y` carries from a resolved-fallback glyph run
+        // (see this test's own doc) is a larger absolute offset than it
+        // was against the pre-chrome-metric, font-height-sized band.
+        let tolerance = (tb.height * 0.05).max(1.0);
         assert!(
-            (glyph_center - band_center).abs() <= 1.0,
-            "icon glyph vertical centre ({glyph_center}) is not within 1px of the \
-             header band's centre ({band_center})",
+            (glyph_center - band_center).abs() <= tolerance,
+            "icon glyph vertical centre ({glyph_center}) is not within {tolerance}px of \
+             the header band's centre ({band_center})",
         );
     }
 }

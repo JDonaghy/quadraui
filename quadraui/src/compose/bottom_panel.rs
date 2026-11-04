@@ -151,7 +151,9 @@ pub enum BottomPanelEvent {
 /// Resolved panel regions for one rendered frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BottomPanelLayout {
-    /// One-row strip at the top of the panel containing tab labels + controls.
+    /// Strip at the top of the panel containing tab labels + controls —
+    /// `Style::tab_height` tall on a pixel backend, one row tall on a
+    /// cell grid (TUI).
     pub tab_strip_bounds: Rect,
     /// Content area below the strip where the active tab's widget renders.
     pub content_bounds: Rect,
@@ -272,7 +274,14 @@ impl BottomPanelController {
     pub fn render(&mut self, backend: &mut dyn Backend, panel_bounds: Rect) -> BottomPanelLayout {
         let lh = backend.chrome_line_height();
 
-        let strip_h = lh;
+        // On a pixel backend (GUI), the bottom panel's tab row is sized
+        // off `Style::tab_height` rather than the raw chrome line height;
+        // TUI's cell grid (`lh <= 1.0`) keeps the one-row strip.
+        let strip_h = if lh > 1.0 {
+            lh.max(backend.style().tab_height)
+        } else {
+            lh
+        };
         let strip = Rect::new(panel_bounds.x, panel_bounds.y, panel_bounds.width, strip_h);
         let content_h = (panel_bounds.height - strip_h).max(0.0);
         let content = Rect::new(
@@ -792,5 +801,53 @@ mod tests {
         let cfg = make_config(vec![], "no-such-id");
         let ctrl = BottomPanelController::new(cfg);
         assert_eq!(ctrl.active_tab_id, "", "no tabs → empty active_tab_id");
+    }
+
+    // ── Tab strip height ──────────────────────────────────────────────
+
+    fn gui_backend() -> crate::testing::RecordingBackend {
+        crate::testing::RecordingBackend {
+            line_height: 20.0,
+            chrome_line_height: Some(18.0),
+            viewport: crate::Viewport {
+                width: 800.0,
+                height: 300.0,
+                scale: 1.0,
+            },
+            char_width: 8.0,
+            ..Default::default()
+        }
+    }
+
+    /// On a pixel backend (GUI), the tab row is sized off
+    /// `Style::tab_height` (35, the default) rather than the raw chrome
+    /// line height.
+    #[test]
+    fn render_tab_strip_height_uses_style_tab_height_on_gui() {
+        let mut ctrl = BottomPanelController::new(make_config(vec![tab("t0", "A", false)], "t0"));
+        let mut backend = gui_backend();
+        let layout = ctrl.render(&mut backend, Rect::new(0.0, 0.0, 800.0, 300.0));
+        assert_eq!(layout.tab_strip_bounds.height, 35.0);
+    }
+
+    /// `Backend::set_style` overriding `tab_height` changes the painted
+    /// row height.
+    #[test]
+    fn render_tab_strip_height_follows_a_set_style_override() {
+        let mut ctrl = BottomPanelController::new(make_config(vec![tab("t0", "A", false)], "t0"));
+        let mut backend = gui_backend();
+        backend.set_style(crate::Style::default().with_tab_height(50.0));
+        let layout = ctrl.render(&mut backend, Rect::new(0.0, 0.0, 800.0, 300.0));
+        assert_eq!(layout.tab_strip_bounds.height, 50.0);
+    }
+
+    /// On a cell grid (TUI), the row stays exactly one line tall.
+    #[test]
+    fn render_tab_strip_height_ignores_style_tab_height_on_a_cell_grid() {
+        let mut ctrl = BottomPanelController::new(make_config(vec![tab("t0", "A", false)], "t0"));
+        let mut backend = crate::testing::RecordingBackend::new();
+        backend.set_style(crate::Style::default().with_tab_height(50.0));
+        let layout = ctrl.render(&mut backend, Rect::new(0.0, 0.0, 80.0, 24.0));
+        assert_eq!(layout.tab_strip_bounds.height, 1.0);
     }
 }

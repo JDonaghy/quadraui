@@ -943,6 +943,30 @@ impl GtkBackend {
         &self.current_style
     }
 
+    /// Resolve the row pitch `draw_list`/`draw_tree`/`draw_data_table`
+    /// lay their rows out at: `Style::row_height` on a pixel backend
+    /// (`candidate_line_height > 1.0`), floored at the font's own line
+    /// height so a chrome font taller than the token isn't clipped — see
+    /// `MacBackend::resolved_row_height`'s identical rationale.
+    fn resolved_row_height(&self, candidate_line_height: f64) -> f64 {
+        if candidate_line_height > 1.0 {
+            candidate_line_height.max(self.current_style.row_height as f64)
+        } else {
+            candidate_line_height
+        }
+    }
+
+    /// Resolve a `SidebarPanel`'s default toolbar-header slot height —
+    /// same shape as [`Self::resolved_row_height`], for `Style::toolbar_height`
+    /// instead of `Style::row_height`.
+    fn resolved_toolbar_height(&self, candidate_line_height: f64) -> f64 {
+        if candidate_line_height > 1.0 {
+            candidate_line_height.max(self.current_style.toolbar_height as f64)
+        } else {
+            candidate_line_height
+        }
+    }
+
     /// Push the app's chosen theme into GTK's own
     /// `gtk-application-prefer-dark-theme` setting, so native GTK chrome
     /// that this crate doesn't rasterise itself (the file dialog, as of
@@ -2377,7 +2401,7 @@ impl Backend for GtkBackend {
             rect.height as f64,
             tree,
             &self.current_theme,
-            self.current_line_height,
+            self.resolved_row_height(self.current_line_height),
             self.nerd_fonts_enabled,
         );
         layout.set_font_description(saved_font.as_ref());
@@ -2406,7 +2430,7 @@ impl Backend for GtkBackend {
             rect.height as f64,
             list,
             &self.current_theme,
-            self.current_line_height,
+            self.resolved_row_height(self.current_line_height),
             self.nerd_fonts_enabled,
         );
         layout.set_font_description(saved_font.as_ref());
@@ -2432,7 +2456,7 @@ impl Backend for GtkBackend {
         hovered_idx: Option<usize>,
         glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
     ) -> crate::DataTableLayout {
-        let lh = self.current_line_height;
+        let lh = self.resolved_row_height(self.current_line_height);
         let theme = self.current_theme;
         let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
@@ -2566,7 +2590,7 @@ impl Backend for GtkBackend {
             table,
             rect.width,
             rect.height,
-            self.current_line_height as f32,
+            self.resolved_row_height(self.current_line_height) as f32,
             &measure,
         )
     }
@@ -2584,7 +2608,9 @@ impl Backend for GtkBackend {
         if content_px <= visible_px {
             return None;
         }
-        let row_h = self.line_height();
+        // Row pitch must match `draw_list`'s own (`resolved_row_height`),
+        // or the thumb geometry drifts from the rows it tracks.
+        let row_h = self.resolved_row_height(self.line_height() as f64) as f32;
         let track = crate::primitives::list::hscrollbar_track(rect, list.bordered, char_w, row_h);
         Some(crate::Scrollbar::horizontal(
             list.id,
@@ -2599,8 +2625,12 @@ impl Backend for GtkBackend {
     fn list_vscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
         // GTK ListView vertical-scrollbar rasteriser not yet implemented.
         // Delegate to the primitive's geometry method using pixel units:
-        // each "row" is one line_height tall.
-        list.vscrollbar(rect, self.line_height())
+        // each "row" is `resolved_row_height` tall, matching `draw_list`'s
+        // own row pitch.
+        list.vscrollbar(
+            rect,
+            self.resolved_row_height(self.line_height() as f64) as f32,
+        )
     }
 
     fn list_layout(&self, rect: QRect, list: &ListView) -> crate::ListViewLayout {
@@ -2608,7 +2638,7 @@ impl Backend for GtkBackend {
             rect.width as f64,
             rect.height as f64,
             list,
-            self.current_line_height,
+            self.resolved_row_height(self.current_line_height),
             self.current_char_width,
         )
     }
@@ -4069,7 +4099,7 @@ impl Backend for GtkBackend {
         crate::gtk::gtk_tree_layout_measured(
             tree,
             rect,
-            self.current_line_height,
+            self.resolved_row_height(self.current_line_height),
             pango_layout.as_ref(),
             char_w,
         )
@@ -4084,8 +4114,10 @@ impl Backend for GtkBackend {
         // `GtkBackend::list_vscrollbar`), `TreeView` rows pitch at
         // `line_height * 1.4` (or `TreeStyle::row_height`); see
         // `layout_metrics::tree_row_pitch`'s doc.
-        let row_h =
-            crate::primitives::layout_metrics::tree_row_pitch(tree, self.current_line_height);
+        let row_h = crate::primitives::layout_metrics::tree_row_pitch(
+            tree,
+            self.resolved_row_height(self.current_line_height),
+        );
         tree.vscrollbar_with_track_width(
             rect,
             row_h as f32,
@@ -4903,7 +4935,7 @@ impl Backend for GtkBackend {
         let (hovered_toolbar_id, pressed_toolbar_id) =
             (interaction.hovered(), interaction.pressed());
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
+        let line_height = self.resolved_toolbar_height(self.current_line_height);
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         // `SidebarPanel` composes a `Toolbar` header — its
         // icon glyphs are chrome, not editor content — so the same
@@ -4944,7 +4976,7 @@ impl Backend for GtkBackend {
         panel: &crate::primitives::sidebar_panel::SidebarPanel,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
         let char_w = self.current_char_width;
-        let line_h = self.current_line_height;
+        let line_h = self.resolved_toolbar_height(self.current_line_height);
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
         // The panel's header is a `Toolbar`, so its measured button
@@ -6053,6 +6085,12 @@ mod tests {
         let mut b = GtkBackend::new();
         b.set_current_char_width(8.0);
         b.set_current_line_height(16.0);
+        // The hscrollbar's row pitch now follows `draw_list`'s own
+        // (`resolved_row_height`, which defaults to `Style::row_height`
+        // on a pixel backend) — not the raw `current_line_height` set
+        // above, which this test keeps only for the char-width-based
+        // inset math on `track.x`/`track.width`.
+        let row_h = b.current_style().row_height;
         let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
         let list = |bordered: bool| -> ListView {
             ListView {
@@ -6085,9 +6123,46 @@ mod tests {
             .expect("overflowing content should yield a scrollbar");
         assert_eq!(bordered_sb.track.x, 8.0);
         assert_eq!(bordered_sb.track.width, 184.0);
-        assert_eq!(bordered_sb.track.y, 100.0 - 2.0 * 16.0);
+        assert_eq!(bordered_sb.track.y, 100.0 - 2.0 * row_h);
         assert!(bordered_sb.track.x >= rect.x + 8.0);
         assert!(bordered_sb.track.x + bordered_sb.track.width <= rect.x + rect.width - 8.0);
+    }
+
+    /// `Backend::set_style` overriding `row_height` changes the row
+    /// pitch `list_layout` resolves — the acceptance bar for this chrome
+    /// metric, mirrored from `MacBackend`'s equivalent test.
+    #[test]
+    fn gtk_backend_list_layout_row_pitch_follows_a_set_style_override() {
+        let mut b = GtkBackend::new();
+        b.set_current_line_height(10.0);
+        let list = ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: vec![crate::ListItem {
+                text: crate::types::StyledText::plain("row"),
+                detail: None,
+                icon: None,
+                decoration: crate::types::Decoration::default(),
+            }],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
+
+        let default_layout = Backend::list_layout(&b, rect, &list);
+        assert_eq!(
+            default_layout.visible_items[0].bounds.height,
+            b.current_style().row_height
+        );
+
+        b.set_style(crate::Style::default().with_row_height(30.0));
+        let overridden_layout = Backend::list_layout(&b, rect, &list);
+        assert_eq!(overridden_layout.visible_items[0].bounds.height, 30.0);
     }
 
     #[test]
@@ -9349,7 +9424,7 @@ mod tests {
             200.0,
             100.0,
             &list,
-            backend.current_line_height,
+            backend.resolved_row_height(backend.current_line_height),
             backend.current_char_width,
         );
         assert_eq!(
@@ -9398,13 +9473,9 @@ mod tests {
         let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
 
         let via_backend = Backend::list_layout(&backend, rect, &list);
-        let via_helper = crate::gtk::gtk_list_layout(
-            200.0,
-            100.0,
-            &list,
-            backend.current_line_height,
-            backend.current_char_width,
-        );
+        let row_h = backend.resolved_row_height(backend.current_line_height);
+        let via_helper =
+            crate::gtk::gtk_list_layout(200.0, 100.0, &list, row_h, backend.current_char_width);
         assert_eq!(
             via_backend, via_helper,
             "list_layout must equal the exact helper draw_list uses internally, \
@@ -9415,11 +9486,11 @@ mod tests {
         // before filling the full 100px viewport height.
         let last = via_backend.visible_items.last().expect("has items");
         assert!(
-            last.bounds.y + last.bounds.height <= 100.0 - backend.current_line_height as f32,
+            last.bounds.y + last.bounds.height <= 100.0 - row_h as f32,
             "h-scrollbar row must be reserved: last row bottom = {}, \
-             viewport height = 100, line_height = {}",
+             viewport height = 100, row_height = {}",
             last.bounds.y + last.bounds.height,
-            backend.current_line_height,
+            row_h,
         );
     }
 

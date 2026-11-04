@@ -177,8 +177,22 @@ only a push to `main` runs this workflow.
   overwriting row 0's content — GTK/macOS/Win don't yet paint a frame in
   the reserved space (same opt-in-per-backend precedent as
   `TreeStyle::row_height`).
+- `Style` gains five VS Code chrome-metric tokens: `tab_height` (35),
+  `status_bar_height` (22), `activity_bar_width` (48), `row_height` (22) and
+  `toolbar_height` (35), each with a matching `with_*` builder.
 
 ### Changed
+- GUI backends (macOS, GTK, Win) default `AppShell`'s tab strip, status bar,
+  activity bar, sidebar header, bottom-panel tab row, `SidebarPanel` toolbar
+  header, and `List`/`TreeView`/`DataTable` row pitch to the matching new
+  `Style` chrome-metric token instead of scaling with the chrome/editor
+  font's own line height — floored at that font's line height so an
+  unusually large UI font size still isn't clipped. `Backend::set_style`
+  overrides any of them; TUI is unaffected (`Style`'s chrome metrics are a
+  documented no-op on a cell grid). `DataTable`'s header title text is now
+  vertically centred within `header_height` instead of anchored to its top,
+  since that slot can now be much taller than the title's own measured
+  height.
 - TUI: on a kitty-keyboard-capable terminal, a chord whose key is a shifted
   symbol now arrives as the shifted glyph rather than as the unshifted base
   key plus `shift` — `Ctrl+Shift+\` reaches `AppLogic` as `Key::Char('|')` +
