@@ -127,6 +127,12 @@ pub struct GalleryApp {
     active_variant: usize,
     active_tab: MainTab,
     log: Vec<String>,
+    /// Applied to the backend every frame, in [`ShellApp::pre_render`] —
+    /// `Theme::default()` (dark) unless [`Self::with_theme`] overrides it.
+    /// Threaded through so `--capture --theme light` (see
+    /// `crate::capture`) can produce a light-theme gallery without a
+    /// second, parallel app type.
+    theme: quadraui::Theme,
 }
 
 impl GalleryApp {
@@ -154,7 +160,16 @@ impl GalleryApp {
             active_variant: 0,
             active_tab: MainTab::Demo,
             log: vec!["Gallery ready — click a group, then a demo.".into()],
+            theme: quadraui::Theme::default(),
         }
+    }
+
+    /// Override the theme applied every frame (see the `theme` field's
+    /// doc). Consuming builder so `GalleryApp::from_demos(..).with_theme(..)`
+    /// chains at the construction site — `crate::capture`'s only caller.
+    pub(crate) fn with_theme(mut self, theme: quadraui::Theme) -> Self {
+        self.theme = theme;
+        self
     }
 
     /// The [`ShellConfig`] every backend's `main.rs` passes to
@@ -271,6 +286,15 @@ impl Default for GalleryApp {
 }
 
 impl ShellApp for GalleryApp {
+    /// Set before the shell computes its layout or paints anything —
+    /// [`ShellApp::pre_render`]'s own doc calls this out as the hook for
+    /// `set_theme`, so the shell's own chrome (sidebar/activity-bar/status
+    /// bar) and every demo's overlay primitives (`Dialog`, `ContextMenu`,
+    /// ...) pick up `self.theme` on the same frame it changes.
+    fn pre_render(&self, backend: &mut dyn Backend) {
+        backend.set_theme(self.theme);
+    }
+
     fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
         let lh = backend.line_height();
 

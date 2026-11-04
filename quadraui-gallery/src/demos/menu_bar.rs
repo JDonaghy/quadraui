@@ -12,7 +12,7 @@ use quadraui::{
     Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
-use crate::demo::{extract_region, Demo};
+use crate::demo::{extract_region, CaptureAction, Demo};
 
 const SOURCE: &str = include_str!("menu_bar.rs");
 
@@ -174,6 +174,17 @@ impl Demo for MenuBarDemo {
 
     fn caps_note(&self, _variant: usize, _caps: &BackendCaps) -> Option<String> {
         None
+    }
+
+    fn capture_action(&self, variant: usize) -> CaptureAction {
+        // Clicking either top-level label opens that menu's dropdown —
+        // `&File`/`&View` paint without the mnemonic marker, so the
+        // painted text is just "File"/"View".
+        if variant == 0 {
+            CaptureAction::ClickText("File")
+        } else {
+            CaptureAction::ClickText("View")
+        }
     }
 }
 // gallery:end

@@ -20,7 +20,7 @@ use quadraui::{
     StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
-use crate::demo::{extract_region, Demo};
+use crate::demo::{extract_region, CaptureAction, Demo};
 
 const SOURCE: &str = include_str!("context_menu.rs");
 
@@ -234,6 +234,13 @@ impl Demo for ContextMenuDemo {
                     .into(),
             )
         }
+    }
+
+    fn capture_action(&self, _variant: usize) -> CaptureAction {
+        // The status bar's own idle hint — painted until a right-click
+        // sets `last_action`, which a freshly-built capture `GalleryApp`
+        // never has yet.
+        CaptureAction::RightClickText("Right-click anywhere")
     }
 }
 // gallery:end
