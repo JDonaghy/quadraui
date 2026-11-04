@@ -146,10 +146,10 @@ extern "C" {
     fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
-/// Fill `rect` with `bg` — the whole-frame backdrop [`QuadraView::draw_rect`]
-/// paints before delegating to the app's own render closure.
-/// Extracted so it's exercised by a headless [`super::headless::BitmapSurface`]
-/// test with no live `NSView`/`NSWindow`.
+/// Fill `rect` with `bg` — the whole-frame backdrop [`render_frame`] paints
+/// at the start of each frame, before the app's own `render`. Extracted so
+/// it's exercised by a headless [`super::headless::BitmapSurface`] test
+/// with no live `NSView`/`NSWindow`.
 ///
 /// # Safety
 ///
@@ -407,6 +407,26 @@ pub(crate) fn render_frame<A: AppLogic>(
     let focus_ring_rect =
         runtime::focused_stop_rect(backend, app, <A as AppLogic>::AreaId::default());
     backend.enter_frame_scope(ctx, |b| {
+        // Background fill so the area between rasterised chrome
+        // (e.g. tab_bar at the top + status_bar at the bottom) has a
+        // consistent backdrop until all content is rasterised, and so
+        // this frame's unpainted regions don't composite with whatever
+        // the *previous* frame (possibly a different `AppLogic`, in a
+        // test driver that swaps apps between `render` calls) left
+        // behind. Uses the current theme's background instead of a
+        // fixed shade so unpainted areas match the theme. Lives inside
+        // this shared `render_frame` — rather than the live
+        // `QuadraView::draw_rect` caller alone — so [`super::testing::MacDriver`]
+        // gets the same per-frame clear the live runner does.
+        let rect = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(viewport.width as f64, viewport.height as f64),
+        );
+        // SAFETY: `ctx` is a non-null `CGContextRef` borrowed for the
+        // duration of this `enter_frame_scope` call.
+        unsafe {
+            fill_frame_background(ctx, rect, b.current_theme().background);
+        }
         let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             app.render(&mut *b, <A as AppLogic>::AreaId::default());
         }));
@@ -616,25 +636,10 @@ define_class!(
             }
             let cg_ref: CGContextRef = cg_opaque.cast();
 
-            // Convert NSRect → core_graphics::CGRect (layout-compatible
-            // but distinct Rust types).
-            let rect = CGRect::new(
-                &CGPoint::new(bounds.origin.x, bounds.origin.y),
-                &CGSize::new(bounds.size.width, bounds.size.height),
-            );
-
-            // Background fill so the area between rasterised chrome
-            // (e.g. tab_bar at the top + status_bar at the bottom) has
-            // a consistent backdrop until all content is rasterised.
-            // Use the current theme's background instead of a fixed shade
-            // so unpainted areas match the theme.
-            let bg = self.ivars().backend.borrow().current_theme().background;
-            // SAFETY: `cg_ref` is a non-null `CGContextRef` borrowed
-            // for the duration of this call.
-            unsafe {
-                fill_frame_background(cg_ref, rect, bg);
-            }
-
+            // Background fill happens inside `render_frame` (shared by
+            // this live path and `super::testing::MacDriver`), not here —
+            // see that function's doc for why.
+            //
             // Now run the app's render via the stored closure.
             // `paint` is responsible for `begin_frame` / frame-scope /
             // `end_frame` orchestration so this method doesn't need

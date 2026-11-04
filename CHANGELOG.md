@@ -208,6 +208,12 @@ only a push to `main` runs this workflow.
   paints over those cells, instead of after — the on-screen result is
   unchanged (the ring still paints last), only `Ctrl-C`'s copied text is now
   correct.
+- macOS: a region one frame stops painting no longer shows the previous
+  frame's content. `macos::run::render_frame` — shared by the live
+  `QuadraView::draw_rect` path and `macos::testing::MacDriver` — now fills
+  the surface with the theme background at the start of every frame, not
+  just the one `draw_rect` painted before delegating to it; GTK and Win
+  already cleared every frame this way.
 
 ## [0.8.0] - 2026-10-31
 ### Changed
