@@ -666,11 +666,19 @@ pub(crate) mod native_surface_paint {
             // rather than flush against `seg_rect`'s left edge — the fill
             // above still covers the full padded bounds, matching the hit
             // region VS Code-style.
+            //
+            // Vertically centred within `seg_rect.height`, which can be
+            // much taller than the text's own measured height on a pixel
+            // backend whose bar is sized off `Style::status_bar_height`
+            // rather than the chrome font's line height (mirrors the
+            // `DataTable` header title centring).
+            let (_, th) = surface.surface_measure_text_styled(&seg.text, seg.bold);
+            let text_y = seg_rect.y + (seg_rect.height - th).max(0.0) / 2.0;
             let text_rect = Rect::new(
                 seg_rect.x + PIXEL_SEGMENT_PADDING,
-                seg_rect.y,
+                text_y,
                 (seg_rect.width - 2.0 * PIXEL_SEGMENT_PADDING).max(0.0),
-                seg_rect.height,
+                th.max(1.0),
             );
             surface.surface_draw_text_run_styled(
                 text_rect, &seg.text, seg.fg, seg.bold, false, false, 1.0,
@@ -1128,6 +1136,56 @@ pub(crate) mod native_surface_paint {
                  segment box ({}) it sits inside",
                 text_rect.width,
                 fill_rect.width
+            );
+        }
+
+        /// Regression: a bar taller than the segment text's own measured
+        /// height (e.g. `Style::status_bar_height`'s 22px or the sidebar
+        /// header's `tab_height`-driven 35px against ~16px text) must
+        /// centre the text vertically within the bar, not anchor it to
+        /// the bar's own top edge.
+        #[test]
+        fn text_is_vertically_centred_within_a_bar_taller_than_the_text() {
+            let bar = sample_bar();
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let bar_height = 35.0;
+            paint(
+                &bar,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                400.0,
+                bar_height,
+                None,
+                None,
+            );
+
+            // `RecordingSurface::surface_measure_text` always reports a
+            // text height of 16.0 regardless of content or weight.
+            let expected_text_h = 16.0;
+            let expected_y = (bar_height - expected_text_h) / 2.0;
+
+            let (text_rect, _, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _, _)| t == "NORMAL")
+                .expect("left segment text drawn");
+            assert_eq!(
+                text_rect.y, expected_y,
+                "left segment text should be centred within the {bar_height}px bar, \
+                 not flush against its top edge"
+            );
+
+            let (text_rect, _, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _, _)| t == "Ln 1, Col 1")
+                .expect("right segment text drawn");
+            assert_eq!(
+                text_rect.y, expected_y,
+                "right segment text should be centred within the {bar_height}px bar too"
             );
         }
     }

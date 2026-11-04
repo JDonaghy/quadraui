@@ -933,16 +933,15 @@ impl MacBackend {
 
     /// Resolve the row pitch `draw_list`/`draw_tree`/`draw_data_table`
     /// lay their rows out at: `Style::row_height` on a pixel backend
-    /// (`candidate_line_height > 1.0`), unchanged otherwise (a cell grid,
-    /// which never reaches this code on macOS, but kept symmetric with
-    /// the TUI-shared formula other chrome strips use).
-    /// On a pixel backend (`candidate_line_height > 1.0`), never shrinks
-    /// below the font's own metric — a chrome/editor font large enough to
-    /// need more than `Style::row_height` still gets it, so a huge UI
-    /// font size doesn't clip row content against a fixed slot. On a
-    /// cell grid, `Style` tokens are a documented no-op (see that
-    /// module's "Where each token maps on TUI"), so the raw candidate
-    /// passes through unchanged.
+    /// (`candidate_line_height > 1.0`), floored at the font's own line
+    /// height so a chrome/editor font large enough to need more than
+    /// `Style::row_height` still gets it — a huge UI font size never
+    /// clips row content against a fixed slot. On a cell grid
+    /// (`candidate_line_height <= 1.0`, which never reaches this code on
+    /// macOS but is kept symmetric with the TUI-shared formula other
+    /// chrome strips use), `Style` tokens are a documented no-op (see
+    /// that module's "Where each token maps on TUI"), so the raw
+    /// candidate passes through unchanged.
     fn resolved_row_height(&self, candidate_line_height: f64) -> f64 {
         if candidate_line_height > 1.0 {
             candidate_line_height.max(self.current_style.row_height as f64)
@@ -8846,6 +8845,85 @@ mod tests {
         assert!(
             w_huge_chrome > w_small_chrome * 2.0,
             "status bar width must grow with set_ui_font: {w_small_chrome} vs {w_huge_chrome}"
+        );
+    }
+
+    /// Black-box acceptance test: a `StatusBar` segment's text ink sits
+    /// vertically centred within the painted band, not anchored to its
+    /// top edge, when the band (`Style::status_bar_height`-sized, 22px by
+    /// default — wider still here at `H`) is taller than the chrome
+    /// font's own line height. Mirrors
+    /// `sidebar_panel::toolbar_icon_glyph_is_vertically_centered_in_header_band`'s
+    /// pixel-scan approach: the band is flat-filled with the segment's own
+    /// `bg` before text is painted, so any pixel that doesn't match that
+    /// fill colour is glyph ink.
+    #[test]
+    fn draw_status_bar_interactive_centres_text_in_a_band_taller_than_the_font() {
+        use super::super::headless::BitmapSurface;
+        use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
+        use crate::Backend;
+
+        const W: u32 = 300;
+        const H: u32 = 40;
+
+        let surface = BitmapSurface::new(W, H);
+        let mut b = MacBackend::new();
+        Backend::set_ui_font(&mut b, "Menlo 11");
+        b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+        let bar = StatusBar {
+            id: WidgetId::new("status"),
+            left_segments: vec![StatusBarSegment {
+                text: "Save".into(),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(10, 10, 10),
+                bold: false,
+                action_id: None,
+            }],
+            right_segments: vec![],
+        };
+        let layout = std::cell::RefCell::new(None);
+        b.enter_frame_scope(surface.context_ptr(), |backend| {
+            let l = backend.draw_status_bar_interactive(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &bar,
+                &crate::InteractionState::new(),
+            );
+            *layout.borrow_mut() = Some(l);
+        });
+        b.end_frame();
+        let layout = layout.into_inner().unwrap();
+        let seg = layout.visible_segments[0].bounds;
+
+        let bg_x = ((seg.x + seg.width - 1.0) as u32).min(W - 1);
+        let bg_y = (seg.y as u32).min(H - 1);
+        let bg = surface.pixel(bg_x, bg_y);
+
+        let x0 = seg.x.max(0.0) as u32;
+        let x1 = ((seg.x + seg.width).min(W as f32)) as u32;
+        let y0 = seg.y.max(0.0) as u32;
+        let y1 = ((seg.y + seg.height).min(H as f32)) as u32;
+
+        let mut min_y: Option<u32> = None;
+        let mut max_y: Option<u32> = None;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if surface.pixel(x, y) != bg {
+                    min_y = Some(min_y.map_or(y, |m| m.min(y)));
+                    max_y = Some(max_y.map_or(y, |m| m.max(y)));
+                }
+            }
+        }
+        let min_y = min_y.expect("segment text should paint at least one pixel") as f32;
+        let max_y = max_y.expect("segment text should paint at least one pixel") as f32;
+
+        let glyph_center = (min_y + max_y + 1.0) / 2.0;
+        let band_center = seg.y + seg.height / 2.0;
+        let tolerance = 2.0;
+        assert!(
+            (glyph_center - band_center).abs() <= tolerance,
+            "segment text vertical centre ({glyph_center}) is not within {tolerance}px of \
+             the {H}px band's centre ({band_center}) — text must not be top-anchored"
         );
     }
 

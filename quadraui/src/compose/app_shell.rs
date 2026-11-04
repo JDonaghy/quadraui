@@ -400,6 +400,15 @@ impl AppShell {
         self
     }
 
+    /// Set the activity bar's width as a multiple of `line_height`.
+    ///
+    /// **Cell-grid (TUI) only by default.** On a pixel backend
+    /// (`line_height > 1.0`) with no [`Self::with_activity_bar_width_px`]
+    /// paired alongside it, this multiple has **no effect** — the bar
+    /// instead defaults to [`crate::Style::activity_bar_width`] (48px,
+    /// matching VS Code) or whatever a host's [`crate::Backend::set_style`]
+    /// last set. Pass [`Self::with_activity_bar_width_px`] too if a GUI
+    /// app genuinely wants a width `set_style` cannot move.
     pub fn with_activity_bar_width(mut self, width: f32) -> Self {
         self.activity_bar_width = width;
         self
@@ -964,22 +973,25 @@ impl AppShell {
 
     // ── Layout ───────────────────────────────────────────────────────
 
-    /// Compute layout bounds without drawing. Use when only hit-testing
-    /// is needed (e.g. in `handle`).
+    /// Compute layout bounds without drawing, against `Style::default()`.
     ///
     /// Takes `line_height` rather than a `&dyn Backend` so callers that
     /// only know the line height (external consumers, tests) can still
     /// call it. It mirrors `Backend::snap_height`'s own threshold —
     /// identity above one line height (a real pixel metric), `.round()`
     /// at or below it (TUI's cell grid, whose `chrome_line_height` is
-    /// architecturally always exactly `1.0`) — so this path always agrees
-    /// with `Self::render`/`Self::handle`, which pass `backend.snap_height`
-    /// directly, for the same `area`/`line_height` on the same backend.
+    /// architecturally always exactly `1.0`).
+    ///
+    /// **This path only agrees with [`Self::render`]/[`Self::handle`] on a
+    /// backend whose [`Backend::set_style`] has never been called** — those
+    /// two read `backend.style()` back, while this falls through to
+    /// `Style::default()` because it has no `&dyn Backend` to read a style
+    /// override from. A caller that has a live backend in hand (the
+    /// canonical `ShellApp`/`shell_adapter` path) should call
+    /// [`Self::layout_for`] instead, so a host's `set_style` override
+    /// (`tab_height`, `status_bar_height`, `activity_bar_width`, …) reaches
+    /// the same layout the chrome is actually painted at.
     pub fn layout(&self, area: Rect, line_height: f32) -> AppShellLayout {
-        // No `&dyn Backend` in hand, so no overridden `Style` to read back
-        // — falls through to `Style::default()`, the same VS Code chrome
-        // metrics `Self::render`/`Self::handle` start from before a host
-        // calls `Backend::set_style`.
         self.compute_layout(area, line_height, &Style::default(), &|h: f32| {
             if line_height > 1.0 {
                 h
@@ -987,6 +999,18 @@ impl AppShell {
                 h.max(0.0).round()
             }
         })
+    }
+
+    /// [`Self::layout`], but reading `line_height`, [`Style`] overrides and
+    /// the snap function from a live `backend` — the same three inputs
+    /// [`Self::render`]/[`Self::handle`] use. Use this whenever a `&dyn
+    /// Backend` is available (e.g. `shell_adapter`'s `ShellContext`
+    /// construction) so a host's `Backend::set_style` override is reflected
+    /// in the layout the app sees, not just in what gets painted.
+    pub fn layout_for(&self, backend: &dyn Backend, area: Rect) -> AppShellLayout {
+        let lh = backend.chrome_line_height();
+        let style = backend.style();
+        self.compute_layout(area, lh, &style, &|h: f32| backend.snap_height(h))
     }
 
     /// Build the [`ActivityBar`] primitive from current panel state.
@@ -1885,6 +1909,58 @@ mod tests {
 
         let l_tui = s.layout(area(), 1.0);
         assert_eq!(l_tui.status_bar_bounds.unwrap().height, 1.0);
+    }
+
+    /// [`AppShell::layout_for`] — the entry point `shell_adapter` uses —
+    /// reads a host's `Backend::set_style` override back, unlike
+    /// [`AppShell::layout`], which only ever sees `Style::default()`. This
+    /// is the layout the canonical `ShellApp` path hands the app, so it
+    /// must move when the painted chrome moves.
+    #[test]
+    fn layout_for_reflects_a_backend_set_style_override() {
+        let s = full_chrome_shell();
+        let backend = RecordingBackend::with_viewport(
+            crate::Viewport::new(area().width, area().height, 1.0),
+            20.0,
+            8.0,
+        );
+
+        let default_layout = s.layout_for(&backend, area());
+        assert_eq!(default_layout.status_bar_bounds.unwrap().height, 22.0);
+
+        let mut overridden = backend;
+        overridden.set_style(Style::default().with_status_bar_height(40.0));
+        let overridden_layout = s.layout_for(&overridden, area());
+        assert_eq!(overridden_layout.status_bar_bounds.unwrap().height, 40.0);
+    }
+
+    /// Same override, but for `activity_bar_width` — the other chrome
+    /// metric that must also reach `shell_adapter`'s app-visible layout
+    /// through [`AppShell::layout_for`].
+    #[test]
+    fn layout_for_reflects_activity_bar_width_override() {
+        let s = shell();
+        let mut backend = RecordingBackend::with_viewport(
+            crate::Viewport::new(area().width, area().height, 1.0),
+            20.0,
+            8.0,
+        );
+        backend.set_style(Style::default().with_activity_bar_width(96.0));
+
+        let l = s.layout_for(&backend, area());
+        assert_eq!(l.activity_bar_bounds.width, 96.0);
+    }
+
+    /// `AppShell::layout` (no backend in hand) only ever sees
+    /// `Style::default()` — the override is invisible there, which is
+    /// exactly why a live-backend caller must use `layout_for` instead.
+    #[test]
+    fn layout_without_a_backend_does_not_see_a_style_override() {
+        let s = full_chrome_shell();
+        // No way to pass a style override to `layout` at all — it always
+        // resolves against `Style::default()`, documented above.
+        let l = s.layout(area(), 20.0);
+        assert_eq!(l.status_bar_bounds.unwrap().height, 22.0);
     }
 
     // ── Activity bar width ──────────────────────────────────────────

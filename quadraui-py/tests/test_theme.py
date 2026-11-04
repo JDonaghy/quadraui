@@ -101,6 +101,41 @@ def test_set_style_rejects_an_unknown_field():
         app.set_style({"not_a_real_token": 1.0})
 
 
+def test_set_style_overrides_the_chrome_metric_tokens_and_round_trips():
+    """`Style`'s five chrome-metric tokens (`tab_height`, `status_bar_height`,
+    `activity_bar_width`, `row_height`, `toolbar_height`) reach `QuiApp`
+    through the same `#[serde(default)]`-decoded `set_style` dict every other
+    `Style` field already does -- no binding-side change needed to carry a
+    new descriptor field, matching `quadraui-binding-core`'s wire decode.
+    """
+    app = QuiApp(20, 5)
+    before = app.style()
+    assert before["tab_height"] == 35.0
+    assert before["status_bar_height"] == 22.0
+    assert before["activity_bar_width"] == 48.0
+    assert before["row_height"] == 22.0
+    assert before["toolbar_height"] == 35.0
+
+    app.set_style(
+        {
+            "tab_height": 50.0,
+            "status_bar_height": 40.0,
+            "activity_bar_width": 96.0,
+            "row_height": 30.0,
+            "toolbar_height": 50.0,
+        }
+    )
+
+    after = app.style()
+    assert after["tab_height"] == 50.0
+    assert after["status_bar_height"] == 40.0
+    assert after["activity_bar_width"] == 96.0
+    assert after["row_height"] == 30.0
+    assert after["toolbar_height"] == 50.0
+    # Unrelated token is untouched.
+    assert after["padding"] == before["padding"]
+
+
 def test_nerd_fonts_round_trips_through_set_and_get():
     app = QuiApp(20, 5)
     # TUI starts disabled -- see `Backend::set_nerd_fonts`'s own doc.

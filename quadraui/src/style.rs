@@ -69,6 +69,16 @@
 //! notifications, menus) — see each field's own doc for the specific VS
 //! Code surface it mirrors.
 //!
+//! A second group of five tokens — [`Self::tab_height`],
+//! [`Self::status_bar_height`], [`Self::activity_bar_width`],
+//! [`Self::row_height`] and [`Self::toolbar_height`] — sizes shell
+//! *chrome* (`AppShell`'s tab strip/status bar/activity bar/sidebar
+//! header, `SidebarPanel`'s own header, and `List`/`TreeView`/
+//! `DataTable` row pitch) rather than overlay padding/radius/border; no
+//! overlay primitive reads them. They follow the same cell-grid-no-op
+//! TUI story as the rest of this struct — see each field's own
+//! "TUI story" paragraph.
+//!
 //! Each further token lands as its own additive field, the same shape
 //! [`Self::focus_ring_width`] already has — `docs/decisions/DECISIONS.md`
 //! D-017's one-token/primitive-at-a-time discipline applies to *adding*
