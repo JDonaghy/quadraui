@@ -37,6 +37,14 @@ fn overlays_group_index() -> usize {
 /// other tests do (a demo registered into `GROUPS[0]` could paint a `"1"`
 /// of its own and make that scrape ambiguous).
 fn click_group_zone<A: AppLogic>(driver: &mut TuiDriver<A>, index: usize) {
+    let (x, y) = activity_item_center(driver, index);
+    driver.click(x, y);
+}
+
+/// Cell-aligned centre of `GROUPS[index]`'s activity-bar item, resolved
+/// from its registered zone — the pointer target the hover tests below
+/// move onto and off of.
+fn activity_item_center<A: AppLogic>(driver: &mut TuiDriver<A>, index: usize) -> (f32, f32) {
     let id = group_panel_id(index);
     let zone = driver
         .inventory()
@@ -45,7 +53,30 @@ fn click_group_zone<A: AppLogic>(driver: &mut TuiDriver<A>, index: usize) {
         .find(|z| z.id == id)
         .unwrap_or_else(|| panic!("no registered zone for group {index}'s activity-bar item"))
         .bounds;
-    driver.click(zone.x + zone.width / 2.0, zone.y + zone.height / 2.0);
+    (
+        (zone.x + zone.width / 2.0).floor(),
+        (zone.y + zone.height / 2.0).floor(),
+    )
+}
+
+/// Cell-aligned centre of the sidebar's content area, from the
+/// `app-shell:sidebar-content` zone. Used as an "off the activity bar"
+/// pointer target: it is outside `layout.activity_bar_bounds` and
+/// outside the main pane, so `GalleryApp::handle_inner` returns
+/// `Reaction::Continue` for a `MouseMoved` landing there and only the
+/// activity-bar hover diff can escalate the frame.
+fn sidebar_content_center<A: AppLogic>(driver: &mut TuiDriver<A>) -> (f32, f32) {
+    let sb = driver
+        .inventory()
+        .zones()
+        .iter()
+        .find(|z| z.id == quadraui::WidgetId::new("app-shell:sidebar-content"))
+        .expect("no registered zone for the sidebar content area")
+        .bounds;
+    (
+        (sb.x + sb.width / 2.0).floor(),
+        (sb.y + sb.height / 2.0).floor(),
+    )
 }
 
 /// Click the sidebar row at `row_in_group` (0-based, in registry order,
@@ -177,18 +208,7 @@ fn hovering_an_inactive_activity_bar_icon_repaints_the_highlight() {
     // Content (`GROUPS[0]`) is active by default, so Chrome's icon is
     // definitely inactive — resolved via the same registered zone
     // `click_group_zone` clicks, not a hardcoded cell.
-    let id = group_panel_id(chrome_group_index());
-    let zone = driver
-        .inventory()
-        .zones()
-        .iter()
-        .find(|z| z.id == id)
-        .unwrap_or_else(|| panic!("no registered zone for the Chrome activity-bar item"))
-        .bounds;
-    let (x, y) = (
-        (zone.x + zone.width / 2.0).floor(),
-        (zone.y + zone.height / 2.0).floor(),
-    );
+    let (x, y) = activity_item_center(&mut driver, chrome_group_index());
 
     let before = driver
         .style_at(x as u16, y as u16)
@@ -210,6 +230,82 @@ fn hovering_an_inactive_activity_bar_icon_repaints_the_highlight() {
         after.bg,
         "hovering the Chrome icon should repaint its hover tint:\n{}",
         driver.screen()
+    );
+}
+
+/// The other end of the same transition: moving the pointer *off* the
+/// activity bar clears `AppShell::hovered_activity_idx`, and that frame
+/// has to be painted too or the icon stays visibly highlighted with the
+/// pointer somewhere else entirely. The off-bar target is the sidebar,
+/// where a `MouseMoved` is outside the main pane, so `handle_inner`
+/// returns `Reaction::Continue` and only the hover diff can escalate it.
+#[test]
+fn moving_off_the_activity_bar_repaints_to_clear_the_highlight() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+
+    let (x, y) = activity_item_center(&mut driver, chrome_group_index());
+    let (sx, sy) = sidebar_content_center(&mut driver);
+
+    let unhovered = driver
+        .style_at(x as u16, y as u16)
+        .unwrap_or_else(|| panic!("cell at ({x}, {y}) should be on screen"));
+
+    driver.dispatch(quadraui::mouse_moved(x, y, quadraui::ButtonMask::default()));
+    let hovered = driver
+        .style_at(x as u16, y as u16)
+        .unwrap_or_else(|| panic!("cell at ({x}, {y}) should be on screen"));
+    assert_ne!(
+        unhovered.bg, hovered.bg,
+        "precondition: hovering the Chrome icon must tint it"
+    );
+
+    let reaction = driver.dispatch(quadraui::mouse_moved(
+        sx,
+        sy,
+        quadraui::ButtonMask::default(),
+    ));
+    assert!(
+        matches!(reaction, quadraui::Reaction::Redraw),
+        "MouseMoved leaving the activity bar should escalate to Redraw so the \
+         highlight AppShell just cleared actually gets repainted, got {reaction:?}"
+    );
+
+    let cleared = driver
+        .style_at(x as u16, y as u16)
+        .unwrap_or_else(|| panic!("cell at ({x}, {y}) should be on screen"));
+    assert_eq!(
+        unhovered.bg,
+        cleared.bg,
+        "the Chrome icon should be back to its unhovered tint once the pointer \
+         has left the activity bar:\n{}",
+        driver.screen()
+    );
+}
+
+/// A `MouseMoved` that neither enters nor leaves the activity bar leaves
+/// the shell's hover index untouched, so it must *not* cost a frame —
+/// the event log never records `MouseMoved`, so there is nothing new to
+/// paint. Pins the `Reaction::Continue` short-circuit the pointer-spam
+/// filter depends on.
+#[test]
+fn moving_within_the_sidebar_does_not_force_a_repaint() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+
+    let (sx, sy) = sidebar_content_center(&mut driver);
+    driver.dispatch(quadraui::mouse_moved(
+        sx,
+        sy,
+        quadraui::ButtonMask::default(),
+    ));
+
+    let reaction = driver.dispatch(quadraui::mouse_moved(
+        sx + 1.0,
+        sy,
+        quadraui::ButtonMask::default(),
+    ));
+    assert!(
+        matches!(reaction, quadraui::Reaction::Continue),
+        "MouseMoved with no activity-bar hover change should stay Continue, got {reaction:?}"
     );
 }
 
