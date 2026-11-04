@@ -18,7 +18,15 @@
 //! [`run_capture`] is the entry point `src/main.rs`'s `--capture <dir>`
 //! flag calls, and the same function a test calls directly (see
 //! `tests/capture_driver.rs`) — there is no separate "CLI" code path to
-//! drift from the one under test.
+//! drift from the one under test. `--capture`'s sibling `--theme
+//! light|dark` flag (default `dark`) threads a [`CaptureTheme`] through
+//! that same call, recorded on every [`ManifestEntry`] it writes.
+//!
+//! Before screenshotting, each (demo, variant) also runs that demo's own
+//! [`crate::Demo::capture_action`] — opening whatever overlay (dialog,
+//! dropdown, cheatsheet, right-click menu) its idle render would
+//! otherwise leave closed — so the capture shows the same opened state a
+//! person clicking through the gallery would see, not just the idle tab.
 //!
 //! ## Per-backend story
 //!
@@ -183,6 +191,12 @@ impl CaptureTheme {
     }
 
     /// The real [`quadraui::Theme`] `GalleryApp::with_theme` applies.
+    #[cfg(any(
+        feature = "tui",
+        all(feature = "macos", target_os = "macos"),
+        feature = "gtk",
+        all(feature = "win", target_os = "windows")
+    ))]
     fn theme(self) -> quadraui::Theme {
         match self {
             CaptureTheme::Dark => quadraui::Theme::default(),

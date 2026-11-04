@@ -166,7 +166,15 @@ impl GalleryApp {
 
     /// Override the theme applied every frame (see the `theme` field's
     /// doc). Consuming builder so `GalleryApp::from_demos(..).with_theme(..)`
-    /// chains at the construction site — `crate::capture`'s only caller.
+    /// chains at the construction site — `crate::capture`'s only caller,
+    /// gated the same way its four capture legs are: nothing calls this
+    /// when none of them are compiled in.
+    #[cfg(any(
+        feature = "tui",
+        all(feature = "macos", target_os = "macos"),
+        feature = "gtk",
+        all(feature = "win", target_os = "windows")
+    ))]
     pub(crate) fn with_theme(mut self, theme: quadraui::Theme) -> Self {
         self.theme = theme;
         self
@@ -353,6 +361,20 @@ impl ShellApp for GalleryApp {
             }
         }
 
+        // ── Bottom panel: event log ──────────────────────────────────
+        // Painted before the main pane so a demo's own overlay (a
+        // `Dialog`, a painted `ContextMenuController` popup, ...) that
+        // extends past `main_content_bounds` — which can happen when its
+        // anchor sits near the bottom edge of a tall main pane, right
+        // next to this sibling panel — layers on top of the log instead
+        // of being hidden under it. The log and the main pane are
+        // non-overlapping siblings everywhere else, so swapping which
+        // one paints first changes nothing visible except that one
+        // overlap case.
+        if let Some(bp) = layout.bottom_panel_bounds {
+            draw_event_log(backend, bp, &self.log);
+        }
+
         // ── Main pane: Demo / Code / Data tabs ──────────────────────
         let main = layout.main_content_bounds;
         if main.width > 0.0 && main.height > 0.0 {
@@ -423,11 +445,6 @@ impl ShellApp for GalleryApp {
                     }
                 },
             }
-        }
-
-        // ── Bottom panel: event log ──────────────────────────────────
-        if let Some(bp) = layout.bottom_panel_bounds {
-            draw_event_log(backend, bp, &self.log);
         }
     }
 
