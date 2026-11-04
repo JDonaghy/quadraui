@@ -90,6 +90,8 @@ mod folder_picker_app;
 mod form_all_fields;
 #[path = "../examples/common/form_combo_box.rs"]
 mod form_combo_box;
+#[path = "../examples/common/form_control_width.rs"]
+mod form_control_width;
 #[path = "../examples/common/form_date_picker.rs"]
 mod form_date_picker;
 #[path = "../examples/common/form_dropdown.rs"]
@@ -216,6 +218,7 @@ use focus_demo::{FocusDemo, LEFT_ID, RIGHT_ID, STATUS_ID};
 use folder_picker_app::FolderPickerApp;
 use form_all_fields::FormAllFieldsApp;
 use form_combo_box::FormComboBoxApp;
+use form_control_width::FormControlWidthApp;
 use form_date_picker::FormDatePickerApp;
 use form_dropdown::FormDropdownApp;
 use form_groups::FormGroupsApp;
@@ -5702,6 +5705,108 @@ fn form_all_fields_paints_every_field_kind_value() {
             "expected {needle:?} painted somewhere on screen:\n{screen}"
         );
     }
+}
+
+// ─── FormControlWidthApp: Fill / Fixed / Content control-width modes ────
+//
+// All three rows share one label column ("Fill"/"Fixed"/"Content"), so
+// their controls all start at the same column regardless of mode — only
+// each mode's resolved *width* differs. D1's acceptance criterion: "one
+// aligned control column, no clipped input."
+
+#[test]
+fn form_control_width_all_modes_share_the_same_control_column() {
+    let driver = TuiDriver::new(FormControlWidthApp::new(), 60, 10);
+
+    let fill = driver
+        .find_bounds("stretches")
+        .expect("Fill row's value is painted");
+    let fixed = driver
+        .find_bounds("exact width")
+        .expect("Fixed row's value is painted");
+    let content = driver
+        .find_bounds("sized to value")
+        .expect("Content row's value is painted");
+
+    assert_eq!(
+        fill.x,
+        fixed.x,
+        "Fill and Fixed controls should start at the same column:\n{}",
+        driver.screen()
+    );
+    assert_eq!(
+        fill.x,
+        content.x,
+        "Fill and Content controls should start at the same column:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_control_width_fill_stretches_to_the_row_right_edge() {
+    let driver = TuiDriver::new(FormControlWidthApp::new(), 60, 10);
+    let fill = driver
+        .find_bounds("stretches")
+        .expect("Fill row's value is painted");
+    let row = driver
+        .screen()
+        .lines()
+        .nth(fill.y as usize)
+        .unwrap_or_default()
+        .to_string();
+    // `Fill`'s closing `]` lands at the last column of a 60-wide row.
+    assert_eq!(
+        row.chars().nth(59),
+        Some(']'),
+        "Fill's box should reach the row's right edge:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_control_width_fixed_ignores_content_length() {
+    let driver = TuiDriver::new(FormControlWidthApp::new(), 60, 10);
+    let fixed = driver
+        .find_bounds("exact width")
+        .expect("Fixed row's value is painted");
+    let row = driver
+        .screen()
+        .lines()
+        .nth(fixed.y as usize)
+        .unwrap_or_default()
+        .to_string();
+    // `Fixed(20.0)` closes its box at column 28 (the control column
+    // starts at 9, 9 + 20 - 1 = 28), well short of the row's right
+    // edge — unlike `Fill`.
+    assert_eq!(
+        row.chars().nth(28),
+        Some(']'),
+        "Fixed's box should close at its exact configured width:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_control_width_content_sizes_to_its_own_value() {
+    let driver = TuiDriver::new(FormControlWidthApp::new(), 60, 10);
+    let content = driver
+        .find_bounds("sized to value")
+        .expect("Content row's value is painted");
+    let row = driver
+        .screen()
+        .lines()
+        .nth(content.y as usize)
+        .unwrap_or_default()
+        .to_string();
+    // `Content` closes its box right after the value text's own natural
+    // width (14 chars + 2 for brackets, starting at column 9: 9 + 16 - 1
+    // = 24), well short of both Fill's and Fixed's closing column.
+    assert_eq!(
+        row.chars().nth(24),
+        Some(']'),
+        "Content's box should close right after its own value:\n{}",
+        driver.screen()
+    );
 }
 
 // ─── FormComboBoxApp: FieldKind::ComboBox routed through FormController ──────

@@ -69,6 +69,8 @@ impl FormGroupsApp {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("toggles"),
@@ -99,6 +101,8 @@ impl FormGroupsApp {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("replace"),
@@ -116,6 +120,8 @@ impl FormGroupsApp {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("buttons"),
@@ -149,6 +155,8 @@ impl FormGroupsApp {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 // ── Gap B demo: embedded toolbar inside a form field ──────
                 FormField {
@@ -192,6 +200,8 @@ impl FormGroupsApp {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
             ],
             focused_field: self.focus.current().cloned(),
@@ -200,6 +210,8 @@ impl FormGroupsApp {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 

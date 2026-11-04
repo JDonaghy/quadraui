@@ -2782,6 +2782,8 @@ mod tests {
                         label_position: Default::default(),
                         label_align: Default::default(),
                         label_width: None,
+                        control_width: Default::default(),
+                        min_control_width: None,
                     }),
                     aux: None,
                     size: SectionSize::Weight(1.0),

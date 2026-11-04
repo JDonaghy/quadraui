@@ -541,7 +541,7 @@ pub use primitives::find_replace::{
 };
 pub use primitives::float::{Float, FloatHit, FloatLayout, FloatMeasure};
 pub use primitives::form::{
-    ButtonRowItem, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
+    ButtonRowItem, ControlWidth, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
     FormItemMeasure, FormLayout, LabelAlign, LabelPosition, ToggleGroupItem, ValidationState,
     VisibleFormField,
 };
