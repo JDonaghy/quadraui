@@ -72,11 +72,30 @@ export interface PumpHandle {
  * `false`), or earlier if the returned handle's `stop()` is called.
  * `intervalMs` defaults to 16 (roughly 60Hz); pass a larger value to trade
  * input latency for CPU.
+ *
+ * If `step()` itself throws (a registered handler threw, or a callback
+ * raised a pending error `step()` surfaces), this stops the interval and,
+ * if `app` is a live `startTui` session (has a `stopLive` method), calls
+ * it to restore the terminal (raw mode off, leave alternate screen) before
+ * rethrowing -- otherwise an uncaught exception inside `setInterval`'s
+ * callback would tear the process down with the terminal left in whatever
+ * state `startTui` last left it in, since the Rust-side live runner's own
+ * cleanup (raw mode off, leave alternate screen) never runs on an abrupt
+ * process exit.
  */
-function pump(app: { step(): boolean }, intervalMs = 16): PumpHandle {
+function pump(
+  app: { step(): boolean; stopLive?(): boolean },
+  intervalMs = 16,
+): PumpHandle {
   const handle = setInterval(() => {
-    if (!app.step()) {
+    try {
+      if (!app.step()) {
+        clearInterval(handle);
+      }
+    } catch (err) {
       clearInterval(handle);
+      app.stopLive?.();
+      throw err;
     }
   }, intervalMs);
   return {
@@ -86,3 +105,6 @@ function pump(app: { step(): boolean }, intervalMs = 16): PumpHandle {
   };
 }
 exports.pump = pump;
+
+/** The type of {@link pump} -- lets a TS consumer `import type { PumpFn }` to name it, since `pump` itself is exported only at runtime (see this file's own doc comment on why this module has no runtime `export`). */
+export type PumpFn = typeof pump;

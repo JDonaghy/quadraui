@@ -2,11 +2,11 @@
 //! [`Backend`]'s own measurement methods, the napi-rs analog of
 //! `quadraui-py`'s own metrics methods on `QuiApp`.
 //!
-//! Every method resolves against `self.driver.backend()`, this app's one
-//! headless `TuiBackend` -- there is no `run_native`/`run_tui` analog on
-//! this crate's `QuiApp` to resolve against instead, so a caller here always
-//! gets numbers that agree with what `screen()`/`screenContains()` actually
-//! show.
+//! Every method resolves against `self.driver.backend()`, this app's own
+//! headless `TuiBackend`, and so calls [`QuiApp::check_not_live`] first:
+//! once `startTui` is running, that backend is the dormant pre-live one
+//! rather than the live session's own, so a reading here would otherwise
+//! silently disagree with what the real terminal actually shows.
 
 use super::*;
 
@@ -23,6 +23,7 @@ impl QuiApp {
     /// (or last `resize`d) with.
     #[napi]
     pub fn viewport(&mut self, env: Env) -> Result<(f64, f64, f64)> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let vp = app.driver.backend().viewport();
             Ok((vp.width as f64, vp.height as f64, vp.scale as f64))
@@ -33,6 +34,7 @@ impl QuiApp {
     /// units -- [`Backend::line_height`]. Always `1.0` (one terminal cell).
     #[napi(js_name = "lineHeight")]
     pub fn line_height(&mut self, env: Env) -> Result<f64> {
+        self.check_not_live()?;
         self.guarded(env, |app| Ok(app.driver.backend().line_height() as f64))
     }
 
@@ -41,6 +43,7 @@ impl QuiApp {
     /// cell).
     #[napi(js_name = "charWidth")]
     pub fn char_width(&mut self, env: Env) -> Result<f64> {
+        self.check_not_live()?;
         self.guarded(env, |app| Ok(app.driver.backend().char_width() as f64))
     }
 
@@ -49,6 +52,7 @@ impl QuiApp {
     /// a pixel backend, whose chrome font can differ from its editor font.
     #[napi(js_name = "listCharWidth")]
     pub fn list_char_width(&mut self, env: Env) -> Result<f64> {
+        self.check_not_live()?;
         self.guarded(env, |app| Ok(app.driver.backend().list_char_width() as f64))
     }
 
@@ -58,6 +62,7 @@ impl QuiApp {
     /// chrome rows on a backend with a separate chrome font.
     #[napi(js_name = "chromeLineHeight")]
     pub fn chrome_line_height(&mut self, env: Env) -> Result<f64> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             Ok(app.driver.backend().chrome_line_height() as f64)
         })
@@ -68,6 +73,7 @@ impl QuiApp {
     /// Always `0.0` on the headless backend.
     #[napi(js_name = "scrollbarReserve")]
     pub fn scrollbar_reserve(&mut self, env: Env) -> Result<f64> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             Ok(app.driver.backend().scrollbar_reserve() as f64)
         })
@@ -79,6 +85,7 @@ impl QuiApp {
     /// grow.
     #[napi(js_name = "scalesTextRows")]
     pub fn scales_text_rows(&mut self, env: Env) -> Result<bool> {
+        self.check_not_live()?;
         self.guarded(env, |app| Ok(app.driver.backend().scales_text_rows()))
     }
 
@@ -88,6 +95,7 @@ impl QuiApp {
     /// resolution to snap away.
     #[napi(js_name = "snapHeight")]
     pub fn snap_height(&mut self, env: Env, h: f64) -> Result<f64> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             Ok(app.driver.backend().snap_height(h as f32) as f64)
         })
@@ -105,6 +113,7 @@ impl QuiApp {
         role: Option<String>,
     ) -> Result<(f64, f64)> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let role = font_role(role.as_deref().unwrap_or("chrome"))
             .map_err(|err| invalid_font_role_error(format!("measureText: {err}")))?;
         self.guarded(env, |app| {
@@ -122,6 +131,7 @@ impl QuiApp {
     /// `"ansi16"`, `"indexed256"`, `"true_color"`).
     #[napi(js_name = "backendCaps")]
     pub fn backend_caps(&mut self, env: Env) -> Result<Object<'_>> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let caps = app.driver.backend().backend_caps();
             let mut obj = Object::new(&env)?;
@@ -143,6 +153,7 @@ impl QuiApp {
     /// what `theme()`/`style()` read back.
     #[napi(js_name = "cellColors")]
     pub fn cell_colors(&mut self, env: Env, x: u16, y: u16) -> Result<Option<CellColors>> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             app.driver.render();
             take_pending_error(app.driver.app_mut())?;

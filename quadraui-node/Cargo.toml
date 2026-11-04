@@ -41,12 +41,16 @@ quadraui = { path = "../quadraui", features = ["tui"] }
 # render -> frame assembly) this binding is a thin napi-rs leaf over. See
 # `quadraui-binding-core/src/lib.rs`'s module doc.
 quadraui-binding-core = { path = "../quadraui-binding-core" }
-# `napi4` is the lowest N-API version with the `ThreadsafeFunction` support
-# a future `QuiApp.waker`/callback surface would need (mirrors `quadraui-py`'s
-# own forward-looking choice of pyo3 features); no napi-visible surface in
-# this crate uses it yet. `serde-json` enables `Env::from_js_value`, the
-# napi-rs analog of `pythonize::depythonize` this crate's own descriptor
-# decode adapter is built on -- see `lib.rs`'s module doc.
+# `napi4` is the lowest N-API version with `ThreadsafeFunction` support.
+# `QuiApp.waker` deliberately does not use one -- its `SharedWaker` payload
+# only ever needs to cross into a plain queue a later `step()` drains, not
+# call back into JS from an arbitrary thread -- see `lib.rs`'s module doc's
+# "Live run loop" section for why. Kept for forward compatibility with a
+# future callback surface that does need one (mirrors `quadraui-py`'s own
+# forward-looking choice of pyo3 features). `serde-json` enables
+# `Env::from_js_value`, the napi-rs analog of `pythonize::depythonize` this
+# crate's own descriptor decode adapter is built on -- see `lib.rs`'s
+# module doc.
 napi = { version = "3", features = ["napi4", "serde-json"] }
 napi-derive = "3"
 # The decode medium every `quadraui_binding_core::wire`/`extra_paint` entry

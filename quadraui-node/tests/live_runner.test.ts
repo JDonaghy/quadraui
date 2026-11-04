@@ -18,6 +18,23 @@ const path = require("node:path");
 
 const { QuiApp, pump } = require("../js/index.ts");
 
+/**
+ * Races `promise` against a bounded timer, rejecting with `message` if
+ * `promise` hasn't settled by then -- so the exact regression a test below
+ * exists to catch (a starved event loop, or a `pump` that never advances)
+ * surfaces as a failing assertion instead of hanging the suite forever
+ * (`node:test` applies no default per-test timeout). Mirrors the
+ * `postAfter` test's own bounded `deadline` poll loop, generalized to wrap
+ * an arbitrary promise instead of a `while` loop.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timedOut = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timedOut]).finally(() => clearTimeout(timer));
+}
+
 test("waker().post delivers a {User: value} event to the registered handler", () => {
   const app = new QuiApp(5, 5);
   const received: unknown[] = [];
@@ -43,6 +60,11 @@ test("waker().wake delivers a {User: null} event", () => {
   assert.deepEqual(received, [{ User: null }]);
 });
 
+// Also the one place in this suite that exercises background-thread ->
+// JS-handler delivery end to end (the Rust-side `#[test]`s in `lib.rs`
+// cover the waker/queue plumbing itself without a live `Env`/registered
+// handler -- see `waker_post_from_a_background_thread_delivers_a_user_event`'s
+// own doc for why).
 test("waker().postAfter delivers once the delay elapses", async () => {
   const app = new QuiApp(5, 5);
   const received: unknown[] = [];
@@ -94,7 +116,11 @@ test("pump(app) via setInterval does not starve a concurrent setTimeout", async 
   });
 
   const handle = pump(app, 1);
-  await timeoutPromise;
+  await withTimeout(
+    timeoutPromise,
+    5_000,
+    "setTimeout never fired -- pump(app) starved the event loop",
+  );
   handle.stop();
 
   assert.equal(timeoutFired, true);
@@ -108,15 +134,19 @@ test("pump(app) stops itself once step() reports the app has exited", async () =
     return stepCalls >= 3 ? false : undefined;
   });
 
-  await new Promise<void>((resolve) => {
-    pump(app, 1);
-    const check = setInterval(() => {
-      if (stepCalls >= 3) {
-        clearInterval(check);
-        resolve();
-      }
-    }, 1);
-  });
+  await withTimeout(
+    new Promise<void>((resolve) => {
+      pump(app, 1);
+      const check = setInterval(() => {
+        if (stepCalls >= 3) {
+          clearInterval(check);
+          resolve();
+        }
+      }, 1);
+    }),
+    5_000,
+    "pump(app) never drove step() to the expected 3 calls",
+  );
 
   const callsWhenStopped = stepCalls;
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -129,21 +159,25 @@ test("pump(app) stops itself once step() reports the app has exited", async () =
 
 function runDetachedScript(body: string): { stdout: string; status: number | null } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "quadraui-node-live-runner-"));
-  const script = path.join(dir, "script.js");
-  fs.writeFileSync(script, body);
-  // `detached: true` (POSIX `setsid()`) puts the child in its own session
-  // with no controlling terminal at all, so crossterm's `open("/dev/tty")`
-  // fallback fails with `ENXIO` instead of seizing whatever real terminal
-  // launched this test suite -- the exact hazard
-  // `quadraui-py/tests/test_run_tui.py`'s own doc describes for the
-  // equivalent Python test, worked around the same way here.
-  const result = spawnSync(process.execPath, [script], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: true,
-    timeout: 30_000,
-  });
-  return { stdout: result.stdout ?? "", status: result.status };
+  try {
+    const script = path.join(dir, "script.js");
+    fs.writeFileSync(script, body);
+    // `detached: true` (POSIX `setsid()`) puts the child in its own session
+    // with no controlling terminal at all, so crossterm's `open("/dev/tty")`
+    // fallback fails with `ENXIO` instead of seizing whatever real terminal
+    // launched this test suite -- the exact hazard
+    // `quadraui-py/tests/test_run_tui.py`'s own doc describes for the
+    // equivalent Python test, worked around the same way here.
+    const result = spawnSync(process.execPath, [script], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
+      timeout: 30_000,
+    });
+    return { stdout: result.stdout ?? "", status: result.status };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 test("startTui raises without a real tty and leaves the headless app usable", () => {

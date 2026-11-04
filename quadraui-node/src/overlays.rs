@@ -14,6 +14,12 @@
 //! `insertButton`/`slotClear` do (see the module doc's "cannot call back
 //! into `QuiApp`" note). From inside a handler, call the matching
 //! [`QuiAppActions`] method (via `QuiApp::actions()`) instead.
+//!
+//! Every method also calls [`QuiApp::check_not_live`] first: it reaches
+//! into `self.driver`'s own [`InteractionEngine`] directly, which is the
+//! orphaned pre-live one once `startTui` has moved this app's
+//! [`NodeAppLogic`] into the live runner, so without the guard a call here
+//! would silently open the overlay on state no live terminal ever renders.
 
 use super::*;
 
@@ -29,6 +35,7 @@ impl QuiApp {
     #[napi(js_name = "showContextMenu")]
     pub fn show_context_menu(&mut self, env: Env, items: Unknown, position: Unknown) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let items: Vec<ContextMenuItem> = decode_direct(env, "showContextMenu", items)?;
         let position: Point = decode_direct(env, "showContextMenu", position)?;
         self.guarded(env, |app| {
@@ -58,6 +65,7 @@ impl QuiApp {
         severity: Option<String>,
     ) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let buttons: Vec<DialogButton> = decode_direct(env, "showMessageDialog", buttons)?;
         let severity = severity
             .map(|s| {
@@ -81,6 +89,7 @@ impl QuiApp {
     /// dialog was open to close.
     #[napi(js_name = "dismissMessageDialog")]
     pub fn dismiss_message_dialog(&mut self, env: Env) -> Result<bool> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
             let closed = app_logic.engine.close_message_dialog(backend);
@@ -102,6 +111,7 @@ impl QuiApp {
     #[napi(js_name = "showToast")]
     pub fn show_toast(&mut self, env: Env, toast: Unknown, corner: Option<String>) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let toast: Toast = decode_direct(env, "showToast", toast)?;
         let corner = corner
             .map(|c| {
@@ -122,6 +132,7 @@ impl QuiApp {
     /// Returns whether one was closed.
     #[napi(js_name = "dismissToast")]
     pub fn dismiss_toast(&mut self, env: Env, id: String) -> Result<bool> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let closed = app.driver.app_mut().engine.dismiss_toast(WidgetId::new(id));
             if closed {
@@ -140,6 +151,7 @@ impl QuiApp {
     #[napi(js_name = "showTooltip")]
     pub fn show_tooltip(&mut self, env: Env, tooltip: Unknown, anchor: Unknown) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let tooltip: quadraui::Tooltip = decode_direct(env, "showTooltip", tooltip)?;
         let anchor: Rect = decode_direct(env, "showTooltip", anchor)?;
         self.guarded(env, |app| {
@@ -153,6 +165,7 @@ impl QuiApp {
     /// Hides the open tooltip (if any). Returns whether one was open.
     #[napi(js_name = "hideTooltip")]
     pub fn hide_tooltip(&mut self, env: Env) -> Result<bool> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let hidden = app.driver.app_mut().engine.hide_tooltip();
             if hidden {
@@ -177,6 +190,7 @@ impl QuiApp {
         cursor: Unknown,
     ) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let completions: quadraui::Completions =
             decode_direct(env, "showCompletions", completions)?;
         let cursor: Point = decode_direct(env, "showCompletions", cursor)?;
@@ -195,6 +209,7 @@ impl QuiApp {
     /// selection. Returns whether one was open.
     #[napi(js_name = "dismissCompletions")]
     pub fn dismiss_completions(&mut self, env: Env) -> Result<bool> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let closed = app.driver.app_mut().engine.dismiss_completions();
             if closed {
@@ -214,6 +229,7 @@ impl QuiApp {
     #[napi(js_name = "showFloat")]
     pub fn show_float(&mut self, env: Env, float: Unknown, width: f64, height: f64) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let float: quadraui::Float = decode_direct(env, "showFloat", float)?;
         let measure = FloatMeasure::new(width as f32, height as f32);
         self.guarded(env, |app| {
@@ -229,6 +245,7 @@ impl QuiApp {
     /// was open.
     #[napi(js_name = "dismissFloat")]
     pub fn dismiss_float(&mut self, env: Env) -> Result<bool> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
             let closed = app_logic.engine.dismiss_float(backend);
@@ -254,6 +271,7 @@ impl QuiApp {
         anchor: Unknown,
     ) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let popup: quadraui::RichTextPopup = decode_direct(env, "showRichTextPopup", popup)?;
         let anchor: Point = decode_direct(env, "showRichTextPopup", anchor)?;
         self.guarded(env, |app| {
@@ -271,6 +289,7 @@ impl QuiApp {
     /// click. Returns whether one was open.
     #[napi(js_name = "dismissRichTextPopup")]
     pub fn dismiss_rich_text_popup(&mut self, env: Env) -> Result<bool> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let closed = app.driver.app_mut().engine.dismiss_rich_text_popup();
             if closed {
