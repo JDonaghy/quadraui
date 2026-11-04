@@ -248,15 +248,19 @@ def test_reopening_an_open_folder_focuses_its_tab(fmmod, tree_root):
 
 
 def test_activating_a_subfolder_row_drills_into_it(fmmod, tree_root):
-    """Activating (clicking) a subfolder row in the details table opens that
-    subfolder as a new, active tab and moves the tree cursor onto it."""
+    """Double-clicking a subfolder row in the details table opens that
+    subfolder as a new, active tab and moves the tree cursor onto it. A
+    single click must not: it only selects, never opens."""
     fm = _manager(fmmod, tree_root)
 
     _press(fmmod, fm, fmmod.DOWN_KEY)   # -> alpha
     _press(fmmod, fm, fmmod.ENTER_KEY)  # open alpha (row 0 is sub/)
     assert _names(_active_table(fm))[0] == "sub/"
 
-    _send(fm, {"DataTable": ["fm:grid:0", {"RowActivated": {"idx": 0}}]})
+    _send(fm, {"DataTable": ["fm:grid:0", {"RowSelected": {"idx": 0}}]})
+    assert [n.name for n in fm.open] == ["alpha"], "a single click must not drill in"
+
+    _send(fm, {"DataTable": ["fm:grid:0", {"RowDoubleClicked": {"idx": 0}}]})
 
     assert [n.name for n in fm.open] == ["alpha", "sub"]
     assert fm.active_tab == 1
@@ -266,13 +270,13 @@ def test_activating_a_subfolder_row_drills_into_it(fmmod, tree_root):
 
 
 def test_activating_a_file_row_reports_it_without_opening_a_tab(fmmod, tree_root):
-    """Activating a file row is not navigation: it reports the file in the
-    status bar and opens no tab."""
+    """Double-clicking a file row is not navigation: it reports the file in
+    the status bar and opens no tab."""
     fm = _manager(fmmod, tree_root)
 
     _press(fmmod, fm, fmmod.DOWN_KEY)   # -> alpha
     _press(fmmod, fm, fmmod.ENTER_KEY)  # open alpha
-    _send(fm, {"DataTable": ["fm:grid:0", {"RowActivated": {"idx": 1}}]})  # a1.txt
+    _send(fm, {"DataTable": ["fm:grid:0", {"RowDoubleClicked": {"idx": 1}}]})  # a1.txt
 
     assert [n.name for n in fm.open] == ["alpha"]  # no new tab
     assert "a1.txt" in _segment_text(_status_bar(fm)["left_segments"])

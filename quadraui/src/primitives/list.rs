@@ -11,8 +11,11 @@
 //! # Backend contract
 //!
 //! **Purely declarative** — render the optional `title` then
-//! `items[scroll_offset..]` until the viewport fills. Click on row →
-//! emit `ListViewEvent::ItemActivated { idx }`. Keyboard `j`/`k`/`Enter`
+//! `items[scroll_offset..]` until the viewport fills. A single click on a
+//! row emits `ListViewEvent::SelectionChanged { idx }` (select); a
+//! double-click emits the distinct `ListViewEvent::ItemDoubleClicked { idx }`
+//! (open) rather than reusing `ItemActivated`, so an app can tell "select"
+//! from "open" apart — see `ItemActivated`'s own doc. Keyboard `j`/`k`/`Enter`
 //! emit the corresponding events. The app updates `selected_idx` and
 //! `scroll_offset` for the next frame.
 
@@ -1316,8 +1319,14 @@ pub(crate) mod native_surface_paint {
 pub enum ListViewEvent {
     /// Keyboard / mouse moved selection to a different row.
     SelectionChanged { idx: usize },
-    /// User confirmed a row (Enter or double-click).
+    /// User confirmed a row via the keyboard (Enter). Documented meaning is
+    /// "click or Enter", but the pointer side is `ItemDoubleClicked` below —
+    /// a single click only ever emits `SelectionChanged`.
     ItemActivated { idx: usize },
+    /// User double-clicked a row — distinct from `SelectionChanged` (a
+    /// plain click) so an app can tell "select" apart from "open" without
+    /// both folding into `ItemActivated`.
+    ItemDoubleClicked { idx: usize },
     /// A key was pressed while the list had focus and the primitive
     /// did not consume it. App may interpret it (e.g. `q` closes the
     /// quickfix panel).

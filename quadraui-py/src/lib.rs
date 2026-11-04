@@ -7349,6 +7349,119 @@ def handle(event):
         });
     }
 
+    /// Double-clicking a list item must emit the distinct
+    /// `ListViewEvent::ItemDoubleClicked`, not `SelectionChanged` -- the
+    /// "open" event an app should listen for instead of treating every
+    /// single click as an open.
+    #[test]
+    fn double_click_over_a_list_item_emits_a_semantic_item_double_clicked_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'list': {
+        'id': 'list:main',
+        'items': [
+            {'text': {'spans': [{'text': 'Alpha', 'fg': None, 'bg': None}]}},
+            {'text': {'spans': [{'text': 'Beta', 'fg': None, 'bg': None}]}},
+        ],
+        'selected_idx': 0,
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Beta").expect("render must not raise"),
+                "the second item must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Beta")
+                .expect("second item's label must be on screen");
+
+            let click = UiEvent::DoubleClick {
+                widget: None,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("DoubleClick must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                2,
+                "click-to-focus must fire a FocusChanged ahead of the double-click"
+            );
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let list_payload = event_dict
+                .get_item("List")
+                .expect("dict lookup")
+                .expect("a double-click must dispatch a List key, not a raw DoubleClick")
+                .cast_into::<PyTuple>()
+                .expect("List must pythonize to a (id, event) tuple");
+            let widget: String = list_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the list's own id must be a string");
+            assert_eq!(widget, "list:main", "the widget id must be the list's own");
+            let inner = list_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner ListViewEvent must pythonize to a dict");
+            let double_clicked = inner
+                .get_item("ItemDoubleClicked")
+                .expect("dict lookup")
+                .expect("a double-click must carry an ItemDoubleClicked key, not SelectionChanged")
+                .cast_into::<PyDict>()
+                .expect("ItemDoubleClicked payload must be a dict");
+            let idx: usize = double_clicked
+                .get_item("idx")
+                .expect("dict lookup")
+                .expect("idx key must be present")
+                .extract()
+                .expect("idx must be an int");
+            assert_eq!(
+                idx, 1,
+                "the double-clicked item's own index must be reported"
+            );
+        });
+    }
+
     /// A Ctrl-click on a list item is a multi-select gesture
     /// `ListViewEvent::SelectionChanged` can't represent (it carries no
     /// modifiers), so `semantic_event_for_hit` leaves it unmapped: the raw
