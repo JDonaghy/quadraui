@@ -633,6 +633,10 @@ pub(crate) mod native_surface_paint {
     /// reserved between the left and right segment groups.
     const MIN_GAP: f32 = 16.0;
 
+    /// Sub-pixel tolerance on the text-fits check: far below anything
+    /// visible, far above f32 round-off on a status-bar-sized width.
+    const TEXT_FIT_SLACK_PX: f32 = 0.5;
+
     /// Paint a [`StatusBar`] into `(x, y, width, line_height)` on
     /// `surface`, returning the resolved [`StatusBarLayout`] for the
     /// caller's click dispatch — same contract as
@@ -744,6 +748,11 @@ pub(crate) mod native_surface_paint {
             // `DataTable` header title centring).
             let (_, th) = surface.surface_measure_text_styled(&seg.text, seg.bold);
             let text_avail = (seg_rect.width - 2.0 * PIXEL_SEGMENT_PADDING).max(0.0);
+            // `text_avail` is `(measured + 2 * padding) - 2 * padding`,
+            // which f32 can round a hair below `measured` for fractional
+            // pixel widths. The slack keeps a segment the layout gave its
+            // natural width from being ellipsized by that round-off.
+            let fit_avail = text_avail + TEXT_FIT_SLACK_PX;
             // The layout clamps a segment's `bounds.width` below its
             // natural width when it crosses the left-side budget edge
             // (see `layout_padded`) — ellipsis-truncate the text to fit
@@ -753,7 +762,7 @@ pub(crate) mod native_surface_paint {
             // instead, keeping the character the `…` would have eaten.
             let bold = seg.bold;
             let paint_text =
-                crate::text_util::truncate_padded_with_ellipsis(&seg.text, text_avail, |s| {
+                crate::text_util::truncate_padded_with_ellipsis(&seg.text, fit_avail, |s| {
                     surface.surface_measure_text_styled(s, bold).0
                 });
             let text_y = seg_rect.y + (seg_rect.height - th).max(0.0) / 2.0;
@@ -803,6 +812,8 @@ pub(crate) mod native_surface_paint {
             text_runs: Vec<(Rect, String, Color, bool)>,
             clip_pushes: Vec<Rect>,
             clip_pops: usize,
+            /// Per-char width override; `0.0` means the default `8.0`.
+            char_px: f32,
         }
 
         const BOLD_BONUS_PX: f32 = 100.0;
@@ -820,7 +831,8 @@ pub(crate) mod native_surface_paint {
                 8.0
             }
             fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-                (text.chars().count() as f32 * 8.0, 16.0)
+                let char_px = if self.char_px > 0.0 { self.char_px } else { 8.0 };
+                (text.chars().count() as f32 * char_px, 16.0)
             }
             fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
                 let (w, h) = self.surface_measure_text(text);
@@ -1062,6 +1074,38 @@ pub(crate) mod native_surface_paint {
                 .find(|(_, t, _, _)| t == "Ln 1, Col 1")
                 .expect("right segment text drawn");
             assert!(!*right_bold, "right segment is bold=false");
+        }
+
+        /// A fractional measured width (`NORMAL` at 30.03px) round-trips
+        /// through `+ 2 * padding` / `- 2 * padding` to just under itself
+        /// in f32; a segment with ample room must still paint unclipped.
+        #[test]
+        fn fractional_width_segment_that_fits_paints_its_full_text() {
+            let mut bar = sample_bar();
+            bar.left_segments[0].text = "NORMAL".into();
+            bar.left_segments[0].bold = false;
+            bar.right_segments.clear();
+            let theme = Theme::default();
+            let mut surface = RecordingSurface {
+                char_px: 5.005,
+                ..Default::default()
+            };
+            paint(
+                &bar,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                20.0,
+                None,
+                None,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _, _)| t == "NORMAL"),
+                "a segment with room to spare must paint whole, got {:?}",
+                surface.text_runs
+            );
         }
 
         /// Covers the gallery's dirty status-bar scenario: a

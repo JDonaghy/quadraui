@@ -428,7 +428,7 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
 // (`tests/tui_example_driver.rs`, `tests/gtk_example_driver.rs`) and in
 // `tests/cross_backend_parity.rs`.
 
-const MINIMAP_W: u32 = 400;
+const MINIMAP_W: u32 = 800;
 const MINIMAP_H: u32 = 300;
 
 /// `draw_minimap` is called every frame `MinimapApp::render` runs; this
