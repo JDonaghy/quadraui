@@ -642,6 +642,25 @@ pub struct TreeStyle {
     /// stay in sync by construction.
     #[serde(default = "TreeStyle::default_row_height")]
     pub row_height: Option<u16>,
+    /// Reserve a 1-cell/pixel margin on every edge of the tree's viewport
+    /// for a decorative frame, mirroring [`crate::primitives::list::ListView::bordered`].
+    ///
+    /// `TreeView::layout` insets `visible_rows`/`hit_regions` by this
+    /// margin when set, so row 0's content never shares a cell with
+    /// whatever chrome a host paints around the widget — most notably
+    /// the generic focus-ring convention (`crate::tui::draw_focus_ring`
+    /// and its GTK/macOS/Win counterparts), which overlays the widget's
+    /// full tab-stop rect and would otherwise overwrite the tree's own
+    /// first row and outer columns. Set this when the tree can receive
+    /// that ring.
+    ///
+    /// **Currently only the TUI rasteriser (`crate::tui::draw_tree`)
+    /// paints the reserved margin as a border** — same opt-in-per-backend
+    /// precedent as `row_height` above. GTK/macOS/Win rasterisers don't
+    /// yet draw a frame in the reserved space; setting this on those
+    /// backends only shrinks the content area.
+    #[serde(default)]
+    pub bordered: bool,
 }
 
 impl TreeStyle {
@@ -658,6 +677,7 @@ impl Default for TreeStyle {
             chevron_expanded: "▾".into(),
             chevron_collapsed: "▸".into(),
             row_height: Self::default_row_height(),
+            bordered: false,
         }
     }
 }
