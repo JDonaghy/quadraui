@@ -69,6 +69,12 @@
 //! notifications, menus) — see each field's own doc for the specific VS
 //! Code surface it mirrors.
 //!
+//! [`Self::scrollbar_width`] is a further single-owner token, the same
+//! shape as [`Self::backdrop_opacity`]: only `List`/`TreeView`/
+//! `DataTable`'s vertical scrollbar reads it (once a future PR wires
+//! the rasterisers to it — see that field's own doc), independent of
+//! the chrome-metric group's `row_height`.
+//!
 //! A second group of five tokens — [`Self::tab_height`],
 //! [`Self::status_bar_height`], [`Self::activity_bar_width`],
 //! [`Self::row_height`] and [`Self::toolbar_height`] — sizes shell
@@ -306,15 +312,25 @@ pub struct Style {
     /// cell wide; every TUI rasteriser for `List`/`TreeView`/`DataTable`
     /// keeps that one-cell track regardless of this field.
     ///
-    /// No pixel-backend rasteriser reads this field yet — each currently
-    /// paints its vertical scrollbar at the fixed
+    /// No pixel-backend rasteriser reads this field yet — `TreeView`
+    /// currently paints its vertical scrollbar at the fixed
     /// [`crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`]
-    /// / `DATA_TABLE_SCROLLBAR_WIDTH` constants — for the same reason as
-    /// [`Self::padding`] above: this field is the themeable seam, wiring
-    /// each backend's rasteriser to read it is tracked separately.
+    /// (`10.0`, already matching this field's default) through the single
+    /// shared [`crate::primitives::tree::native_surface_paint`] paint path
+    /// GTK, macOS and Win32 all call, so wiring the tree to this token is
+    /// one change to that shared function, not one per backend.
+    /// `DataTable` paints at the separate
+    /// [`crate::primitives::layout_metrics::pixel::DATA_TABLE_SCROLLBAR_WIDTH`]
+    /// (`8.0`), so wiring it to this field — for the same reason as
+    /// [`Self::padding`] above, tracked separately from adding the
+    /// themeable seam here — would widen that scrollbar from `8.0` to
+    /// this field's `10.0` default unless that follow-up gives
+    /// `DataTable` its own override.
     ///
     /// Default `10.0` — VS Code's own list/tree overlay scrollbar width,
-    /// matching the pre-existing `TREE_VSCROLLBAR_WIDTH` constant.
+    /// matching the
+    /// [`crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`]
+    /// constant.
     #[serde(default = "default_scrollbar_width")]
     pub scrollbar_width: f32,
 }
@@ -532,7 +548,6 @@ mod tests {
         assert_eq!(style.activity_bar_width, 48.0);
         assert_eq!(style.row_height, 22.0);
         assert_eq!(style.toolbar_height, 35.0);
-        assert_eq!(style.scrollbar_width, 10.0);
     }
 
     /// Each chrome-metric `with_*` builder overrides only its own field.
@@ -562,10 +577,6 @@ mod tests {
         let toolbar_height = defaults.with_toolbar_height(40.0);
         assert_eq!(toolbar_height.toolbar_height, 40.0);
         assert_eq!(toolbar_height.tab_height, defaults.tab_height);
-
-        let scrollbar_width = defaults.with_scrollbar_width(14.0);
-        assert_eq!(scrollbar_width.scrollbar_width, 14.0);
-        assert_eq!(scrollbar_width.toolbar_height, defaults.toolbar_height);
     }
 
     /// A JSON payload serialized before the chrome-metric fields existed
@@ -588,7 +599,6 @@ mod tests {
         assert_eq!(style.activity_bar_width, 48.0);
         assert_eq!(style.row_height, 22.0);
         assert_eq!(style.toolbar_height, 35.0);
-        assert_eq!(style.scrollbar_width, 10.0);
     }
 
     /// A JSON payload serialized before [`Style::scrollbar_width`]

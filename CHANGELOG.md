@@ -63,9 +63,14 @@ only a push to `main` runs this workflow.
   `TREE_VSCROLLBAR_WIDTH` constant) — a themeable seam for the
   `List`/`TreeView`/`DataTable` vertical scrollbar track width.
   Additive field on the already-`#[non_exhaustive]` `Style` struct; no
-  pixel-backend rasteriser reads it yet (each still paints at its own
-  fixed `layout_metrics::pixel` constant) — wiring each backend to read
-  it is tracked as a follow-up per backend.
+  pixel-backend rasteriser reads it yet. `TreeView` paints its vertical
+  scrollbar through one shared function (`tree::native_surface_paint`)
+  that GTK, macOS and Win32 all call, so wiring the tree to this token
+  is a single follow-up, not one per backend. `DataTable` paints at its
+  own, separate `DATA_TABLE_SCROLLBAR_WIDTH` constant (`8.0`, not
+  `10.0`), so wiring it to this token is a second, independent
+  follow-up that widens that scrollbar unless it also adds a
+  `DataTable`-specific override.
 - `Backend::draw_button_with_state(rect, button, &InteractionState)` — a
   `Button` rasteriser that tints the background when the button is
   hovered/pressed, keyed by `button.id`. Additive: `draw_button` is
