@@ -1,11 +1,12 @@
 //! Backend-agnostic Form demo showcasing per-field `label_position` /
 //! `label_align` / `label_width` and a custom `tab_index` order.
 //!
-//! [`AppLogic`] impl driving the TUI runner via the thin
-//! `examples/tui_form_label_placement.rs` shell (~10 lines). The TUI
-//! backend renders every `LabelPosition` this demo exercises; other
-//! backends compile against the new `FormField` fields but don't yet
-//! have their own rasteriser support for them.
+//! [`AppLogic`] impl driving every backend via its own thin runner shell
+//! (`examples/tui_form_label_placement.rs`, `macos_form_label_placement.rs`,
+//! `gtk_form_label_placement.rs`, `win_form_label_placement.rs`, each ~10
+//! lines). TUI, GTK, macOS and Win32 all rasterise every `LabelPosition`
+//! this demo exercises (`tui/form.rs`, `gtk/form.rs`, `macos/form.rs`,
+//! `win/form.rs`).
 //!
 //! Shape: a "server profile" settings form with five fields, each using a
 //! different label placement, and a declared `tab_index` that does *not*

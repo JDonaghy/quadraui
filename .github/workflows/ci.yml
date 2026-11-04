@@ -788,10 +788,10 @@ jobs:
       # from this leg entirely.
       - name: Build (win feature)
         if: matrix.os == 'windows-latest'
-        run: cargo build -p quadraui --example win_demo --example win_platform_services --example win_app --example win_multi_tree --example win_split --example win_panel --example win_toast --example win_indicators --example win_search_panel --example win_sidebar_search --example win_menu_bar --example win_data_table --example win_chart --example win_form_groups --example win_hscroll --example win_appshell_demo --features win
+        run: cargo build -p quadraui --example win_demo --example win_platform_services --example win_app --example win_multi_tree --example win_split --example win_panel --example win_toast --example win_indicators --example win_search_panel --example win_sidebar_search --example win_menu_bar --example win_data_table --example win_chart --example win_form_groups --example win_hscroll --example win_appshell_demo --example win_form_label_placement --features win
       - name: Clippy (win feature)
         if: matrix.os == 'windows-latest'
-        run: cargo clippy -p quadraui --example win_demo --example win_platform_services --example win_app --example win_multi_tree --example win_split --example win_panel --example win_toast --example win_indicators --example win_search_panel --example win_sidebar_search --example win_menu_bar --example win_data_table --example win_chart --example win_form_groups --example win_hscroll --example win_appshell_demo --features win -- -D warnings
+        run: cargo clippy -p quadraui --example win_demo --example win_platform_services --example win_app --example win_multi_tree --example win_split --example win_panel --example win_toast --example win_indicators --example win_search_panel --example win_sidebar_search --example win_menu_bar --example win_data_table --example win_chart --example win_form_groups --example win_hscroll --example win_appshell_demo --example win_form_label_placement --features win -- -D warnings
       # Headless Direct2D test surface (#24, `src/win/testing.rs`'s
       # `HeadlessSurface`: an `ID2D1DCRenderTarget` bound to an in-memory
       # DIB section — no `HWND`, display, or GPU). The two steps above
