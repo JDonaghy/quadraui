@@ -140,10 +140,15 @@ impl Demo for FocusDemo {
         let body_h = (area.height - status_h).max(0.0);
         let half_w = (area.width / 2.0).round();
 
+        // `&& ring.is_focus_visible()`: Tab/Shift+Tab (the only way this
+        // demo moves focus) always leaves the ring focus-visible, so the
+        // ring shows on every Tab press — see `FocusRing::is_focus_visible`'s
+        // doc for the click-to-focus case this guards against in a host
+        // that also wires up pointer focus.
         let ring = self.focus.borrow();
-        let left_focused = ring.is_focused(&WidgetId::new(LEFT_ID));
-        let right_focused = ring.is_focused(&WidgetId::new(RIGHT_ID));
-        let status_focused = ring.is_focused(&WidgetId::new(STATUS_ID));
+        let left_focused = ring.is_focused(&WidgetId::new(LEFT_ID)) && ring.is_focus_visible();
+        let right_focused = ring.is_focused(&WidgetId::new(RIGHT_ID)) && ring.is_focus_visible();
+        let status_focused = ring.is_focused(&WidgetId::new(STATUS_ID)) && ring.is_focus_visible();
         drop(ring);
 
         let left = self.list(LEFT_ID, &["alpha", "bravo", "charlie"], left_focused);
