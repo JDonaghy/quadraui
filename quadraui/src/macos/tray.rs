@@ -85,13 +85,14 @@ impl MacTrayState {
         &mut self,
         mtm: MainThreadMarker,
         events: &Rc<RefCell<VecDeque<UiEvent>>>,
+        redraw_kicker: &Option<Rc<dyn Fn()>>,
     ) -> Retained<NSStatusItem> {
         if let Some(item) = &self.status_item {
             return item.clone();
         }
         let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
         if let Some(button) = item.button(mtm) {
-            let target = QuadraTrayTarget::new(mtm, events.clone());
+            let target = QuadraTrayTarget::new(mtm, events.clone(), redraw_kicker.clone());
             // SAFETY: `target` is retained in `self.click_target` below
             // for the tray's lifetime, so the button's weak `target`
             // property never dangles — same contract
@@ -118,6 +119,10 @@ impl MacTrayState {
 /// `NSApplication::currentEvent` and pushes `UiEvent::TrayClicked`.
 struct QuadraTrayTargetIvars {
     events: Rc<RefCell<VecDeque<UiEvent>>>,
+    /// Clone of [`super::backend::MacBackend::redraw_kicker`] — see
+    /// `QuadraMenuTargetIvars::redraw_kicker`'s doc for why this is
+    /// preferred over `NSApplication::keyWindow()`.
+    redraw_kicker: Option<Rc<dyn Fn()>>,
 }
 
 define_class!(
@@ -137,10 +142,13 @@ define_class!(
         /// Action selector wired to the tray button in
         /// [`MacTrayState::ensure_item`]. Pushes
         /// `UiEvent::TrayClicked { button }` and — mirroring
-        /// `QuadraMenuTarget::quadra_menu_action`'s redraw kick —
-        /// triggers `setNeedsDisplay` on the key window's content view
-        /// so the queued event actually gets drained this run loop turn
-        /// rather than waiting for the next unrelated paint.
+        /// `QuadraMenuTarget::quadra_menu_action`'s redraw kick — calls
+        /// the installed redraw kicker (or falls back to
+        /// `setNeedsDisplay` on the key window's content view) so the
+        /// queued event actually gets drained this run loop turn rather
+        /// than waiting for the next unrelated paint. The redraw
+        /// kicker, unlike `keyWindow()`, works even while the app isn't
+        /// frontmost — the common case for a tray-icon click.
         #[unsafe(method(quadraTrayAction:))]
         fn quadra_tray_action(&self, _sender: &AnyObject) {
             let mtm = MainThreadMarker::from(self);
@@ -149,10 +157,14 @@ define_class!(
                 .events
                 .borrow_mut()
                 .push_back(UiEvent::TrayClicked { button });
-            let app = NSApplication::sharedApplication(mtm);
-            if let Some(window) = app.keyWindow() {
-                if let Some(view) = window.contentView() {
-                    view.setNeedsDisplay(true);
+            if let Some(kick) = &self.ivars().redraw_kicker {
+                kick();
+            } else {
+                let app = NSApplication::sharedApplication(mtm);
+                if let Some(window) = app.keyWindow() {
+                    if let Some(view) = window.contentView() {
+                        view.setNeedsDisplay(true);
+                    }
                 }
             }
         }
@@ -160,9 +172,16 @@ define_class!(
 );
 
 impl QuadraTrayTarget {
-    fn new(mtm: MainThreadMarker, events: Rc<RefCell<VecDeque<UiEvent>>>) -> Retained<Self> {
+    fn new(
+        mtm: MainThreadMarker,
+        events: Rc<RefCell<VecDeque<UiEvent>>>,
+        redraw_kicker: Option<Rc<dyn Fn()>>,
+    ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
-        let this = this.set_ivars(QuadraTrayTargetIvars { events });
+        let this = this.set_ivars(QuadraTrayTargetIvars {
+            events,
+            redraw_kicker,
+        });
         unsafe { msg_send![super(this), init] }
     }
 }
@@ -217,12 +236,13 @@ pub(crate) fn set_icon(
     state: &mut MacTrayState,
     events: Rc<RefCell<VecDeque<UiEvent>>>,
     icon: ImageSource,
+    redraw_kicker: Option<Rc<dyn Fn()>>,
 ) -> ServiceResult<()> {
     let mtm = MainThreadMarker::new().ok_or(BackendError::Unsupported)?;
     let image = decode_ns_image(&icon).ok_or_else(|| BackendError::PlatformFailure {
         context: "NSImage failed to decode the tray icon source".to_string(),
     })?;
-    let item = state.ensure_item(mtm, &events);
+    let item = state.ensure_item(mtm, &events, &redraw_kicker);
     if let Some(button) = item.button(mtm) {
         button.setImage(Some(&image));
     }
@@ -234,9 +254,10 @@ pub(crate) fn set_tooltip(
     state: &mut MacTrayState,
     events: Rc<RefCell<VecDeque<UiEvent>>>,
     tooltip: &str,
+    redraw_kicker: Option<Rc<dyn Fn()>>,
 ) -> ServiceResult<()> {
     let mtm = MainThreadMarker::new().ok_or(BackendError::Unsupported)?;
-    let item = state.ensure_item(mtm, &events);
+    let item = state.ensure_item(mtm, &events, &redraw_kicker);
     if let Some(button) = item.button(mtm) {
         button.setToolTip(Some(&NSString::from_str(tooltip)));
     }
@@ -247,19 +268,27 @@ pub(crate) fn set_tooltip(
 /// empty `menu.items` detaches any previously-attached menu — click
 /// behaviour then reverts to `UiEvent::TrayClicked` via
 /// [`MacTrayState::click_target`].
+///
+/// `redraw_kicker` — a clone of
+/// [`super::backend::MacBackend::redraw_kicker`] — is threaded into the
+/// `QuadraMenuTarget` built here so a tray-menu item activation forces
+/// its drain even when the app isn't frontmost: the tray's menu pops up
+/// without AppKit ever making any quadraui window key, so a kick that
+/// only tries `NSApplication::keyWindow()` would never fire.
 pub(crate) fn set_menu(
     state: &mut MacTrayState,
     events: Rc<RefCell<VecDeque<UiEvent>>>,
     menu: &ContextMenu,
+    redraw_kicker: Option<Rc<dyn Fn()>>,
 ) -> ServiceResult<()> {
     let mtm = MainThreadMarker::new().ok_or(BackendError::Unsupported)?;
-    let item = state.ensure_item(mtm, &events);
+    let item = state.ensure_item(mtm, &events, &redraw_kicker);
     if menu.items.is_empty() {
         item.setMenu(None);
         state.menu_target = None;
         return Ok(());
     }
-    let target = QuadraMenuTarget::new(mtm, events, MenuKind::Context);
+    let target = QuadraMenuTarget::new(mtm, events, MenuKind::Context, redraw_kicker);
     let ns_menu = build_ns_menu(mtm, &menu.items, &target);
     item.setMenu(Some(&ns_menu));
     state.menu_target = Some(target);
@@ -283,14 +312,14 @@ mod tests {
     #[test]
     fn set_icon_off_main_thread_returns_unsupported_not_panic() {
         let mut state = MacTrayState::default();
-        let result = set_icon(&mut state, events(), ImageSource::Bytes(Vec::new()));
+        let result = set_icon(&mut state, events(), ImageSource::Bytes(Vec::new()), None);
         assert_eq!(result, Err(BackendError::Unsupported));
     }
 
     #[test]
     fn set_tooltip_off_main_thread_returns_unsupported_not_panic() {
         let mut state = MacTrayState::default();
-        let result = set_tooltip(&mut state, events(), "hello");
+        let result = set_tooltip(&mut state, events(), "hello", None);
         assert_eq!(result, Err(BackendError::Unsupported));
     }
 
@@ -304,7 +333,48 @@ mod tests {
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
         };
-        let result = set_menu(&mut state, events(), &menu);
+        let result = set_menu(&mut state, events(), &menu, None);
         assert_eq!(result, Err(BackendError::Unsupported));
+    }
+
+    /// Regression test: `quadraTrayAction:` — the real action
+    /// selector, not a hand-rolled simulation — must call the installed
+    /// redraw kicker instead of only trying
+    /// `NSApplication::keyWindow()`, which is `None` whenever the app
+    /// isn't frontmost (the common case for a tray-icon click).
+    #[test]
+    fn quadra_tray_action_calls_redraw_kicker_without_key_window() {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let ev = events();
+        let kicked = Rc::new(std::cell::Cell::new(false));
+        let kicked_handle = kicked.clone();
+        let redraw_kicker: Rc<dyn Fn()> = Rc::new(move || kicked_handle.set(true));
+        let target = QuadraTrayTarget::new(mtm, ev.clone(), Some(redraw_kicker));
+
+        assert!(NSApplication::sharedApplication(mtm).keyWindow().is_none());
+
+        // Drive the actual action selector via `msg_send!` —
+        // `define_class!`-declared methods are transformed for ABI
+        // reasons and aren't meant to be called as plain Rust methods,
+        // see that macro's own doc. `quadraTrayAction:`'s `sender`
+        // argument is unused — any valid object reference works here,
+        // the same no-op-upcast pattern `MacTrayState::ensure_item`
+        // uses for `button.setTarget`.
+        let sender: Retained<NSObject> = NSObject::new();
+        let sender_obj: &AnyObject = unsafe { &*(&*sender as *const NSObject as *const AnyObject) };
+        unsafe {
+            let _: () = msg_send![&*target, quadraTrayAction: sender_obj];
+        }
+
+        assert!(
+            kicked.get(),
+            "quadraTrayAction: must call the redraw kicker even with no key window"
+        );
+        assert!(matches!(
+            ev.borrow().front(),
+            Some(UiEvent::TrayClicked { .. })
+        ));
     }
 }

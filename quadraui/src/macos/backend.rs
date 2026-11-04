@@ -759,7 +759,10 @@ impl MacBackend {
     /// uses for every other event, so a background-thread wake schedules a
     /// repaint through one call site rather than a second bespoke one.
     /// `mtm` proves the call happens on the main thread, matching
-    /// [`dispatch2::MainThreadBound::new`]'s contract.
+    /// [`dispatch2::MainThreadBound::new`]'s contract. [`Self::redraw_kicker`]
+    /// hands a clone of this same closure to the menu/tray action
+    /// selectors, which need the identical "repaint the view itself,
+    /// not whatever window happens to be key" behaviour.
     ///
     /// A second call is a no-op ([`std::sync::OnceLock::set`] silently
     /// ignores it) — `run` only ever calls this once per backend instance.
@@ -778,6 +781,25 @@ impl MacBackend {
     /// ignores it) — `run` only ever calls this once per backend instance.
     pub(crate) fn set_tick_callback(&self, callback: Rc<dyn Fn()>, mtm: MainThreadMarker) {
         let _ = self.tick_callback.set(MainThreadBound::new(callback, mtm));
+    }
+
+    /// Clone of the installed [`Self::set_wake_callback`] closure, if
+    /// `macos::run::run` has installed one. Calling it schedules a
+    /// repaint via `view.setNeedsDisplay(true)` on the view itself —
+    /// which AppKit services regardless of whether that view's window
+    /// is `keyWindow()` — rather than the live window needing to be
+    /// frontmost.
+    ///
+    /// Menu/tray action selectors (`menu_bar_install::quadra_menu_action`,
+    /// `tray::quadra_tray_action`) hold this directly so a queued
+    /// activation gets drained this run-loop turn without first
+    /// checking `NSApplication::keyWindow()`, which is `None` whenever
+    /// the app isn't frontmost — the common case for a tray-icon
+    /// interaction. `None` for a `MacBackend` never handed to
+    /// `macos::run::run` (e.g. a bare unit test), the same "no callback
+    /// yet" case [`Self::waker`] documents.
+    pub(crate) fn redraw_kicker(&self, mtm: MainThreadMarker) -> Option<Rc<dyn Fn()>> {
+        self.wake_callback.get().map(|bound| bound.get(mtm).clone())
     }
 
     /// Stash the raw press `NSEvent`. Called by `macos::run`'s
@@ -1815,7 +1837,12 @@ impl Backend for MacBackend {
         };
         // Replacing wholesale — the previous target drops when this
         // assignment runs, after the new menu is installed.
-        let target = super::menu_bar_install::install_menu_bar(mtm, bar, self.events.clone());
+        let target = super::menu_bar_install::install_menu_bar(
+            mtm,
+            bar,
+            self.events.clone(),
+            self.redraw_kicker(mtm),
+        );
         self.menu_target = Some(target);
     }
 
@@ -1838,6 +1865,7 @@ impl Backend for MacBackend {
             anchor.x as f64,
             anchor.y as f64,
             self.events.clone(),
+            self.redraw_kicker(mtm),
         );
     }
 
@@ -4506,18 +4534,21 @@ impl WindowControl for MacBackend {
 /// use for `super::menu_bar_install`.
 impl crate::backend::TrayService for MacBackend {
     fn set_icon(&mut self, icon: crate::primitives::image::ImageSource) -> ServiceResult<()> {
-        super::tray::set_icon(&mut self.tray, self.events.clone(), icon)
+        let kicker = MainThreadMarker::new().and_then(|mtm| self.redraw_kicker(mtm));
+        super::tray::set_icon(&mut self.tray, self.events.clone(), icon, kicker)
     }
 
     fn set_tooltip(&mut self, tooltip: &str) -> ServiceResult<()> {
-        super::tray::set_tooltip(&mut self.tray, self.events.clone(), tooltip)
+        let kicker = MainThreadMarker::new().and_then(|mtm| self.redraw_kicker(mtm));
+        super::tray::set_tooltip(&mut self.tray, self.events.clone(), tooltip, kicker)
     }
 
     fn set_menu(
         &mut self,
         menu: &crate::primitives::context_menu::ContextMenu,
     ) -> ServiceResult<()> {
-        super::tray::set_menu(&mut self.tray, self.events.clone(), menu)
+        let kicker = MainThreadMarker::new().and_then(|mtm| self.redraw_kicker(mtm));
+        super::tray::set_menu(&mut self.tray, self.events.clone(), menu, kicker)
     }
 }
 

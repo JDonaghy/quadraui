@@ -8,11 +8,17 @@
 //!
 //! Action selectors fire on a Rust-side Obj-C subclass
 //! (`QuadraMenuTarget`) that holds a clone of the backend's event
-//! queue and a `tag → WidgetId` map. When the user clicks a menu
-//! item, the selector reads the sender's `tag`, looks up the
-//! `WidgetId`, and pushes `UiEvent::MenuActivated(id)` onto the
-//! queue. Standard app-menu items (Hide, Quit, etc.) use stock
-//! AppKit selectors instead and don't route through our target.
+//! queue, a `tag → WidgetId` map, and a clone of
+//! `MacBackend::redraw_kicker`. When the user clicks a menu item, the
+//! selector reads the sender's `tag`, looks up the `WidgetId`, pushes
+//! `UiEvent::MenuActivated(id)` onto the queue, and calls the redraw
+//! kicker to force the `drawRect:` that drains it — that kicker
+//! targets the app's own view directly rather than
+//! `NSApplication::keyWindow()`'s content view, so the activation is
+//! delivered even when the app isn't frontmost (the common case for a
+//! tray-icon interaction; see `super::tray::set_menu`, which reuses
+//! this same target). Standard app-menu items (Hide, Quit, etc.) use
+//! stock AppKit selectors instead and don't route through our target.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -64,6 +70,14 @@ pub(crate) struct QuadraMenuTargetIvars {
     events: Rc<RefCell<VecDeque<UiEvent>>>,
     /// Selects which `UiEvent` variant the action selector pushes.
     kind: MenuKind,
+    /// Clone of [`super::backend::MacBackend::redraw_kicker`] — calling
+    /// it schedules a repaint on the app's own view directly, so the
+    /// just-queued activation drains this run-loop turn regardless of
+    /// whether the app's window is `keyWindow()`. `None` for a target
+    /// built before `macos::run::run` has installed the wake callback
+    /// (or in a unit test); the action selector falls back to the old
+    /// `NSApplication::keyWindow()` kick in that case.
+    redraw_kicker: Option<Rc<dyn Fn()>>,
 }
 
 define_class!(
@@ -89,12 +103,15 @@ define_class!(
         /// Action selector wired to every quadraui-installed
         /// `NSMenuItem`. Reads the sender's tag, looks up the
         /// associated `WidgetId`, pushes
-        /// `UiEvent::MenuActivated(id)` onto the backend queue, and
-        /// triggers `setNeedsDisplay` on the key window's content
-        /// view so `drawRect:` fires — the paint closure drains the
-        /// queue and dispatches the event through `AppLogic::handle`
-        /// before painting, mirroring the TUI/GTK poll-and-dispatch
-        /// shape.
+        /// `UiEvent::MenuActivated(id)` onto the backend queue, then
+        /// calls the installed redraw kicker (falling back to
+        /// `setNeedsDisplay` on the key window's content view if none
+        /// is installed) so `drawRect:` fires — the paint closure
+        /// drains the queue and dispatches the event through
+        /// `AppLogic::handle` before painting, mirroring the TUI/GTK
+        /// poll-and-dispatch shape. The redraw kicker targets the
+        /// app's own view directly, so this is delivered even when no
+        /// window is `keyWindow()`.
         #[unsafe(method(quadraMenuAction:))]
         fn quadra_menu_action(&self, sender: &NSMenuItem) {
             // `tag` and `setNeedsDisplay:` are safe methods.
@@ -106,11 +123,20 @@ define_class!(
                     MenuKind::Context => UiEvent::ContextMenuItemActivated(id),
                 };
                 self.ivars().events.borrow_mut().push_back(event);
-                let mtm = MainThreadMarker::from(self);
-                let app = NSApplication::sharedApplication(mtm);
-                if let Some(window) = app.keyWindow() {
-                    if let Some(view) = window.contentView() {
-                        view.setNeedsDisplay(true);
+                if let Some(kick) = &self.ivars().redraw_kicker {
+                    kick();
+                } else {
+                    // No wake callback installed (a target built before
+                    // `macos::run::run` wired one, or in a unit test) —
+                    // fall back to kicking the key window's content
+                    // view directly. A no-op if there is no key window
+                    // (e.g. the app isn't frontmost), same as before.
+                    let mtm = MainThreadMarker::from(self);
+                    let app = NSApplication::sharedApplication(mtm);
+                    if let Some(window) = app.keyWindow() {
+                        if let Some(view) = window.contentView() {
+                            view.setNeedsDisplay(true);
+                        }
                     }
                 }
             }
@@ -127,12 +153,14 @@ impl QuadraMenuTarget {
         mtm: MainThreadMarker,
         events: Rc<RefCell<VecDeque<UiEvent>>>,
         kind: MenuKind,
+        redraw_kicker: Option<Rc<dyn Fn()>>,
     ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(QuadraMenuTargetIvars {
             tag_to_id: RefCell::new(HashMap::new()),
             events,
             kind,
+            redraw_kicker,
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -173,8 +201,9 @@ pub(crate) fn install_menu_bar(
     mtm: MainThreadMarker,
     bar: &MenuBar,
     events: Rc<RefCell<VecDeque<UiEvent>>>,
+    redraw_kicker: Option<Rc<dyn Fn()>>,
 ) -> Retained<QuadraMenuTarget> {
-    let target = QuadraMenuTarget::new(mtm, events, MenuKind::Bar);
+    let target = QuadraMenuTarget::new(mtm, events, MenuKind::Bar, redraw_kicker);
 
     // Build the root NSMenu. Title is unused for the main menu bar but
     // assigned for diagnostics in Accessibility Inspector.
@@ -570,8 +599,9 @@ pub(crate) fn show_context_menu(
     anchor_x: f64,
     anchor_y: f64,
     events: Rc<RefCell<VecDeque<UiEvent>>>,
+    redraw_kicker: Option<Rc<dyn Fn()>>,
 ) {
-    let target = QuadraMenuTarget::new(mtm, events.clone(), MenuKind::Context);
+    let target = QuadraMenuTarget::new(mtm, events.clone(), MenuKind::Context, redraw_kicker);
     let ns_menu: Retained<NSMenu> = unsafe {
         msg_send![
             mtm.alloc::<NSMenu>(),
@@ -684,7 +714,7 @@ mod tests {
             open_item: None,
             focused_item: None,
         };
-        let target = install_menu_bar(mtm, &bar, events.clone());
+        let target = install_menu_bar(mtm, &bar, events.clone(), None);
 
         // The two leaf items got tags 1 and 2 in declaration order.
         assert_eq!(target.registered_id(1), Some(WidgetId::new("file.open")));
@@ -692,6 +722,60 @@ mod tests {
 
         // Simulate "Save" being activated.
         target.simulate_activation(2);
+        let queued: Vec<_> = events.borrow().iter().cloned().collect();
+        assert_eq!(
+            queued,
+            vec![UiEvent::MenuActivated(WidgetId::new("file.save"))]
+        );
+    }
+
+    /// Regression test: the real `quadraMenuAction:` selector — not
+    /// the `simulate_activation` test shortcut above, which never
+    /// touches AppKit at all — must call the installed redraw kicker
+    /// to force the drain, instead of only trying
+    /// `NSApplication::keyWindow()` (which is `None` whenever the app
+    /// isn't frontmost, the common case for a tray-icon interaction).
+    #[test]
+    fn quadra_menu_action_calls_redraw_kicker_without_key_window() {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let events = events();
+        let kicked = Rc::new(std::cell::Cell::new(false));
+        let kicked_handle = kicked.clone();
+        let redraw_kicker: Rc<dyn Fn()> = Rc::new(move || kicked_handle.set(true));
+        let bar = MenuBar {
+            id: WidgetId::new("menubar"),
+            items: vec![MenuBarItem {
+                id: WidgetId::new("file"),
+                label: "&File".into(),
+                disabled: false,
+                submenu: Some(vec![item("file.save", "Save")]),
+            }],
+            open_item: None,
+            focused_item: None,
+        };
+        let target = install_menu_bar(mtm, &bar, events.clone(), Some(redraw_kicker));
+
+        // No key window exists in this headless unit test — the same
+        // state as a tray-icon click while the app isn't frontmost.
+        assert!(NSApplication::sharedApplication(mtm).keyWindow().is_none());
+
+        // Drive the actual action selector (not `simulate_activation`)
+        // via `msg_send!` — `define_class!`-declared methods are
+        // transformed for ABI reasons and aren't meant to be called as
+        // plain Rust methods, see that macro's own doc — with a sender
+        // tagged the way `append_menu_item` tags a real `NSMenuItem`.
+        let sender = NSMenuItem::new(mtm);
+        sender.setTag(1);
+        unsafe {
+            let _: () = msg_send![&*target, quadraMenuAction: &*sender];
+        }
+
+        assert!(
+            kicked.get(),
+            "quadraMenuAction: must call the redraw kicker even with no key window"
+        );
         let queued: Vec<_> = events.borrow().iter().cloned().collect();
         assert_eq!(
             queued,
@@ -719,7 +803,7 @@ mod tests {
             open_item: None,
             focused_item: None,
         };
-        let target = install_menu_bar(mtm, &bar, events());
+        let target = install_menu_bar(mtm, &bar, events(), None);
         // Tags should be 1 (cut) and 2 (copy); separator skipped.
         assert_eq!(target.registered_id(1), Some(WidgetId::new("edit.cut")));
         assert_eq!(target.registered_id(2), Some(WidgetId::new("edit.copy")));
@@ -747,7 +831,7 @@ mod tests {
             open_item: None,
             focused_item: None,
         };
-        let target = install_menu_bar(mtm, &bar, events());
+        let target = install_menu_bar(mtm, &bar, events(), None);
         // Only the leaf "Zoom In" gets a tag — the "Appearance"
         // container is a submenu-bearing item, not actionable.
         assert_eq!(
@@ -797,7 +881,7 @@ mod tests {
             open_item: None,
             focused_item: None,
         };
-        let _target = install_menu_bar(mtm, &bar, events());
+        let _target = install_menu_bar(mtm, &bar, events(), None);
 
         let view_menu =
             find_installed_top_level_menu(mtm, "View").expect("a View menu must be synthesized");
@@ -834,7 +918,7 @@ mod tests {
             open_item: None,
             focused_item: None,
         };
-        let _target = install_menu_bar(mtm, &bar, events());
+        let _target = install_menu_bar(mtm, &bar, events(), None);
 
         let main_menu = NSApplication::sharedApplication(mtm)
             .mainMenu()
@@ -885,7 +969,7 @@ mod tests {
         menu: &crate::primitives::context_menu::ContextMenu,
         ev: Rc<RefCell<VecDeque<UiEvent>>>,
     ) -> Retained<QuadraMenuTarget> {
-        let target = QuadraMenuTarget::new(mtm, ev, MenuKind::Context);
+        let target = QuadraMenuTarget::new(mtm, ev, MenuKind::Context, None);
         let ns_menu: Retained<NSMenu> = unsafe {
             msg_send![
                 mtm.alloc::<NSMenu>(),
@@ -962,7 +1046,7 @@ mod tests {
         let menu = context_menu(vec![item("ctx.copy", "Copy")]);
         let ev = events();
 
-        let bar_target = install_menu_bar(mtm, &bar, ev.clone());
+        let bar_target = install_menu_bar(mtm, &bar, ev.clone(), None);
         let ctx_target = build_context_target(mtm, &menu, ev.clone());
 
         // Both used tag 1, but each maps to its own WidgetId.
