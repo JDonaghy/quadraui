@@ -40,6 +40,7 @@
 //! round-trips intact; see [`strip_json_comments`]'s tests.
 
 use crate::types::StyledSpan;
+use std::borrow::Cow;
 
 /// Snap `byte_idx` to the nearest UTF-8 char boundary in `s` at or
 /// before `byte_idx`, clamping `byte_idx` to `s.len()` first.
@@ -332,6 +333,37 @@ where
     let candidate = format!("{prefix}{ELLIPSIS}");
     let w = measure(&candidate);
     (candidate, w)
+}
+
+/// [`truncate_with_ellipsis`] for a run whose text carries its own
+/// **trailing padding**: trailing whitespace is treated as padding, not
+/// content, so a run that overflows `max_width` only by its own trailing
+/// spaces is clipped rather than spending a real character on the `…`.
+///
+/// Status-bar segments are the motivating case — a consumer writes
+/// `format!(" {label} ")` to give the segment breathing room, and losing
+/// the last letter of `label` to buy back an invisible space is strictly
+/// worse than dropping the space.
+///
+/// Borrows `text` unchanged when it already fits, borrows its
+/// [`str::trim_end`] when only the padding overflows, and otherwise
+/// defers to [`truncate_with_ellipsis`].
+pub fn truncate_padded_with_ellipsis<'a, F>(
+    text: &'a str,
+    max_width: f32,
+    measure: F,
+) -> Cow<'a, str>
+where
+    F: Fn(&str) -> f32,
+{
+    if measure(text) <= max_width {
+        return Cow::Borrowed(text);
+    }
+    let trimmed = text.trim_end();
+    if trimmed.len() < text.len() && measure(trimmed) <= max_width {
+        return Cow::Borrowed(trimmed);
+    }
+    Cow::Owned(truncate_with_ellipsis(text, max_width, measure).0)
 }
 
 /// Case-sensitive subsequence fuzzy match with a relevance score and
@@ -993,6 +1025,38 @@ mod tests {
             truncate_with_ellipsis("日本語テスト", 7.0, |s| display_width(s) as f32);
         assert_eq!(fitted, "日本語…");
         assert_eq!(w, 7.0);
+    }
+
+    // ── truncate_padded_with_ellipsis ───────────────────────────────────
+
+    #[test]
+    fn truncate_padded_with_ellipsis_borrows_text_that_already_fits() {
+        let fitted = truncate_padded_with_ellipsis(" fits ", 100.0, chars_measure);
+        assert_eq!(fitted, " fits ");
+        assert!(matches!(fitted, Cow::Borrowed(_)), "no allocation needed");
+    }
+
+    #[test]
+    fn truncate_padded_with_ellipsis_clips_padding_instead_of_eating_a_character() {
+        // `" {label} "` is 8 cells in a 7-cell budget: dropping the
+        // invisible trailing space keeps the whole label, where an
+        // ellipsis would have cost the final "l".
+        let fitted = truncate_padded_with_ellipsis(" label ", 6.0, chars_measure);
+        assert_eq!(fitted, " label");
+    }
+
+    #[test]
+    fn truncate_padded_with_ellipsis_still_ellipsizes_real_overflow() {
+        // Trimming the padding is not enough here, so the content itself
+        // must be truncated — and the result ends in the ellipsis.
+        let fitted = truncate_padded_with_ellipsis(" a long label ", 6.0, chars_measure);
+        assert_eq!(fitted, " a lo…");
+    }
+
+    #[test]
+    fn truncate_padded_with_ellipsis_ellipsizes_unpadded_overflow() {
+        let fitted = truncate_padded_with_ellipsis("overflowing", 5.0, chars_measure);
+        assert_eq!(fitted, "over…");
     }
 
     // ── fuzzy_score ─────────────────────────────────────────────────────
