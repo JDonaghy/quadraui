@@ -324,9 +324,10 @@ only a push to `main` runs this workflow.
 
 ### Fixed
 - GUI (GTK/macOS/Win) single-line inputs now match `TextInput`'s framed
-  convention: `Palette`'s query row paints a thin bar caret (`theme.cursor`)
-  instead of a full-glyph-width filled block, and `CommandLine` gains a 1px
-  `border_fg` frame around its bar. TUI is unchanged — `Palette`'s own
+  convention: `Palette`'s query row paints a thin bar caret (`theme.cursor`),
+  gated on `Palette::has_focus` like `TextInput`'s own bar caret, instead of
+  an unconditional full-glyph-width filled block, and `CommandLine` gains a
+  1px `border_fg` frame around its bar. TUI is unchanged — `Palette`'s own
   rasteriser keeps its terminal-style inverted block caret, and
   `CommandLine`'s stays borderless.
 - `compose::MenuSystem::set_menus` no longer leaves `open_item`/`submenu_path`

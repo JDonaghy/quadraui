@@ -579,8 +579,8 @@ impl Palette {
 //   [`crate::paint_surface::PaintSurface::surface_draw_icon_glyph`].
 // - **Query cursor**: GTK/macOS both painted a filled cursor block
 //   (inverting the character underneath, terminal-style); Windows drew
-//   no cursor. `paint` instead gives every GUI backend a thin bar caret —
-//   the block-invert treatment is TUI-only (`tui::palette`'s `set_cell`
+//   no cursor. `paint` gives every GUI backend a thin bar caret; the
+//   block-invert treatment is TUI-only (`tui::palette`'s `set_cell`
 //   fg/bg swap).
 // - **`PaletteMode::Input` suppression**: GTK and Windows both hide the
 //   item list in `Input` mode; macOS did not. `paint` suppresses the
@@ -844,18 +844,23 @@ pub(crate) mod native_surface_paint {
                 theme.query_fg,
             );
 
-            let cursor_prefix = safe_prefix(&palette.query, palette.query_cursor);
-            let (cursor_prefix_w, _) = surface.surface_measure_text(cursor_prefix);
-            let cursor_x = query_text_x + cursor_prefix_w;
             // Thin bar caret, matching the GUI convention every other
             // single-line input uses (`text_input`/`command_line`'s
             // `CURSOR_WIDTH`) — a block caret that inverts the glyph
             // underneath is TUI-only (`tui::palette` keeps it via
-            // `set_cell`'s fg/bg swap).
-            surface.surface_fill_rect(
-                Rect::new(cursor_x, qy, QUERY_CURSOR_WIDTH, qb.height),
-                theme.cursor,
-            );
+            // `set_cell`'s fg/bg swap). Only paints while the palette has
+            // focus, same as `text_input::native_surface_paint::paint`'s
+            // `ti.has_focus` gate — an unfocused palette shouldn't still
+            // show a blinking-looking caret.
+            if palette.has_focus {
+                let cursor_prefix = safe_prefix(&palette.query, palette.query_cursor);
+                let (cursor_prefix_w, _) = surface.surface_measure_text(cursor_prefix);
+                let cursor_x = query_text_x + cursor_prefix_w;
+                surface.surface_fill_rect(
+                    Rect::new(cursor_x, qy, QUERY_CURSOR_WIDTH, qb.height),
+                    theme.cursor,
+                );
+            }
         }
 
         // ── Separator row ────────────────────────────────────────────

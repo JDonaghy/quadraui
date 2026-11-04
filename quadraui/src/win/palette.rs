@@ -179,11 +179,19 @@ mod tests {
         // A cursor bar is a *solid fill* spanning the row's full height —
         // unlike glyph ink (which never covers a whole text-row column
         // solidly, since real fonts leave leading above ascenders and
-        // below descenders) — but only ~2px wide, unlike the old
-        // full-glyph-width block. Scan for the column with the highest
-        // fraction of cursor-near pixels and require it to be nearly
-        // fully covered, and require most columns in the query row to
-        // NOT be covered (ruling out a block spanning the whole glyph).
+        // below descenders) — but only ~2px wide, not a full-glyph-width
+        // block. Scan for the column with the highest fraction of
+        // cursor-near pixels and require it to be nearly fully covered,
+        // and require most columns in the query row to NOT be covered
+        // (ruling out a block spanning the whole glyph).
+        //
+        // `draw_palette` always paints with `Theme::default()` (it takes
+        // no theme parameter — see that fn's doc), whose dark-mode
+        // `cursor` and `query_fg` happen to be the same `rgb(220, 220,
+        // 220)`, so probing `theme.cursor` below doesn't by itself
+        // distinguish a caret from glyph ink; `fully_covered_cols <= 4`
+        // (a bar is ~2px wide, a full-glyph block is not) is the
+        // assertion that actually tells them apart.
         let dist2 = |px: Color, c: Color| {
             let dr = px.r as i32 - c.r as i32;
             let dg = px.g as i32 - c.g as i32;
