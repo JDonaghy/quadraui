@@ -209,6 +209,11 @@ fn clicking_a_demo_widget_appends_to_the_event_log() {
         .expect("Toast sidebar row should paint");
     driver.click(x, y);
 
+    // The event log is hidden by default — `Ctrl+J` (VS Code's own
+    // "toggle panel" binding) shows it so its entries are actually on
+    // screen for the assertions below.
+    driver.ctrl_char('j');
+
     let before = driver.screen();
     let before_log_lines = before.matches("MouseDown").count();
     assert!(
@@ -255,6 +260,11 @@ fn keying_a_demo_widget_appends_to_the_event_log() {
         .find("Toast")
         .expect("Toast sidebar row should paint");
     driver.click(x, y);
+
+    // The event log is hidden by default — `Ctrl+J` (VS Code's own
+    // "toggle panel" binding) shows it so its entries are actually on
+    // screen for the assertions below.
+    driver.ctrl_char('j');
 
     let before = driver.screen();
     let before_key_lines = before.matches("KeyPressed").count();
