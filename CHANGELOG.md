@@ -83,6 +83,20 @@ only a push to `main` runs this workflow.
   the full curated name list, also inlined on `Icon::codicon`'s doc. New
   `examples/{tui,gtk}_codicon_tree.rs` demo a file-explorer-shaped
   `TreeView` using it.
+- `ColumnWidth::FixedCells(f32)` and `ColumnWidth::FixedPx(f32)` — explicit-
+  unit replacements for the now-deprecated `ColumnWidth::Fixed(f32)`.
+  `FixedCells` is always read in cells: unchanged on TUI, and scaled up by
+  the pixel backend's own measured average glyph width on GTK/macOS/Win, so
+  `FixedCells(10.0)` reads as roughly the same ten-glyph-wide column on
+  every backend. `FixedPx` is always read in pixels: unchanged on a pixel
+  backend, and divided by a nominal 8px terminal cell on TUI. `ColumnWidth`
+  is now `#[non_exhaustive]`. Fixes the gallery `DataTable` demo's
+  `Fixed(10.0)` "Restarts" column reading as a one-glyph-wide sliver on a
+  pixel backend instead of the ten-cell-wide column it paints on TUI; the
+  gallery demo and `examples/common/data_table_app.rs` now declare it
+  `FixedCells(10.0)` instead. Covered by new unit tests in
+  `primitives::data_table`, `quadraui-py/tests/test_data_table_interactions.py`,
+  and `quadraui-node/tests/data_table_interactions.test.ts`.
 - `ListViewEvent::ItemDoubleClicked { idx }` and
   `DataTableEvent::RowDoubleClicked { idx }` — distinct double-click events,
   mirroring `TreeEvent::RowDoubleClicked`, so an app can tell "select" apart
@@ -278,6 +292,12 @@ only a push to `main` runs this workflow.
 - `Style` gains five VS Code chrome-metric tokens: `tab_height` (35),
   `status_bar_height` (22), `activity_bar_width` (48), `row_height` (22) and
   `toolbar_height` (35), each with a matching `with_*` builder.
+
+### Deprecated
+- `ColumnWidth::Fixed(f32)` — ambiguous unit (cells on TUI, pixels on
+  GTK/macOS/Win). Use `ColumnWidth::FixedCells` (always cells) or
+  `ColumnWidth::FixedPx` (always pixels) instead; see this release's
+  `### Added` entry. No removal planned yet.
 
 ### Changed
 - GUI backends (macOS, GTK, Win) default `AppShell`'s tab strip, status bar,

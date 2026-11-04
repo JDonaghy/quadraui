@@ -137,3 +137,39 @@ def test_down_arrow_on_a_focused_table_selects_the_next_row():
     app.run(2)
 
     assert {"DataTable": ("table", {"RowSelected": {"idx": 1}})} in received
+
+
+def test_fixed_px_column_degrades_to_a_nominal_cell_count_on_tui():
+    """`ColumnWidth::FixedPx(80.0)` is a pixel width. This app always
+    renders through the cell-grid TUI backend, where it degrades to
+    `80.0 / 8.0 == 10.0` nominal cells rather than being read as 80 raw
+    cells the way `{"FixedCells": 80.0}` would be -- so a header click at
+    viewport x == 5.0 (inside the 10-cell-wide column) hits column 0, and
+    a click at x == 15.0 (well past its right edge) hits column 1.
+    """
+    app = QuiApp(30, 8)
+    app.insert_data_table(
+        {
+            "id": "table",
+            "columns": [
+                {"title": "Name", "width": {"FixedPx": 80.0}},
+                {"title": "Age", "width": {"Flex": 1.0}},
+            ],
+            "rows": [_row("Alice", "30")],
+        }
+    )
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 5.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    assert {"DataTable": ("table", {"HeaderClicked": {"col": 0}})} in received
+
+    received.clear()
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 15.0, "y": 0.0}, "modifiers": {}}}
+    )
+    app.run(1)
+    assert {"DataTable": ("table", {"HeaderClicked": {"col": 1}})} in received

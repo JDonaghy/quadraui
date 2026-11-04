@@ -2179,12 +2179,12 @@ mod tests {
             columns: vec![
                 Column {
                     title: "Name".to_string(),
-                    width: ColumnWidth::Fixed(8.0),
+                    width: ColumnWidth::FixedCells(8.0),
                     align: Default::default(),
                 },
                 Column {
                     title: "Age".to_string(),
-                    width: ColumnWidth::Fixed(8.0),
+                    width: ColumnWidth::FixedCells(8.0),
                     align: Default::default(),
                 },
             ],
