@@ -190,9 +190,10 @@ impl CommandLine {
 
 /// Shared [`PaintSurface`](crate::paint_surface::PaintSurface)-backed paint
 /// for [`CommandLine`]. Unifies selection highlight rendering across backends:
-/// all backends now paint [`CommandLineLayout::selection_bounds`]'s rect,
+/// all backends paint [`CommandLineLayout::selection_bounds`]'s rect,
 /// clipped to the command bar bounds, with insert-cursor positioning via
-/// [`CommandLineLayout::char_bounds`].
+/// [`CommandLineLayout::char_bounds`], and a 1px `border_fg` frame around
+/// the bar (every GUI single-line input's shared convention).
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -232,8 +233,13 @@ pub(crate) mod native_surface_paint {
             return layout;
         }
 
-        surface.surface_push_clip(rect);
         surface.surface_fill_rect(rect, theme.command_line_bg);
+        // 1px frame, matching `text_input`/`form`'s bordered single-line
+        // input convention — TUI keeps its own borderless bottom-row
+        // rasteriser (`tui::command_line`), this module is GUI-only.
+        surface.surface_stroke_rect(rect, theme.border_fg, 1.0);
+
+        surface.surface_push_clip(rect);
 
         if let Some(sel) = selection {
             if let Some(r) = layout.selection_bounds(sel) {
@@ -277,6 +283,7 @@ pub(crate) mod native_surface_paint {
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color, f32)>,
             text_runs: Vec<(Rect, String, Color)>,
             clip_pushes: Vec<Rect>,
             clip_pops: usize,
@@ -303,7 +310,9 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
                 self.fills.push((rect, color));
             }
-            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
             fn surface_stroke_rounded_rect(
                 &mut self,
                 _rect: Rect,
@@ -360,6 +369,21 @@ pub(crate) mod native_surface_paint {
             let cursor_rect = layout.char_bounds(1);
             assert_eq!(surface.fills[1].0.x, cursor_rect.x);
             assert_eq!(surface.fills[1].1, theme.cursor);
+        }
+
+        #[test]
+        fn paints_a_1px_border_frame() {
+            let cmd = sample(":wq", None, false);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let rect = Rect::new(0.0, 0.0, 100.0, 20.0);
+            paint(&cmd, &mut surface, &theme, rect, 8.0, None);
+
+            assert_eq!(
+                surface.strokes,
+                vec![(rect, theme.border_fg, 1.0)],
+                "command line should frame its full bar in a 1px border"
+            );
         }
 
         #[test]

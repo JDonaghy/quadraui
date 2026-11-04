@@ -121,8 +121,9 @@ pub struct Theme {
     pub warning_fg: Color,
 
     // ── Palette pilot ───────────────────────────────────────────
-    /// Query-input text colour and cursor block fg in a `Palette`
-    /// modal. Distinct from `surface_fg` — the query line is
+    /// Query-input text colour in a `Palette` modal, also the TUI
+    /// block-cursor fg (GUI backends paint the query cursor as a bar in
+    /// `cursor` instead). Distinct from `surface_fg` — the query line is
     /// emphasised, item rows are not.
     pub query_fg: Color,
     /// Per-character highlight colour for fuzzy-match positions in

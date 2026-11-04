@@ -157,10 +157,10 @@ mod tests {
         );
     }
 
-    /// The shared `paint` now fills a cursor block in `query_fg` on
-    /// every backend, including Windows.
+    /// The shared `paint` gives every GUI backend, including Windows, a
+    /// thin bar caret (not a full-glyph-width block) in `theme.cursor`.
     #[test]
-    fn query_row_paints_a_cursor_block() {
+    fn query_row_paints_a_cursor_bar() {
         let surface = HeadlessSurface::new(300, 200).expect("create surface");
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let p = palette();
@@ -176,12 +176,14 @@ mod tests {
         let layout = win_palette_layout(rect, &p, line_height);
         let qb = layout.query_bounds.expect("query bounds present");
         let theme = Theme::default();
-        // A cursor is a *solid fill* spanning the row's full height —
+        // A cursor bar is a *solid fill* spanning the row's full height —
         // unlike glyph ink (which never covers a whole text-row column
         // solidly, since real fonts leave leading above ascenders and
-        // below descenders), so scan for the column with the highest
-        // fraction of query_fg-near pixels and require it to be nearly
-        // fully covered.
+        // below descenders) — but only ~2px wide, unlike the old
+        // full-glyph-width block. Scan for the column with the highest
+        // fraction of cursor-near pixels and require it to be nearly
+        // fully covered, and require most columns in the query row to
+        // NOT be covered (ruling out a block spanning the whole glyph).
         let dist2 = |px: Color, c: Color| {
             let dr = px.r as i32 - c.r as i32;
             let dg = px.g as i32 - c.g as i32;
@@ -189,18 +191,25 @@ mod tests {
             dr * dr + dg * dg + db * db
         };
         let rows: Vec<u32> = (qb.y as u32..(qb.y + qb.height) as u32).collect();
-        let best_coverage = (qb.x as u32..(qb.x + qb.width) as u32)
+        let coverage: Vec<f32> = (qb.x as u32..(qb.x + qb.width) as u32)
             .map(|x| {
                 let covered = rows
                     .iter()
-                    .filter(|&&y| dist2(surface.pixel_at(x, y), theme.query_fg) < 400)
+                    .filter(|&&y| dist2(surface.pixel_at(x, y), theme.cursor) < 400)
                     .count();
                 covered as f32 / rows.len().max(1) as f32
             })
-            .fold(0.0_f32, f32::max);
+            .collect();
+        let best_coverage = coverage.iter().cloned().fold(0.0_f32, f32::max);
+        let fully_covered_cols = coverage.iter().filter(|&&c| c > 0.9).count();
         assert!(
             best_coverage > 0.9,
-            "expected a full-row-height query_fg cursor block; best column coverage was {best_coverage}"
+            "expected a full-row-height cursor bar; best column coverage was {best_coverage}"
+        );
+        assert!(
+            fully_covered_cols <= 4,
+            "expected a thin ~2px bar caret, not a full-glyph-width block; \
+             {fully_covered_cols} columns were fully covered"
         );
     }
 
