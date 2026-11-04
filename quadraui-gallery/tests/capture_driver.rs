@@ -199,6 +199,33 @@ fn every_manifest_row_matches_a_registered_demo_variant() {
             entry.demo,
             demo.variants()
         );
+        // `tui` is always compiled into this test binary (the module's
+        // own `#![cfg(feature = "tui")]`), so every `tui` row is a real
+        // capture attempt, never an `"unsupported"` placeholder — a
+        // `capture_action` whose needle isn't actually painted (a panic
+        // caught by `run_capture`'s own `catch_unwind`) must not slip
+        // through as a quiet `"error"` row for a demo this issue opens
+        // an overlay on. Scoped to those demos rather than every row:
+        // `click_demo_zone`'s own doc in `capture.rs` already names an
+        // unrelated, pre-existing name-collision bug (clicking "Panel"
+        // can select "Bottom Panel" first) that a blanket assertion
+        // would also trip on.
+        const OVERLAY_DEMOS: &[&str] = &[
+            "Dialog",
+            "Message Dialog",
+            "Context Menu",
+            "File Dialog",
+            "Help Overlay",
+            "Menu Bar",
+        ];
+        assert!(
+            !(entry.backend == "tui"
+                && OVERLAY_DEMOS.contains(&entry.demo.as_str())
+                && entry.status.as_deref() == Some("error")),
+            "tui row for {:?}/{:?} captured as an error: {entry:#?}",
+            entry.demo,
+            entry.variant
+        );
     }
 }
 
@@ -233,6 +260,114 @@ fn capture_opens_the_dialog_demo_instead_of_leaving_it_idle() {
         "capturing Dialog/Confirm should show the opened dialog's own button \
          labels, not its idle row list:\n{svg}"
     );
+}
+
+/// `HelpOverlayDemo`'s `capture_action` (`CaptureAction::PressChar('?')`)
+/// must actually open the cheatsheet before the screenshot — the status
+/// bar's own hint flips from the idle `"? = open help..."` text to
+/// `"Esc or ? to close"` once the overlay is open, so that string
+/// appearing in the capture is proof the key press was handled, not
+/// merely sent.
+#[test]
+fn capture_opens_the_help_overlay_demo_instead_of_leaving_it_idle() {
+    let dir = tempfile::tempdir().expect("create temp capture dir");
+    let manifest = quadraui_gallery::capture::run_capture(
+        dir.path(),
+        quadraui_gallery::capture::CaptureTheme::Dark,
+    )
+    .expect("run_capture");
+
+    let entry = manifest
+        .iter()
+        .find(|e| e.backend == "tui" && e.demo == "Help Overlay" && e.variant == "Explorer")
+        .expect("manifest should list a tui Help Overlay/Explorer entry");
+    assert!(
+        entry.status.is_none(),
+        "Help Overlay/Explorer should have captured cleanly: {entry:#?}"
+    );
+    let path = entry
+        .path
+        .as_deref()
+        .expect("Help Overlay/Explorer should have a path");
+    let svg = fs::read_to_string(dir.path().join(path)).expect("read captured SVG");
+    assert!(
+        svg.contains("Esc or ? to close"),
+        "capturing Help Overlay/Explorer should show the opened cheatsheet's \
+         own close hint, not the idle \"? = open help\" prompt:\n{svg}"
+    );
+}
+
+/// `MenuBarDemo`'s `capture_action` clicks the top-level `File`/`View`
+/// label — the captured SVG should show that dropdown's own item labels,
+/// not just the closed menu bar a capture that only clicked the variant
+/// tab would leave behind.
+#[test]
+fn capture_opens_the_menu_bar_demo_instead_of_leaving_it_idle() {
+    let dir = tempfile::tempdir().expect("create temp capture dir");
+    let manifest = quadraui_gallery::capture::run_capture(
+        dir.path(),
+        quadraui_gallery::capture::CaptureTheme::Dark,
+    )
+    .expect("run_capture");
+
+    for (variant, needle) in [
+        ("Dropdown", "New File"),
+        ("Submenu cascade", "Toggle Sidebar"),
+    ] {
+        let entry = manifest
+            .iter()
+            .find(|e| e.backend == "tui" && e.demo == "Menu Bar" && e.variant == variant)
+            .unwrap_or_else(|| panic!("manifest should list a tui Menu Bar/{variant} entry"));
+        assert!(
+            entry.status.is_none(),
+            "Menu Bar/{variant} should have captured cleanly: {entry:#?}"
+        );
+        let path = entry
+            .path
+            .as_deref()
+            .unwrap_or_else(|| panic!("Menu Bar/{variant} should have a path"));
+        let svg = fs::read_to_string(dir.path().join(path)).expect("read captured SVG");
+        assert!(
+            svg.contains(needle),
+            "capturing Menu Bar/{variant} should show the opened dropdown's \
+             own item {needle:?}, not the closed menu bar:\n{svg}"
+        );
+    }
+}
+
+/// `ContextMenuDemo`'s `capture_action` right-clicks the status bar's
+/// idle hint — on TUI (no native OS menu) every `MenuStyle` variant
+/// resolves to the painted `ContextMenuController` path, so the captured
+/// SVG should show that menu's own item labels for all three variants.
+#[test]
+fn capture_opens_the_context_menu_demo_instead_of_leaving_it_idle() {
+    let dir = tempfile::tempdir().expect("create temp capture dir");
+    let manifest = quadraui_gallery::capture::run_capture(
+        dir.path(),
+        quadraui_gallery::capture::CaptureTheme::Dark,
+    )
+    .expect("run_capture");
+
+    for variant in ["Auto", "Native", "Custom"] {
+        let entry = manifest
+            .iter()
+            .find(|e| e.backend == "tui" && e.demo == "Context Menu" && e.variant == variant)
+            .unwrap_or_else(|| panic!("manifest should list a tui Context Menu/{variant} entry"));
+        assert!(
+            entry.status.is_none(),
+            "Context Menu/{variant} should have captured cleanly: {entry:#?}"
+        );
+        let path = entry
+            .path
+            .as_deref()
+            .unwrap_or_else(|| panic!("Context Menu/{variant} should have a path"));
+        let svg = fs::read_to_string(dir.path().join(path)).expect("read captured SVG");
+        assert!(
+            svg.contains("Select All"),
+            "capturing Context Menu/{variant} should show the opened \
+             painted menu's own item labels, not the idle status bar hint:\n{svg}"
+        );
+    }
 }
 
 /// `--theme light` (here, `CaptureTheme::Light` passed straight to

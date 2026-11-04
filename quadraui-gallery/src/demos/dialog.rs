@@ -235,7 +235,7 @@ impl DialogDemo {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " click a row, or Open dialog ".into(),
+                text: " click a row, or use the button below ".into(),
                 fg: Color::rgb(220, 220, 220),
                 bg: Color::rgb(40, 80, 120),
                 bold: false,

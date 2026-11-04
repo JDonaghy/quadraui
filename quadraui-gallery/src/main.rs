@@ -54,7 +54,13 @@ fn maybe_run_capture() {
         .find_map(|a| a.strip_prefix("--theme=").map(str::to_string))
         .or_else(|| {
             let pos = args.iter().position(|a| a == "--theme")?;
-            args.get(pos + 1).cloned()
+            match args.get(pos + 1) {
+                Some(value) => Some(value.clone()),
+                None => {
+                    eprintln!("quadraui-gallery: --theme requires a light|dark argument");
+                    std::process::exit(2);
+                }
+            }
         });
     let theme = match theme_arg.as_deref() {
         None => quadraui_gallery::capture::CaptureTheme::default(),
