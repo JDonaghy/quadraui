@@ -231,6 +231,15 @@ only a push to `main` runs this workflow.
   `viewDidChangeEffectiveAppearance` and re-reads
   `PlatformServices::system_theme` on the fly; previously only a one-shot
   `system_theme()` read was available, with no live notification.
+- macOS: a tray icon or menu bar item activation now reliably reaches
+  `AppLogic::handle` even while the app isn't frontmost. The action
+  selectors (`menu_bar_install::quadra_menu_action`,
+  `tray::quadra_tray_action`) used to force the drain of their queued
+  `UiEvent` by calling `setNeedsDisplay` on `NSApplication.keyWindow()`'s
+  content view — `None` whenever no quadraui window is key, the common
+  case for a tray-icon click. They now call `MacBackend::redraw_kicker`,
+  which schedules the repaint on the app's own view directly, the same
+  path a background-thread wake already used.
 
 ## [0.8.0] - 2026-10-31
 ### Changed
