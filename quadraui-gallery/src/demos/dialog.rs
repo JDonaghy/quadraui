@@ -28,7 +28,7 @@ use quadraui::{
     StatusBarSegment, StyledText, ToolbarItemMeasure, UiEvent, WidgetId,
 };
 
-use crate::demo::{extract_region, Demo};
+use crate::demo::{extract_region, CaptureAction, Demo};
 
 const SOURCE: &str = include_str!("dialog.rs");
 
@@ -427,6 +427,10 @@ impl Demo for DialogDemo {
         // required, backend-generic machinery with no capability flag —
         // every backend routes clicks through the same stack.
         None
+    }
+
+    fn capture_action(&self, _variant: usize) -> CaptureAction {
+        CaptureAction::ClickText("Open dialog")
     }
 }
 // gallery:end

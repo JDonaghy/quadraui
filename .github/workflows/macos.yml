@@ -295,15 +295,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Capture every registered demo (macos backend)
+      - name: Capture every registered demo (macos backend, dark theme)
         run: |
           mkdir -p target/gallery-capture
           cargo run -p quadraui-gallery --features macos --bin quadraui-gallery -- \
             --capture target/gallery-capture
-      - name: Upload gallery capture (macos)
+      - name: Upload gallery capture (macos, dark)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gallery-capture-macos
           path: target/gallery-capture
+          if-no-files-found: warn
+      # `--theme light` leg — see `ci.yml`'s `gallery-capture-tui`
+      # job's own light-theme step for why this reruns the same binary a
+      # second time rather than varying the theme row-by-row within one
+      # manifest.
+      - name: Capture every registered demo (macos backend, light theme)
+        run: |
+          mkdir -p target/gallery-capture-light
+          cargo run -p quadraui-gallery --features macos --bin quadraui-gallery -- \
+            --capture target/gallery-capture-light --theme light
+      - name: Upload gallery capture (macos, light)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gallery-capture-macos-light
+          path: target/gallery-capture-light
           if-no-files-found: warn

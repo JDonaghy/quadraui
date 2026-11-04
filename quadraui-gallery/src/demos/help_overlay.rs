@@ -24,7 +24,7 @@ use quadraui::{
     WidgetId,
 };
 
-use crate::demo::{extract_region, Demo};
+use crate::demo::{extract_region, CaptureAction, Demo};
 
 const SOURCE: &str = include_str!("help_overlay.rs");
 
@@ -196,6 +196,10 @@ impl Demo for HelpOverlayDemo {
         // no `Backend` capability flag — it works identically on every
         // backend, including the Settings variant's no-help fallback.
         None
+    }
+
+    fn capture_action(&self, _variant: usize) -> CaptureAction {
+        CaptureAction::PressChar('?')
     }
 }
 // gallery:end

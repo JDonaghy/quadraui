@@ -18,8 +18,11 @@ use quadraui_gallery::registry::registry;
 fn capture_writes_tui_svg_and_lists_it_in_the_manifest() {
     let dir = tempfile::tempdir().expect("create temp capture dir");
 
-    let manifest = quadraui_gallery::capture::run_capture(dir.path())
-        .expect("run_capture should succeed into a fresh temp dir");
+    let manifest = quadraui_gallery::capture::run_capture(
+        dir.path(),
+        quadraui_gallery::capture::CaptureTheme::Dark,
+    )
+    .expect("run_capture should succeed into a fresh temp dir");
 
     // At least one registered demo exists today (ToastDemo) — this
     // assertion would fail loudly, not silently pass, if the registry
@@ -160,7 +163,11 @@ fn capture_writes_tui_svg_and_lists_it_in_the_manifest() {
 #[test]
 fn every_manifest_row_matches_a_registered_demo_variant() {
     let dir = tempfile::tempdir().expect("create temp capture dir");
-    let manifest = quadraui_gallery::capture::run_capture(dir.path()).expect("run_capture");
+    let manifest = quadraui_gallery::capture::run_capture(
+        dir.path(),
+        quadraui_gallery::capture::CaptureTheme::Dark,
+    )
+    .expect("run_capture");
 
     let demos = registry();
     let expected_rows: usize = demos.iter().map(|d| d.variants().len()).sum::<usize>()
@@ -193,4 +200,87 @@ fn every_manifest_row_matches_a_registered_demo_variant() {
             demo.variants()
         );
     }
+}
+
+/// `Dialog`'s `capture_action` (`CaptureAction::ClickText("Open dialog")`)
+/// must actually open the modal before the screenshot — the captured SVG
+/// should show its button labels, not just the idle row list a capture
+/// that only clicked the variant tab would leave behind.
+#[test]
+fn capture_opens_the_dialog_demo_instead_of_leaving_it_idle() {
+    let dir = tempfile::tempdir().expect("create temp capture dir");
+    let manifest = quadraui_gallery::capture::run_capture(
+        dir.path(),
+        quadraui_gallery::capture::CaptureTheme::Dark,
+    )
+    .expect("run_capture");
+
+    let entry = manifest
+        .iter()
+        .find(|e| e.backend == "tui" && e.demo == "Dialog" && e.variant == "Confirm")
+        .expect("manifest should list a tui Dialog/Confirm entry");
+    assert!(
+        entry.status.is_none(),
+        "Dialog/Confirm should have captured cleanly: {entry:#?}"
+    );
+    let path = entry
+        .path
+        .as_deref()
+        .expect("Dialog/Confirm should have a path");
+    let svg = fs::read_to_string(dir.path().join(path)).expect("read captured SVG");
+    assert!(
+        svg.contains("OK") && svg.contains("Cancel"),
+        "capturing Dialog/Confirm should show the opened dialog's own button \
+         labels, not its idle row list:\n{svg}"
+    );
+}
+
+/// `--theme light` (here, `CaptureTheme::Light` passed straight to
+/// `run_capture`) renders every demo under `Theme::light_default()` and
+/// records that on every manifest row's `theme` field — the default
+/// (omitted) leg keeps recording `"dark"`, so this only changes what a
+/// caller explicitly asks for.
+#[test]
+fn theme_flag_is_recorded_on_every_manifest_row_and_changes_the_painted_background() {
+    let dark_dir = tempfile::tempdir().expect("create temp capture dir");
+    let dark_manifest = quadraui_gallery::capture::run_capture(
+        dark_dir.path(),
+        quadraui_gallery::capture::CaptureTheme::Dark,
+    )
+    .expect("run_capture (dark)");
+    assert!(
+        dark_manifest.iter().all(|e| e.theme == "dark"),
+        "every row of a Dark run must record theme == \"dark\": {dark_manifest:#?}"
+    );
+
+    let light_dir = tempfile::tempdir().expect("create temp capture dir");
+    let light_manifest = quadraui_gallery::capture::run_capture(
+        light_dir.path(),
+        quadraui_gallery::capture::CaptureTheme::Light,
+    )
+    .expect("run_capture (light)");
+    assert!(
+        light_manifest.iter().all(|e| e.theme == "light"),
+        "every row of a Light run must record theme == \"light\": {light_manifest:#?}"
+    );
+
+    let demos = registry();
+    let demo = &demos[0];
+    let variant = demo.variants()[0];
+    let dark_entry = dark_manifest
+        .iter()
+        .find(|e| e.backend == "tui" && e.demo == demo.name() && e.variant == variant)
+        .expect("dark tui entry");
+    let light_entry = light_manifest
+        .iter()
+        .find(|e| e.backend == "tui" && e.demo == demo.name() && e.variant == variant)
+        .expect("light tui entry");
+    let dark_svg = fs::read_to_string(dark_dir.path().join(dark_entry.path.as_deref().unwrap()))
+        .expect("read dark SVG");
+    let light_svg = fs::read_to_string(light_dir.path().join(light_entry.path.as_deref().unwrap()))
+        .expect("read light SVG");
+    assert_ne!(
+        dark_svg, light_svg,
+        "a light-theme capture should paint different chrome colours than dark"
+    );
 }

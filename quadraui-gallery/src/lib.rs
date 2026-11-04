@@ -25,4 +25,4 @@ pub mod registry;
 pub mod site_export;
 
 pub use app::GalleryApp;
-pub use demo::Demo;
+pub use demo::{CaptureAction, Demo};
