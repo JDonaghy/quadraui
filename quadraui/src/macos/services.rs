@@ -870,6 +870,15 @@ impl PlatformServices for MacPlatformServices {
     /// `NSAppearance::bestMatchFromAppearancesWithNames` — for a one-shot
     /// query like this, the name itself already carries the answer, and every
     /// system appearance name contains the substring unambiguously.
+    ///
+    /// Reads the *application's* effective appearance, not the
+    /// effective appearance of any particular view. `run::QuadraView`'s
+    /// `viewDidChangeEffectiveAppearance` override calls through here
+    /// from inside that same callback, relying on the app's appearance
+    /// already having resolved by the time AppKit reaches the view —
+    /// true in every observed case, since a view's effective appearance
+    /// derives from its app's, but worth knowing if that call site ever
+    /// needs to report the view's own appearance instead.
     fn system_theme(&self) -> ServiceResult<SystemTheme> {
         let mtm = MainThreadMarker::new().ok_or(BackendError::Unsupported)?;
         let appearance_name = NSApplication::sharedApplication(mtm)
