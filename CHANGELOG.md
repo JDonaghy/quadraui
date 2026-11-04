@@ -189,10 +189,25 @@ only a push to `main` runs this workflow.
   font's own line height — floored at that font's line height so an
   unusually large UI font size still isn't clipped. `Backend::set_style`
   overrides any of them; TUI is unaffected (`Style`'s chrome metrics are a
-  documented no-op on a cell grid). `DataTable`'s header title text is now
-  vertically centred within `header_height` instead of anchored to its top,
-  since that slot can now be much taller than the title's own measured
-  height.
+  documented no-op on a cell grid). `DataTable`'s header title text and
+  `StatusBar`'s segment text (which also paints `AppShell`'s sidebar header
+  title through the same shared paint path) are now vertically centred
+  within their own band instead of anchored to its top, since that band can
+  now be much taller than the text's own measured height.
+- `AppShell` gains `layout_for(&self, backend: &dyn Backend, area: Rect) ->
+  AppShellLayout`, the entry point `shell_adapter`'s canonical `ShellApp`
+  path now uses instead of `AppShell::layout` — it reads `line_height`,
+  `Style` (so a `Backend::set_style` override reaches the app-visible
+  layout, not just what `AppShell::render` paints) and the snap function
+  from the live `backend`, same as `AppShell::render`/`AppShell::handle`.
+  `AppShell::layout` is unchanged (still resolves against
+  `Style::default()`, documented) for callers with no `&dyn Backend` in
+  hand. `ShellConfig::activity_bar_width_px`/`status_bar_height_px` now
+  default to `None` (was `Some(48.0)`/`Some(22.0)`) so a `Backend::set_style`
+  override on `activity_bar_width`/`status_bar_height` isn't permanently
+  shadowed by a `ShellConfig`-pinned px value — `AppShell::compute_layout`'s
+  own `Style`-token default already resolves to the same 48px/22px with no
+  override, so a default-constructed `ShellConfig` paints identically.
 - TUI: on a kitty-keyboard-capable terminal, a chord whose key is a shifted
   symbol now arrives as the shifted glyph rather than as the unshifted base
   key plus `shift` — `Ctrl+Shift+\` reaches `AppLogic` as `Key::Char('|')` +

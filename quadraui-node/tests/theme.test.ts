@@ -125,6 +125,38 @@ test("setStyle rejects an unknown field", () => {
   );
 });
 
+// `Style`'s five chrome-metric tokens (`tab_height`, `status_bar_height`,
+// `activity_bar_width`, `row_height`, `toolbar_height`) reach `QuiApp`
+// through the same `#[serde(default)]`-decoded `setStyle` object every
+// other `Style` field already does -- no binding-side change needed to
+// carry a new descriptor field.
+test("setStyle overrides the chrome metric tokens and round trips", () => {
+  const app = new QuiApp(20, 5);
+  const before: any = app.style();
+  assert.equal(before.tab_height, 35.0);
+  assert.equal(before.status_bar_height, 22.0);
+  assert.equal(before.activity_bar_width, 48.0);
+  assert.equal(before.row_height, 22.0);
+  assert.equal(before.toolbar_height, 35.0);
+
+  app.setStyle({
+    tab_height: 50.0,
+    status_bar_height: 40.0,
+    activity_bar_width: 96.0,
+    row_height: 30.0,
+    toolbar_height: 50.0,
+  });
+
+  const after: any = app.style();
+  assert.equal(after.tab_height, 50.0);
+  assert.equal(after.status_bar_height, 40.0);
+  assert.equal(after.activity_bar_width, 96.0);
+  assert.equal(after.row_height, 30.0);
+  assert.equal(after.toolbar_height, 50.0);
+  // Unrelated token is untouched.
+  assert.deepEqual(after.padding, before.padding);
+});
+
 test("setStyle rejects an undefined value instead of raising on the app", () => {
   // Same `Object.keys`-reports-an-`undefined`-value gap as `setTheme`, on
   // `setStyle`'s own merge path.

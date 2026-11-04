@@ -98,7 +98,7 @@ impl<A: ShellApp> ShellAdapter<A> {
         area: Rect,
         ev: &AppShellEvent,
     ) -> Reaction {
-        let layout = self.shell.layout(area, backend.chrome_line_height());
+        let layout = self.shell.layout_for(backend, area);
         let sidebar_visible = self.shell.sidebar_visible();
         let ctx = ShellContext::new(
             self.active_panel_id.as_ref(),
@@ -259,7 +259,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         // the next `on_shell_event_ctx`/`take_requested_panel` dispatch.
         let viewport = backend.viewport();
         let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-        let layout = self.shell.layout(area, backend.chrome_line_height());
+        let layout = self.shell.layout_for(backend, area);
         let sidebar_visible = self.shell.sidebar_visible();
         let ctx = ShellContext::new(
             self.active_panel_id.as_ref(),
@@ -351,7 +351,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
                 stack.hit_test(position).is_some()
             };
             if modal_hit {
-                let layout = self.shell.layout(area, backend.chrome_line_height());
+                let layout = self.shell.layout_for(backend, area);
                 let sidebar_visible = self.shell.sidebar_visible();
                 let ctx = ShellContext::new(
                     self.active_panel_id.as_ref(),
@@ -465,7 +465,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             }
         }
 
-        let layout = self.shell.layout(area, backend.chrome_line_height());
+        let layout = self.shell.layout_for(backend, area);
         let sidebar_visible = self.shell.sidebar_visible();
         let ctx = ShellContext::new(
             self.active_panel_id.as_ref(),
@@ -741,6 +741,66 @@ mod tests {
         let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 6.0);
         let sb = layout.status_bar_bounds.expect("row reserved");
         assert_eq!(sb.height, 30.0);
+    }
+
+    /// A host's `Backend::set_style` override must reach the app-visible
+    /// `ShellContext::layout` `setup_shell`/`handle` hand to a `ShellApp`,
+    /// not just `AppShell::render`'s own painted chrome — otherwise the
+    /// app's content rects and the app's own hit routing desync from what
+    /// got drawn. `AppLogic::setup` is the canonical `ShellApp` entry
+    /// point that builds this `ShellContext`, via
+    /// `ShellAdapter::setup`'s `notify_shell_event`/`layout_for` call.
+    #[test]
+    fn set_style_override_reaches_setup_shell_ctx_layout() {
+        struct CapturesStatusBarHeight {
+            seen_height: RefCell<Option<f32>>,
+        }
+
+        impl ShellApp for CapturesStatusBarHeight {
+            fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+
+            fn handle(
+                &mut self,
+                _event: UiEvent,
+                _backend: &mut dyn Backend,
+                _ctx: &ShellContext,
+            ) -> Reaction {
+                Reaction::Continue
+            }
+
+            fn setup_shell(&mut self, ctx: &ShellContext) {
+                *self.seen_height.borrow_mut() = ctx.layout.status_bar_bounds.map(|r| r.height);
+            }
+        }
+
+        let config = ShellConfig::new("t", Vec::new()).with_status_bar();
+        let mut adapter = build_shell_adapter(
+            CapturesStatusBarHeight {
+                seen_height: RefCell::new(None),
+            },
+            config,
+        );
+
+        let mut backend = crate::testing::RecordingBackend::with_viewport(
+            crate::Viewport {
+                width: 800.0,
+                height: 600.0,
+                scale: 1.0,
+            },
+            20.0,
+            8.0,
+        );
+        backend.set_style(crate::Style::default().with_status_bar_height(40.0));
+
+        AppLogic::setup(&mut adapter, &mut backend);
+
+        assert_eq!(
+            *adapter.app.seen_height.borrow(),
+            Some(40.0),
+            "ctx.layout seen by setup_shell must reflect the backend's set_style \
+             override, the same 40.0px AppShell::render would paint, not the \
+             Style::default() 22.0px AppShell::layout alone would resolve"
+        );
     }
 
     /// A `ShellConfig` with no explicit px override at all — matching the

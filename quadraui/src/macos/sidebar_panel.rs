@@ -287,13 +287,14 @@ mod tests {
 
         let glyph_center = (min_y + max_y + 1.0) / 2.0;
         let band_center = tb.y + tb.height / 2.0;
-        // Tolerance scales with the band height: `Style::toolbar_height`
-        // (35px, the default here) is taller than the chrome font's own
-        // line height, so the same sub-pixel ascent/descent asymmetry
-        // `valign_offset_y` carries from a resolved-fallback glyph run
-        // (see this test's own doc) is a larger absolute offset than it
-        // was against the pre-chrome-metric, font-height-sized band.
-        let tolerance = (tb.height * 0.05).max(1.0);
+        // A flat 2px, not a fraction of the band height: the sub-pixel
+        // ascent/descent asymmetry `valign_offset_y` carries from a
+        // resolved-fallback glyph run (see this test's own doc) is an
+        // absolute few-pixel offset regardless of how tall
+        // `Style::toolbar_height` makes the band — scaling the tolerance
+        // with band height would let a genuinely top-anchored glyph on an
+        // even taller band slip past this assertion unnoticed.
+        let tolerance = 2.0;
         assert!(
             (glyph_center - band_center).abs() <= tolerance,
             "icon glyph vertical centre ({glyph_center}) is not within {tolerance}px of \

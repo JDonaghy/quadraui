@@ -32,14 +32,19 @@ pub struct ShellConfig {
     /// See [`Self::activity_bar_width_px`] for a fixed-pixel alternative
     /// that doesn't move with the app's editor font.
     pub activity_bar_width: f32,
-    /// Fixed-pixel activity bar width override, on pixel backends. `Some(48.0)`
-    /// by default, matching VS Code's activity bar and the `ACTIVITY_ROW_PX`
-    /// row height GTK/macOS already paint each item at — regardless of
-    /// `line_height`. Set via [`Self::with_activity_bar_width_px`]; pass
-    /// `None` to fall back to `activity_bar_width` (a line-height multiple)
-    /// instead. **TUI ignores this field** — a cell grid has no literal
-    /// pixels, so a px override there would become a column count instead
-    /// of a width; `activity_bar_width` always drives TUI.
+    /// Fixed-pixel activity bar width override, on pixel backends. `None`
+    /// by default, which leaves [`AppShell::compute_layout`]'s own default
+    /// in charge — [`crate::Style::activity_bar_width`] (48px, matching VS
+    /// Code's activity bar) on a pixel backend with no override, or
+    /// whatever a host's [`crate::Backend::set_style`] last set. A `Some`
+    /// here is a **hard** override that wins over `Style::activity_bar_width`
+    /// too, so only set it when the app genuinely wants a width `set_style`
+    /// cannot move — most apps should leave this `None` and let `set_style`
+    /// stay in charge. Set via [`Self::with_activity_bar_width_px`]; pass
+    /// `None` (the default) to go back to that. **TUI ignores this field**
+    /// — a cell grid has no literal pixels, so a px override there would
+    /// become a column count instead of a width; `activity_bar_width` (a
+    /// line-height multiple) always drives TUI.
     pub activity_bar_width_px: Option<f32>,
     pub position: ShellPosition,
     pub has_title_bar: bool,
@@ -86,11 +91,17 @@ pub struct ShellConfig {
     pub has_command_line: bool,
     pub has_status_bar: bool,
     /// Fixed-pixel status bar height, on pixel backends, when
-    /// [`Self::has_status_bar`] is set. `Some(22.0)` by default, matching
-    /// VS Code's status bar. `None` falls back to one line-height (the
-    /// same fallback [`AppShell`] has always used). Set via
-    /// [`Self::with_status_bar_height_px`]. **TUI ignores this field** —
-    /// a cell grid has no literal pixels, so a px override there would
+    /// [`Self::has_status_bar`] is set. `None` by default, which leaves
+    /// [`AppShell::compute_layout`]'s own default in charge —
+    /// [`crate::Style::status_bar_height`] (22px, matching VS Code's status
+    /// bar) on a pixel backend with no override, or whatever a host's
+    /// [`crate::Backend::set_style`] last set. A `Some` here is a **hard**
+    /// override that wins over `Style::status_bar_height` too, so only set
+    /// it when the app genuinely wants a height `set_style` cannot move —
+    /// most apps should leave this `None` and let `set_style` stay in
+    /// charge. Set via [`Self::with_status_bar_height_px`]; pass `None`
+    /// (the default) to go back to that. **TUI ignores this field** — a
+    /// cell grid has no literal pixels, so a px override there would
     /// become a row count instead of a height; the one-line-height
     /// fallback always drives TUI.
     pub status_bar_height_px: Option<f32>,
@@ -219,7 +230,7 @@ impl ShellConfig {
             min_sidebar_width: 8.0,
             max_sidebar_width: 50.0,
             activity_bar_width: 4.0,
-            activity_bar_width_px: Some(48.0),
+            activity_bar_width_px: None,
             position: ShellPosition::Left,
             has_title_bar: false,
             title_bar_height_lh: 1.5,
@@ -231,7 +242,7 @@ impl ShellConfig {
             max_bottom_panel_height_lh: 30.0,
             has_command_line: false,
             has_status_bar: false,
-            status_bar_height_px: Some(22.0),
+            status_bar_height_px: None,
             status_bar_under_main_column: false,
             bottom_panel: None,
             bottom_bands: Vec::new(),
@@ -257,8 +268,15 @@ impl ShellConfig {
     }
 
     /// Override the activity bar width in line-height multiples (`4.0` by
-    /// default). Same unit as `default_sidebar_width`. See
+    /// default). Same unit as `default_sidebar_width`.
+    ///
+    /// **Cell-grid (TUI) only by default.** On a pixel backend with
+    /// [`Self::activity_bar_width_px`] left `None` (the default), this
+    /// multiple has no effect — the bar instead resolves to
+    /// [`crate::Style::activity_bar_width`] (48px) or a host's
+    /// `Backend::set_style` override. See
     /// [`Self::with_activity_bar_width_px`] for a fixed-pixel alternative
+    /// that wins over `set_style` too.
     pub fn with_activity_bar_width(mut self, width_lh: f32) -> Self {
         self.activity_bar_width = width_lh;
         self
@@ -948,14 +966,17 @@ mod tests {
 
     /// A fresh `ShellConfig` keeps `AppShell`'s own line-height-multiple
     /// default (4.0, giving 4 TUI columns: 1 accent + 2 icon cells for
-    /// double-width nerd font glyphs + 1 separator) available as a
-    /// fallback, but leads with a px-first default matching VS Code's
-    /// activity bar (`48.0`) on pixel backends.
+    /// double-width nerd font glyphs + 1 separator) for TUI, and leaves
+    /// `activity_bar_width_px` unset so `AppShell::compute_layout`'s own
+    /// pixel-backend default — `Style::activity_bar_width` (48px, matching
+    /// VS Code) — stays in charge, which in turn means a host's
+    /// `Backend::set_style` override reaches the painted bar instead of
+    /// being shadowed by a `ShellConfig`-pinned px value.
     #[test]
     fn shell_config_activity_bar_width_defaults_match_app_shell() {
         let config = ShellConfig::new("test", Vec::new());
         assert_eq!(config.activity_bar_width, 4.0);
-        assert_eq!(config.activity_bar_width_px, Some(48.0));
+        assert_eq!(config.activity_bar_width_px, None);
     }
 
     /// `with_activity_bar_width` stores the line-height multiple
@@ -991,12 +1012,16 @@ mod tests {
         assert_eq!(config.title_bar_min_px, Some(34.0));
     }
 
-    /// A fresh `ShellConfig` defaults the status bar height to `22.0`,
-    /// matching VS Code's status bar on pixel backends.
+    /// A fresh `ShellConfig` leaves `status_bar_height_px` unset so
+    /// `AppShell::compute_layout`'s own pixel-backend default —
+    /// `Style::status_bar_height` (22px, matching VS Code) — stays in
+    /// charge, which in turn means a host's `Backend::set_style` override
+    /// reaches the painted bar instead of being shadowed by a
+    /// `ShellConfig`-pinned px value.
     #[test]
-    fn shell_config_status_bar_height_px_defaults_to_22() {
+    fn shell_config_status_bar_height_px_defaults_to_unset() {
         let config = ShellConfig::new("test", Vec::new());
-        assert_eq!(config.status_bar_height_px, Some(22.0));
+        assert_eq!(config.status_bar_height_px, None);
     }
 
     /// `with_status_bar_height_px` stores the override for

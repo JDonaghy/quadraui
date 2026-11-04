@@ -515,18 +515,24 @@ mod tests {
         // "logical" fill rect. The shared `native_surface_paint::paint`
         // insets that draw position by `PIXEL_EDGE_INSET` (outer bar edge)
         // *and* `PIXEL_SEGMENT_PADDING` (per-segment text inset), so the
-        // lone left segment's label starts at their sum, not at the bar's
-        // raw origin.
+        // lone left segment's label starts at their sum on the x axis.
         assert_eq!(
-            (bounds.x, bounds.y),
-            (
-                crate::primitives::status_bar::PIXEL_EDGE_INSET
-                    + crate::primitives::status_bar::PIXEL_SEGMENT_PADDING,
-                0.0
-            ),
+            bounds.x,
+            crate::primitives::status_bar::PIXEL_EDGE_INSET
+                + crate::primitives::status_bar::PIXEL_SEGMENT_PADDING,
             "the only segment's label should start `PIXEL_EDGE_INSET + \
-             PIXEL_SEGMENT_PADDING` in from the bar's left edge (issue #1155), \
-             not flush at its origin"
+             PIXEL_SEGMENT_PADDING` in from the bar's left edge, not flush at its \
+             origin"
+        );
+        // On the y axis the text is vertically centred within the bar
+        // (here the whole `H`-tall surface, since this app passes its full
+        // rect as the bar's bounds) rather than anchored to its top edge —
+        // `H` is taller than the chrome font's own line height, so a
+        // flush-top label would sit at `y == 0.0`.
+        assert!(
+            bounds.y > 0.0,
+            "the segment label should be vertically centred within the \
+             {H}px-tall bar, not flush at y=0"
         );
 
         let (x, y) = driver
