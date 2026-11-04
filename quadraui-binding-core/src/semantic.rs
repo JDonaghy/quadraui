@@ -19,14 +19,16 @@ use crate::tree_edit::tree_row_rename_key_event;
 
 /// Up/Down navigation for a focused `DataTable`: moves the current row
 /// selection by one, clamped to `[0, total_rows - 1]` and starting at row 0
-/// when nothing is selected yet. Every other key returns `None`, leaving
-/// [`focus_scoped_key_event`] to fall through to the raw
-/// `UiEvent::KeyPressed` — `DataTable` has no focus-scoped `KeyPressed`
-/// variant of its own (unlike `Tree`/`List`/`TabBar`) because
-/// `DataTableEvent::RowSelected` already is the semantic shape arrow-key
-/// navigation needs; a widget-scoped `KeyPressed` would just be an extra
-/// hop a binding's own handler would have to unwrap before reaching the
-/// same `key` string.
+/// when nothing is selected yet. Enter activates the currently selected row
+/// — the keyboard equivalent of a pointer double-click — and is a no-op
+/// (`None`) when nothing is selected, since there is no row to activate.
+/// Every other key returns `None`, leaving [`focus_scoped_key_event`] to
+/// fall through to the raw `UiEvent::KeyPressed` — `DataTable` has no
+/// focus-scoped `KeyPressed` variant of its own (unlike `Tree`/`List`/
+/// `TabBar`) because `DataTableEvent::RowSelected`/`RowActivated` already
+/// are the semantic shapes arrow-key navigation and Enter need; a
+/// widget-scoped `KeyPressed` would just be an extra hop a binding's own
+/// handler would have to unwrap before reaching the same `key` string.
 fn data_table_key_event(
     id: WidgetId,
     key: &Key,
@@ -35,6 +37,10 @@ fn data_table_key_event(
 ) -> Option<UiEvent> {
     if total_rows == 0 {
         return None;
+    }
+    if matches!(key, Key::Named(NamedKey::Enter)) {
+        let idx = selected_idx?;
+        return Some(UiEvent::DataTable(id, DataTableEvent::RowActivated { idx }));
     }
     let idx = match key {
         Key::Named(NamedKey::Down) => selected_idx.map_or(0, |i| (i + 1).min(total_rows - 1)),
@@ -391,9 +397,10 @@ pub fn key_to_focus_string(key: &Key) -> String {
 
 /// Routes a raw `KeyPressed` to whichever leaf the `FocusManager` names as
 /// focused, wrapping it into that leaf's own semantic `KeyPressed` variant
-/// (or, for a focused `DataTable`'s Up/Down, straight into
-/// [`data_table_key_event`]'s `RowSelected`). `Button` has no semantic key
-/// variant at all, so a key focused on one passes through as the original
+/// (or, for a focused `DataTable`'s Up/Down/Enter, straight into
+/// [`data_table_key_event`]'s `RowSelected`/`RowActivated`). `Button` has
+/// no semantic key variant at all, so a key focused on one passes through
+/// as the original
 /// `UiEvent::KeyPressed` unchanged; the same happens for any other key a
 /// focused `DataTable` doesn't recognize, and when `focused` names a leaf
 /// absent from this frame's hit map (for example a tree that scrolled out

@@ -58,6 +58,14 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Fixed
+- `quadraui-binding-core`'s `data_table_key_event` now maps Enter on a
+  focused `DataTable` to `DataTableEvent::RowActivated { idx }` — the
+  keyboard equivalent of a pointer double-click — instead of being a no-op;
+  previously only Up/Down mapped to `RowSelected` and Enter fell through
+  unhandled. A no-op when nothing is selected, since there is no row to
+  activate.
+
 ### Added
 - `ListViewEvent::ItemDoubleClicked { idx }` and
   `DataTableEvent::RowDoubleClicked { idx }` — distinct double-click events,
