@@ -981,6 +981,31 @@ define_class!(
             self.dispatch(UiEvent::DpiChanged(scale as f32));
         }
 
+        // ── System theme change ──────────────────────────────────────
+        //
+        // `NSView`'s own override point for "the effective appearance of
+        // the receiver changing" — AppKit invokes this directly (no
+        // `NSNotificationCenter` registration needed, unlike
+        // `viewFrameDidChange:`/`windowDidChangeBackingProperties:`
+        // above) whenever the OS Light/Dark setting flips, the app's own
+        // `NSApplication.appearance` override changes, or (per
+        // `NSControlTintDidChangeNotification`'s own deprecation note,
+        // which points here as the replacement) the accent color
+        // changes — mirroring
+        // `win::run::dispatch_event`'s `WM_SETTINGCHANGE` arm, which
+        // folds the same three signals into one `SystemThemeChanged`.
+        // Re-reads the full `SystemTheme` through
+        // `PlatformServices::system_theme` rather than caching a stale
+        // copy, the same way that `WM_SETTINGCHANGE` arm does via
+        // `backend.services().system_theme()`.
+        #[unsafe(method(viewDidChangeEffectiveAppearance))]
+        fn view_did_change_effective_appearance(&self) {
+            let theme = self.ivars().backend.borrow().services().system_theme().ok();
+            if let Some(theme) = theme {
+                self.dispatch(UiEvent::SystemThemeChanged(theme));
+            }
+        }
+
         // ── OS file drop ─────────────────────────────────────────────
         //
         // `NSDraggingDestination`'s methods are informal/optional
