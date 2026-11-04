@@ -295,6 +295,32 @@ pub(crate) mod native_surface_paint {
             surface.surface_stroke_rounded_rect(rect, style.corner_radius, border, 1.0);
         }
 
+        // Focus-visible ring: a second, outset stroke in the theme's
+        // ring colour, independent of the border tint above — the same
+        // `Style::focus_ring_width` every `Backend::draw_focus_ring`
+        // caller reads, so a consumer that widens the ring widens this
+        // one too. Suppressed when disabled (nothing to focus) and left
+        // to the caller otherwise: `Button::focused` carries no "how did
+        // focus arrive" information, so a host that wants focus-visible
+        // suppression after a mouse click (VS Code's convention) clears
+        // `focused` itself on click rather than on Tab — see
+        // `crate::compose::FocusRing::is_focus_visible`.
+        if button.focused && !button.disabled {
+            let ring_gap = 2.0;
+            let ring_rect = Rect::new(
+                rect.x - ring_gap,
+                rect.y - ring_gap,
+                rect.width + ring_gap * 2.0,
+                rect.height + ring_gap * 2.0,
+            );
+            surface.surface_stroke_rounded_rect(
+                ring_rect,
+                style.corner_radius,
+                theme.focus_ring_color(),
+                style.focus_ring_width,
+            );
+        }
+
         if !button.label.is_empty() {
             let fg = if button.disabled {
                 theme.muted_fg
@@ -305,6 +331,122 @@ pub(crate) mod native_surface_paint {
         }
 
         layout
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::{Point, Viewport};
+        use crate::types::{Color, WidgetId};
+        use crate::Image;
+
+        /// Records every stroke call — enough to assert the focus ring
+        /// is (or isn't) painted, without a Cairo/Core Graphics/Direct2D
+        /// host.
+        #[derive(Default)]
+        struct RecordingSurface {
+            strokes: Vec<(Rect, f32, Color, f32)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, 0.0, color, stroke_width));
+            }
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                rect: Rect,
+                radius: f32,
+                color: Color,
+                stroke_width: f32,
+            ) {
+                self.strokes.push((rect, radius, color, stroke_width));
+            }
+            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _sw: f32) {}
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        const RECT: Rect = Rect::new(10.0, 10.0, 60.0, 20.0);
+
+        #[test]
+        fn focused_button_paints_a_ring_stroke_in_the_theme_ring_colour() {
+            let mut button = Button::new(WidgetId::new("b"), "OK");
+            button.focused = true;
+            let theme = Theme::default();
+            let style = Style::default().with_focus_ring_width(3.0);
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let ring = surface
+                .strokes
+                .iter()
+                .find(|(_, _, _, sw)| *sw == 3.0)
+                .expect("a focused button must paint a ring stroke at the style's width");
+            assert_eq!(ring.2, theme.focus_ring_color());
+            // The ring surrounds the button rather than tracing it exactly.
+            assert!(ring.0.x < RECT.x && ring.0.y < RECT.y);
+            assert!(ring.0.width > RECT.width && ring.0.height > RECT.height);
+        }
+
+        #[test]
+        fn unfocused_button_paints_no_ring_stroke() {
+            let button = Button::new(WidgetId::new("b"), "OK");
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            assert!(
+                surface
+                    .strokes
+                    .iter()
+                    .all(|(_, _, color, _)| *color != theme.focus_ring_color()),
+                "an unfocused button must not paint the focus ring colour"
+            );
+        }
+
+        #[test]
+        fn disabled_focused_button_paints_no_ring_stroke() {
+            let mut button = Button::new(WidgetId::new("b"), "OK");
+            button.focused = true;
+            button.disabled = true;
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            assert!(
+                surface
+                    .strokes
+                    .iter()
+                    .all(|(_, _, color, _)| *color != theme.focus_ring_color()),
+                "a disabled button must not paint a focus ring even while `focused`"
+            );
+        }
     }
 }
 

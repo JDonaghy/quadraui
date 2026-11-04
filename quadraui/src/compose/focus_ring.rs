@@ -36,45 +36,75 @@ use super::focus_group::FocusGroup;
 use crate::types::WidgetId;
 
 /// Manages Tab/Shift+Tab cycling through a fixed list of focusable widgets.
+///
+/// # Focus-visible
+///
+/// Alongside "what is focused" ([`Self::current`]), `FocusRing` tracks
+/// *how* it got there, in [`Self::is_focus_visible`] — VS Code's
+/// `:focus-visible` convention: a keyboard move ([`Self::advance`],
+/// [`Self::retreat`], [`Self::focus_first`]) shows the ring; a pointer
+/// move ([`Self::set`], the click-to-focus path) focuses the widget but
+/// suppresses it. A shared painter never sees this distinction — it only
+/// receives whatever `bool` the host passes as `has_focus`/`focused` on
+/// the primitive's own descriptor — so a host that wants the suppression
+/// computes that bool as `ring.is_focused(id) && ring.is_focus_visible()`
+/// rather than `ring.is_focused(id)` alone.
 #[derive(Debug, Clone)]
 pub struct FocusRing {
     items: Vec<WidgetId>,
     group: FocusGroup,
+    focus_visible: bool,
 }
 
 impl FocusRing {
     /// Create a new ring from anything convertible to `WidgetId`.
     ///
-    /// The first item is focused initially. Pass an empty vec for no focus.
+    /// The first item is focused initially, with the ring visible (as if
+    /// reached by keyboard). Pass an empty vec for no focus.
     pub fn new(ids: Vec<impl Into<WidgetId>>) -> Self {
         let items: Vec<WidgetId> = ids.into_iter().map(Into::into).collect();
         let mut group = FocusGroup::new(items.len());
         if !items.is_empty() {
             group.set_active(Some(0));
         }
-        Self { items, group }
+        Self {
+            items,
+            group,
+            focus_visible: true,
+        }
     }
 
-    /// Move focus to the next item (wraps around). No-op if nothing is
-    /// currently focused (empty ring, or focus was [`Self::clear`]ed).
+    /// Move focus to the next item (wraps around), and mark the ring
+    /// focus-visible. No-op if nothing is currently focused (empty ring,
+    /// or focus was [`Self::clear`]ed).
     pub fn advance(&mut self) {
         if self.group.active().is_some() {
             self.group.cycle(1);
+            self.focus_visible = true;
         }
     }
 
-    /// Move focus to the previous item (wraps around). No-op if nothing
-    /// is currently focused (empty ring, or focus was [`Self::clear`]ed).
+    /// Move focus to the previous item (wraps around), and mark the ring
+    /// focus-visible. No-op if nothing is currently focused (empty ring,
+    /// or focus was [`Self::clear`]ed).
     pub fn retreat(&mut self) {
         if self.group.active().is_some() {
             self.group.cycle(-1);
+            self.focus_visible = true;
         }
     }
 
-    /// Set focus to a specific widget by ID. No-op if the ID isn't in the ring.
+    /// Set focus to a specific widget by ID — the click-to-focus path.
+    /// No-op if the ID isn't in the ring. Marks the ring **not**
+    /// focus-visible: a mouse click focuses the widget without showing
+    /// the ring, matching VS Code. A host that wants the ring shown
+    /// after a programmatic `set` anyway (keyboard-equivalent focus,
+    /// e.g. restoring focus after a dialog closes) should call
+    /// [`Self::set_focus_visible`] immediately after.
     pub fn set(&mut self, id: &WidgetId) {
         if let Some(idx) = self.items.iter().position(|item| item == id) {
             self.group.set_active(Some(idx));
+            self.focus_visible = false;
         }
     }
 
@@ -83,11 +113,29 @@ impl FocusRing {
         self.group.set_active(None);
     }
 
-    /// Focus the first item. No-op if empty.
+    /// Focus the first item, and mark the ring focus-visible. No-op if
+    /// empty.
     pub fn focus_first(&mut self) {
         if !self.items.is_empty() {
             self.group.set_active(Some(0));
+            self.focus_visible = true;
         }
+    }
+
+    /// Whether the focus ring should currently be painted — `true` after
+    /// a keyboard move, `false` after [`Self::set`] (a mouse click). See
+    /// the type doc's "Focus-visible" section for how a host applies
+    /// this to a primitive's `has_focus`/`focused` descriptor field.
+    pub fn is_focus_visible(&self) -> bool {
+        self.focus_visible
+    }
+
+    /// Force the focus-visible flag directly, independent of how focus
+    /// last moved — e.g. a host that wants the ring shown immediately
+    /// after a programmatic [`Self::set`] (focus restored by code, not a
+    /// click).
+    pub fn set_focus_visible(&mut self, visible: bool) {
+        self.focus_visible = visible;
     }
 
     /// The currently focused widget ID, or `None` if nothing is focused.
@@ -192,6 +240,69 @@ mod tests {
         ring.set(&WidgetId::new("b"));
         ring.advance();
         assert_eq!(ring.current(), Some(&WidgetId::new("c")));
+    }
+
+    #[test]
+    fn new_ring_starts_focus_visible() {
+        let ring = FocusRing::new(vec!["a", "b"]);
+        assert!(ring.is_focus_visible());
+    }
+
+    /// The acceptance scenario for VS Code's `:focus-visible` convention:
+    /// a Tab-reached widget shows the ring, and clicking a different one
+    /// suppresses it even though focus did move.
+    #[test]
+    fn click_to_focus_suppresses_the_ring_but_keyboard_move_restores_it() {
+        let mut ring = FocusRing::new(vec!["a", "b", "c"]);
+        assert!(ring.is_focus_visible(), "Tab landed here, so it's visible");
+
+        ring.set(&WidgetId::new("b"));
+        assert!(ring.is_focused(&WidgetId::new("b")), "click did move focus");
+        assert!(
+            !ring.is_focus_visible(),
+            "a mouse click must suppress the ring"
+        );
+
+        ring.advance();
+        assert!(
+            ring.is_focus_visible(),
+            "a subsequent keyboard move restores the ring"
+        );
+    }
+
+    #[test]
+    fn retreat_and_focus_first_also_mark_focus_visible() {
+        let mut ring = FocusRing::new(vec!["a", "b"]);
+        ring.set(&WidgetId::new("b"));
+        assert!(!ring.is_focus_visible());
+
+        ring.retreat();
+        assert!(ring.is_focus_visible(), "Shift+Tab restores visibility");
+
+        ring.set(&WidgetId::new("a"));
+        assert!(!ring.is_focus_visible());
+        ring.focus_first();
+        assert!(ring.is_focus_visible());
+    }
+
+    #[test]
+    fn set_focus_visible_overrides_directly() {
+        let mut ring = FocusRing::new(vec!["a"]);
+        ring.set(&WidgetId::new("a"));
+        assert!(!ring.is_focus_visible());
+
+        ring.set_focus_visible(true);
+        assert!(ring.is_focus_visible());
+    }
+
+    /// Clicking an id that isn't in the ring is already a no-op for
+    /// focus; it must be a no-op for visibility too.
+    #[test]
+    fn set_unknown_id_does_not_change_focus_visible() {
+        let mut ring = FocusRing::new(vec!["a", "b"]);
+        assert!(ring.is_focus_visible());
+        ring.set(&WidgetId::new("z"));
+        assert!(ring.is_focus_visible());
     }
 
     #[test]

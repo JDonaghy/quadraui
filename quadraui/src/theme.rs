@@ -621,6 +621,21 @@ impl Theme {
         self.accent_fg
     }
 
+    /// Stroke colour for a keyboard-focus ring (the border
+    /// [`crate::Backend::draw_focus_ring`] paints, and the border a
+    /// shared `native_surface_paint` module paints for a focused
+    /// [`crate::Button`]/row/field that isn't routed through the
+    /// runner-owned [`crate::focus::FocusManager`] overlay).
+    ///
+    /// **A method, not a field** — the same reasoning as
+    /// [`Self::tab_active_border_top`]: every palette that already sets
+    /// [`Self::accent_fg`] gets a matching ring for free, and no new
+    /// field exists for a downstream consumer's exhaustive palette
+    /// literal to miss.
+    pub fn focus_ring_color(&self) -> Color {
+        self.accent_fg
+    }
+
     // ── Hover / pressed state lift ───────────────────────────────────────
     //
     // `Self::hover_bg`/`hover_fg`/`hover_border` above are the `Tooltip`
@@ -1090,6 +1105,21 @@ mod tests {
             ..Theme::default()
         };
         assert_eq!(theme.tab_active_border_top(), Color::rgb(255, 100, 0));
+    }
+
+    /// Same derived-from-`accent_fg` contract as `tab_active_border_top`:
+    /// the default value tracks the palette's accent, and a custom
+    /// palette's focus ring follows it with no new field.
+    #[test]
+    fn focus_ring_color_tracks_accent_fg() {
+        let theme = Theme::default();
+        assert_eq!(theme.focus_ring_color(), theme.accent_fg);
+
+        let theme = Theme {
+            accent_fg: Color::rgb(255, 100, 0),
+            ..Theme::default()
+        };
+        assert_eq!(theme.focus_ring_color(), Color::rgb(255, 100, 0));
     }
 
     /// The regression this whole change is about: a `Theme` built with an
