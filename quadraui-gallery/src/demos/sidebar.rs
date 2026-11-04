@@ -297,11 +297,9 @@ impl Demo for SidebarDemo {
                 // `SidebarPanel` paints its toolbar slot but deliberately
                 // leaves `content_bounds` to the host (see that
                 // primitive's own doc) — fill it with the surface colour
-                // first, so whatever was behind this demo's content area
-                // before this frame (the window's base clear colour,
-                // which reads as a stray light-grey strip under
-                // `Theme::light_default()`) never shows through below the
-                // last task row.
+                // first, so the window's base clear colour (a stray
+                // light-grey strip under `Theme::light_default()`) never
+                // shows through below the last task row.
                 backend.draw_solid_fill(content, theme.surface_bg);
                 let header_text = if self.filter_on {
                     "  Tasks (filtered)  "
