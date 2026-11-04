@@ -162,6 +162,57 @@ fn navigating_group_then_demo_shows_it_and_its_code_region() {
     );
 }
 
+/// Hovering an inactive activity-bar icon — with no click, so
+/// `GalleryApp::handle` never appends to the (hidden) event log — must
+/// still repaint the hover highlight `AppShell` tracks in
+/// `hovered_activity_idx`. A plain `MouseMoved` only reaches the host's
+/// render loop when `ShellApp::handle` returns `Reaction::Redraw`
+/// (`TuiDriver::dispatch` calls `render()` only on `EventOutcome::
+/// Redraw`), so this is the regression a `Reaction::Continue`
+/// short-circuit over the activity bar would silently reintroduce.
+#[test]
+fn hovering_an_inactive_activity_bar_icon_repaints_the_highlight() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+
+    // Content (`GROUPS[0]`) is active by default, so Chrome's icon is
+    // definitely inactive — resolved via the same registered zone
+    // `click_group_zone` clicks, not a hardcoded cell.
+    let id = group_panel_id(chrome_group_index());
+    let zone = driver
+        .inventory()
+        .zones()
+        .iter()
+        .find(|z| z.id == id)
+        .unwrap_or_else(|| panic!("no registered zone for the Chrome activity-bar item"))
+        .bounds;
+    let (x, y) = (
+        (zone.x + zone.width / 2.0).floor(),
+        (zone.y + zone.height / 2.0).floor(),
+    );
+
+    let before = driver
+        .style_at(x as u16, y as u16)
+        .unwrap_or_else(|| panic!("cell at ({x}, {y}) should be on screen"));
+
+    let reaction = driver.dispatch(quadraui::mouse_moved(x, y, quadraui::ButtonMask::default()));
+    assert!(
+        matches!(reaction, quadraui::Reaction::Redraw),
+        "MouseMoved over the activity bar should escalate to Redraw so \
+         AppShell's hover-highlight mutation actually gets painted, got \
+         {reaction:?}"
+    );
+
+    let after = driver
+        .style_at(x as u16, y as u16)
+        .unwrap_or_else(|| panic!("cell at ({x}, {y}) should be on screen"));
+    assert_ne!(
+        before.bg,
+        after.bg,
+        "hovering the Chrome icon should repaint its hover tint:\n{}",
+        driver.screen()
+    );
+}
+
 /// Same navigation as above, but to the Data tab — asserting it shows
 /// the active variant's primitive(s) as pretty JSON.
 #[test]
