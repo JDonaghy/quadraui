@@ -898,7 +898,9 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app: &mut NodeAppLogic) -> 
 /// `resize`.
 fn checked_dimensions(width: u16, height: u16) -> Result<(u16, u16)> {
     if width == 0 || height == 0 {
-        return Err(Error::from_reason("width and height must both be non-zero"));
+        return Err(invalid_dimensions_error(
+            "width and height must both be non-zero",
+        ));
     }
     Ok((width, height))
 }
@@ -971,6 +973,37 @@ fn live_runner_active_error(detail: impl std::fmt::Display) -> Error {
 /// app.
 fn live_runner_exited_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("LiveRunnerExitedError: {detail}"))
+}
+
+/// Mirrors [`invalid_descriptor_error`] for a slot id argument that is not
+/// one of the `SLOT_*` constants -- [`QuiApp::slot_clear`]'s own check --
+/// the napi-rs analog of `quadraui-py`'s `UnknownSlotError` exception
+/// subclass.
+fn unknown_slot_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("UnknownSlotError: {detail}"))
+}
+
+/// Mirrors [`invalid_descriptor_error`] for a `u32` code point argument
+/// that is not a valid Unicode scalar value -- `pushKeyEvent`'s own check --
+/// the napi-rs analog of `quadraui-py`'s `InvalidCharError` exception
+/// subclass.
+fn invalid_char_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("InvalidCharError: {detail}"))
+}
+
+/// Mirrors [`invalid_descriptor_error`] for a `QuiApp`/`QuiShellApp` method
+/// called after an earlier caught panic poisoned this handle -- see
+/// [`QuiApp::guarded`]'s doc -- the napi-rs analog of `quadraui-py`'s
+/// `PoisonedError` exception subclass.
+fn poisoned_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("PoisonedError: {detail}"))
+}
+
+/// Mirrors [`invalid_descriptor_error`] for a Rust panic caught at the
+/// [`QuiApp::guarded`]/`QuiShellApp::guarded` boundary -- the napi-rs
+/// analog of `quadraui-py`'s `PanicError` exception subclass.
+fn panic_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("PanicError: {detail}"))
 }
 
 /// Decodes `descriptor` straight into `T` via napi's own
@@ -1518,7 +1551,7 @@ impl QuiApp {
         self.check_not_dispatching()?;
         self.check_not_live()?;
         let ch = char::from_u32(ch)
-            .ok_or_else(|| Error::from_reason(format!("invalid Unicode code point: {ch}")))?;
+            .ok_or_else(|| invalid_char_error(format!("invalid Unicode code point: {ch}")))?;
         self.pending_events.push_back(key_pressed_event(ch));
         Ok(())
     }
@@ -1586,7 +1619,7 @@ impl QuiApp {
         self.check_not_dispatching()?;
         self.check_not_live()?;
         if !NodeAppLogic::is_known_slot(slot) {
-            return Err(Error::from_reason(format!("unknown slot id: {slot}")));
+            return Err(unknown_slot_error(format!("unknown slot id: {slot}")));
         }
         self.guarded(env, |app| {
             let cleared = app.driver.app_mut().clear_slot(slot);
@@ -1931,7 +1964,7 @@ impl QuiApp {
     #[napi]
     pub fn waker(&self) -> Result<QuiAppWaker> {
         if self.poisoned {
-            return Err(Error::from_reason(
+            return Err(poisoned_error(
                 "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
             ));
         }
@@ -2094,7 +2127,7 @@ impl QuiApp {
     fn guarded<T>(&mut self, env: Env, body: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         self.check_not_dispatching()?;
         if self.poisoned {
-            return Err(Error::from_reason(
+            return Err(poisoned_error(
                 "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
             ));
         }
@@ -2106,7 +2139,7 @@ impl QuiApp {
             Ok(result) => result,
             Err(payload) => {
                 self.poisoned = true;
-                Err(Error::from_reason(panic_message(&*payload)))
+                Err(panic_error(panic_message(&*payload)))
             }
         }
     }
@@ -2574,7 +2607,7 @@ impl QuiShellApp {
     pub fn push_key_event(&mut self, ch: u32) -> Result<()> {
         self.check_not_dispatching()?;
         let ch = char::from_u32(ch)
-            .ok_or_else(|| Error::from_reason(format!("invalid Unicode code point: {ch}")))?;
+            .ok_or_else(|| invalid_char_error(format!("invalid Unicode code point: {ch}")))?;
         self.pending_events.push_back(key_pressed_event(ch));
         Ok(())
     }
@@ -2690,7 +2723,7 @@ impl QuiShellApp {
     fn guarded<T>(&mut self, env: Env, body: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         self.check_not_dispatching()?;
         if self.poisoned {
-            return Err(Error::from_reason(
+            return Err(poisoned_error(
                 "this QuiShellApp is poisoned by an earlier caught panic and can no longer be used",
             ));
         }
@@ -2702,7 +2735,7 @@ impl QuiShellApp {
             Ok(result) => result,
             Err(payload) => {
                 self.poisoned = true;
-                Err(Error::from_reason(panic_message(&*payload)))
+                Err(panic_error(panic_message(&*payload)))
             }
         }
     }
