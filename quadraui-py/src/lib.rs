@@ -105,8 +105,8 @@
 //! `open_path`, `reveal_in_file_manager`, `move_to_trash`,
 //! `restore_from_trash`, `set_title`, `set_document_edited`,
 //! `set_represented_filename`, `set_tray_icon`, `set_tray_tooltip`,
-//! `set_tray_menu`, `set_cursor`. Each method on it decodes and queues the
-//! same
+//! `set_tray_menu`, `set_cursor`, `set_theme`. Each method on it decodes and
+//! queues the same
 //! action its `QuiApp` namesake would apply immediately;
 //! [`PyAppLogic::handle`]/[`PyAppLogic::tick`] drain that queue via
 //! [`flush_deferred_actions`] right after the dispatch that queued it
@@ -172,7 +172,7 @@ use quadraui::{
     ContextMenuPlacement, DialogButton, DialogSeverity, FileDialogOptions, Float, FloatMeasure,
     GlobalShortcutId, ImageSource, MessageDialogOptions, Notification, Point, PointerShape,
     Reaction, Rect, RgbaImage, RichTextPopup, ServiceResult, ShellApp, ShellConfig, ShellContext,
-    Toast, ToastCorner, Tooltip, UiEvent, UserPayload, WidgetId, WindowControl,
+    Theme, Toast, ToastCorner, Tooltip, UiEvent, UserPayload, WidgetId, WindowControl,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -372,11 +372,19 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 /// `show_tooltip`, `send_notification`, `open_path`,
 /// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
 /// `set_title`, `set_document_edited`, `set_represented_filename`,
-/// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`) —
-/// carrying exactly the already-decoded arguments the matching `QuiApp`
-/// method passes to the same underlying `quadraui`/`quadraui_binding_core`
-/// call, so applying one is a direct call with no further decoding or
-/// validation left to do.
+/// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
+/// `set_theme`) — carrying exactly the already-decoded arguments the
+/// matching `QuiApp` method passes to the same underlying
+/// `quadraui`/`quadraui_binding_core` call, so applying one is a direct call
+/// with no further decoding or validation left to do.
+///
+/// `Theme`'s overrides are the one exception: unlike `QuiApp::set_theme`,
+/// [`QuiAppActions::set_theme`] has no live backend to merge onto at queue
+/// time (that's the whole problem this type exists to solve), so each
+/// override is decoded and validated against [`Theme::default`]'s field set
+/// only — [`flush_deferred_actions`] re-merges the stored `(field, value)`
+/// pairs onto the real live backend's current theme right before applying
+/// it.
 enum DeferredAction {
     MessageDialog(MessageDialogOptions),
     ContextMenu(Vec<ContextMenuItem>, Point),
@@ -394,6 +402,7 @@ enum DeferredAction {
     TrayTooltip(String),
     TrayMenu(Vec<ContextMenuItem>),
     Cursor(PointerShape),
+    Theme(Vec<(String, serde_json::Value)>),
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
@@ -1579,9 +1588,9 @@ impl QuiAppWaker {
 /// `show_toast`, `show_tooltip`, `send_notification`, `open_path`,
 /// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
 /// `set_title`, `set_document_edited`, `set_represented_filename`,
-/// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor` — so
-/// a registered event handler can request one of them without
-/// re-entering `QuiApp`'s own PyO3 cell.
+/// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
+/// `set_theme` — so a registered event handler can request one of them
+/// without re-entering `QuiApp`'s own PyO3 cell.
 ///
 /// A handler already holds `QuiApp`'s one mutable borrow for the whole
 /// dispatch that invoked it (the same wall `show_message_dialog`'s own doc
@@ -1823,6 +1832,35 @@ impl QuiAppActions {
             .push_back(DeferredAction::Cursor(shape));
         Ok(())
     }
+
+    /// Queues a [`DeferredAction::Theme`] — same `overrides` argument, same
+    /// per-field decoding (hex string/list/dict colours via
+    /// [`theme_color_value`]), as `QuiApp::set_theme`. Unlike
+    /// `QuiApp::set_theme`, there is no live backend here to merge each
+    /// override onto, so this validates `overrides`' keys/values against
+    /// [`Theme::default`]'s own field set instead (an `UnknownField`/
+    /// `Invalid` [`OverrideError`] still raises synchronously from this
+    /// call) and stores the decoded `(field, value)` pairs for
+    /// [`flush_deferred_actions`] to merge onto the real current theme and
+    /// apply via [`Backend::set_theme`] right after this dispatch finishes.
+    fn set_theme(&self, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+        let keys = dict_keys(overrides)?;
+        let mut decoded = Vec::with_capacity(keys.len());
+        merge_overrides(Theme::default(), keys, |key| {
+            let val = overrides
+                .get_item(key)
+                .map_err(|err| err.to_string())?
+                .expect("key was read from overrides.keys() above");
+            let json = theme_color_value(key, pyany_to_json(&val)?)?;
+            decoded.push((key.to_string(), json.clone()));
+            Ok(json)
+        })
+        .map_err(|err| override_error_to_py("set_theme", err))?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Theme(decoded));
+        Ok(())
+    }
 }
 
 /// Applies every action queued on `app_logic.deferred_actions` directly
@@ -1954,6 +1992,19 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
             }
             DeferredAction::Cursor(shape) => {
                 backend.set_cursor(shape);
+            }
+            DeferredAction::Theme(overrides) => {
+                let mut value = serde_json::to_value(backend.theme())
+                    .expect("Theme serializes to a JSON object");
+                let obj = value
+                    .as_object_mut()
+                    .expect("Theme serializes to a JSON object");
+                for (key, json) in overrides {
+                    obj.insert(key, json);
+                }
+                let theme: Theme = serde_json::from_value(value)
+                    .expect("fields were already validated by QuiAppActions::set_theme");
+                backend.set_theme(theme);
             }
         }
     }

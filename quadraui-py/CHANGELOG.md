@@ -12,6 +12,15 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `QuiAppActions.set_theme(overrides)` — the deferred counterpart of
+  `QuiApp.set_theme`, so a handler reacting to `UiEvent::SystemThemeChanged`
+  can repaint the live `run_tui`/`run_native` backend without hitting the
+  "already borrowed" PyO3 error a direct `app.set_theme(...)` call raises
+  from inside that same dispatch. Decodes and validates `overrides` against
+  `Theme::default()`'s field set immediately (an unknown field or malformed
+  colour still raises synchronously); `flush_deferred_actions` re-merges the
+  stored overrides onto the real backend's current theme and applies them
+  via `Backend::set_theme` right after the dispatch that queued it finishes.
 - `QuiApp.actions()` returns a `QuiAppActions` handle a registered event
   handler can call `show_message_dialog`/`show_context_menu`/`show_toast`/
   `show_tooltip`/`send_notification`/`open_path`/`reveal_in_file_manager`/
