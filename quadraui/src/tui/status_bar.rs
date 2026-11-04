@@ -102,20 +102,13 @@ pub fn draw_status_bar(
         // this backend measures with below — ellipsis-truncate to it so
         // an over-long segment (most often the always-kept first left
         // segment) never paints past its own reserved cells into a
-        // neighbouring segment.
+        // neighbouring segment. A segment that overflows only by the
+        // trailing space a consumer padded it with is clipped instead,
+        // keeping the character the `…` would otherwise have eaten.
         let budget = vs.bounds.width;
-        let fits = seg.text.chars().count() as f32 <= budget;
-        let truncated_text = if fits {
-            None
-        } else {
-            Some(
-                crate::text_util::truncate_with_ellipsis(&seg.text, budget, |s| {
-                    s.chars().count() as f32
-                })
-                .0,
-            )
-        };
-        let paint_text: &str = truncated_text.as_deref().unwrap_or(&seg.text);
+        let paint_text = crate::text_util::truncate_padded_with_ellipsis(&seg.text, budget, |s| {
+            s.chars().count() as f32
+        });
         let mut cx = start_x;
         for ch in paint_text.chars() {
             if cx >= bar_end {
@@ -684,5 +677,43 @@ mod tests {
             left.bounds.x + left.bounds.width,
             right.bounds.x
         );
+    }
+
+    /// A consumer that pads a segment as `format!(" {label} ")` — the
+    /// conventional shape — must not lose the last character of `label`
+    /// to an ellipsis when the only thing that overflows is the padding
+    /// space itself. `quadraui-gallery`'s Code/Data/log panes paint one
+    /// source line per bar this way, so a single-cell overflow there is
+    /// the difference between a readable line and a mangled one.
+    #[test]
+    fn a_segment_overflowing_only_by_its_trailing_pad_clips_instead_of_ellipsizing() {
+        let bar = StatusBar {
+            id: WidgetId::new("padded"),
+            // 14 cells: a 12-char label between two pad spaces.
+            left_segments: vec![plain_right_seg(" padded label ")],
+            right_segments: vec![],
+        };
+        // 13 cells of budget: one short of the padded text, exactly the
+        // width of its trimmed form.
+        let (buf, _) = paint_at_width(&bar, 13);
+        let row = row_text(&buf, 13);
+        assert_eq!(
+            row, " padded label",
+            "the trailing pad should be clipped, keeping the whole label"
+        );
+    }
+
+    #[test]
+    fn a_segment_overflowing_past_its_trailing_pad_still_ellipsizes() {
+        let bar = StatusBar {
+            id: WidgetId::new("padded"),
+            left_segments: vec![plain_right_seg(" padded label ")],
+            right_segments: vec![],
+        };
+        // 12 cells: too narrow for even the trimmed text, so a real
+        // character has to go and the run must say so with an ellipsis.
+        let (buf, _) = paint_at_width(&bar, 12);
+        let row = row_text(&buf, 12);
+        assert_eq!(row, " padded lab…");
     }
 }

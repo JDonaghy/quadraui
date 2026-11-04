@@ -405,6 +405,13 @@ only a push to `main` runs this workflow.
   right group when `right_segments` is non-empty, so a left-only bar's
   segments now fill it right up to the edge inset instead of stopping
   `min_gap` short.
+- A `StatusBar` segment that overflows its resolved width *only* by the
+  trailing space a consumer padded it with (`format!(" {label} ")`, the
+  conventional shape) is now clipped rather than ellipsis-truncated, so
+  the invisible pad no longer costs the last character of `label`. New
+  shared `text_util::truncate_padded_with_ellipsis(text, max_width,
+  measurer)` carries that policy for both TUI and the GTK/macOS/Win
+  paint path.
 
 ## [0.8.0] - 2026-10-31
 ### Changed

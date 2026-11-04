@@ -742,22 +742,20 @@ pub(crate) mod native_surface_paint {
             // backend whose bar is sized off `Style::status_bar_height`
             // rather than the chrome font's line height (mirrors the
             // `DataTable` header title centring).
-            let (raw_tw, th) = surface.surface_measure_text_styled(&seg.text, seg.bold);
+            let (_, th) = surface.surface_measure_text_styled(&seg.text, seg.bold);
             let text_avail = (seg_rect.width - 2.0 * PIXEL_SEGMENT_PADDING).max(0.0);
             // The layout clamps a segment's `bounds.width` below its
             // natural width when it crosses the left-side budget edge
             // (see `layout_padded`) — ellipsis-truncate the text to fit
             // that clamp rather than painting it at full width over the
-            // neighbouring segment.
+            // neighbouring segment. A segment that overflows only by the
+            // trailing space a consumer padded it with is clipped
+            // instead, keeping the character the `…` would have eaten.
             let bold = seg.bold;
-            let paint_text: std::borrow::Cow<'_, str> = if raw_tw <= text_avail {
-                std::borrow::Cow::Borrowed(seg.text.as_str())
-            } else {
-                let (t, _) = crate::text_util::truncate_with_ellipsis(&seg.text, text_avail, |s| {
+            let paint_text =
+                crate::text_util::truncate_padded_with_ellipsis(&seg.text, text_avail, |s| {
                     surface.surface_measure_text_styled(s, bold).0
                 });
-                std::borrow::Cow::Owned(t)
-            };
             let text_y = seg_rect.y + (seg_rect.height - th).max(0.0) / 2.0;
             let text_rect = Rect::new(
                 seg_rect.x + PIXEL_SEGMENT_PADDING,
