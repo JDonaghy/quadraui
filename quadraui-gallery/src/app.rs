@@ -147,6 +147,14 @@ pub struct GalleryApp {
     /// `crate::capture`) can produce a light-theme gallery without a
     /// second, parallel app type.
     theme: quadraui::Theme,
+    /// `AppShell::hovered_activity_idx` as of the end of the previous
+    /// [`ShellApp::handle`] dispatch. The shell mutates that field from
+    /// its own `MouseMoved` arms and then reports `AppShellEvent::
+    /// Ignored`, so this app's `Reaction` is the only thing that can ask
+    /// the host for the frame that paints the new highlight; comparing
+    /// against the cached value spots both directions of the transition
+    /// (pointer entering an icon, and pointer leaving the bar).
+    hovered_activity_idx: Option<usize>,
 }
 
 impl GalleryApp {
@@ -173,6 +181,7 @@ impl GalleryApp {
             active_tab: MainTab::Demo,
             log: vec!["Gallery ready — click a group, then a demo.".into()],
             theme: quadraui::Theme::default(),
+            hovered_activity_idx: None,
         }
     }
 
@@ -531,6 +540,20 @@ impl ShellApp for GalleryApp {
         // quitting the gallery when nothing downstream wanted the key.
         let reaction = self.handle_inner(&event, backend, ctx);
 
+        // `ShellAdapter` runs `AppShell::handle` — which updates
+        // `hovered_activity_idx` from its own `MouseMoved` arms, with or
+        // without a button held — *before* this app's `Reaction` is
+        // consulted, and that call reports `AppShellEvent::Ignored`, so
+        // nothing downstream of it can ask for the frame that paints the
+        // new highlight. Diff the shell's index against the one this
+        // dispatch started with (rather than testing where the pointer
+        // now is) so both ends of the transition repaint: moving onto an
+        // icon, and moving off the bar entirely — the latter is the frame
+        // that has to *clear* a highlight.
+        let hovered = ctx.shell_mut().hovered_activity_idx();
+        let hover_changed = hovered != self.hovered_activity_idx;
+        self.hovered_activity_idx = hovered;
+
         match reaction {
             Reaction::Exit => Reaction::Exit,
             Reaction::Continue if is_quit_key(&event) => Reaction::Exit,
@@ -540,24 +563,12 @@ impl ShellApp for GalleryApp {
             // `quadraui::runner::Reaction::RedrawAfter`'s doc).
             r @ Reaction::RedrawAfter(_) => r,
             // `UiEvent::MouseMoved` is the one event `log_event` never
-            // appends to the log (see its own doc), and most of the time
-            // a `Continue` here really did change nothing on screen — so
-            // pass it through rather than forcing a redraw on every pixel
-            // the pointer crosses. The one exception is the activity bar:
-            // `ShellAdapter` runs `AppShell::handle` (which updates
-            // `hovered_activity_idx` for `MouseMoved`, including with a
-            // button held) *before* this app's own `Reaction` is
-            // consulted, and that call always returns `AppShellEvent::
-            // Ignored` — so nothing else ever escalates to `Redraw` for
-            // it. Skip the short-circuit while the pointer is over the
-            // activity bar so the final `_ => Redraw` arm below repaints
-            // the hover highlight `AppShell::render` paints from that
-            // field.
-            Reaction::Continue
-                if matches!(event, UiEvent::MouseMoved { .. })
-                    && !event_position(&event)
-                        .is_some_and(|p| ctx.layout.activity_bar_bounds.contains(p)) =>
-            {
+            // appends to the log (see its own doc), so unless the shell's
+            // activity-bar hover moved (see `hover_changed` above) a
+            // `Continue` here really did change nothing on screen — pass
+            // it through rather than forcing a redraw on every pixel the
+            // pointer crosses.
+            Reaction::Continue if matches!(event, UiEvent::MouseMoved { .. }) && !hover_changed => {
                 Reaction::Continue
             }
             // `log_event` above just appended to the bottom-panel log on
