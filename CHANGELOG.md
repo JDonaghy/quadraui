@@ -59,6 +59,18 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `Backend::draw_button_with_state(rect, button, &InteractionState)` — a
+  `Button` rasteriser that tints the background when the button is
+  hovered/pressed, keyed by `button.id`. Additive: `draw_button` is
+  unchanged and `draw_button_with_state` defaults to forwarding to it, so
+  every existing call site and backend implementor keeps compiling.
+  Implemented for real on TUI, GTK, macOS and Win (all four share the
+  button paint path). New `Theme::button_hover_bg(base)` /
+  `Theme::button_pressed_bg(base)` accessor methods derive the tint from
+  `Theme::accent_fg` — no new `Theme` field. `examples/{tui,gtk}_controls`
+  demonstrate it; `tests/tui_example_driver.rs`'s
+  `controls_button_hover_paints_hover_background_at_the_cursor` asserts the
+  painted consequence headlessly.
 - `tui::TuiRunner` gains `parts_mut(&mut self) -> (&mut TuiBackend, &mut A)`,
   disjoint mutable access to both the backend and the `AppLogic` it drives
   — for host code running inside `run_tui`/`run_native` that needs to call a

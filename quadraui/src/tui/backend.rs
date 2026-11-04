@@ -4156,6 +4156,15 @@ impl Backend for TuiBackend {
         rect: QRect,
         button: &crate::primitives::button::Button,
     ) -> crate::primitives::button::ButtonLayout {
+        self.draw_button_with_state(rect, button, &crate::InteractionState::new())
+    }
+
+    fn draw_button_with_state(
+        &mut self,
+        rect: QRect,
+        button: &crate::primitives::button::Button,
+        interaction: &crate::InteractionState,
+    ) -> crate::primitives::button::ButtonLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let Some(frame) = self.current_frame_mut() else {
@@ -4165,7 +4174,14 @@ impl Backend for TuiBackend {
             );
             return self.button_layout(rect, button);
         };
-        crate::tui::draw_button(frame.buffer_mut(), area, button, &theme)
+        crate::tui::draw_button_interactive(
+            frame.buffer_mut(),
+            area,
+            button,
+            &theme,
+            interaction.is_hovered(&button.id),
+            interaction.is_pressed(&button.id),
+        )
     }
 
     fn button_layout(

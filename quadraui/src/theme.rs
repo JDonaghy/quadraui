@@ -621,6 +621,38 @@ impl Theme {
         self.accent_fg
     }
 
+    // ── Hover / pressed state lift ───────────────────────────────────────
+    //
+    // `Self::hover_bg`/`hover_fg`/`hover_border` above are the `Tooltip`
+    // popup's own fill, not a generic "something is hovered" tint — using
+    // them for e.g. a hovered `Button` would mean every palette that
+    // retints its tooltip (to make LSP hover popups stand out) also,
+    // unintentionally, retints every hovered button. These methods are
+    // the dedicated, derived alternative: no new field, and no borrowed
+    // meaning from an unrelated primitive.
+
+    /// Background tint for a hovered [`crate::Button`], blended from
+    /// `base` (the button's own resting background — `accent_bg` for
+    /// [`crate::ButtonVariant::Primary`], `surface_bg` otherwise) toward
+    /// [`Self::accent_fg`] at a low alpha.
+    ///
+    /// Taking `base` as a parameter, rather than returning one fixed
+    /// colour, is what makes this work for every variant: blending
+    /// toward the accent colour lightens a dark `Secondary` button and
+    /// still visibly shifts an already-accent-coloured `Primary` one,
+    /// where one hardcoded hover colour would either clash with or
+    /// disappear into the resting fill.
+    pub fn button_hover_bg(&self, base: Color) -> Color {
+        base.blend(self.accent_fg, 0.14)
+    }
+
+    /// Background tint for a pressed [`crate::Button`] — like
+    /// [`Self::button_hover_bg`], but blended at a higher alpha so a
+    /// press reads as visibly deeper than a hover.
+    pub fn button_pressed_bg(&self, base: Color) -> Color {
+        base.blend(self.accent_fg, 0.26)
+    }
+
     // ── Terminal find-highlight lift ────────────────────────────
     //
     // `tui/terminal.rs`, `gtk/terminal.rs`, and `macos/terminal.rs`
@@ -1370,6 +1402,38 @@ mod tests {
         assert_ne!(
             Theme::light_default().inactive_selected_bg,
             Theme::default().inactive_selected_bg
+        );
+    }
+
+    #[test]
+    fn button_hover_bg_shifts_toward_accent_without_new_field() {
+        let theme = Theme::default();
+        let base = theme.surface_bg;
+        let hovered = theme.button_hover_bg(base);
+        assert_ne!(
+            hovered, base,
+            "hovering a button should visibly tint its resting background"
+        );
+    }
+
+    #[test]
+    fn button_pressed_bg_is_a_deeper_tint_than_hover() {
+        let theme = Theme::default();
+        let base = theme.surface_bg;
+        let hovered = theme.button_hover_bg(base);
+        let pressed = theme.button_pressed_bg(base);
+        assert_ne!(pressed, hovered, "pressed must read differently from hover");
+        // Both blend toward the same accent colour — pressed just goes
+        // further, so its distance from `base` is strictly larger.
+        let dist = |c: Color| -> i32 {
+            (c.r as i32 - base.r as i32).abs()
+                + (c.g as i32 - base.g as i32).abs()
+                + (c.b as i32 - base.b as i32).abs()
+        };
+        assert!(
+            dist(pressed) > dist(hovered),
+            "pressed ({pressed:?}) should sit further from the resting colour \
+             ({base:?}) than hover ({hovered:?})"
         );
     }
 }

@@ -66,6 +66,8 @@ mod tests {
                     theme,
                     rect,
                     &crate::style::Style::default(),
+                    false,
+                    false,
                 );
             })
             .map(|_| win_button_layout(rect, button))

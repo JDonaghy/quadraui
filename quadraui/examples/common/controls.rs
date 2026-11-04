@@ -3,18 +3,20 @@
 //!
 //! [`ControlsApp`] demonstrates a [`Button`], a [`RadioGroup`] and a
 //! [`Switch`] stacked vertically, each clickable with the mouse and
-//! reachable from the keyboard.
+//! reachable from the keyboard. The button also tints on hover/press
+//! via [`InteractionState`] and [`Backend::draw_button_with_state`].
 //!
 //! Controls:
 //! - Tab         move focus to the next control
 //! - Space/Enter activate the focused control
 //! - Up/Down     move the radio group cursor (while it has focus)
+//! - Hover       tints the button background
 //! - q / Esc     quit
 
 use quadraui::{
-    AppLogic, Backend, Button, ButtonHit, Color, Key, Modifiers, NamedKey, RadioGroup,
-    RadioGroupHit, RadioOption, Reaction, Rect, StatusBar, StatusBarSegment, Switch, SwitchHit,
-    UiEvent, WidgetId,
+    AppLogic, Backend, Button, ButtonHit, Color, InteractionState, Key, Modifiers, NamedKey,
+    RadioGroup, RadioGroupHit, RadioOption, Reaction, Rect, StatusBar, StatusBarSegment, Switch,
+    SwitchHit, UiEvent, WidgetId,
 };
 
 const FOCUS_ORDER: [Focus; 3] = [Focus::Button, Focus::RadioGroup, Focus::Switch];
@@ -32,6 +34,9 @@ pub struct ControlsApp {
     selected: Option<usize>,
     wrap_enabled: bool,
     last_message: String,
+    /// Hover/pressed state for the button, keyed by its `WidgetId` —
+    /// fed from `MouseMoved`/`MouseDown`/`MouseUp` in `handle` below.
+    interaction: InteractionState,
 }
 
 impl ControlsApp {
@@ -42,6 +47,7 @@ impl ControlsApp {
             selected: Some(0),
             wrap_enabled: false,
             last_message: "Tab=focus Space=activate Up/Down=radio".into(),
+            interaction: InteractionState::new(),
         }
     }
 
@@ -147,7 +153,7 @@ impl AppLogic for ControlsApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let (button_rect, radio_rect, switch_rect, status_rect) = self.layout_rects(backend);
 
-        let _ = backend.draw_button(button_rect, &self.button());
+        let _ = backend.draw_button_with_state(button_rect, &self.button(), &self.interaction);
         let _ = backend.draw_radio_group(radio_rect, &self.radio_group());
         let _ = backend.draw_switch(switch_rect, &self.switch());
         let _ = backend.draw_status_bar_interactive(
@@ -206,6 +212,17 @@ impl AppLogic for ControlsApp {
                 }
                 Reaction::Continue
             }
+            UiEvent::MouseMoved { position, .. } => {
+                let (button_rect, ..) = self.layout_rects(backend);
+                let button_layout = backend.button_layout(button_rect, &self.button());
+                let hovered = matches!(button_layout.hit_test(position), ButtonHit::Body)
+                    .then(|| self.button().id);
+                if self.interaction.set_hovered(hovered) {
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
+                }
+            }
             UiEvent::MouseDown { position, .. } => {
                 let (button_rect, radio_rect, switch_rect, _status_rect) =
                     self.layout_rects(backend);
@@ -213,6 +230,7 @@ impl AppLogic for ControlsApp {
                 let button_layout = backend.button_layout(button_rect, &self.button());
                 if matches!(button_layout.hit_test(position), ButtonHit::Body) {
                     self.focus = Focus::Button;
+                    self.interaction.set_pressed(Some(self.button().id));
                     self.activate_focused();
                     return Reaction::Redraw;
                 }
@@ -233,6 +251,13 @@ impl AppLogic for ControlsApp {
                 }
 
                 Reaction::Continue
+            }
+            UiEvent::MouseUp { .. } => {
+                if self.interaction.set_pressed(None) {
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
+                }
             }
             UiEvent::WindowResized { .. } => Reaction::Redraw,
             _ => Reaction::Continue,

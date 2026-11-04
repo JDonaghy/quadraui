@@ -240,12 +240,25 @@ pub(crate) mod native_surface_paint {
     /// Paint a [`Button`] into `rect` on `surface`, returning
     /// [`ButtonLayout`] for host click dispatch. `style` supplies the
     /// corner radius the fill/border paint with.
+    ///
+    /// `is_hovered` / `is_pressed` are `false` for the plain, non-state
+    /// `Backend::draw_button` call sites — identical paint to before
+    /// hover support existed. `Backend::draw_button_with_state`
+    /// implementations pass the resolved
+    /// `interaction.is_hovered(&button.id)` /
+    /// `interaction.is_pressed(&button.id)` instead, which tints `bg`
+    /// via [`Theme::button_pressed_bg`] (pressed takes priority over
+    /// hover, matching every other `InteractionState`-driven
+    /// rasteriser in this crate — a button can't be mid-press without
+    /// also being hovered).
     pub(crate) fn paint(
         button: &Button,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         rect: Rect,
         style: &Style,
+        is_hovered: bool,
+        is_pressed: bool,
     ) -> ButtonLayout {
         let layout = button.layout(rect);
         if rect.width <= 0.0 || rect.height <= 0.0 {
@@ -259,6 +272,15 @@ pub(crate) mod native_surface_paint {
                 ButtonVariant::Primary => theme.accent_bg,
                 ButtonVariant::Secondary | ButtonVariant::Icon => theme.surface_bg,
             }
+        };
+        let bg = if button.disabled {
+            bg
+        } else if is_pressed {
+            theme.button_pressed_bg(bg)
+        } else if is_hovered {
+            theme.button_hover_bg(bg)
+        } else {
+            bg
         };
         surface.surface_fill_rounded_rect(rect, style.corner_radius, bg);
 

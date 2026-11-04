@@ -3647,6 +3647,28 @@ pub trait Backend: sealed::Sealed {
     /// (ABSOLUTE).
     fn draw_button(&mut self, rect: Rect, button: &Button) -> ButtonLayout;
 
+    /// [`Self::draw_button`], reading hover/pressed state from a single
+    /// [`InteractionState`] keyed by [`WidgetId`]: a backend that
+    /// implements this tints the button's background when
+    /// `interaction.is_hovered(&button.id)` / `is_pressed(&button.id)`
+    /// — see [`crate::Theme::button_hover_bg`] /
+    /// [`crate::Theme::button_pressed_bg`] for the derived tint colours.
+    ///
+    /// Additive over [`Self::draw_button`], not a replacement — the
+    /// default forwards to it (ignoring `interaction`), so this method
+    /// is the one new backends/hosts adopt for hover feedback while
+    /// every existing call site and implementor keeps compiling
+    /// unchanged. Same coordinate frame as [`Self::button_layout`]
+    /// (ABSOLUTE).
+    fn draw_button_with_state(
+        &mut self,
+        rect: Rect,
+        button: &Button,
+        _interaction: &InteractionState,
+    ) -> ButtonLayout {
+        self.draw_button(rect, button)
+    }
+
     /// Compute button layout without painting.
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
