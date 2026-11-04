@@ -136,6 +136,24 @@ def test_set_style_overrides_the_chrome_metric_tokens_and_round_trips():
     assert after["padding"] == before["padding"]
 
 
+def test_set_style_overrides_the_scrollbar_width_token_and_round_trips():
+    """`Style::scrollbar_width` reaches `QuiApp` through the same
+    `#[serde(default)]`-decoded `set_style` dict every other `Style` field
+    already does -- no binding-side change needed to carry a new
+    descriptor field, matching `quadraui-binding-core`'s wire decode.
+    """
+    app = QuiApp(20, 5)
+    before = app.style()
+    assert before["scrollbar_width"] == 10.0
+
+    app.set_style({"scrollbar_width": 14.0})
+
+    after = app.style()
+    assert after["scrollbar_width"] == 14.0
+    # Unrelated token is untouched.
+    assert after["padding"] == before["padding"]
+
+
 def test_nerd_fonts_round_trips_through_set_and_get():
     app = QuiApp(20, 5)
     # TUI starts disabled -- see `Backend::set_nerd_fonts`'s own doc.
