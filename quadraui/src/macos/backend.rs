@@ -3726,10 +3726,28 @@ impl Backend for MacBackend {
     }
     /// Paint via the shared [`crate::primitives::button::native_surface_paint::paint`].
     fn draw_button(&mut self, rect: Rect, button: &Button) -> ButtonLayout {
+        self.draw_button_with_state(rect, button, &crate::InteractionState::new())
+    }
+
+    /// Paint via the shared [`crate::primitives::button::native_surface_paint::paint`],
+    /// passing through `interaction`'s resolved hover/pressed state for
+    /// `button.id`.
+    fn draw_button_with_state(
+        &mut self,
+        rect: Rect,
+        button: &Button,
+        interaction: &crate::InteractionState,
+    ) -> ButtonLayout {
         let theme = self.current_theme;
         let style = self.style();
         let layout = crate::primitives::button::native_surface_paint::paint(
-            button, self, &theme, rect, &style,
+            button,
+            self,
+            &theme,
+            rect,
+            &style,
+            interaction.is_hovered(&button.id),
+            interaction.is_pressed(&button.id),
         );
         self.register_zone(button.id, rect);
         layout

@@ -27,7 +27,26 @@ pub fn tui_button_layout(button: &Button, area: Rect) -> ButtonLayout {
 
 /// Draw a [`Button`] into `area` on `buf`. Returns the layout for host
 /// click dispatch.
+///
+/// Identical to [`draw_button_interactive`] with `is_hovered` /
+/// `is_pressed` both `false` — plain, no-hover-state paint.
 pub fn draw_button(buf: &mut Buffer, area: Rect, button: &Button, theme: &Theme) -> ButtonLayout {
+    draw_button_interactive(buf, area, button, theme, false, false)
+}
+
+/// [`draw_button`], tinting the background via [`Theme::button_pressed_bg`]
+/// / [`Theme::button_hover_bg`] when `is_pressed` / `is_hovered` is set —
+/// the TUI side of [`crate::Backend::draw_button_with_state`]. Pressed
+/// takes priority over hover, same as the GTK/macOS/Win `native_surface_paint`
+/// path.
+pub fn draw_button_interactive(
+    buf: &mut Buffer,
+    area: Rect,
+    button: &Button,
+    theme: &Theme,
+    is_hovered: bool,
+    is_pressed: bool,
+) -> ButtonLayout {
     let layout = tui_button_layout(button, area);
 
     if area.width == 0 || area.height == 0 {
@@ -40,14 +59,24 @@ pub fn draw_button(buf: &mut Buffer, area: Rect, button: &Button, theme: &Theme)
     let end = x0.saturating_add(w);
 
     let bg = if button.disabled {
-        ratatui_color(theme.surface_bg)
+        theme.surface_bg
     } else {
         match button.variant {
-            ButtonVariant::Primary => ratatui_color(theme.accent_bg),
-            ButtonVariant::Secondary => ratatui_color(theme.surface_bg),
-            ButtonVariant::Icon => ratatui_color(theme.background),
+            ButtonVariant::Primary => theme.accent_bg,
+            ButtonVariant::Secondary => theme.surface_bg,
+            ButtonVariant::Icon => theme.background,
         }
     };
+    let bg = if button.disabled {
+        bg
+    } else if is_pressed {
+        theme.button_pressed_bg(bg)
+    } else if is_hovered {
+        theme.button_hover_bg(bg)
+    } else {
+        bg
+    };
+    let bg = ratatui_color(bg);
     let fg = if button.disabled {
         ratatui_color(theme.muted_fg)
     } else {
@@ -164,5 +193,75 @@ mod tests {
         let button = mk_button("OK");
         let _layout = draw_button(&mut buf, Rect::new(0, 0, 0, 0), &button, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    fn cell_bg(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
+        buf[(x, y)]
+            .style()
+            .bg
+            .unwrap_or(ratatui::style::Color::Reset)
+    }
+
+    #[test]
+    fn hovered_background_differs_from_resting() {
+        let area = Rect::new(0, 0, 8, 1);
+        let theme = Theme::default();
+        let button = mk_button("OK");
+
+        let mut resting_buf = Buffer::empty(area);
+        draw_button_interactive(&mut resting_buf, area, &button, &theme, false, false);
+        let resting_bg = cell_bg(&resting_buf, 3, 0);
+
+        let mut hovered_buf = Buffer::empty(area);
+        draw_button_interactive(&mut hovered_buf, area, &button, &theme, true, false);
+        let hovered_bg = cell_bg(&hovered_buf, 3, 0);
+
+        assert_ne!(
+            resting_bg, hovered_bg,
+            "hovering should repaint the button background"
+        );
+    }
+
+    #[test]
+    fn pressed_background_differs_from_hovered_and_resting() {
+        let area = Rect::new(0, 0, 8, 1);
+        let theme = Theme::default();
+        let button = mk_button("OK");
+
+        let mut resting_buf = Buffer::empty(area);
+        draw_button_interactive(&mut resting_buf, area, &button, &theme, false, false);
+        let resting_bg = cell_bg(&resting_buf, 3, 0);
+
+        let mut hovered_buf = Buffer::empty(area);
+        draw_button_interactive(&mut hovered_buf, area, &button, &theme, true, false);
+        let hovered_bg = cell_bg(&hovered_buf, 3, 0);
+
+        let mut pressed_buf = Buffer::empty(area);
+        draw_button_interactive(&mut pressed_buf, area, &button, &theme, true, true);
+        let pressed_bg = cell_bg(&pressed_buf, 3, 0);
+
+        assert_ne!(pressed_bg, resting_bg);
+        assert_ne!(pressed_bg, hovered_bg);
+    }
+
+    #[test]
+    fn disabled_button_ignores_hover_and_pressed() {
+        let area = Rect::new(0, 0, 8, 1);
+        let theme = Theme::default();
+        let mut button = mk_button("OK");
+        button.disabled = true;
+
+        let mut resting_buf = Buffer::empty(area);
+        draw_button_interactive(&mut resting_buf, area, &button, &theme, false, false);
+        let resting_bg = cell_bg(&resting_buf, 3, 0);
+
+        let mut hovered_buf = Buffer::empty(area);
+        draw_button_interactive(&mut hovered_buf, area, &button, &theme, true, true);
+        let hovered_bg = cell_bg(&hovered_buf, 3, 0);
+
+        assert_eq!(
+            resting_bg, hovered_bg,
+            "a disabled button must not paint hover/pressed tints"
+        );
     }
 }
