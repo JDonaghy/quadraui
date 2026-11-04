@@ -107,18 +107,21 @@ test("setRender overrides the fixed slots for every frame", () => {
 
 test("setRender honours a row's padding/gap spacing keys", () => {
   // `"padding"`/`"gap"` are siblings of the `"row"` key in the same node
-  // dict -- on this headless backend one native unit is one terminal
-  // cell, so `padding: 2` must inset the leaf exactly 2 rows/columns from
-  // the top-left corner.
+  // dict. The value is a surface-native-pixel measurement, exactly like
+  // `Style.padding` -- on a cell-grid backend (TUI) it converts into whole
+  // cells via `ceil(px / nominal_cell_px)` (an 8px-wide, 16px-tall nominal
+  // cell), not read as that many cells outright. `padding: 12` therefore
+  // insets the leaf by `ceil(12 / 8) == 2` columns and `ceil(12 / 16) ==
+  // 1` row from the top-left corner.
   const app = new QuiApp(20, 6);
   app.setRender(() => ({
     row: [{ id: "left", text_display: { id: "text:left", lines: [{ spans: [{ text: "L", fg: null, bg: null }] }] } }],
-    padding: 2,
+    padding: 12,
   }));
   const lines = app.screen().split("\n");
-  assert.equal(lines[0].trim(), "", "no padding rows stay blank");
-  assert.equal(lines[2].slice(0, 2), "  ", "padding columns stay blank");
-  assert.equal(lines[2].trim(), "L");
+  assert.equal(lines[0].trim(), "", "the row above the padding inset stays blank");
+  assert.equal(lines[1].slice(0, 2), "  ", "padding columns stay blank");
+  assert.equal(lines[1].trim(), "L");
 });
 
 test("a handler calling back into QuiApp (e.g. insertButton) mid-dispatch raises instead of corrupting state", () => {

@@ -84,14 +84,19 @@ impl EdgeInsets {
         }
     }
 
-    /// Shrinks `rect` by these insets, each independently cell-quantised
-    /// via [`quantise_padding`] first — floored at zero width/height so an
-    /// inset wider than `rect` never produces a negative size.
-    pub fn inset(&self, rect: Rect) -> Rect {
-        let top = quantise_padding(self.top);
-        let right = quantise_padding(self.right);
-        let bottom = quantise_padding(self.bottom);
-        let left = quantise_padding(self.left);
+    /// Shrinks `rect` by these insets: `top`/`bottom` quantised via
+    /// [`quantise_vertical`] against `line_height`, `left`/`right` via
+    /// [`quantise_horizontal`] against `char_width` — the same pair of
+    /// per-axis native-unit metrics `Backend::char_width`/
+    /// `Backend::line_height` report, so a caller painting into a real
+    /// backend passes those two numbers straight through (see
+    /// `crate::render::inset_for_spacing`). Floored at zero width/height
+    /// so an inset wider than `rect` never produces a negative size.
+    pub fn inset(&self, rect: Rect, char_width: f32, line_height: f32) -> Rect {
+        let top = quantise_vertical(self.top, line_height);
+        let bottom = quantise_vertical(self.bottom, line_height);
+        let left = quantise_horizontal(self.left, char_width);
+        let right = quantise_horizontal(self.right, char_width);
         let width = (rect.width - left - right).max(0.0);
         let height = (rect.height - top - bottom).max(0.0);
         Rect::new(rect.x + left, rect.y + top, width, height)
@@ -107,22 +112,26 @@ impl EdgeInsets {
 ///
 /// # TUI story
 ///
-/// quadraui's binding-core coordinate space is unit-agnostic (`Rect` is
-/// plain `f32` everywhere — see `quadraui::flex`'s module doc): a Python/JS
-/// render callback picks numbers in the active backend's own native
-/// units, exactly like every other `Rect`-valued quantity in this tree. On
-/// a pixel backend one native unit is one surface pixel, so a sub-pixel
-/// spacing value is visually negligible; on `TuiBackend` one native unit
-/// is exactly one terminal cell (`Backend::char_width`/`line_height` both
-/// return `1.0`), so a fractional cell has no grid position to paint into.
-/// [`EdgeInsets::inset`]/[`quantise_padding`]/[`quantise_margin`] round
-/// every spacing value up to the next whole native unit before using it —
-/// a no-op rounding on a pixel backend (sub-pixel noise only), the exact
-/// "ceil to the next whole cell" rule on TUI. A `margin` under one unit
-/// (so under one cell on TUI) drops to `0.0` outright rather than rounding
-/// up to a whole cell of margin where the caller asked for none/a sliver —
-/// see [`quantise_margin`]. `quadraui::style` documents the identical rule
-/// for `quadraui::Style::padding`.
+/// Every value here is in **surface-native pixels**, exactly like
+/// `quadraui::Style::padding` — a Python/JS render callback picks the same
+/// number regardless of which backend ends up painting it. On a pixel
+/// backend (GTK/macOS/Win) that number already IS the native unit, so
+/// [`quantise_horizontal`]/[`quantise_vertical`] only round away sub-pixel
+/// noise. On `TuiBackend` the native unit is one terminal cell, and
+/// `Backend::char_width`/`line_height` both report `1.0` there — the
+/// backend's own native unit already *is* one cell, architecturally, not a
+/// real font pixel measurement — so dividing by either one can't supply
+/// the pixel-to-cell conversion a TUI rasteriser needs. Instead,
+/// [`quantise_horizontal`]/[`quantise_vertical`] fall back to
+/// [`NOMINAL_CELL_PX_WIDTH`]/[`NOMINAL_CELL_PX_HEIGHT`] — the same "8×16
+/// nominal terminal cell" estimate this tree's own monospace-width
+/// heuristics already lean on (see `gtk::backend`'s tab-bar-layout twin) —
+/// and round `ceil(px / nominal_cell_px)` up to the next whole cell. A
+/// `margin` that rounds to under one native unit drops to `0.0` outright
+/// rather than rounding up to a whole unit of margin where the caller
+/// asked for none/a sliver — see [`quantise_margin_horizontal`]/
+/// [`quantise_margin_vertical`]. `quadraui::style` documents the identical
+/// rule for `quadraui::Style::padding`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Spacing {
     pub padding: EdgeInsets,
@@ -130,23 +139,69 @@ pub struct Spacing {
     pub gap: f32,
 }
 
-/// Rounds `value` up to the next whole native unit, floored at `0.0` —
-/// [`Spacing`]'s doc explains why this is the shared TUI/pixel-backend
-/// degrade rule for every padding/gap edge.
-pub fn quantise_padding(value: f32) -> f32 {
-    value.max(0.0).ceil()
+/// Nominal pixel width of one terminal cell — the pixel reference
+/// [`quantise_horizontal`] falls back to on a cell-grid backend, whose own
+/// `Backend::char_width()` reports `1.0` rather than a real font
+/// measurement. See [`Spacing`]'s doc for why a real per-backend metric
+/// can't supply this.
+const NOMINAL_CELL_PX_WIDTH: f32 = 8.0;
+
+/// Nominal pixel height of one terminal cell — [`NOMINAL_CELL_PX_WIDTH`]'s
+/// vertical counterpart, consumed by [`quantise_vertical`].
+const NOMINAL_CELL_PX_HEIGHT: f32 = 16.0;
+
+/// Converts a raw spacing value (surface-native pixels) into native units
+/// on one axis, without rounding: `value` unchanged on a pixel backend
+/// (`metric > 1.0`, a real font measurement), or `value / nominal_cell_px`
+/// on a cell-grid backend (`metric <= 1.0` — architecturally always
+/// exactly `1.0`; see [`Spacing`]'s doc for why that can't itself be the
+/// pixel reference). Floored at `0.0` first so a spacing value below zero
+/// (not reachable from today's wire decode, but defensive) never produces
+/// a negative inset.
+fn native_units(value: f32, metric: f32, nominal_cell_px: f32) -> f32 {
+    let value = value.max(0.0);
+    if metric <= 1.0 {
+        value / nominal_cell_px
+    } else {
+        value
+    }
 }
 
-/// [`quantise_padding`]'s rule, plus: a margin under one whole native unit
-/// drops to `0.0` instead of rounding up — seeing a fractional margin
-/// round *up* into a full cell of space on TUI when the caller meant
-/// "basically none" would be more surprising than dropping it.
-pub fn quantise_margin(value: f32) -> f32 {
-    if value < 1.0 {
+/// Rounds a horizontal spacing value up to the next whole horizontal
+/// native unit — [`Spacing`]'s doc explains the shared TUI/pixel-backend
+/// degrade rule this implements for every padding/gap horizontal edge.
+/// `char_width` is the painting backend's own `Backend::char_width()`.
+pub fn quantise_horizontal(value: f32, char_width: f32) -> f32 {
+    native_units(value, char_width, NOMINAL_CELL_PX_WIDTH).ceil()
+}
+
+/// [`quantise_horizontal`]'s vertical counterpart. `line_height` is the
+/// painting backend's own `Backend::line_height()`.
+pub fn quantise_vertical(value: f32, line_height: f32) -> f32 {
+    native_units(value, line_height, NOMINAL_CELL_PX_HEIGHT).ceil()
+}
+
+/// Drops `native` to `0.0` when it is under one whole native unit, else
+/// rounds it up — seeing a fractional margin round *up* into a full cell
+/// of space on TUI when the caller meant "basically none" would be more
+/// surprising than dropping it.
+fn quantise_margin(native: f32) -> f32 {
+    if native < 1.0 {
         0.0
     } else {
-        value.ceil()
+        native.ceil()
     }
+}
+
+/// [`quantise_horizontal`]'s rule, plus the [`quantise_margin`] drop —
+/// margin's own degrade rule for a horizontal edge.
+pub fn quantise_margin_horizontal(value: f32, char_width: f32) -> f32 {
+    quantise_margin(native_units(value, char_width, NOMINAL_CELL_PX_WIDTH))
+}
+
+/// [`quantise_margin_horizontal`]'s vertical counterpart.
+pub fn quantise_margin_vertical(value: f32, line_height: f32) -> f32 {
+    quantise_margin(native_units(value, line_height, NOMINAL_CELL_PX_HEIGHT))
 }
 
 /// A [`LayoutNode::Split`]'s decoded shape: the `quadraui::Split` descriptor
@@ -326,4 +381,64 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
     }
     let mut seen = HashSet::new();
     walk(what, node, &mut seen)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `TuiBackend::char_width`/`line_height`'s own values — the
+    /// architectural `1.0` that flags a cell-grid backend.
+    const TUI_CHAR_WIDTH: f32 = 1.0;
+    const TUI_LINE_HEIGHT: f32 = 1.0;
+
+    /// A real font's reported char/line metrics (GTK/macOS/Win) — any
+    /// value `> 1.0` takes the pixel-backend passthrough branch, so these
+    /// particular numbers aren't load-bearing, just plausible ones.
+    const PIXEL_CHAR_WIDTH: f32 = 8.0;
+    const PIXEL_LINE_HEIGHT: f32 = 16.0;
+
+    #[test]
+    fn quantise_horizontal_passes_a_pixel_backend_value_through() {
+        assert_eq!(quantise_horizontal(12.0, PIXEL_CHAR_WIDTH), 12.0);
+    }
+
+    #[test]
+    fn quantise_horizontal_shrinks_pixels_into_cells_on_a_cell_grid_backend() {
+        // ceil(12 / 8) = 2 -- not "12 cells", the bug this function exists
+        // to fix.
+        assert_eq!(quantise_horizontal(12.0, TUI_CHAR_WIDTH), 2.0);
+    }
+
+    #[test]
+    fn quantise_vertical_shrinks_pixels_into_cells_on_a_cell_grid_backend() {
+        // ceil(12 / 16) = 1.
+        assert_eq!(quantise_vertical(12.0, TUI_LINE_HEIGHT), 1.0);
+    }
+
+    #[test]
+    fn quantise_margin_horizontal_drops_a_sub_cell_margin_on_tui() {
+        // 4px is under one nominal 8px-wide cell, so it drops to zero
+        // rather than rounding up to a whole cell of margin.
+        assert_eq!(quantise_margin_horizontal(4.0, TUI_CHAR_WIDTH), 0.0);
+    }
+
+    #[test]
+    fn quantise_margin_horizontal_rounds_up_once_it_clears_one_cell() {
+        // ceil(9 / 8) = 2.
+        assert_eq!(quantise_margin_horizontal(9.0, TUI_CHAR_WIDTH), 2.0);
+    }
+
+    #[test]
+    fn quantise_margin_vertical_drops_a_sub_cell_margin_on_a_pixel_backend() {
+        assert_eq!(quantise_margin_vertical(0.5, PIXEL_LINE_HEIGHT), 0.0);
+    }
+
+    #[test]
+    fn edge_insets_inset_uses_the_matching_axis_metric_per_side() {
+        let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let insets = EdgeInsets::uniform(12.0);
+        let inset = insets.inset(rect, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
+        assert_eq!(inset, Rect::new(2.0, 1.0, 76.0, 22.0));
+    }
 }

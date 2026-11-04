@@ -16,7 +16,10 @@ use quadraui::{
 
 use crate::extra_paint::ExtraPaint;
 use crate::hit::PaintedHit;
-use crate::layout::{quantise_margin, LayoutContainer, LayoutLeaf, LayoutNode, LeafDescriptor};
+use crate::layout::{
+    quantise_horizontal, quantise_margin_horizontal, quantise_margin_vertical, quantise_vertical,
+    LayoutContainer, LayoutLeaf, LayoutNode, LeafDescriptor,
+};
 
 /// Owned decode of a render callback's returned descriptor set — one
 /// optional descriptor per slot, keyed by `"button"`, `"text_display"`,
@@ -301,7 +304,10 @@ fn text_display_region(
     }
 }
 
-/// Paints a layout tree into `area`. A `Row`/`Column` divides its area into
+/// Paints a layout tree into `area`. A `Row`/`Column` first shrinks `area`
+/// by its own `padding`/`margin` and reserves `gap` between children (see
+/// [`inset_for_spacing`]/[`split_rects_with_gap`] — a no-spacing container
+/// behaves exactly as before these existed), then divides what's left into
 /// equal shares — one per child, side by side or stacked — and recurses;
 /// equal shares (rather than `draw_bands`'s fixed line-count bands) fill
 /// the whole area regardless of viewport size. A `Leaf` paints its one
@@ -332,23 +338,31 @@ pub fn paint_layout(
 ) {
     match node {
         LayoutNode::Row(container) => {
-            let area = inset_for_spacing(area, container);
+            let char_width = backend.char_width();
+            let line_height = backend.line_height();
+            let area = inset_for_spacing(area, container, char_width, line_height);
             for (child, rect) in container.children.iter().zip(split_rects_with_gap(
                 area,
                 container.children.len(),
                 true,
                 container.spacing.gap,
+                char_width,
+                line_height,
             )) {
                 paint_layout(backend, rect, child, hits, chrome_interaction);
             }
         }
         LayoutNode::Column(container) => {
-            let area = inset_for_spacing(area, container);
+            let char_width = backend.char_width();
+            let line_height = backend.line_height();
+            let area = inset_for_spacing(area, container, char_width, line_height);
             for (child, rect) in container.children.iter().zip(split_rects_with_gap(
                 area,
                 container.children.len(),
                 false,
                 container.spacing.gap,
+                char_width,
+                line_height,
             )) {
                 paint_layout(backend, rect, child, hits, chrome_interaction);
             }
@@ -467,32 +481,65 @@ pub fn paint_layout(
 /// Shrinks `area` by `container.spacing`'s `margin` (the space the parent
 /// leaves around the whole container, inset uniformly on every side) then
 /// its `padding` (the space inset from the container's own edges before
-/// laying out children) — `margin` quantised via [`quantise_margin`],
-/// `padding` via [`crate::layout::EdgeInsets::inset`]. The order matters:
-/// margin is outside the container's own box, padding is inside it, same
-/// as CSS's box model.
-fn inset_for_spacing(area: Rect, container: &LayoutContainer) -> Rect {
-    let margin = quantise_margin(container.spacing.margin);
+/// laying out children) — `margin` quantised per-axis via
+/// [`quantise_margin_horizontal`]/[`quantise_margin_vertical`], `padding`
+/// via [`crate::layout::EdgeInsets::inset`]. `char_width`/`line_height` are
+/// the painting backend's own `Backend::char_width()`/`Backend::line_height()`
+/// — see [`crate::layout::Spacing`]'s doc for why both quantisers need
+/// them. The order matters: margin is outside the container's own box,
+/// padding is inside it, same as CSS's box model.
+fn inset_for_spacing(
+    area: Rect,
+    container: &LayoutContainer,
+    char_width: f32,
+    line_height: f32,
+) -> Rect {
+    let margin_h = quantise_margin_horizontal(container.spacing.margin, char_width);
+    let margin_v = quantise_margin_vertical(container.spacing.margin, line_height);
     let after_margin = Rect::new(
-        area.x + margin,
-        area.y + margin,
-        (area.width - margin * 2.0).max(0.0),
-        (area.height - margin * 2.0).max(0.0),
+        area.x + margin_h,
+        area.y + margin_v,
+        (area.width - margin_h * 2.0).max(0.0),
+        (area.height - margin_v * 2.0).max(0.0),
     );
-    container.spacing.padding.inset(after_margin)
+    container
+        .spacing
+        .padding
+        .inset(after_margin, char_width, line_height)
 }
 
 /// Divides `area` into `n` equal shares, side by side when `horizontal` or
 /// stacked top-to-bottom otherwise, with `gap` native units of space
-/// between adjacent shares (quantised via
-/// [`crate::layout::quantise_padding`] so a TUI `gap` always lands on a
-/// whole cell boundary). Returns an empty `Vec` for `n == 0`. `gap: 0.0`
-/// behaves exactly like the equal-share split this replaced.
-pub fn split_rects_with_gap(area: Rect, n: usize, horizontal: bool, gap: f32) -> Vec<Rect> {
+/// between adjacent shares — quantised via [`quantise_horizontal`] (using
+/// `char_width`) when `horizontal`, or [`crate::layout::quantise_vertical`]
+/// (using `line_height`) otherwise, so the *distance* between two adjacent
+/// shares is always a whole number of TUI cells. The shares themselves
+/// stay fractional (`(area's main-axis extent - total_gap) / n`), so an
+/// individual share's own start position is not guaranteed to land on a
+/// cell boundary — only the gap carved out of the space between shares
+/// is quantised. Returns an empty `Vec` for `n == 0`. `gap: 0.0` behaves
+/// exactly like the equal-share split this replaced. When `gap` alone
+/// consumes the whole of `area` (so every share clamps to `0.0`), every
+/// returned rect's origin is clamped to `area`'s own far edge instead of
+/// marching past it — a share is always zero-width/height in that case,
+/// so nothing paints either way, but the geometry itself never escapes
+/// `area`.
+pub fn split_rects_with_gap(
+    area: Rect,
+    n: usize,
+    horizontal: bool,
+    gap: f32,
+    char_width: f32,
+    line_height: f32,
+) -> Vec<Rect> {
     if n == 0 {
         return Vec::new();
     }
-    let gap = crate::layout::quantise_padding(gap);
+    let gap = if horizontal {
+        quantise_horizontal(gap, char_width)
+    } else {
+        quantise_vertical(gap, line_height)
+    };
     let n_f = n as f32;
     let total_gap = gap * (n.saturating_sub(1)) as f32;
     (0..n)
@@ -500,10 +547,12 @@ pub fn split_rects_with_gap(area: Rect, n: usize, horizontal: bool, gap: f32) ->
             let i_f = i as f32;
             if horizontal {
                 let share = ((area.width - total_gap) / n_f).max(0.0);
-                Rect::new(area.x + (share + gap) * i_f, area.y, share, area.height)
+                let x = (area.x + (share + gap) * i_f).min(area.x + area.width);
+                Rect::new(x, area.y, share, area.height)
             } else {
                 let share = ((area.height - total_gap) / n_f).max(0.0);
-                Rect::new(area.x, area.y + (share + gap) * i_f, area.width, share)
+                let y = (area.y + (share + gap) * i_f).min(area.y + area.height);
+                Rect::new(area.x, y, area.width, share)
             }
         })
         .collect()
@@ -511,9 +560,11 @@ pub fn split_rects_with_gap(area: Rect, n: usize, horizontal: bool, gap: f32) ->
 
 /// Divides `area` into `n` equal shares with no gap between them —
 /// [`split_rects_with_gap`] with `gap: 0.0`, kept as its own name for
-/// every caller that has no [`LayoutContainer`] spacing to thread through.
+/// every caller that has no [`LayoutContainer`] spacing to thread
+/// through. `gap: 0.0` never consults either metric, so `char_width`/
+/// `line_height` here are nominal.
 pub fn split_rects(area: Rect, n: usize, horizontal: bool) -> Vec<Rect> {
-    split_rects_with_gap(area, n, horizontal, 0.0)
+    split_rects_with_gap(area, n, horizontal, 0.0, 1.0, 1.0)
 }
 
 /// How many rows of `tree` fit in `rect` at a zero scroll offset — the
@@ -659,9 +710,21 @@ pub fn paint_leaf(
 }
 
 #[cfg(test)]
-mod spacing_tests {
+mod tests {
     use super::*;
     use crate::layout::{EdgeInsets, Spacing};
+
+    /// A real font's reported char/line metrics (GTK/macOS/Win) — any
+    /// value `> 1.0` takes [`crate::layout::quantise_horizontal`]/
+    /// [`quantise_vertical`]'s pixel-backend passthrough branch, so these
+    /// particular numbers aren't load-bearing, just plausible ones.
+    const PIXEL_CHAR_WIDTH: f32 = 8.0;
+    const PIXEL_LINE_HEIGHT: f32 = 16.0;
+
+    /// `TuiBackend::char_width`/`line_height`'s own values — the
+    /// architectural `1.0` that flags a cell-grid backend.
+    const TUI_CHAR_WIDTH: f32 = 1.0;
+    const TUI_LINE_HEIGHT: f32 = 1.0;
 
     fn container(children: usize, spacing: Spacing) -> LayoutContainer {
         LayoutContainer {
@@ -678,7 +741,7 @@ mod spacing_tests {
     }
 
     #[test]
-    fn inset_for_spacing_applies_margin_then_padding() {
+    fn inset_for_spacing_applies_margin_then_padding_on_a_pixel_backend() {
         let area = Rect::new(0.0, 0.0, 100.0, 50.0);
         let c = container(
             0,
@@ -688,8 +751,9 @@ mod spacing_tests {
                 gap: 0.0,
             },
         );
-        let inset = inset_for_spacing(area, &c);
-        // margin (3) then padding (5) on every side: 8 total inset.
+        let inset = inset_for_spacing(area, &c, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
+        // margin (3) then padding (5) on every side: 8 total inset, in
+        // surface-native pixels, unchanged by the pixel-backend passthrough.
         assert_eq!(inset.x, 8.0);
         assert_eq!(inset.y, 8.0);
         assert_eq!(inset.width, 100.0 - 16.0);
@@ -697,7 +761,7 @@ mod spacing_tests {
     }
 
     #[test]
-    fn inset_for_spacing_drops_a_sub_cell_margin() {
+    fn inset_for_spacing_drops_a_sub_cell_margin_on_a_pixel_backend() {
         let area = Rect::new(0.0, 0.0, 100.0, 50.0);
         let c = container(
             0,
@@ -707,14 +771,95 @@ mod spacing_tests {
                 gap: 0.0,
             },
         );
-        let inset = inset_for_spacing(area, &c);
+        let inset = inset_for_spacing(area, &c, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
         assert_eq!(inset, area, "a margin under one native unit drops to zero");
+    }
+
+    /// The blocking regression this module exists to pin down: a pixel
+    /// padding value shrinks into a *small* number of TUI cells instead of
+    /// being read as that many whole cells outright (`padding: 12` must
+    /// not mean "12-cell inset" on a cell-grid backend).
+    #[test]
+    fn inset_for_spacing_shrinks_a_pixel_padding_into_whole_cells_on_tui() {
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let c = container(
+            0,
+            Spacing {
+                padding: EdgeInsets::uniform(12.0),
+                margin: 0.0,
+                gap: 0.0,
+            },
+        );
+        let inset = inset_for_spacing(area, &c, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
+        // ceil(12 / 8) = 2 columns each side, ceil(12 / 16) = 1 row each side.
+        assert_eq!(inset.x, 2.0);
+        assert_eq!(inset.y, 1.0);
+        assert_eq!(inset.width, 80.0 - 4.0);
+        assert_eq!(inset.height, 24.0 - 2.0);
+    }
+
+    /// The literal acceptance scenario the blocking review flagged: a
+    /// `padding: 12, gap: 8` row of three children on a stock 80×24
+    /// terminal must still leave real room to paint into, not clip to
+    /// zero height.
+    #[test]
+    fn split_rects_with_gap_does_not_clip_a_terminal_sized_row() {
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let c = container(
+            3,
+            Spacing {
+                padding: EdgeInsets::uniform(12.0),
+                margin: 0.0,
+                gap: 8.0,
+            },
+        );
+        let inset = inset_for_spacing(area, &c, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
+        assert!(inset.width > 0.0, "row must not clip to zero width");
+        assert!(inset.height > 0.0, "row must not clip to zero height");
+        let rects = split_rects_with_gap(
+            inset,
+            c.children.len(),
+            true,
+            c.spacing.gap,
+            TUI_CHAR_WIDTH,
+            TUI_LINE_HEIGHT,
+        );
+        assert_eq!(rects.len(), 3);
+        for rect in &rects {
+            assert!(
+                rect.width > 0.0,
+                "every child must get real width: {rect:?}"
+            );
+            assert!(
+                rect.height > 0.0,
+                "every child must get real height: {rect:?}"
+            );
+        }
+    }
+
+    /// When `gap` alone consumes the whole area, every share clamps to
+    /// `0.0` but the geometry itself must still stay inside `area` — see
+    /// [`split_rects_with_gap`]'s doc for why marching origins past the
+    /// far edge is a latent hit-test/overdraw hazard even though nothing
+    /// actually paints into a zero-sized rect.
+    #[test]
+    fn split_rects_with_gap_clamps_origins_when_gap_exceeds_the_area() {
+        let area = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let rects = split_rects_with_gap(area, 5, true, 4.0, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
+        assert_eq!(rects.len(), 5);
+        for rect in &rects {
+            assert_eq!(rect.width, 0.0);
+            assert!(
+                rect.x <= area.x + area.width,
+                "origin must not escape area: {rect:?}"
+            );
+        }
     }
 
     #[test]
     fn split_rects_with_gap_leaves_whole_unit_gaps_between_shares() {
         let area = Rect::new(0.0, 0.0, 33.0, 10.0);
-        let rects = split_rects_with_gap(area, 3, true, 3.0);
+        let rects = split_rects_with_gap(area, 3, true, 3.0, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
         assert_eq!(rects.len(), 3);
         // 33 width, 2 gaps of 3 => 27 left for 3 equal shares of 9 each.
         assert_eq!(rects[0], Rect::new(0.0, 0.0, 9.0, 10.0));
@@ -726,7 +871,7 @@ mod spacing_tests {
     fn split_rects_with_gap_zero_matches_the_plain_equal_split() {
         let area = Rect::new(0.0, 0.0, 30.0, 10.0);
         assert_eq!(
-            split_rects_with_gap(area, 3, true, 0.0),
+            split_rects_with_gap(area, 3, true, 0.0, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT),
             split_rects(area, 3, true)
         );
     }
@@ -734,8 +879,19 @@ mod spacing_tests {
     #[test]
     fn split_rects_with_gap_quantises_a_fractional_gap_up() {
         let area = Rect::new(0.0, 0.0, 20.0, 10.0);
-        let rects = split_rects_with_gap(area, 2, true, 0.4);
+        let rects = split_rects_with_gap(area, 2, true, 0.4, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
         // 0.4 rounds up to a whole unit of gap (1.0).
+        assert_eq!(rects[1].x - (rects[0].x + rects[0].width), 1.0);
+    }
+
+    /// The same fractional gap from a cell-grid backend's own metrics:
+    /// `0.4` surface-native pixels is nowhere near one nominal 8px-wide
+    /// cell, so it still rounds up to exactly one whole TUI cell of gap —
+    /// same outcome as the pixel-backend case above, by a different route.
+    #[test]
+    fn split_rects_with_gap_quantises_a_fractional_gap_up_on_tui() {
+        let area = Rect::new(0.0, 0.0, 20.0, 10.0);
+        let rects = split_rects_with_gap(area, 2, true, 0.4, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
         assert_eq!(rects[1].x - (rects[0].x + rects[0].width), 1.0);
     }
 }
