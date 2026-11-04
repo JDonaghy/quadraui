@@ -59,6 +59,22 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `ListViewEvent::ItemDoubleClicked { idx }` and
+  `DataTableEvent::RowDoubleClicked { idx }` — distinct double-click events,
+  mirroring `TreeEvent::RowDoubleClicked`, so an app can tell "select" apart
+  from "open" instead of both folding into `ItemActivated`/`RowActivated`.
+  `quadraui-binding-core`'s `semantic_event_for_hit` now checks its own
+  `double_click` flag for a `DataTableRow` hit (previously ignored there, so
+  every row click — single or double — reached the binding as
+  `RowActivated`): a plain click now resolves to `DataTableEvent::RowSelected`
+  and a real double-click to the new `RowDoubleClicked`; a `ListItem` double
+  click now resolves to `ItemDoubleClicked` instead of reusing
+  `ItemActivated`, mirroring how `TreeEvent::RowDoubleClicked` was added
+  previously. `RowActivated`/`ItemActivated` keep their documented
+  click-or-Enter meaning
+  for native `Backend` consumers that construct them directly. Covered by
+  `quadraui-binding-core::engine` tests and `quadraui-py`'s
+  `test_data_table_interactions.py` / inline `lib.rs` list test.
 - `Style::scrollbar_width` (default `10.0`, matching the existing
   `TREE_VSCROLLBAR_WIDTH` constant) — a themeable seam for the
   `List`/`TreeView`/`DataTable` vertical scrollbar track width.

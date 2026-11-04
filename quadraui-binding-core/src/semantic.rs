@@ -221,7 +221,8 @@ fn date_picker_key_event(id: WidgetId, picker: &DatePicker, key: &str) -> Option
 /// the handler would have to re-interpret itself. `double_click` selects
 /// between a variant's single- and double-click shapes where both exist
 /// (e.g. `TreeEvent::RowClicked` vs `RowDoubleClicked`,
-/// `ListViewEvent::SelectionChanged` vs `ItemActivated`). `None` for every
+/// `ListViewEvent::SelectionChanged` vs `ItemDoubleClicked`,
+/// `DataTableEvent::RowSelected` vs `RowDoubleClicked`). `None` for every
 /// other `HitDetail` — a data-table header divider or a split divider
 /// (handled separately, via [`crate::drag::ActiveDrag`], since either spans
 /// a drag rather than a single click), a tab-bar scroll-left/right arrow (no semantic
@@ -271,7 +272,7 @@ pub fn semantic_event_for_hit(
             if double_click {
                 Some(UiEvent::List(
                     id,
-                    ListViewEvent::ItemActivated { idx: *index },
+                    ListViewEvent::ItemDoubleClicked { idx: *index },
                 ))
             } else if modifiers == Modifiers::default() {
                 Some(UiEvent::List(
@@ -294,10 +295,19 @@ pub fn semantic_event_for_hit(
             id,
             DataTableEvent::HeaderClicked { col: *col },
         )),
-        HitDetail::DataTableRow { row } => Some(UiEvent::DataTable(
-            id,
-            DataTableEvent::RowActivated { idx: *row },
-        )),
+        HitDetail::DataTableRow { row } => {
+            if double_click {
+                Some(UiEvent::DataTable(
+                    id,
+                    DataTableEvent::RowDoubleClicked { idx: *row },
+                ))
+            } else {
+                Some(UiEvent::DataTable(
+                    id,
+                    DataTableEvent::RowSelected { idx: *row },
+                ))
+            }
+        }
         HitDetail::ExtraBody => hit_map.iter().find_map(|hit| match hit {
             PaintedHit::Extra {
                 id: hit_id, extra, ..

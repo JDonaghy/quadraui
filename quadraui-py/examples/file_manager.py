@@ -32,7 +32,8 @@ Interaction (keyboard drives, mouse works too):
   Enter / o    open the cursored folder as a details tab (and expand it)
   r            reload the cursored folder from disk
   click a tree row         select it and toggle its expansion
-  activate a details row   drill into that subfolder (or report a file's size)
+  double-click a details row   drill into that subfolder (or report a
+                            file's size); a single click just selects it
   click a tab / its ×      switch to / close that tab
   q / Escape   quit the real run loops
 
@@ -215,9 +216,10 @@ def tree_leaf(rows: list[dict], *, selected_path: list[int], scroll_offset: int)
 # Each details tab lists the immediate children (files + subfolders) of one
 # opened folder. `width` is `{"Flex": w}` -- unitless proportional weights that
 # lay out the same on every backend, unlike `{"Fixed": n}` (surface-native
-# units: cells on TUI, *pixels* on native). Activating a row emits a
-# `DataTable/RowActivated` event whose `idx` indexes straight into the folder's
-# `children`, so a click on a subfolder row can drill into it.
+# units: cells on TUI, *pixels* on native). Double-clicking a row emits a
+# `DataTable/RowDoubleClicked` event whose `idx` indexes straight into the
+# folder's `children`, so a double-click on a subfolder row can drill into
+# it without a single click opening it prematurely.
 
 _SIZE_UNITS = ("B", "KB", "MB", "GB", "TB")
 
@@ -237,7 +239,7 @@ def _human_size(n: int | None) -> str:
 def details_table(folder: Node, index: int) -> dict:
     """The data_table descriptor for one opened folder's contents, as the
     content subtree of tab `index`. Row order matches `folder.children`, so a
-    `RowActivated{idx}` maps straight back to a child node."""
+    `RowDoubleClicked{idx}` maps straight back to a child node."""
     table_id = f"fm:grid:{index}"
     columns = [
         {"title": "Name", "width": {"Flex": 2.0}, "align": "Left"},
@@ -496,8 +498,10 @@ class FileManager:
                 return
 
     def _activate_detail(self, idx: int) -> None:
-        """A details-table row was activated (clicked): drill into a subfolder,
-        or report a file's size."""
+        """A details-table row was double-clicked: drill into a subfolder, or
+        report a file's size. A single click only emits `RowSelected` (see
+        `_handle`), which this demo does not act on, so opening never
+        happens on the click that merely moves the cursor there."""
         if not self.open:
             return
         folder = self.open[self.active_tab]
@@ -631,8 +635,8 @@ class FileManager:
 
         if "DataTable" in event:
             activation = event["DataTable"][1]
-            if "RowActivated" in activation:
-                self._activate_detail(activation["RowActivated"]["idx"])
+            if "RowDoubleClicked" in activation:
+                self._activate_detail(activation["RowDoubleClicked"]["idx"])
         elif "Tree" in event:
             activation = event["Tree"][1]
             if "RowClicked" in activation:
@@ -758,9 +762,9 @@ def _run_headless(fm: FileManager) -> None:
         _key_event(DOWN_KEY),    # cursor onto the first subfolder
         _key_event(RIGHT_KEY),   # expand it (load on demand)
         _key_event(ENTER_KEY),   # open it as a details tab
-        # Activate the first details row (a click would deliver this), drilling
-        # into it if it is a subfolder.
-        {"DataTable": ["fm:grid:0", {"RowActivated": {"idx": 0}}]},
+        # Double-click the first details row (a real double-click would
+        # deliver this), drilling into it if it is a subfolder.
+        {"DataTable": ["fm:grid:0", {"RowDoubleClicked": {"idx": 0}}]},
     ]
     for event in steps:
         fm.app.push_event(event)
