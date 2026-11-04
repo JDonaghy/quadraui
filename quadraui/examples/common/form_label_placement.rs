@@ -4,9 +4,16 @@
 //! [`AppLogic`] impl driving every backend via its own thin runner shell
 //! (`examples/tui_form_label_placement.rs`, `macos_form_label_placement.rs`,
 //! `gtk_form_label_placement.rs`, `win_form_label_placement.rs`, each ~10
-//! lines). TUI, GTK, macOS and Win32 all rasterise every `LabelPosition`
-//! this demo exercises (`tui/form.rs`, `gtk/form.rs`, `macos/form.rs`,
-//! `win/form.rs`).
+//! lines). Field-kind painting for every `LabelPosition` this demo
+//! exercises lives in the shared `primitives::form::paint` (TUI additionally
+//! goes through `tui/form.rs`'s cell-quantised wrapper); the GTK/macOS/Win32
+//! modules named above only paint their own chrome around that shared path.
+//! `Top` is the one placement that degrades on a pixel backend at this
+//! demo's default row height: `primitives::form::paint` falls back to
+//! `Left`'s side-by-side layout when the row isn't tall enough to stack a
+//! label line above the field body, so "Role" renders as a `Left`-style
+//! label there instead of a `Top`-stacked one (TUI's taller default row
+//! fits the stack, so it alone shows `Top` as written).
 //!
 //! Shape: a "server profile" settings form with five fields, each using a
 //! different label placement, and a declared `tab_index` that does *not*
@@ -14,8 +21,9 @@
 //! - "Role" (`TextInput`)   — `label_position: Top`, tab_index 2
 //! - "ID" (`ReadOnly`)      — form-level default `Left`, tab_index 0
 //! - "Owner" (`TextInput`)  — form-level default `Left`, tab_index 1
-//!   ("ID" and "Owner" share one aligned label column via the form-level
-//!   `label_width`.)
+//!   ("ID" and "Owner" share one aligned label column: the form-level
+//!   `label_width: None` sizes it to the widest `Left` label on every
+//!   backend.)
 //! - "Notes" (`TextInput`)  — `label_position: Inline`, tab_index 3
 //! - "Internal key" (`ReadOnly`) — `label_position: Hidden`, tab_index 4
 //!
@@ -154,7 +162,7 @@ impl FormLabelPlacementApp {
             has_focus: true,
             label_position: LabelPosition::Left,
             label_align: LabelAlign::End,
-            label_width: Some(14.0),
+            label_width: None,
             control_width: Default::default(),
             min_control_width: None,
         }
