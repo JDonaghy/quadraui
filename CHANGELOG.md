@@ -224,6 +224,13 @@ only a push to `main` runs this workflow.
   the surface with the theme background at the start of every frame, not
   just the one `draw_rect` painted before delegating to it; GTK and Win
   already cleared every frame this way.
+- macOS: toggling the OS Light/Dark appearance (or the accent color) while
+  a quadraui window is open now reaches `AppLogic::handle` as
+  `UiEvent::SystemThemeChanged`, matching the Win-GUI backend's
+  `WM_SETTINGCHANGE` handling. `QuadraView` overrides `NSView`'s
+  `viewDidChangeEffectiveAppearance` and re-reads
+  `PlatformServices::system_theme` on the fly; previously only a one-shot
+  `system_theme()` read was available, with no live notification.
 
 ## [0.8.0] - 2026-10-31
 ### Changed
