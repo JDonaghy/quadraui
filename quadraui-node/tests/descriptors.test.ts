@@ -68,6 +68,67 @@ test("insertTree renders a row's text", () => {
   assert.ok(app.screenContains("Alpha"));
 });
 
+test("insertTree accepts a codicon icon and renders its fallback text", () => {
+  // A tree row's `icon` accepts `{codicon: "...", fallback: "..."}` in
+  // place of `{glyph: "...", fallback: "..."}` -- the wire shape `Icon`'s
+  // `Deserialize` impl resolves through the bundled codicon name table.
+  // The headless driver defaults to nerd fonts off, so the rendered row
+  // shows the icon's plain-text fallback.
+  const app = new QuiApp(40, 20);
+  app.insertTree({
+    id: "tree:1",
+    rows: [
+      {
+        path: [0],
+        indent: 0,
+        icon: { codicon: "folder", fallback: "DIR" },
+        text: { spans: [{ text: "src", fg: null, bg: null }] },
+        badge: null,
+        is_expanded: null,
+      },
+    ],
+    selection_mode: "Single",
+    selected_path: null,
+    style: {
+      indent: 2,
+      show_chevrons: true,
+      chevron_expanded: "v",
+      chevron_collapsed: ">",
+    },
+  });
+  assert.ok(app.screenContains("DIR"));
+  assert.ok(app.screenContains("src"));
+});
+
+test("insertTree with an unknown codicon name raises InvalidDescriptorError", () => {
+  const app = new QuiApp(40, 20);
+  assert.throws(
+    () =>
+      app.insertTree({
+        id: "tree:1",
+        rows: [
+          {
+            path: [0],
+            indent: 0,
+            icon: { codicon: "not-a-real-codicon-name", fallback: "?" },
+            text: { spans: [{ text: "src", fg: null, bg: null }] },
+            badge: null,
+            is_expanded: null,
+          },
+        ],
+        selection_mode: "Single",
+        selected_path: null,
+        style: {
+          indent: 2,
+          show_chevrons: true,
+          chevron_expanded: "v",
+          chevron_collapsed: ">",
+        },
+      }),
+    /InvalidDescriptorError/,
+  );
+});
+
 test("insertDataTable renders a cell's text", () => {
   const app = new QuiApp(40, 20);
   app.insertDataTable({

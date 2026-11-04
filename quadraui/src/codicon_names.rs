@@ -51,7 +51,14 @@ pub(crate) const NAMES: &[(&str, char)] = &[
     ("edit", '\u{ea73}'),
     ("save", '\u{eb4b}'),
     ("git-commit", '\u{eafc}'),
-    ("git-branch", '\u{ec6f}'),
+    // Upstream codicon.css's own `git-branch` codepoint (`U+EC6F`) falls
+    // outside the `U+EA60`-`U+EC1E` range Nerd Fonts patches codicon
+    // into, so a Nerd-Font-patched terminal paints tofu at that
+    // codepoint. `U+EA68` ("source-control") maps to the identical
+    // glyph in the bundled font (same outline, glyph id 121), so using
+    // it here keeps the GUI pixel-identical while staying inside the
+    // patched range on TUI.
+    ("git-branch", '\u{ea68}'),
     ("source-control", '\u{ea68}'),
     ("terminal", '\u{ea85}'),
     ("package", '\u{eb29}'),
@@ -109,6 +116,52 @@ mod tests {
             assert_ne!(
                 glyph_id, 0,
                 "{name:?} (U+{:04X}) has no glyph mapped in codicon.ttf's own cmap table",
+                *c as u32
+            );
+        }
+    }
+
+    /// [`NAMES`] entries resolved codepoint matches the glyph the bundled
+    /// font's own `post` table (format 2.0) names that codepoint —
+    /// not just *some* glyph, the *named* one. A handful of
+    /// [`NAMES`] entries deliberately point at a different upstream
+    /// codicon.css name's codepoint because the two share one glyph
+    /// outline (an upstream alias dedup, or — for `"git-branch"` — a
+    /// deliberate swap onto the Nerd-Font-patched range; see [`NAMES`]'s
+    /// `"git-branch"` entry comment), so those are listed in
+    /// `ALIASES` rather than failing this check.
+    #[test]
+    fn names_resolve_to_the_matching_glyph_name_in_the_bundled_fonts_post_table() {
+        /// `(our_name, the_post_table_name_its_codepoint_actually_resolves_to)`
+        /// — every deliberate alias dedup upstream codicon.css itself makes,
+        /// plus `"git-branch"`'s deliberate swap onto `"source-control"`'s
+        /// codepoint (see [`NAMES`]).
+        const ALIASES: &[(&str, &str)] = &[
+            ("symbol-folder", "folder"),
+            ("file", "symbol-file"),
+            ("json", "symbol-namespace"),
+            ("git-branch", "source-control"),
+        ];
+
+        let font_bytes = include_bytes!("../assets/codicon.ttf");
+        let post_names = post_table_glyph_names(font_bytes)
+            .unwrap_or_else(|| panic!("codicon.ttf's post table could not be parsed at all"));
+        for (name, c) in NAMES {
+            let glyph_id = cmap_glyph_id(font_bytes, *c as u32).unwrap_or(0);
+            let post_name = post_names
+                .get(glyph_id as usize)
+                .and_then(|n| n.as_deref())
+                .unwrap_or_else(|| {
+                    panic!("{name:?} (U+{:04X}, glyph id {glyph_id}) has no post-table name — font's post table does not cover standard Macintosh glyph ids", *c as u32)
+                });
+            let expected = ALIASES
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, expected)| *expected)
+                .unwrap_or(name);
+            assert_eq!(
+                post_name, expected,
+                "{name:?} (U+{:04X}) resolves to glyph {post_name:?} in codicon.ttf's post table, expected {expected:?}",
                 *c as u32
             );
         }
@@ -234,6 +287,84 @@ mod tests {
             return Some(((raw_glyph_id as i32 + id_delta as i32) as u16) as u32);
         }
         Some(0)
+    }
+
+    /// Glyph id → name, read from an sfnt's `post` table. `None` whole-table
+    /// if the table isn't present or isn't format 2.0 (the only format
+    /// carrying per-glyph names); `None` per-entry for a glyph id below
+    /// 258 — this font's names are all custom (PUA icon glyphs, never one
+    /// of the 258 standard Macintosh glyph names), which
+    /// [`names_resolve_to_the_matching_glyph_name_in_the_bundled_fonts_post_table`]
+    /// relies on rather than embedding that 258-name table here.
+    fn post_table_glyph_names(bytes: &[u8]) -> Option<Vec<Option<String>>> {
+        let num_tables = u16::from_be_bytes(bytes.get(4..6)?.try_into().ok()?) as usize;
+        let records_start = 12;
+        let mut post_offset = None;
+        for i in 0..num_tables {
+            let rec = records_start + i * 16;
+            let tag = bytes.get(rec..rec + 4)?;
+            if tag == b"post" {
+                let offset =
+                    u32::from_be_bytes(bytes.get(rec + 8..rec + 12)?.try_into().ok()?) as usize;
+                post_offset = Some(offset);
+                break;
+            }
+        }
+        let post = post_offset?;
+        let version = u32::from_be_bytes(bytes.get(post..post + 4)?.try_into().ok()?);
+        if version != 0x0002_0000 {
+            return None;
+        }
+        let num_glyphs = u16::from_be_bytes(bytes.get(post + 32..post + 34)?.try_into().ok()?);
+        let index_start = post + 34;
+        let mut indices = Vec::with_capacity(num_glyphs as usize);
+        for i in 0..num_glyphs as usize {
+            let idx = u16::from_be_bytes(
+                bytes
+                    .get(index_start + i * 2..index_start + i * 2 + 2)?
+                    .try_into()
+                    .ok()?,
+            );
+            indices.push(idx);
+        }
+
+        // Pascal strings (one length byte + that many bytes) immediately
+        // follow the index array, one per custom-name slot — slot count
+        // is `max(glyphNameIndex) - 258 + 1`, not the number of glyphs
+        // referencing a custom name, since two glyph ids may point at the
+        // same slot. Stop there rather than scanning to EOF, since
+        // nothing delimits the end of this region from whatever table
+        // follows it in the sfnt.
+        let needed = indices
+            .iter()
+            .filter(|idx| **idx >= 258)
+            .map(|idx| *idx as usize - 258 + 1)
+            .max()
+            .unwrap_or(0);
+        let mut custom_names = Vec::new();
+        let mut pos = index_start + num_glyphs as usize * 2;
+        while custom_names.len() < needed {
+            let len = *bytes.get(pos)? as usize;
+            pos += 1;
+            let name = std::str::from_utf8(bytes.get(pos..pos + len)?)
+                .ok()?
+                .to_string();
+            pos += len;
+            custom_names.push(name);
+        }
+
+        Some(
+            indices
+                .into_iter()
+                .map(|idx| {
+                    if idx >= 258 {
+                        custom_names.get(idx as usize - 258).cloned()
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        )
     }
 
     /// Format-12 (segmented coverage) `cmap` subtable lookup.

@@ -59,16 +59,22 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
-- `Icon::codicon(name, fallback) -> Option<Icon>` builds an icon from the
+- `Icon::codicon(name, fallback) -> Option<Icon>` and
+  `TabIcon::codicon(name, color) -> Option<TabIcon>` build an icon from the
   bundled codicon font's name table (`"folder"`, `"file-code"`,
   `"git-branch"`, …) instead of a raw glyph string. No backend changes are
   needed to paint it — every GUI backend already appends the bundled
   codicon font last in its text-rendering fallback chain, so the resolved
   glyph renders through the same `Icon::resolve` path any other
   app-supplied glyph already goes through; TUI falls back to the caller's
-  own text when nerd fonts are off. See `quadraui/src/codicon_names.rs`
-  for the full curated name list. New `examples/{tui,gtk}_codicon_tree.rs`
-  demo a file-explorer-shaped `TreeView` using it.
+  own text when nerd fonts are off. `Icon` and `TabIcon` additionally
+  `Deserialize` a `{"codicon": "folder", ...}` wire shape (alongside the
+  pre-existing `{"glyph": ..., ...}` one), so a `quadraui-py`/
+  `quadraui-node` app can pass a codicon name in a descriptor dict without
+  hand-encoding a PUA codepoint. See `quadraui/src/codicon_names.rs` for
+  the full curated name list, also inlined on `Icon::codicon`'s doc. New
+  `examples/{tui,gtk}_codicon_tree.rs` demo a file-explorer-shaped
+  `TreeView` using it.
 - `tui::TuiRunner` gains `parts_mut(&mut self) -> (&mut TuiBackend, &mut A)`,
   disjoint mutable access to both the backend and the `AppLogic` it drives
   — for host code running inside `run_tui`/`run_native` that needs to call a

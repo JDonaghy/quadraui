@@ -4,15 +4,17 @@
 //! [`CodiconTreeDemo`] paints a small file-explorer-shaped [`TreeView`]
 //! whose rows use [`quadraui::Icon::codicon`] — `"root-folder"`,
 //! `"folder"`, `"file-code"`, `"markdown"` — instead of a raw glyph
-//! string. On GUI backends the icons paint from the bundled codicon
-//! font automatically (no backend-specific wiring: see
-//! [`quadraui::Icon::codicon`]'s doc for why); on TUI, `n` toggles
-//! `set_nerd_fonts` so the same rows flip between the codicon glyph and
-//! each icon's plain-text fallback.
+//! string. `n` toggles `set_nerd_fonts`, which flips the same rows
+//! between the codicon glyph and each icon's plain-text fallback on
+//! every backend: [`quadraui::Backend::set_nerd_fonts`] is a real,
+//! backend-agnostic flag, not a TUI-only concept, and the GTK rasteriser
+//! honours it the same way the TUI one does (see
+//! [`quadraui::Icon::codicon`]'s doc for why no backend-specific wiring
+//! was needed to paint the glyph side in the first place).
 //!
 //! Controls:
-//! - `n` toggle nerd fonts on/off (TUI only — GUI backends always paint
-//!   the bundled codicon font)
+//! - `n` toggle nerd fonts on/off (codicon glyph vs. plain-text fallback,
+//!   on every backend)
 //! - `q` / `Esc` quit
 
 use quadraui::{

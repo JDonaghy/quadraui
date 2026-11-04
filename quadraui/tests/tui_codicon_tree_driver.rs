@@ -3,8 +3,9 @@
 //! why this pulls in the example's own `AppLogic` source via `#[path]`
 //! rather than a test-only copy.
 //!
-//! Kept in its own file rather than folded into `tui_example_driver.rs`
-//! to avoid colliding with concurrent edits to that shared file.
+//! A standalone file, the same pattern `date_picker_driver.rs` and
+//! `scroll_view_driver.rs` use for their own single-example drivers,
+//! rather than one more `#[test]` fn inside `tui_example_driver.rs`.
 
 #![cfg(feature = "tui")]
 
@@ -31,6 +32,18 @@ fn codicon_tree_paints_glyphs_when_nerd_fonts_on() {
     assert!(
         !screen.contains("DIR") && !screen.contains("TOML") && !screen.contains("MD"),
         "nerd-fonts-on should paint codicon glyphs, not the ASCII fallbacks:\n{screen}"
+    );
+    // The positive case: the bundled "folder" and "file-code" codepoints
+    // actually appear, rather than this test only ever being able to
+    // fail loudly if `Icon::resolve`'s glyph side regressed to an empty
+    // string instead of the fallback.
+    assert!(
+        screen.contains('\u{ea83}'),
+        "root-folder/folder rows should paint the \"folder\" codicon glyph:\n{screen}"
+    );
+    assert!(
+        screen.contains('\u{eae9}'),
+        "src file rows should paint the \"file-code\" codicon glyph:\n{screen}"
     );
 }
 
