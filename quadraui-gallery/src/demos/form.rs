@@ -551,9 +551,13 @@ fn build_all_fields_form() -> Form {
 /// Label-placement reference sheet — variant 3 ("Label placement"). No
 /// interactive state: a static form, same shape as
 /// `examples/common/form_label_placement.rs`'s "server profile" form.
-/// "ID" and "Owner" share the form-level `Left` label column (aligned via
-/// `label_width`); "Role" overrides to `Top`, "Notes" to `Inline`, and
-/// "Internal key" to `Hidden`.
+/// "ID" and "Owner" share the form-level `Left` label column; leaving
+/// `label_width: None` sizes that shared column to the widest `Left`
+/// label on every backend (`Form::label_width` is TUI cells on TUI but
+/// device pixels on GTK/macOS/Win32, so a single literal can't aim at
+/// both — `None`'s "widest label" rule is the only width that aligns on
+/// both unit systems). "Role" overrides to `Top`, "Notes" to `Inline`,
+/// and "Internal key" to `Hidden`.
 fn build_label_placement_form() -> Form {
     let field =
         |id: &str, label: &str, value: &str, label_position: Option<LabelPosition>| -> FormField {
@@ -602,7 +606,7 @@ fn build_label_placement_form() -> Form {
         has_focus: true,
         label_position: LabelPosition::Left,
         label_align: LabelAlign::End,
-        label_width: Some(14.0),
+        label_width: None,
     }
 }
 
@@ -708,6 +712,11 @@ impl Demo for FormDemo {
                     &InteractionState::new(),
                 );
             }
+            // `variants()` has exactly four entries, so this wildcard is
+            // reached only by variant 3 ("Label placement") — `handle`'s
+            // matching wildcard below is reached only by variant 2
+            // ("Scrolling"); each comment names its own variant so the
+            // two stay in sync.
             _ => backend.draw_form(area, &build_label_placement_form()),
         }
     }
@@ -759,6 +768,10 @@ impl Demo for FormDemo {
                 _ => Reaction::Continue,
             },
             3 => Reaction::Continue,
+            // `variants()` has exactly four entries, so this wildcard is
+            // reached only by variant 2 ("Scrolling") — `render`'s matching
+            // wildcard is reached only by variant 3 ("Label placement");
+            // each comment names its own variant so the two stay in sync.
             _ => {
                 self.scroll.fc.set_form(self.scroll.build_form());
                 self.scroll.fc.set_backend_info(backend.line_height());
@@ -849,7 +862,7 @@ mod tests {
         let form = build_label_placement_form();
         assert_eq!(form.label_position, LabelPosition::Left);
         assert_eq!(form.label_align, LabelAlign::End);
-        assert_eq!(form.label_width, Some(14.0));
+        assert_eq!(form.label_width, None);
         // "ID" and "Owner" fall back to the form-level default (`None`).
         for id in ["id", "owner"] {
             let field = form.fields.iter().find(|f| f.id.as_str() == id).unwrap();

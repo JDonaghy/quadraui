@@ -10059,9 +10059,10 @@ fn form_label_placement_aligned_label_column_shares_a_right_edge() {
     let driver = TuiDriver::new(FormLabelPlacementApp::new(), 100, 20);
 
     // "ID" and "Owner" both use the form-level default `label_position:
-    // Left` + `label_align: End` + `label_width: Some(14.0)`: their label
-    // text should end flush against the same right edge, even though "ID"
-    // and "Owner" are different lengths.
+    // Left` + `label_align: End` + `label_width: None`, which sizes the
+    // shared column to the widest `Left` label: their label text should
+    // end flush against the same right edge, even though "ID" and "Owner"
+    // are different lengths.
     let id_label = driver.find_bounds("ID").expect("'ID' label is painted");
     let owner_label = driver
         .find_bounds("Owner")
