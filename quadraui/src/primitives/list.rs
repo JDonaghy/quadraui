@@ -896,29 +896,44 @@ pub(crate) mod native_surface_paint {
             // boundary sits.
             let text_right_limit = row_x + row_w - detail_reserve - 4.0;
 
+            // A span that overflows `text_right_limit` is ellipsis-
+            // truncated (via the shared `fit_text_prefix`) rather than
+            // hard-clipped mid-glyph — see `Tree`'s identical treatment,
+            // the pattern every overflowing primitive now follows.
             for span in &item.text.spans {
-                if cursor_x >= text_right_limit {
+                let remaining = text_right_limit - cursor_x;
+                if remaining <= 0.0 {
                     break;
                 }
                 let span_fg = span.fg.unwrap_or(decoration_fg);
-                if let Some(sbg) = span.bg {
-                    let (sw, _) = surface.surface_measure_text_styled(&span.text, span.bold);
-                    surface.surface_fill_rect(
-                        Rect::new(cursor_x, row_y, sw.min(text_right_limit - cursor_x), row_h),
-                        sbg,
-                    );
-                }
                 let (sw, sh) = surface.surface_measure_text_styled(&span.text, span.bold);
+                let (paint_text, paint_w, truncated) = if sw <= remaining {
+                    (span.text.clone(), sw, false)
+                } else {
+                    let (t, w) = crate::paint_surface::fit_text_prefix(
+                        surface, &span.text, span.bold, remaining,
+                    );
+                    (t, w, true)
+                };
+                if paint_w <= 0.0 {
+                    break;
+                }
+                if let Some(sbg) = span.bg {
+                    surface.surface_fill_rect(Rect::new(cursor_x, row_y, paint_w, row_h), sbg);
+                }
                 surface.surface_draw_text_run_styled(
-                    Rect::new(cursor_x, row_y + (row_h - sh) / 2.0, sw, sh),
-                    &span.text,
+                    Rect::new(cursor_x, row_y + (row_h - sh) / 2.0, paint_w, sh),
+                    &paint_text,
                     span_fg,
                     span.bold,
                     false,
                     false,
                     1.0,
                 );
-                cursor_x += sw;
+                cursor_x += paint_w;
+                if truncated {
+                    break;
+                }
             }
 
             // Detail text is pinned to the visible viewport (does not
@@ -1310,6 +1325,46 @@ pub(crate) mod native_surface_paint {
                 &theme,
             );
             assert!(ascii_surface.texts.iter().any(|(_, t, _)| t == "F"));
+        }
+
+        #[test]
+        fn overlong_row_text_ellipsizes_instead_of_clipping_mid_glyph() {
+            // AREA is 100px wide; this label measures 50 * 8.0 = 400px,
+            // wildly overflowing the row — it must end in `…`, not stop
+            // abruptly on a hard character boundary.
+            let mut list = vlist(1);
+            list.items[0].text = StyledText::plain("x".repeat(50));
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &theme,
+            );
+
+            let row_text = surface
+                .texts
+                .iter()
+                .find(|(_, t, _)| t.starts_with('x'))
+                .map(|(_, t, _)| t.clone())
+                .expect("row text must be painted");
+            assert!(
+                row_text.ends_with('…'),
+                "overlong row text must end in an ellipsis, got {row_text:?}"
+            );
+            assert!(
+                row_text.len() < "x".repeat(50).len(),
+                "overlong row text must be shorter than the source, got {row_text:?}"
+            );
         }
     }
 }

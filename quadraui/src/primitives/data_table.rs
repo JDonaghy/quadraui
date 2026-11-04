@@ -994,7 +994,15 @@ pub(crate) mod native_surface_paint {
             let col_w = rc.width;
 
             surface.surface_push_clip(Rect::new(col_x, rect.y, col_w, header_height));
-            let (tw, th) = surface.surface_measure_text_styled(&title, true);
+            let (raw_tw, _) = surface.surface_measure_text_styled(&title, true);
+            // An overflowing column header is ellipsis-truncated via the
+            // shared `fit_text_prefix` rather than clipped mid-glyph.
+            let (title, tw) = if raw_tw <= col_w {
+                (title, raw_tw)
+            } else {
+                crate::paint_surface::fit_text_prefix(surface, &title, true, col_w)
+            };
+            let (_, th) = surface.surface_measure_text_styled(&title, true);
             let text_x = align_text_x(col_x, col_w, tw, col.align);
             // Centred within `header_height`, which can be much taller than
             // the title's own measured height on a pixel backend whose
@@ -1065,32 +1073,69 @@ pub(crate) mod native_surface_paint {
                 surface.surface_push_clip(Rect::new(col_x, row_y, col_w, line_height));
 
                 let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
-                let (tw, th) = surface.surface_measure_text(&full_text);
+                let (raw_tw, th) = surface.surface_measure_text(&full_text);
                 let align = table
                     .columns
                     .get(col_idx)
                     .map(|c| c.align)
                     .unwrap_or(ColumnAlign::Left);
-                let text_x = align_text_x(col_x, col_w, tw, align);
+                // An over-long cell is ellipsis-truncated to its own
+                // column width via the shared `fit_text_prefix` rather
+                // than clipped mid-glyph. Truncation always renders
+                // left-aligned from `col_x` — an overflowing cell has no
+                // good right/centre anchor for its ellipsis, so it uses
+                // the same left edge every other overflowing primitive
+                // ellipsizes from.
+                let needs_ellipsis = raw_tw > col_w;
+                let text_x = if needs_ellipsis {
+                    col_x
+                } else {
+                    align_text_x(col_x, col_w, raw_tw, align)
+                };
                 let text_y = row_y + (line_height - th) / 2.0;
+                let budget = if needs_ellipsis { col_w } else { raw_tw };
 
                 if is_muted {
+                    let (paint_text, paint_w) = if needs_ellipsis {
+                        crate::paint_surface::fit_text_prefix(surface, &full_text, false, col_w)
+                    } else {
+                        (full_text, raw_tw)
+                    };
                     surface.surface_draw_text_run(
-                        Rect::new(text_x, text_y, tw.max(1.0), th.max(1.0)),
-                        &full_text,
+                        Rect::new(text_x, text_y, paint_w.max(1.0), th.max(1.0)),
+                        &paint_text,
                         theme.muted_fg,
                     );
                 } else {
                     let mut run_x = text_x;
+                    let mut remaining = budget;
                     for span in &styled.spans {
+                        if remaining <= 0.0 {
+                            break;
+                        }
                         let (sw, sh) = surface.surface_measure_text(&span.text);
                         let span_fg = span.fg.unwrap_or(theme.foreground);
+                        let (paint_text, paint_w, truncated) = if sw <= remaining {
+                            (span.text.clone(), sw, false)
+                        } else {
+                            let (t, w) = crate::paint_surface::fit_text_prefix(
+                                surface, &span.text, false, remaining,
+                            );
+                            (t, w, true)
+                        };
+                        if paint_w <= 0.0 {
+                            break;
+                        }
                         surface.surface_draw_text_run(
-                            Rect::new(run_x, text_y, sw.max(1.0), sh.max(1.0)),
-                            &span.text,
+                            Rect::new(run_x, text_y, paint_w.max(1.0), sh.max(1.0)),
+                            &paint_text,
                             span_fg,
                         );
-                        run_x += sw;
+                        run_x += paint_w;
+                        remaining -= paint_w;
+                        if truncated {
+                            break;
+                        }
                     }
                 }
                 surface.surface_pop_clip();
@@ -1554,6 +1599,30 @@ pub(crate) mod native_surface_paint {
                 .find(|r| r.1 == "alpha")
                 .expect("muted row should still paint its text");
             assert_eq!(alpha_run.2, theme.muted_fg);
+        }
+
+        /// A body cell too wide for its own column is ellipsis-truncated
+        /// via the shared `fit_text_prefix` rather than clipped
+        /// mid-glyph.
+        #[test]
+        fn overlong_body_cell_ellipsizes_instead_of_clipping_mid_glyph() {
+            let mut table = two_col_table();
+            table.rows[0].cells[0] = StyledText::plain("x".repeat(80));
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+            paint(&table, &mut surface, &theme, rect, 16.0, None);
+
+            let cell_text = surface
+                .text_runs
+                .iter()
+                .find(|r| r.1.starts_with('x'))
+                .map(|r| r.1.clone())
+                .expect("overlong cell text must still paint");
+            assert!(
+                cell_text.ends_with('…') && cell_text.len() < 80,
+                "overlong body cell must end in an ellipsis, got {cell_text:?}"
+            );
         }
 
         #[test]

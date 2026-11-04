@@ -300,6 +300,7 @@ pub fn draw_list(
         }
 
         // Main item text — rendered with h_scroll awareness.
+        let text_start_vcol = vcol;
         let vcol_after_text = render_spans_scrolled(
             buf,
             vcol,
@@ -313,6 +314,23 @@ pub fn draw_list(
             item.decoration,
             dim_fg,
         );
+
+        // The item's own right edge (not `h_scroll`'s left edge) cut the
+        // text off mid-glyph — overwrite the last visible column with
+        // `…`, reusing whatever fg/bg that cell already has so per-span
+        // colouring survives the clamp untouched (same technique as
+        // `Tree`'s TUI rasteriser).
+        if item_w > 0
+            && vcol_after_text > h_scroll + item_w as usize
+            && text_start_vcol < h_scroll + item_w as usize
+        {
+            let ellipsis_x = item_x + item_w - 1;
+            let (ellipsis_fg, ellipsis_bg) = buf
+                .cell((ellipsis_x, y))
+                .map(|existing| (existing.fg, existing.bg))
+                .unwrap_or((decoration_fg, bg));
+            set_cell(buf, ellipsis_x, y, '…', ellipsis_fg, ellipsis_bg);
+        }
 
         // Buffer column past the last text character (clamped to item_w).
         // Used to ensure detail text doesn't overwrite main text.
@@ -959,6 +977,29 @@ mod tests {
             "v-scrollbar thumb must move DOWN as scroll_offset grows \
              (got top={thumb_top}, bottom={thumb_bot}) — guards the \
              'thumb hardcoded at gutter top' failure class (Rule 6)",
+        );
+    }
+
+    #[test]
+    fn overlong_row_text_ellipsizes_instead_of_clipping_mid_glyph() {
+        // A 20-column area leaves well under 20 columns for the item's
+        // own text after the selection prefix; a 50-char label must end
+        // in `…`, not stop abruptly on a hard character boundary.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        let mut list = make_list(0);
+        list.items = vec![item(&"x".repeat(50), Decoration::Normal)];
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        let row: String = (0..20).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(
+            row.trim_end().ends_with('…'),
+            "overlong row text must end in an ellipsis, got {row:?}"
         );
     }
 }

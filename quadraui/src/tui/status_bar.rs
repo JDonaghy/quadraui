@@ -3,9 +3,13 @@
 //! Per D6: this function consumes a pre-computed
 //! [`crate::StatusBarLayout`] (built by the caller via
 //! [`crate::StatusBar::layout`] with its native cell-width measurer)
-//! and paints the resolved `visible_segments` verbatim. No layout
-//! decisions live here; any policy change (priority drop, gap rules,
-//! …) belongs in the primitive.
+//! and paints the resolved `visible_segments`. No layout decisions live
+//! here; any policy change (priority drop, gap rules, …) belongs in the
+//! primitive. The one adjustment made at paint time is ellipsis-
+//! truncating a segment's text to the `bounds.width` cells the layout
+//! already resolved for it (via [`crate::text_util::truncate_with_ellipsis`])
+//! — a rendering detail, not a layout decision, since the width itself
+//! came from the primitive.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
@@ -93,8 +97,27 @@ pub fn draw_status_bar(
         let bg = ratatui_color(effective_bg);
         let start_x = area.x + vs.bounds.x.round() as u16;
         let bar_end = area.x + area.width;
+        // `vs.bounds.width` is already the priority-drop-resolved budget
+        // (see `StatusBar::layout_padded`) in the same char-count unit
+        // this backend measures with below — ellipsis-truncate to it so
+        // an over-long segment (most often the always-kept first left
+        // segment) never paints past its own reserved cells into a
+        // neighbouring segment.
+        let budget = vs.bounds.width;
+        let fits = seg.text.chars().count() as f32 <= budget;
+        let truncated_text = if fits {
+            None
+        } else {
+            Some(
+                crate::text_util::truncate_with_ellipsis(&seg.text, budget, |s| {
+                    s.chars().count() as f32
+                })
+                .0,
+            )
+        };
+        let paint_text: &str = truncated_text.as_deref().unwrap_or(&seg.text);
         let mut cx = start_x;
-        for ch in seg.text.chars() {
+        for ch in paint_text.chars() {
             if cx >= bar_end {
                 break;
             }
@@ -604,6 +627,62 @@ mod tests {
         assert_eq!(
             dirty_layout.resolved_right_start, 1,
             "the front segment (cursor position, in this mis-ordered bar) is dropped"
+        );
+    }
+
+    /// Reproduces the gallery Status Bar demo's "Dirty (priority drop)"
+    /// variant: the left segment grows far past anything a priority-drop
+    /// of the *right* side alone can accommodate. The left segment must
+    /// still paint — ellipsis-truncated to its own reserved cells — and
+    /// the cursor-position segment must keep painting undisturbed,
+    /// rather than the left segment's overflow bleeding into (or past)
+    /// it.
+    #[test]
+    fn dirty_variant_ellipsizes_the_left_segment_without_corrupting_the_right_side() {
+        let bar = StatusBar {
+            id: WidgetId::new("gallery:status-bar"),
+            left_segments: vec![StatusBarSegment {
+                text: format!("NORMAL{}", " [+]".repeat(60)),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(40, 80, 120),
+                bold: true,
+                action_id: None,
+            }],
+            right_segments: vec![
+                plain_right_seg("Spaces: 4"),
+                plain_right_seg("UTF-8"),
+                plain_right_seg("LF"),
+                plain_right_seg("Ln 1, Col 1"),
+            ],
+        };
+        let (buf, layout) = paint_at_width(&bar, 60);
+        let row = row_text(&buf, 60);
+
+        assert!(
+            row.contains('…'),
+            "the massively overflowing left segment must ellipsize: {row:?}"
+        );
+        assert!(
+            row.contains("Ln 1, Col 1"),
+            "the cursor-position segment must survive, undisturbed: {row:?}"
+        );
+
+        let left = layout
+            .visible_segments
+            .iter()
+            .find(|v| v.side == StatusSegmentSide::Left)
+            .expect("the always-kept left segment must still be visible");
+        let right = layout
+            .visible_segments
+            .iter()
+            .find(|v| v.side == StatusSegmentSide::Right)
+            .expect("at least the cursor segment must survive on the right");
+        assert!(
+            left.bounds.x + left.bounds.width <= right.bounds.x,
+            "the left segment's reserved cells must end at or before the right \
+             group starts: left ends at {}, right starts at {}",
+            left.bounds.x + left.bounds.width,
+            right.bounds.x
         );
     }
 }

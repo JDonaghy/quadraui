@@ -436,24 +436,22 @@ impl StatusBar {
         let mut visible_segments: Vec<VisibleStatusSegment> = Vec::new();
         let mut hit_regions: Vec<(Rect, StatusBarHit)> = Vec::new();
 
-        // ── Left segments, left-to-right from the inset edge ───────────
-        let mut cursor = edge_inset;
-        for (i, seg) in self.left_segments.iter().enumerate() {
-            let w = measure(seg).width + pad;
-            let bounds = Rect::new(cursor, 0.0, w, bar_height);
-            let clickable = seg.action_id.is_some();
-            visible_segments.push(VisibleStatusSegment {
-                segment_idx: i,
-                side: StatusSegmentSide::Left,
-                bounds,
-                clickable,
-            });
-            if let Some(id) = &seg.action_id {
-                hit_regions.push((bounds, StatusBarHit::Segment(*id)));
-            }
-            cursor += w;
-        }
-        let left_w = cursor;
+        // ── Left segments: measure first, resolve geometry after the
+        // right side is known ──────────────────────────────────────────
+        //
+        // `left_w` (the *natural*, undropped total) feeds the right
+        // side's own budget below. Left's own `resolved_left_end` is
+        // decided afterward, once `total_visible` (the right side's
+        // resolved width) is known, so a huge left segment stays within
+        // its own reserved space rather than painting into the right
+        // group.
+        let left_widths: Vec<f32> = self
+            .left_segments
+            .iter()
+            .map(|s| measure(s).width + pad)
+            .collect();
+        let total_left: f32 = left_widths.iter().sum();
+        let left_w = edge_inset + total_left;
 
         // ── Right segments: priority-drop so they fit ─────────────────
         //
@@ -491,13 +489,75 @@ impl StatusBar {
                 found
             };
 
+        let visible_right_widths = &right_widths[resolved_right_start..];
+        let total_visible: f32 = visible_right_widths.iter().sum();
+
+        // ── Left segments: priority-drop whole segments from the end so
+        // they fit the space the (now-resolved) right side leaves ──────
+        //
+        // Convention, mirroring `right_segments`: `left_segments` is
+        // ordered most-important first (e.g. the mode indicator), least-
+        // important last, so dropping from the end protects index 0.
+        // Index 0 is always kept, even if it alone still overflows — in
+        // that case its bounds are clamped to the remaining budget and
+        // paint time ellipsis-truncates its text to fit, rather than
+        // letting it paint at its full natural width over the right
+        // group.
+        let left_budget = (bar_width - 2.0 * edge_inset - min_gap - total_visible).max(0.0);
+        let resolved_left_end =
+            if self.left_segments.is_empty() || total_left <= left_budget + f32::EPSILON {
+                left_widths.len()
+            } else {
+                let mut remaining = total_left;
+                let mut found = 0;
+                for i in (0..left_widths.len()).rev() {
+                    if remaining <= left_budget + f32::EPSILON {
+                        found = i;
+                        break;
+                    }
+                    // Always keep the first (highest-priority) segment, even
+                    // if it alone overflows.
+                    if i == 0 {
+                        found = 0;
+                        break;
+                    }
+                    remaining -= left_widths[i];
+                }
+                found + 1
+            };
+
+        // ── Left segments, left-to-right from the inset edge ───────────
+        let mut cursor = edge_inset;
+        for (i, seg) in self.left_segments[..resolved_left_end].iter().enumerate() {
+            let natural_w = left_widths[i];
+            // The last surviving segment may still overflow the budget
+            // (the single-segment case above) — clamp its bounds to what's
+            // actually left so paint time truncates its text instead of
+            // painting past the reserved left space.
+            let w = if i + 1 == resolved_left_end {
+                natural_w.min((left_budget - (cursor - edge_inset)).max(0.0))
+            } else {
+                natural_w
+            };
+            let bounds = Rect::new(cursor, 0.0, w, bar_height);
+            let clickable = seg.action_id.is_some();
+            visible_segments.push(VisibleStatusSegment {
+                segment_idx: i,
+                side: StatusSegmentSide::Left,
+                bounds,
+                clickable,
+            });
+            if let Some(id) = &seg.action_id {
+                hit_regions.push((bounds, StatusBarHit::Segment(*id)));
+            }
+            cursor += w;
+        }
+
         // Right segments right-aligned inside `bar_width`, inset from the
         // bar's own right edge by `edge_inset`. Rendered in the natural
         // `right_segments[start..]` order; first visible segment is
         // leftmost of the right group.
         let visible_right = &self.right_segments[resolved_right_start..];
-        let visible_right_widths = &right_widths[resolved_right_start..];
-        let total_visible: f32 = visible_right_widths.iter().sum();
         let mut cursor = (bar_width - edge_inset - total_visible).max(0.0);
         for (offset, seg) in visible_right.iter().enumerate() {
             let seg_idx = resolved_right_start + offset;
@@ -672,16 +732,37 @@ pub(crate) mod native_surface_paint {
             // backend whose bar is sized off `Style::status_bar_height`
             // rather than the chrome font's line height (mirrors the
             // `DataTable` header title centring).
-            let (_, th) = surface.surface_measure_text_styled(&seg.text, seg.bold);
+            let (raw_tw, th) = surface.surface_measure_text_styled(&seg.text, seg.bold);
+            let text_avail = (seg_rect.width - 2.0 * PIXEL_SEGMENT_PADDING).max(0.0);
+            // The layout clamps a segment's `bounds.width` below its
+            // natural width only when priority-drop ran out of whole
+            // segments to drop (see `layout_padded`'s left-side budget) —
+            // ellipsis-truncate the text to fit that clamp rather than
+            // painting it at full width over the neighbouring segment.
+            let bold = seg.bold;
+            let paint_text: std::borrow::Cow<'_, str> = if raw_tw <= text_avail {
+                std::borrow::Cow::Borrowed(seg.text.as_str())
+            } else {
+                let (t, _) = crate::text_util::truncate_with_ellipsis(&seg.text, text_avail, |s| {
+                    surface.surface_measure_text_styled(s, bold).0
+                });
+                std::borrow::Cow::Owned(t)
+            };
             let text_y = seg_rect.y + (seg_rect.height - th).max(0.0) / 2.0;
             let text_rect = Rect::new(
                 seg_rect.x + PIXEL_SEGMENT_PADDING,
                 text_y,
-                (seg_rect.width - 2.0 * PIXEL_SEGMENT_PADDING).max(0.0),
+                text_avail,
                 th.max(1.0),
             );
             surface.surface_draw_text_run_styled(
-                text_rect, &seg.text, seg.fg, seg.bold, false, false, 1.0,
+                text_rect,
+                &paint_text,
+                seg.fg,
+                seg.bold,
+                false,
+                false,
+                1.0,
             );
         }
 
@@ -902,6 +983,9 @@ pub(crate) mod native_surface_paint {
             let mut bar = sample_bar();
             bar.left_segments[0].bold = false;
             let theme = Theme::default();
+            // Wide enough that neither weight needs the left-priority-drop
+            // budget clamp below — this test is about the bold/plain width
+            // delta, not about overflow handling.
             let mut plain_surface = RecordingSurface::default();
             let plain_layout = paint(
                 &bar,
@@ -909,7 +993,7 @@ pub(crate) mod native_surface_paint {
                 &theme,
                 0.0,
                 0.0,
-                200.0,
+                1000.0,
                 20.0,
                 None,
                 None,
@@ -923,7 +1007,7 @@ pub(crate) mod native_surface_paint {
                 &theme,
                 0.0,
                 0.0,
-                200.0,
+                1000.0,
                 20.0,
                 None,
                 None,
@@ -942,13 +1026,16 @@ pub(crate) mod native_surface_paint {
             let bar = sample_bar();
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
+            // Wide enough that `RecordingSurface`'s exaggerated
+            // `BOLD_BONUS_PX` test fixture doesn't trip the left-side
+            // overflow clamp this test isn't about.
             paint(
                 &bar,
                 &mut surface,
                 &theme,
                 0.0,
                 0.0,
-                200.0,
+                400.0,
                 20.0,
                 None,
                 None,
@@ -967,6 +1054,54 @@ pub(crate) mod native_surface_paint {
                 .find(|(_, t, _, _)| t == "Ln 1, Col 1")
                 .expect("right segment text drawn");
             assert!(!*right_bold, "right segment is bold=false");
+        }
+
+        /// Regression for the dirty-priority-drop gallery scenario: a
+        /// single left segment too wide for the bar paints an ellipsis-
+        /// truncated run, not its full text, so it never bleeds into the
+        /// right group's painted segment.
+        #[test]
+        fn overlong_left_segment_paints_an_ellipsis_not_its_full_text() {
+            let mut bar = sample_bar();
+            bar.left_segments[0].text = "x".repeat(60);
+            // Plain weight — `RecordingSurface`'s `BOLD_BONUS_PX` test
+            // fixture is tuned for the bold-measurement test above, not
+            // this one; on top of a 60-char overflow it would eat the
+            // entire remaining budget before even a bare ellipsis fits.
+            bar.left_segments[0].bold = false;
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &bar,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                20.0,
+                None,
+                None,
+            );
+
+            let left_run = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _, _)| t.starts_with('x'))
+                .expect("left segment text must still paint");
+            assert!(
+                left_run.1.ends_with('…') && left_run.1.len() < 60,
+                "overlong left segment must end in an ellipsis, got {:?}",
+                left_run.1
+            );
+
+            // The right-side cursor segment must still paint, undisturbed,
+            // past where the clamped left run ends.
+            let right_run = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _, _)| t == "Ln 1, Col 1")
+                .expect("right segment must still paint");
+            assert!(right_run.0.x >= left_run.0.x + left_run.0.width - 0.01);
         }
 
         #[test]
@@ -1549,6 +1684,77 @@ mod tests {
             r.is_some(),
             "last segment should survive even when too wide"
         );
+    }
+
+    #[test]
+    fn status_bar_layout_left_priority_drop_whole_segments() {
+        // Left segments ordered most-important first. A narrow bar should
+        // drop the low-priority (trailing) ones from the end and preserve
+        // the mode indicator, mirroring the right side's own drop policy.
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![
+                make_status_seg("NORMAL", None, true),   // 6, highest priority
+                make_status_seg("main.rs", None, false), // 7
+                make_status_seg("UTF-8", None, false),   // 5
+            ],
+            right_segments: vec![make_status_seg("Ln 1,Col 1", Some("cursor"), false)], // 10
+        };
+        // bar=25, right=10, gap=2 → left_budget = 25-2-10=13.
+        // Sum of left = 6+7+5=18 > 13. Drop "UTF-8" (5): remaining 13 <= 13. Keep 2.
+        let layout = bar.layout(25.0, 1.0, 2.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        });
+        let left_segments: Vec<_> = layout
+            .visible_segments
+            .iter()
+            .filter(|v| v.side == StatusSegmentSide::Left)
+            .collect();
+        assert_eq!(
+            left_segments.len(),
+            2,
+            "lowest-priority trailing left segment should be dropped whole"
+        );
+        assert_eq!(left_segments[0].segment_idx, 0);
+        assert_eq!(left_segments[1].segment_idx, 1);
+        // Neither surviving segment is clamped — their sum fits the budget.
+        assert_eq!(left_segments[0].bounds.width, 6.0);
+        assert_eq!(left_segments[1].bounds.width, 7.0);
+    }
+
+    #[test]
+    fn status_bar_layout_left_single_segment_clamped_not_overflowing_into_right() {
+        // A single left segment too wide even by itself (the gallery
+        // "dirty" demo's scenario) must never paint at its full natural
+        // width over the right group — its bounds are clamped to the
+        // left budget so paint time ellipsis-truncates it instead.
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![make_status_seg(&"x".repeat(60), None, true)],
+            right_segments: vec![make_status_seg(" Ln 1,Col 1", Some("cursor"), false)],
+        };
+        let layout = bar.layout(30.0, 1.0, 2.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        });
+        let left = layout
+            .visible_segments
+            .iter()
+            .find(|v| v.side == StatusSegmentSide::Left)
+            .expect("the always-kept first left segment must still be visible");
+        assert!(
+            left.bounds.width < 60.0,
+            "an overflowing lone left segment must be clamped below its natural \
+             width, got {}",
+            left.bounds.width
+        );
+        // The right-side cursor segment must still be fully visible and
+        // positioned past where the clamped left segment ends.
+        let right = layout
+            .visible_segments
+            .iter()
+            .find(|v| v.side == StatusSegmentSide::Right)
+            .expect("the cursor segment must survive");
+        assert!(left.bounds.x + left.bounds.width <= right.bounds.x + 0.01);
     }
 
     // Outer edge inset + per-segment padding.

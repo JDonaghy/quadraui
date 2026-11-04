@@ -383,6 +383,23 @@ only a push to `main` runs this workflow.
   flush with the box's top edge for `Sides`/`None`, and 2 units below it
   (room for the border stroke) for `Full`, unchanged. TUI's own painter
   never had this bug.
+- `List` row text, `Board` column headers/card titles, and `DataTable`
+  header/body cells now ellipsis-truncate an overflowing label (`…`) on
+  every backend instead of clipping it mid-glyph, via a new shared
+  `text_util::truncate_with_ellipsis(text, max_width, measurer)` helper —
+  the same algorithm `Tree` already used, generalized to a measurer
+  closure so both the pixel backends (through
+  `paint_surface::fit_text_prefix`) and TUI (cell-count measurer) share
+  one implementation.
+- `StatusBar::layout`/`layout_padded` now priority-drop whole
+  `left_segments` from the end (mirroring the existing `right_segments`
+  policy) when they don't fit the bar, and clamp the always-kept first
+  left segment's bounds to whatever's left so it paints an ellipsis
+  instead of bleeding into the right-side segments — on both TUI and the
+  shared GTK/macOS/Win paint path. Previously only the right side ever
+  dropped segments; an overflowing left segment (e.g. a long dirty-mode
+  indicator) painted at its full width regardless of how little room was
+  left.
 
 ## [0.8.0] - 2026-10-31
 ### Changed
