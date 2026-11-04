@@ -9869,12 +9869,13 @@ fn appshell_chrome_bands_carve_left_to_right() {
         "main area (x={main_x}) sits right of the sidebar header (x={explorer_x})"
     );
 
-    // The sidebar band's width is what clips its content, so the demo's
+    // The sidebar band's width is what bounds its content, so the demo's
     // placeholder text stops at the band edge rather than running under
-    // the main area.
+    // the main area — and it ends in an ellipsis, filling the band right
+    // up to that edge rather than being cut mid-word.
     assert_eq!(
         row_containing(&screen, "(sidebar content").trim_end(),
-        " S │ (sidebar content he"
+        " S │ (sidebar content h…"
     );
 }
 

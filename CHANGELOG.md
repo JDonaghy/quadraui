@@ -391,15 +391,20 @@ only a push to `main` runs this workflow.
   closure so both the pixel backends (through
   `paint_surface::fit_text_prefix`) and TUI (cell-count measurer) share
   one implementation.
-- `StatusBar::layout`/`layout_padded` now priority-drop whole
-  `left_segments` from the end (mirroring the existing `right_segments`
-  policy) when they don't fit the bar, and clamp the always-kept first
-  left segment's bounds to whatever's left so it paints an ellipsis
-  instead of bleeding into the right-side segments — on both TUI and the
-  shared GTK/macOS/Win paint path. Previously only the right side ever
-  dropped segments; an overflowing left segment (e.g. a long dirty-mode
-  indicator) painted at its full width regardless of how little room was
-  left.
+- `StatusBar::layout`/`layout_padded` now bound `left_segments` to the
+  space the resolved right group leaves, instead of letting an
+  overflowing left segment (e.g. a long dirty-mode indicator) paint at
+  its full natural width over the right-side segments. `left_segments`
+  keeps its documented most-important-first order: each segment gets its
+  natural width in turn, the one that crosses the budget edge is clamped
+  to the cells that remain (paint time ellipsis-truncates its text to
+  that width), and only a segment left with no cells at all is dropped
+  whole. Applies on both TUI and the shared GTK/macOS/Win paint path,
+  which consume the same resolved `StatusBarLayout`.
+- `StatusBar::layout`/`layout_padded` only reserve `min_gap` for the
+  right group when `right_segments` is non-empty, so a left-only bar's
+  segments now fill it right up to the edge inset instead of stopping
+  `min_gap` short.
 
 ## [0.8.0] - 2026-10-31
 ### Changed
