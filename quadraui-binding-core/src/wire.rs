@@ -40,8 +40,9 @@ use quadraui::{
 use crate::extra_paint::{decode_extra_primitive, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
 use crate::host::text_display_from_lines;
 use crate::layout::{
-    validate_unique_leaf_ids, LayoutLeaf, LayoutNode, LayoutPanel, LayoutSidebarPanel, LayoutSplit,
-    LayoutSplitTree, LayoutTabEntry, LayoutTabs, LeafDescriptor, LEAF_KIND_KEYS,
+    validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode, LayoutPanel,
+    LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry, LayoutTabs, LeafDescriptor,
+    Spacing, LEAF_KIND_KEYS,
 };
 use crate::render::RenderFrame;
 use crate::{decode_value, DecodeError};
@@ -363,10 +364,14 @@ pub fn decode_layout_node<'de, D: Deserializer<'de>>(
 
 fn layout_node_from_value(what: &str, value: &Value) -> Result<LayoutNode, DecodeError> {
     if let Some(v) = obj_get(value, "row") {
-        return Ok(LayoutNode::Row(layout_children_from_value(what, v)?));
+        let children = layout_children_from_value(what, v)?;
+        let spacing = spacing_from_value(what, value, "\"row\"")?;
+        return Ok(LayoutNode::Row(LayoutContainer { children, spacing }));
     }
     if let Some(v) = obj_get(value, "column") {
-        return Ok(LayoutNode::Column(layout_children_from_value(what, v)?));
+        let children = layout_children_from_value(what, v)?;
+        let spacing = spacing_from_value(what, value, "\"column\"")?;
+        return Ok(LayoutNode::Column(LayoutContainer { children, spacing }));
     }
     if let Some(v) = obj_get(value, "split") {
         let split_value = must_be_dict(what, v, "\"split\"")?;
@@ -426,6 +431,53 @@ fn layout_children_from_value(what: &str, value: &Value) -> Result<Vec<LayoutNod
             layout_node_from_value(what, child)
         })
         .collect()
+}
+
+/// Decodes a `"row"`/`"column"` node's optional `"padding"`/`"margin"`/
+/// `"gap"` spacing keys — siblings of the `"row"`/`"column"` key itself in
+/// the same node dict, e.g. `{"row": [...], "padding": 12, "gap": 8}`.
+/// Every key is optional and defaults to [`Spacing::default`], so an
+/// existing `{"row": [...]}`/`{"column": [...]}` dict with none of them
+/// decodes to exactly the same (no-op) spacing as before this existed.
+fn spacing_from_value(what: &str, value: &Value, label: &str) -> Result<Spacing, DecodeError> {
+    let context = format!("{what}: {label}");
+    let padding = match obj_get(value, "padding") {
+        Some(v) => edge_insets_from_value(v, &context)?,
+        None => EdgeInsets::default(),
+    };
+    let margin = opt_f32(value, "margin", &context)?.unwrap_or(0.0);
+    let gap = opt_f32(value, "gap", &context)?.unwrap_or(0.0);
+    Ok(Spacing {
+        padding,
+        margin,
+        gap,
+    })
+}
+
+/// Decodes a `"padding"` value: a bare number (the same inset on every
+/// side), an `{"x": .., "y": ..}` axis pair, or a full `{"top": ..,
+/// "right": .., "bottom": .., "left": ..}` shape. Every key inside either
+/// dict shape is itself optional and defaults to `0.0`.
+fn edge_insets_from_value(value: &Value, context: &str) -> Result<EdgeInsets, DecodeError> {
+    if let Some(n) = value.as_f64() {
+        return Ok(EdgeInsets::uniform(n as f32));
+    }
+    if value.is_object() {
+        let x = opt_f32(value, "x", context)?;
+        let y = opt_f32(value, "y", context)?;
+        if x.is_some() || y.is_some() {
+            return Ok(EdgeInsets::xy(x.unwrap_or(0.0), y.unwrap_or(0.0)));
+        }
+        return Ok(EdgeInsets {
+            top: opt_f32(value, "top", context)?.unwrap_or(0.0),
+            right: opt_f32(value, "right", context)?.unwrap_or(0.0),
+            bottom: opt_f32(value, "bottom", context)?.unwrap_or(0.0),
+            left: opt_f32(value, "left", context)?.unwrap_or(0.0),
+        });
+    }
+    Err(DecodeError(format!(
+        "{context} \"padding\" must be a number, or an object with \"x\"/\"y\" or \"top\"/\"right\"/\"bottom\"/\"left\""
+    )))
 }
 
 /// Decodes a `"split"` node: `{"id", "orientation", "ratio", "first",
@@ -1139,6 +1191,58 @@ mod tests {
         assert_eq!(split.split.ratio, 0.4);
         assert!(matches!(*split.first, LayoutNode::Leaf(_)));
         assert!(matches!(*split.second, LayoutNode::Leaf(_)));
+    }
+
+    /// A `"row"`'s `"padding"`/`"margin"`/`"gap"` keys are siblings of
+    /// the `"row"` key in the same node dict, decoded into
+    /// [`crate::layout::Spacing`] alongside the children. `"padding"` as
+    /// a bare number applies uniformly to every edge.
+    #[test]
+    fn round_trips_a_row_node_s_spacing_keys() {
+        let value = json!({
+            "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+            "padding": 12,
+            "margin": 4,
+            "gap": 8,
+        });
+        let node = decode(&value).expect("valid row");
+        let LayoutNode::Row(container) = node else {
+            panic!("expected a row node");
+        };
+        assert_eq!(container.children.len(), 1);
+        assert_eq!(container.spacing.padding, EdgeInsets::uniform(12.0));
+        assert_eq!(container.spacing.margin, 4.0);
+        assert_eq!(container.spacing.gap, 8.0);
+    }
+
+    /// `"padding"` also accepts an `{"x": .., "y": ..}` axis pair, applying
+    /// `x` to the left/right edges and `y` to top/bottom.
+    #[test]
+    fn row_padding_accepts_an_x_y_axis_pair() {
+        let value = json!({
+            "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+            "padding": {"x": 6, "y": 2},
+        });
+        let node = decode(&value).expect("valid row");
+        let LayoutNode::Row(container) = node else {
+            panic!("expected a row node");
+        };
+        assert_eq!(container.spacing.padding, EdgeInsets::xy(6.0, 2.0));
+    }
+
+    /// A `"row"` with no spacing keys at all -- the shape every
+    /// pre-existing render callback uses -- decodes to [`Spacing::default`]
+    /// (no inset, no gap), unchanged from before spacing keys existed.
+    #[test]
+    fn row_with_no_spacing_keys_decodes_to_the_default_spacing() {
+        let value = json!({
+            "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+        });
+        let node = decode(&value).expect("valid row");
+        let LayoutNode::Row(container) = node else {
+            panic!("expected a row node");
+        };
+        assert_eq!(container.spacing, Spacing::default());
     }
 
     /// A `"tabs"` node marks the `"selected"` entry active and carries
