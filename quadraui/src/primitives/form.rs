@@ -902,6 +902,12 @@ mod native_surface_paint {
         t.spans.iter().map(|s| s.text.as_str()).collect()
     }
 
+    /// Gap (in pixels) between the reserved label column's right edge
+    /// and the x every field's control column starts at. One constant
+    /// shared by [`paint`] and [`left_control_column_start`] so a
+    /// backend test can't drift from the painter it checks.
+    const CONTROL_GAP: f32 = 8.0;
+
     /// Shared label-column width (in pixels) for every `Left`-resolved
     /// field in `form`, mirroring `tui::form::left_label_column_width`'s
     /// semantics so the two renderers agree. An explicit
@@ -958,6 +964,37 @@ mod native_surface_paint {
             row_rect.y + (row_h - label_h) / 2.0,
             row_rect.x + 6.0 + col_width,
         )
+    }
+
+    /// The x within `row_rect` at which `field`'s control column
+    /// starts, for a field whose label resolves to
+    /// [`LabelPosition::Left`] and is non-empty — the single column
+    /// every non-`Button` [`FieldKind`] begins painting at.
+    ///
+    /// Built from the same [`left_label_column_width`] +
+    /// [`left_label_geometry`] + [`CONTROL_GAP`] chain [`paint`] uses,
+    /// so a backend test asserting "this field painted something past
+    /// its label column" reads the painter's own column instead of
+    /// re-deriving it from a copy of the arithmetic.
+    pub(crate) fn left_control_column_start(
+        form: &Form,
+        field: &FormField,
+        row_rect: Rect,
+        surface: &dyn PaintSurface,
+    ) -> f32 {
+        let left_label_width = left_label_column_width(form, surface);
+        let label_text = plain_text(&field.label);
+        let (label_w, label_h) = surface.surface_measure_text(&label_text);
+        let (_label_x, _label_y, label_right) = left_label_geometry(
+            form,
+            field,
+            row_rect,
+            row_rect.height,
+            label_w,
+            label_h,
+            left_label_width,
+        );
+        label_right + CONTROL_GAP
     }
 
     /// Resolved label geometry for one field row — decoded from the
@@ -1247,7 +1284,11 @@ mod native_surface_paint {
                 // each sitting at its own position. `available` is what
                 // `ControlWidth::Fill` stretches a control's box/track
                 // to.
-                let control_start = if no_label { label_x } else { label_right + 8.0 };
+                let control_start = if no_label {
+                    label_x
+                } else {
+                    label_right + CONTROL_GAP
+                };
                 let available = (input_right - control_start).max(0.0);
                 let min_control_width = form.resolved_min_control_width(field);
                 let resolved_control_width = form.resolved_control_width(field);
@@ -1928,6 +1969,93 @@ mod native_surface_paint {
         /// top and bottom.
         fn expected_pill(item: &Rect) -> Rect {
             Rect::new(item.x, item.y + 2.0, item.width, item.height - 4.0)
+        }
+
+        /// [`left_control_column_start`] has to report the exact x the
+        /// painter starts a control at, for every `Left`-labelled field
+        /// in the form — it's the seam a backend's pixel probe uses to
+        /// say "this field painted something past its label column", so
+        /// a drift between the two would make that probe silently check
+        /// the wrong band.
+        ///
+        /// `ColorPicker` is the probe kind: its swatch is a fixed
+        /// 12x12 fill in the picker's own colour, so the fill is
+        /// unambiguous in the recording and its `x` is the control
+        /// column's start with no width-resolution arithmetic in
+        /// between. Two fields with different label lengths pin that
+        /// both share one column (the wider label's) rather than each
+        /// sitting after its own label.
+        #[test]
+        fn left_control_column_start_matches_the_painted_control_x() {
+            let swatch_a = Color::rgb(0x11, 0x22, 0x33);
+            let swatch_b = Color::rgb(0x44, 0x55, 0x66);
+            let color_field = |id: &str, label: &str, value: Color| FormField {
+                id: WidgetId::new(id),
+                label: StyledText::plain(label),
+                kind: FieldKind::ColorPicker { value },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+            };
+            let form = Form {
+                id: WidgetId::new("control-column"),
+                fields: vec![
+                    color_field("accent", "A much longer label", swatch_a),
+                    color_field("border", "Hi", swatch_b),
+                ],
+                focused_field: None,
+                scroll_offset: 0,
+                has_focus: false,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
+                control_width: Default::default(),
+                min_control_width: None,
+            };
+
+            let (surface, flayout) = paint_recorded(&form);
+            let probe = RecordingSurface::default();
+
+            let mut starts = Vec::new();
+            for vf in &flayout.visible_fields {
+                let field = &form.fields[vf.field_idx];
+                let expected = left_control_column_start(&form, field, vf.bounds, &probe);
+                let swatch = surface
+                    .fills
+                    .iter()
+                    .find(|(r, c)| {
+                        *c == *match field.kind {
+                            FieldKind::ColorPicker { ref value } => value,
+                            _ => unreachable!("every field here is a ColorPicker"),
+                        } && r.width == 12.0
+                            && r.height == 12.0
+                    })
+                    .map(|(r, _)| *r)
+                    .unwrap_or_else(|| {
+                        panic!("field {:?} painted no 12x12 colour swatch", field.id)
+                    });
+                assert_eq!(
+                    swatch.x, expected,
+                    "field {:?}: painter started its control at x={}, but \
+                     left_control_column_start reports x={expected}",
+                    field.id, swatch.x,
+                );
+                starts.push(swatch.x);
+            }
+
+            assert_eq!(starts.len(), 2, "both fields must be visible");
+            assert_eq!(
+                starts[0], starts[1],
+                "a short-labelled field must start its control at the same \
+                 shared column as the long-labelled one, not right after its \
+                 own label",
+            );
         }
 
         /// The shared painter must paint an on-toggle background, matching
@@ -2713,7 +2841,7 @@ mod native_surface_paint {
     all(feature = "macos", target_os = "macos")
 ))]
 #[allow(unused_imports)]
-pub(crate) use native_surface_paint::paint;
+pub(crate) use native_surface_paint::{left_control_column_start, paint};
 
 /// Events a `Form` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
