@@ -17,8 +17,9 @@ use quadraui::testing::{ConformanceDriver, FrameInventory, LogicalViewport};
 use quadraui::tui::ratatui_color;
 use quadraui::tui::testing::{driver_with_shell as tui_driver_with_shell, TuiDriver};
 use quadraui::{
-    AppLogic, Backend, DataTableLayout, NamedKey, Reaction, Rect, Theme, Tooltip, TooltipBorder,
-    TooltipChrome, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
+    AppLogic, Backend, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableLayout,
+    NamedKey, Reaction, Rect, StyledText, Theme, Tooltip, TooltipBorder, TooltipChrome,
+    TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
 };
 
 #[path = "../examples/common/pipeline_app.rs"]
@@ -652,6 +653,160 @@ fn data_table_divider_drag_overflows_into_h_scroll_parity_tui_and_gtk_agree() {
     assert_eq!(
         tui_overflowed, gtk_overflowed,
         "both backends should agree that the drag overflowed"
+    );
+}
+
+// ─── `ColumnWidth` unit portability: cells vs pixels across backends ─────────
+//
+// `ColumnWidth::Fixed` is a bare native-unit number, so the same declared
+// value means a ten-cell column on a terminal and a ten-*pixel* sliver on a
+// pixel surface. `FixedCells`/`FixedPx` each name their unit and convert into
+// the other backend family's, so one descriptor describes one column shape
+// everywhere. Measuring both backends in *characters* — resolved native width
+// divided by that backend's own average glyph advance — is what makes the two
+// coordinate spaces comparable without naming either unit in the shared body.
+
+/// Resolves a declared column width through one backend's own
+/// `data_table_layout`, so the assertions below read real per-backend font
+/// metrics rather than a test-local approximation of them.
+trait ColumnUnitProbe {
+    /// Resolved native width of `table`'s first column.
+    fn probe_column_width(&self, table: &DataTable) -> f32;
+    /// Native width of one average glyph: exactly one cell on a terminal,
+    /// the font's measured advance on a pixel surface.
+    fn probe_char_width(&self) -> f32;
+}
+
+impl ColumnUnitProbe for TuiDriver<DataTableApp> {
+    fn probe_column_width(&self, table: &DataTable) -> f32 {
+        // Same viewport the shared `DataTableDriverCtor` builds, in cells.
+        self.backend()
+            .data_table_layout(Rect::new(0.0, 0.0, 100.0, 26.0), table)
+            .columns[0]
+            .width
+    }
+
+    fn probe_char_width(&self) -> f32 {
+        self.backend().char_width()
+    }
+}
+
+impl ColumnUnitProbe for GtkDriver<DataTableApp> {
+    fn probe_column_width(&self, table: &DataTable) -> f32 {
+        // Same viewport the shared `DataTableDriverCtor` builds, in pixels.
+        self.backend()
+            .data_table_layout(Rect::new(0.0, 0.0, 900.0, 600.0), table)
+            .columns[0]
+            .width
+    }
+
+    fn probe_char_width(&self) -> f32 {
+        self.backend().char_width()
+    }
+}
+
+/// A declared width `width` resolved by `d`'s backend, expressed in average
+/// glyph widths. Column 0 carries the declared width; a trailing `Flex(1.0)`
+/// column absorbs the leftover so the "stretch the last column to fill the
+/// viewport" pass never masks what column 0 asked for.
+fn declared_width_in_chars<D: ColumnUnitProbe>(d: &D, width: ColumnWidth) -> f32 {
+    let table = DataTable {
+        id: WidgetId::new("table:column-unit-probe"),
+        columns: vec![
+            Column {
+                title: "Probe".to_string(),
+                width,
+                align: ColumnAlign::Left,
+            },
+            Column {
+                title: "Filler".to_string(),
+                width: ColumnWidth::Flex(1.0),
+                align: ColumnAlign::Left,
+            },
+        ],
+        rows: vec![DataRow {
+            cells: vec![StyledText::plain("probe"), StyledText::plain("filler")],
+            decoration: Default::default(),
+        }],
+        selected_idx: None,
+        scroll_offset: 0,
+        sort: None,
+        has_focus: false,
+        show_scrollbar: false,
+        min_total_width: None,
+        h_scroll: 0.0,
+        column_overrides: vec![],
+        footer: None,
+    };
+    d.probe_column_width(&table) / d.probe_char_width()
+}
+
+/// How many times wider, in characters, the same declared width lands on TUI
+/// than on GTK. `1.0` means the descriptor describes one column shape on both
+/// backends; a large number means the declared number was reinterpreted
+/// instead of converted.
+fn tui_over_gtk_char_ratio(width: ColumnWidth) -> f32 {
+    let tui = TuiDriver::<DataTableApp>::new_default();
+    let gtk = GtkDriver::<DataTableApp>::new_default();
+    let tui_chars = declared_width_in_chars(&tui, width);
+    let gtk_chars = declared_width_in_chars(&gtk, width);
+    assert!(
+        gtk_chars > 0.0,
+        "GTK must resolve the probe column to a nonzero width, got {gtk_chars} chars"
+    );
+    tui_chars / gtk_chars
+}
+
+#[test]
+fn fixed_cells_describes_the_same_column_width_on_tui_and_gtk() {
+    let tui = TuiDriver::<DataTableApp>::new_default();
+    let gtk = GtkDriver::<DataTableApp>::new_default();
+    let tui_chars = declared_width_in_chars(&tui, ColumnWidth::FixedCells(10.0));
+    let gtk_chars = declared_width_in_chars(&gtk, ColumnWidth::FixedCells(10.0));
+
+    // A cell *is* a character on a terminal, so TUI must land on exactly ten.
+    assert!(
+        (tui_chars - 10.0).abs() < 0.01,
+        "TUI: FixedCells(10.0) must resolve to exactly 10 cells, got {tui_chars}"
+    );
+    // GTK scales ten cells by its own glyph advance, so it lands near ten
+    // characters too — the tolerance covers a proportional font, whose
+    // "average glyph" sample and `char_width` need not agree exactly.
+    assert!(
+        (gtk_chars - 10.0).abs() <= 3.0,
+        "GTK: FixedCells(10.0) must resolve to about 10 characters, got {gtk_chars}"
+    );
+}
+
+#[test]
+fn fixed_px_describes_the_same_column_width_on_tui_and_gtk() {
+    let ratio = tui_over_gtk_char_ratio(ColumnWidth::FixedPx(80.0));
+    assert!(
+        (0.5..=2.0).contains(&ratio),
+        "FixedPx(80.0) must describe about the same column width on both \
+         backends, but TUI/GTK character ratio is {ratio}"
+    );
+}
+
+#[test]
+fn deprecated_fixed_width_is_the_ambiguity_fixed_cells_and_fixed_px_replace() {
+    // The negative control for the two tests above: the same declared `10.0`
+    // is ten characters on a terminal and roughly one on a pixel surface.
+    // `ColumnWidth::Fixed` is deprecated precisely because of this gap, so
+    // naming it here is deliberate.
+    #[allow(deprecated)]
+    let ratio = tui_over_gtk_char_ratio(ColumnWidth::Fixed(10.0));
+    assert!(
+        ratio > 3.0,
+        "Fixed(10.0) is expected to read as far more characters on TUI than on \
+         GTK — that unit ambiguity is what FixedCells/FixedPx exist to fix — \
+         but the TUI/GTK character ratio is only {ratio}"
+    );
+    let cells_ratio = tui_over_gtk_char_ratio(ColumnWidth::FixedCells(10.0));
+    assert!(
+        cells_ratio < ratio,
+        "FixedCells(10.0) must agree across backends better than Fixed(10.0): \
+         cells ratio {cells_ratio}, Fixed ratio {ratio}"
     );
 }
 
