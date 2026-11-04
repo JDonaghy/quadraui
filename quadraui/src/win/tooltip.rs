@@ -145,6 +145,64 @@ mod tests {
         );
     }
 
+    /// Regression test: callers following the `TooltipMeasure` contract
+    /// (see that type's doc) size `Sides`/`None` tooltips to exactly one
+    /// content row — no border row to spare, unlike `Full`'s 3 — so
+    /// `paint`'s text placement must not assume a top border those two
+    /// variants never draw. Before that placement accounted for the
+    /// border mode, a one-row `Sides`/`None` box failed the
+    /// `row_y + line_height > bounds.y + bounds.height` guard and drew no
+    /// text at all, i.e. an empty box on every pixel backend.
+    #[test]
+    fn text_paints_inside_bounds_for_every_border_at_contract_height() {
+        const LINE_H: f32 = 16.0;
+
+        for (border, rows) in [
+            (TooltipBorder::Sides, 1.0),
+            (TooltipBorder::Full, 3.0),
+            (TooltipBorder::None, 1.0),
+        ] {
+            let surface = HeadlessSurface::new(W, H).expect("create surface");
+            let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+            let tooltip = sample_tooltip();
+            let layout = TooltipLayout {
+                bounds: crate::event::Rect::new(20.0, 20.0, 120.0, LINE_H * rows),
+                resolved_placement: ResolvedPlacement::Bottom,
+            };
+            let chrome = TooltipChrome::new(border);
+
+            surface
+                .paint(|target| {
+                    draw_tooltip_with_chrome(
+                        target, &dwrite, &tooltip, &layout, &chrome, LINE_H, 8.0,
+                    );
+                })
+                .expect("paint tooltip");
+
+            let bg = Theme::default().hover_bg;
+            let b = layout.bounds;
+            let bg_ref =
+                surface.pixel_at((b.x + b.width - 4.0) as u32, (b.y + b.height - 4.0) as u32);
+            assert_eq!(
+                (bg_ref.r, bg_ref.g, bg_ref.b),
+                (bg.r, bg.g, bg.b),
+                "{border:?}: bottom-right reference pixel should be bg-only ground"
+            );
+
+            let has_ink = (b.y as u32..(b.y + b.height) as u32).any(|y| {
+                (b.x as u32..(b.x + b.width) as u32).any(|x| {
+                    let px = surface.pixel_at(x, y);
+                    (px.r, px.g, px.b) != (bg.r, bg.g, bg.b)
+                })
+            });
+            assert!(
+                has_ink,
+                "{border:?}: expected glyph ink somewhere inside a {rows}-row-tall box \
+                 sized per the `TooltipMeasure` contract, found none"
+            );
+        }
+    }
+
     #[test]
     fn none_border_paints_no_stroke() {
         let surface = HeadlessSurface::new(W, H).expect("create surface");

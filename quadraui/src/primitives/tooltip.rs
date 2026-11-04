@@ -537,13 +537,20 @@ pub(crate) mod native_surface_paint {
             surface.surface_fill_rect(bounds, bg);
         }
 
-        // Content normally starts 2 units below the top edge; a title
-        // pushes that down further, since its real font height
-        // (`title_h`) is typically much taller than the 1-unit border
-        // line it's centred on — without this, a title would visually
-        // collide with the first content row instead of sitting in its
-        // own space above it.
-        let mut text_top = bounds.y + 2.0;
+        // `Full` reserves its top border row, so content starts 2 units
+        // below the box's top edge; a title pushes that down further,
+        // since its real font height (`title_h`) is typically much
+        // taller than the 1-unit border line it's centred on — without
+        // this, a title would visually collide with the first content
+        // row instead of sitting in its own space above it. `Sides` and
+        // `None` have no top rule to clear, so content starts flush with
+        // the box's top edge — callers following the `TooltipMeasure`
+        // contract size those two variants to exactly the content rows
+        // they hold, with no border row to spare.
+        let mut text_top = match chrome.border {
+            TooltipBorder::Full => bounds.y + 2.0,
+            TooltipBorder::Sides | TooltipBorder::None => bounds.y,
+        };
 
         match chrome.border {
             TooltipBorder::Full => {

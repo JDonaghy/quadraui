@@ -315,6 +315,42 @@ mod tests {
         }
     }
 
+    /// Regression test: callers following the `TooltipMeasure` contract
+    /// (see that type's doc) size `Sides`/`None` tooltips to exactly one
+    /// content row — no border row to spare, unlike `Full`'s 3 — so
+    /// `paint`'s text placement must not assume a top border those two
+    /// variants never draw. Before that placement accounted for the
+    /// border mode, a one-row `Sides`/`None` box failed the
+    /// `row_y + line_height > bounds.y + bounds.height` guard and drew no
+    /// text at all, i.e. an empty box on every pixel backend.
+    #[test]
+    fn text_paints_inside_bounds_for_every_border_at_contract_height() {
+        for (border, rows) in [
+            (TooltipBorder::Sides, 1.0),
+            (TooltipBorder::Full, 3.0),
+            (TooltipBorder::None, 1.0),
+        ] {
+            let tooltip = sample_tooltip();
+            let layout = TooltipLayout {
+                bounds: QRect::new(20.0, 20.0, 120.0, LINE_H as f32 * rows),
+                resolved_placement: ResolvedPlacement::Bottom,
+            };
+            let chrome = TooltipChrome::new(border);
+            let (data, stride) = paint(&tooltip, &layout, &chrome);
+            let b = layout.bounds;
+            let bg = bg_reference(&data, stride, b);
+
+            let has_ink = (b.y as i32..(b.y + b.height) as i32).any(|y| {
+                (b.x as i32..(b.x + b.width) as i32).any(|x| pixel(&data, stride, x, y) != bg)
+            });
+            assert!(
+                has_ink,
+                "{border:?}: expected glyph ink somewhere inside a {rows}-row-tall box \
+                 sized per the `TooltipMeasure` contract, found none"
+            );
+        }
+    }
+
     /// Styled-line spans render `bold` through
     /// `PaintSurface::surface_draw_text_run_styled`; a rasteriser that
     /// clears Pango attributes before drawing each span silently drops
@@ -386,7 +422,10 @@ mod tests {
 
         let x_start = b.x as i32;
         let x_end = (b.x + b.width) as i32;
-        let y_start = b.y as i32 + 2; // text_top offset used by `paint`
+        // `TooltipBorder::None` has no top rule to clear, so `paint` starts
+        // content flush with the box's top edge (no +2 inset — that's
+        // `Full`-only, see `native_surface_paint::paint`'s `text_top`).
+        let y_start = b.y as i32;
         let y_end = y_start + LINE_H as i32;
         let bg = bg_reference(&bold_data, stride, b);
 

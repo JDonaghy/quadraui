@@ -327,6 +327,52 @@ mod tests {
         );
     }
 
+    /// Regression test: callers following the `TooltipMeasure` contract
+    /// (see that type's doc) size `Sides`/`None` tooltips to exactly one
+    /// content row — no border row to spare, unlike `Full`'s 3 — so
+    /// `paint`'s text placement must not assume a top border those two
+    /// variants never draw. Before that placement accounted for the
+    /// border mode, a one-row `Sides`/`None` box failed the
+    /// `row_y + line_height > bounds.y + bounds.height` guard and drew no
+    /// text at all, i.e. an empty box on every pixel backend.
+    #[test]
+    fn text_paints_inside_bounds_for_every_border_at_contract_height() {
+        let mut probe = MacBackend::new();
+        probe.set_current_font(font());
+        let line_h = probe.line_height();
+
+        for (border, rows) in [
+            (TooltipBorder::Sides, 1.0),
+            (TooltipBorder::Full, 3.0),
+            (TooltipBorder::None, 1.0),
+        ] {
+            let tip = sample_tooltip();
+            let layout = TooltipLayout {
+                bounds: QRect::new(10.0, 10.0, 120.0, line_h * rows),
+                resolved_placement: ResolvedPlacement::Bottom,
+            };
+            let chrome = TooltipChrome::new(border);
+            let surface = paint(&tip, &layout, &chrome);
+            let b = layout.bounds;
+            let bg = bg_reference(&surface, b);
+
+            let has_ink = (b.y as u32..(b.y + b.height) as u32).any(|y| {
+                (b.x as u32..(b.x + b.width) as u32).any(|x| {
+                    (
+                        surface.pixel(x, y).0,
+                        surface.pixel(x, y).1,
+                        surface.pixel(x, y).2,
+                    ) != bg
+                })
+            });
+            assert!(
+                has_ink,
+                "{border:?}: expected glyph ink somewhere inside a {rows}-row-tall box \
+                 sized per the `TooltipMeasure` contract, found none"
+            );
+        }
+    }
+
     #[test]
     fn title_is_ignored_when_border_is_sides_or_none() {
         for border in [TooltipBorder::Sides, TooltipBorder::None] {

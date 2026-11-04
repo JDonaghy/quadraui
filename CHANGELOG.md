@@ -269,6 +269,15 @@ only a push to `main` runs this workflow.
   case for a tray-icon click. They now call `MacBackend::redraw_kicker`,
   which schedules the repaint on the app's own view directly, the same
   path a background-thread wake already used.
+- `Tooltip` with `TooltipChrome { border: TooltipBorder::Sides | TooltipBorder::None, .. }`
+  now renders its text on GTK, macOS and Win32. `native_surface_paint::paint`'s
+  content placement assumed a top border row on every border mode, so a
+  tooltip sized to exactly one content row per the `TooltipMeasure`
+  contract — what `Sides`/`None` have no border row to spare for — failed
+  the "does this row fit" check and drew an empty box. Content now starts
+  flush with the box's top edge for `Sides`/`None`, and 2 units below it
+  (room for the border stroke) for `Full`, unchanged. TUI's own painter
+  never had this bug.
 
 ## [0.8.0] - 2026-10-31
 ### Changed
