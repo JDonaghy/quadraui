@@ -17,6 +17,194 @@
 // value), so it disappears entirely rather than needing ESM semantics.
 const native: typeof import("../index.js") = require("../index.js");
 
+// ─── Error subclasses ───────────────────────────────────────────────────
+//
+// napi-rs has no custom-exception-class mechanism at the FFI boundary the
+// way PyO3's `create_exception!` does, so the native addon only ever
+// throws a plain `Error` whose `message` is tagged with one of the names
+// below (e.g. `"InvalidDescriptorError: slot 0 already holds a
+// descriptor"` -- see `quadraui-node/src/lib.rs`'s module doc's
+// "Descriptor decode adapter" section). The classes below give a JS/TS
+// caller the same `instanceof`-based catch ergonomics `quadraui-py`'s real
+// exception subclasses have: `wrapNativeErrors` replaces every writable,
+// configurable method `native.QuiApp`/`QuiShellApp`/`QuiAppWaker`/
+// `QuiAppActions` exposes with a wrapper that recognizes that tag on a
+// caught `Error` and re-throws the matching subclass instance instead.
+// `.message` keeps the original tagged text verbatim, so an
+// `assert.throws(fn, /TagName/)` check written against the untyped native
+// error keeps passing unchanged against the typed one.
+//
+// `QuiApp.runShell` is the one static method the native addon exports that
+// this section does not reach: napi-rs registers it as a non-writable,
+// non-configurable property, so `wrapNativeErrors` (which only ever
+// replaces a writable+configurable function property) silently leaves it
+// alone rather than throwing at module load. A caller that wants a typed
+// subclass out of a `runShell` validation failure (zero width/height, a
+// malformed `ShellConfig`) can still pass the caught error through
+// `toQuadrauiError` itself.
+
+/**
+ * Base class every subclass below extends. A bare
+ * `catch (err) { if (err instanceof QuadrauiError) ... }` matches any of
+ * them regardless of which specific subclass was thrown -- the napi-rs
+ * analog of `quadraui-py`'s own `QuadrauiError` (see that package's
+ * `src/lib.rs`).
+ */
+class QuadrauiError extends Error {
+  constructor(message: string) {
+    super(message);
+    // `new.target` reflects the subclass actually being constructed even
+    // through this `super(message)` call, so every subclass below gets
+    // its own `name` for free without repeating this constructor.
+    this.name = new.target.name;
+  }
+}
+exports.QuadrauiError = QuadrauiError;
+
+/** A descriptor/event shape this binding's decode adapter rejected -- mirrors `quadraui-py`'s `InvalidDescriptorError`. */
+class InvalidDescriptorError extends QuadrauiError {}
+exports.InvalidDescriptorError = InvalidDescriptorError;
+
+/** A fixed slot or additive-primitive kind that already holds a descriptor -- mirrors `quadraui-py`'s `SlotOccupiedError`. */
+class SlotOccupiedError extends QuadrauiError {}
+exports.SlotOccupiedError = SlotOccupiedError;
+
+/** A slot id that is not one of the documented `SLOT_*` constants -- mirrors `quadraui-py`'s `UnknownSlotError`. */
+class UnknownSlotError extends QuadrauiError {}
+exports.UnknownSlotError = UnknownSlotError;
+
+/** A zero width/height, or a byte buffer whose length does not match the width/height it is supposed to encode -- mirrors `quadraui-py`'s `InvalidDimensionsError`. */
+class InvalidDimensionsError extends QuadrauiError {}
+exports.InvalidDimensionsError = InvalidDimensionsError;
+
+/** A `pushKeyEvent` code point that is not a valid Unicode scalar value -- mirrors `quadraui-py`'s `InvalidCharError`. */
+class InvalidCharError extends QuadrauiError {}
+exports.InvalidCharError = InvalidCharError;
+
+/** A Rust panic caught at this app's `guarded` boundary -- mirrors `quadraui-py`'s `PanicError`. The app is poisoned afterwards; every later call raises {@link PoisonedError} instead. */
+class PanicError extends QuadrauiError {}
+exports.PanicError = PanicError;
+
+/** Raised by every method on an app an earlier caught panic poisoned -- mirrors `quadraui-py`'s `PoisonedError`. */
+class PoisonedError extends QuadrauiError {}
+exports.PoisonedError = PoisonedError;
+
+/** A failure internal to this binding rather than caused by caller input -- mirrors `quadraui-py`'s `InternalError`. */
+class InternalError extends QuadrauiError {}
+exports.InternalError = InternalError;
+
+/** A `role` string `measureText` does not recognize -- mirrors `quadraui-py`'s `InvalidFontRoleError`. */
+class InvalidFontRoleError extends QuadrauiError {}
+exports.InvalidFontRoleError = InvalidFontRoleError;
+
+/**
+ * A method called re-entrantly from inside this same app's own registered
+ * event/tick/render callback. napi-rs's own per-instance borrow tracking
+ * already rejects most of these at the FFI boundary; this is this
+ * binding's own explicit, defense-in-depth guard for the rest -- no
+ * `quadraui-py` equivalent (PyO3's runtime borrow check already covers the
+ * whole surface there).
+ */
+class ReentrantCallError extends QuadrauiError {}
+exports.ReentrantCallError = ReentrantCallError;
+
+/** A `QuiApp` method called while `startTui`/`startNative` is live. */
+class LiveRunnerActiveError extends QuadrauiError {}
+exports.LiveRunnerActiveError = LiveRunnerActiveError;
+
+/** `step`/`run` called after a live `startTui`/`startNative` session this app once held has already ended. */
+class LiveRunnerExitedError extends QuadrauiError {}
+exports.LiveRunnerExitedError = LiveRunnerExitedError;
+
+/**
+ * Every subclass above, keyed by both its own name and the tag its native
+ * `Error.message` prefix carries (the two always match -- see
+ * `toQuadrauiError` below). Exported as `ERROR_CLASSES` so a
+ * `test_public_api.py`-style check can enumerate every subclass this
+ * module promises to export without hardcoding the list a second time;
+ * see `tests/public_api.test.ts`.
+ */
+const ERROR_CLASSES_BY_TAG: Record<string, new (message: string) => QuadrauiError> = {
+  InvalidDescriptorError,
+  SlotOccupiedError,
+  UnknownSlotError,
+  InvalidDimensionsError,
+  InvalidCharError,
+  PanicError,
+  PoisonedError,
+  InternalError,
+  InvalidFontRoleError,
+  ReentrantCallError,
+  LiveRunnerActiveError,
+  LiveRunnerExitedError,
+};
+exports.ERROR_CLASSES = Object.freeze({ ...ERROR_CLASSES_BY_TAG });
+
+const ERROR_TAG_PATTERN = /^([A-Za-z]+Error): /;
+
+/**
+ * Converts a value caught from a native call into the {@link QuadrauiError}
+ * subclass its message is tagged with, preserving the original message
+ * and stack trace. Returns `err` unchanged if it is already a
+ * `QuadrauiError`, or is not an `Error` carrying a recognized tag -- a
+ * registered handler/tick/render callback can throw anything, and that
+ * value must pass through unchanged rather than being coerced into a
+ * `QuadrauiError` it has nothing to do with.
+ */
+function toQuadrauiError(err: unknown): unknown {
+  if (!(err instanceof Error) || err instanceof QuadrauiError) {
+    return err;
+  }
+  const match = ERROR_TAG_PATTERN.exec(err.message);
+  const ErrorClass = match && ERROR_CLASSES_BY_TAG[match[1]];
+  if (!ErrorClass) {
+    return err;
+  }
+  const wrapped = new ErrorClass(err.message);
+  wrapped.stack = err.stack;
+  return wrapped;
+}
+exports.toQuadrauiError = toQuadrauiError;
+
+/**
+ * Replaces every own, writable, configurable function-valued property on
+ * `target` (a native addon prototype, or a constructor used for its
+ * static methods) with a wrapper that converts a thrown native `Error`
+ * through {@link toQuadrauiError} before rethrowing. `"constructor"` is
+ * always skipped (nothing to convert on a prototype's own back-reference
+ * to its constructor); a property napi-rs registers as non-writable/
+ * non-configurable is left alone the same way, which is what keeps
+ * `QuiApp.runShell` (see this file's own "Error subclasses" section doc)
+ * from needing special-case handling here.
+ */
+function wrapNativeErrors(target: object): void {
+  for (const key of Object.getOwnPropertyNames(target)) {
+    if (key === "constructor") continue;
+    const descriptor = Object.getOwnPropertyDescriptor(target, key);
+    if (
+      !descriptor ||
+      typeof descriptor.value !== "function" ||
+      !descriptor.writable ||
+      !descriptor.configurable
+    ) {
+      continue;
+    }
+    const original = descriptor.value as (...args: unknown[]) => unknown;
+    (target as Record<string, unknown>)[key] = function (this: unknown, ...args: unknown[]) {
+      try {
+        return original.apply(this, args);
+      } catch (err) {
+        throw toQuadrauiError(err);
+      }
+    };
+  }
+}
+
+wrapNativeErrors(native.QuiApp.prototype);
+wrapNativeErrors(native.QuiShellApp.prototype);
+wrapNativeErrors(native.QuiAppWaker.prototype);
+wrapNativeErrors(native.QuiAppActions.prototype);
+
 /**
  * A headless quadraui app, driven entirely from JavaScript/TypeScript.
  *
@@ -25,9 +213,27 @@ const native: typeof import("../index.js") = require("../index.js");
  * rendered frame with `screen()`/`screenContains()`. See the native
  * binding's own doc comment (`quadraui-node/src/lib.rs`'s `QuiApp`) for the
  * full method list and panic/poison behaviour.
+ *
+ * A thin subclass of the native constructor rather than a bare re-export:
+ * every other method is already wrapped in place on
+ * `native.QuiApp.prototype` (this subclass inherits that prototype
+ * unchanged), but a constructor call never goes through an instance's own
+ * prototype method lookup the way every other wrapped call does, so the
+ * zero-width/zero-height constructor check needs its own
+ * {@link toQuadrauiError} call here. `static runShell` is inherited
+ * unchanged -- see this file's own "Error subclasses" section doc for why
+ * it stays unwrapped.
  */
-export type QuiApp = InstanceType<typeof native.QuiApp>;
-exports.QuiApp = native.QuiApp;
+class QuiApp extends native.QuiApp {
+  constructor(width: number, height: number) {
+    try {
+      super(width, height);
+    } catch (err) {
+      throw toQuadrauiError(err);
+    }
+  }
+}
+exports.QuiApp = QuiApp;
 
 /**
  * A headless `ShellApp`/`ShellConfig`-backed app: an AppShell (activity bar

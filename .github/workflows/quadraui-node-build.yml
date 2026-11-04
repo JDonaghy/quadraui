@@ -1,0 +1,101 @@
+name: quadraui-node build
+
+# Builds `@quadraui/node`'s native addon from source, runs its own
+# black-box `node --test` suite (headless `QuiApp`/`QuiShellApp` surface,
+# plus the `QuadrauiError` subclass export check in
+# `tests/public_api.test.ts`), then `npm pack`s the result and `require()`s
+# the packed tarball from a separate throwaway directory -- proving the
+# package a consumer would actually install loads and raises typed errors,
+# not just that this workspace's own build-tree layout happens to resolve.
+# Mirrors `quadraui-py-tests` (`ci.yml`) for the test half and
+# `quadraui-py-wheels.yml`'s "build artifact, then prove it is loadable"
+# shape for the pack half.
+#
+# One platform (`ubuntu-latest`), build-from-source only: `@quadraui/node`
+# ships no prebuilt `.node` binary per platform yet (`package.json`'s own
+# `"private": true` -- there is no npm-publish decision for this package
+# the way `quadraui-py-release.yml` has one for PyPI), so there is no
+# `quadraui-py-wheels.yml`-style OS matrix to run here. A consumer on any
+# platform builds from source the same way this job does, via `napi
+# build`'s own per-platform target detection; add a prebuilt-binary matrix
+# (and a `quadraui-node-release.yml` publish workflow) once this package
+# has that decision made for it.
+#
+# Node >= 23.6 is pinned below because this package's own `js/index.ts`
+# `main`/`types` entry is a `.ts` file `require()`d directly (see that
+# file's own header doc) -- Node's type-stripping only erases TypeScript
+# syntax from a `.ts` file by default from that version on; an older Node
+# needs `--experimental-strip-types` explicitly, which neither this
+# package's own `npm test` script nor a consumer's plain `require()` pass.
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "quadraui-node/**"
+      - "quadraui-binding-core/**"
+      - "quadraui/src/**"
+      - "quadraui/Cargo.toml"
+      - ".github/workflows/quadraui-node-build.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "quadraui-node/**"
+      - "quadraui-binding-core/**"
+      - "quadraui/src/**"
+      - "quadraui/Cargo.toml"
+      - ".github/workflows/quadraui-node-build.yml"
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: npm test (plain build) + npm pack
+    runs-on: ubuntu-latest
+    # Sized generously for a cold Rust + napi build; a healthy run is a
+    # few minutes once dependencies are warm.
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: quadraui-node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Build the native addon (plain/debug build)
+        run: npm run build:debug
+      - name: npm test
+        run: npm test
+      - name: npm pack
+        run: npm pack --pack-destination "$RUNNER_TEMP"
+      - name: Verify the packed tarball is loadable and raises typed errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg_dir="$RUNNER_TEMP/quadraui-node-pack-check"
+          mkdir -p "$pkg_dir"
+          tar -xf "$RUNNER_TEMP"/quadraui-node-*.tgz -C "$pkg_dir"
+          node -e "
+          const quadraui = require('$pkg_dir/package');
+          const app = new quadraui.QuiApp(5, 5);
+          if (typeof app.screen() !== 'string') {
+            throw new Error('screen() did not return a string');
+          }
+          try {
+            app.slotClear(999);
+            throw new Error('slotClear(999) did not raise');
+          } catch (err) {
+            if (!(err instanceof quadraui.UnknownSlotError) || !(err instanceof quadraui.QuadrauiError)) {
+              throw new Error('slotClear(999) did not raise an UnknownSlotError/QuadrauiError: ' + err);
+            }
+          }
+          console.log('packed @quadraui/node is loadable and raises typed errors');
+          "
