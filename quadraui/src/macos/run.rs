@@ -581,6 +581,14 @@ pub(crate) struct QuadraViewIvars {
     /// running across folded notches — see
     /// `start_or_extend_wheel_momentum`'s doc.
     momentum_timer: RefCell<Option<Retained<NSTimer>>>,
+    /// `false` until `viewDidChangeEffectiveAppearance` has fired once.
+    /// AppKit calls that hook once during [`run_with`]'s
+    /// `window.setContentView(Some(&view))` — before the window is even
+    /// key — when the view's effective appearance first resolves
+    /// against its window; that call carries no real OS change. See
+    /// the hook's own doc for why the first call is swallowed rather
+    /// than dispatched.
+    appearance_change_seen: Cell<bool>,
 }
 
 define_class!(
@@ -987,20 +995,85 @@ define_class!(
         // the receiver changing" — AppKit invokes this directly (no
         // `NSNotificationCenter` registration needed, unlike
         // `viewFrameDidChange:`/`windowDidChangeBackingProperties:`
-        // above) whenever the OS Light/Dark setting flips, the app's own
-        // `NSApplication.appearance` override changes, or (per
+        // above) whenever the OS Light/Dark setting flips or the app's
+        // own `NSApplication.appearance` override changes, and (per
         // `NSControlTintDidChangeNotification`'s own deprecation note,
-        // which points here as the replacement) the accent color
-        // changes — mirroring
-        // `win::run::dispatch_event`'s `WM_SETTINGCHANGE` arm, which
-        // folds the same three signals into one `SystemThemeChanged`.
-        // Re-reads the full `SystemTheme` through
+        // which points here as the replacement) is asserted to fire on
+        // an accent-colour change too — unconfirmed in-repo; drop that
+        // claim if a hardware smoke test shows otherwise. Loosely
+        // mirrors `win::run::dispatch_event`'s `WM_SETTINGCHANGE` arm,
+        // which folds the same light/dark + accent signal (plus
+        // high-contrast) into one `SystemThemeChanged` — "loosely"
+        // because that Win arm filters on `is_theme_setting_change` and
+        // explicitly covers `SPI_SETHIGHCONTRAST`, where this arm needs
+        // no filter and has no producer at all yet for reduce-motion
+        // (`NSWorkspace.accessibilityDisplayOptionsDidChangeNotification`
+        // would be the hook). Re-reads the full `SystemTheme` through
         // `PlatformServices::system_theme` rather than caching a stale
         // copy, the same way that `WM_SETTINGCHANGE` arm does via
-        // `backend.services().system_theme()`.
+        // `backend.services().system_theme()`. That read goes through
+        // `NSApp.effectiveAppearance`, not this view's own
+        // `effectiveAppearance` (see `MacPlatformServices::system_theme`'s
+        // doc) — an ordering assumption that the app's appearance has
+        // already resolved by the time AppKit reaches this view's
+        // callback; true in every observed case, since the view's
+        // effective appearance derives from the app's, but the one
+        // place in this method that could silently report the *old*
+        // theme for a single notification if a future AppKit ever
+        // reorders it.
+        //
+        // No AppKit documentation states `NSView`'s default
+        // implementation of this hook does anything, but forwarding to
+        // it first — the way `init`/`retain`/`release` overrides
+        // elsewhere in this crate do — costs nothing and survives a
+        // future AppKit release giving it one.
         #[unsafe(method(viewDidChangeEffectiveAppearance))]
         fn view_did_change_effective_appearance(&self) {
-            let theme = self.ivars().backend.borrow().services().system_theme().ok();
+            unsafe {
+                let _: () = msg_send![super(self), viewDidChangeEffectiveAppearance];
+            }
+
+            // AppKit fires this once during `run_with`'s
+            // `window.setContentView(Some(&view))` — before the window
+            // is even key, let alone visible — when the view's
+            // effective appearance first resolves against its window.
+            // That call is a startup artifact, not an OS change;
+            // Win-GUI never emits a `SystemThemeChanged` at launch, so
+            // swallow this one call to keep the two backends' event
+            // streams aligned.
+            if !self.ivars().appearance_change_seen.replace(true) {
+                return;
+            }
+
+            // `backend` may already be mutably borrowed further up
+            // this exact call stack: a file/folder picker's
+            // `NSOpenPanel`/`NSSavePanel` `runModal` (see
+            // `services.rs`'s module doc) spins a *nested* AppKit run
+            // loop while `dispatch` → `AppLogic::handle` still holds
+            // `backend.borrow_mut()` (see `dispatch`'s doc), and AppKit
+            // propagates an appearance flip to every view behind that
+            // modal panel during the nested loop. A plain `.borrow()`
+            // here would hit `BorrowMutError` and panic straight across
+            // this `define_class!` trampoline's C ABI boundary — before
+            // `dispatch`'s own `catch_unwind` ever gets a chance to run
+            // — aborting the process. `try_borrow` instead drops the
+            // notification under contention, the same trade the GTK
+            // runner makes for its own re-entrant
+            // `MainContext::iteration` case (`gtk::run`'s `pump_depth` +
+            // `try_borrow_mut`/`try_borrow_both` guards): a best-effort
+            // live update beats a guaranteed abort, and the theme is
+            // still available on the next real callback or the next
+            // on-demand `system_theme()` poll. The borrowed `Ref` is a
+            // temporary that drops at this statement's `;`, before
+            // `dispatch` (→ `handle` → `backend.borrow_mut()`) ever
+            // runs — collapsing this into a single `if let` would hold
+            // the `Ref` across that call and panic instead.
+            let theme = self
+                .ivars()
+                .backend
+                .try_borrow()
+                .ok()
+                .and_then(|b| b.services().system_theme().ok());
             if let Some(theme) = theme {
                 self.dispatch(UiEvent::SystemThemeChanged(theme));
             }
@@ -1142,6 +1215,7 @@ impl QuadraView {
             window_closed,
             wheel_momentum: RefCell::new(None),
             momentum_timer: RefCell::new(None),
+            appearance_change_seen: Cell::new(false),
         });
         unsafe { msg_send![super(this), init] }
     }

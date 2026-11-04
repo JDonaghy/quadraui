@@ -4396,12 +4396,13 @@ pub trait PlatformServices {
     /// - **Win-GUI** — `UISettings::GetColorValue` (`Background`/`Accent`
     ///   `UIColorType`s).
     ///
-    /// Win-GUI additionally pushes [`crate::UiEvent::SystemThemeChanged`]
-    /// on a live `WM_SETTINGCHANGE("ImmersiveColorSet")`; macOS and GTK
-    /// have no producer yet (same "declare the gap, don't fake it" posture
-    /// as [`crate::UiEvent::WindowStateChanged`] there) — on those two
-    /// backends this method remains a poll-on-demand query, not a
-    /// subscription.
+    /// Win-GUI and macOS additionally push
+    /// [`crate::UiEvent::SystemThemeChanged`] live — Win-GUI off
+    /// `WM_SETTINGCHANGE("ImmersiveColorSet")`, macOS off `NSView`'s
+    /// `viewDidChangeEffectiveAppearance` override point. GTK has no
+    /// producer yet (same "declare the gap, don't fake it" posture as
+    /// [`crate::UiEvent::WindowStateChanged`] there) — on GTK this
+    /// method remains a poll-on-demand query, not a subscription.
     fn system_theme(&self) -> ServiceResult<SystemTheme> {
         Err(BackendError::Unsupported)
     }

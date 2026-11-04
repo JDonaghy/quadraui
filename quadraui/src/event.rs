@@ -738,15 +738,15 @@ pub enum UiEvent {
     ///
     /// Win wires this off `WM_SETTINGCHANGE`, filtered to the
     /// `ImmersiveColorSet` setting name so it doesn't fire on every other
-    /// unrelated settings change Windows bundles into that message. GTK
-    /// and macOS have no producer yet — same "declare the gap, don't fake
-    /// it" posture as [`Self::WindowStateChanged`]: the variant exists so
-    /// app code and the event vocabulary are ready before each backend
-    /// wires its own native change notification (GTK's
-    /// `Settings::connect_gtk_application_prefer_dark_theme_notify`, macOS
-    /// KVO on `effectiveAppearance`). TUI has no equivalent OS notification
-    /// at all — a terminal can't push, only answer a query — so it will
-    /// never emit this variant.
+    /// unrelated settings change Windows bundles into that message. macOS
+    /// wires it off `NSView`'s `viewDidChangeEffectiveAppearance` override
+    /// point, which needs no notification-centre registration. GTK has no
+    /// producer yet — same "declare the gap, don't fake it" posture as
+    /// [`Self::WindowStateChanged`]: the variant exists so app code and
+    /// the event vocabulary are ready before GTK wires its own native
+    /// change notification (`Settings::connect_gtk_application_prefer_dark_theme_notify`).
+    /// TUI has no equivalent OS notification at all — a terminal can't
+    /// push, only answer a query — so it will never emit this variant.
     ///
     /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
     ///
