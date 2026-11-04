@@ -85,8 +85,6 @@ use std::path::Path;
 
 use serde::Serialize;
 
-#[cfg(all(feature = "win", target_os = "windows"))]
-use crate::app::demo_zone_id;
 use crate::registry::registry;
 #[cfg(any(
     feature = "tui",
@@ -95,7 +93,7 @@ use crate::registry::registry;
     all(feature = "win", target_os = "windows")
 ))]
 use crate::{
-    app::{group_panel_id, GROUPS},
+    app::{demo_zone_id, group_panel_id, GROUPS},
     GalleryApp,
 };
 
@@ -378,7 +376,7 @@ fn capture_tui_over(
     use quadraui::testing::{Anchor, ConformanceDriver};
     use quadraui::tui::testing::driver_with_shell;
 
-    for demo in demos_fn() {
+    for (demo_idx, demo) in demos_fn().into_iter().enumerate() {
         let group = demo.group().to_string();
         let group_idx = group_index_of(demo.as_ref());
         let variants = demo.variants();
@@ -405,7 +403,10 @@ fn capture_tui_over(
                 if group_idx != 0 {
                     click_group_zone(&mut driver, group_idx);
                 }
-                driver.click_text_at(demo.name(), Anchor::Center);
+                // By zone, not by `demo.name()`'s painted text — two demos
+                // in the same group can have names where one is a literal
+                // substring of the other (see `click_demo_zone`'s doc).
+                click_demo_zone(&mut driver, demo_idx);
                 if variants.len() > 1 {
                     driver.click_text_at(variant, Anchor::Center);
                 }
@@ -595,14 +596,21 @@ where
 /// `find`/`find_bounds` text search every `ConformanceDriver` uses is a
 /// first-match substring search, so clicking by name text can silently
 /// select the wrong demo's row when its name collides with an
-/// earlier-registered one.
+/// earlier-registered one — the production `BottomPanelDemo`/`PanelDemo`
+/// pair, registered in that order, is exactly this collision
+/// (`"Panel"` matches inside `"Bottom Panel"`'s own row first).
 ///
-/// Only [`quadraui::win::backend::WinBackend`]'s
-/// `draw_status_bar_interactive` registers a zone per `StatusBar` segment
-/// (TUI, GTK and macOS paint the bar without registering one), so this is
-/// only usable from `capture_win_over` — the other three capture functions
-/// still click by name text.
-#[cfg(all(feature = "win", target_os = "windows"))]
+/// `GalleryApp::render_content` registers this zone on every backend
+/// (via `Backend::register_zone`, since a `ListView` row carries no
+/// `WidgetId` of its own the way a `StatusBar` segment's `action_id`
+/// did), so every capture function below can click by zone rather than
+/// by painted name text.
+#[cfg(any(
+    feature = "tui",
+    all(feature = "macos", target_os = "macos"),
+    feature = "gtk",
+    all(feature = "win", target_os = "windows")
+))]
 fn click_demo_zone<D>(driver: &mut D, index: usize)
 where
     D: quadraui::testing::ConformanceDriver + quadraui::testing::DriverInput,
@@ -809,7 +817,7 @@ fn capture_macos(
     use quadraui::macos::testing::driver_with_shell;
     use quadraui::testing::{Anchor, ConformanceDriver};
 
-    for demo in registry() {
+    for (demo_idx, demo) in registry().into_iter().enumerate() {
         let group = demo.group().to_string();
         let group_idx = group_index_of(demo.as_ref());
         let variants = demo.variants();
@@ -835,7 +843,10 @@ fn capture_macos(
                 if group_idx != 0 {
                     click_group_zone(&mut driver, group_idx);
                 }
-                driver.click_text_at(demo.name(), Anchor::Center);
+                // By zone, not by `demo.name()`'s painted text — two demos
+                // in the same group can have names where one is a literal
+                // substring of the other (see `click_demo_zone`'s doc).
+                click_demo_zone(&mut driver, demo_idx);
                 if variants.len() > 1 {
                     driver.click_text_at(variant, Anchor::Center);
                 }
@@ -969,7 +980,7 @@ fn capture_gtk_over(
     use quadraui::gtk::testing::driver_with_shell;
     use quadraui::testing::{Anchor, ConformanceDriver};
 
-    for demo in demos_fn() {
+    for (demo_idx, demo) in demos_fn().into_iter().enumerate() {
         let group = demo.group().to_string();
         let group_idx = group_index_of(demo.as_ref());
         let variants = demo.variants();
@@ -996,7 +1007,10 @@ fn capture_gtk_over(
                 if group_idx != 0 {
                     click_group_zone(&mut driver, group_idx);
                 }
-                driver.click_text_at(demo.name(), Anchor::Center);
+                // By zone, not by `demo.name()`'s painted text — two demos
+                // in the same group can have names where one is a literal
+                // substring of the other (see `click_demo_zone`'s doc).
+                click_demo_zone(&mut driver, demo_idx);
                 if variants.len() > 1 {
                     driver.click_text_at(variant, Anchor::Center);
                 }
@@ -1708,10 +1722,10 @@ mod tests {
     /// (which toggles it hidden instead of selecting it), and selecting a
     /// demo's sidebar row by its painted name text (ambiguous whenever
     /// another registered demo's name contains it as a substring).
-    #[cfg(all(feature = "win", target_os = "windows"))]
+    #[cfg(any(feature = "tui", all(feature = "win", target_os = "windows")))]
     struct NamedDemo(&'static str);
 
-    #[cfg(all(feature = "win", target_os = "windows"))]
+    #[cfg(any(feature = "tui", all(feature = "win", target_os = "windows")))]
     impl crate::Demo for NamedDemo {
         fn name(&self) -> &'static str {
             self.0
@@ -1769,7 +1783,7 @@ mod tests {
     /// `BottomPanelDemo`/`PanelDemo` pair in `registry()` — a text search
     /// for `"Zone"` would match this row first, since `"Drop Zone"`
     /// contains `"Zone"` as a substring.
-    #[cfg(all(feature = "win", target_os = "windows"))]
+    #[cfg(any(feature = "tui", all(feature = "win", target_os = "windows")))]
     fn name_collision_registry() -> Vec<Box<dyn crate::Demo>> {
         vec![
             Box::new(NamedDemo("Drop Zone")),
@@ -1779,15 +1793,82 @@ mod tests {
 
     /// `click_demo_zone` lands each click by the sidebar row's registered
     /// `WidgetId` zone rather than by searching for its painted name, so a
+    /// name collision like `"Drop Zone"`/`"Zone"` (or the production
+    /// `"Bottom Panel"`/`"Panel"` pair) can't make it select the wrong
+    /// row — `GalleryApp::render_content` registers that zone on every
+    /// backend, so `capture_tui_over` picks the right row here exactly
+    /// the same way `capture_win_over` already did below.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn capture_tui_selects_each_demo_by_its_own_zone_despite_a_group_0_name_collision() {
+        let dir = tempfile::tempdir().expect("create temp capture dir");
+        let mut manifest = Vec::new();
+
+        capture_tui_over(name_collision_registry, dir.path(), &mut manifest)
+            .expect("capture_tui_over");
+
+        assert_eq!(manifest.len(), 2, "one row per demo: {manifest:#?}");
+        for name in ["Drop Zone", "Zone"] {
+            let entry = manifest
+                .iter()
+                .find(|e| e.demo == name)
+                .unwrap_or_else(|| panic!("missing manifest row for demo {name}: {manifest:#?}"));
+            assert!(
+                entry.status.is_none(),
+                "demo {name} should have captured cleanly: {entry:#?}"
+            );
+            let path = entry
+                .path
+                .as_deref()
+                .unwrap_or_else(|| panic!("demo {name} should have a path: {entry:#?}"));
+            let svg = fs::read_to_string(dir.path().join(path)).expect("read captured SVG");
+            assert!(
+                svg.contains(&format!("selected={name}")),
+                "SVG for {name} should show that demo's own rendered content \
+                 (proving the click landed on its own row, not the other \
+                 demo's whose name collides with it as a substring):\n{svg}"
+            );
+        }
+    }
+
+    /// Pins the literal production regression the collision tests above
+    /// generalise: `BottomPanelDemo` ("Bottom Panel") is registered
+    /// immediately before `PanelDemo` ("Panel") in `registry()`, in the
+    /// same `"Chrome"` group — selecting "Panel" by painted name text
+    /// would land on "Bottom Panel"'s row instead (a first-match
+    /// substring search), and then every one of `PanelDemo`'s three
+    /// variant labels ("Expanded"/"Collapsed"/"No accent, close only")
+    /// fails to find its own text on `BottomPanelDemo`'s screen.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn capture_tui_captures_every_panel_demo_variant_despite_the_bottom_panel_name_collision() {
+        let dir = tempfile::tempdir().expect("create temp capture dir");
+        let mut manifest = Vec::new();
+
+        capture_tui_over(registry, dir.path(), &mut manifest).expect("capture_tui_over");
+
+        let panel_entries: Vec<_> = manifest.iter().filter(|e| e.demo == "Panel").collect();
+        assert_eq!(
+            panel_entries.len(),
+            3,
+            "Panel has three variants, so three manifest rows: {panel_entries:#?}"
+        );
+        for entry in panel_entries {
+            assert!(
+                entry.status.is_none(),
+                "Panel's {:?} variant should have captured cleanly: {entry:#?}",
+                entry.variant
+            );
+        }
+    }
+
+    /// `click_demo_zone` lands each click by the sidebar row's registered
+    /// `WidgetId` zone rather than by searching for its painted name, so a
     /// name collision like `"Drop Zone"`/`"Zone"` can't make it select the
-    /// wrong row. That zone lookup only resolves on `win`: only
-    /// [`quadraui::win::backend::WinBackend`]'s `draw_status_bar_interactive`
-    /// registers a zone per `StatusBar` segment (TUI, GTK and macOS paint
-    /// the bar without registering one), so `capture_win_over` is the only
-    /// one of the four capture functions this fix applies to — see
-    /// `capture_tui_selects_the_clicked_variant_and_names_it_in_the_filename`
-    /// and its GTK/macOS counterparts for the name-text click path the
-    /// other three backends still use.
+    /// wrong row — the `win`-specific analogue of
+    /// `capture_tui_selects_each_demo_by_its_own_zone_despite_a_group_0_name_collision`
+    /// above, pinned separately since this backend's capture plumbing
+    /// (`capture_win_on_large_stack`) differs from the other three.
     #[cfg(all(feature = "win", target_os = "windows"))]
     #[test]
     fn capture_win_selects_each_demo_by_its_own_zone_despite_a_group_0_name_collision() {
