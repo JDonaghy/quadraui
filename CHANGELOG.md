@@ -295,6 +295,13 @@ only a push to `main` runs this workflow.
   layout produces and crossterm resolves it, clearing `SHIFT` as it does.
   Not a compile break, but a consumer matching such a chord on the base-key
   glyph plus `shift` has to match the shifted glyph instead.
+- `Form`/`FormField`'s new `control_width` defaults to `ControlWidth::Fill`,
+  so every existing form on every backend repositions its controls from the
+  row's right edge to the shared column right after the label on the next
+  `quadraui` bump — not a compile break (the field is additive), but a
+  visible layout change for any consumer that builds `Form`/`FormField`
+  literals (`grep -rn 'FormField\s*{\|Form\s*{' ~/src/coord-tui/src
+  ~/src/vimcode/src` finds both building forms, so both repaint).
 
 ### Fixed
 - `compose::MenuSystem::set_menus` no longer leaves `open_item`/`submenu_path`
