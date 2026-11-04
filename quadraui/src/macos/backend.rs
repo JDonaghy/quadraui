@@ -7487,12 +7487,12 @@ mod tests {
 
     // ── Form (#808, PaintSurface Phase 2a) ──────────────────────────
 
-    /// `macos::form::draw_form` previously matched only 10 of 14
-    /// `FieldKind` variants and silently fell through on `Slider` /
-    /// `ColorPicker` / `Dropdown` / `TextArea`, painting nothing beyond
-    /// label and row background. It now routes through the shared
-    /// `primitives::form::paint`. This scans each field's row past where
-    /// its label ends for a pixel that isn't the row background.
+    /// `macos::form::draw_form` routes every `FieldKind` through the
+    /// shared `primitives::form::paint`, which never silently drops a
+    /// variant. This scans each field's row past where its shared
+    /// label column ends (`primitives::form::native_surface_paint`'s
+    /// `control_start`, right after the label, independent of
+    /// `ControlWidth` mode) for a pixel that isn't the row background.
     #[test]
     fn mac_backend_draw_form_paints_the_four_field_kinds_macos_used_to_drop() {
         use super::super::headless::BitmapSurface;
@@ -7594,9 +7594,27 @@ mod tests {
         let theme = Theme::default();
         let bg = (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b);
 
+        // Mirrors `left_label_column_width` + `left_label_geometry` +
+        // `control_start` from `primitives::form::native_surface_paint`:
+        // every field here has a non-empty label and the default
+        // (`Left`) label position, so the shared label column is the
+        // widest label among them, and every control starts 8.0 past
+        // that column's right edge — regardless of `ControlWidth`
+        // mode, since none of these four kinds stretch their start
+        // position with `Fill`.
+        let col_width = form
+            .fields
+            .iter()
+            .map(|f| {
+                let label: String = f.label.spans.iter().map(|s| s.text.as_str()).collect();
+                backend.surface_measure_text(&label).0
+            })
+            .fold(0.0_f32, f32::max);
+
         for vf in &flayout.visible_fields {
             let field = &form.fields[vf.field_idx];
-            let x0 = (vf.bounds.x + vf.bounds.width * 0.6) as u32;
+            let control_start = vf.bounds.x + 6.0 + col_width + 8.0;
+            let x0 = (control_start as u32).min(W);
             let x1 = ((vf.bounds.x + vf.bounds.width) as u32).min(W);
             let y0 = vf.bounds.y as u32;
             let y1 = ((vf.bounds.y + vf.bounds.height) as u32).min(H);
@@ -7613,11 +7631,10 @@ mod tests {
             }
             assert!(
                 painted_beyond_label,
-                "field {:?} ({:?}) must paint something in the right ~40% of its \
-                 row (past the label) — this is exactly the #808 silent-drop bug: \
-                 pre-fix, macos::form::draw_form's `_ => {{}}` matched Slider/\
-                 ColorPicker/Dropdown/TextArea and painted only the row background \
-                 there",
+                "field {:?} ({:?}) must paint something past its shared label \
+                 column (x >= {x0}) — a `_ => {{}}` fallthrough for Slider/\
+                 ColorPicker/Dropdown/TextArea in `macos::form::draw_form` would \
+                 paint only the row background there",
                 field.id, field.kind,
             );
         }

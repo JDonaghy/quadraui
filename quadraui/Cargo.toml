@@ -1245,6 +1245,16 @@ path = "examples/gtk_form_scroll.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_form_control_width"
+path = "examples/tui_form_control_width.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_form_control_width"
+path = "examples/gtk_form_control_width.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_folder_picker"
 path = "examples/tui_folder_picker.rs"
 required-features = ["tui"]
