@@ -38,6 +38,8 @@ mod ai_transcript;
 mod appshell_demo;
 #[path = "../examples/common/bottom_panel_demo.rs"]
 mod bottom_panel_demo;
+#[path = "../examples/common/codicon_tree_demo.rs"]
+mod codicon_tree_demo;
 #[path = "../examples/common/canvas_app.rs"]
 mod canvas_app;
 #[path = "../examples/common/canvas_shapes_app.rs"]
@@ -198,6 +200,7 @@ use bottom_panel_demo::BottomPanelDemo;
 use canvas_app::CanvasApp;
 use canvas_shapes_app::CanvasShapesApp;
 use caret_shape_demo::CaretShapeDemo;
+use codicon_tree_demo::CodiconTreeDemo;
 use chart_app::ChartApp;
 use chat_demo::ChatDemo;
 use clipboard_demo::ClipboardDemo;
@@ -9977,4 +9980,62 @@ fn form_label_placement_tab_order_follows_tab_index_not_declaration_order() {
          field (\"owner\"), not the next-declared field (\"role\"):\n{}",
         driver.screen()
     );
+}
+
+/// With nerd fonts on (the demo's default), rows paint the bundled
+/// codicon glyph — a non-ASCII PUA codepoint — rather than the plain
+/// fallback text, and every row label is still visible.
+#[test]
+fn codicon_tree_paints_glyphs_when_nerd_fonts_on() {
+    let driver = TuiDriver::new(CodiconTreeDemo::new(), 40, 10);
+    assert!(driver.app().nerd_fonts_enabled());
+    let screen = driver.screen();
+    for label in ["quadraui", "src", "types.rs", "Cargo.toml", "README.md"] {
+        assert!(
+            screen.contains(label),
+            "row label {label:?} should be visible:\n{screen}"
+        );
+    }
+    assert!(
+        !screen.contains("DIR") && !screen.contains("TOML") && !screen.contains("MD"),
+        "nerd-fonts-on should paint codicon glyphs, not the ASCII fallbacks:\n{screen}"
+    );
+    // The positive case: the bundled "folder" and "file-code" codepoints
+    // actually appear, rather than this test only ever being able to
+    // fail loudly if `Icon::resolve`'s glyph side regressed to an empty
+    // string instead of the fallback.
+    assert!(
+        screen.contains('\u{ea83}'),
+        "root-folder/folder rows should paint the \"folder\" codicon glyph:\n{screen}"
+    );
+    assert!(
+        screen.contains('\u{eae9}'),
+        "src file rows should paint the \"file-code\" codicon glyph:\n{screen}"
+    );
+}
+
+/// `n` toggles nerd fonts off: the same rows now paint each icon's
+/// plain-text fallback instead of the codicon glyph — the TUI-degrades
+/// path every `Icon` goes through (see `Icon::resolve`'s doc).
+#[test]
+fn codicon_tree_falls_back_to_plain_text_when_nerd_fonts_off() {
+    let mut driver = TuiDriver::new(CodiconTreeDemo::new(), 40, 10);
+    driver.type_char('n');
+    assert!(!driver.app().nerd_fonts_enabled());
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("DIR"),
+        "folder rows should fall back to the \"DIR\" text:\n{screen}"
+    );
+    assert!(
+        screen.contains("RS"),
+        "file-code rows should fall back to the \"RS\" text:\n{screen}"
+    );
+    for label in ["quadraui", "src", "types.rs", "Cargo.toml", "README.md"] {
+        assert!(
+            screen.contains(label),
+            "row label {label:?} should still be visible:\n{screen}"
+        );
+    }
 }
