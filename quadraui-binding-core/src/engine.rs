@@ -2351,6 +2351,78 @@ mod tests {
         );
     }
 
+    /// Enter on a focused `DataTable` with a selected row must activate
+    /// that row (`DataTableEvent::RowActivated`) — the keyboard equivalent
+    /// of a pointer double-click, so an app wired to `RowActivated` for
+    /// "open" also works from the keyboard, not just a mouse.
+    #[test]
+    fn enter_on_a_focused_data_table_activates_the_selected_row() {
+        use quadraui::{DataTableEvent, Key, NamedKey};
+
+        let mut driver = data_table_driver(Some(0));
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("table"))),
+                "the data table is a tab stop and must accept focus"
+            );
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::DataTable(id, DataTableEvent::RowActivated { idx: 0 })
+                    if *id == WidgetId::new("table")
+            )),
+            "expected RowActivated {{ idx: 0 }}: {:?}",
+            dispatched
+        );
+    }
+
+    /// Enter on a focused `DataTable` with nothing selected must be a
+    /// no-op — there is no row to activate, so it must not fall through
+    /// to a raw `UiEvent::KeyPressed` the handler has no table to route
+    /// it back to, and must not activate row 0 by default the way
+    /// Up/Down's `RowSelected` navigation does.
+    #[test]
+    fn enter_on_a_focused_data_table_with_no_selection_is_a_no_op() {
+        use quadraui::{DataTableEvent, Key, NamedKey};
+
+        let mut driver = data_table_driver(None);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("table"))),
+                "the data table is a tab stop and must accept focus"
+            );
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            !dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::DataTable(_, DataTableEvent::RowActivated { .. })
+            )),
+            "no selection means no row to activate: {:?}",
+            dispatched
+        );
+    }
+
     /// A single click on a `DataTable` row must emit
     /// `DataTableEvent::RowSelected`, not `RowActivated` — the "select"
     /// event, so a row body click never opens anything on its own.
