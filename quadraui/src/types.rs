@@ -267,6 +267,32 @@ impl Icon {
         self
     }
 
+    /// Build an [`Icon`] from one of the bundled codicon set's names
+    /// (`"folder"`, `"file"`, `"git-branch"`, …) instead of a raw glyph
+    /// string. `None` if `name` isn't in the crate's curated name table —
+    /// see `quadraui/src/codicon_names.rs`'s module doc for the full list
+    /// and where to extend it.
+    ///
+    /// `glyph` resolves to the exact PUA codepoint the bundled codicon
+    /// font (`codicon.rs`'s `FONT_BYTES`) maps that name to. No backend
+    /// changes are needed to paint it: every GUI backend already appends
+    /// the bundled codicon font last in its text-rendering fallback
+    /// chain (see `codicon.rs`'s module doc), so this glyph renders from
+    /// the bundled font automatically whenever [`Self::resolve`] picks it
+    /// — the same path any other app-supplied glyph already goes
+    /// through. `fallback` is the ASCII/Unicode text painted instead when
+    /// nerd fonts are unavailable (TUI with `set_nerd_fonts(false)`, the
+    /// default).
+    #[must_use]
+    pub fn codicon(name: &str, fallback: impl Into<String>) -> Option<Self> {
+        let glyph = crate::codicon_names::codepoint(name)?;
+        Some(Self {
+            glyph: glyph.to_string(),
+            fallback: fallback.into(),
+            color: None,
+        })
+    }
+
     /// The Nerd Font glyph when `nerd_fonts_enabled` is set, otherwise
     /// the ASCII/Unicode fallback. Centralises the
     /// `if nerd_fonts_enabled { &self.glyph } else { &self.fallback }`
@@ -955,5 +981,23 @@ mod tests {
         // Toggling an index already present (even if duplicated in input)
         // removes every occurrence and leaves the rest sorted.
         assert_eq!(next, vec![5]);
+    }
+
+    #[test]
+    fn icon_codicon_resolves_a_known_name_to_its_bundled_glyph() {
+        let icon = Icon::codicon("folder", "DIR").expect("\"folder\" is a known codicon name");
+        assert_eq!(icon.glyph, "\u{ea83}");
+        assert_eq!(icon.fallback, "DIR");
+        assert_eq!(icon.color, None);
+        // The resolved glyph goes through the same two-sided path as any
+        // other app-supplied `Icon` — nerd-fonts-on paints the glyph,
+        // nerd-fonts-off paints the caller's own fallback text.
+        assert_eq!(icon.resolve(true), "\u{ea83}");
+        assert_eq!(icon.resolve(false), "DIR");
+    }
+
+    #[test]
+    fn icon_codicon_rejects_an_unknown_name() {
+        assert_eq!(Icon::codicon("not-a-real-codicon-name", "?"), None);
     }
 }
