@@ -109,7 +109,10 @@ only a push to `main` runs this workflow.
   `label_width`); `Content` sizes to the control's own natural content,
   repositioned but otherwise matching the pre-existing behaviour.
   `min_control_width` floors the resolved width so a narrow `Fixed`/`Content`
-  column never clips its value below a usable size. All additive
+  column never clips its value below a usable size — a text input whose
+  column is narrower than its value now clips the value at the box's inner
+  edge on GTK/macOS/Win too, rather than drawing it through the box's
+  border. All additive
   `#[serde(default)]` fields. `examples/common/form_control_width.rs`
   (`tui_form_control_width` / `gtk_form_control_width`) exercises all three
   modes side by side; `tests/tui_example_driver.rs`'s `form_control_width_*`
