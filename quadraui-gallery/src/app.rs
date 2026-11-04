@@ -2,18 +2,30 @@
 //!
 //! Chrome layout:
 //! - **Activity bar**: the five primitive groups in [`GROUPS`].
-//! - **Sidebar**: the demos registered (via [`crate::registry::registry`])
-//!   in the active group, one clickable row each.
+//! - **Sidebar**: a themed [`quadraui::ListView`] of the demos registered
+//!   (via [`crate::registry::registry`]) in the active group, one
+//!   selectable row each.
 //! - **Main pane**: a Demo / Code / Data tab strip over the active
 //!   demo's render / trimmed source / primitive JSON.
-//! - **Bottom panel**: an event log. [`GalleryApp::handle`] logs every
-//!   [`UiEvent`] (plus its target [`WidgetId`], when the event carries
-//!   one) *before* forwarding it to the active demo's content area.
+//! - **Bottom panel**: an event log, hidden by default — `Ctrl+J` is the
+//!   only way to reveal it (see [`GalleryApp::setup_shell`] and
+//!   [`GalleryApp::handle_inner`]; dragging the resize divider only
+//!   resizes an already-visible panel, it never shows a hidden one).
+//!   [`GalleryApp::handle`] logs every
+//!   [`UiEvent`] but [`UiEvent::MouseMoved`] (plus its target
+//!   [`WidgetId`], when the event carries one) *before* forwarding it to
+//!   the active demo's content area.
+//!
+//! Every colour painted directly by this module (as opposed to by a
+//! primitive's own themed rasteriser) comes from [`Backend::theme`], so
+//! the chrome follows whichever [`quadraui::Theme`] the host backend is
+//! running — including `Theme::light_default()`.
 
 use quadraui::{
-    AppShellEvent, AppShellLayout, Backend, Color, InteractionState, Key, NamedKey,
-    PanelDefinition, Reaction, Rect, ShellApp, ShellConfig, ShellContext, StatusBar,
-    StatusBarSegment, TabBar, TabBarHit, TabItem, UiEvent, WidgetId,
+    AppShellEvent, AppShellLayout, Backend, Decoration, InteractionState, Key, ListItem, ListView,
+    ListViewHit, Modifiers, NamedKey, PanelDefinition, Reaction, Rect, ShellApp, ShellConfig,
+    ShellContext, StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar, TabBarHit, TabItem,
+    TextDisplay, TextDisplayLine, UiEvent, WidgetId,
 };
 
 use crate::registry::registry;
@@ -65,16 +77,18 @@ pub fn group_panel_id(index: usize) -> WidgetId {
 
 /// The [`WidgetId`] the sidebar row for `registry()[index]` (or any
 /// other demo list passed to [`GalleryApp::from_demos`], same order) is
-/// given as its `StatusBar` segment's `action_id` — parallel to
-/// `GalleryApp`'s own `demo_ids` field, built the same way in
-/// [`GalleryApp::from_demos`]. Only `quadraui::win::backend::WinBackend`'s
-/// `draw_status_bar_interactive` turns a segment's `action_id` into a
-/// registered zone, so `quadraui::testing::ConformanceDriver::inventory()`
-/// only reports this id's real painted bounds on the `win` backend — public
-/// so `capture_win_over` can resolve a demo's real click target from its
-/// zone instead of scraping its name as painted text, which two demos
-/// sharing a name substring (e.g. `"Panel"` and `"Bottom Panel"`) makes
-/// ambiguous for a first-match-wins text search.
+/// registered under — parallel to `GalleryApp`'s own `demo_ids` field,
+/// built the same way in [`GalleryApp::from_demos`].
+/// `GalleryApp::render_content` registers this id's real painted bounds
+/// as a zone on every backend (via `Backend::register_zone`, since a
+/// `ListView` row carries no `WidgetId` of its own to double as an
+/// action id), so `quadraui::testing::ConformanceDriver::inventory()`
+/// resolves it regardless of which backend is running — public so a
+/// capture helper (e.g. `capture.rs`'s `click_demo_zone`) can resolve a
+/// demo's real click target from its zone instead of scraping its name
+/// as painted text, which two demos sharing a name substring (e.g.
+/// `"Panel"` and `"Bottom Panel"`) makes ambiguous for a
+/// first-match-wins text search.
 pub fn demo_zone_id(index: usize) -> WidgetId {
     WidgetId::new(format!("gallery:demo:{index}"))
 }
@@ -127,6 +141,20 @@ pub struct GalleryApp {
     active_variant: usize,
     active_tab: MainTab,
     log: Vec<String>,
+    /// Applied to the backend every frame, in [`ShellApp::pre_render`] —
+    /// `Theme::default()` (dark) unless [`Self::with_theme`] overrides it.
+    /// Threaded through so `--capture --theme light` (see
+    /// `crate::capture`) can produce a light-theme gallery without a
+    /// second, parallel app type.
+    theme: quadraui::Theme,
+    /// `AppShell::hovered_activity_idx` as of the end of the previous
+    /// [`ShellApp::handle`] dispatch. The shell mutates that field from
+    /// its own `MouseMoved` arms and then reports `AppShellEvent::
+    /// Ignored`, so this app's `Reaction` is the only thing that can ask
+    /// the host for the frame that paints the new highlight; comparing
+    /// against the cached value spots both directions of the transition
+    /// (pointer entering an icon, and pointer leaving the bar).
+    hovered_activity_idx: Option<usize>,
 }
 
 impl GalleryApp {
@@ -141,9 +169,7 @@ impl GalleryApp {
     /// than private for that last use, never exposed outside this
     /// crate.
     pub(crate) fn from_demos(demos: Vec<Box<dyn Demo>>) -> Self {
-        let demo_ids: Vec<WidgetId> = (0..demos.len())
-            .map(|i| WidgetId::new(format!("gallery:demo:{i}")))
-            .collect();
+        let demo_ids: Vec<WidgetId> = (0..demos.len()).map(demo_zone_id).collect();
         let active_group = 0;
         let selected = demos.iter().position(|d| d.group() == GROUPS[active_group]);
         Self {
@@ -154,7 +180,25 @@ impl GalleryApp {
             active_variant: 0,
             active_tab: MainTab::Demo,
             log: vec!["Gallery ready — click a group, then a demo.".into()],
+            theme: quadraui::Theme::default(),
+            hovered_activity_idx: None,
         }
+    }
+
+    /// Override the theme applied every frame (see the `theme` field's
+    /// doc). Consuming builder so `GalleryApp::from_demos(..).with_theme(..)`
+    /// chains at the construction site — `crate::capture`'s only caller,
+    /// gated the same way its four capture legs are: nothing calls this
+    /// when none of them are compiled in.
+    #[cfg(any(
+        feature = "tui",
+        all(feature = "macos", target_os = "macos"),
+        feature = "gtk",
+        all(feature = "win", target_os = "windows")
+    ))]
+    pub(crate) fn with_theme(mut self, theme: quadraui::Theme) -> Self {
+        self.theme = theme;
+        self
     }
 
     /// The [`ShellConfig`] every backend's `main.rs` passes to
@@ -188,7 +232,7 @@ impl GalleryApp {
             .map(|(i, _)| i)
     }
 
-    fn tab_bar(&self) -> TabBar {
+    fn tab_bar(&self, backend: &dyn Backend) -> TabBar {
         TabBar {
             id: WidgetId::new("gallery:main-tabs"),
             tabs: [MainTab::Demo, MainTab::Code, MainTab::Data]
@@ -201,9 +245,57 @@ impl GalleryApp {
                 .collect(),
             scroll_offset: 0,
             right_segments: vec![],
-            active_accent: Some(Color::rgb(0, 140, 220)),
+            active_accent: Some(backend.theme().accent_bg),
             show_tab_close: false,
             compact: true,
+        }
+    }
+
+    /// Build the sidebar's [`ListView`] for `rows` (the demo indices in
+    /// the active group, in display order) — shared by `render_content`
+    /// (paint) and `handle_inner` (click hit-test via
+    /// [`Backend::list_layout`]) so the two can never disagree about
+    /// which row a click landed on.
+    fn sidebar_list(&self, rows: &[usize]) -> ListView {
+        // `self.selected` is only `None` when the active group is empty,
+        // which the caller (`render_content`) handles with a sibling
+        // branch before ever building this list — so the `unwrap_or(0)`
+        // fallback below is unreachable in practice, not a silent
+        // "row 0 looks selected" trap.
+        debug_assert!(
+            !rows.is_empty() && self.selected.is_some(),
+            "sidebar_list called with no selection and/or an empty group"
+        );
+        let selected_idx = self
+            .selected
+            .and_then(|idx| rows.iter().position(|&r| r == idx))
+            .unwrap_or(0);
+        let items: Vec<ListItem> = rows
+            .iter()
+            .map(|&idx| ListItem {
+                text: StyledText::plain(self.demos[idx].name()),
+                icon: None,
+                detail: None,
+                decoration: Decoration::Normal,
+            })
+            .collect();
+        ListView {
+            id: WidgetId::new("gallery:sidebar:list"),
+            title: None,
+            items,
+            selected_idx,
+            scroll_offset: 0,
+            // Always highlighted, not gated on real keyboard focus: this
+            // row denotes "currently showing", a persistent indicator
+            // rather than a focus-only affordance. This always paints
+            // `theme.selected_bg` rather than dimming to
+            // `theme.inactive_selected_bg` when the sidebar itself isn't
+            // focused — a deliberate simplification, not an oversight.
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
         }
     }
 
@@ -219,7 +311,15 @@ impl GalleryApp {
         }
     }
 
+    /// Append `event` to the log, except [`UiEvent::MouseMoved`] — logged
+    /// at the window's native pointer-move rate, it would otherwise
+    /// drown out every other entry and defeat
+    /// [`push_log`](Self::push_log)'s whole-session [`MAX_LOG_LINES`]
+    /// budget within a few seconds of mouse movement.
     fn log_event(&mut self, event: &UiEvent) {
+        if matches!(event, UiEvent::MouseMoved { .. }) {
+            return;
+        }
         let (label, widget) = describe_event(event);
         let line = match widget {
             Some(id) => format!("{label} \u{2192} {}", id.as_str()),
@@ -271,80 +371,102 @@ impl Default for GalleryApp {
 }
 
 impl ShellApp for GalleryApp {
+    /// Set before the shell computes its layout or paints anything —
+    /// [`ShellApp::pre_render`]'s own doc calls this out as the hook for
+    /// `set_theme`, so the shell's own chrome (sidebar/activity-bar/status
+    /// bar) and every demo's overlay primitives (`Dialog`, `ContextMenu`,
+    /// ...) pick up `self.theme` on the same frame it changes.
+    fn pre_render(&self, backend: &mut dyn Backend) {
+        backend.set_theme(self.theme);
+    }
+
     fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
         let lh = backend.line_height();
 
         // ── Sidebar: demos in the active group ──────────────────────
+        //
+        // A themed `ListView`: selection highlight, no hairline between
+        // rows, and left/right padding that matches every other
+        // `ListView` host in the toolkit — not a gallery-only look.
         if let Some(sb) = layout.sidebar_content_bounds {
             let rows: Vec<usize> = self.demos_in_active_group().collect();
             if rows.is_empty() {
-                let bar = StatusBar {
+                let list = ListView {
                     id: WidgetId::new("gallery:sidebar:empty"),
-                    left_segments: vec![StatusBarSegment {
-                        text: " (no demos ported yet) ".into(),
-                        fg: Color::rgb(120, 120, 120),
-                        bg: Color::rgb(25, 25, 25),
-                        bold: false,
-                        action_id: None,
+                    title: None,
+                    items: vec![ListItem {
+                        text: StyledText::plain("(no demos ported yet)"),
+                        icon: None,
+                        detail: None,
+                        decoration: Decoration::Muted,
                     }],
-                    right_segments: vec![],
+                    selected_idx: 0,
+                    scroll_offset: 0,
+                    has_focus: false,
+                    bordered: false,
+                    h_scroll: 0,
+                    max_content_width: None,
+                    show_v_scrollbar: false,
                 };
-                backend.draw_status_bar_interactive(
-                    Rect::new(sb.x, sb.y, sb.width, lh),
-                    &bar,
-                    &InteractionState::new(),
-                );
+                backend.draw_list(sb, &list);
             } else {
-                for (row, &idx) in rows.iter().enumerate() {
-                    let y = sb.y + row as f32 * lh;
-                    if y + lh > sb.y + sb.height {
-                        break;
+                let list = self.sidebar_list(&rows);
+                backend.draw_list(sb, &list);
+
+                // Register each visible row's real painted bounds under
+                // its own `demo_zone_id` — `ListItem` carries no
+                // `WidgetId` of its own (unlike `StatusBarSegment::action_id`),
+                // so this is the one place a demo's sidebar row becomes a
+                // zone `quadraui::testing::ConformanceDriver::inventory()`
+                // reports, on every backend.
+                let local = Rect::new(0.0, 0.0, sb.width, sb.height);
+                let list_layout = backend.list_layout(local, &list);
+                for visible in &list_layout.visible_items {
+                    if let Some(&idx) = rows.get(visible.item_idx) {
+                        let bounds = Rect::new(
+                            sb.x + visible.bounds.x,
+                            sb.y + visible.bounds.y,
+                            visible.bounds.width,
+                            visible.bounds.height,
+                        );
+                        backend.register_zone(self.demo_ids[idx], bounds);
                     }
-                    let is_active = self.selected == Some(idx);
-                    let bar = StatusBar {
-                        id: WidgetId::new(format!("gallery:sidebar-row:{idx}")),
-                        left_segments: vec![StatusBarSegment {
-                            text: format!(" {} ", self.demos[idx].name()),
-                            fg: if is_active {
-                                Color::rgb(255, 255, 255)
-                            } else {
-                                Color::rgb(190, 190, 190)
-                            },
-                            bg: if is_active {
-                                Color::rgb(45, 70, 110)
-                            } else {
-                                Color::rgb(25, 25, 25)
-                            },
-                            bold: is_active,
-                            action_id: Some(self.demo_ids[idx]),
-                        }],
-                        right_segments: vec![],
-                    };
-                    backend.draw_status_bar_interactive(
-                        Rect::new(sb.x, y, sb.width, lh),
-                        &bar,
-                        &InteractionState::new(),
-                    );
                 }
             }
+        }
+
+        // ── Bottom panel: event log ──────────────────────────────────
+        // Painted before the main pane so a demo's own overlay (a
+        // `Dialog`, a painted `ContextMenuController` popup, ...) that
+        // extends past `main_content_bounds` — which can happen when its
+        // anchor sits near the bottom edge of a tall main pane, right
+        // next to this sibling panel — layers on top of the log instead
+        // of being hidden under it. The log and the main pane are
+        // non-overlapping siblings everywhere else, so swapping which
+        // one paints first changes nothing visible except that one
+        // overlap case.
+        if let Some(bp) = layout.bottom_panel_bounds {
+            draw_event_log(backend, bp, &self.log);
         }
 
         // ── Main pane: Demo / Code / Data tabs ──────────────────────
         let main = layout.main_content_bounds;
         if main.width > 0.0 && main.height > 0.0 {
             let tab_rect = Rect::new(main.x, main.y, main.width, lh);
-            backend.draw_tab_bar_layout(tab_rect, &self.tab_bar(), None);
+            let bar = self.tab_bar(backend);
+            backend.draw_tab_bar_layout(tab_rect, &bar, None);
 
             let body = Rect::new(main.x, main.y + lh, main.width, (main.height - lh).max(0.0));
 
             match self.selected {
                 None => {
+                    let theme = backend.theme();
                     let bar = StatusBar {
                         id: WidgetId::new("gallery:main:empty"),
                         left_segments: vec![StatusBarSegment {
                             text: " Select a demo from the sidebar ".into(),
-                            fg: Color::rgb(160, 160, 160),
-                            bg: Color::rgb(20, 20, 20),
+                            fg: theme.muted_fg,
+                            bg: theme.surface_bg,
                             bold: false,
                             action_id: None,
                         }],
@@ -367,12 +489,13 @@ impl ShellApp for GalleryApp {
                         }
                         let caps = backend.backend_caps();
                         if let Some(note) = self.demos[idx].caps_note(self.active_variant, &caps) {
+                            let theme = backend.theme();
                             let note_bar = StatusBar {
                                 id: WidgetId::new("gallery:caps-note"),
                                 left_segments: vec![StatusBarSegment {
                                     text: format!(" \u{26a0} {note} "),
-                                    fg: Color::rgb(255, 210, 120),
-                                    bg: Color::rgb(45, 35, 15),
+                                    fg: theme.warning_fg,
+                                    bg: theme.surface_bg,
                                     bold: false,
                                     action_id: None,
                                 }],
@@ -400,11 +523,6 @@ impl ShellApp for GalleryApp {
                 },
             }
         }
-
-        // ── Bottom panel: event log ──────────────────────────────────
-        if let Some(bp) = layout.bottom_panel_bounds {
-            draw_event_log(backend, bp, &self.log);
-        }
     }
 
     fn handle(
@@ -420,7 +538,21 @@ impl ShellApp for GalleryApp {
         // `Escape` to dismiss itself, and a demo that consumes the key
         // returns something other than `Continue` here. Only fall back to
         // quitting the gallery when nothing downstream wanted the key.
-        let reaction = self.handle_inner(event.clone(), backend, ctx);
+        let reaction = self.handle_inner(&event, backend, ctx);
+
+        // `ShellAdapter` runs `AppShell::handle` — which updates
+        // `hovered_activity_idx` from its own `MouseMoved` arms, with or
+        // without a button held — *before* this app's `Reaction` is
+        // consulted, and that call reports `AppShellEvent::Ignored`, so
+        // nothing downstream of it can ask for the frame that paints the
+        // new highlight. Diff the shell's index against the one this
+        // dispatch started with (rather than testing where the pointer
+        // now is) so both ends of the transition repaint: moving onto an
+        // icon, and moving off the bar entirely — the latter is the frame
+        // that has to *clear* a highlight.
+        let hovered = ctx.shell_mut().hovered_activity_idx();
+        let hover_changed = hovered != self.hovered_activity_idx;
+        self.hovered_activity_idx = hovered;
 
         match reaction {
             Reaction::Exit => Reaction::Exit,
@@ -430,16 +562,28 @@ impl ShellApp for GalleryApp {
             // check back in `Duration`" request (see
             // `quadraui::runner::Reaction::RedrawAfter`'s doc).
             r @ Reaction::RedrawAfter(_) => r,
+            // `UiEvent::MouseMoved` is the one event `log_event` never
+            // appends to the log (see its own doc), so unless the shell's
+            // activity-bar hover moved (see `hover_changed` above) a
+            // `Continue` here really did change nothing on screen — pass
+            // it through rather than forcing a redraw on every pixel the
+            // pointer crosses.
+            Reaction::Continue if matches!(event, UiEvent::MouseMoved { .. }) && !hover_changed => {
+                Reaction::Continue
+            }
             // `log_event` above just appended to the bottom-panel log on
-            // every call, so every remaining path has already changed
-            // what's on screen — escalate `Continue` (when `handle_inner`
-            // found nothing else to do) up to `Redraw`. Without this, a
-            // click that reaches a demo but doesn't change the demo's own
-            // state (e.g. a miss on a hit test) would return `Continue`,
-            // and the host would skip repainting — leaving the
-            // just-logged line invisible even though `self.log` really
-            // did grow. `Reaction` is `#[non_exhaustive]`; any future
-            // variant not named above falls into this arm the same way.
+            // every other event, so every remaining path has already
+            // changed what's on screen — escalate `Continue` (when
+            // `handle_inner` found nothing else to do) up to `Redraw`.
+            // Without this, a click that reaches a demo but doesn't change
+            // the demo's own state (e.g. a miss on a hit test) would
+            // return `Continue`, and the host would skip repainting —
+            // leaving the just-logged line invisible even though
+            // `self.log` really did grow (irrelevant to on-screen pixels
+            // while the log itself is hidden, but still correct once a
+            // user has shown it with `Ctrl+J`). `Reaction` is
+            // `#[non_exhaustive]`; any future variant not named above
+            // falls into this arm the same way.
             _ => Reaction::Redraw,
         }
     }
@@ -452,6 +596,15 @@ impl ShellApp for GalleryApp {
             Some(idx) => self.demos[idx].tick(self.active_variant, backend),
             None => Reaction::Continue,
         }
+    }
+
+    /// Start with the event log hidden — `Ctrl+J` (see `handle_inner`) is
+    /// the only way back; the resize divider only acts on an
+    /// already-visible bottom panel. Runs once, before frame 0, so no
+    /// backend ever paints the log on its very first frame only to have
+    /// it collapse on the next.
+    fn setup_shell(&mut self, ctx: &ShellContext) {
+        ctx.shell_mut().hide_bottom_panel();
     }
 
     fn on_shell_event_ctx(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
@@ -469,32 +622,78 @@ impl ShellApp for GalleryApp {
 }
 
 impl GalleryApp {
+    /// `Ctrl+J` toggles the event log — VS Code's own "toggle panel"
+    /// binding. The log is hidden by default (`setup_shell`); this is
+    /// the *only* way to see it — the resize divider's grip is only
+    /// hit-tested when `layout.bottom_panel_bounds` is `Some`, which it
+    /// never is while the panel is hidden.
+    ///
+    /// Checked as a **fallback** — after [`Self::dispatch_to_shell_and_demo`]
+    /// has already had a chance to route the event — rather than
+    /// intercepted up front, the same precedence `handle`'s own
+    /// `is_quit_key` check uses for `Escape`/`q`: several demos (the
+    /// Message List and Diff View scroll bindings, among others) match
+    /// `Key::Char('j')` without checking modifiers at all, so a demo
+    /// that wants every `j` (`Ctrl` held or not) for its own vertical
+    /// scroll gets first refusal; the shell's own toggle only fires once
+    /// nothing downstream claimed the chord.
     fn handle_inner(
         &mut self,
-        event: UiEvent,
+        event: &UiEvent,
         backend: &mut dyn Backend,
         ctx: &ShellContext,
     ) -> Reaction {
-        if let UiEvent::MouseDown { position, .. } = &event {
-            // Sidebar row click → select demo. Each row is a full-width
-            // one-line `StatusBar`, so the row index is just the click's
-            // offset from the sidebar's top divided by `line_height` —
-            // no separate hit-test layout needed.
+        let reaction = self.dispatch_to_shell_and_demo(event, backend, ctx);
+        if matches!(reaction, Reaction::Continue) {
+            if let UiEvent::KeyPressed {
+                key: Key::Char('j'),
+                modifiers: Modifiers { ctrl: true, .. },
+                ..
+            } = event
+            {
+                ctx.shell_mut().toggle_bottom_panel();
+                let now_visible = ctx.shell_mut().bottom_panel_visible();
+                self.push_log(format!(
+                    "\u{2192} event log {}",
+                    if now_visible { "shown" } else { "hidden" }
+                ));
+                return Reaction::Redraw;
+            }
+        }
+        reaction
+    }
+
+    fn dispatch_to_shell_and_demo(
+        &mut self,
+        event: &UiEvent,
+        backend: &mut dyn Backend,
+        ctx: &ShellContext,
+    ) -> Reaction {
+        if let UiEvent::MouseDown { position, .. } = event {
+            // Sidebar row click → select demo, via the same `ListView`
+            // layout `render_content` paints (`sidebar_list`) so paint
+            // and hit-test can never disagree on which row a click
+            // landed on.
             if ctx.in_sidebar(position.x, position.y) {
                 if let Some(sb) = ctx.sidebar_bounds() {
-                    let lh = backend.line_height();
-                    let row = ((position.y - sb.y) / lh).floor();
-                    if row >= 0.0 {
-                        let rows: Vec<usize> = self.demos_in_active_group().collect();
-                        if let Some(&idx) = rows.get(row as usize) {
-                            self.selected = Some(idx);
-                            self.active_variant = 0;
-                            self.active_tab = MainTab::Demo;
-                            self.push_log(format!(
-                                "\u{2192} demo selected: {}",
-                                self.demos[idx].name()
-                            ));
-                            return Reaction::Redraw;
+                    let rows: Vec<usize> = self.demos_in_active_group().collect();
+                    if !rows.is_empty() {
+                        let list = self.sidebar_list(&rows);
+                        let local = Rect::new(0.0, 0.0, sb.width, sb.height);
+                        let hit = backend
+                            .list_layout(local, &list)
+                            .hit_test(position.x - sb.x, position.y - sb.y);
+                        if let ListViewHit::Item(pos) = hit {
+                            if let Some(&idx) = rows.get(pos) {
+                                self.selected = Some(idx);
+                                self.active_variant = 0;
+                                self.active_tab = MainTab::Demo;
+                                self.push_log(format!(
+                                    "\u{2192} demo selected: {}",
+                                    self.demos[idx].name()
+                                ));
+                                return Reaction::Redraw;
+                            }
                         }
                     }
                 }
@@ -510,7 +709,8 @@ impl GalleryApp {
                 && position.y >= tab_rect.y
                 && position.y < tab_rect.y + tab_rect.height
             {
-                let layout = backend.resolve_tab_bar_layout(tab_rect, &self.tab_bar());
+                let bar = self.tab_bar(backend);
+                let layout = backend.resolve_tab_bar_layout(tab_rect, &bar);
                 let local_x = position.x - tab_rect.x;
                 let local_y = position.y - tab_rect.y;
                 if let TabBarHit::Tab(idx) = layout.hit_test(local_x, local_y) {
@@ -552,7 +752,7 @@ impl GalleryApp {
         // doesn't react to clicks happening elsewhere on screen.
         if self.active_tab == MainTab::Demo {
             if let Some(idx) = self.selected {
-                let outside_main = event_position(&event)
+                let outside_main = event_position(event)
                     .map(|p| !ctx.in_main(p.x, p.y))
                     .unwrap_or(false);
                 if !outside_main {
@@ -561,7 +761,7 @@ impl GalleryApp {
                     let body =
                         Rect::new(main.x, main.y + lh, main.width, (main.height - lh).max(0.0));
                     let demo_rect = self.demo_content_rect(idx, backend, body);
-                    return self.demos[idx].handle(self.active_variant, &event, backend, demo_rect);
+                    return self.demos[idx].handle(self.active_variant, event, backend, demo_rect);
                 }
             }
         }
@@ -647,6 +847,7 @@ fn draw_text_block(backend: &mut dyn Backend, rect: Rect, prefix: &str, text: &s
     if rect.height <= 0.0 || rect.width <= 0.0 {
         return;
     }
+    let theme = backend.theme();
     for (i, line) in text.lines().enumerate() {
         let y = rect.y + i as f32 * lh;
         if y + lh > rect.y + rect.height {
@@ -656,8 +857,8 @@ fn draw_text_block(backend: &mut dyn Backend, rect: Rect, prefix: &str, text: &s
             id: WidgetId::new(format!("gallery:text-row:{prefix}:{i}")),
             left_segments: vec![StatusBarSegment {
                 text: format!(" {line} "),
-                fg: Color::rgb(210, 210, 210),
-                bg: Color::rgb(18, 18, 18),
+                fg: theme.surface_fg,
+                bg: theme.surface_bg,
                 bold: false,
                 action_id: None,
             }],
@@ -671,17 +872,23 @@ fn draw_text_block(backend: &mut dyn Backend, rect: Rect, prefix: &str, text: &s
     }
 }
 
-/// Paint the last lines of `log` that fit `rect`, oldest-of-the-visible-
-/// window first (newest line at the bottom, standard log order).
+/// Paint `log` through the real [`TextDisplay`] primitive — themed
+/// padding, auto-scroll-to-bottom, and its own backend-owned rasteriser,
+/// rather than one hand-rolled hairline-separated `StatusBar` per line.
 fn draw_event_log(backend: &mut dyn Backend, rect: Rect, log: &[String]) {
-    let lh = backend.line_height();
-    if rect.height <= 0.0 {
+    if rect.height <= 0.0 || rect.width <= 0.0 {
         return;
     }
-    let capacity = (rect.height / lh).floor().max(0.0) as usize;
-    let start = log.len().saturating_sub(capacity);
-    let text = log[start..].join("\n");
-    draw_text_block(backend, rect, "log", &text);
+    let mut td = TextDisplay::new(WidgetId::new("gallery:event-log"));
+    td.lines = log
+        .iter()
+        .map(|line| TextDisplayLine {
+            spans: vec![StyledSpan::plain(line.clone())],
+            decoration: Decoration::Normal,
+            timestamp: None,
+        })
+        .collect();
+    backend.draw_text_display(rect, &td);
 }
 
 /// Which variant column (if any) contains `x`, for an equal-width picker
@@ -705,15 +912,15 @@ fn variant_col_at(row_rect: Rect, num_variants: usize, x: f32) -> Option<usize> 
 }
 
 /// Paint one row of clickable variant names, the active one highlighted,
-/// as `variants.len()` equal-width adjacent one-line bars (the same
-/// per-row-its-own-`StatusBar` pattern the sidebar uses above). Equal
-/// columns, computed the same way here and in `handle_inner`'s variant-row
-/// hit test (via [`variant_col_at`]), so the two never disagree on which
-/// column a click landed in.
+/// as `variants.len()` equal-width adjacent one-line `StatusBar` bars.
+/// Equal columns, computed the same way here and in `handle_inner`'s
+/// variant-row hit test (via [`variant_col_at`]), so the two never
+/// disagree on which column a click landed in.
 fn draw_variant_picker(backend: &mut dyn Backend, rect: Rect, variants: &[&str], active: usize) {
     if variants.is_empty() || rect.width <= 0.0 {
         return;
     }
+    let theme = backend.theme();
     let col_width = rect.width / variants.len() as f32;
     for (i, name) in variants.iter().enumerate() {
         let is_active = i == active;
@@ -723,14 +930,14 @@ fn draw_variant_picker(backend: &mut dyn Backend, rect: Rect, variants: &[&str],
             left_segments: vec![StatusBarSegment {
                 text: format!(" {name} "),
                 fg: if is_active {
-                    Color::rgb(255, 255, 255)
+                    theme.tab_active_fg
                 } else {
-                    Color::rgb(170, 170, 170)
+                    theme.tab_inactive_fg
                 },
                 bg: if is_active {
-                    Color::rgb(45, 70, 110)
+                    theme.tab_active_bg
                 } else {
-                    Color::rgb(30, 30, 30)
+                    theme.tab_bar_bg
                 },
                 bold: is_active,
                 action_id: Some(id),

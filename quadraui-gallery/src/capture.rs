@@ -18,7 +18,15 @@
 //! [`run_capture`] is the entry point `src/main.rs`'s `--capture <dir>`
 //! flag calls, and the same function a test calls directly (see
 //! `tests/capture_driver.rs`) — there is no separate "CLI" code path to
-//! drift from the one under test.
+//! drift from the one under test. `--capture`'s sibling `--theme
+//! light|dark` flag (default `dark`) threads a [`CaptureTheme`] through
+//! that same call, recorded on every [`ManifestEntry`] it writes.
+//!
+//! Before screenshotting, each (demo, variant) also runs that demo's own
+//! [`crate::Demo::capture_action`] — opening whatever overlay (dialog,
+//! dropdown, cheatsheet, right-click menu) its idle render would
+//! otherwise leave closed — so the capture shows the same opened state a
+//! person clicking through the gallery would see, not just the idle tab.
 //!
 //! ## Per-backend story
 //!
@@ -77,8 +85,6 @@ use std::path::Path;
 
 use serde::Serialize;
 
-#[cfg(all(feature = "win", target_os = "windows"))]
-use crate::app::demo_zone_id;
 use crate::registry::registry;
 #[cfg(any(
     feature = "tui",
@@ -87,7 +93,7 @@ use crate::registry::registry;
     all(feature = "win", target_os = "windows")
 ))]
 use crate::{
-    app::{group_panel_id, GROUPS},
+    app::{demo_zone_id, group_panel_id, GROUPS},
     GalleryApp,
 };
 
@@ -101,6 +107,14 @@ pub struct ManifestEntry {
     pub group: String,
     pub variant: String,
     pub backend: String,
+    /// `"dark"` or `"light"` — the [`quadraui::Theme`] this whole
+    /// [`run_capture`] call rendered every row under (see that
+    /// function's `theme` parameter). Every row from one run shares the
+    /// same value; a `--theme light` CI leg writes its own capture
+    /// directory/manifest the same way the Linux/macOS backend legs
+    /// already do (see this module's own doc), rather than this field
+    /// varying row-to-row within one manifest.
+    pub theme: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -147,51 +161,97 @@ const WIN_CAPTURE_WIDTH: u32 = 960;
 #[cfg(all(feature = "win", target_os = "windows"))]
 const WIN_CAPTURE_HEIGHT: u32 = 600;
 
-/// Capture every registered demo × variant × backend into `dir`,
-/// writing one image per combination plus `dir/manifest.json`, and
-/// return the manifest entries written.
+/// Which [`quadraui::Theme`] [`run_capture`] renders the whole gallery
+/// under for one call — threaded into every backend's capture loop (via
+/// `GalleryApp::with_theme`) and recorded on every
+/// [`ManifestEntry`] that call writes, so a reader of `manifest.json`
+/// alone (no access to the CLI invocation that produced it) can tell
+/// which theme its images show. One `run_capture` call always renders
+/// every demo under exactly one theme — a `light` leg is a second call
+/// into its own directory, the same "each backend/OS combination gets
+/// its own capture directory and manifest" shape this module's own doc
+/// already describes for backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaptureTheme {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl CaptureTheme {
+    /// The `"theme"` string [`ManifestEntry::theme`] carries for this
+    /// run.
+    fn label(self) -> &'static str {
+        match self {
+            CaptureTheme::Dark => "dark",
+            CaptureTheme::Light => "light",
+        }
+    }
+
+    /// The real [`quadraui::Theme`] `GalleryApp::with_theme` applies.
+    #[cfg(any(
+        feature = "tui",
+        all(feature = "macos", target_os = "macos"),
+        feature = "gtk",
+        all(feature = "win", target_os = "windows")
+    ))]
+    fn theme(self) -> quadraui::Theme {
+        match self {
+            CaptureTheme::Dark => quadraui::Theme::default(),
+            CaptureTheme::Light => quadraui::Theme::light_default(),
+        }
+    }
+}
+
+/// Capture every registered demo × variant × backend, under `theme`,
+/// into `dir`, writing one image per combination plus
+/// `dir/manifest.json`, and return the manifest entries written.
 ///
 /// Creates `dir` (and any missing parents) if it doesn't exist yet.
-pub fn run_capture(dir: &Path) -> io::Result<Vec<ManifestEntry>> {
+pub fn run_capture(dir: &Path, theme: CaptureTheme) -> io::Result<Vec<ManifestEntry>> {
     fs::create_dir_all(dir)?;
     let mut manifest = Vec::new();
 
     #[cfg(feature = "tui")]
-    capture_tui(dir, &mut manifest)?;
+    capture_tui(dir, theme, &mut manifest)?;
     #[cfg(not(feature = "tui"))]
     push_status(
         &mut manifest,
         "tui",
+        theme,
         "unsupported",
         "quadraui-gallery was built without the `tui` feature",
     );
 
     #[cfg(all(feature = "macos", target_os = "macos"))]
-    capture_macos(dir, &mut manifest)?;
+    capture_macos(dir, theme, &mut manifest)?;
     #[cfg(not(all(feature = "macos", target_os = "macos")))]
     push_status(
         &mut manifest,
         "macos",
+        theme,
         "unsupported",
         "macOS headless capture needs --features macos on a target_os = \"macos\" host",
     );
 
     #[cfg(feature = "gtk")]
-    capture_gtk(dir, &mut manifest)?;
+    capture_gtk(dir, theme, &mut manifest)?;
     #[cfg(not(feature = "gtk"))]
     push_status(
         &mut manifest,
         "gtk",
+        theme,
         "unsupported",
         "quadraui-gallery was built without the `gtk` feature",
     );
 
     #[cfg(all(feature = "win", target_os = "windows"))]
-    capture_win(dir, &mut manifest)?;
+    capture_win(dir, theme, &mut manifest)?;
     #[cfg(not(all(feature = "win", target_os = "windows")))]
     push_status(
         &mut manifest,
         "win",
+        theme,
         "unsupported",
         "Windows headless capture needs --features win on a target_os = \"windows\" host",
     );
@@ -207,7 +267,13 @@ pub fn run_capture(dir: &Path) -> io::Result<Vec<ManifestEntry>> {
 /// has no image to show" branch in [`run_capture`], so `unsupported`
 /// entries always carry the same demo/group/variant shape the real
 /// captures do.
-fn push_status(manifest: &mut Vec<ManifestEntry>, backend: &str, status: &str, why: &str) {
+fn push_status(
+    manifest: &mut Vec<ManifestEntry>,
+    backend: &str,
+    theme: CaptureTheme,
+    status: &str,
+    why: &str,
+) {
     for demo in registry() {
         let group = demo.group().to_string();
         for variant in demo.variants() {
@@ -216,6 +282,7 @@ fn push_status(manifest: &mut Vec<ManifestEntry>, backend: &str, status: &str, w
                 group: group.clone(),
                 variant: variant.to_string(),
                 backend: backend.to_string(),
+                theme: theme.label().to_string(),
                 path: None,
                 status: Some(status.to_string()),
                 note: Some(why.to_string()),
@@ -281,8 +348,12 @@ fn group_index_of(demo: &dyn crate::Demo) -> usize {
 // ── TUI capture ──────────────────────────────────────────────────────
 
 #[cfg(feature = "tui")]
-fn capture_tui(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()> {
-    capture_tui_over(registry, dir, manifest)
+fn capture_tui(
+    dir: &Path,
+    theme: CaptureTheme,
+    manifest: &mut Vec<ManifestEntry>,
+) -> io::Result<()> {
+    capture_tui_over(registry, dir, theme, manifest)
 }
 
 /// [`capture_tui`]'s body, generic over the demo-list constructor so a
@@ -299,16 +370,17 @@ fn capture_tui(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()> 
 fn capture_tui_over(
     demos_fn: fn() -> Vec<Box<dyn crate::Demo>>,
     dir: &Path,
+    theme: CaptureTheme,
     manifest: &mut Vec<ManifestEntry>,
 ) -> io::Result<()> {
     use quadraui::testing::{Anchor, ConformanceDriver};
     use quadraui::tui::testing::driver_with_shell;
 
-    for demo in demos_fn() {
+    for (demo_idx, demo) in demos_fn().into_iter().enumerate() {
         let group = demo.group().to_string();
         let group_idx = group_index_of(demo.as_ref());
         let variants = demo.variants();
-        for &variant in variants {
+        for (variant_idx, &variant) in variants.iter().enumerate() {
             let filename = format!(
                 "tui__{}__{}__{}.svg",
                 slug(&group),
@@ -316,9 +388,10 @@ fn capture_tui_over(
                 slug(variant)
             );
             let dest = dir.join(&filename);
+            let capture_action = demo.capture_action(variant_idx);
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut driver = driver_with_shell(
-                    GalleryApp::from_demos(demos_fn()),
+                    GalleryApp::from_demos(demos_fn()).with_theme(theme.theme()),
                     GalleryApp::config(),
                     TUI_CAPTURE_WIDTH,
                     TUI_CAPTURE_HEIGHT,
@@ -330,10 +403,14 @@ fn capture_tui_over(
                 if group_idx != 0 {
                     click_group_zone(&mut driver, group_idx);
                 }
-                driver.click_text_at(demo.name(), Anchor::Center);
+                // By zone, not by `demo.name()`'s painted text — two demos
+                // in the same group can have names where one is a literal
+                // substring of the other (see `click_demo_zone`'s doc).
+                click_demo_zone(&mut driver, demo_idx);
                 if variants.len() > 1 {
                     driver.click_text_at(variant, Anchor::Center);
                 }
+                apply_capture_action_tui(&mut driver, capture_action);
                 write_tui_svg(&driver, TUI_CAPTURE_WIDTH, TUI_CAPTURE_HEIGHT, &dest)
             }));
 
@@ -342,12 +419,71 @@ fn capture_tui_over(
                 &group,
                 variant,
                 "tui",
+                theme,
                 filename,
                 outcome,
             ));
         }
     }
     Ok(())
+}
+
+/// Replay `action` (see [`crate::CaptureAction`]) against `driver`,
+/// right after [`capture_tui_over`] has selected the demo/variant and
+/// right before it screenshots.
+///
+/// Mirrored, concretely, per backend by `apply_capture_action_macos`/
+/// `apply_capture_action_gtk`/`apply_capture_action_win` rather than one
+/// function generic over every driver: each concrete driver type has its
+/// own inherent `type_char`/`press_named`/`find`/`dispatch` methods
+/// (plain method syntax resolves to those ahead of any
+/// `ConformanceDriver`/`DriverInput`/`PixelClickConformance` trait import
+/// — ordinary Rust inherent-vs-trait method resolution, not a quirk of
+/// this crate), but calling an inherent method generically, through a
+/// type parameter bounded only by those traits, isn't possible — a
+/// generic function can only reach what its bounds name. Four short,
+/// near-identical bodies read better than threading that bound mismatch
+/// through UFCS.
+///
+/// [`quadraui::tui::testing::TuiDriver`] implements
+/// [`quadraui::testing::ConformanceDriver`] but deliberately not
+/// [`quadraui::testing::PixelClickConformance`] (see that impl's own
+/// doc), so [`CaptureAction::RightClickText`] resolves its click point
+/// through `TuiDriver`'s own inherent `find`, not that trait.
+#[cfg(feature = "tui")]
+fn apply_capture_action_tui<A: quadraui::AppLogic>(
+    driver: &mut quadraui::tui::testing::TuiDriver<A>,
+    action: crate::CaptureAction,
+) {
+    use crate::CaptureAction;
+    use quadraui::testing::{Anchor, ConformanceDriver};
+
+    match action {
+        CaptureAction::None => {}
+        // `TuiDriver` has its own inherent `type_char`/`press_named`/`find`
+        // (distinct from `ConformanceDriver`'s/`DriverInput`'s same-named
+        // trait methods — see those impls' own doc), which plain method
+        // syntax resolves to ahead of any trait import, so no UFCS is
+        // needed to disambiguate here.
+        CaptureAction::ClickText(text) => driver.click_text_at(text, Anchor::Center),
+        CaptureAction::PressChar(c) => {
+            driver.type_char(c);
+        }
+        CaptureAction::PressNamed(key) => {
+            driver.press_named(key);
+        }
+        CaptureAction::RightClickText(text) => {
+            let (x, y) = driver
+                .find(text)
+                .unwrap_or_else(|| panic!("TuiDriver: {text:?} not painted"));
+            driver.dispatch(quadraui::mouse_down(
+                quadraui::MouseButton::Right,
+                x,
+                y,
+                quadraui::Modifiers::default(),
+            ));
+        }
+    }
 }
 
 /// Turn one (demo, variant, backend) capture attempt's outcome into its
@@ -369,6 +505,7 @@ fn capture_outcome_entry(
     group: &str,
     variant: &str,
     backend: &str,
+    theme: CaptureTheme,
     filename: String,
     outcome: std::thread::Result<io::Result<()>>,
 ) -> ManifestEntry {
@@ -393,6 +530,7 @@ fn capture_outcome_entry(
         group: group.to_string(),
         variant: variant.to_string(),
         backend: backend.to_string(),
+        theme: theme.label().to_string(),
         path,
         status,
         note,
@@ -458,14 +596,21 @@ where
 /// `find`/`find_bounds` text search every `ConformanceDriver` uses is a
 /// first-match substring search, so clicking by name text can silently
 /// select the wrong demo's row when its name collides with an
-/// earlier-registered one.
+/// earlier-registered one — the production `BottomPanelDemo`/`PanelDemo`
+/// pair, registered in that order, is exactly this collision
+/// (`"Panel"` matches inside `"Bottom Panel"`'s own row first).
 ///
-/// Only [`quadraui::win::backend::WinBackend`]'s
-/// `draw_status_bar_interactive` registers a zone per `StatusBar` segment
-/// (TUI, GTK and macOS paint the bar without registering one), so this is
-/// only usable from `capture_win_over` — the other three capture functions
-/// still click by name text.
-#[cfg(all(feature = "win", target_os = "windows"))]
+/// `GalleryApp::render_content` registers this zone on every backend
+/// (via `Backend::register_zone`, since a `ListView` row carries no
+/// `WidgetId` of its own the way a `StatusBar` segment's `action_id`
+/// did), so every capture function below can click by zone rather than
+/// by painted name text.
+#[cfg(any(
+    feature = "tui",
+    all(feature = "macos", target_os = "macos"),
+    feature = "gtk",
+    all(feature = "win", target_os = "windows")
+))]
 fn click_demo_zone<D>(driver: &mut D, index: usize)
 where
     D: quadraui::testing::ConformanceDriver + quadraui::testing::DriverInput,
@@ -664,15 +809,19 @@ fn xml_escape(s: &str) -> String {
 // ── macOS capture ────────────────────────────────────────────────────
 
 #[cfg(all(feature = "macos", target_os = "macos"))]
-fn capture_macos(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()> {
+fn capture_macos(
+    dir: &Path,
+    theme: CaptureTheme,
+    manifest: &mut Vec<ManifestEntry>,
+) -> io::Result<()> {
     use quadraui::macos::testing::driver_with_shell;
     use quadraui::testing::{Anchor, ConformanceDriver};
 
-    for demo in registry() {
+    for (demo_idx, demo) in registry().into_iter().enumerate() {
         let group = demo.group().to_string();
         let group_idx = group_index_of(demo.as_ref());
         let variants = demo.variants();
-        for &variant in variants {
+        for (variant_idx, &variant) in variants.iter().enumerate() {
             let filename = format!(
                 "macos__{}__{}__{}.png",
                 slug(&group),
@@ -680,9 +829,10 @@ fn capture_macos(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()
                 slug(variant)
             );
             let dest = dir.join(&filename);
+            let capture_action = demo.capture_action(variant_idx);
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut driver = driver_with_shell(
-                    GalleryApp::new(),
+                    GalleryApp::new().with_theme(theme.theme()),
                     GalleryApp::config(),
                     MAC_CAPTURE_WIDTH,
                     MAC_CAPTURE_HEIGHT,
@@ -693,10 +843,14 @@ fn capture_macos(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()
                 if group_idx != 0 {
                     click_group_zone(&mut driver, group_idx);
                 }
-                driver.click_text_at(demo.name(), Anchor::Center);
+                // By zone, not by `demo.name()`'s painted text — two demos
+                // in the same group can have names where one is a literal
+                // substring of the other (see `click_demo_zone`'s doc).
+                click_demo_zone(&mut driver, demo_idx);
                 if variants.len() > 1 {
                     driver.click_text_at(variant, Anchor::Center);
                 }
+                apply_capture_action_macos(&mut driver, capture_action);
                 write_mac_png(
                     driver.surface(),
                     MAC_CAPTURE_WIDTH,
@@ -710,12 +864,48 @@ fn capture_macos(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()
                 &group,
                 variant,
                 "macos",
+                theme,
                 filename,
                 outcome,
             ));
         }
     }
     Ok(())
+}
+
+/// Replay `action` against `driver` — the macOS leg of the hook
+/// [`apply_capture_action_tui`]'s own doc describes; see that function
+/// for why this is a concrete, per-backend body rather than one generic
+/// over every driver.
+#[cfg(all(feature = "macos", target_os = "macos"))]
+fn apply_capture_action_macos<A: quadraui::AppLogic>(
+    driver: &mut quadraui::macos::testing::MacDriver<A>,
+    action: crate::CaptureAction,
+) {
+    use crate::CaptureAction;
+    use quadraui::testing::{Anchor, ConformanceDriver};
+
+    match action {
+        CaptureAction::None => {}
+        CaptureAction::ClickText(text) => driver.click_text_at(text, Anchor::Center),
+        CaptureAction::PressChar(c) => {
+            driver.type_char(c);
+        }
+        CaptureAction::PressNamed(key) => {
+            driver.press_named(key);
+        }
+        CaptureAction::RightClickText(text) => {
+            let (x, y) = driver
+                .find(text)
+                .unwrap_or_else(|| panic!("MacDriver: {text:?} not painted"));
+            driver.dispatch(quadraui::mouse_down(
+                quadraui::MouseButton::Right,
+                x,
+                y,
+                quadraui::Modifiers::default(),
+            ));
+        }
+    }
 }
 
 /// PNG-encode a [`BitmapSurface`](quadraui::macos::headless::BitmapSurface)'s
@@ -768,8 +958,12 @@ fn composite_over_white(premultiplied_rgba: &[u8]) -> Vec<u8> {
 // ── GTK capture ──────────────────────────────────────────────────────
 
 #[cfg(feature = "gtk")]
-fn capture_gtk(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()> {
-    capture_gtk_over(registry, dir, manifest)
+fn capture_gtk(
+    dir: &Path,
+    theme: CaptureTheme,
+    manifest: &mut Vec<ManifestEntry>,
+) -> io::Result<()> {
+    capture_gtk_over(registry, dir, theme, manifest)
 }
 
 /// [`capture_gtk`]'s body, generic over the demo-list constructor — see
@@ -780,16 +974,17 @@ fn capture_gtk(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()> 
 fn capture_gtk_over(
     demos_fn: fn() -> Vec<Box<dyn crate::Demo>>,
     dir: &Path,
+    theme: CaptureTheme,
     manifest: &mut Vec<ManifestEntry>,
 ) -> io::Result<()> {
     use quadraui::gtk::testing::driver_with_shell;
     use quadraui::testing::{Anchor, ConformanceDriver};
 
-    for demo in demos_fn() {
+    for (demo_idx, demo) in demos_fn().into_iter().enumerate() {
         let group = demo.group().to_string();
         let group_idx = group_index_of(demo.as_ref());
         let variants = demo.variants();
-        for &variant in variants {
+        for (variant_idx, &variant) in variants.iter().enumerate() {
             let filename = format!(
                 "gtk__{}__{}__{}.png",
                 slug(&group),
@@ -797,9 +992,10 @@ fn capture_gtk_over(
                 slug(variant)
             );
             let dest = dir.join(&filename);
+            let capture_action = demo.capture_action(variant_idx);
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut driver = driver_with_shell(
-                    GalleryApp::from_demos(demos_fn()),
+                    GalleryApp::from_demos(demos_fn()).with_theme(theme.theme()),
                     GalleryApp::config(),
                     GTK_CAPTURE_WIDTH,
                     GTK_CAPTURE_HEIGHT,
@@ -811,10 +1007,14 @@ fn capture_gtk_over(
                 if group_idx != 0 {
                     click_group_zone(&mut driver, group_idx);
                 }
-                driver.click_text_at(demo.name(), Anchor::Center);
+                // By zone, not by `demo.name()`'s painted text — two demos
+                // in the same group can have names where one is a literal
+                // substring of the other (see `click_demo_zone`'s doc).
+                click_demo_zone(&mut driver, demo_idx);
                 if variants.len() > 1 {
                     driver.click_text_at(variant, Anchor::Center);
                 }
+                apply_capture_action_gtk(&mut driver, capture_action);
                 write_gtk_png(&mut driver, GTK_CAPTURE_WIDTH, GTK_CAPTURE_HEIGHT, &dest)
             }));
 
@@ -823,12 +1023,48 @@ fn capture_gtk_over(
                 &group,
                 variant,
                 "gtk",
+                theme,
                 filename,
                 outcome,
             ));
         }
     }
     Ok(())
+}
+
+/// Replay `action` against `driver` — the GTK leg of the hook
+/// [`apply_capture_action_tui`]'s own doc describes; see that function
+/// for why this is a concrete, per-backend body rather than one generic
+/// over every driver.
+#[cfg(feature = "gtk")]
+fn apply_capture_action_gtk<A: quadraui::AppLogic>(
+    driver: &mut quadraui::gtk::testing::GtkDriver<A>,
+    action: crate::CaptureAction,
+) {
+    use crate::CaptureAction;
+    use quadraui::testing::{Anchor, ConformanceDriver};
+
+    match action {
+        CaptureAction::None => {}
+        CaptureAction::ClickText(text) => driver.click_text_at(text, Anchor::Center),
+        CaptureAction::PressChar(c) => {
+            driver.type_char(c);
+        }
+        CaptureAction::PressNamed(key) => {
+            driver.press_named(key);
+        }
+        CaptureAction::RightClickText(text) => {
+            let (x, y) = driver
+                .find(text)
+                .unwrap_or_else(|| panic!("GtkDriver: {text:?} not painted"));
+            driver.dispatch(quadraui::mouse_down(
+                quadraui::MouseButton::Right,
+                x,
+                y,
+                quadraui::Modifiers::default(),
+            ));
+        }
+    }
 }
 
 /// PNG-encode a [`GtkDriver`](quadraui::gtk::testing::GtkDriver)'s whole
@@ -889,8 +1125,12 @@ fn composite_bgra_over_white(data: &[u8], width: i32, height: i32, stride: i32) 
 // ── Windows capture ──────────────────────────────────────────────────
 
 #[cfg(all(feature = "win", target_os = "windows"))]
-fn capture_win(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()> {
-    capture_win_on_large_stack(registry, dir, manifest)
+fn capture_win(
+    dir: &Path,
+    theme: CaptureTheme,
+    manifest: &mut Vec<ManifestEntry>,
+) -> io::Result<()> {
+    capture_win_on_large_stack(registry, dir, theme, manifest)
 }
 
 /// Run [`capture_win_over`] on a dedicated thread with an explicit,
@@ -913,12 +1153,13 @@ fn capture_win(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()> 
 fn capture_win_on_large_stack(
     demos_fn: fn() -> Vec<Box<dyn crate::Demo>>,
     dir: &Path,
+    theme: CaptureTheme,
     manifest: &mut Vec<ManifestEntry>,
 ) -> io::Result<()> {
     std::thread::scope(|scope| {
         let handle = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
-            .spawn_scoped(scope, || capture_win_over(demos_fn, dir, manifest))
+            .spawn_scoped(scope, || capture_win_over(demos_fn, dir, theme, manifest))
             .expect("spawn win capture thread");
         match handle.join() {
             Ok(result) => result,
@@ -940,6 +1181,7 @@ fn capture_win_on_large_stack(
 fn capture_win_over(
     demos_fn: fn() -> Vec<Box<dyn crate::Demo>>,
     dir: &Path,
+    theme: CaptureTheme,
     manifest: &mut Vec<ManifestEntry>,
 ) -> io::Result<()> {
     use quadraui::testing::{Anchor, ConformanceDriver};
@@ -949,7 +1191,7 @@ fn capture_win_over(
         let group = demo.group().to_string();
         let group_idx = group_index_of(demo.as_ref());
         let variants = demo.variants();
-        for &variant in variants {
+        for (variant_idx, &variant) in variants.iter().enumerate() {
             let filename = format!(
                 "win__{}__{}__{}.png",
                 slug(&group),
@@ -957,9 +1199,10 @@ fn capture_win_over(
                 slug(variant)
             );
             let dest = dir.join(&filename);
+            let capture_action = demo.capture_action(variant_idx);
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut driver = driver_with_shell(
-                    GalleryApp::from_demos(demos_fn()),
+                    GalleryApp::from_demos(demos_fn()).with_theme(theme.theme()),
                     GalleryApp::config(),
                     WIN_CAPTURE_WIDTH,
                     WIN_CAPTURE_HEIGHT,
@@ -975,6 +1218,7 @@ fn capture_win_over(
                 if variants.len() > 1 {
                     driver.click_text_at(variant, Anchor::Center);
                 }
+                apply_capture_action_win(&mut driver, capture_action);
                 write_win_png(&mut driver, WIN_CAPTURE_WIDTH, WIN_CAPTURE_HEIGHT, &dest)
             }));
 
@@ -983,12 +1227,48 @@ fn capture_win_over(
                 &group,
                 variant,
                 "win",
+                theme,
                 filename,
                 outcome,
             ));
         }
     }
     Ok(())
+}
+
+/// Replay `action` against `driver` — the Windows leg of the hook
+/// [`apply_capture_action_tui`]'s own doc describes; see that function
+/// for why this is a concrete, per-backend body rather than one generic
+/// over every driver.
+#[cfg(all(feature = "win", target_os = "windows"))]
+fn apply_capture_action_win<A: quadraui::AppLogic>(
+    driver: &mut quadraui::win::testing::WinDriver<A>,
+    action: crate::CaptureAction,
+) {
+    use crate::CaptureAction;
+    use quadraui::testing::{Anchor, ConformanceDriver};
+
+    match action {
+        CaptureAction::None => {}
+        CaptureAction::ClickText(text) => driver.click_text_at(text, Anchor::Center),
+        CaptureAction::PressChar(c) => {
+            driver.type_char(c);
+        }
+        CaptureAction::PressNamed(key) => {
+            driver.press_named(key);
+        }
+        CaptureAction::RightClickText(text) => {
+            let (x, y) = driver
+                .find(text)
+                .unwrap_or_else(|| panic!("WinDriver: {text:?} not painted"));
+            driver.dispatch(quadraui::mouse_down(
+                quadraui::MouseButton::Right,
+                x,
+                y,
+                quadraui::Modifiers::default(),
+            ));
+        }
+    }
 }
 
 /// PNG-encode a [`WinDriver`](quadraui::win::testing::WinDriver)'s whole
@@ -1115,6 +1395,7 @@ mod tests {
             "Chrome",
             "default",
             "win",
+            CaptureTheme::Dark,
             "demo.png".to_string(),
             outcome,
         );
@@ -1134,6 +1415,7 @@ mod tests {
             "Group",
             "default",
             "tui",
+            CaptureTheme::Dark,
             "demo.svg".to_string(),
             Ok(Err(io_err)),
         );
@@ -1149,6 +1431,7 @@ mod tests {
             "Group",
             "default",
             "tui",
+            CaptureTheme::Dark,
             "demo.svg".to_string(),
             Ok(Ok(())),
         );
@@ -1289,8 +1572,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp capture dir");
         let mut manifest = Vec::new();
 
-        capture_tui_over(two_variant_registry, dir.path(), &mut manifest)
-            .expect("capture_tui_over");
+        capture_tui_over(
+            two_variant_registry,
+            dir.path(),
+            CaptureTheme::Dark,
+            &mut manifest,
+        )
+        .expect("capture_tui_over");
 
         assert_eq!(manifest.len(), 2, "one row per variant: {manifest:#?}");
         for variant in ["Alpha", "Beta"] {
@@ -1327,8 +1615,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp capture dir");
         let mut manifest = Vec::new();
 
-        capture_gtk_over(two_variant_registry, dir.path(), &mut manifest)
-            .expect("capture_gtk_over");
+        capture_gtk_over(
+            two_variant_registry,
+            dir.path(),
+            CaptureTheme::Dark,
+            &mut manifest,
+        )
+        .expect("capture_gtk_over");
 
         assert_eq!(manifest.len(), 2, "one row per variant: {manifest:#?}");
         for variant in ["Alpha", "Beta"] {
@@ -1372,8 +1665,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp capture dir");
         let mut manifest = Vec::new();
 
-        capture_win_on_large_stack(two_variant_registry, dir.path(), &mut manifest)
-            .expect("capture_win_on_large_stack");
+        capture_win_on_large_stack(
+            two_variant_registry,
+            dir.path(),
+            CaptureTheme::Dark,
+            &mut manifest,
+        )
+        .expect("capture_win_on_large_stack");
 
         assert_eq!(manifest.len(), 2, "one row per variant: {manifest:#?}");
         let mut rendered_pixels = Vec::new();
@@ -1424,10 +1722,10 @@ mod tests {
     /// (which toggles it hidden instead of selecting it), and selecting a
     /// demo's sidebar row by its painted name text (ambiguous whenever
     /// another registered demo's name contains it as a substring).
-    #[cfg(all(feature = "win", target_os = "windows"))]
+    #[cfg(any(feature = "tui", all(feature = "win", target_os = "windows")))]
     struct NamedDemo(&'static str);
 
-    #[cfg(all(feature = "win", target_os = "windows"))]
+    #[cfg(any(feature = "tui", all(feature = "win", target_os = "windows")))]
     impl crate::Demo for NamedDemo {
         fn name(&self) -> &'static str {
             self.0
@@ -1485,7 +1783,7 @@ mod tests {
     /// `BottomPanelDemo`/`PanelDemo` pair in `registry()` — a text search
     /// for `"Zone"` would match this row first, since `"Drop Zone"`
     /// contains `"Zone"` as a substring.
-    #[cfg(all(feature = "win", target_os = "windows"))]
+    #[cfg(any(feature = "tui", all(feature = "win", target_os = "windows")))]
     fn name_collision_registry() -> Vec<Box<dyn crate::Demo>> {
         vec![
             Box::new(NamedDemo("Drop Zone")),
@@ -1495,23 +1793,139 @@ mod tests {
 
     /// `click_demo_zone` lands each click by the sidebar row's registered
     /// `WidgetId` zone rather than by searching for its painted name, so a
+    /// name collision like `"Drop Zone"`/`"Zone"` (or the production
+    /// `"Bottom Panel"`/`"Panel"` pair) can't make it select the wrong
+    /// row — `GalleryApp::render_content` registers that zone on every
+    /// backend, so `capture_tui_over` picks the right row here exactly
+    /// the same way `capture_win_over` already did below.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn capture_tui_selects_each_demo_by_its_own_zone_despite_a_group_0_name_collision() {
+        let dir = tempfile::tempdir().expect("create temp capture dir");
+        let mut manifest = Vec::new();
+
+        capture_tui_over(
+            name_collision_registry,
+            dir.path(),
+            CaptureTheme::Dark,
+            &mut manifest,
+        )
+        .expect("capture_tui_over");
+
+        assert_eq!(manifest.len(), 2, "one row per demo: {manifest:#?}");
+        for name in ["Drop Zone", "Zone"] {
+            let entry = manifest
+                .iter()
+                .find(|e| e.demo == name)
+                .unwrap_or_else(|| panic!("missing manifest row for demo {name}: {manifest:#?}"));
+            assert!(
+                entry.status.is_none(),
+                "demo {name} should have captured cleanly: {entry:#?}"
+            );
+            let path = entry
+                .path
+                .as_deref()
+                .unwrap_or_else(|| panic!("demo {name} should have a path: {entry:#?}"));
+            let svg = fs::read_to_string(dir.path().join(path)).expect("read captured SVG");
+            assert!(
+                svg.contains(&format!("selected={name}")),
+                "SVG for {name} should show that demo's own rendered content \
+                 (proving the click landed on its own row, not the other \
+                 demo's whose name collides with it as a substring):\n{svg}"
+            );
+        }
+    }
+
+    /// The literal production pair, in production order: `BottomPanelDemo`
+    /// ("Bottom Panel") registered immediately before `PanelDemo`
+    /// ("Panel"), both in `registry()`'s `"Chrome"` group — a two-entry
+    /// double rather than driving the full ~400-capture production
+    /// `registry()` (every demo, re-constructed per variant, including a
+    /// `FilePickerDemo` temp directory tree each time) just to pin this
+    /// one name collision.
+    #[cfg(feature = "tui")]
+    fn panel_name_collision_registry() -> Vec<Box<dyn crate::Demo>> {
+        vec![
+            Box::new(crate::demos::bottom_panel::BottomPanelDemo::new()),
+            Box::new(crate::demos::panel::PanelDemo::new()),
+        ]
+    }
+
+    /// Pins the literal production regression the collision tests above
+    /// generalise: `BottomPanelDemo` ("Bottom Panel") is registered
+    /// immediately before `PanelDemo` ("Panel") in `registry()`, in the
+    /// same `"Chrome"` group — selecting "Panel" by painted name text
+    /// would land on "Bottom Panel"'s row instead (a first-match
+    /// substring search), and then every one of `PanelDemo`'s three
+    /// variant labels ("Expanded"/"Collapsed"/"No accent, close only")
+    /// fails to find its own text on `BottomPanelDemo`'s screen.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn capture_tui_captures_every_panel_demo_variant_despite_the_bottom_panel_name_collision() {
+        let dir = tempfile::tempdir().expect("create temp capture dir");
+        let mut manifest = Vec::new();
+
+        capture_tui_over(
+            panel_name_collision_registry,
+            dir.path(),
+            CaptureTheme::Dark,
+            &mut manifest,
+        )
+        .expect("capture_tui_over");
+
+        let panel_entries: Vec<_> = manifest.iter().filter(|e| e.demo == "Panel").collect();
+        assert_eq!(
+            panel_entries.len(),
+            3,
+            "Panel has three variants, so three manifest rows: {panel_entries:#?}"
+        );
+        for entry in &panel_entries {
+            assert!(
+                entry.status.is_none(),
+                "Panel's {:?} variant should have captured cleanly: {entry:#?}",
+                entry.variant
+            );
+            let path = entry.path.as_deref().unwrap_or_else(|| {
+                panic!("Panel's {:?} variant should have a path", entry.variant)
+            });
+            let svg = fs::read_to_string(dir.path().join(path)).expect("read captured SVG");
+            // `Panel::title` always paints — even collapsed (see
+            // `collapsed_panel_still_paints_title_bar_chrome` in
+            // `quadraui/src/primitives/panel.rs`) — so "Demo Panel" shows
+            // on every one of the three variants. `BottomPanelDemo` never
+            // paints that string, so finding it here proves the click
+            // actually landed on `PanelDemo`'s own row, not on
+            // `BottomPanelDemo`'s whose name collides with it as a
+            // substring.
+            assert!(
+                svg.contains("Demo Panel"),
+                "SVG for Panel's {:?} variant should show its own painted \
+                 title:\n{svg}",
+                entry.variant
+            );
+        }
+    }
+
+    /// `click_demo_zone` lands each click by the sidebar row's registered
+    /// `WidgetId` zone rather than by searching for its painted name, so a
     /// name collision like `"Drop Zone"`/`"Zone"` can't make it select the
-    /// wrong row. That zone lookup only resolves on `win`: only
-    /// [`quadraui::win::backend::WinBackend`]'s `draw_status_bar_interactive`
-    /// registers a zone per `StatusBar` segment (TUI, GTK and macOS paint
-    /// the bar without registering one), so `capture_win_over` is the only
-    /// one of the four capture functions this fix applies to — see
-    /// `capture_tui_selects_the_clicked_variant_and_names_it_in_the_filename`
-    /// and its GTK/macOS counterparts for the name-text click path the
-    /// other three backends still use.
+    /// wrong row — the `win`-specific analogue of
+    /// `capture_tui_selects_each_demo_by_its_own_zone_despite_a_group_0_name_collision`
+    /// above, pinned separately since this backend's capture plumbing
+    /// (`capture_win_on_large_stack`) differs from the other three.
     #[cfg(all(feature = "win", target_os = "windows"))]
     #[test]
     fn capture_win_selects_each_demo_by_its_own_zone_despite_a_group_0_name_collision() {
         let dir = tempfile::tempdir().expect("create temp capture dir");
         let mut manifest = Vec::new();
 
-        capture_win_on_large_stack(name_collision_registry, dir.path(), &mut manifest)
-            .expect("capture_win_on_large_stack");
+        capture_win_on_large_stack(
+            name_collision_registry,
+            dir.path(),
+            CaptureTheme::Dark,
+            &mut manifest,
+        )
+        .expect("capture_win_on_large_stack");
 
         assert_eq!(manifest.len(), 2, "one row per demo: {manifest:#?}");
         let mut rendered_pixels = Vec::new();

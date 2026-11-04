@@ -16,7 +16,11 @@ use quadraui_gallery::registry::registry;
 #[test]
 fn capture_writes_gtk_png_and_lists_it_in_the_manifest() {
     let dir = tempfile::tempdir().expect("create temp capture dir");
-    let manifest = quadraui_gallery::capture::run_capture(dir.path()).expect("run_capture");
+    let manifest = quadraui_gallery::capture::run_capture(
+        dir.path(),
+        quadraui_gallery::capture::CaptureTheme::Dark,
+    )
+    .expect("run_capture");
 
     let demos = registry();
     let demo = &demos[0];

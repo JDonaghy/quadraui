@@ -12,10 +12,10 @@
 
 use quadraui::compose::sidebar_panel_body::{SidebarPanelBody, SidebarPanelChrome};
 use quadraui::{
-    Backend, BackendCaps, BackendWidget, Color, Decoration, InteractionState, NavigationMode,
-    Reaction, Rect, Scrollbar, SidebarEvent, SidebarPanel, SidebarPanelHit, SidebarSectionDef,
-    SidebarSystem, StatusBar, StatusBarSegment, StyledText, Toolbar, ToolbarButton,
-    ToolbarHoverTracker, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    Backend, BackendCaps, BackendWidget, Decoration, InteractionState, NavigationMode, Reaction,
+    Rect, Scrollbar, SidebarEvent, SidebarPanel, SidebarPanelHit, SidebarSectionDef, SidebarSystem,
+    StatusBar, StatusBarSegment, StyledText, Toolbar, ToolbarButton, ToolbarHoverTracker, TreeRow,
+    TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -260,6 +260,7 @@ impl Demo for SidebarDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height();
+        let theme = backend.theme();
         match variant {
             0 => {
                 let sidebar_rect =
@@ -270,15 +271,15 @@ impl Demo for SidebarDemo {
                     id: WidgetId::new("gallery:sidebar:reveal-hint"),
                     left_segments: vec![StatusBarSegment {
                         text: format!(" last: {} ", self.reveal_last),
-                        fg: Color::rgb(220, 220, 220),
-                        bg: Color::rgb(40, 40, 60),
+                        fg: theme.muted_fg,
+                        bg: theme.header_bg,
                         bold: false,
                         action_id: None,
                     }],
                     right_segments: vec![StatusBarSegment {
                         text: " ↑↓ select · z collapse · g reveal ".into(),
-                        fg: Color::rgb(220, 220, 220),
-                        bg: Color::rgb(40, 40, 60),
+                        fg: theme.muted_fg,
+                        bg: theme.header_bg,
                         bold: false,
                         action_id: None,
                     }],
@@ -293,6 +294,13 @@ impl Demo for SidebarDemo {
                     &InteractionState::from_parts(self.hover.current(), self.pressed),
                 );
                 let content = layout.content_bounds;
+                // `SidebarPanel` paints its toolbar slot but deliberately
+                // leaves `content_bounds` to the host (see that
+                // primitive's own doc) — fill it with the surface colour
+                // first, so the window's base clear colour (a stray
+                // light-grey strip under `Theme::light_default()`) never
+                // shows through below the last task row.
+                backend.draw_solid_fill(content, theme.surface_bg);
                 let header_text = if self.filter_on {
                     "  Tasks (filtered)  "
                 } else {
@@ -304,8 +312,8 @@ impl Demo for SidebarDemo {
                         id: WidgetId::new("gallery:sidebar:tasks-header"),
                         left_segments: vec![StatusBarSegment {
                             text: header_text.into(),
-                            fg: Color::rgb(200, 200, 200),
-                            bg: Color::rgb(20, 20, 20),
+                            fg: theme.header_fg,
+                            bg: theme.header_bg,
                             bold: true,
                             action_id: None,
                         }],
@@ -319,9 +327,9 @@ impl Demo for SidebarDemo {
                         break;
                     }
                     let (fg, bg) = if Some(i) == self.tasks_selected {
-                        (Color::rgb(255, 255, 255), Color::rgb(60, 100, 160))
+                        (theme.header_fg, theme.selected_bg)
                     } else {
-                        (Color::rgb(220, 220, 220), Color::rgb(20, 20, 20))
+                        (theme.surface_fg, theme.surface_bg)
                     };
                     let _ = backend.draw_status_bar_interactive(
                         Rect::new(content.x, row_y, content.width, lh),
@@ -344,8 +352,8 @@ impl Demo for SidebarDemo {
                     id: WidgetId::new("gallery:sidebar:tasks-hint"),
                     left_segments: vec![StatusBarSegment {
                         text: format!(" {} ", self.tasks_last),
-                        fg: Color::rgb(220, 220, 220),
-                        bg: Color::rgb(40, 40, 60),
+                        fg: theme.muted_fg,
+                        bg: theme.header_bg,
                         bold: false,
                         action_id: None,
                     }],
@@ -362,8 +370,8 @@ impl Demo for SidebarDemo {
                     id: WidgetId::new("gallery:sidebar:groups-hint"),
                     left_segments: vec![StatusBarSegment {
                         text: format!(" last: {} ", self.groups_last),
-                        fg: Color::rgb(220, 220, 220),
-                        bg: Color::rgb(40, 40, 60),
+                        fg: theme.muted_fg,
+                        bg: theme.header_bg,
                         bold: false,
                         action_id: None,
                     }],
@@ -374,7 +382,7 @@ impl Demo for SidebarDemo {
             _ => {
                 let panel_rect = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
                 let panel = SidebarPanelBody {
-                    background: Some(Color::rgb(24, 24, 28)),
+                    background: Some(theme.surface_bg),
                     chrome: self.body_chrome(),
                     scrollbar_gutter: Some(backend.char_width().max(1.0)),
                 };
@@ -406,15 +414,15 @@ impl Demo for SidebarDemo {
                     id: WidgetId::new("gallery:sidebar:body-hint"),
                     left_segments: vec![StatusBarSegment {
                         text: format!(" chrome={:?} last: {} ", self.chrome_mode, self.body_last),
-                        fg: Color::rgb(220, 220, 220),
-                        bg: Color::rgb(40, 40, 60),
+                        fg: theme.muted_fg,
+                        bg: theme.header_bg,
                         bold: false,
                         action_id: None,
                     }],
                     right_segments: vec![StatusBarSegment {
                         text: " ↑↓ scroll · c cycle chrome ".into(),
-                        fg: Color::rgb(220, 220, 220),
-                        bg: Color::rgb(40, 40, 60),
+                        fg: theme.muted_fg,
+                        bg: theme.header_bg,
                         bold: false,
                         action_id: None,
                     }],

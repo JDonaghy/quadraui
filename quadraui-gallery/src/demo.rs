@@ -7,8 +7,35 @@
 //! tabs (`CLAUDE.md`'s "Demos are mandatory" rule, applied to a gallery
 //! of demos rather than a single example binary).
 
-use quadraui::{Backend, BackendCaps, Rect, UiEvent};
+use quadraui::{Backend, BackendCaps, NamedKey, Rect, UiEvent};
 use serde_json::Value;
+
+/// What headless capture (`quadraui-gallery --capture`) should do to one
+/// demo/variant, after selecting it and before taking the screenshot —
+/// opens whatever overlay this demo's own `render`/`handle` would
+/// otherwise leave closed, so a Dialog/Context-Menu/Help-Overlay-style
+/// demo gets captured in its *open* state rather than idle. See
+/// [`Demo::capture_action`].
+///
+/// Every variant here maps to a plain, backend-agnostic input primitive
+/// (`quadraui::testing`'s `ConformanceDriver`/`DriverInput` seam already
+/// gives every backend's headless driver) — this type carries no
+/// backend-specific coordinates or widget ids of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureAction {
+    /// Nothing to open — the demo's idle render is the capture.
+    None,
+    /// Left-click the center of the first painted run containing this
+    /// text.
+    ClickText(&'static str),
+    /// Right-click the center of the first painted run containing this
+    /// text — e.g. a context-menu demo's own "right-click anywhere" hint.
+    RightClickText(&'static str),
+    /// Press this character key (no modifiers).
+    PressChar(char),
+    /// Press this named (non-printable) key (no modifiers).
+    PressNamed(NamedKey),
+}
 
 /// One exhibit in the gallery: a name, a group, an optional list of
 /// named variants, and four read/write seams the shell drives.
@@ -90,6 +117,18 @@ pub trait Demo {
     fn tick(&mut self, variant: usize, backend: &mut dyn Backend) -> quadraui::Reaction {
         let _ = (variant, backend);
         quadraui::Reaction::Continue
+    }
+
+    /// The input headless capture (`quadraui-gallery --capture`) replays
+    /// against `variant` right after selecting it and right before taking
+    /// the screenshot — see [`CaptureAction`]. Default: [`CaptureAction::None`],
+    /// which is correct for every demo with nothing of its own to open
+    /// (most of them); a demo whose `render` leaves a dialog/menu/overlay
+    /// closed until some input arrives overrides this so capture shows that
+    /// overlay open, not idle.
+    fn capture_action(&self, variant: usize) -> CaptureAction {
+        let _ = variant;
+        CaptureAction::None
     }
 }
 

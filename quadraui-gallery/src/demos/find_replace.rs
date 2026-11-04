@@ -109,18 +109,17 @@ impl FindReplaceDemo {
     /// hit-test against it (see the module doc for why this is a
     /// cross-backend *approximation*, not each backend's exact anchor
     /// formula).
-    fn content_origin(
-        panel: &FindReplacePanel,
-        rect: Rect,
-        char_width: f32,
-        line_height: f32,
-    ) -> (f32, f32) {
+    ///
+    /// `panel.group_bounds` is **absolute** (see [`Self::panel_for`]'s
+    /// call sites), matching the GTK/macOS rasteriser's own anchor
+    /// formula directly — no separate `rect` offset to add on top.
+    fn content_origin(panel: &FindReplacePanel, char_width: f32, line_height: f32) -> (f32, f32) {
         let cw = char_width.max(1.0);
         let lh = line_height.max(1.0);
-        let panel_w = (panel.panel_width as f32 * cw).min((rect.width - 2.0 * cw).max(0.0));
         let gb = &panel.group_bounds;
-        let gb_right = rect.x + gb.x + gb.width;
-        let x = (gb_right - (panel_w + cw)).max(rect.x);
+        let panel_w = (panel.panel_width as f32 * cw).min((gb.width - 2.0 * cw).max(0.0));
+        let gb_right = gb.x + gb.width;
+        let x = (gb_right - (panel_w + cw)).max(gb.x);
         let y = gb.y.max(lh);
         (x + cw, y + lh)
     }
@@ -165,8 +164,18 @@ impl Demo for FindReplaceDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let rect = Self::editor_rect(area, backend);
-        let panel = self.panel_for(variant, Rect::new(0.0, 0.0, rect.width, rect.height));
-        backend.draw_find_replace(rect, &panel);
+        // `group_bounds` is **absolute** (anchored at `rect`'s own
+        // origin, not `(0, 0)`): the GTK/macOS rasteriser anchors the
+        // popup directly off `panel.group_bounds` and ignores the `rect`
+        // argument below entirely (see `Backend::draw_find_replace`'s
+        // per-backend docs), so an `(0, 0)`-relative `group_bounds` paints
+        // the popup at the window's top-left corner — over the sidebar —
+        // instead of this demo's own top-right. Passing a zeroed `rect`
+        // here keeps the TUI rasteriser's `editor_left` offset (which
+        // *does* add `rect.x` on top of `group_bounds.x`) from double
+        // counting it.
+        let panel = self.panel_for(variant, rect);
+        backend.draw_find_replace(Rect::new(0.0, 0.0, rect.width, rect.height), &panel);
 
         let lh = backend.line_height();
         let status_rect = Rect::new(area.x, rect.y + rect.height, area.width, lh);
@@ -191,11 +200,11 @@ impl Demo for FindReplaceDemo {
                 ..
             } => {
                 let rect = Self::editor_rect(area, backend);
-                let group_bounds = Rect::new(0.0, 0.0, rect.width, rect.height);
+                let group_bounds = rect;
                 let probe = self.panel_for(variant, group_bounds);
                 let char_width = backend.char_width();
                 let line_height = backend.line_height();
-                let origin = Self::content_origin(&probe, rect, char_width, line_height);
+                let origin = Self::content_origin(&probe, char_width, line_height);
                 let hit = probe.hit_test(position.x, position.y, origin, char_width, line_height);
                 self.panel.group_bounds = group_bounds;
                 self.last_click = Some(match hit {

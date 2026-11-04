@@ -58,6 +58,14 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Fixed
+- `quadraui-binding-core`'s `data_table_key_event` now maps Enter on a
+  focused `DataTable` to `DataTableEvent::RowActivated { idx }` — the
+  keyboard equivalent of a pointer double-click — instead of being a no-op;
+  previously only Up/Down mapped to `RowSelected` and Enter fell through
+  unhandled. A no-op when nothing is selected, since there is no row to
+  activate.
+
 ### Added
 - `Icon::codicon(name, fallback) -> Option<Icon>` and
   `TabIcon::codicon(name, color) -> Option<TabIcon>` build an icon from the
@@ -91,6 +99,20 @@ only a push to `main` runs this workflow.
   for native `Backend` consumers that construct them directly. Covered by
   `quadraui-binding-core::engine` tests and `quadraui-py`'s
   `test_data_table_interactions.py` / inline `lib.rs` list test.
+- `Theme::focus_ring_color()` — derived from `accent_fg` (no new field,
+  matching `Theme::tab_active_border_top`'s pattern), the colour the
+  shared `Button` rasteriser (`button::native_surface_paint`) now
+  strokes an outset focus ring in for a focused, enabled button on GTK,
+  macOS and Win32, at `Style::focus_ring_width`. `compose::FocusRing`
+  gains `is_focus_visible()`/`set_focus_visible()`: a keyboard move
+  (`advance`/`retreat`/`focus_first`) marks the ring visible, a
+  click-to-focus `set()` suppresses it (VS Code's `:focus-visible`
+  convention) — a host composes a primitive's `has_focus`/`focused`
+  bool as `ring.is_focused(id) && ring.is_focus_visible()` to pick this
+  up. `List`/`TreeView`/`TextInput`/`TabBar` still paint only their
+  pre-existing selection/border focus treatment — ringing those too
+  needs threading `Style` through several more per-backend paint
+  wrappers each and is tracked as follow-up work, not done here.
 - `Style::scrollbar_width` (default `10.0`, matching the existing
   `TREE_VSCROLLBAR_WIDTH` constant) — a themeable seam for the
   `List`/`TreeView`/`DataTable` vertical scrollbar track width.
