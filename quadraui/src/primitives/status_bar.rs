@@ -831,7 +831,11 @@ pub(crate) mod native_surface_paint {
                 8.0
             }
             fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-                let char_px = if self.char_px > 0.0 { self.char_px } else { 8.0 };
+                let char_px = if self.char_px > 0.0 {
+                    self.char_px
+                } else {
+                    8.0
+                };
                 (text.chars().count() as f32 * char_px, 16.0)
             }
             fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
