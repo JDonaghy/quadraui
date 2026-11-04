@@ -59,6 +59,13 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `Style::scrollbar_width` (default `10.0`, matching the existing
+  `TREE_VSCROLLBAR_WIDTH` constant) — a themeable seam for the
+  `List`/`TreeView`/`DataTable` vertical scrollbar track width.
+  Additive field on the already-`#[non_exhaustive]` `Style` struct; no
+  pixel-backend rasteriser reads it yet (each still paints at its own
+  fixed `layout_metrics::pixel` constant) — wiring each backend to read
+  it is tracked as a follow-up per backend.
 - `Backend::draw_button_with_state(rect, button, &InteractionState)` — a
   `Button` rasteriser that tints the background when the button is
   hovered/pressed, keyed by `button.id`. Additive: `draw_button` is

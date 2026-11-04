@@ -286,6 +286,27 @@ pub struct Style {
     /// Default `35.0` — VS Code's own toolbar height.
     #[serde(default = "default_toolbar_height")]
     pub toolbar_height: f32,
+
+    /// Width, in surface-native pixels, of a `List`/`TreeView`/
+    /// `DataTable` vertical scrollbar track — independent of
+    /// [`Self::row_height`], since VS Code's overlay scrollbar is a
+    /// fixed 10px regardless of the row pitch it scrolls.
+    ///
+    /// **TUI story: no-op.** A terminal scrollbar is always exactly one
+    /// cell wide; every TUI rasteriser for `List`/`TreeView`/`DataTable`
+    /// keeps that one-cell track regardless of this field.
+    ///
+    /// No pixel-backend rasteriser reads this field yet — each currently
+    /// paints its vertical scrollbar at the fixed
+    /// [`crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`]
+    /// / `DATA_TABLE_SCROLLBAR_WIDTH` constants — for the same reason as
+    /// [`Self::padding`] above: this field is the themeable seam, wiring
+    /// each backend's rasteriser to read it is tracked separately.
+    ///
+    /// Default `10.0` — VS Code's own list/tree overlay scrollbar width,
+    /// matching the pre-existing `TREE_VSCROLLBAR_WIDTH` constant.
+    #[serde(default = "default_scrollbar_width")]
+    pub scrollbar_width: f32,
 }
 
 /// `#[serde(default)]` value for [`Style::tab_height`] — a struct
@@ -326,6 +347,12 @@ fn default_backdrop_opacity() -> f32 {
     1.0
 }
 
+/// `#[serde(default)]` value for [`Style::scrollbar_width`] — see
+/// [`default_tab_height`].
+fn default_scrollbar_width() -> f32 {
+    10.0
+}
+
 impl Default for Style {
     fn default() -> Self {
         Self {
@@ -341,6 +368,7 @@ impl Default for Style {
             activity_bar_width: 48.0,
             row_height: 22.0,
             toolbar_height: 35.0,
+            scrollbar_width: 10.0,
         }
     }
 }
@@ -440,6 +468,13 @@ impl Style {
         self.toolbar_height = toolbar_height;
         self
     }
+
+    /// Set [`Self::scrollbar_width`].
+    #[must_use]
+    pub fn with_scrollbar_width(mut self, scrollbar_width: f32) -> Self {
+        self.scrollbar_width = scrollbar_width;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -487,6 +522,7 @@ mod tests {
         assert_eq!(style.activity_bar_width, 48.0);
         assert_eq!(style.row_height, 22.0);
         assert_eq!(style.toolbar_height, 35.0);
+        assert_eq!(style.scrollbar_width, 10.0);
     }
 
     /// Each chrome-metric `with_*` builder overrides only its own field.
@@ -516,6 +552,10 @@ mod tests {
         let toolbar_height = defaults.with_toolbar_height(40.0);
         assert_eq!(toolbar_height.toolbar_height, 40.0);
         assert_eq!(toolbar_height.tab_height, defaults.tab_height);
+
+        let scrollbar_width = defaults.with_scrollbar_width(14.0);
+        assert_eq!(scrollbar_width.scrollbar_width, 14.0);
+        assert_eq!(scrollbar_width.toolbar_height, defaults.toolbar_height);
     }
 
     /// A JSON payload serialized before the chrome-metric fields existed
@@ -538,6 +578,24 @@ mod tests {
         assert_eq!(style.activity_bar_width, 48.0);
         assert_eq!(style.row_height, 22.0);
         assert_eq!(style.toolbar_height, 35.0);
+        assert_eq!(style.scrollbar_width, 10.0);
+    }
+
+    /// A JSON payload serialized before [`Style::scrollbar_width`]
+    /// existed has no such key; `#[serde(default = "…")]` must
+    /// deserialize it at the VS Code default rather than erroring.
+    #[test]
+    fn deserializing_without_scrollbar_width_defaults_to_ten_pixels() {
+        let json = r#"{
+            "focus_ring_width": 2.0,
+            "padding": 8.0,
+            "corner_radius": 6.0,
+            "border_width": 1.0,
+            "shadow_elevation": 1,
+            "control_height": 26.0
+        }"#;
+        let style: Style = serde_json::from_str(json).expect("deserialize without scrollbar_width");
+        assert_eq!(style.scrollbar_width, 10.0);
     }
 
     /// Every one of these `with_*` builders overrides only its own
@@ -588,6 +646,15 @@ mod tests {
         let style = Style::default().with_backdrop_opacity(0.3);
         assert_eq!(style.backdrop_opacity, 0.3);
         assert_eq!(style.shadow_elevation, Style::default().shadow_elevation);
+    }
+
+    /// Same proof as `with_focus_ring_width_builder_overrides_only_that_field`,
+    /// for [`Style::scrollbar_width`].
+    #[test]
+    fn with_scrollbar_width_builder_overrides_only_that_field() {
+        let style = Style::default().with_scrollbar_width(14.0);
+        assert_eq!(style.scrollbar_width, 14.0);
+        assert_eq!(style.row_height, Style::default().row_height);
     }
 
     /// A JSON payload serialized before `backdrop_opacity` existed has no
