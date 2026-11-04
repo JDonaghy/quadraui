@@ -1723,6 +1723,52 @@ mod native_surface_paint {
     /// run itself is never clipped.
     const TEXT_BOX_PADDING: f32 = 8.0;
 
+    /// Sub-pixel slack when deciding whether a run fits its box. A
+    /// [`ControlWidth::Content`] box is sized *from* a measured width,
+    /// so `measured + 2 * TEXT_BOX_PADDING - 2 * TEXT_BOX_PADDING`
+    /// can land a rounding step below `measured`; without this slack
+    /// that alone would drop the value's last character.
+    const TEXT_FIT_EPSILON: f32 = 0.5;
+
+    /// Longest leading run of `text` that measures no wider than
+    /// `budget`, as a byte length plus that prefix's `(width, height)`.
+    /// The height is always the full run's, so a clipped value still
+    /// centres on the same baseline as an unclipped one.
+    ///
+    /// `PaintSurface::surface_draw_text_run` ignores its rect's width
+    /// on every pixel backend (cairo, Core Text and Direct2D all just
+    /// lay the string out at the rect's origin), so a text input box
+    /// narrower than its value has to clip the *string* rather than
+    /// rely on the drawing verb. The common case — the whole run
+    /// already fits — costs one measurement; a too-long run
+    /// binary-searches its char boundaries.
+    fn clip_run_to_width(surface: &dyn PaintSurface, text: &str, budget: f32) -> (usize, f32, f32) {
+        let (w, h) = surface.surface_measure_text(text);
+        if text.is_empty() || w <= budget + TEXT_FIT_EPSILON {
+            return (text.len(), w, h);
+        }
+        let boundaries: Vec<usize> = text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(text.len()))
+            .collect();
+        // Invariant: the prefix ending at `boundaries[lo]` fits (the
+        // empty prefix always does) and the one at `boundaries[hi]`
+        // does not (the full run, checked above, does not).
+        let (mut lo, mut hi) = (0usize, boundaries.len() - 1);
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2;
+            if surface.surface_measure_text(&text[..boundaries[mid]]).0 <= budget + TEXT_FIT_EPSILON
+            {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let end = boundaries[lo];
+        (end, surface.surface_measure_text(&text[..end]).0, h)
+    }
+
     /// Shared text-input box painter for `TextInput` / `PasswordInput` /
     /// the single-line `TextArea` preview: a stroked box with px padding
     /// around the value, rather than literal `[value]` bracket glyphs —
@@ -1760,7 +1806,6 @@ mod native_surface_paint {
         };
         let input_fg = if value.is_empty() { dim_fg } else { field_fg };
         let row_h = row_rect.height;
-        let (shown_w, shown_h) = surface.surface_measure_text(shown);
 
         // The box spans exactly `[control_start, control_start +
         // control_width)` — the caller already resolved `control_width`
@@ -1772,13 +1817,24 @@ mod native_surface_paint {
         // TEXT_BOX_PADDING` below always has room before this box's
         // right edge.
         let ix = control_start;
-        let box_right = control_start + control_width.max(TEXT_BOX_PADDING * 2.0);
+        let box_w = control_width.max(TEXT_BOX_PADDING * 2.0);
+        let box_right = control_start + box_w;
 
         surface.surface_stroke_rect(
             Rect::new(ix, row_rect.y + 2.0, (box_right - ix).max(1.0), row_h - 4.0),
             dim_fg,
             1.0,
         );
+
+        // A `Fixed` column narrower than its value — or a `Fill` one in
+        // a narrow row — has to clip rather than spill the value past
+        // the stroked edge, which is what makes `Fixed`'s exact width
+        // and `min_control_width`'s floor observable here. The budget
+        // comes from `box_w` rather than `box_right - ix` so it stays
+        // independent of how far right the control column sits.
+        let text_budget = (box_w - TEXT_BOX_PADDING * 2.0).max(0.0);
+        let (drawn_len, shown_w, shown_h) = clip_run_to_width(surface, shown, text_budget);
+        let shown = &shown[..drawn_len];
 
         let y = row_rect.y + (row_h - shown_h) / 2.0;
 
@@ -2191,6 +2247,67 @@ mod native_surface_paint {
                 run_right <= box_right,
                 "value run (right edge {run_right}) must fit inside the stroked \
                  box (right edge {box_right}), not spill past it"
+            );
+        }
+
+        /// A `ControlWidth::Fixed` column narrower than its value must
+        /// clip the drawn run at the box's inner edge rather than let it
+        /// spill past the stroked border — the pixel backends'
+        /// `surface_draw_text_run` ignores the rect's width, so the
+        /// painter has to shorten the string itself.
+        #[test]
+        fn fixed_control_width_narrower_than_its_value_clips_the_run() {
+            // `FixedMeasure` is 6 units per character, so a 32-unit box
+            // leaves `32 - 2 * TEXT_BOX_PADDING = 16` units of text —
+            // room for two characters, not six.
+            let field = text_input_field("name", "abcdef", Some(ControlWidth::Fixed(32.0)));
+            let form = form_with_one_field(field);
+
+            let (surface, _flayout) = paint_recorded(&form);
+
+            let stroke = surface
+                .strokes
+                .first()
+                .expect("TextInput paints a stroked box");
+            let box_right = stroke.0.x + stroke.0.width;
+
+            let run = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text.starts_with('a'))
+                .expect("the value is drawn as a text run");
+            assert_eq!(
+                run.1, "ab",
+                "the value should be clipped to what the box can hold"
+            );
+            assert!(
+                run.0.x + run.0.width <= box_right,
+                "clipped run (right edge {}) must stay inside the stroked box \
+                 (right edge {box_right})",
+                run.0.x + run.0.width,
+            );
+        }
+
+        /// `min_control_width` floors the resolved column, so a `Fixed`
+        /// column too narrow for its value stops clipping once the floor
+        /// is wide enough to hold it.
+        #[test]
+        fn min_control_width_floors_a_narrow_fixed_column_back_to_the_full_value() {
+            let mut field = text_input_field("name", "abcdef", Some(ControlWidth::Fixed(32.0)));
+            // 6 characters * 6 units + 2 * TEXT_BOX_PADDING.
+            field.min_control_width = Some(52.0);
+            let form = form_with_one_field(field);
+
+            let (surface, _flayout) = paint_recorded(&form);
+
+            assert!(
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, text, _)| text == "abcdef"),
+                "min_control_width should widen the box enough to draw the whole \
+                 value; runs were {:?}",
+                surface.text_runs,
             );
         }
 
