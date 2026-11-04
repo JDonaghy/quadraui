@@ -1,13 +1,16 @@
 //! System clipboard access -- the napi-rs analog of `quadraui-py`'s own
 //! clipboard methods on `QuiApp`.
 //!
-//! Unlike `quadraui-py`, which keeps a separate, lazily constructed
-//! `TuiBackend` alive for the clipboard alone (so a long-lived
-//! `arboard::Clipboard` handle survives a `run_native`/`run_tui` call moving
-//! the main `PyAppLogic` into a different backend), this crate's `QuiApp`
-//! has no `run_native`/`run_tui` analog: `self.driver.backend()` is the one
-//! `TuiBackend` this app ever has, for its whole lifetime, so every method
-//! below reads/writes through it directly.
+//! Every method below reads/writes through `self.driver.backend()`'s own
+//! clipboard, deliberately *not* gated by [`QuiApp::check_not_live`]: the
+//! clipboard is one `arboard::Clipboard` handle tied to this app's own
+//! headless `TuiBackend` for its whole lifetime, so it keeps working the
+//! same way whether or not `startTui` has moved this app's
+//! [`NodeAppLogic`] into a live session -- mirroring `quadraui-py`'s own
+//! `clipboard_write_text`, which keeps a separate, lazily constructed
+//! `TuiBackend` alive for the clipboard alone so a long-lived
+//! `arboard::Clipboard` handle survives a `run_native`/`run_tui` call
+//! moving the main `PyAppLogic` into a different backend.
 
 use super::*;
 

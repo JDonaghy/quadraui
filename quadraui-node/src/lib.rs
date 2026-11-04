@@ -321,8 +321,8 @@ impl LiveRunner {
 
     /// One non-blocking pass -- [`TuiRunner::step`] for the one variant
     /// that exists today. Never blocks, mirroring every backend's own
-    /// non-blocking `step()` the issue this module's doc section cites
-    /// names by file and line.
+    /// non-blocking `step()` -- a `gtk`/`macos`/`win` variant drives its
+    /// own runner's `step()` the same way once it exists.
     fn step(&mut self) -> io::Result<StepOutcome> {
         match self {
             LiveRunner::Tui(runner) => runner.step(),
@@ -964,6 +964,15 @@ fn live_runner_active_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("LiveRunnerActiveError: {detail}"))
 }
 
+/// Mirrors [`invalid_descriptor_error`] for `step`/`run` called after a
+/// live `startTui`/`startNative` session this app once held has already
+/// ended -- see [`QuiApp::live_exited`]'s doc for why this is sticky
+/// rather than silently falling back to ticking the orphaned headless
+/// app.
+fn live_runner_exited_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("LiveRunnerExitedError: {detail}"))
+}
+
 /// Decodes `descriptor` straight into `T` via napi's own
 /// `Env::from_js_value` -- the napi-rs analog of `quadraui-py`'s
 /// `pythonize::depythonize`, for any descriptor type that derives
@@ -1445,6 +1454,19 @@ pub struct QuiApp {
     /// called, and again once that runner's own `step` observes
     /// [`StepOutcome::Exited`] (or `stopLive` is called explicitly).
     live: Option<LiveRunner>,
+    /// Set the instant [`Self::live`] goes from `Some` back to `None` --
+    /// whether because that runner's own `step` observed
+    /// [`StepOutcome::Exited`], it failed outright, or [`QuiApp::stop_live`]
+    /// tore it down early -- and never cleared again. Once set,
+    /// [`QuiApp::step_once`] raises `LiveRunnerExitedError` instead of
+    /// falling back to ticking [`Self::driver`]'s own [`NodeAppLogic`]:
+    /// `startTui` already moved that logic's handlers/descriptors into the
+    /// live session and never moves them back (see `startTui`'s own doc),
+    /// so a `step()` call after the session that owned them has ended --
+    /// whether a stray extra call or a JS pump loop mistakenly restarted
+    /// after seeing `step()` return `false` -- would otherwise silently
+    /// spin on that now-empty orphan instead of raising.
+    live_exited: Cell<bool>,
     /// The [`Backend::waker`] closure currently reachable through
     /// [`QuiApp::waker`]'s returned handle -- [`Self::driver`]'s own
     /// headless backend's waker until [`Self::live`] is `Some`, swapped to
@@ -1468,6 +1490,7 @@ impl QuiApp {
             poisoned: false,
             in_dispatch: Cell::new(false),
             live: None,
+            live_exited: Cell::new(false),
             current_waker,
         })
     }
@@ -1837,7 +1860,13 @@ impl QuiApp {
     /// configuration (handlers, inserted descriptors) is lost the same way
     /// `quadraui-py`'s `run_tui` loses it on the same failure
     /// (`std::mem::take` already moved it out before the takeover
-    /// attempt), leaving [`Self::driver`] usable but empty.
+    /// attempt), leaving [`Self::driver`] usable but empty. The same data
+    /// loss applies once a *successful* session ends too, whether its own
+    /// `step` observes [`StepOutcome::Exited`] or [`Self::stop_live`] tears
+    /// it down early: neither moves the handlers/descriptors back onto
+    /// [`Self::driver`], and [`Self::live_exited`]'s sticky flag then
+    /// raises `LiveRunnerExitedError` on any further `step()`/`run()`
+    /// rather than silently ticking that now-empty orphan.
     #[napi(js_name = "startTui")]
     pub fn start_tui(&mut self, env: Env, mouse: Option<bool>) -> Result<()> {
         self.check_not_live()?;
@@ -1865,12 +1894,17 @@ impl QuiApp {
     /// `None`. Returns whether a live session was actually running (`false`
     /// is not an error -- calling this with no live session active is a
     /// harmless no-op, matching `slotClear`'s own "nothing to do" shape
-    /// rather than `insertButton`'s "state already there" one).
+    /// rather than `insertButton`'s "state already there" one). This app's
+    /// prior configuration (handlers/descriptors `startTui` moved out) does
+    /// not come back -- see [`Self::live_exited`]'s own doc, which this
+    /// also sets, so a later `step()`/`run()` raises `LiveRunnerExitedError`
+    /// rather than silently ticking the now-empty orphan.
     #[napi(js_name = "stopLive")]
     pub fn stop_live(&mut self, env: Env) -> Result<bool> {
         self.guarded(env, |app| {
             let was_live = app.live.take().is_some();
             if was_live {
+                app.live_exited.set(true);
                 app.restore_headless_waker();
             }
             Ok(was_live)
@@ -1991,17 +2025,23 @@ impl QuiApp {
 
     /// Raises `LiveRunnerActiveError` if `startTui` (or a future
     /// `startNative`) is currently running on this app -- see this
-    /// module's doc's "Live run loop" section. Every method that reaches
-    /// into [`Self::driver`] directly (rather than through [`Self::live`])
-    /// calls this first: once `startTui` has moved this app's
-    /// [`NodeAppLogic`] out, mutating or reading [`Self::driver`] again
-    /// would silently touch the emptied, orphaned logic left behind
-    /// instead of the live session actually running, rather than raising
-    /// a clear error. `step`/`run` (which drive [`Self::live`] itself) and
-    /// `waker`/`actions` (which only ever read already-shared `Arc`/`Rc`
-    /// state that keeps working correctly regardless of where the
-    /// [`NodeAppLogic`] it was obtained from now lives) are the exceptions
-    /// and do not call this.
+    /// module's doc's "Live run loop" section. Every method on `QuiApp`
+    /// (in this module and in the sibling `overlays`/`accelerators`/
+    /// `theme`/`metrics`/`platform` modules) that reaches into
+    /// [`Self::driver`] directly -- its headless backend or the
+    /// [`NodeAppLogic`] `startTui` leaves behind -- calls this first: once
+    /// `startTui` has moved this app's own `NodeAppLogic` into
+    /// [`Self::live`], mutating or reading [`Self::driver`] again would
+    /// silently touch the emptied, orphaned logic and the dormant backend
+    /// left behind instead of the live session actually running, rather
+    /// than raising a clear error. `step`/`run` (which drive
+    /// [`Self::live`] itself) and `waker` (which only ever reads an
+    /// already-shared `Arc` that keeps working correctly regardless of
+    /// where the `NodeAppLogic` it was obtained from now lives) are the
+    /// only exceptions and do not call this. `clipboard.rs`'s methods are
+    /// a deliberate, documented exception too: they resolve against
+    /// `self.driver.backend()`'s own clipboard regardless of a live
+    /// session, by design -- see that module's own doc.
     fn check_not_live(&self) -> Result<()> {
         if self.live.is_some() {
             return Err(live_runner_active_error(
@@ -2074,17 +2114,27 @@ impl QuiApp {
     /// Dispatches the oldest queued event, or ticks if none is queued, then
     /// surfaces any pending error a callback recorded while handling it.
     /// Returns whether the app is still running. With no live session
-    /// ([`Self::live`] is `None`), drains [`Self::driver`]'s queue/backend
-    /// via [`step_driver`], exactly as before `startTui` existed. With one
-    /// running, instead takes one non-blocking [`LiveRunner::step`] pass
-    /// -- never a blocking `pump`, since that would freeze the one libuv
-    /// reactor this whole process shares (see this module's doc's "Live
-    /// run loop" section) -- and, once that pass reports
-    /// [`StepOutcome::Exited`] (or itself fails), drops [`Self::live`] and
-    /// restores [`Self::current_waker`] to the headless path via
+    /// ([`Self::live`] is `None`) and none having ever ended
+    /// ([`Self::live_exited`] is unset), drains [`Self::driver`]'s queue/
+    /// backend via [`step_driver`], exactly as before `startTui` existed.
+    /// Raises `LiveRunnerExitedError` instead if a live session once ran
+    /// here and has since ended -- see [`Self::live_exited`]'s own doc.
+    /// With a live session currently running, instead takes one
+    /// non-blocking [`LiveRunner::step`] pass -- never a blocking `pump`,
+    /// since that would freeze the one libuv reactor this whole process
+    /// shares (see this module's doc's "Live run loop" section) -- and,
+    /// once that pass reports [`StepOutcome::Exited`] (or itself fails),
+    /// drops [`Self::live`], sets [`Self::live_exited`], and restores
+    /// [`Self::current_waker`] to the headless path via
     /// [`Self::restore_headless_waker`].
     fn step_once(&mut self) -> Result<bool> {
         let Some(live) = self.live.as_mut() else {
+            if self.live_exited.get() {
+                return Err(live_runner_exited_error(
+                    "the live startTui/startNative session this app once held has already \
+                     ended -- construct a new QuiApp to run another one",
+                ));
+            }
             let running = step_driver(&mut self.driver, &mut self.pending_events);
             take_pending_error(self.driver.app_mut())?;
             return Ok(running);
@@ -2098,6 +2148,7 @@ impl QuiApp {
             Ok(outcome) => outcome,
             Err(err) => {
                 self.live = None;
+                self.live_exited.set(true);
                 self.restore_headless_waker();
                 pending?;
                 return Err(internal_error(format!("step: {err}")));
@@ -2111,6 +2162,7 @@ impl QuiApp {
         // this crate needing a wildcard arm that silently swallows it.
         if outcome == StepOutcome::Exited {
             self.live = None;
+            self.live_exited.set(true);
             self.restore_headless_waker();
             Ok(false)
         } else {
@@ -2884,6 +2936,42 @@ mod tests {
             .step(null_env_for_test())
             .expect("step must drain the delivered User event without raising");
         assert!(running, "delivering a User event must not exit the app");
+    }
+
+    /// `waker()` raises rather than handing out a handle once this app is
+    /// poisoned by an earlier caught panic -- the one direct `&self` read
+    /// of [`QuiApp::current_waker`] that bypasses [`QuiApp::guarded`]'s own
+    /// poison check, so it needs this check inline instead. Delivering a
+    /// stale handle obtained before the poisoning would still technically
+    /// work (it only ever posts into a queue a live `step()` would drain),
+    /// but every other `QuiApp` method already refuses a poisoned app, so
+    /// `waker()` keeping that same promise is the contract this covers.
+    #[test]
+    fn waker_raises_poisoned_error_on_a_poisoned_app() {
+        let mut app = QuiApp::new(10, 10).expect("valid dimensions");
+        let panicked: Result<()> = app.guarded(null_env_for_test(), |_| panic!("boom"));
+        assert!(panicked.is_err());
+        assert!(app.poisoned);
+
+        assert!(
+            app.waker().is_err(),
+            "waker() must raise on a poisoned app rather than handing out a handle"
+        );
+    }
+
+    /// [`NodeEventSink::dispatch_user`]'s `unwrap_or(JsonValue::Null)`
+    /// fallback: a [`UserPayload`] wrapping anything other than a
+    /// [`JsonValue`] -- unreachable from this crate's own [`QuiAppWaker`],
+    /// which only ever wraps one, but reachable from a future binding
+    /// sharing this same `InteractionEngine` -- recovers as `{"User":
+    /// null}` instead of panicking on the failed `downcast_ref`.
+    #[test]
+    fn user_event_with_a_foreign_payload_surfaces_as_user_none() {
+        let payload = UserPayload::new(42_i32);
+        let value = payload.downcast_ref::<JsonValue>().cloned();
+        assert_eq!(value, None, "an i32 payload must not downcast to JsonValue");
+        let wrapped = serde_json::json!({ "User": value.unwrap_or(JsonValue::Null) });
+        assert_eq!(wrapped, serde_json::json!({ "User": null }));
     }
 
     // A `startTui` round trip (success or the no-real-tty failure path) is

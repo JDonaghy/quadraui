@@ -4,12 +4,12 @@
 //! `quadraui-py`'s own platform-services methods on `QuiApp`.
 //!
 //! Every method resolves [`quadraui::PlatformServices`] off
-//! `self.driver.backend()`, this app's one headless `TuiBackend` -- there
-//! is no `run_native`/`run_tui` analog on this crate's `QuiApp` for one of
-//! these to reach a different backend instead. `TuiPlatformServices`
-//! (`quadraui::tui::services`) is a genuine, non-stub implementation for
-//! every method here -- see that module's doc for exactly what each one
-//! does on a terminal.
+//! `self.driver.backend()`, this app's own headless `TuiBackend`, and so
+//! calls [`QuiApp::check_not_live`] first: once `startTui` is running,
+//! that backend is the dormant pre-live one, not the live session's own.
+//! `TuiPlatformServices` (`quadraui::tui::services`) is a genuine,
+//! non-stub implementation for every method here -- see that module's doc
+//! for exactly what each one does on a terminal.
 //!
 //! `openPath`/`revealInFileManager`/`moveToTrash`/`restoreFromTrash`/
 //! `sendNotification` each has a deferred-queue twin on [`QuiAppActions`]
@@ -33,6 +33,7 @@ impl QuiApp {
     #[napi(js_name = "queueDialogEvents")]
     pub fn queue_dialog_events(&mut self, env: Env, events: Unknown) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let events: Vec<UiEvent> = decode_via_json("queueDialogEvents", events)?;
         self.guarded(env, |app| {
             app.driver.queue_dialog_events(events);
@@ -56,6 +57,7 @@ impl QuiApp {
         initial_dir: Option<String>,
         filters: Option<Vec<(String, Vec<String>)>>,
     ) -> Result<Option<String>> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let opts = FileDialogOptions {
                 title,
@@ -86,6 +88,7 @@ impl QuiApp {
         initial_filename: Option<String>,
         filters: Option<Vec<(String, Vec<String>)>>,
     ) -> Result<Option<String>> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let opts = FileDialogOptions {
                 title,
@@ -115,6 +118,7 @@ impl QuiApp {
         title: Option<String>,
         initial_dir: Option<String>,
     ) -> Result<Option<String>> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let opts = FileDialogOptions {
                 title,
@@ -147,6 +151,7 @@ impl QuiApp {
         silent: Option<bool>,
         tag: Option<String>,
     ) -> Result<()> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let mut n = Notification::new(title, body).with_silent(silent.unwrap_or(false));
             if let Some(tag) = tag {
@@ -166,6 +171,7 @@ impl QuiApp {
     /// hyperlink. Raises only when neither leg reached anything.
     #[napi(js_name = "openUrl")]
     pub fn open_url(&mut self, env: Env, url: String) -> Result<()> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             app.driver
                 .backend()
@@ -187,6 +193,7 @@ impl QuiApp {
     /// from a handler instead.
     #[napi(js_name = "revealInFileManager")]
     pub fn reveal_in_file_manager(&mut self, env: Env, path: String) -> Result<()> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             app.driver
                 .backend()
@@ -203,6 +210,7 @@ impl QuiApp {
     /// [`QuiAppActions::open_path`] from a handler instead.
     #[napi(js_name = "openPath")]
     pub fn open_path(&mut self, env: Env, path: String) -> Result<()> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             app.driver
                 .backend()
@@ -219,6 +227,7 @@ impl QuiApp {
     /// [`QuiAppActions::move_to_trash`] from a handler instead.
     #[napi(js_name = "moveToTrash")]
     pub fn move_to_trash(&mut self, env: Env, path: String) -> Result<()> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             app.driver
                 .backend()
@@ -238,6 +247,7 @@ impl QuiApp {
     /// instead.
     #[napi(js_name = "restoreFromTrash")]
     pub fn restore_from_trash(&mut self, env: Env, path: String) -> Result<()> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             app.driver
                 .backend()
@@ -253,6 +263,7 @@ impl QuiApp {
     /// this method's own "manual verification" story.
     #[napi]
     pub fn beep(&mut self, env: Env) -> Result<()> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             app.driver
                 .backend()
@@ -271,6 +282,7 @@ impl QuiApp {
     /// when `$COLORFGBG` is unset or unparseable.
     #[napi(js_name = "systemTheme")]
     pub fn system_theme(&mut self, env: Env) -> Result<Unknown<'static>> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let theme = app
                 .driver
@@ -288,6 +300,7 @@ impl QuiApp {
     /// headless `TuiBackend`.
     #[napi(js_name = "platformName")]
     pub fn platform_name(&mut self, env: Env) -> Result<&'static str> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             Ok(app.driver.backend().services().platform_name())
         })

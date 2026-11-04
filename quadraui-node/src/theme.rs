@@ -8,6 +8,12 @@
 //! [`BindingHost`], so [`BindingHost::setup`] replays it if a future
 //! `AppLogic::setup` call constructs a fresh backend -- mirrors
 //! `quadraui-py`'s own replay contract for the same methods.
+//!
+//! Every method here resolves against `self.driver.backend()`, this app's
+//! own headless `TuiBackend`, and so calls [`QuiApp::check_not_live`]
+//! first: once `startTui` is running, that backend is the dormant
+//! pre-live one, not the live session's own, so a change (or a read) here
+//! would otherwise silently miss the terminal actually on screen.
 
 use super::*;
 
@@ -18,6 +24,7 @@ impl QuiApp {
     /// `{r, g, b, a}` object.
     #[napi]
     pub fn theme(&mut self, env: Env) -> Result<Unknown<'static>> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let theme = app.driver.backend().theme();
             encode_via_json(env, "theme", &theme)
@@ -34,6 +41,7 @@ impl QuiApp {
     #[napi(js_name = "setTheme")]
     pub fn set_theme(&mut self, env: Env, overrides: Object) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let keys = Object::keys(&overrides)?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
@@ -61,6 +69,7 @@ impl QuiApp {
     /// plain object with one entry per token.
     #[napi]
     pub fn style(&mut self, env: Env) -> Result<Unknown<'static>> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let style = app.driver.backend().style();
             encode_via_json(env, "style", &style)
@@ -73,6 +82,7 @@ impl QuiApp {
     #[napi(js_name = "setStyle")]
     pub fn set_style(&mut self, env: Env, overrides: Object) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let keys = Object::keys(&overrides)?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
@@ -96,6 +106,7 @@ impl QuiApp {
     /// than `Icon::fallback`.
     #[napi(js_name = "setNerdFonts")]
     pub fn set_nerd_fonts(&mut self, env: Env, enabled: bool) -> Result<()> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
             backend.set_nerd_fonts(enabled);
@@ -108,6 +119,7 @@ impl QuiApp {
     /// [`Backend::nerd_fonts_enabled`].
     #[napi(js_name = "nerdFontsEnabled")]
     pub fn nerd_fonts_enabled(&mut self, env: Env) -> Result<bool> {
+        self.check_not_live()?;
         self.guarded(env, |app| Ok(app.driver.backend().nerd_fonts_enabled()))
     }
 
@@ -117,6 +129,7 @@ impl QuiApp {
     /// replayed by [`BindingHost::setup`].
     #[napi(js_name = "setEditorFont")]
     pub fn set_editor_font(&mut self, env: Env, family: String, size_pt: f64) -> Result<()> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
             backend.set_editor_font(&family, size_pt as f32);
@@ -130,6 +143,7 @@ impl QuiApp {
     /// [`Self::set_editor_font`].
     #[napi(js_name = "setUiFont")]
     pub fn set_ui_font(&mut self, env: Env, font_desc: String) -> Result<()> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
             backend.set_ui_font(&font_desc);
@@ -149,6 +163,7 @@ impl QuiApp {
         env: Env,
         bytes: Vec<u8>,
     ) -> Result<Option<Vec<String>>> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
             let families = backend.register_font_from_memory(&bytes);
@@ -163,6 +178,7 @@ impl QuiApp {
     /// [`Self::set_editor_font`].
     #[napi(js_name = "setNerdFontFallback")]
     pub fn set_nerd_font_fallback(&mut self, env: Env, family: String) -> Result<()> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
             backend.set_nerd_font_fallback(&family);
@@ -177,6 +193,7 @@ impl QuiApp {
     /// "don't know", never "false".
     #[napi(js_name = "hasFontFamily")]
     pub fn has_font_family(&mut self, env: Env, family: String) -> Result<Option<bool>> {
+        self.check_not_live()?;
         self.guarded(env, |app| Ok(app.driver.backend().has_font_family(&family)))
     }
 
@@ -188,6 +205,7 @@ impl QuiApp {
     #[napi(js_name = "setCaretShape")]
     pub fn set_caret_shape(&mut self, env: Env, shape: String) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let shape = caret_shape(&shape)
             .map_err(|err| invalid_descriptor_error(format!("setCaretShape: {err}")))?;
         self.guarded(env, |app| {

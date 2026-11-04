@@ -3,10 +3,12 @@
 //! the napi-rs analog of `quadraui-py`'s own accelerator methods on
 //! `QuiApp`.
 //!
-//! Every method resolves against `self.driver`, this app's one headless
-//! `TuiBackend` -- there is no `run_native`/`run_tui` analog on this
-//! crate's `QuiApp` for a global shortcut to reach instead. Every in-tree
-//! `PlatformServices` override inherits
+//! Every method resolves against `self.driver`, this app's own headless
+//! `TuiBackend`, and so calls [`QuiApp::check_not_live`] first: once
+//! `startTui` is running, `self.driver`'s backend and [`NodeAppLogic`] are
+//! the orphaned pre-live state rather than the live session's own, and
+//! registering an accelerator against it would never take effect on the
+//! live backend. Every in-tree `PlatformServices` override inherits
 //! [`quadraui::PlatformServices::register_global_shortcut`]'s
 //! `Unsupported` default today, so `registerGlobalShortcut`'s success path
 //! has no automated coverage here and needs manual verification once a
@@ -31,6 +33,7 @@ impl QuiApp {
     #[napi(js_name = "registerAccelerator")]
     pub fn register_accelerator(&mut self, env: Env, descriptor: Unknown) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let acc: Accelerator = decode_via_json("registerAccelerator", descriptor)?;
         self.guarded(env, |app| {
             let (backend, app_logic) = app.driver.parts_mut();
@@ -45,6 +48,7 @@ impl QuiApp {
     /// registered, or was already unregistered.
     #[napi(js_name = "unregisterAccelerator")]
     pub fn unregister_accelerator(&mut self, env: Env, id: String) -> Result<()> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             let id = AcceleratorId::new(id);
             let (backend, app_logic) = app.driver.parts_mut();
@@ -68,6 +72,7 @@ impl QuiApp {
         descriptor: Unknown,
     ) -> Result<Unknown<'static>> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let acc: Accelerator = decode_via_json("registerGlobalShortcut", descriptor)?;
         self.guarded(env, |app| {
             let id = app
@@ -85,6 +90,7 @@ impl QuiApp {
     #[napi(js_name = "unregisterGlobalShortcut")]
     pub fn unregister_global_shortcut(&mut self, env: Env, id: Unknown) -> Result<()> {
         self.check_not_dispatching()?;
+        self.check_not_live()?;
         let id: GlobalShortcutId = decode_via_json("unregisterGlobalShortcut", id)?;
         self.guarded(env, |app| {
             app.driver
@@ -99,6 +105,7 @@ impl QuiApp {
     /// [`quadraui::PlatformServices::unregister_all_global_shortcuts`].
     #[napi(js_name = "unregisterAllGlobalShortcuts")]
     pub fn unregister_all_global_shortcuts(&mut self, env: Env) -> Result<()> {
+        self.check_not_live()?;
         self.guarded(env, |app| {
             app.driver
                 .backend()
