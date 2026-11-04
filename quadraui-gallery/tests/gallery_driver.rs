@@ -620,6 +620,30 @@ fn find_replace_chevron_click_toggles_show_replace() {
     let (x, y) = driver
         .find("▼")
         .unwrap_or_else(|| panic!("chevron glyph should paint:\n{}", driver.screen()));
+
+    // The panel anchors inside the demo's own editor area, not the
+    // window's top-left — relative to two other already-painted
+    // anchors rather than a hardcoded coordinate: strictly right of the
+    // sidebar row (the editor area starts after the sidebar) and
+    // strictly below the Demo/Code/Data tab strip (the editor area
+    // starts below it). A `group_bounds` that collapsed back to
+    // `(0, 0)`-relative would paint the chevron over the sidebar
+    // instead.
+    let (sidebar_x, _) = driver
+        .find("Find & Replace")
+        .expect("Find & Replace sidebar row should still paint, selected");
+    let (_, tab_y) = driver.find("Data").expect("Data tab label should paint");
+    assert!(
+        x > sidebar_x,
+        "chevron at x={x} should be right of the sidebar row at x={sidebar_x}:\n{}",
+        driver.screen()
+    );
+    assert!(
+        y > tab_y,
+        "chevron at y={y} should be below the tab strip at y={tab_y}:\n{}",
+        driver.screen()
+    );
+
     driver.click(x, y);
 
     let (dx, dy) = driver.find("Data").expect("Data tab label should paint");

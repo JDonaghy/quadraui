@@ -1831,6 +1831,21 @@ mod tests {
         }
     }
 
+    /// The literal production pair, in production order: `BottomPanelDemo`
+    /// ("Bottom Panel") registered immediately before `PanelDemo`
+    /// ("Panel"), both in `registry()`'s `"Chrome"` group — a two-entry
+    /// double rather than driving the full ~400-capture production
+    /// `registry()` (every demo, re-constructed per variant, including a
+    /// `FilePickerDemo` temp directory tree each time) just to pin this
+    /// one name collision.
+    #[cfg(feature = "tui")]
+    fn panel_name_collision_registry() -> Vec<Box<dyn crate::Demo>> {
+        vec![
+            Box::new(crate::demos::bottom_panel::BottomPanelDemo::new()),
+            Box::new(crate::demos::panel::PanelDemo::new()),
+        ]
+    }
+
     /// Pins the literal production regression the collision tests above
     /// generalise: `BottomPanelDemo` ("Bottom Panel") is registered
     /// immediately before `PanelDemo` ("Panel") in `registry()`, in the
@@ -1845,7 +1860,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp capture dir");
         let mut manifest = Vec::new();
 
-        capture_tui_over(registry, dir.path(), &mut manifest).expect("capture_tui_over");
+        capture_tui_over(panel_name_collision_registry, dir.path(), &mut manifest)
+            .expect("capture_tui_over");
 
         let panel_entries: Vec<_> = manifest.iter().filter(|e| e.demo == "Panel").collect();
         assert_eq!(
@@ -1853,10 +1869,29 @@ mod tests {
             3,
             "Panel has three variants, so three manifest rows: {panel_entries:#?}"
         );
-        for entry in panel_entries {
+        for entry in &panel_entries {
             assert!(
                 entry.status.is_none(),
                 "Panel's {:?} variant should have captured cleanly: {entry:#?}",
+                entry.variant
+            );
+            let path = entry
+                .path
+                .as_deref()
+                .unwrap_or_else(|| panic!("Panel's {:?} variant should have a path", entry.variant));
+            let svg = fs::read_to_string(dir.path().join(path)).expect("read captured SVG");
+            // `Panel::title` always paints — even collapsed (see
+            // `collapsed_panel_still_paints_title_bar_chrome` in
+            // `quadraui/src/primitives/panel.rs`) — so "Demo Panel" shows
+            // on every one of the three variants. `BottomPanelDemo` never
+            // paints that string, so finding it here proves the click
+            // actually landed on `PanelDemo`'s own row, not on
+            // `BottomPanelDemo`'s whose name collides with it as a
+            // substring.
+            assert!(
+                svg.contains("Demo Panel"),
+                "SVG for Panel's {:?} variant should show its own painted \
+                 title:\n{svg}",
                 entry.variant
             );
         }
