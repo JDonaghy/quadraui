@@ -146,7 +146,12 @@ pub struct Style {
     /// field yet — every one of the six overlay primitives' TUI
     /// rasterisers keeps its own pre-existing fixed cell gutter — so
     /// today this is a documented fallback rule, not yet a live call
-    /// site.
+    /// site. `quadraui-binding-core`'s own `layout::Spacing` (the
+    /// `padding`/`margin`/`gap` keys a Python/JS render callback's
+    /// `"row"`/`"column"` layout-tree node may declare) is a *live* call
+    /// site of this identical rule — see that type's own doc for why
+    /// ceiling to a whole native unit degrades correctly on both a pixel
+    /// backend and TUI from the same formula.
     ///
     /// Default `8.0` — VS Code's own hover-card/quick-pick body padding.
     pub padding: f32,

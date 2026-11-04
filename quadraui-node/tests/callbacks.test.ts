@@ -105,6 +105,22 @@ test("setRender overrides the fixed slots for every frame", () => {
   assert.ok(app.screenContains("From render"));
 });
 
+test("setRender honours a row's padding/gap spacing keys", () => {
+  // `"padding"`/`"gap"` are siblings of the `"row"` key in the same node
+  // dict -- on this headless backend one native unit is one terminal
+  // cell, so `padding: 2` must inset the leaf exactly 2 rows/columns from
+  // the top-left corner.
+  const app = new QuiApp(20, 6);
+  app.setRender(() => ({
+    row: [{ id: "left", text_display: { id: "text:left", lines: [{ spans: [{ text: "L", fg: null, bg: null }] }] } }],
+    padding: 2,
+  }));
+  const lines = app.screen().split("\n");
+  assert.equal(lines[0].trim(), "", "no padding rows stay blank");
+  assert.equal(lines[2].slice(0, 2), "  ", "padding columns stay blank");
+  assert.equal(lines[2].trim(), "L");
+});
+
 test("a handler calling back into QuiApp (e.g. insertButton) mid-dispatch raises instead of corrupting state", () => {
   const app = new QuiApp(20, 5);
   let reentrantCallThrew = false;

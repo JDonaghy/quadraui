@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use quadraui::{
-    Button, DataTable, ListView, Panel, SidebarPanel, Split, SplitTree, TabBar, TextDisplay,
+    Button, DataTable, ListView, Panel, Rect, SidebarPanel, Split, SplitTree, TabBar, TextDisplay,
     TreeView,
 };
 
@@ -26,14 +26,127 @@ use crate::DecodeError;
 /// subtree, or a `SplitTree` holding an arbitrarily nested divider tree of
 /// content subtrees.
 pub enum LayoutNode {
-    Row(Vec<LayoutNode>),
-    Column(Vec<LayoutNode>),
+    Row(LayoutContainer),
+    Column(LayoutContainer),
     Leaf(LayoutLeaf),
     Split(LayoutSplit),
     Tabs(LayoutTabs),
     Panel(LayoutPanel),
     SidebarPanel(LayoutSidebarPanel),
     SplitTree(LayoutSplitTree),
+}
+
+/// A [`LayoutNode::Row`]/[`LayoutNode::Column`]'s decoded shape: its child
+/// nodes paired with the [`Spacing`] (`padding`/`margin`/`gap`) the render
+/// callback's `"row"`/`"column"` dict declared alongside them — see
+/// `crate::wire::layout_node_from_value`'s decode for the wire shape.
+/// `spacing` defaults to [`Spacing::default`] (no inset, no gap), so an
+/// existing tree with no spacing keys paints bit-for-bit identical to
+/// before this field existed.
+pub struct LayoutContainer {
+    pub children: Vec<LayoutNode>,
+    pub spacing: Spacing,
+}
+
+/// One edge inset a `padding` spacing key decodes into: all four sides
+/// individually, so a layout dict can express a uniform inset (one
+/// number, same on every side), an `{"x": .., "y": ..}` axis pair, or a
+/// full `{"top": .., "right": .., "bottom": .., "left": ..}` shape — see
+/// `crate::wire::edge_insets_from_value` for the decode. Each side
+/// defaults to `0.0`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EdgeInsets {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+impl EdgeInsets {
+    /// The same inset on every side.
+    pub fn uniform(v: f32) -> Self {
+        Self {
+            top: v,
+            right: v,
+            bottom: v,
+            left: v,
+        }
+    }
+
+    /// `x` on the left/right edges, `y` on the top/bottom ones — the
+    /// `{"x": .., "y": ..}` wire shape.
+    pub fn xy(x: f32, y: f32) -> Self {
+        Self {
+            top: y,
+            right: x,
+            bottom: y,
+            left: x,
+        }
+    }
+
+    /// Shrinks `rect` by these insets, each independently cell-quantised
+    /// via [`quantise_padding`] first — floored at zero width/height so an
+    /// inset wider than `rect` never produces a negative size.
+    pub fn inset(&self, rect: Rect) -> Rect {
+        let top = quantise_padding(self.top);
+        let right = quantise_padding(self.right);
+        let bottom = quantise_padding(self.bottom);
+        let left = quantise_padding(self.left);
+        let width = (rect.width - left - right).max(0.0);
+        let height = (rect.height - top - bottom).max(0.0);
+        Rect::new(rect.x + left, rect.y + top, width, height)
+    }
+}
+
+/// Spacing a [`LayoutNode::Row`]/[`LayoutNode::Column`] may declare: the
+/// space inset from its own edges before laying out children (`padding`),
+/// the space its parent leaves around it (`margin`, one value on every
+/// side), and the space inserted between adjacent children on the
+/// container's main axis (`gap`). All three default to `0.0` — no
+/// spacing — matching a tree with no spacing keys at all.
+///
+/// # TUI story
+///
+/// quadraui's binding-core coordinate space is unit-agnostic (`Rect` is
+/// plain `f32` everywhere — see `quadraui::flex`'s module doc): a Python/JS
+/// render callback picks numbers in the active backend's own native
+/// units, exactly like every other `Rect`-valued quantity in this tree. On
+/// a pixel backend one native unit is one surface pixel, so a sub-pixel
+/// spacing value is visually negligible; on `TuiBackend` one native unit
+/// is exactly one terminal cell (`Backend::char_width`/`line_height` both
+/// return `1.0`), so a fractional cell has no grid position to paint into.
+/// [`EdgeInsets::inset`]/[`quantise_padding`]/[`quantise_margin`] round
+/// every spacing value up to the next whole native unit before using it —
+/// a no-op rounding on a pixel backend (sub-pixel noise only), the exact
+/// "ceil to the next whole cell" rule on TUI. A `margin` under one unit
+/// (so under one cell on TUI) drops to `0.0` outright rather than rounding
+/// up to a whole cell of margin where the caller asked for none/a sliver —
+/// see [`quantise_margin`]. `quadraui::style` documents the identical rule
+/// for `quadraui::Style::padding`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Spacing {
+    pub padding: EdgeInsets,
+    pub margin: f32,
+    pub gap: f32,
+}
+
+/// Rounds `value` up to the next whole native unit, floored at `0.0` —
+/// [`Spacing`]'s doc explains why this is the shared TUI/pixel-backend
+/// degrade rule for every padding/gap edge.
+pub fn quantise_padding(value: f32) -> f32 {
+    value.max(0.0).ceil()
+}
+
+/// [`quantise_padding`]'s rule, plus: a margin under one whole native unit
+/// drops to `0.0` instead of rounding up — seeing a fractional margin
+/// round *up* into a full cell of space on TUI when the caller meant
+/// "basically none" would be more surprising than dropping it.
+pub fn quantise_margin(value: f32) -> f32 {
+    if value < 1.0 {
+        0.0
+    } else {
+        value.ceil()
+    }
 }
 
 /// A [`LayoutNode::Split`]'s decoded shape: the `quadraui::Split` descriptor
@@ -144,8 +257,8 @@ pub const LEAF_KIND_KEYS: [&str; 6] = [
 pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), DecodeError> {
     fn walk(what: &str, node: &LayoutNode, seen: &mut HashSet<String>) -> Result<(), DecodeError> {
         match node {
-            LayoutNode::Row(children) | LayoutNode::Column(children) => {
-                for child in children {
+            LayoutNode::Row(container) | LayoutNode::Column(container) => {
+                for child in &container.children {
                     walk(what, child, seen)?;
                 }
                 Ok(())

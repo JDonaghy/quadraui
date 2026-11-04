@@ -14,6 +14,9 @@ binding work:
 - a `"split"` node's `"first_min"`/`"second_min"` are honoured as a minimum
   pane size, specified in portable line-count units rather than a
   backend-native one.
+- a `"row"`/`"column"` node's optional `"padding"`/`"gap"`/`"margin"`
+  spacing keys, siblings of the `"row"`/`"column"` key in the same node
+  dict, are honoured by the shared layout pass.
 
 Run against a built wheel/extension, e.g.:
 
@@ -312,6 +315,60 @@ def test_split_honors_first_min_as_a_portable_minimum_pane_size():
     # 10-line minimum it's pushed out to at least that many columns.
     assert col_no_min < 5
     assert col_with_min >= 10
+
+
+def test_row_padding_insets_content_from_the_container_edge():
+    # `"padding"`/`"gap"` are siblings of the `"row"` key in the same node
+    # dict, honoured by the shared layout pass -- on TUI a native unit is
+    # one cell, so `padding: 2` must inset the leaf exactly 2 rows/columns
+    # from the top-left corner of a 20x6 screen.
+    app = QuiApp(20, 6)
+
+    def render():
+        return {
+            "row": [_text("text:left", "L")],
+            "padding": 2,
+        }
+
+    app.set_render(render)
+    screen = app.screen()
+    lines = screen.splitlines()
+    assert lines[0].strip() == "", "no padding rows stay blank"
+    assert lines[1].strip() == ""
+    assert lines[2][:2] == "  ", "padding columns stay blank"
+    assert lines[2].strip() == "L"
+
+
+def test_row_gap_separates_two_children_by_whole_cells():
+    # `"gap"` inserts space between adjacent `"row"` children on the main
+    # axis -- two single-column leaves with `gap: 3` land 3 columns apart
+    # rather than touching.
+    app = QuiApp(20, 3)
+
+    def render():
+        return {
+            "row": [_text("text:left", "L"), _text("text:right", "R")],
+            "gap": 3,
+        }
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    left_col = line.index("L")
+    right_col = line.index("R")
+    assert right_col - left_col >= 3 + 1, line
+
+
+def test_row_with_no_spacing_keys_still_decodes_the_legacy_array_shape():
+    # A bare `{"row": [...]}` with no spacing keys at all -- the shape
+    # every pre-existing render callback uses -- must still decode and
+    # paint with zero inset, unchanged from before spacing keys existed.
+    app = QuiApp(10, 3)
+
+    def render():
+        return {"row": [_text("text:left", "L")]}
+
+    app.set_render(render)
+    assert app.screen().splitlines()[0][0] == "L"
 
 
 def test_duplicate_leaf_id_inside_panel_content_is_rejected():
