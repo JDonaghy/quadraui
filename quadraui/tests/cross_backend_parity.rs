@@ -504,7 +504,7 @@ fn data_table_divider_before_last_column_parity_tui_and_gtk_agree_on_direction()
     // Dragging the divider immediately before the last column (Age |
     // Restarts) right must widen Age on *both* backends — the literal
     // reported symptom was that this direction inverted. Age is
-    // Flex-declared and Restarts (last) is Fixed, the exact shape that
+    // Flex-declared and Restarts (last) is FixedCells, the exact shape that
     // reproduced the bug (see `resolve_columns`'s pass-2 doc comment in
     // `src/primitives/data_table.rs` for the root cause).
     let tui_widened = run_datatable_resize_script::<TuiDriver<DataTableApp>>(60.0);
@@ -584,10 +584,10 @@ fn run_multi_drag_fill_script<D: DataTableResizeDriver + DataTableDriverCtor>(dx
 #[test]
 fn data_table_rightmost_column_stays_flush_after_multiple_drags_parity_tui_and_gtk_agree() {
     // After a sequence of divider drags, the table must still fill its viewport
-    // exactly. Every divider drag now shares the same last column (`Restarts`,
-    // `Fixed(10.0)` — a literal pixel/cell value identical on both backends) as its
-    // absorbing partner. The same dx=5.0 on both backends ensures the net demand on
-    // the shared column stays non-overflowing.
+    // exactly. Every divider drag shares the same last column (`Restarts`,
+    // `FixedCells(10.0)` — 10 cells on TUI, ~10 glyph widths on GTK) as its
+    // absorbing partner. dx=5.0 native units on both backends keeps the net demand
+    // on that column below its room above the 4.0 floor, so nothing overflows.
     let tui_flush = run_multi_drag_fill_script::<TuiDriver<DataTableApp>>(5.0);
     let gtk_flush = run_multi_drag_fill_script::<GtkDriver<DataTableApp>>(5.0);
 
@@ -607,15 +607,27 @@ fn data_table_rightmost_column_stays_flush_after_multiple_drags_parity_tui_and_g
 // on overflow is shared `primitives::data_table` logic, so it must be a cross-backend
 // parity assertion, not TUI-only.
 
-/// Drags the Name|Status divider (col 0) far enough right to drive
-/// `Restarts` (the last column, `Fixed(10.0)`, floored at 4.0 — 6.0 units
-/// of room) past its floor, and returns whether the table ended up
-/// h-scrolling. The h-scrollbar appearing on overflow is shared
+/// Drags the Name|Status divider (col 0) past the room `Restarts` (the last
+/// column, `FixedCells(10.0)`, floored at 4.0 native units) has left, by
+/// `overshoot` native units, and returns whether the table ended up
+/// h-scrolling. The drag distance is derived from the last column's resolved
+/// width on each backend: `FixedCells` is 10 cells on TUI but ~10 glyph widths
+/// of pixels on GTK, so a single literal `dx` cannot mean "past the floor" in
+/// both coordinate spaces. The h-scrollbar appearing on overflow is shared
 /// `primitives::data_table` logic (`resolve_columns` + `DataTable::layout`),
 /// so it must be a cross-backend parity assertion, not TUI-only.
-fn run_overflow_script<D: DataTableResizeDriver + DataTableDriverCtor>(dx: f32) -> bool {
+fn run_overflow_script<D: DataTableResizeDriver + DataTableDriverCtor>(overshoot: f32) -> bool {
     let mut d = D::new_default();
-    d.drag_divider_at(0, dx);
+    let last_width = *d
+        .column_widths()
+        .last()
+        .expect("DataTableApp has at least one column");
+    let room = last_width - 4.0;
+    assert!(
+        room > 0.0,
+        "Restarts must start above its 4.0 floor: width={last_width}"
+    );
+    d.drag_divider_at(0, room + overshoot);
     let layout = d.table_layout();
     layout.h_scrollbar_height > 0.0
         && layout.content_width > layout.viewport_width - layout.scrollbar_width
@@ -623,12 +635,11 @@ fn run_overflow_script<D: DataTableResizeDriver + DataTableDriverCtor>(dx: f32) 
 
 #[test]
 fn data_table_divider_drag_overflows_into_h_scroll_parity_tui_and_gtk_agree() {
-    // 20.0 is well past the 6.0 units of room `Restarts` has on either
-    // backend (see the flush test above for why that floor is identical
-    // in both coordinate spaces) — the drag must not be refused, and the
-    // resulting overflow/h-scroll must show up identically on both.
-    let tui_overflowed = run_overflow_script::<TuiDriver<DataTableApp>>(20.0);
-    let gtk_overflowed = run_overflow_script::<GtkDriver<DataTableApp>>(20.0);
+    // Each backend drags 14.0 native units past the room `Restarts` has left
+    // above its floor — the drag must not be refused, and the resulting
+    // overflow/h-scroll must show up identically on both.
+    let tui_overflowed = run_overflow_script::<TuiDriver<DataTableApp>>(14.0);
+    let gtk_overflowed = run_overflow_script::<GtkDriver<DataTableApp>>(14.0);
 
     assert!(
         tui_overflowed,
