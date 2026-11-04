@@ -116,6 +116,16 @@ pub mod pixel {
     /// [`crate::DataTable`] width reserved for the vertical scrollbar.
     pub const DATA_TABLE_SCROLLBAR_WIDTH: f32 = 8.0;
 
+    /// Nominal pixel width of one terminal cell — the fallback
+    /// [`crate::primitives::data_table::ColumnWidth::FixedPx`] divides by
+    /// to convert a pixel width into cells on a cell-grid backend (TUI),
+    /// whose own measured average glyph width is architecturally always
+    /// exactly `1.0` rather than a real font metric, so it can't itself
+    /// supply the pixel-to-cell ratio. Mirrors the "8×16 nominal terminal
+    /// cell" estimate `quadraui-binding-core::layout`'s `Spacing` degrade
+    /// already leans on, for the same reason.
+    pub const NOMINAL_CELL_PX_WIDTH: f32 = 8.0;
+
     /// [`crate::TreeView`] vertical scrollbar column width on pixel
     /// backends, matching VS Code's list/tree scrollbar (10px) — see
     /// [`super::tree_row_pitch`]'s doc for why the column width must not

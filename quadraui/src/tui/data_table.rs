@@ -441,7 +441,7 @@ mod tests {
                 },
                 Column {
                     title: "Age".into(),
-                    width: ColumnWidth::Fixed(5.0),
+                    width: ColumnWidth::FixedCells(5.0),
                     align: ColumnAlign::Right,
                 },
             ],
@@ -991,7 +991,7 @@ mod tests {
                 .iter()
                 .map(|t| Column {
                     title: (*t).into(),
-                    width: ColumnWidth::Fixed(12.0),
+                    width: ColumnWidth::FixedCells(12.0),
                     align: ColumnAlign::Left,
                 })
                 .collect(),
@@ -1120,7 +1120,7 @@ mod tests {
                 .iter()
                 .map(|t| Column {
                     title: (*t).into(),
-                    width: ColumnWidth::Fixed(30.0),
+                    width: ColumnWidth::FixedCells(30.0),
                     align: ColumnAlign::Left,
                 })
                 .collect(),

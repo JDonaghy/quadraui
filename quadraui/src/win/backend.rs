@@ -10424,7 +10424,7 @@ mod tests {
                 // regardless of font.
                 crate::Column {
                     title: String::new(),
-                    width: crate::ColumnWidth::Fixed(0.0),
+                    width: crate::ColumnWidth::FixedPx(0.0),
                     align: crate::ColumnAlign::Left,
                 },
             ],

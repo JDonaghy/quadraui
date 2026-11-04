@@ -9251,7 +9251,7 @@ mod tests {
             id: WidgetId::new("dt"),
             columns: vec![Column {
                 title: "Name".into(),
-                width: ColumnWidth::Fixed(40.0),
+                width: ColumnWidth::FixedPx(40.0),
                 align: Default::default(),
             }],
             rows: vec![DataRow {
@@ -9294,7 +9294,7 @@ mod tests {
         let title = "日付"; // 2 chars, 6 UTF-8 bytes
         let table = crate::DataTable {
             id: WidgetId::new("dt"),
-            // A trailing `Fixed` column so `resolve_columns`'s pass 4
+            // A trailing `FixedPx` column so `resolve_columns`'s pass 4
             // (#521 defect 2: stretch the *last* column to fill any
             // viewport leftover) grows that one instead of masking
             // the `Content` column's own measured width under test.
@@ -9309,7 +9309,7 @@ mod tests {
                 },
                 Column {
                     title: "filler".into(),
-                    width: ColumnWidth::Fixed(50.0),
+                    width: ColumnWidth::FixedPx(50.0),
                     align: Default::default(),
                 },
             ],

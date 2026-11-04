@@ -88,6 +88,55 @@ test("double click on a data table row emits the distinct RowDoubleClicked", () 
   );
 });
 
+test("a FixedPx column degrades to a nominal cell count on TUI", () => {
+  // `ColumnWidth::FixedPx(80.0)` is a pixel width. This app always renders
+  // through the cell-grid TUI backend, where it degrades to
+  // `80.0 / 8.0 == 10.0` nominal cells rather than being read as 80 raw
+  // cells the way `{ FixedCells: 80.0 }` would be -- so a header click at
+  // viewport x == 5.0 (inside the 10-cell-wide column) hits column 0, and
+  // a click at x == 15.0 (well past its right edge) hits column 1.
+  const app = new QuiApp(30, 8);
+  app.insertDataTable({
+    id: "table",
+    columns: [
+      { title: "Name", width: { FixedPx: 80.0 } },
+      { title: "Age", width: { Flex: 1.0 } },
+    ],
+    rows: [row("Alice", "30")],
+  });
+
+  const received: any[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: 5.0, y: 0.0 }, modifiers: {} },
+  });
+  app.run(1);
+  assert.ok(
+    received.some(
+      (event) =>
+        event.DataTable &&
+        event.DataTable[0] === "table" &&
+        event.DataTable[1].HeaderClicked?.col === 0,
+    ),
+    `expected a DataTable HeaderClicked{col: 0}, got: ${JSON.stringify(received)}`,
+  );
+
+  received.length = 0;
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: 15.0, y: 0.0 }, modifiers: {} },
+  });
+  app.run(1);
+  assert.ok(
+    received.some(
+      (event) =>
+        event.DataTable &&
+        event.DataTable[0] === "table" &&
+        event.DataTable[1].HeaderClicked?.col === 1,
+    ),
+    `expected a DataTable HeaderClicked{col: 1}, got: ${JSON.stringify(received)}`,
+  );
+});
+
 test("double click on a list item emits ItemDoubleClicked, not ItemActivated", () => {
   const app = new QuiApp(40, 10);
   app.insertList({

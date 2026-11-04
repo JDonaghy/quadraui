@@ -5929,7 +5929,7 @@ mod tests {
                 .iter()
                 .map(|t| crate::Column {
                     title: (*t).into(),
-                    width: crate::ColumnWidth::Fixed(30.0),
+                    width: crate::ColumnWidth::FixedCells(30.0),
                     align: crate::ColumnAlign::Left,
                 })
                 .collect(),

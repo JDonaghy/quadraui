@@ -76,6 +76,7 @@
 //! whose resolved boundaries aren't integers (`Flex`/`Content` widths that
 //! don't divide evenly) the two can disagree by up to one cell.
 
+use crate::primitives::layout_metrics;
 use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -92,11 +93,40 @@ pub struct Column {
 }
 
 /// Column width strategy.
+///
+/// `#[non_exhaustive]` so a future unit variant (or anything else) can land
+/// without breaking an external exhaustive `match` — see
+/// `CLAUDE.md`'s *Downstream consumers* section.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ColumnWidth {
-    /// Fixed width in surface-native units (cells for TUI, pixels for
-    /// GTK). Not affected by flex distribution.
+    /// Fixed width in surface-native units: cells on TUI, pixels on
+    /// GTK/macOS/Win. Not affected by flex distribution.
+    ///
+    /// Ambiguous across backends: a column tuned at `Fixed(10.0)` reads as
+    /// 10 cells on TUI but 10 *pixels* on a pixel backend — about one
+    /// average glyph wide instead of ten. Use [`ColumnWidth::FixedCells`]
+    /// (always reads as the same cell count) or [`ColumnWidth::FixedPx`]
+    /// (always reads as the same pixel count) instead, each of which
+    /// converts to the other backend family's native unit rather than
+    /// reinterpreting the number outright.
+    #[deprecated(
+        since = "0.9.0",
+        note = "ambiguous unit (cells on TUI, pixels on GTK/macOS/Win); use FixedCells or FixedPx instead"
+    )]
     Fixed(f32),
+    /// Fixed width in **cells**: exactly `n` cells on TUI, and `n` times
+    /// the pixel backend's own average glyph width on GTK/macOS/Win — so
+    /// the same declared width reads as roughly the same number of
+    /// average-width characters on every backend. Not affected by flex
+    /// distribution.
+    FixedCells(f32),
+    /// Fixed width in **pixels**: exactly `n` pixels/DIPs on a pixel
+    /// backend (GTK/macOS/Win), and `n` divided by a nominal 8px terminal
+    /// cell on TUI — so a pixel-tuned width degrades to a proportionate
+    /// cell count on a terminal rather than being read as cells outright.
+    /// Not affected by flex distribution.
+    FixedPx(f32),
     /// Flex weight — columns share remaining space proportionally.
     /// `Flex(1.0)` and `Flex(2.0)` in the same table give a 1:2 split.
     Flex(f32),
@@ -266,7 +296,8 @@ pub struct DataTable {
     #[serde(default)]
     pub h_scroll: f32,
     /// Per-column width overrides from user drag. When set, an override
-    /// replaces the column's `ColumnWidth` strategy with `Fixed(w)`.
+    /// replaces the column's `ColumnWidth` strategy with a literal
+    /// native-unit width, honored as-is with no unit conversion.
     /// `None` entries mean the column uses its original strategy.
     /// Must be the same length as `columns` or empty.
     #[serde(default)]
@@ -633,8 +664,10 @@ impl DataTable {
     /// `row_height * 1.2`.
     ///
     /// The measurer receives each `Column` and returns a `ColumnMeasure`
-    /// with the content width. Only used for `ColumnWidth::Content`
-    /// columns; `Fixed` and `Flex` columns ignore the measure.
+    /// with the content width. Used for `ColumnWidth::Content` columns,
+    /// and for `ColumnWidth::FixedCells` on a pixel backend (to measure an
+    /// average glyph width) — `Fixed`, `FixedPx` and `Flex` columns ignore
+    /// the measure, and `FixedCells` ignores it too on a cell-grid backend.
     pub fn layout<F>(
         &self,
         viewport_width: f32,
@@ -660,6 +693,7 @@ impl DataTable {
         let resolved = resolve_columns(
             &self.columns,
             layout_width,
+            row_height,
             &measure,
             &self.column_overrides,
         );
@@ -703,9 +737,17 @@ impl DataTable {
 
 /// Resolve column widths from definitions + viewport width.
 /// Shared logic that TreeTable will also use.
+///
+/// `row_height` is the same backend-native row height [`DataTable::layout`]
+/// takes — `> 1.5` on a pixel backend (GTK/macOS/Win), `<= 1.5` on a
+/// cell-grid one (TUI; architecturally always exactly `1.0`), matching the
+/// threshold [`DataTable::layout`] already uses to pick `h_sb_h`'s unit.
+/// Used only to resolve [`ColumnWidth::FixedCells`]/[`ColumnWidth::FixedPx`]
+/// into the *other* backend family's native unit.
 fn resolve_columns<F>(
     columns: &[Column],
     viewport_width: f32,
+    row_height: f32,
     measure: &F,
     overrides: &[Option<f32>],
 ) -> Vec<ResolvedColumn>
@@ -716,17 +758,29 @@ where
         return Vec::new();
     }
 
+    let is_cell_grid = row_height <= 1.5;
+    // Lazily measured average glyph width, in native (pixel) units, for a
+    // `FixedCells` column on a pixel backend — computed at most once per
+    // call by measuring `pixel::TAB_CELL_WIDTH_SAMPLE` (the same sample
+    // string `pixel_tab_bar_layout` already measures for an analogous
+    // "average glyph advance" estimate) through the caller's own `measure`
+    // closure, so it uses whatever real font metrics that backend has
+    // rather than a nominal constant. `None` until first needed so a table
+    // with no `FixedCells` column never pays for the extra `measure` call.
+    let mut avg_char_width_px: Option<f32> = None;
+
     let mut widths: Vec<f32> = Vec::with_capacity(columns.len());
     let mut remaining = viewport_width;
     let mut total_flex = 0.0_f32;
 
-    // Pass 1: resolve Fixed and Content columns, accumulate flex weight.
-    // Column overrides replace the original strategy with Fixed(w).
+    // Pass 1: resolve Fixed/FixedCells/FixedPx and Content columns,
+    // accumulate flex weight. Column overrides replace the original
+    // strategy with a literal native-unit width.
     //
     // Overrides are honored at face value — NOT clamped to `remaining`.
-    // Fixed/Content columns are still clamped: they come from the table's
-    // own declared shape, which is expected to fit the budget it was
-    // resolved against. An override, by contrast, is a deliberate
+    // Fixed/FixedCells/FixedPx/Content columns are still clamped: they
+    // come from the table's own declared shape, which is expected to fit
+    // the budget it was resolved against. An override, by contrast, is a deliberate
     // divider-drag request that may legitimately ask for more than
     // `viewport_width` has to give — that's exactly how the "rightmost
     // column absorbs the slack, then the table overflows and h-scrolls"
@@ -745,7 +799,41 @@ where
             continue;
         }
         match col.width {
+            #[allow(deprecated)] // `ColumnWidth::Fixed` is `#[deprecated]`.
             ColumnWidth::Fixed(w) => {
+                let w = w.min(remaining).max(0.0);
+                widths.push(w);
+                remaining -= w;
+            }
+            ColumnWidth::FixedCells(n) => {
+                let w = if is_cell_grid {
+                    n
+                } else {
+                    let cw = *avg_char_width_px.get_or_insert_with(|| {
+                        let sample = Column {
+                            title: layout_metrics::pixel::TAB_CELL_WIDTH_SAMPLE.to_string(),
+                            width: ColumnWidth::default(),
+                            align: ColumnAlign::default(),
+                        };
+                        let measured = measure(&sample).content_width;
+                        let len = layout_metrics::pixel::TAB_CELL_WIDTH_SAMPLE
+                            .chars()
+                            .count()
+                            .max(1) as f32;
+                        (measured / len).max(0.0)
+                    });
+                    n * cw
+                };
+                let w = w.min(remaining).max(0.0);
+                widths.push(w);
+                remaining -= w;
+            }
+            ColumnWidth::FixedPx(n) => {
+                let w = if is_cell_grid {
+                    n / layout_metrics::pixel::NOMINAL_CELL_PX_WIDTH
+                } else {
+                    n
+                };
                 let w = w.min(remaining).max(0.0);
                 widths.push(w);
                 remaining -= w;
@@ -1722,12 +1810,73 @@ mod tests {
     #[test]
     fn fixed_column_takes_exact_width() {
         let mut table = make_table(3, 0);
-        table.columns[0].width = ColumnWidth::Fixed(10.0);
+        table.columns[0].width = ColumnWidth::FixedCells(10.0);
         let layout = table.layout(80.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
         assert!((layout.columns[0].width - 10.0).abs() < 0.01);
         // Remaining 70 split between 2 flex columns
         assert!((layout.columns[1].width - 35.0).abs() < 0.01);
         assert!((layout.columns[2].width - 35.0).abs() < 0.01);
+    }
+
+    /// `FixedCells(10.0)` on a cell-grid backend (`row_height <= 1.5`) is
+    /// exactly 10 native units — unaffected by the measurer, which a
+    /// cell-grid backend always drives with a character-count closure
+    /// anyway (see `tui::data_table::data_table_layout`). Column 0 is not
+    /// the last column, so pass 4's "stretch the last column to fill the
+    /// viewport" never masks its declared width with the leftover space.
+    #[test]
+    fn fixed_cells_resolves_to_exact_cell_count_on_a_cell_grid_backend() {
+        let mut table = make_table(3, 0);
+        table.columns[0].width = ColumnWidth::FixedCells(10.0);
+        let layout = table.layout(80.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        assert!((layout.columns[0].width - 10.0).abs() < 0.01);
+    }
+
+    /// `FixedCells(10.0)` on a pixel backend (`row_height > 1.5`) scales up
+    /// by the measurer's own average glyph width — measured once via the
+    /// `TAB_CELL_WIDTH_SAMPLE` sample string — instead of being read as 10
+    /// raw pixels. Here every glyph measures 4.0 wide, so the column comes
+    /// out to 40.0: the same ~10-glyph-wide column a cell-grid backend
+    /// paints at `FixedCells(10.0) == 10.0` native units, not a 10-pixel
+    /// sliver.
+    #[test]
+    fn fixed_cells_scales_by_measured_glyph_width_on_a_pixel_backend() {
+        let mut table = make_table(3, 0);
+        table.columns[0].width = ColumnWidth::FixedCells(10.0);
+        let layout = table.layout(800.0, 20.0, 18.0, 18.0, 0.0, |col| {
+            ColumnMeasure::new(col.title.chars().count() as f32 * 4.0)
+        });
+        assert!(
+            (layout.columns[0].width - 40.0).abs() < 0.01,
+            "expected 40.0 (10 cells * 4.0 px/glyph), got {}",
+            layout.columns[0].width
+        );
+    }
+
+    /// `FixedPx(80.0)` on a pixel backend is exactly 80.0 native units
+    /// (already pixels) — the measurer is never consulted.
+    #[test]
+    fn fixed_px_passes_through_unchanged_on_a_pixel_backend() {
+        let mut table = make_table(3, 0);
+        table.columns[0].width = ColumnWidth::FixedPx(80.0);
+        let layout = table.layout(800.0, 20.0, 18.0, 18.0, 0.0, |_| {
+            panic!("FixedPx must never consult the measurer")
+        });
+        assert!((layout.columns[0].width - 80.0).abs() < 0.01);
+    }
+
+    /// `FixedPx(80.0)` on a cell-grid backend degrades to cells via the
+    /// nominal 8px-per-cell estimate: `80.0 / 8.0 == 10.0` cells — the same
+    /// nominal cell count [`fixed_cells_resolves_to_exact_cell_count_on_a_cell_grid_backend`]
+    /// declares directly.
+    #[test]
+    fn fixed_px_degrades_to_nominal_cells_on_a_cell_grid_backend() {
+        let mut table = make_table(3, 0);
+        table.columns[0].width = ColumnWidth::FixedPx(80.0);
+        let layout = table.layout(80.0, 20.0, 1.0, 1.0, 0.0, |_| {
+            panic!("FixedPx must never consult the measurer")
+        });
+        assert!((layout.columns[0].width - 10.0).abs() < 0.01);
     }
 
     #[test]
@@ -1881,13 +2030,13 @@ mod tests {
     // ── Divider drag: the rightmost column absorbs slack, then overflow ──
 
     /// Builds a table with 3 `Flex` columns (weights 3.0, 1.5, 0.5) then one
-    /// `Fixed(10.0)` — the shape used in divider-drag tests below.
+    /// `FixedCells(10.0)` — the shape used in divider-drag tests below.
     fn make_sample_shaped_table() -> DataTable {
         let mut table = make_table(4, 0);
         table.columns[0].width = ColumnWidth::Flex(3.0);
         table.columns[1].width = ColumnWidth::Flex(1.5);
         table.columns[2].width = ColumnWidth::Flex(0.5);
-        table.columns[3].width = ColumnWidth::Fixed(10.0);
+        table.columns[3].width = ColumnWidth::FixedCells(10.0);
         table
     }
 
@@ -2302,7 +2451,7 @@ mod tests {
 
     #[test]
     fn fill_never_shrinks_content_that_legitimately_overflows_the_viewport() {
-        // All columns Fixed and their sum (150) exceeds the visible
+        // All columns FixedCells and their sum (150) exceeds the visible
         // area (40) — the `min_total_width` h-scroll case (see
         // `DataTable::layout`: when `min_total_width` exceeds the
         // visible column area, columns are laid out at
@@ -2312,9 +2461,9 @@ mod tests {
         // laid out against, never shrinks it back down to the smaller
         // visible area.
         let mut table = make_table(3, 0);
-        table.columns[0].width = ColumnWidth::Fixed(50.0);
-        table.columns[1].width = ColumnWidth::Fixed(50.0);
-        table.columns[2].width = ColumnWidth::Fixed(50.0);
+        table.columns[0].width = ColumnWidth::FixedCells(50.0);
+        table.columns[1].width = ColumnWidth::FixedCells(50.0);
+        table.columns[2].width = ColumnWidth::FixedCells(50.0);
         table.min_total_width = Some(150.0);
         let layout = table.layout(40.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
         assert!(
@@ -2453,7 +2602,7 @@ mod tests {
 
     // ── Hit-testing with horizontal scroll offset ──────────────────────
     //
-    // Geometry: 4 × `Fixed(30.0)` columns laid out at `min_total_width = 120`
+    // Geometry: 4 × `FixedCells(30.0)` columns laid out at `min_total_width = 120`
     // inside a 60-wide viewport, so content space is exactly twice the
     // viewport and every column boundary lands on a round number.
     //
@@ -2466,7 +2615,7 @@ mod tests {
     fn make_wide_table(nrows: usize) -> DataTable {
         let mut table = make_table(4, nrows);
         for c in &mut table.columns {
-            c.width = ColumnWidth::Fixed(30.0);
+            c.width = ColumnWidth::FixedCells(30.0);
         }
         table.min_total_width = Some(120.0);
         table
