@@ -107,8 +107,8 @@ pub struct Palette {
     pub title: String,
     /// Current search query text.
     pub query: String,
-    /// Cursor byte offset in `query`. Backends paint a cursor block
-    /// at the corresponding visible column.
+    /// Cursor byte offset in `query`. Backends paint a cursor (a block
+    /// on TUI, a thin bar on GUI) at the corresponding visible column.
     #[serde(default)]
     pub query_cursor: usize,
     /// Filtered, pre-scored visible items in display order.
@@ -579,8 +579,9 @@ impl Palette {
 //   [`crate::paint_surface::PaintSurface::surface_draw_icon_glyph`].
 // - **Query cursor**: GTK/macOS both painted a filled cursor block
 //   (inverting the character underneath, terminal-style); Windows drew
-//   no cursor. `paint` carries the block-cursor treatment for every
-//   backend.
+//   no cursor. `paint` instead gives every GUI backend a thin bar caret —
+//   the block-invert treatment is TUI-only (`tui::palette`'s `set_cell`
+//   fg/bg swap).
 // - **`PaletteMode::Input` suppression**: GTK and Windows both hide the
 //   item list in `Input` mode; macOS did not. `paint` suppresses the
 //   item list for every backend.
@@ -624,6 +625,9 @@ pub(crate) mod native_surface_paint {
     /// own bottom edge (there is no bottom border row the way TUI has
     /// one — this is purely visual padding).
     const BOTTOM_INSET: f32 = 4.0;
+    /// Query-row insert-cursor width. Matches `text_input`/`command_line`'s
+    /// `CURSOR_W`/`CURSOR_WIDTH` bar-caret convention for every GUI backend.
+    const QUERY_CURSOR_WIDTH: f32 = 2.0;
 
     /// Compute the shared [`Palette`] layout — the one geometry `paint`
     /// paints from and every backend's `Backend::palette_layout` exposes
@@ -843,23 +847,15 @@ pub(crate) mod native_surface_paint {
             let cursor_prefix = safe_prefix(&palette.query, palette.query_cursor);
             let (cursor_prefix_w, _) = surface.surface_measure_text(cursor_prefix);
             let cursor_x = query_text_x + cursor_prefix_w;
-            let cursor_char: String = palette
-                .query
-                .get(palette.query_cursor..)
-                .and_then(|s| s.chars().next())
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| " ".to_string());
-            let (cursor_w, _) = surface.surface_measure_text(&cursor_char);
-            let cursor_w = cursor_w.max(line_height * 0.45);
-            surface.surface_fill_rect(Rect::new(cursor_x, qy, cursor_w, qb.height), theme.query_fg);
-            if !cursor_char.trim().is_empty() {
-                let (_, ch) = surface.surface_measure_text(&cursor_char);
-                surface.surface_draw_text_run(
-                    Rect::new(cursor_x, qy + (qb.height - ch) / 2.0, cursor_w, ch),
-                    &cursor_char,
-                    theme.surface_bg,
-                );
-            }
+            // Thin bar caret, matching the GUI convention every other
+            // single-line input uses (`text_input`/`command_line`'s
+            // `CURSOR_WIDTH`) — a block caret that inverts the glyph
+            // underneath is TUI-only (`tui::palette` keeps it via
+            // `set_cell`'s fg/bg swap).
+            surface.surface_fill_rect(
+                Rect::new(cursor_x, qy, QUERY_CURSOR_WIDTH, qb.height),
+                theme.cursor,
+            );
         }
 
         // ── Separator row ────────────────────────────────────────────

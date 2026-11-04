@@ -365,6 +365,12 @@ only a push to `main` runs this workflow.
   ~/src/vimcode/src` finds both building forms, so both repaint).
 
 ### Fixed
+- GUI (GTK/macOS/Win) single-line inputs now match `TextInput`'s framed
+  convention: `Palette`'s query row paints a thin bar caret (`theme.cursor`)
+  instead of a full-glyph-width filled block, and `CommandLine` gains a 1px
+  `border_fg` frame around its bar. TUI is unchanged — `Palette`'s own
+  rasteriser keeps its terminal-style inverted block caret, and
+  `CommandLine`'s stays borderless.
 - `compose::MenuSystem::set_menus` no longer leaves `open_item`/`submenu_path`
   pointing past the end of a shorter menu list it was just handed — it now
   closes the dropdown (or drops the dangling submenu level) itself. Fixes a
