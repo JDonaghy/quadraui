@@ -1804,8 +1804,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp capture dir");
         let mut manifest = Vec::new();
 
-        capture_tui_over(name_collision_registry, dir.path(), &mut manifest)
-            .expect("capture_tui_over");
+        capture_tui_over(
+            name_collision_registry,
+            dir.path(),
+            CaptureTheme::Dark,
+            &mut manifest,
+        )
+        .expect("capture_tui_over");
 
         assert_eq!(manifest.len(), 2, "one row per demo: {manifest:#?}");
         for name in ["Drop Zone", "Zone"] {
@@ -1860,8 +1865,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp capture dir");
         let mut manifest = Vec::new();
 
-        capture_tui_over(panel_name_collision_registry, dir.path(), &mut manifest)
-            .expect("capture_tui_over");
+        capture_tui_over(
+            panel_name_collision_registry,
+            dir.path(),
+            CaptureTheme::Dark,
+            &mut manifest,
+        )
+        .expect("capture_tui_over");
 
         let panel_entries: Vec<_> = manifest.iter().filter(|e| e.demo == "Panel").collect();
         assert_eq!(
@@ -1875,10 +1885,9 @@ mod tests {
                 "Panel's {:?} variant should have captured cleanly: {entry:#?}",
                 entry.variant
             );
-            let path = entry
-                .path
-                .as_deref()
-                .unwrap_or_else(|| panic!("Panel's {:?} variant should have a path", entry.variant));
+            let path = entry.path.as_deref().unwrap_or_else(|| {
+                panic!("Panel's {:?} variant should have a path", entry.variant)
+            });
             let svg = fs::read_to_string(dir.path().join(path)).expect("read captured SVG");
             // `Panel::title` always paints — even collapsed (see
             // `collapsed_panel_still_paints_title_bar_chrome` in
