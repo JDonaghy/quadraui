@@ -576,6 +576,8 @@ fn build_label_placement_form() -> Form {
                 label_position,
                 label_align: None,
                 label_width: None,
+                control_width: None,
+                min_control_width: None,
                 tab_index: None,
             }
         };
@@ -598,6 +600,8 @@ fn build_label_placement_form() -> Form {
                 label_position: Some(LabelPosition::Hidden),
                 label_align: None,
                 label_width: None,
+                control_width: None,
+                min_control_width: None,
                 tab_index: None,
             },
         ],
@@ -607,6 +611,8 @@ fn build_label_placement_form() -> Form {
         label_position: LabelPosition::Left,
         label_align: LabelAlign::End,
         label_width: None,
+        control_width: Default::default(),
+        min_control_width: None,
     }
 }
 
