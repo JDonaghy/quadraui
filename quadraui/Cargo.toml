@@ -2031,3 +2031,18 @@ required-features = ["gtk"]
 name = "tui_form_label_placement"
 path = "examples/tui_form_label_placement.rs"
 required-features = ["tui"]
+
+# `Icon::codicon(name)` demo — a `TreeView` whose rows carry codicon
+# icons. Both entries are mandatory (see the note above): without an
+# explicit `[[example]]`, autodiscovery picks each file up with no
+# `required-features` and the GTK runner fails `cargo test --features
+# tui` on `quadraui::gtk` being configured out.
+[[example]]
+name = "tui_codicon_tree"
+path = "examples/tui_codicon_tree.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_codicon_tree"
+path = "examples/gtk_codicon_tree.rs"
+required-features = ["gtk"]
