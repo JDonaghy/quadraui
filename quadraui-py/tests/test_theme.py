@@ -204,3 +204,62 @@ def test_app_can_react_to_a_system_theme_changed_event():
     app.set_theme({"background": "#000000" if dark else "#ffffff"})
 
     assert app.cell_colors(0, 0)[1] == (0, 0, 0)
+
+
+# ─── `QuiAppActions.set_theme` (deferred counterpart) ───────────────────
+
+
+def test_actions_set_theme_queued_from_a_handler_does_not_raise_already_borrowed():
+    # A handler reacting to `SystemThemeChanged` holds this app's one
+    # mutable borrow for the whole dispatch that invoked it -- a direct
+    # `app.set_theme(...)` call from inside it would hit PyO3's "already
+    # borrowed" wall instead. `app.actions().set_theme(...)` queues the
+    # repaint instead, applied by `flush_deferred_actions` right after this
+    # dispatch finishes.
+    app = QuiApp(20, 5)
+    _insert_empty_status_bar(app)
+    actions = app.actions()
+
+    def on_event(event):
+        if "SystemThemeChanged" in event:
+            dark = event["SystemThemeChanged"]["dark"]
+            actions.set_theme({"background": "#000000" if dark else "#ffffff"})
+
+    app.set_handler(on_event)
+    app.push_event(
+        {"SystemThemeChanged": {"dark": True, "accent": None, "high_contrast": False}}
+    )
+    app.step()
+
+    assert app.cell_colors(0, 0)[1] == (0, 0, 0)
+
+
+def test_actions_set_theme_only_touches_the_named_fields():
+    app = QuiApp(20, 5)
+    before = app.theme()
+    actions = app.actions()
+
+    def on_event(_event):
+        actions.set_theme({"background": "#112233"})
+
+    app.set_handler(on_event)
+    app.push_key_event(ord("a"))
+    app.run(1)
+
+    after = app.theme()
+    assert after["background"] == {"r": 17, "g": 34, "b": 51, "a": 255}
+    assert after["foreground"] == before["foreground"]
+
+
+def test_actions_set_theme_rejects_an_unknown_field():
+    app = QuiApp(20, 5)
+    actions = app.actions()
+    with pytest.raises(InvalidDescriptorError):
+        actions.set_theme({"not_a_real_field": "#000000"})
+
+
+def test_actions_set_theme_rejects_a_malformed_hex_colour():
+    app = QuiApp(20, 5)
+    actions = app.actions()
+    with pytest.raises(InvalidDescriptorError):
+        actions.set_theme({"background": "not-a-colour"})
