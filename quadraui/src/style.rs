@@ -69,6 +69,12 @@
 //! notifications, menus) — see each field's own doc for the specific VS
 //! Code surface it mirrors.
 //!
+//! [`Self::scrollbar_width`] is a further single-owner token, the same
+//! shape as [`Self::backdrop_opacity`]: only `List`/`TreeView`/
+//! `DataTable`'s vertical scrollbar reads it (once a future PR wires
+//! the rasterisers to it — see that field's own doc), independent of
+//! the chrome-metric group's `row_height`.
+//!
 //! A second group of five tokens — [`Self::tab_height`],
 //! [`Self::status_bar_height`], [`Self::activity_bar_width`],
 //! [`Self::row_height`] and [`Self::toolbar_height`] — sizes shell
@@ -139,14 +145,24 @@ pub struct Style {
     /// before laying out their label/list/button content.
     ///
     /// **TUI story: cell-quantised.** A sub-cell padding has no grid
-    /// position to paint into; a TUI rasteriser that wants to honour
-    /// this token rounds it up to whole cells first (`(padding /
-    /// cell_width).ceil()`), the same way `LayoutMetrics::cell_quantum`
-    /// already quantises hit-test geometry. No TUI primitive reads this
-    /// field yet — every one of the six overlay primitives' TUI
-    /// rasterisers keeps its own pre-existing fixed cell gutter — so
-    /// today this is a documented fallback rule, not yet a live call
-    /// site.
+    /// position to paint into; a TUI rasteriser that wants to honour this
+    /// token rounds it up to whole cells first — `ceil(padding /
+    /// nominal_cell_px)`, **not** `padding / Backend::char_width()`:
+    /// `char_width`/`line_height` report `1.0` on a cell-grid backend (the
+    /// native unit already *is* one cell, architecturally) rather than a
+    /// real font pixel size, so they can't supply the pixel reference this
+    /// formula needs; a nominal "one cell ≈ 8×16px" estimate stands in
+    /// instead, the same way `LayoutMetrics::cell_quantum` already
+    /// quantises hit-test geometry. No TUI primitive reads this field yet
+    /// — every one of the six overlay primitives' TUI rasterisers keeps
+    /// its own pre-existing fixed cell gutter — so today this is a
+    /// documented fallback rule, not yet a live call site.
+    /// `quadraui-binding-core`'s own `layout::Spacing` (the
+    /// `padding`/`margin`/`gap` keys a Python/JS render callback's
+    /// `"row"`/`"column"` layout-tree node may declare) is a *live* call
+    /// site of this identical rule, nominal constant and all — see that
+    /// type's own doc for why ceiling to a whole native unit degrades
+    /// correctly on both a pixel backend and TUI from the same formula.
     ///
     /// Default `8.0` — VS Code's own hover-card/quick-pick body padding.
     pub padding: f32,
@@ -286,6 +302,37 @@ pub struct Style {
     /// Default `35.0` — VS Code's own toolbar height.
     #[serde(default = "default_toolbar_height")]
     pub toolbar_height: f32,
+
+    /// Width, in surface-native pixels, of a `List`/`TreeView`/
+    /// `DataTable` vertical scrollbar track — independent of
+    /// [`Self::row_height`], since VS Code's overlay scrollbar is a
+    /// fixed 10px regardless of the row pitch it scrolls.
+    ///
+    /// **TUI story: no-op.** A terminal scrollbar is always exactly one
+    /// cell wide; every TUI rasteriser for `List`/`TreeView`/`DataTable`
+    /// keeps that one-cell track regardless of this field.
+    ///
+    /// No pixel-backend rasteriser reads this field yet — `TreeView`
+    /// currently paints its vertical scrollbar at the fixed
+    /// [`crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`]
+    /// (`10.0`, already matching this field's default) through the single
+    /// shared [`crate::primitives::tree::native_surface_paint`] paint path
+    /// GTK, macOS and Win32 all call, so wiring the tree to this token is
+    /// one change to that shared function, not one per backend.
+    /// `DataTable` paints at the separate
+    /// [`crate::primitives::layout_metrics::pixel::DATA_TABLE_SCROLLBAR_WIDTH`]
+    /// (`8.0`), so wiring it to this field — for the same reason as
+    /// [`Self::padding`] above, tracked separately from adding the
+    /// themeable seam here — would widen that scrollbar from `8.0` to
+    /// this field's `10.0` default unless that follow-up gives
+    /// `DataTable` its own override.
+    ///
+    /// Default `10.0` — VS Code's own list/tree overlay scrollbar width,
+    /// matching the
+    /// [`crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`]
+    /// constant.
+    #[serde(default = "default_scrollbar_width")]
+    pub scrollbar_width: f32,
 }
 
 /// `#[serde(default)]` value for [`Style::tab_height`] — a struct
@@ -326,6 +373,12 @@ fn default_backdrop_opacity() -> f32 {
     1.0
 }
 
+/// `#[serde(default)]` value for [`Style::scrollbar_width`] — see
+/// [`default_tab_height`].
+fn default_scrollbar_width() -> f32 {
+    10.0
+}
+
 impl Default for Style {
     fn default() -> Self {
         Self {
@@ -341,6 +394,7 @@ impl Default for Style {
             activity_bar_width: 48.0,
             row_height: 22.0,
             toolbar_height: 35.0,
+            scrollbar_width: 10.0,
         }
     }
 }
@@ -438,6 +492,13 @@ impl Style {
     #[must_use]
     pub fn with_toolbar_height(mut self, toolbar_height: f32) -> Self {
         self.toolbar_height = toolbar_height;
+        self
+    }
+
+    /// Set [`Self::scrollbar_width`].
+    #[must_use]
+    pub fn with_scrollbar_width(mut self, scrollbar_width: f32) -> Self {
+        self.scrollbar_width = scrollbar_width;
         self
     }
 }
@@ -540,6 +601,23 @@ mod tests {
         assert_eq!(style.toolbar_height, 35.0);
     }
 
+    /// A JSON payload serialized before [`Style::scrollbar_width`]
+    /// existed has no such key; `#[serde(default = "…")]` must
+    /// deserialize it at the VS Code default rather than erroring.
+    #[test]
+    fn deserializing_without_scrollbar_width_defaults_to_ten_pixels() {
+        let json = r#"{
+            "focus_ring_width": 2.0,
+            "padding": 8.0,
+            "corner_radius": 6.0,
+            "border_width": 1.0,
+            "shadow_elevation": 1,
+            "control_height": 26.0
+        }"#;
+        let style: Style = serde_json::from_str(json).expect("deserialize without scrollbar_width");
+        assert_eq!(style.scrollbar_width, 10.0);
+    }
+
     /// Every one of these `with_*` builders overrides only its own
     /// field — the same proof `with_focus_ring_width_builder_overrides_only_that_field`
     /// already gives for the original token, extended to the rest of
@@ -588,6 +666,15 @@ mod tests {
         let style = Style::default().with_backdrop_opacity(0.3);
         assert_eq!(style.backdrop_opacity, 0.3);
         assert_eq!(style.shadow_elevation, Style::default().shadow_elevation);
+    }
+
+    /// Same proof as `with_focus_ring_width_builder_overrides_only_that_field`,
+    /// for [`Style::scrollbar_width`].
+    #[test]
+    fn with_scrollbar_width_builder_overrides_only_that_field() {
+        let style = Style::default().with_scrollbar_width(14.0);
+        assert_eq!(style.scrollbar_width, 14.0);
+        assert_eq!(style.row_height, Style::default().row_height);
     }
 
     /// A JSON payload serialized before `backdrop_opacity` existed has no

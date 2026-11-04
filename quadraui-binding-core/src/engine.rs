@@ -2351,6 +2351,75 @@ mod tests {
         );
     }
 
+    /// A single click on a `DataTable` row must emit
+    /// `DataTableEvent::RowSelected`, not `RowActivated` — the "select"
+    /// event, so a row body click never opens anything on its own.
+    #[test]
+    fn single_click_on_a_data_table_row_emits_row_selected() {
+        use quadraui::DataTableEvent;
+
+        let mut driver = data_table_driver(None);
+        driver.render();
+        let (area, layout) = data_table_geometry(&driver);
+        let row_point = Point::new(area.x + 2.0, area.y + layout.header_height + 0.5);
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: row_point,
+            modifiers: Modifiers::default(),
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::DataTable(id, DataTableEvent::RowSelected { idx: 0 })
+                    if *id == WidgetId::new("table")
+            )),
+            "expected RowSelected {{ idx: 0 }}: {:?}",
+            dispatched
+        );
+        assert!(
+            !dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::DataTable(_, DataTableEvent::RowActivated { .. })
+            )),
+            "a single click must not emit RowActivated: {:?}",
+            dispatched
+        );
+    }
+
+    /// A double-click on a `DataTable` row must emit the distinct
+    /// `DataTableEvent::RowDoubleClicked`, not `RowSelected`/`RowActivated`
+    /// — the "open" event a file-manager-style app should listen for
+    /// instead of opening on every single click.
+    #[test]
+    fn double_click_on_a_data_table_row_emits_row_double_clicked() {
+        use quadraui::DataTableEvent;
+
+        let mut driver = data_table_driver(None);
+        driver.render();
+        let (area, layout) = data_table_geometry(&driver);
+        let row_point = Point::new(area.x + 2.0, area.y + layout.header_height + 0.5);
+
+        driver.dispatch(UiEvent::DoubleClick {
+            widget: None,
+            position: row_point,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::DataTable(id, DataTableEvent::RowDoubleClicked { idx: 0 })
+                    if *id == WidgetId::new("table")
+            )),
+            "expected RowDoubleClicked {{ idx: 0 }}: {:?}",
+            dispatched
+        );
+    }
+
     /// A minimal [`AppLogic`] painting a single `TextDisplay`, for the
     /// titled-display hit-test/wheel-scroll coverage below — mirrors
     /// [`DataTableLogic`], swapping the data-table band for a text-display

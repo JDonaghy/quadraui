@@ -75,11 +75,11 @@ pub use host::{
     ErasedShellDriver, OverrideError, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST,
     SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
-pub use layout::{validate_unique_leaf_ids, LayoutLeaf, LayoutNode, LayoutPanel};
-pub use layout::{LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry, LayoutTabs};
-pub use layout::{LeafDescriptor, LEAF_KIND_KEYS};
+pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
+pub use layout::{LayoutPanel, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry};
+pub use layout::{LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS};
 pub use render::{draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf, split_rects};
-pub use render::{tree_viewport_rows, RenderFrame, RenderRefs};
+pub use render::{split_rects_with_gap, tree_viewport_rows, RenderFrame, RenderRefs};
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
 pub use text_input::{apply_text_input_edit, clamp_cursor, text_input_click_event};
 pub use text_input::{text_input_insert_event, text_input_key_event, TextEditorCache};

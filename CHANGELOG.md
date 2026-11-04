@@ -75,6 +75,46 @@ only a push to `main` runs this workflow.
   the full curated name list, also inlined on `Icon::codicon`'s doc. New
   `examples/{tui,gtk}_codicon_tree.rs` demo a file-explorer-shaped
   `TreeView` using it.
+- `ListViewEvent::ItemDoubleClicked { idx }` and
+  `DataTableEvent::RowDoubleClicked { idx }` — distinct double-click events,
+  mirroring `TreeEvent::RowDoubleClicked`, so an app can tell "select" apart
+  from "open" instead of both folding into `ItemActivated`/`RowActivated`.
+  `quadraui-binding-core`'s `semantic_event_for_hit` now checks its own
+  `double_click` flag for a `DataTableRow` hit (previously ignored there, so
+  every row click — single or double — reached the binding as
+  `RowActivated`): a plain click now resolves to `DataTableEvent::RowSelected`
+  and a real double-click to the new `RowDoubleClicked`; a `ListItem` double
+  click now resolves to `ItemDoubleClicked` instead of reusing
+  `ItemActivated`, mirroring how `TreeEvent::RowDoubleClicked` was added
+  previously. `RowActivated`/`ItemActivated` keep their documented
+  click-or-Enter meaning
+  for native `Backend` consumers that construct them directly. Covered by
+  `quadraui-binding-core::engine` tests and `quadraui-py`'s
+  `test_data_table_interactions.py` / inline `lib.rs` list test.
+- `Style::scrollbar_width` (default `10.0`, matching the existing
+  `TREE_VSCROLLBAR_WIDTH` constant) — a themeable seam for the
+  `List`/`TreeView`/`DataTable` vertical scrollbar track width.
+  Additive field on the already-`#[non_exhaustive]` `Style` struct; no
+  pixel-backend rasteriser reads it yet. `TreeView` paints its vertical
+  scrollbar through one shared function (`tree::native_surface_paint`)
+  that GTK, macOS and Win32 all call, so wiring the tree to this token
+  is a single follow-up, not one per backend. `DataTable` paints at its
+  own, separate `DATA_TABLE_SCROLLBAR_WIDTH` constant (`8.0`, not
+  `10.0`), so wiring it to this token is a second, independent
+  follow-up that widens that scrollbar unless it also adds a
+  `DataTable`-specific override.
+- `Backend::draw_button_with_state(rect, button, &InteractionState)` — a
+  `Button` rasteriser that tints the background when the button is
+  hovered/pressed, keyed by `button.id`. Additive: `draw_button` is
+  unchanged and `draw_button_with_state` defaults to forwarding to it, so
+  every existing call site and backend implementor keeps compiling.
+  Implemented for real on TUI, GTK, macOS and Win (all four share the
+  button paint path). New `Theme::button_hover_bg(base)` /
+  `Theme::button_pressed_bg(base)` accessor methods derive the tint from
+  `Theme::accent_fg` — no new `Theme` field. `examples/{tui,gtk}_controls`
+  demonstrate it; `tests/tui_example_driver.rs`'s
+  `controls_button_hover_paints_hover_background_at_the_cursor` asserts the
+  painted consequence headlessly.
 - `tui::TuiRunner` gains `parts_mut(&mut self) -> (&mut TuiBackend, &mut A)`,
   disjoint mutable access to both the backend and the `AppLogic` it drives
   — for host code running inside `run_tui`/`run_native` that needs to call a

@@ -87,6 +87,38 @@ def test_dragging_a_header_divider_emits_column_resized():
     assert resized == [{"col": 0, "width": 13.0}], received
 
 
+def test_single_click_on_a_row_emits_row_selected_not_row_activated():
+    app = QuiApp(24, 8)
+    _insert_table(app)
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    # Body rows start at viewport y == 1.0, just below the header.
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 2.0, "y": 1.0}, "modifiers": {}}}
+    )
+    app.run(1)
+
+    assert {"DataTable": ("table", {"RowSelected": {"idx": 0}})} in received
+    assert not any(
+        "DataTable" in event and "RowActivated" in event["DataTable"][1] for event in received
+    ), received
+
+
+def test_double_click_on_a_row_emits_row_double_clicked():
+    app = QuiApp(24, 8)
+    _insert_table(app)
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"DoubleClick": {"position": {"x": 2.0, "y": 1.0}}}
+    )
+    app.run(1)
+
+    assert {"DataTable": ("table", {"RowDoubleClicked": {"idx": 0}})} in received
+
+
 def test_down_arrow_on_a_focused_table_selects_the_next_row():
     app = QuiApp(24, 8)
     _insert_table(app, selected_idx=0)

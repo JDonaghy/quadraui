@@ -157,6 +157,23 @@ test("setStyle overrides the chrome metric tokens and round trips", () => {
   assert.deepEqual(after.padding, before.padding);
 });
 
+// `Style::scrollbar_width` reaches `QuiApp` through the same
+// `#[serde(default)]`-decoded `setStyle` object every other `Style` field
+// already does -- no binding-side change needed to carry a new descriptor
+// field.
+test("setStyle overrides the scrollbar width token and round trips", () => {
+  const app = new QuiApp(20, 5);
+  const before: any = app.style();
+  assert.equal(before.scrollbar_width, 10.0);
+
+  app.setStyle({ scrollbar_width: 14.0 });
+
+  const after: any = app.style();
+  assert.equal(after.scrollbar_width, 14.0);
+  // Unrelated token is untouched.
+  assert.deepEqual(after.padding, before.padding);
+});
+
 test("setStyle rejects an undefined value instead of raising on the app", () => {
   // Same `Object.keys`-reports-an-`undefined`-value gap as `setTheme`, on
   // `setStyle`'s own merge path.

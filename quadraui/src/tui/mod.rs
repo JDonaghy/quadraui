@@ -84,7 +84,7 @@ pub mod vt_testing;
 pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style};
 pub use backend::TuiBackend;
 pub use board::{draw_board, tui_board_layout};
-pub use button::{draw_button, tui_button_layout};
+pub use button::{draw_button, draw_button_interactive, tui_button_layout};
 pub use canvas::{draw_canvas, tui_canvas_layout};
 pub use chart::{draw_chart, tui_chart_layout};
 pub use combo_box::draw_combo_box;

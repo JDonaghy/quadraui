@@ -3084,10 +3084,35 @@ mod tests {
             ]
         });
         let node = decode_layout_node("test", &value).expect("valid layout tree");
-        let LayoutNode::Row(children) = node else {
+        let LayoutNode::Row(container) = node else {
             panic!("expected a row");
         };
-        assert_eq!(children.len(), 2);
+        assert_eq!(container.children.len(), 2);
+    }
+
+    /// A `"row"`'s `"padding"`/`"gap"` spacing keys are siblings of the
+    /// `"row"` key in the same node dict, decoded into
+    /// [`quadraui_binding_core::layout::Spacing`] alongside the children —
+    /// see [`decode_layout_node_round_trips_a_row_of_leaves`]'s doc for why
+    /// this needs no live napi `Env`.
+    #[test]
+    fn decode_layout_node_round_trips_row_spacing_keys() {
+        let value = serde_json::json!({
+            "row": [
+                {"id": "left", "text_display": {"id": "text:left", "lines": []}},
+            ],
+            "padding": 12,
+            "gap": 8,
+            "margin": 4,
+        });
+        let node = decode_layout_node("test", &value).expect("valid layout tree");
+        let LayoutNode::Row(container) = node else {
+            panic!("expected a row");
+        };
+        assert_eq!(container.spacing.padding.top, 12.0);
+        assert_eq!(container.spacing.padding.left, 12.0);
+        assert_eq!(container.spacing.gap, 8.0);
+        assert_eq!(container.spacing.margin, 4.0);
     }
 
     /// `decode_render_output` round-trips a flat render-callback payload

@@ -6393,6 +6393,50 @@ fn controls_mouse_click_on_radio_option_selects_it() {
     );
 }
 
+/// `draw_button_with_state` tints the button's background when
+/// `InteractionState` reports it hovered — pins the *visual* consequence,
+/// not just that `ControlsApp` compiles against the new trait method.
+/// Mirrors `toolbar_hover_paints_hover_background_at_the_cursor`.
+#[test]
+fn controls_button_hover_paints_hover_background_at_the_cursor() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+
+    let before = driver.screen();
+    let (x, y) = driver
+        .find("Clicked 0x")
+        .unwrap_or_else(|| panic!("button label should be on screen:\n{before}"));
+    let resting_bg = driver
+        .style_at(x as u16, y as u16)
+        .expect("button cell should be inside the screen")
+        .bg;
+
+    driver.mouse_move(x, y);
+
+    let hovered_bg = driver
+        .style_at(x as u16, y as u16)
+        .expect("button cell should be inside the screen")
+        .bg;
+    assert_ne!(
+        hovered_bg,
+        resting_bg,
+        "hovering the button should paint its hover background:\n{}",
+        driver.screen()
+    );
+
+    // Moving off the button clears the hover.
+    driver.mouse_move(0.0, 0.0);
+    let after_bg = driver
+        .style_at(x as u16, y as u16)
+        .expect("button cell should be inside the screen")
+        .bg;
+    assert_eq!(
+        after_bg,
+        resting_bg,
+        "moving off the button should clear the hover background:\n{}",
+        driver.screen()
+    );
+}
+
 #[test]
 fn controls_tab_to_switch_and_space_toggles_it() {
     let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
