@@ -997,16 +997,16 @@ mod tests {
     fn config_registers_a_codicon_override_per_group_falling_back_to_its_digit() {
         let config = GalleryApp::config();
         assert_eq!(config.panel_icons.len(), GROUPS.len());
-        for i in 0..GROUPS.len() {
+        for (i, &digit) in GROUP_ICONS.iter().enumerate().take(GROUPS.len()) {
             let (id, icon) = config
                 .panel_icons
                 .iter()
                 .find(|(id, _)| *id == group_panel_id(i))
                 .unwrap_or_else(|| panic!("no panel icon override registered for group {i}"));
             assert_eq!(*id, group_panel_id(i));
-            assert_eq!(icon.fallback, GROUP_ICONS[i]);
+            assert_eq!(icon.fallback, digit);
             assert_ne!(
-                icon.glyph, GROUP_ICONS[i],
+                icon.glyph, digit,
                 "group {i}'s glyph half must be the real codicon, not the TUI digit"
             );
         }
