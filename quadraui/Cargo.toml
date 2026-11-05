@@ -2055,3 +2055,20 @@ required-features = ["macos"]
 name = "win_form_label_placement"
 path = "examples/win_form_label_placement.rs"
 required-features = ["win"]
+
+# `Icon::codicon(name)` demo — a `TreeView` whose rows carry codicon
+# icons. Both entries are mandatory, same reasoning as the
+# `tui_sidebar_panel_body`/`gtk_sidebar_panel_body` pair above: without
+# an explicit `[[example]]`, autodiscovery picks each file up with no
+# `required-features`, and `gtk_codicon_tree.rs` then gets compiled by
+# `cargo test --features tui` and fails on `quadraui::gtk` being
+# configured out.
+[[example]]
+name = "tui_codicon_tree"
+path = "examples/tui_codicon_tree.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_codicon_tree"
+path = "examples/gtk_codicon_tree.rs"
+required-features = ["gtk"]

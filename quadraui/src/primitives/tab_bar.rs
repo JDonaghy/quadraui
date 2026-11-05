@@ -202,7 +202,7 @@ fn default_true() -> bool {
 ///
 /// [`Backend::draw_tab_bar_icons`]: crate::Backend::draw_tab_bar_icons
 /// [`Backend::draw_tab_bar`]: crate::Backend::draw_tab_bar
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TabIcon {
     /// Icon glyph — usually a single Nerd Font character.
     pub glyph: String,
@@ -222,6 +222,53 @@ impl TabIcon {
     /// measurement instead.
     pub fn cols(&self) -> u16 {
         crate::text_util::display_width(&self.glyph) as u16 + 1
+    }
+
+    /// Build a [`TabIcon`] from one of the bundled codicon set's names
+    /// (`"file-code"`, `"markdown"`, …) instead of a raw glyph string —
+    /// the same table [`crate::Icon::codicon`] resolves names through.
+    /// `None` if `name` isn't in the crate's curated name table; see
+    /// `codicon_names.rs`'s module doc for the full list.
+    #[must_use]
+    pub fn codicon(name: &str, color: Color) -> Option<Self> {
+        let glyph = crate::codicon_names::codepoint(name)?;
+        Some(Self {
+            glyph: glyph.to_string(),
+            color,
+        })
+    }
+}
+
+/// Accepts both `{"glyph": ..., "color": ...}` and `{"codicon": "...",
+/// "color": ...}` — the same two-shape convention as [`Icon`]'s manual
+/// `Deserialize` impl; see that type's doc for why `Codicon` is tried
+/// first.
+impl<'de> Deserialize<'de> for TabIcon {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Codicon { codicon: String, color: Color },
+            Glyph { glyph: String, color: Color },
+        }
+
+        match Wire::deserialize(deserializer)? {
+            Wire::Glyph { glyph, color } => Ok(TabIcon { glyph, color }),
+            Wire::Codicon { codicon, color } => {
+                let glyph = crate::codicon_names::codepoint(&codicon).ok_or_else(|| {
+                    serde::de::Error::custom(format!(
+                        "unknown codicon name {codicon:?} — see codicon_names::NAMES"
+                    ))
+                })?;
+                Ok(TabIcon {
+                    glyph: glyph.to_string(),
+                    color,
+                })
+            }
+        }
     }
 }
 
@@ -1725,5 +1772,59 @@ mod tests {
             let back: TabBarEvent = serde_json::from_str(&json).unwrap();
             assert_eq!(event, &back);
         }
+    }
+
+    #[test]
+    fn tab_icon_codicon_resolves_a_known_name_to_its_bundled_glyph() {
+        let icon = TabIcon::codicon("file-code", Color::rgb(222, 165, 132))
+            .expect("\"file-code\" is a known codicon name");
+        assert_eq!(icon.glyph, "\u{eae9}");
+        assert_eq!(icon.color, Color::rgb(222, 165, 132));
+    }
+
+    #[test]
+    fn tab_icon_codicon_rejects_an_unknown_name() {
+        assert_eq!(
+            TabIcon::codicon("not-a-real-codicon-name", Color::rgb(0, 0, 0)),
+            None
+        );
+    }
+
+    /// The wire shape a Python/JS app sends for a tab icon: `{"codicon":
+    /// "...", "color": ...}` in place of a raw `glyph` string.
+    #[test]
+    fn tab_icon_deserializes_the_codicon_wire_shape() {
+        let icon: TabIcon = serde_json::from_str(
+            r#"{"codicon": "file-code", "color": {"r": 222, "g": 165, "b": 132, "a": 255}}"#,
+        )
+        .expect("codicon wire shape should deserialize");
+        assert_eq!(
+            icon,
+            TabIcon::codicon("file-code", Color::rgb(222, 165, 132)).unwrap()
+        );
+    }
+
+    /// The pre-existing `{"glyph": ..., "color": ...}` wire shape still
+    /// deserializes unchanged.
+    #[test]
+    fn tab_icon_deserializes_the_glyph_wire_shape_unchanged() {
+        let icon: TabIcon =
+            serde_json::from_str(r#"{"glyph": "R", "color": {"r": 1, "g": 2, "b": 3, "a": 255}}"#)
+                .expect("glyph wire shape should deserialize");
+        assert_eq!(
+            icon,
+            TabIcon {
+                glyph: "R".to_string(),
+                color: Color::rgb(1, 2, 3),
+            }
+        );
+    }
+
+    #[test]
+    fn tab_icon_deserialize_rejects_an_unknown_codicon_name() {
+        let result: Result<TabIcon, _> = serde_json::from_str(
+            r#"{"codicon": "not-a-real-codicon-name", "color": {"r": 0, "g": 0, "b": 0, "a": 255}}"#,
+        );
+        assert!(result.is_err());
     }
 }

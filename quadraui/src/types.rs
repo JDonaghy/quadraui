@@ -231,7 +231,17 @@ impl StyledText {
 
 /// Icon reference. Each app supplies both the glyph (for icon fonts) and
 /// an ASCII/Unicode fallback (for TUI or when the icon font is unavailable).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Deserializes from either of two wire shapes — see the manual
+/// [`Deserialize`] impl below:
+/// - `{"glyph": "...", "fallback": "...", "color": ...}` — the shape this
+///   type also [`Serialize`]s as.
+/// - `{"codicon": "folder", "fallback": "DIR", "color": ...}` — a bundled
+///   codicon name in place of a raw glyph string, resolved the same way
+///   [`Icon::codicon`] resolves one in Rust. Lets a Python/JS app pass a
+///   codicon icon in a descriptor dict without hand-encoding a PUA
+///   codepoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Icon {
     /// Nerd Font / icon-font glyph string.
     pub glyph: String,
@@ -267,6 +277,51 @@ impl Icon {
         self
     }
 
+    /// Build an [`Icon`] from one of the bundled codicon set's names
+    /// instead of a raw glyph string. `None` if `name` isn't below — the
+    /// crate's curated subset of codicon 0.0.46's ~500-icon set (browse
+    /// the full upstream set at
+    /// <https://microsoft.github.io/vscode-codicons/dist/codicon.html>;
+    /// extend the table in `codicon_names.rs`, where each entry's own
+    /// doc explains how it is verified, to add more):
+    ///
+    /// `"folder"`, `"folder-opened"`, `"root-folder"`,
+    /// `"root-folder-opened"`, `"new-folder"`, `"symbol-folder"`,
+    /// `"file"`, `"files"`, `"new-file"`, `"file-code"`, `"file-media"`,
+    /// `"file-pdf"`, `"file-submodule"`, `"file-zip"`, `"symbol-file"`,
+    /// `"json"`, `"markdown"`, `"gear"`, `"settings-gear"`, `"search"`,
+    /// `"trash"`, `"edit"`, `"save"`, `"git-commit"`, `"git-branch"`,
+    /// `"source-control"`, `"terminal"`, `"package"`, `"extensions"`,
+    /// `"account"`, `"bug"`, `"debug-alt"`, `"circle-filled"`,
+    /// `"warning"`, `"error"`, `"info"`, `"pass-filled"`.
+    ///
+    /// `glyph` resolves to the exact PUA codepoint the bundled codicon
+    /// font (`codicon.rs`'s `FONT_BYTES`) maps that name to. No backend
+    /// changes are needed to paint it: every GUI backend already appends
+    /// the bundled codicon font last in its text-rendering fallback
+    /// chain (see `codicon.rs`'s module doc), so this glyph renders from
+    /// the bundled font automatically whenever [`Self::resolve`] picks it
+    /// — the same path any other app-supplied glyph already goes
+    /// through. `fallback` is the ASCII/Unicode text painted instead when
+    /// nerd fonts are unavailable (TUI with `set_nerd_fonts(false)`, the
+    /// default).
+    ///
+    /// A Python/JS app reaches the same table through the `{"codicon":
+    /// "folder", "fallback": "DIR"}` wire shape this type's [`Deserialize`]
+    /// impl also accepts, rather than this constructor — and there, an
+    /// unknown name is a decode error rather than a silent `None`, since
+    /// a binding's caller has no `Option` to inspect before the result
+    /// lands on a widget.
+    #[must_use]
+    pub fn codicon(name: &str, fallback: impl Into<String>) -> Option<Self> {
+        let glyph = crate::codicon_names::codepoint(name)?;
+        Some(Self {
+            glyph: glyph.to_string(),
+            fallback: fallback.into(),
+            color: None,
+        })
+    }
+
     /// The Nerd Font glyph when `nerd_fonts_enabled` is set, otherwise
     /// the ASCII/Unicode fallback. Centralises the
     /// `if nerd_fonts_enabled { &self.glyph } else { &self.fallback }`
@@ -278,6 +333,64 @@ impl Icon {
             &self.glyph
         } else {
             &self.fallback
+        }
+    }
+}
+
+/// Accepts both of [`Icon`]'s wire shapes — see that type's doc. `serde`
+/// tries an `#[serde(untagged)]` enum's variants in declaration order and
+/// commits to the first one whose required fields are all present, so
+/// `Codicon` (which needs a `codicon` field absent from the other shape)
+/// is listed first with no risk of swallowing a plain `{"glyph": ...}`
+/// payload.
+impl<'de> Deserialize<'de> for Icon {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Codicon {
+                codicon: String,
+                fallback: String,
+                #[serde(default)]
+                color: Option<Color>,
+            },
+            Glyph {
+                glyph: String,
+                fallback: String,
+                #[serde(default)]
+                color: Option<Color>,
+            },
+        }
+
+        match Wire::deserialize(deserializer)? {
+            Wire::Glyph {
+                glyph,
+                fallback,
+                color,
+            } => Ok(Icon {
+                glyph,
+                fallback,
+                color,
+            }),
+            Wire::Codicon {
+                codicon,
+                fallback,
+                color,
+            } => {
+                let glyph = crate::codicon_names::codepoint(&codicon).ok_or_else(|| {
+                    serde::de::Error::custom(format!(
+                        "unknown codicon name {codicon:?} — see codicon_names::NAMES"
+                    ))
+                })?;
+                Ok(Icon {
+                    glyph: glyph.to_string(),
+                    fallback,
+                    color,
+                })
+            }
         }
     }
 }
@@ -955,5 +1068,82 @@ mod tests {
         // Toggling an index already present (even if duplicated in input)
         // removes every occurrence and leaves the rest sorted.
         assert_eq!(next, vec![5]);
+    }
+
+    #[test]
+    fn icon_codicon_resolves_a_known_name_to_its_bundled_glyph() {
+        let icon = Icon::codicon("folder", "DIR").expect("\"folder\" is a known codicon name");
+        assert_eq!(icon.glyph, "\u{ea83}");
+        assert_eq!(icon.fallback, "DIR");
+        assert_eq!(icon.color, None);
+        // The resolved glyph goes through the same two-sided path as any
+        // other app-supplied `Icon` — nerd-fonts-on paints the glyph,
+        // nerd-fonts-off paints the caller's own fallback text.
+        assert_eq!(icon.resolve(true), "\u{ea83}");
+        assert_eq!(icon.resolve(false), "DIR");
+    }
+
+    #[test]
+    fn icon_codicon_rejects_an_unknown_name() {
+        assert_eq!(Icon::codicon("not-a-real-codicon-name", "?"), None);
+    }
+
+    /// The wire shape a Python/JS app sends: `{"codicon": "...", ...}`
+    /// in place of a raw `glyph` string. This is the shape
+    /// `quadraui-py`/`quadraui-node` descriptor decoding exercises
+    /// (both crates deserialize `Icon` through this same `Deserialize`
+    /// impl, not a copy of it).
+    #[test]
+    fn icon_deserializes_the_codicon_wire_shape() {
+        let icon: Icon =
+            serde_json::from_str(r#"{"codicon": "folder", "fallback": "DIR", "color": null}"#)
+                .expect("codicon wire shape should deserialize");
+        assert_eq!(icon, Icon::codicon("folder", "DIR").unwrap());
+    }
+
+    /// The `color` field is optional on the codicon wire shape too, the
+    /// same as on the plain `glyph` shape.
+    #[test]
+    fn icon_deserializes_the_codicon_wire_shape_without_color() {
+        let icon: Icon = serde_json::from_str(r#"{"codicon": "folder", "fallback": "DIR"}"#)
+            .expect("codicon wire shape without color should deserialize");
+        assert_eq!(icon, Icon::codicon("folder", "DIR").unwrap());
+    }
+
+    /// The pre-existing `{"glyph": ..., "fallback": ...}` wire shape still
+    /// deserializes unchanged — the codicon shape is additive, not a
+    /// replacement.
+    #[test]
+    fn icon_deserializes_the_glyph_wire_shape_unchanged() {
+        let icon: Icon = serde_json::from_str(r#"{"glyph": "", "fallback": "R"}"#)
+            .expect("glyph wire shape should deserialize");
+        assert_eq!(icon, Icon::new("\u{f021}", "R"));
+    }
+
+    /// An unknown codicon name is a deserialize error, not a silently
+    /// icon-less `Icon` — unlike [`Icon::codicon`]'s `Option`-returning
+    /// Rust API, the wire path has nowhere to hide a `None` result inside
+    /// `Icon` itself, so it surfaces as a decode failure a binding can
+    /// turn into a raised `InvalidDescriptorError`/`TypeError`.
+    #[test]
+    fn icon_deserialize_rejects_an_unknown_codicon_name() {
+        let result: Result<Icon, _> =
+            serde_json::from_str(r#"{"codicon": "not-a-real-codicon-name", "fallback": "?"}"#);
+        assert!(result.is_err());
+    }
+
+    /// `Icon`'s `Serialize` output is unaffected by the new `Deserialize`
+    /// shim — it always emits the `glyph` shape, round-tripping through
+    /// both.
+    #[test]
+    fn icon_round_trips_through_serialize_and_deserialize() {
+        let icon = Icon::codicon("markdown", "MD")
+            .unwrap()
+            .with_color(Color::rgb(1, 2, 3));
+        let json = serde_json::to_string(&icon).unwrap();
+        assert!(json.contains("\"glyph\""));
+        assert!(!json.contains("\"codicon\""));
+        let round_tripped: Icon = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped, icon);
     }
 }

@@ -158,6 +158,69 @@ def test_insert_tree():
     assert app.screen_contains("Alpha")
 
 
+def test_insert_tree_with_codicon_icon():
+    """A tree row's `icon` accepts `{"codicon": "...", "fallback": "..."}`
+    in place of `{"glyph": "...", "fallback": "..."}` — the wire shape
+    `Icon`'s `Deserialize` impl resolves through the bundled codicon name
+    table. `QuiApp`'s headless driver defaults to nerd fonts off, so the
+    rendered row shows the icon's plain-text fallback.
+    """
+    app = QuiApp(40, 20)
+    app.insert_tree(
+        {
+            "id": "tree:1",
+            "rows": [
+                {
+                    "path": [0],
+                    "indent": 0,
+                    "icon": {"codicon": "folder", "fallback": "DIR"},
+                    "text": {"spans": [{"text": "src", "fg": None, "bg": None}]},
+                    "badge": None,
+                    "is_expanded": None,
+                }
+            ],
+            "selection_mode": "Single",
+            "selected_path": None,
+            "style": {
+                "indent": 2,
+                "show_chevrons": True,
+                "chevron_expanded": "v",
+                "chevron_collapsed": ">",
+            },
+        }
+    )
+    assert app.screen_contains("DIR")
+    assert app.screen_contains("src")
+
+
+def test_insert_tree_with_unknown_codicon_name_raises():
+    app = QuiApp(40, 20)
+    with pytest.raises(InvalidDescriptorError):
+        app.insert_tree(
+            {
+                "id": "tree:1",
+                "rows": [
+                    {
+                        "path": [0],
+                        "indent": 0,
+                        "icon": {"codicon": "not-a-real-codicon-name", "fallback": "?"},
+                        "text": {"spans": [{"text": "src", "fg": None, "bg": None}]},
+                        "badge": None,
+                        "is_expanded": None,
+                    }
+                ],
+                "selection_mode": "Single",
+                "selected_path": None,
+                "style": {
+                    "indent": 2,
+                    "show_chevrons": True,
+                    "chevron_expanded": "v",
+                    "chevron_collapsed": ">",
+                },
+            }
+        )
+
+
 def test_insert_data_table():
     app = QuiApp(40, 20)
     app.insert_data_table(

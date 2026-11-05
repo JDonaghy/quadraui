@@ -309,6 +309,13 @@ pub(crate) mod image_cache;
 ))]
 pub(crate) mod codicon;
 
+// Codicon name → codepoint table backing `Icon::codicon`. Unlike
+// `codicon` above (the font bytes + chrome-glyph constants, needed only
+// by GUI rasterisers), this is plain data `Icon::codicon` resolves on
+// every build — including a TUI-only or zero-backend-feature one — so
+// it carries no feature gate. See `codicon_names.rs`'s module doc.
+pub(crate) mod codicon_names;
+
 // ── Per-backend rasterisers ─────────────────────────────────────────────────
 // Public `draw_*` rasterisers, gated behind feature flags so apps that only
 // consume the data layer don't pull in ratatui / gtk4. Lifted out of vimcode
