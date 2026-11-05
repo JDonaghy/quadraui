@@ -2,7 +2,11 @@
 //!
 //! Renders column headers with Pango-measured text and sort indicators,
 //! then body rows with per-cell text aligned within resolved column
-//! bounds. Uses Pango for measurement and Cairo for painting.
+//! bounds. Uses Pango for measurement and Cairo for painting. A header,
+//! body or footer cell too wide for its column is ellipsis-truncated via
+//! the shared [`crate::paint_surface::fit_text_prefix`] (Pango-measured
+//! through [`super::surface::CairoSurface`]); the per-cell `cr.clip()`
+//! stays in place as an overflow guard, not the primary truncation path.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -142,10 +146,8 @@ pub fn draw_data_table_with_glyphs(
             _ => None,
         };
 
-        pango_layout.set_font_description(Some(&base_font));
-        pango_layout.set_text(&col.title);
-        pango_layout.set_attributes(Some(&bold_attrs));
-        let (title_w, _) = pango_layout.pixel_size();
+        let col_x = x + rc.x as f64 - h_off;
+        let col_w = rc.width as f64;
 
         let sort_glyph_str = sort_glyph.map(|g| g.to_string());
         let sort_w = if let Some(ref g) = sort_glyph_str {
@@ -156,15 +158,38 @@ pub fn draw_data_table_with_glyphs(
         } else {
             0.0
         };
-        let text_w = title_w as f64
-            + if sort_glyph_str.is_some() {
-                SORT_GAP + sort_w
-            } else {
-                0.0
-            };
+        let sort_reserved = if sort_glyph_str.is_some() {
+            SORT_GAP + sort_w
+        } else {
+            0.0
+        };
 
-        let col_x = x + rc.x as f64 - h_off;
-        let col_w = rc.width as f64;
+        // A title too wide for the width left over after the sort glyph
+        // is ellipsis-truncated via the shared `fit_text_prefix` rather
+        // than clipped mid-glyph by the `cr.clip()` below (which stays
+        // as an overflow guard).
+        pango_layout.set_font_description(Some(&base_font));
+        pango_layout.set_text(&col.title);
+        pango_layout.set_attributes(Some(&bold_attrs));
+        let (raw_title_w, _) = pango_layout.pixel_size();
+        let avail_title_w = (col_w - sort_reserved).max(0.0);
+        let (title, title_w) = if raw_title_w as f64 <= avail_title_w {
+            (col.title.clone(), raw_title_w as f64)
+        } else {
+            let measure_surface = super::surface::CairoSurface {
+                cr,
+                layout: Some(pango_layout),
+                translucent_fill: false,
+            };
+            let (t, w) = crate::paint_surface::fit_text_prefix(
+                &measure_surface,
+                &col.title,
+                true,
+                avail_title_w as f32,
+            );
+            (t, w as f64)
+        };
+        let text_w = title_w + sort_reserved;
 
         cr.save().ok();
         cr.rectangle(col_x, y, col_w, header_height);
@@ -178,7 +203,7 @@ pub fn draw_data_table_with_glyphs(
 
         pango_layout.set_font_description(Some(&base_font));
         pango_layout.set_attributes(Some(&bold_attrs));
-        pango_layout.set_text(&col.title);
+        pango_layout.set_text(&title);
         cr.move_to(text_x, y);
         super::painted_text::show_layout(cr, pango_layout);
 
@@ -186,7 +211,7 @@ pub fn draw_data_table_with_glyphs(
             pango_layout.set_font_description(Some(&bold_icon_font));
             pango_layout.set_attributes(None);
             pango_layout.set_text(g);
-            cr.move_to(text_x + title_w as f64 + SORT_GAP, y);
+            cr.move_to(text_x + title_w + SORT_GAP, y);
             super::painted_text::show_layout(cr, pango_layout);
         }
 
@@ -251,20 +276,54 @@ pub fn draw_data_table_with_glyphs(
             let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
             pango_layout.set_text(&full_text);
             pango_layout.set_attributes(None);
-            let (text_w, _) = pango_layout.pixel_size();
+            let (raw_text_w, _) = pango_layout.pixel_size();
+
+            // An over-long cell is ellipsis-truncated to its own column
+            // width via the shared `fit_text_prefix` rather than clipped
+            // mid-glyph by the `cr.clip()` above, which stays as an
+            // overflow guard. Truncation always renders left-aligned —
+            // an overflowing cell has no good right/centre anchor for
+            // its ellipsis.
+            let needs_ellipsis = raw_text_w as f64 > col_w;
+            let (render_text, text_w): (std::borrow::Cow<'_, str>, f64) = if needs_ellipsis {
+                let measure_surface = super::surface::CairoSurface {
+                    cr,
+                    layout: Some(pango_layout),
+                    translucent_fill: false,
+                };
+                let (t, w) = crate::paint_surface::fit_text_prefix(
+                    &measure_surface,
+                    &full_text,
+                    false,
+                    col_w as f32,
+                );
+                (std::borrow::Cow::Owned(t), w as f64)
+            } else {
+                (
+                    std::borrow::Cow::Borrowed(full_text.as_str()),
+                    raw_text_w as f64,
+                )
+            };
 
             let align = table
                 .columns
                 .get(col_idx)
                 .map(|c| c.align)
                 .unwrap_or(ColumnAlign::Left);
-            let text_x = match align {
-                ColumnAlign::Left => col_x,
-                ColumnAlign::Center => col_x + (col_w - text_w as f64) / 2.0,
-                ColumnAlign::Right => col_x + col_w - text_w as f64,
+            let text_x = if needs_ellipsis {
+                col_x
+            } else {
+                match align {
+                    ColumnAlign::Left => col_x,
+                    ColumnAlign::Center => col_x + (col_w - text_w) / 2.0,
+                    ColumnAlign::Right => col_x + col_w - text_w,
+                }
             };
 
-            // Per-span colored text via Pango attributes.
+            // Per-span colored text via Pango attributes, against the
+            // original (untruncated) span byte offsets — harmless when
+            // `render_text` is shorter than `full_text` since Pango
+            // clamps an attribute range past the text's end.
             let attrs = pango::AttrList::new();
             let mut byte_offset = 0u32;
             for span in &styled.spans {
@@ -288,6 +347,7 @@ pub fn draw_data_table_with_glyphs(
             } else {
                 set_source(cr, theme.foreground);
             }
+            pango_layout.set_text(&render_text);
             pango_layout.set_attributes(Some(&attrs));
             cr.move_to(text_x, row_y);
             super::painted_text::show_layout(cr, pango_layout);
@@ -405,22 +465,50 @@ pub fn draw_data_table_with_glyphs(
                 let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
                 pango_layout.set_text(&full_text);
                 pango_layout.set_attributes(Some(&bold_attrs));
-                let (text_w, _) = pango_layout.pixel_size();
+                let (raw_text_w, _) = pango_layout.pixel_size();
+
+                // Same ellipsis-truncation rule as the body cells above.
+                let needs_ellipsis = raw_text_w as f64 > col_w;
+                let (render_text, text_w): (std::borrow::Cow<'_, str>, f64) = if needs_ellipsis {
+                    let measure_surface = super::surface::CairoSurface {
+                        cr,
+                        layout: Some(pango_layout),
+                        translucent_fill: false,
+                    };
+                    let (t, w) = crate::paint_surface::fit_text_prefix(
+                        &measure_surface,
+                        &full_text,
+                        true,
+                        col_w as f32,
+                    );
+                    (std::borrow::Cow::Owned(t), w as f64)
+                } else {
+                    (
+                        std::borrow::Cow::Borrowed(full_text.as_str()),
+                        raw_text_w as f64,
+                    )
+                };
 
                 let align = table
                     .columns
                     .get(col_idx)
                     .map(|c| c.align)
                     .unwrap_or(ColumnAlign::Left);
-                let text_x = match align {
-                    ColumnAlign::Left => col_x,
-                    ColumnAlign::Center => col_x + (col_w - text_w as f64) / 2.0,
-                    ColumnAlign::Right => col_x + col_w - text_w as f64,
+                let text_x = if needs_ellipsis {
+                    col_x
+                } else {
+                    match align {
+                        ColumnAlign::Left => col_x,
+                        ColumnAlign::Center => col_x + (col_w - text_w) / 2.0,
+                        ColumnAlign::Right => col_x + col_w - text_w,
+                    }
                 };
 
                 // Bold weight for the whole cell (subtle style hook that
                 // separates the footer from body rows), plus per-span
-                // colour overrides.
+                // colour overrides against the original span byte
+                // offsets (harmless past `render_text`'s end — see the
+                // body cell loop above).
                 let attrs = pango::AttrList::new();
                 attrs.insert(pango::AttrInt::new_weight(pango::Weight::Bold));
                 let mut byte_offset = 0u32;
@@ -439,6 +527,7 @@ pub fn draw_data_table_with_glyphs(
                     byte_offset += span_bytes;
                 }
                 set_source(cr, theme.foreground);
+                pango_layout.set_text(&render_text);
                 pango_layout.set_attributes(Some(&attrs));
                 cr.move_to(text_x, footer_y);
                 super::painted_text::show_layout(cr, pango_layout);
@@ -713,6 +802,78 @@ mod tests {
             body_px, header_px,
             "separator must survive even when the left column's text fills the \
              entire column width: header pixel {header_px:?}, body pixel {body_px:?}"
+        );
+    }
+
+    /// A body cell too wide for its own column is ellipsis-truncated via
+    /// the shared `fit_text_prefix` rather than clipped mid-glyph by the
+    /// per-cell `cr.clip()`. `draw_data_table` leaves `pango_layout` set
+    /// to the last cell it painted — the rightmost column of the lone
+    /// row here, with no footer or scrollbar in play to overwrite it
+    /// afterwards — so reading `pango_layout.text()` back out shows
+    /// exactly what reached Cairo.
+    #[test]
+    fn overlong_body_cell_ellipsizes_instead_of_clipping_mid_glyph() {
+        let long = "x".repeat(80);
+        let table = three_col_table("A", "B", &long);
+        let theme = Theme::default();
+
+        let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        draw_data_table(
+            &cr,
+            &pango_layout,
+            0.0,
+            0.0,
+            W as f64,
+            H as f64,
+            &table,
+            &theme,
+            LINE_H,
+            None,
+        );
+
+        let rendered = pango_layout.text();
+        assert!(
+            rendered.ends_with('…') && rendered.len() < long.len(),
+            "overlong body cell must paint an ellipsis-truncated prefix, got {rendered:?}"
+        );
+    }
+
+    /// Same truncation rule applies to an overlong header title. With no
+    /// rows to paint, `draw_data_table` leaves `pango_layout` set to the
+    /// last header column it painted (the rightmost of the three here),
+    /// so reading `pango_layout.text()` back out shows exactly what
+    /// reached Cairo for that title.
+    #[test]
+    fn overlong_header_title_ellipsizes_instead_of_clipping_mid_glyph() {
+        let long_title = "x".repeat(80);
+        let mut table = three_col_table("A", "B", "C");
+        table.rows.clear();
+        table.columns[2].title = long_title.clone();
+        let theme = Theme::default();
+
+        let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        draw_data_table(
+            &cr,
+            &pango_layout,
+            0.0,
+            0.0,
+            W as f64,
+            H as f64,
+            &table,
+            &theme,
+            LINE_H,
+            None,
+        );
+
+        let rendered = pango_layout.text();
+        assert!(
+            rendered.ends_with('…') && rendered.len() < long_title.len(),
+            "overlong header title must paint an ellipsis-truncated prefix, got {rendered:?}"
         );
     }
 }
