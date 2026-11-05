@@ -204,6 +204,25 @@ pub struct MacBackend {
     /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
     /// `current_char_width` wide.
     editor_v_scrollbar_w: Option<f32>,
+    /// Timestamp of the most recent trackpad/wheel scroll, fed in by
+    /// `super::run`'s `scrollWheel:` handler via
+    /// [`Self::note_scroll_activity`]. [`Self::new`] seeds this with its
+    /// own construction instant rather than `None`, so a scrollbar
+    /// painted immediately after startup — a live app's first frame, a
+    /// headless pixel test, a gallery capture — still shows at full
+    /// opacity like VS Code's overlay scrollbars briefly do on load,
+    /// instead of starting invisible. With no further scroll activity
+    /// it fades out exactly like any other idle period. `None` is a
+    /// reachable test seam ([`Self::set_scroll_last_interaction`]) for
+    /// "never interacted, already fully faded".
+    scroll_fade_last_interaction: Option<std::time::Instant>,
+    /// Test seam overriding "now" for [`idle_fade_opacity`] instead of
+    /// [`std::time::Instant::now`], so pixel tests can assert the fade
+    /// curve deterministically without a real sleep. `None` (the
+    /// default) uses real wall-clock time, as a live app does.
+    ///
+    /// [`idle_fade_opacity`]: crate::primitives::scrollbar::idle_fade_opacity
+    scroll_fade_clock_override: Option<std::time::Instant>,
     /// Chrome (UI) font — macOS is the only pixel backend where
     /// `set_ui_font` was a silent no-op and every piece of chrome
     /// painted in `current_font`, the *editor* font, instead. Unlike
@@ -732,6 +751,8 @@ impl MacBackend {
             current_line_height: 16.0,
             current_char_width: 8.0,
             editor_v_scrollbar_w: None,
+            scroll_fade_last_interaction: Some(std::time::Instant::now()),
+            scroll_fade_clock_override: None,
             chrome_font,
             chrome_line_height: chrome_metrics.line_height,
             chrome_char_width: chrome_metrics.char_width,
@@ -871,6 +892,60 @@ impl MacBackend {
     /// when this is `false`.
     pub fn caret_visible(&self) -> bool {
         self.caret_visible.get()
+    }
+
+    /// Record that a scroll event just arrived, resetting the overlay
+    /// scrollbar's idle-fade clock to "now". `super::run`'s
+    /// `scrollWheel:` handler calls this for every delta it receives
+    /// — precise trackpad deltas and discrete wheel notches alike —
+    /// before dispatching the translated [`UiEvent::Scroll`].
+    ///
+    /// [`UiEvent::Scroll`]: crate::UiEvent::Scroll
+    pub fn note_scroll_activity(&mut self) {
+        self.scroll_fade_last_interaction = Some(self.fade_now());
+    }
+
+    /// Test seam: pin the overlay scrollbar's last-interaction instant
+    /// directly instead of going through a synthetic
+    /// [`Self::note_scroll_activity`] call. `None` resets to "never
+    /// scrolled" (fully faded).
+    pub fn set_scroll_last_interaction(&mut self, at: Option<std::time::Instant>) {
+        self.scroll_fade_last_interaction = at;
+    }
+
+    /// The overlay scrollbar's current last-interaction instant —
+    /// [`Self::new`]'s own construction time until a real scroll (or a
+    /// test) resets it. `None` once explicitly cleared via
+    /// [`Self::set_scroll_last_interaction`].
+    pub fn scroll_last_interaction(&self) -> Option<std::time::Instant> {
+        self.scroll_fade_last_interaction
+    }
+
+    /// Test seam: override what [`Self::fade_now`] returns, so a pixel
+    /// test can assert the fade curve at an exact offset from the last
+    /// interaction without a real sleep. `None` (the default) falls
+    /// back to [`std::time::Instant::now`].
+    pub fn set_fade_clock_override(&mut self, now: Option<std::time::Instant>) {
+        self.scroll_fade_clock_override = now;
+    }
+
+    /// "Now", for overlay-scrollbar fade purposes — real wall-clock
+    /// time unless a test pinned [`Self::set_fade_clock_override`].
+    fn fade_now(&self) -> std::time::Instant {
+        self.scroll_fade_clock_override
+            .unwrap_or_else(std::time::Instant::now)
+    }
+
+    /// Opacity multiplier [`Backend::draw_scrollbar`] paints the track
+    /// and thumb at: `0.0` if [`Self::scroll_last_interaction`] has been
+    /// explicitly cleared to `None`, otherwise
+    /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
+    /// sampled at [`Self::fade_now`].
+    fn scrollbar_fade_opacity(&self) -> f32 {
+        match self.scroll_fade_last_interaction {
+            Some(last) => crate::primitives::scrollbar::idle_fade_opacity(last, self.fade_now()),
+            None => 0.0,
+        }
     }
 
     /// Install the font that subsequent `draw_*` calls use for text.
@@ -3637,7 +3712,10 @@ impl Backend for MacBackend {
     }
     fn draw_scrollbar(&mut self, _rect: Rect, scrollbar: &Scrollbar) {
         let theme = self.current_theme;
-        crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, self, &theme);
+        let opacity = self.scrollbar_fade_opacity();
+        crate::primitives::scrollbar::native_surface_paint::paint_with_opacity(
+            scrollbar, self, &theme, opacity,
+        );
     }
 
     fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {

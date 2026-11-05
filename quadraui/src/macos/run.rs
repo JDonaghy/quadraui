@@ -933,6 +933,13 @@ define_class!(
             let dx = event.scrollingDeltaX();
             let dy = event.scrollingDeltaY();
             let precise = event.hasPreciseScrollingDeltas();
+            // Reset the overlay scrollbar idle-fade clock on every
+            // delta — precise trackpad and discrete wheel notch alike —
+            // so the bar snaps to full opacity for the hold window
+            // regardless of which `WheelRouting` arm handles delivery.
+            if let Ok(mut backend) = self.ivars().backend.try_borrow_mut() {
+                backend.note_scroll_activity();
+            }
             match route_wheel_event(precise, dx, dy, x, y) {
                 WheelRouting::Immediate(ev) => {
                     self.cancel_wheel_momentum();
