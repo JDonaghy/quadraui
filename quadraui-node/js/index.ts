@@ -120,6 +120,14 @@ exports.LiveRunnerExitedError = LiveRunnerExitedError;
 class NoNativeBackendError extends QuadrauiError {}
 exports.NoNativeBackendError = NoNativeBackendError;
 
+/** `startNative` on the `gtk` feature found no display to open a window on (no `DISPLAY`/`WAYLAND_DISPLAY`) -- mirrors `quadraui-py`'s `NoDisplayError`. */
+class NoDisplayError extends QuadrauiError {}
+exports.NoDisplayError = NoDisplayError;
+
+/** `startNative` on the `gtk` feature was given an `appId` that is not a valid `GApplication` id -- mirrors `quadraui-py`'s `InvalidAppIdError`. */
+class InvalidAppIdError extends QuadrauiError {}
+exports.InvalidAppIdError = InvalidAppIdError;
+
 /**
  * Every subclass above, keyed by both its own name and the tag its native
  * `Error.message` prefix carries (the two always match -- see
@@ -142,6 +150,8 @@ const ERROR_CLASSES_BY_TAG: Record<string, new (message: string) => QuadrauiErro
   LiveRunnerActiveError,
   LiveRunnerExitedError,
   NoNativeBackendError,
+  NoDisplayError,
+  InvalidAppIdError,
 };
 exports.ERROR_CLASSES = Object.freeze({ ...ERROR_CLASSES_BY_TAG });
 

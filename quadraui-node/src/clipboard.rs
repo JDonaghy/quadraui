@@ -5,12 +5,19 @@
 //! clipboard, deliberately *not* gated by [`QuiApp::check_not_live`]: the
 //! clipboard is one `arboard::Clipboard` handle tied to this app's own
 //! headless `TuiBackend` for its whole lifetime, so it keeps working the
-//! same way whether or not `startTui` has moved this app's
+//! same way whether or not `startTui`/`startNative` has moved this app's
 //! [`NodeAppLogic`] into a live session -- mirroring `quadraui-py`'s own
 //! `clipboard_write_text`, which keeps a separate, lazily constructed
 //! `TuiBackend` alive for the clipboard alone so a long-lived
 //! `arboard::Clipboard` handle survives a `run_native`/`run_tui` call
-//! moving the main `PyAppLogic` into a different backend.
+//! moving the main `PyAppLogic` into a different backend. This is more
+//! surprising for a `startNative` session than a `startTui` one: a real
+//! `GtkRunner`/`MacRunner`/`WinRunner` window has its own native
+//! clipboard integration (GTK's own selection/clipboard objects, AppKit's
+//! `NSPasteboard`, Win32's clipboard APIs) that these methods never touch
+//! -- they always resolve against the dormant headless `TuiBackend`'s
+//! own clipboard instead, regardless of what the live native window's
+//! clipboard holds.
 
 use super::*;
 

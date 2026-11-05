@@ -11,9 +11,10 @@
 //!
 //! Every method here resolves against `self.driver.backend()`, this app's
 //! own headless `TuiBackend`, and so calls [`QuiApp::check_not_live`]
-//! first: once `startTui` is running, that backend is the dormant
-//! pre-live one, not the live session's own, so a change (or a read) here
-//! would otherwise silently miss the terminal actually on screen.
+//! first: once `startTui`/`startNative` is running, that backend is the
+//! dormant pre-live one, not the live session's own, so a change (or a
+//! read) here would otherwise silently miss the terminal/window actually
+//! on screen.
 
 use super::*;
 
