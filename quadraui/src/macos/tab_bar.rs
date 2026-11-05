@@ -55,10 +55,15 @@ use crate::primitives::tab_bar::{
 };
 #[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits};
+use crate::style::Style;
 use crate::theme::Theme;
 
-/// Per-tab horizontal padding (left + right) inside the tab background fill.
-const TAB_PAD: f64 = 14.0;
+/// Per-tab horizontal padding (left + right) inside the tab background
+/// fill, in `bar.compact` mode. A compact strip (used where vertical
+/// space is at a premium) keeps this fixed literal rather than scaling
+/// with [`Style::tab_padding_x`] — the non-compact case reads that style
+/// token instead, so a host-set value only ever widens the normal strip.
+const TAB_PAD_COMPACT: f64 = 2.0;
 /// Gap between the tab label and the close glyph.
 const TAB_INNER_GAP: f64 = 10.0;
 /// Gap between adjacent tabs.
@@ -149,8 +154,8 @@ pub(crate) fn mac_tab_icon_extras(
 /// ink. A caller whose font carries no icon codepoints gets tofu of the
 /// measured width, not misplaced hit boxes.
 #[allow(deprecated)]
-pub fn mac_tab_bar_layout(font: &CTFont, width: f64, bar: &TabBar) -> TabBarHits {
-    mac_tab_bar_layout_icons(font, width, bar, &[])
+pub fn mac_tab_bar_layout(font: &CTFont, width: f64, bar: &TabBar, style: &Style) -> TabBarHits {
+    mac_tab_bar_layout_icons(font, width, bar, &[], style)
 }
 
 /// Compute the [`TabBarHits`] [`draw_tab_bar`] would produce for `bar` at
@@ -187,8 +192,9 @@ pub fn mac_tab_bar_layout_icons(
     width: f64,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
+    style: &Style,
 ) -> TabBarHits {
-    let native = mac_tab_bar_native_layout_icons(font, width, 1.0, bar, icons);
+    let native = mac_tab_bar_native_layout_icons(font, width, 1.0, bar, icons, style);
     let mut hits = crate::backend::tab_bar_hits_from_layout(&native, bar);
     // `mac_tab_bar_native_layout_icons`'s `resolved_scroll_offset` is the
     // scroll-offset value this function reports back as engine feedback.
@@ -237,8 +243,9 @@ pub fn mac_tab_bar_native_layout(
     width: f64,
     height: f64,
     bar: &TabBar,
+    style: &Style,
 ) -> TabBarLayout {
-    mac_tab_bar_native_layout_icons(font, width, height, bar, &[])
+    mac_tab_bar_native_layout_icons(font, width, height, bar, &[], style)
 }
 
 /// [`mac_tab_bar_native_layout`] with a per-tab icon sidecar — the
@@ -256,8 +263,13 @@ pub fn mac_tab_bar_native_layout_icons(
     height: f64,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
+    style: &Style,
 ) -> TabBarLayout {
-    let tab_pad = if bar.compact { 2.0 } else { TAB_PAD };
+    let tab_pad = if bar.compact {
+        TAB_PAD_COMPACT
+    } else {
+        style.tab_padding_x as f64
+    };
     let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
     let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
 
@@ -418,6 +430,7 @@ pub unsafe fn draw_tab_bar(
     row_height: f64,
     bar: &TabBar,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
 ) -> TabBarHits {
     draw_tab_bar_icons(
@@ -429,6 +442,7 @@ pub unsafe fn draw_tab_bar(
         row_height,
         bar,
         theme,
+        style,
         hovered_close_tab,
         &[],
     )
@@ -488,6 +502,7 @@ pub unsafe fn draw_tab_bar_icons(
     row_height: f64,
     bar: &TabBar,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
     icons: &[Option<TabIcon>],
 ) -> TabBarHits {
@@ -500,6 +515,7 @@ pub unsafe fn draw_tab_bar_icons(
         row_height,
         bar,
         theme,
+        style,
         hovered_close_tab,
         icons,
         None,
@@ -527,19 +543,24 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
     row_height: f64,
     bar: &TabBar,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
     icons: &[Option<TabIcon>],
     glyphs: Option<&TabBarGlyphs>,
     nerd_fonts_enabled: bool,
 ) -> TabBarHits {
     let text_y_offset = y_offset + (row_height - line_height) / 2.0;
-    let tab_pad = if bar.compact { 2.0 } else { TAB_PAD };
+    let tab_pad = if bar.compact {
+        TAB_PAD_COMPACT
+    } else {
+        style.tab_padding_x as f64
+    };
     let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
 
     // Single source of truth for geometry — `Backend::tab_bar_layout_icons`
     // calls the same function with the same sidecar, so the no-paint twin
     // can never drift from what this loop actually paints.
-    let hits = mac_tab_bar_layout_icons(font, width, bar, icons);
+    let hits = mac_tab_bar_layout_icons(font, width, bar, icons, style);
     // Re-derived rather than threaded out of `mac_tab_bar_layout_icons`:
     // the same pure function of (font, icons), so the label x below is
     // offset by exactly the width the hit boxes were built around.
@@ -1160,8 +1181,9 @@ mod tests {
         let bar = sample_bar();
         let f = font();
 
-        let hits = mac_tab_bar_layout(&f, W as f64, &bar);
-        let native = mac_tab_bar_native_layout(&f, W as f64, H as f64, &bar);
+        let style = Style::default();
+        let hits = mac_tab_bar_layout(&f, W as f64, &bar, &style);
+        let native = mac_tab_bar_native_layout(&f, W as f64, H as f64, &bar, &style);
         let native_as_hits = crate::backend::tab_bar_hits_from_layout(&native, &bar);
 
         assert_eq!(
@@ -1425,10 +1447,10 @@ mod tests {
 
         let (slot_lo, _) = hits.slot_positions[0];
         let icon_extra = mac_tab_icon_extras(&font(), bar.tabs.len(), &icons)[0];
-        // The glyph occupies `[slot_lo + TAB_PAD, slot_lo + TAB_PAD +
-        // icon_extra - TAB_ICON_GAP)`; the gap after it is bare
-        // background, which is what separates icon ink from label ink.
-        let glyph_lo = slot_lo + TAB_PAD;
+        // The glyph occupies `[slot_lo + tab_padding_x, slot_lo +
+        // tab_padding_x + icon_extra - TAB_ICON_GAP)`; the gap after it is
+        // bare background, which is what separates icon ink from label ink.
+        let glyph_lo = slot_lo + Style::default().tab_padding_x as f64;
         let glyph_hi = glyph_lo + icon_extra - TAB_ICON_GAP;
         assert!(glyph_hi > glyph_lo, "icon span must be non-empty");
 
@@ -1493,17 +1515,18 @@ mod tests {
     fn short_and_overlong_sidecars_are_tolerated() {
         let bar = sample_bar();
         let f = font();
+        let style = Style::default();
 
         // One entry for a two-tab bar: tab 1 behaves as `None`.
         let short = vec![Some(TabIcon {
             glyph: "R".into(),
             color: Color::rgb(220, 120, 60),
         })];
-        let hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &short);
+        let hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &short, &style);
         assert_eq!(hits.slot_positions.len(), bar.tabs.len());
         assert_eq!(
             hits.slot_positions[0],
-            mac_tab_bar_layout_icons(&f, W as f64, &bar, &sample_icons()).slot_positions[0],
+            mac_tab_bar_layout_icons(&f, W as f64, &bar, &sample_icons(), &style).slot_positions[0],
             "a short sidecar decorates the entries it does have",
         );
 
@@ -1516,8 +1539,8 @@ mod tests {
                 color: Color::rgb(220, 120, 60),
             }),
         ];
-        let long_hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &long);
-        let plain = mac_tab_bar_layout(&f, W as f64, &bar);
+        let long_hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &long, &style);
+        let plain = mac_tab_bar_layout(&f, W as f64, &bar, &style);
         assert_eq!(
             long_hits.slot_positions, plain.slot_positions,
             "an overlong sidecar whose in-range entries are all None must \
@@ -1562,9 +1585,10 @@ mod tests {
             })
             .collect();
         let f = font();
+        let style = Style::default();
 
-        let plain = mac_tab_bar_layout(&f, W as f64, &bar);
-        let decorated = mac_tab_bar_layout_icons(&f, W as f64, &bar, &icons);
+        let plain = mac_tab_bar_layout(&f, W as f64, &bar, &style);
+        let decorated = mac_tab_bar_layout_icons(&f, W as f64, &bar, &icons, &style);
         // Guard the premise: the reservation must actually have widened
         // the slots this correction is computed from, otherwise the
         // assertions below would hold vacuously.
@@ -1609,9 +1633,10 @@ mod tests {
         let bar = sample_bar();
         let icons = sample_icons();
         let f = font();
+        let style = Style::default();
 
-        let hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &icons);
-        let native = mac_tab_bar_native_layout_icons(&f, W as f64, H as f64, &bar, &icons);
+        let hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &icons, &style);
+        let native = mac_tab_bar_native_layout_icons(&f, W as f64, H as f64, &bar, &icons, &style);
         let native_as_hits = crate::backend::tab_bar_hits_from_layout(&native, &bar);
 
         assert_eq!(hits.slot_positions, native_as_hits.slot_positions);
@@ -1770,7 +1795,7 @@ mod tests {
 
         // Bar-relative geometry `draw_tab_bar_icons` computes internally,
         // before any `rect.x` shift — the pre-fix behaviour.
-        let bar_relative = mac_tab_bar_layout(&font(), W as f64, &bar);
+        let bar_relative = mac_tab_bar_layout(&font(), W as f64, &bar, &Style::default());
         assert_eq!(
             bar_relative.right_segment_bounds.len(),
             1,
@@ -2037,6 +2062,84 @@ mod tests {
                 .iter()
                 .map(|r| r.text.as_str())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// `Style::tab_padding_x` sets the label's leading inset: with no icon
+    /// decorating the tab, the label text run's painted `x` origin is
+    /// exactly `slot_x + tab_padding_x`, not a fixed literal. Uses the
+    /// painted-text-run recorder (the same choke point
+    /// `close_dirty_glyph_override_paints_app_glyph_default_paints_codicon`
+    /// drives above) rather than scanning pixels, since `draw_text`
+    /// records the exact `x` this rasteriser paints at — a direct
+    /// assertion on the ink column, not an inference from colour.
+    #[test]
+    #[allow(deprecated)]
+    fn tab_padding_x_sets_the_labels_leading_inset() {
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: "main.rs".into(),
+                is_active: false,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: false,
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: false,
+            compact: false,
+        };
+
+        // Paint once per style and return the label's recorded run x
+        // alongside the tab's slot origin, so each call is self-contained
+        // about which inset produced it.
+        let label_x_for_style = |style: Style| -> (f64, f64) {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = backend_with_test_fonts();
+            backend.set_style(style);
+            backend.set_painted_text_recording(true);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let hits = std::cell::RefCell::new(None);
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                let h = b.draw_tab_bar(QRect::new(0.0, 0.0, W as f32, H as f32), &bar, None);
+                *hits.borrow_mut() = Some(h);
+            });
+            let slot_x = hits.into_inner().unwrap().slot_positions[0].0;
+            let runs = backend.text_runs().to_vec();
+            backend.end_frame();
+            let label_run = runs
+                .iter()
+                .find(|r| r.text == "main.rs")
+                .expect("label must have painted a text run");
+            (label_run.bounds.x as f64, slot_x)
+        };
+
+        let default_style = Style::default();
+        let (default_label_x, default_slot_x) = label_x_for_style(default_style);
+        assert!(
+            (default_label_x - (default_slot_x + default_style.tab_padding_x as f64)).abs()
+                < 0.01,
+            "label x {default_label_x} should sit tab_padding_x={} in from slot edge {default_slot_x}",
+            default_style.tab_padding_x,
+        );
+
+        // A distinctly different inset must move the label by exactly the
+        // difference — proving the token actually drives the paint rather
+        // than the assertion above holding by coincidence at the default.
+        let wide_style = Style::default().with_tab_padding_x(26.0);
+        let (wide_label_x, wide_slot_x) = label_x_for_style(wide_style);
+        assert!(
+            (wide_label_x - (wide_slot_x + wide_style.tab_padding_x as f64)).abs() < 0.01,
+            "label x {wide_label_x} should sit tab_padding_x={} in from slot edge {wide_slot_x}",
+            wide_style.tab_padding_x,
+        );
+        assert!(
+            (wide_label_x - default_label_x - 16.0).abs() < 0.01,
+            "widening tab_padding_x by 16.0 (10.0 -> 26.0) should shift the label \
+             by exactly 16.0 (default {default_label_x}, wide {wide_label_x})",
         );
     }
 }

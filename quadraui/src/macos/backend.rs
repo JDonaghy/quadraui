@@ -2699,6 +2699,7 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 bar,
                 &theme,
+                &self.current_style,
                 hovered_close_tab,
                 icons,
             );
@@ -2746,6 +2747,7 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 bar,
                 &theme,
+                &self.current_style,
                 hovered_close_tab,
                 &[],
                 glyphs,
@@ -2814,6 +2816,7 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 bar,
                 &theme,
+                &self.current_style,
                 hovered_close_tab,
                 icons,
             );
@@ -2825,6 +2828,7 @@ impl Backend for MacBackend {
             rect.height as f64,
             bar,
             icons,
+            &self.current_style,
         )
     }
     fn draw_activity_bar(
@@ -2963,6 +2967,7 @@ impl Backend for MacBackend {
             rect.width as f64,
             bar,
             icons,
+            &self.current_style,
         );
         // Bar-relative → target-surface-absolute, the same
         // shift `Self::draw_tab_bar_icons` applies to its own returned
@@ -2999,6 +3004,7 @@ impl Backend for MacBackend {
             rect.height as f64,
             bar,
             icons,
+            &self.current_style,
         )
     }
 
