@@ -2628,10 +2628,12 @@ impl Backend for GtkBackend {
         // GTK ListView vertical-scrollbar rasteriser not yet implemented.
         // Delegate to the primitive's geometry method using pixel units:
         // each "row" is `resolved_row_height` tall, matching `draw_list`'s
-        // own row pitch.
-        list.vscrollbar(
+        // own row pitch. `scrollbar_width` sets the track's column width so
+        // this hit-test agrees exactly with what `draw_list` paints.
+        list.vscrollbar_with_track_width(
             rect,
             self.resolved_row_height(self.line_height() as f64) as f32,
+            self.current_style.scrollbar_width,
         )
     }
 
@@ -8681,6 +8683,48 @@ mod tests {
             crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH
         );
         assert!(sb.thumb_len >= 50.0);
+    }
+
+    /// `list_vscrollbar`'s track width must follow a host-set
+    /// `Style::scrollbar_width`, the same live field
+    /// `native_surface_paint::paint` reads — so the painted track and
+    /// the hit-tested track can never drift apart, at the default width
+    /// or a host override.
+    #[test]
+    fn gtk_backend_list_vscrollbar_track_width_follows_style_token() {
+        let mut backend = GtkBackend::new();
+        let list = ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..30)
+                .map(|i| crate::ListItem {
+                    text: crate::types::StyledText::plain(format!("row {i}")),
+                    detail: None,
+                    icon: None,
+                    decoration: crate::types::Decoration::default(),
+                })
+                .collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: true,
+        };
+        let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
+
+        let default_sb = Backend::list_vscrollbar(&backend, rect, &list)
+            .expect("30 rows must overflow a 100px viewport");
+        assert_eq!(
+            default_sb.track.width,
+            backend.current_style().scrollbar_width
+        );
+
+        backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
+        let overridden_sb = Backend::list_vscrollbar(&backend, rect, &list)
+            .expect("30 rows must overflow a 100px viewport");
+        assert_eq!(overridden_sb.track.width, 24.0);
     }
 
     /// `draw_list` paints item labels and icon glyphs with `ui_font`, not

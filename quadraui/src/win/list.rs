@@ -101,7 +101,10 @@ pub fn win_list_layout(
 ///   room past the main text.
 /// - **Vertical scrollbar:** painted via
 ///   [`crate::primitives::scrollbar::native_surface_paint::paint`] when
-///   [`ListView::show_v_scrollbar`] calls for one.
+///   [`ListView::show_v_scrollbar`] calls for one, at `style`'s own
+///   [`crate::style::Style::scrollbar_width`] rather than a fixed width —
+///   the caller's live style, not a local default, so a host-set override
+///   reaches this rasteriser the same as GTK/macOS.
 #[cfg(target_os = "windows")]
 pub fn draw_list(
     target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
@@ -109,13 +112,12 @@ pub fn draw_list(
     rect: Rect,
     list: &ListView,
     line_height: f32,
+    style: &crate::style::Style,
 ) -> ListViewLayout {
     use super::text::fill_rect;
-    use crate::style::Style;
     use crate::theme::Theme;
 
     let theme = Theme::default();
-    let style = Style::default();
     let char_width = dwrite
         .measure_text("M")
         .map(|(w, _)| w)
@@ -147,7 +149,7 @@ pub fn draw_list(
         true,
         &mut surface,
         &theme,
-        &style,
+        style,
     );
 
     // The `bordered` frame is drawn *after* the shared content paint so it
@@ -334,7 +336,14 @@ mod tests {
 
             let layout = surface
                 .paint(|target| {
-                    draw_list(target, &dwrite, rect, &list, LINE_HEIGHT);
+                    draw_list(
+                        target,
+                        &dwrite,
+                        rect,
+                        &list,
+                        LINE_HEIGHT,
+                        &crate::style::Style::default(),
+                    );
                 })
                 .map(|_| win_list_layout(&list, rect, LINE_HEIGHT, CHAR_WIDTH))
                 .expect("paint list");
@@ -401,7 +410,14 @@ mod tests {
 
             let painted = surface
                 .paint(|target| {
-                    draw_list(target, &dwrite, rect, &list, LINE_HEIGHT);
+                    draw_list(
+                        target,
+                        &dwrite,
+                        rect,
+                        &list,
+                        LINE_HEIGHT,
+                        &crate::style::Style::default(),
+                    );
                 })
                 .map(|_| {
                     let char_width = dwrite
@@ -429,15 +445,31 @@ mod tests {
             let mut list = make_list((0..30).map(|i| item(&format!("row-{i}"))).collect());
             list.show_v_scrollbar = true;
             let rect = Rect::new(0.0, 0.0, W, H);
+            // `track_width` must match what `draw_list` below actually
+            // paints (`Style::default().scrollbar_width`), not
+            // `LINE_HEIGHT` — otherwise this probes a point `vscrollbar`'s
+            // (now unused here) `row_height`-wide track would resolve to,
+            // not the track `draw_list` paints.
             let expected = list
-                .vscrollbar(rect, LINE_HEIGHT)
+                .vscrollbar_with_track_width(
+                    rect,
+                    LINE_HEIGHT,
+                    crate::style::Style::default().scrollbar_width,
+                )
                 .expect("30 rows in a 100px / 14px viewport must need a v-scrollbar");
 
             let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
             let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
             surface
                 .paint(|target| {
-                    draw_list(target, &dwrite, rect, &list, LINE_HEIGHT);
+                    draw_list(
+                        target,
+                        &dwrite,
+                        rect,
+                        &list,
+                        LINE_HEIGHT,
+                        &crate::style::Style::default(),
+                    );
                 })
                 .expect("paint list");
 
@@ -466,7 +498,14 @@ mod tests {
             let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
             surface
                 .paint(|target| {
-                    draw_list(target, &dwrite, rect, &list, LINE_HEIGHT);
+                    draw_list(
+                        target,
+                        &dwrite,
+                        rect,
+                        &list,
+                        LINE_HEIGHT,
+                        &crate::style::Style::default(),
+                    );
                 })
                 .expect("paint list");
 

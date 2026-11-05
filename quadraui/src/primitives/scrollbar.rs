@@ -25,8 +25,8 @@
 //! ## Idle fade
 //!
 //! [`idle_fade_opacity`] is the overlay-scrollbar fade curve: full
-//! opacity for [`FADE_HOLD`] after the last hover/scroll/drag, then a
-//! linear fade to `0.0` over [`FADE_OUT`], built on
+//! opacity for [`SCROLLBAR_FADE_HOLD`] after the last hover/scroll/drag,
+//! then a linear fade to `0.0` over [`SCROLLBAR_FADE_OUT`], built on
 //! [`crate::transition::Transition`] so it shares its deterministic,
 //! headless-clock-friendly contract (pass a fixed [`std::time::Instant`]
 //! captured once at test setup, advance `now` by adding a
@@ -49,33 +49,32 @@ use std::time::{Duration, Instant};
 /// hover/scroll/drag interaction, before [`idle_fade_opacity`] starts
 /// fading it out — VS Code holds the bar at full opacity for a beat
 /// rather than snapping it invisible the instant activity stops.
-pub const FADE_HOLD: Duration = Duration::from_millis(400);
+pub const SCROLLBAR_FADE_HOLD: Duration = Duration::from_millis(400);
 
-/// How long the fade-out itself takes once [`FADE_HOLD`] elapses.
-pub const FADE_OUT: Duration = Duration::from_millis(800);
+/// How long the fade-out itself takes once [`SCROLLBAR_FADE_HOLD`] elapses.
+pub const SCROLLBAR_FADE_OUT: Duration = Duration::from_millis(800);
 
 /// Opacity multiplier (`0.0..=1.0`) for an overlay scrollbar that was
 /// last interacted with (hovered, scrolled, or dragged) at
 /// `last_interaction`, sampled at `now`.
 ///
-/// Full opacity for [`FADE_HOLD`] after `last_interaction`, then a
-/// linear ramp down to `0.0` over the following [`FADE_OUT`] — a thin
-/// wrapper around [`Transition::progress_at`] run in reverse (`1.0 -
-/// progress`). `now` at or before `last_interaction` returns `1.0`
-/// rather than going negative, the same clamp [`Transition::progress_at`]
-/// itself applies.
+/// Full opacity for [`SCROLLBAR_FADE_HOLD`] after `last_interaction`, then
+/// a linear ramp down to `0.0` over the following [`SCROLLBAR_FADE_OUT`] —
+/// a thin wrapper around [`Transition::progress_at`] run in reverse
+/// (`1.0 - progress`). `now` at or before `last_interaction` returns
+/// `1.0` rather than going negative: [`Instant::duration_since`] itself
+/// saturates to a zero [`Duration`] when `now` precedes `last_interaction`,
+/// which already falls inside the hold window below, so no separate
+/// early-return is needed for that case.
 ///
 /// Tests build a deterministic headless clock the same way
 /// [`Transition`]'s own doc describes: capture `Instant::now()` once,
 /// then advance `now` by adding a [`Duration`] rather than sleeping.
 pub fn idle_fade_opacity(last_interaction: Instant, now: Instant) -> f32 {
-    if now <= last_interaction {
+    if now.duration_since(last_interaction) <= SCROLLBAR_FADE_HOLD {
         return 1.0;
     }
-    if now.duration_since(last_interaction) <= FADE_HOLD {
-        return 1.0;
-    }
-    let fade = Transition::starting_at(last_interaction + FADE_HOLD, FADE_OUT);
+    let fade = Transition::starting_at(last_interaction + SCROLLBAR_FADE_HOLD, SCROLLBAR_FADE_OUT);
     1.0 - fade.progress_at(now)
 }
 
@@ -518,8 +517,11 @@ pub(crate) mod native_surface_paint {
     /// (`0.0..=1.0`) on top of the hover/drag weighting — the render-side
     /// half of the overlay idle-fade seam
     /// [`crate::primitives::scrollbar::idle_fade_opacity`] computes.
-    /// `opacity <= 0.0` paints nothing at all, the same early return as
-    /// a zero-size track, so a fully faded-out bar costs no draw calls.
+    /// Any `opacity` below `1.0 / 255.0` paints nothing at all, the same
+    /// early return as a zero-size track: below that threshold even the
+    /// track's own (lowest-weighted, `>= 0.20`) alpha already rounds to
+    /// `0` in [`crate::types::Color::with_alpha`], so an idle-faded bar
+    /// this close to invisible costs no draw calls.
     pub(crate) fn paint_with_opacity(
         scrollbar: &Scrollbar,
         surface: &mut dyn PaintSurface,
@@ -527,7 +529,7 @@ pub(crate) mod native_surface_paint {
         opacity: f32,
     ) {
         let track = scrollbar.track;
-        if track.width <= 0.0 || track.height <= 0.0 || opacity <= 0.0 {
+        if track.width <= 0.0 || track.height <= 0.0 || opacity < 1.0 / 255.0 {
             return;
         }
         let opacity = opacity.min(1.0) as f64;
@@ -1122,13 +1124,13 @@ mod tests {
     fn idle_fade_opacity_is_full_during_the_hold_window() {
         let last = Instant::now();
         assert_eq!(idle_fade_opacity(last, last), 1.0);
-        assert_eq!(idle_fade_opacity(last, last + FADE_HOLD), 1.0);
+        assert_eq!(idle_fade_opacity(last, last + SCROLLBAR_FADE_HOLD), 1.0);
     }
 
     #[test]
     fn idle_fade_opacity_ramps_down_linearly_after_the_hold_window() {
         let last = Instant::now();
-        let mid = last + FADE_HOLD + FADE_OUT / 2;
+        let mid = last + SCROLLBAR_FADE_HOLD + SCROLLBAR_FADE_OUT / 2;
         let opacity = idle_fade_opacity(last, mid);
         assert!(
             (opacity - 0.5).abs() < 1e-3,
@@ -1139,7 +1141,7 @@ mod tests {
     #[test]
     fn idle_fade_opacity_reaches_zero_after_the_full_idle_interval() {
         let last = Instant::now();
-        let after = last + FADE_HOLD + FADE_OUT;
+        let after = last + SCROLLBAR_FADE_HOLD + SCROLLBAR_FADE_OUT;
         assert_eq!(idle_fade_opacity(last, after), 0.0);
         // Staying idle even longer doesn't go negative.
         assert_eq!(

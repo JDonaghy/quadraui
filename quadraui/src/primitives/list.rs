@@ -445,9 +445,10 @@ impl ListView {
         }
         // Track occupies the rightmost content column; its height spans the
         // content rows (below the title in flat mode, between borders in
-        // bordered mode). The column sits `row_height` inside the right
-        // border in `bordered` mode (so it never overlaps the border
-        // stroke itself), `track_width` wide either way.
+        // bordered mode). In `bordered` mode the column is inset
+        // `row_height` from the right edge (the same inset `layout` uses
+        // for its last content column) rather than the 1-unit border
+        // stroke itself, `track_width` wide either way.
         let (track_x, track_y, track_h) = if self.bordered {
             let x = area.x + area.width - row_height - track_width;
             let y = area.y + row_height;
@@ -1190,6 +1191,48 @@ pub(crate) mod native_surface_paint {
                 .find(|(r, _)| (r.width - 20.0).abs() < 0.01)
                 .expect("expected a fill at the 20px-wide scrollbar track");
             assert_eq!(track_fill.0.x, AREA.x + AREA.width - 20.0);
+        }
+
+        /// The "always-visible bar" acceptance item is not a painter bug:
+        /// [`ListView::vscrollbar_with_track_width`] already returns `None`
+        /// once every row fits the viewport (`total <= visible`, checked
+        /// before any track geometry is computed), and this shared paint
+        /// path is the only place any backend's vertical scrollbar fill
+        /// comes from — so a list whose content fits paints no scrollbar
+        /// fill at all, on every backend, with no per-backend code to fix.
+        #[test]
+        fn no_vertical_scrollbar_fill_when_content_fits_the_viewport() {
+            // AREA is 80px tall at LINE_HEIGHT 16 → 5 rows fit; 3 items
+            // is strictly fewer, so no scrollbar is needed.
+            let list = vlist(3);
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let mut surface = RecordingSurface::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+            );
+            assert!(
+                list.vscrollbar(AREA, LINE_HEIGHT).is_none(),
+                "3 items in a 5-row viewport must not need a v-scrollbar"
+            );
+            for (r, _) in &surface.fills {
+                assert!(
+                    r.x + r.width <= AREA.x + AREA.width + 0.01,
+                    "unexpected fill past the list's right edge (a scrollbar \
+                     track painted when content fits): {:?}",
+                    r
+                );
+            }
         }
 
         #[test]

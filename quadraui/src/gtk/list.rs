@@ -254,6 +254,63 @@ mod tests {
              (non-background), got white — the #1075 regression this test guards"
         );
     }
+
+    /// Paint-vs-hit-test agreement at a *non-default* [`Style::scrollbar_width`],
+    /// through the real `GtkBackend::draw_list` / `GtkBackend::list_vscrollbar`
+    /// trait methods rather than calling the primitive's geometry directly.
+    ///
+    /// `LINE_HEIGHT` (`10.0`) deliberately equals `Style::default()`'s
+    /// `scrollbar_width`, so a track-width regression that silently falls
+    /// back to `row_height` (what `ListView::vscrollbar` does) would still
+    /// probe the right pixel at the default style — exactly the drift this
+    /// test's non-default width is here to catch. A width far from
+    /// `LINE_HEIGHT` makes the two diverge wherever `list_vscrollbar`'s
+    /// hit-test and `draw_list`'s paint disagree on which token sets the
+    /// track's column width.
+    #[test]
+    fn gtk_list_vscrollbar_hit_test_agrees_with_draw_list_paint_at_non_default_width() {
+        use crate::gtk::GtkBackend;
+        use crate::Backend;
+
+        let list = vlist(30);
+        let rect = crate::event::Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        let mut backend = GtkBackend::new();
+        backend.set_current_style(Style::default().with_scrollbar_width(30.0));
+
+        let expected = backend
+            .list_vscrollbar(rect, &list)
+            .expect("30 rows in a 10-row viewport must need a v-scrollbar");
+
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_list(rect, &list);
+            });
+        }
+
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let probe_x = (expected.track.x + expected.track.width / 2.0).round() as i32;
+        let probe_y = (expected.track.y + expected.track.height / 2.0).round() as i32;
+        let (r, g, b) = pixel(
+            &data,
+            stride,
+            probe_x.clamp(0, W - 1),
+            probe_y.clamp(0, H - 1),
+        );
+        assert_ne!(
+            (r, g, b),
+            (255, 255, 255),
+            "expected the v-scrollbar track `GtkBackend::list_vscrollbar` resolves at \
+             ({probe_x}, {probe_y}) to be painted (non-background) by `GtkBackend::draw_list` \
+             — paint and hit-test must agree on the track's column width"
+        );
+    }
 }
 
 /// Multi-select click wiring over [`crate::gtk::testing::GtkDriver`].
