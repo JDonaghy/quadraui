@@ -3,9 +3,12 @@
 //! Box-bordered popup with one row per item. Selected clickable items
 //! render inverted (fg/bg swapped); separators draw as a horizontal
 //! dash; disabled items render dimmed. Items with `checked == Some(true)`
-//! show a leading `✓` glyph in the row's left-padding column. Items with
-//! `submenu.is_some()` show a `▶` glyph at the far-right column instead
-//! of a keyboard-shortcut hint. The right-aligned shortcut hint is sourced
+//! show a leading `✓` glyph in the row's left-padding column; an item
+//! with no `checked` state but a [`ContextMenuItem::icon`] shows that
+//! icon's resolved glyph in the same column instead (`checked` always
+//! wins the shared slot when both are set). Items with `submenu.is_some()`
+//! show a `▶` glyph at the far-right column instead of a
+//! keyboard-shortcut hint. The right-aligned shortcut hint is sourced
 //! from `item.detail` if set (back-compat), otherwise from
 //! `render_accelerator(item.key_equivalent, Platform::Tui)`.
 //!
@@ -187,6 +190,18 @@ pub fn draw_context_menu_with_glyphs(
                 .and_then(|s| s.chars().next())
                 .unwrap_or('✓');
             set_cell(buf, inner_x, row_y, ch, item_fg, item_bg);
+        } else if item.checked.is_none() {
+            // No checkbox state claims the shared leading slot — show
+            // the item's own icon there instead, if it has one. A
+            // single cell, same degrade every TUI chrome-glyph slot
+            // takes: only the resolved glyph's first `char` renders.
+            if let Some(ch) = item
+                .icon
+                .as_ref()
+                .and_then(|icon| icon.resolve(nerd_fonts_enabled).chars().next())
+            {
+                set_cell(buf, inner_x, row_y, ch, item_fg, item_bg);
+            }
         }
         let label = item
             .label
@@ -619,6 +634,82 @@ mod tests {
             cell_char(&buf, inner_x, unchecked_row),
             ' ',
             "checked=Some(false) item should leave the slot blank",
+        );
+    }
+
+    #[test]
+    fn item_icon_paints_resolved_glyph_in_left_padding() {
+        use crate::primitives::context_menu::ContextMenuItem;
+        use crate::types::Icon;
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("new-file")),
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("New File")],
+                },
+                icon: Some(Icon::new("G", "F")),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+        let inner_x = layout.bounds.x.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        // `nerd_fonts_enabled = false` (what `draw_context_menu` always
+        // passes) resolves to the icon's fallback — the glyph, not the
+        // ASCII fallback, so this stays "F" rather than "G".
+        assert_eq!(
+            cell_char(&buf, inner_x, row_y),
+            'F',
+            "item icon should paint its resolved fallback glyph at inner_x",
+        );
+    }
+
+    #[test]
+    fn checked_state_wins_shared_slot_over_item_icon() {
+        use crate::primitives::context_menu::ContextMenuItem;
+        use crate::types::Icon;
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("word-wrap")),
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("Word Wrap")],
+                },
+                checked: Some(true),
+                icon: Some(Icon::new("G", "F")),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
+        let inner_x = layout.bounds.x.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, inner_x, row_y),
+            '✓',
+            "checked=Some(true) should win the shared slot over the item's own icon",
         );
     }
 

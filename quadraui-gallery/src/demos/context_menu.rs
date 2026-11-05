@@ -15,7 +15,7 @@
 
 use quadraui::{
     Accelerator, AcceleratorId, AcceleratorScope, Backend, BackendCaps, Color, ContextMenu,
-    ContextMenuController, ContextMenuItem, ContextMenuOutcome, ContextMenuPlacement,
+    ContextMenuController, ContextMenuItem, ContextMenuOutcome, ContextMenuPlacement, Icon,
     InteractionState, KeyBinding, MenuStyle, Reaction, Rect, ResolvedMenuStyle, StatusBar,
     StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
@@ -51,8 +51,18 @@ impl ContextMenuDemo {
         ContextMenu {
             id: WidgetId::new("gallery:context-menu"),
             items: vec![
-                action_item("gallery:ctx:cut", "Cut", Some(KeyBinding::Cut)),
-                action_item("gallery:ctx:copy", "Copy", Some(KeyBinding::Copy)),
+                // `C3`: a leading icon on "Cut"/"Copy" — the bundled
+                // `edit`/`files` codicons on GUI, their `X`/`CP`
+                // fallbacks on TUI (or on GUI with
+                // `set_nerd_fonts(false)`).
+                ContextMenuItem {
+                    icon: Icon::codicon("edit", "X"),
+                    ..action_item("gallery:ctx:cut", "Cut", Some(KeyBinding::Cut))
+                },
+                ContextMenuItem {
+                    icon: Icon::codicon("files", "CP"),
+                    ..action_item("gallery:ctx:copy", "Copy", Some(KeyBinding::Copy))
+                },
                 action_item("gallery:ctx:paste", "Paste", Some(KeyBinding::Paste)),
                 ContextMenuItem::default(), // separator
                 action_item(

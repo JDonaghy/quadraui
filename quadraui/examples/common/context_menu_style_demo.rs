@@ -20,7 +20,7 @@
 
 use quadraui::{
     AppLogic, Backend, Color, ContextMenu, ContextMenuController, ContextMenuItem,
-    ContextMenuOutcome, ContextMenuPlacement, InteractionState, Key, MenuStyle, MouseButton,
+    ContextMenuOutcome, ContextMenuPlacement, Icon, InteractionState, Key, MenuStyle, MouseButton,
     NamedKey, Reaction, Rect, ResolvedMenuStyle, StatusBar, StatusBarSegment, StyledText, UiEvent,
     WidgetId,
 };
@@ -50,8 +50,14 @@ impl ContextMenuStyleDemo {
         ContextMenu {
             id: WidgetId::new("menu-style-demo"),
             items: vec![
+                // `C3`: a leading icon on the first item — paints the
+                // bundled `files` codicon on GUI and its `CP` fallback
+                // on TUI (or on GUI with `set_nerd_fonts(false)`).
+                ContextMenuItem {
+                    icon: Icon::codicon("files", "CP"),
+                    ..action_item("ctx.copy", "Copy")
+                },
                 action_item("ctx.cut", "Cut"),
-                action_item("ctx.copy", "Copy"),
                 action_item("ctx.paste", "Paste"),
                 ContextMenuItem::default(), // separator
                 action_item("ctx.about", "About this demo"),

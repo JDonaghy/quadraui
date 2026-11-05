@@ -87,6 +87,47 @@ test("showContextMenu escape dismisses without item activation", () => {
   assert.ok(!app.screenContains("Copy"));
 });
 
+test("showContextMenu item with a codicon icon renders its fallback glyph", () => {
+  // `ContextMenuItem.icon` accepts the same `{codicon: "...", fallback:
+  // "..."}` wire shape a tree row's `icon` does (see
+  // `descriptors.test.ts`'s `insertTree accepts a codicon icon` case),
+  // but paints into the single-cell gutter `checked`'s checkmark shares
+  // (only the fallback's first character renders) rather than a
+  // measured-width slot -- the headless driver defaults to nerd fonts
+  // off, so that's the fallback's plain-text first character, directly
+  // left of the label with no gap.
+  const app = new QuiApp(40, 20);
+  app.showContextMenu(
+    [
+      {
+        id: "new-file",
+        label: { spans: [{ text: "New File", fg: null, bg: null }] },
+        icon: { codicon: "new-file", fallback: "NF" },
+      },
+    ],
+    { x: 2.0, y: 2.0 },
+  );
+  assert.ok(app.screenContains("NNew File"));
+});
+
+test("showContextMenu item with an unknown codicon name raises InvalidDescriptorError", () => {
+  const app = new QuiApp(40, 20);
+  assert.throws(
+    () =>
+      app.showContextMenu(
+        [
+          {
+            id: "new-file",
+            label: { spans: [{ text: "New File", fg: null, bg: null }] },
+            icon: { codicon: "not-a-real-codicon-name", fallback: "?" },
+          },
+        ],
+        { x: 2.0, y: 2.0 },
+      ),
+    /InvalidDescriptorError/,
+  );
+});
+
 // ── Message dialog ───────────────────────────────────────────────────────
 
 function dialogButtons() {

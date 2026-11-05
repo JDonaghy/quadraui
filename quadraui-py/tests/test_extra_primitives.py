@@ -2049,6 +2049,40 @@ def test_show_context_menu_escape_dismisses_without_item_activation():
     assert received == ["ContextMenuDismissed"]
 
 
+def test_show_context_menu_item_with_codicon_icon_renders_fallback():
+    # `ContextMenuItem::icon` accepts the same `{"codicon": "...",
+    # "fallback": "..."}` wire shape a tree row's `icon` does (see
+    # `test_descriptors.py::test_insert_tree_with_codicon_icon`), but
+    # paints into the single-cell gutter `checked`'s `✓` shares (only
+    # the fallback's first character renders) rather than a
+    # measured-width slot -- `QuiApp`'s headless driver defaults to nerd
+    # fonts off, so that's the fallback's plain-text first character,
+    # directly left of the label with no gap.
+    app = QuiApp(40, 20)
+    items = [
+        {
+            "id": "new-file",
+            "label": {"spans": [{"text": "New File", "fg": None, "bg": None}]},
+            "icon": {"codicon": "new-file", "fallback": "NF"},
+        },
+    ]
+    app.show_context_menu(items, (2.0, 2.0))
+    assert app.screen_contains("NNew File")
+
+
+def test_show_context_menu_item_with_unknown_codicon_name_raises():
+    app = QuiApp(40, 20)
+    items = [
+        {
+            "id": "new-file",
+            "label": {"spans": [{"text": "New File", "fg": None, "bg": None}]},
+            "icon": {"codicon": "not-a-real-codicon-name", "fallback": "?"},
+        },
+    ]
+    with pytest.raises(InvalidDescriptorError):
+        app.show_context_menu(items, (2.0, 2.0))
+
+
 def test_show_message_dialog_rejects_empty_buttons():
     # A dialog with no buttons can never be resolved by Enter or Escape,
     # and would swallow every click forever with no dismiss surface.
