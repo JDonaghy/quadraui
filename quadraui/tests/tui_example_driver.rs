@@ -9733,6 +9733,57 @@ fn status_bar_priority_demo_dirty_drops_low_priority_not_cursor() {
 }
 
 #[test]
+fn status_bar_priority_demo_dirty_left_segment_ends_in_an_ellipsis() {
+    let mut driver = TuiDriver::new(StatusBarPriorityDemo::new(), 90, 5);
+    driver.type_char('d');
+    let screen = driver.screen();
+    let bar = screen
+        .lines()
+        .find(|line| line.contains("NORMAL"))
+        .unwrap_or_else(|| panic!("status bar row should paint:\n{screen}"))
+        .to_string();
+
+    // "dirty" grows the left segment past the space the right group
+    // leaves it, so it is squeezed into what remains and the overflow is
+    // marked with a single ellipsis rather than cut mid-word.
+    let left = bar
+        .split_once("Ln 1, Col 1")
+        .map(|(before, _)| before)
+        .unwrap_or_else(|| panic!("cursor segment should paint:\n{screen}"));
+    assert!(
+        left.trim_end().ends_with('…'),
+        "an overflowing left segment should end in an ellipsis, got \
+         {:?}:\n{screen}",
+        left.trim_end()
+    );
+    assert_eq!(
+        bar.chars().filter(|c| *c == '…').count(),
+        1,
+        "exactly one ellipsis marks the truncation point:\n{screen}"
+    );
+}
+
+#[test]
+fn status_bar_priority_demo_undirty_left_segment_has_no_ellipsis() {
+    let mut driver = TuiDriver::new(StatusBarPriorityDemo::new(), 90, 5);
+    driver.type_char('d');
+    driver.type_char('d');
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("NORMAL"),
+        "the short left segment should paint in full:\n{screen}"
+    );
+    assert!(
+        !screen.contains('…'),
+        "a left segment that fits must not be ellipsized:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Spaces: 4"),
+        "every right segment returns once the squeeze is lifted:\n{screen}"
+    );
+}
+
+#[test]
 fn status_bar_priority_demo_pressing_q_exits() {
     let mut driver = TuiDriver::new(StatusBarPriorityDemo::new(), 90, 5);
     assert!(!driver.exited());
