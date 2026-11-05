@@ -48,7 +48,8 @@ use crate::types::WidgetId;
 /// receives whatever `bool` the host passes as `has_focus`/`focused` on
 /// the primitive's own descriptor — so a host that wants the suppression
 /// computes that bool as `ring.is_focused(id) && ring.is_focus_visible()`
-/// rather than `ring.is_focused(id)` alone.
+/// rather than `ring.is_focused(id)` alone. [`crate::Button::focused`]
+/// and [`crate::TextInput::has_focus`] both follow this convention.
 #[derive(Debug, Clone)]
 pub struct FocusRing {
     items: Vec<WidgetId>,
@@ -313,5 +314,49 @@ mod tests {
         assert_eq!(ring.current(), Some(&WidgetId::new("only")));
         ring.retreat();
         assert_eq!(ring.current(), Some(&WidgetId::new("only")));
+    }
+
+    /// A headless proof that `TextInput` follows the same `has_focus`
+    /// composition convention [`FocusRing::is_focus_visible`]'s type
+    /// doc describes for `Button::focused`: a Tab-reached text input
+    /// reports focus-visible, a clicked one doesn't — even though the
+    /// click did move focus to it. Every rasteriser that paints a
+    /// ring (or, on TUI, a focus-tinted border) keys off the single
+    /// composed bool below, never off `is_focused` alone.
+    #[test]
+    fn focused_text_input_reports_focus_visible_after_tab_not_after_click() {
+        use crate::TextInput;
+
+        let id = WidgetId::new("search:input");
+        let mut ring = FocusRing::new(vec![id.clone()]);
+        let mut input = TextInput::new(id.clone());
+
+        // `FocusRing::new` starts focus-visible, as if Tab just landed
+        // here.
+        input.has_focus = ring.is_focused(&id) && ring.is_focus_visible();
+        assert!(
+            input.has_focus,
+            "a Tab-reached text input must report focus-visible"
+        );
+
+        // A mouse click re-focuses the same widget via `set`.
+        ring.set(&id);
+        input.has_focus = ring.is_focused(&id) && ring.is_focus_visible();
+        assert!(
+            ring.is_focused(&id),
+            "the click did move focus to this input"
+        );
+        assert!(
+            !input.has_focus,
+            "a mouse click must suppress the text input's focus-visible ring"
+        );
+
+        // Shift+Tab afterwards restores it.
+        ring.retreat();
+        input.has_focus = ring.is_focused(&id) && ring.is_focus_visible();
+        assert!(
+            input.has_focus,
+            "a subsequent keyboard move restores focus-visible"
+        );
     }
 }

@@ -126,8 +126,17 @@ pub struct TextInput {
     /// The primitive clamps this so the cursor stays in view.
     #[serde(default)]
     pub scroll_col: usize,
-    /// Whether the input has keyboard focus. Controls cursor visibility
-    /// and border color (rasteriser-defined).
+    /// Whether the input has keyboard focus. Controls cursor visibility,
+    /// border color, and (where the rasteriser paints one — see
+    /// `native_surface_paint::paint` below) the focus-visible ring,
+    /// rasteriser-defined in each case.
+    ///
+    /// Carries no "how did focus arrive" information, same convention
+    /// as [`crate::Button::focused`]: a host that wants VS Code's
+    /// `:focus-visible` suppression after a mouse click composes this
+    /// as `ring.is_focused(id) && ring.is_focus_visible()` via
+    /// [`crate::compose::FocusRing`] rather than setting it unconditionally
+    /// on focus.
     #[serde(default)]
     pub has_focus: bool,
 }
@@ -1073,6 +1082,14 @@ impl TextInput {
 // placement. No geometry is re-derived here — the whole point of taking
 // an already-resolved `&TextInputLayout` rather than laying out `ti`
 // itself.
+//
+// None of the three per-backend rasterisers strokes a focus-visible
+// ring yet (each is tracked as its own issue). When one does, it
+// computes the outset rect/radius/width through
+// `crate::primitives::button::native_surface_paint::focus_ring_geometry`
+// — the same helper `Button`'s shared painter already calls — rather
+// than re-deriving the outset gap independently, so the ring matches
+// `Button`'s pixel-for-pixel.
 #[cfg(all(feature = "macos", target_os = "macos"))]
 #[allow(dead_code)]
 mod native_surface_paint {
