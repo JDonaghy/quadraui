@@ -761,6 +761,19 @@ impl Theme {
     // "success" colour independent of its git-added colour sets
     // `git_added` to that colour — there is no separate
     // `ThemeOverrides` map; the existing field *is* the override point.
+    //
+    // **Known limitation**: every `*_bg` accessor blends against
+    // [`Self::background`] (the window-level backdrop), but every
+    // current consumer (`Toast`, `Form`'s validation strip) paints its
+    // banner onto a *surface* on top of that backdrop
+    // ([`Self::surface_bg`]/a panel fill), not onto `background`
+    // directly. A host that recolours only `surface_bg` and leaves
+    // `background` unchanged gets a banner tint computed against the
+    // wrong base colour. Blending against `background` rather than
+    // `surface_bg` matches [`Self::success_bg`]'s own doc and the rest
+    // of this family; a future change deriving from `surface_bg`
+    // instead would need to re-verify every existing consumer's
+    // contrast.
 
     /// Foreground for a "success" indicator (a passed check, a saved
     /// confirmation). Tracks [`Self::git_added`] — both default palettes
@@ -1565,28 +1578,30 @@ mod tests {
 
     /// `danger_bg`/`warning_bg`/`info_bg` each track a *different*
     /// existing field (`error_fg`/`warning_fg`/`accent_bg`) — asserting
-    /// them mutually distinct on the dark default catches an accessor
-    /// accidentally wired to the wrong source field.
+    /// them mutually distinct on both default palettes catches an
+    /// accessor accidentally wired to the wrong source field.
     #[test]
     fn severity_bg_roles_are_mutually_distinct() {
-        let theme = Theme::default();
-        let roles = [
-            theme.success_bg(),
-            theme.danger_bg(),
-            theme.warning_bg(),
-            theme.info_bg(),
-        ];
-        for (i, a) in roles.iter().enumerate() {
-            for (j, b) in roles.iter().enumerate() {
-                if i != j {
-                    assert_ne!(a, b, "severity bg role {i} and {j} must not collide");
+        for theme in [Theme::default(), Theme::light_default()] {
+            let roles = [
+                theme.success_bg(),
+                theme.danger_bg(),
+                theme.warning_bg(),
+                theme.info_bg(),
+            ];
+            for (i, a) in roles.iter().enumerate() {
+                for (j, b) in roles.iter().enumerate() {
+                    if i != j {
+                        assert_ne!(a, b, "severity bg role {i} and {j} must not collide");
+                    }
                 }
             }
         }
     }
 
     /// No new `Theme` field — every role is reachable off a value built
-    /// field-by-field (no `..Default::default()` spread), same shape as
+    /// with a `..Theme::default()` spread after overriding the fields it
+    /// derives from, same shape as
     /// `chart_series_is_reachable_off_a_non_default_theme`. `success_fg`
     /// derives only from `git_added` (untouched below), so it must match
     /// the default exactly; `danger_bg` also derives from `background`

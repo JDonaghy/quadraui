@@ -767,11 +767,18 @@ pub(crate) mod native_surface_paint {
 
     /// Severity → fallback background tint, used when `Toast::accent` is
     /// `None`. Duplicated across `tui::toast` (out of scope for the
-    /// `PaintSurface` migration) — both read the same `Theme` accessors,
-    /// so they stay in sync without a shared function.
+    /// `PaintSurface` migration) — both read the same `Theme` fields/
+    /// accessors, so they stay in sync without a shared function.
+    ///
+    /// `Info` stays on the neutral `theme.surface_bg` panel colour
+    /// rather than `Theme::info_bg`'s accent tint: `Info` is
+    /// `ToastSeverity::default()`, so every toast shown without an
+    /// explicit severity goes through this arm, and VS Code's own info
+    /// notification background is the neutral notification surface, not
+    /// an accent-tinted one.
     fn severity_bg(severity: ToastSeverity, theme: &Theme) -> Color {
         match severity {
-            ToastSeverity::Info => theme.info_bg(),
+            ToastSeverity::Info => theme.surface_bg,
             ToastSeverity::Success => theme.success_bg(),
             ToastSeverity::Warning => theme.warning_bg(),
             ToastSeverity::Error => theme.danger_bg(),

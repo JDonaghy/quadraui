@@ -90,9 +90,12 @@ fn toast_height(toast: &Toast, width: f32) -> f32 {
     1.0 + body_lines as f32 + button_row + TUI_BORDER_ROWS
 }
 
+/// `Info` stays on the neutral `theme.surface_bg` panel colour rather
+/// than `Theme::info_bg`'s accent tint — see
+/// `primitives::toast::native_surface_paint::severity_bg`'s doc for why.
 fn severity_bg(severity: ToastSeverity, theme: &Theme) -> crate::types::Color {
     match severity {
-        ToastSeverity::Info => theme.info_bg(),
+        ToastSeverity::Info => theme.surface_bg,
         ToastSeverity::Success => theme.success_bg(),
         ToastSeverity::Warning => theme.warning_bg(),
         ToastSeverity::Error => theme.danger_bg(),

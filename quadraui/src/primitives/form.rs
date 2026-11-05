@@ -1712,16 +1712,25 @@ mod native_surface_paint {
                 // severity's own `Theme::danger_bg`/`warning_bg` so the
                 // strip reads as a small banner (VS Code's own
                 // validation-message styling), not just coloured text on
-                // the plain row background.
+                // the plain row background. The fill spans only the
+                // control column — the same `label_right + CONTROL_GAP`
+                // .. `content_rect`'s right edge span the control body
+                // itself paints into above — not the label column, so
+                // the banner sits under the input the way VS Code's
+                // does, rather than under the label too.
                 let strip_y = row_rect.y + row_h;
                 let strip_h = (row_h_full - row_h).max(0.0);
-                surface.surface_fill_rect(
-                    Rect::new(row_rect.x, strip_y, row_rect.width, strip_h),
-                    strip_bg,
-                );
+                let strip_x = if no_label {
+                    label_x
+                } else {
+                    label_right + CONTROL_GAP
+                };
+                let strip_right = content_rect.x + content_rect.width - 8.0;
+                let strip_w = (strip_right - strip_x).max(0.0);
+                surface.surface_fill_rect(Rect::new(strip_x, strip_y, strip_w, strip_h), strip_bg);
                 surface.surface_fill_rect(
                     Rect::new(
-                        row_rect.x + 2.0,
+                        strip_x + 2.0,
                         strip_y + (strip_h - 3.0).max(0.0) / 2.0,
                         3.0,
                         3.0,
@@ -1730,7 +1739,7 @@ mod native_surface_paint {
                 );
                 let (mw, mh) = surface.surface_measure_text(msg);
                 let my = strip_y + (strip_h - mh).max(0.0) / 2.0;
-                surface.surface_draw_text_run(Rect::new(row_rect.x + 8.0, my, mw, mh), msg, color);
+                surface.surface_draw_text_run(Rect::new(strip_x + 8.0, my, mw, mh), msg, color);
             }
         }
         surface.surface_pop_clip();
@@ -2714,6 +2723,71 @@ mod native_surface_paint {
                 label_bottom,
                 label_rect,
                 msg_rect,
+            );
+        }
+
+        /// The validation-message strip is painted with the severity's
+        /// `Theme::danger_bg`/`warning_bg` tint, and only under the
+        /// control column (not the label column) — so a later refactor
+        /// can't silently drop the fill or widen it back under the
+        /// label.
+        #[test]
+        fn validation_strip_fills_danger_bg_under_the_control_only() {
+            let mut form = one_field_form(
+                "name",
+                FieldKind::TextInput {
+                    value: String::new(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            );
+            form.fields[0].label = StyledText::plain("Name");
+            form.fields[0].validation = Some(ValidationState::Error("Required".to_string()));
+
+            let row_h = form_row_height(14.0);
+            let measure = form_field_measure(&form.fields[0], row_h, &FixedMeasure);
+            let flayout = form.layout(320.0, 160.0, |_| measure.clone());
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &form,
+                &flayout,
+                &mut surface,
+                &theme,
+                crate::Point::new(0.0, 0.0),
+            );
+
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Name")
+                .expect("label text run recorded");
+            let (msg_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Required")
+                .expect("validation message text run recorded");
+
+            let strip_fill = surface
+                .fills
+                .iter()
+                .find(|(r, c)| *c == theme.danger_bg() && (r.y - msg_rect.y).abs() < r.height)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "expected a danger_bg fill behind the validation \
+                         message; fills were {:?}",
+                        surface.fills,
+                    )
+                });
+            assert!(
+                strip_fill.0.x >= label_rect.x + label_rect.width,
+                "the validation strip (x={}) must start at or after the \
+                 label's right edge (x={}), not span under the label \
+                 column too; label was {:?}",
+                strip_fill.0.x,
+                label_rect.x + label_rect.width,
+                label_rect,
             );
         }
 
