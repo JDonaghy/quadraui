@@ -87,6 +87,14 @@ only a push to `main` runs this workflow.
   previously only Up/Down mapped to `RowSelected` and Enter fell through
   unhandled. A no-op when nothing is selected, since there is no row to
   activate.
+- `quadraui-binding-core`'s new `list_key_event` maps Enter on a focused
+  `List` to `ListViewEvent::ItemActivated { idx }` — the same keyboard
+  parity `data_table_key_event` already has for `DataTable`'s own
+  `RowActivated`, and the same event `A11yAction::Click` already produced
+  for a list item. Previously no code path ever constructed
+  `ItemActivated`: Enter on a focused list only ever fell through as a raw
+  `ListViewEvent::KeyPressed`. A no-op on an empty list, since there is no
+  row to activate.
 - `MultiSectionView`'s GTK/macOS/Win section-header chevron now paints the
   same codicon `CHEVRON_DOWN`/`CHEVRON_RIGHT` glyph `TreeView`'s own GUI
   paint path substitutes for its default `▾`/`▸`, instead of the plain

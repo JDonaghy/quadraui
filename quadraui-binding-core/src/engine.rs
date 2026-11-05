@@ -2496,6 +2496,152 @@ mod tests {
         );
     }
 
+    /// A minimal [`AppLogic`] painting a single `ListView`, for the
+    /// Enter-activates-the-selection coverage below — mirrors
+    /// [`DataTableLogic`], swapping the data-table band for a list one.
+    struct ListLogic {
+        list: quadraui::ListView,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for ListLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: None,
+                    text_display: None,
+                    list: Some(&self.list),
+                    tree: None,
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Builds a three-row `ListView` (empty `items` when `item_count` is
+    /// `0`, for the no-selection no-op case) and drives it through a
+    /// [`TuiDriver`] — mirrors [`data_table_driver`].
+    fn list_driver(item_count: usize, selected_idx: usize) -> TuiDriver<ListLogic> {
+        use quadraui::{ListItem, StyledText};
+
+        let list = quadraui::ListView {
+            id: WidgetId::new("list"),
+            title: None,
+            items: (0..item_count)
+                .map(|i| ListItem {
+                    text: StyledText::plain(format!("item {i}")),
+                    icon: None,
+                    detail: None,
+                    decoration: Default::default(),
+                })
+                .collect(),
+            selected_idx,
+            scroll_offset: 0,
+            has_focus: false,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        let logic = ListLogic {
+            list,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 24, 8)
+    }
+
+    /// Enter on a focused `List` with at least one row must activate the
+    /// current selection (`ListViewEvent::ItemActivated`) — the keyboard
+    /// equivalent of a pointer double-click, so an app wired to
+    /// `ItemActivated` for "open" also works from the keyboard, not just a
+    /// mouse.
+    #[test]
+    fn enter_on_a_focused_list_activates_the_selected_row() {
+        use quadraui::{Key, ListViewEvent, NamedKey};
+
+        let mut driver = list_driver(3, 1);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("list"))),
+                "the list is a tab stop and must accept focus"
+            );
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::List(id, ListViewEvent::ItemActivated { idx: 1 })
+                    if *id == WidgetId::new("list")
+            )),
+            "expected ItemActivated {{ idx: 1 }}: {:?}",
+            dispatched
+        );
+    }
+
+    /// Enter on a focused `List` with no items must be a no-op — there is
+    /// no row to activate, so it must not fall through to a raw
+    /// `UiEvent::KeyPressed` the handler has no list to route it back to.
+    #[test]
+    fn enter_on_a_focused_list_with_no_items_is_a_no_op() {
+        use quadraui::{Key, ListViewEvent, NamedKey};
+
+        let mut driver = list_driver(0, 0);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("list"))),
+                "the list is a tab stop and must accept focus"
+            );
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            !dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::List(_, ListViewEvent::ItemActivated { .. })
+            )),
+            "no items means no row to activate: {:?}",
+            dispatched
+        );
+    }
+
     /// A minimal [`AppLogic`] painting a single `TextDisplay`, for the
     /// titled-display hit-test/wheel-scroll coverage below — mirrors
     /// [`DataTableLogic`], swapping the data-table band for a text-display

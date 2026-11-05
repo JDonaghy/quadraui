@@ -198,6 +198,11 @@ fn emit_unroutable_key(kind: &str, widget: WidgetId, key: &str, action: A11yActi
     }
 }
 
+/// `Click` is List's "open" action — the same `ItemActivated` a focused
+/// list's own Enter key produces (`quadraui-binding-core`'s
+/// `list_key_event`), not `SelectionChanged` (a plain click's event). A
+/// screen reader's default action and a sighted keyboard user therefore
+/// trigger the identical `UiEvent`.
 fn route_list_action(widget: WidgetId, key: &str, action: A11yAction) -> Vec<UiEvent> {
     let Some(idx) = key
         .strip_prefix("item.")
@@ -217,6 +222,12 @@ fn route_list_action(widget: WidgetId, key: &str, action: A11yAction) -> Vec<UiE
     }
 }
 
+/// `Click` is Tree's "open" action, mirroring [`route_list_action`]'s own
+/// `Click` → "open" mapping: `RowDoubleClicked` is the only event a tree
+/// row's pointer gesture can produce that means "open" rather than
+/// "select" (`TreeEvent` has no separate `RowActivated` variant the way
+/// `ListViewEvent`/`DataTableEvent` do), so it is the one a screen
+/// reader's default action routes to as well.
 fn route_tree_action(widget: WidgetId, key: &str, action: A11yAction) -> Vec<UiEvent> {
     let Some(path) = key.strip_prefix("row.").and_then(decode_tree_path) else {
         emit_unroutable_key("tree", widget, key, action);

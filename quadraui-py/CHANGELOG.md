@@ -106,3 +106,26 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   expose `quadraui::PlatformServices`'s OS-wide hotkey seam — headless-only
   for now, and raising `InternalError` until an in-tree backend implements
   a real OS hotkey call.
+
+### Changed
+
+- A `list` event dict can now carry an `"ItemDoubleClicked"` key (double
+  click, distinct from a plain click's `"SelectionChanged"`) alongside the
+  existing `"SelectionChanged"`/`"ItemActivated"`/`"KeyPressed"`/
+  `"SelectionSet"` — mirrors the Rust-side `ListViewEvent::ItemDoubleClicked`
+  through the same generic event-to-dict pythonization every other `list`
+  event already goes through, no new binding code needed. A `data_table`
+  event dict gained the equivalent `"RowDoubleClicked"` key alongside
+  `"RowSelected"`/`"RowActivated"`/`"HeaderClicked"`/etc. A single click on
+  a `list`/`data_table` row now only ever produces
+  `"SelectionChanged"`/`"RowSelected"`, never `"ItemActivated"`/
+  `"RowActivated"` — a Python app that was treating a plain click as
+  "open" (reading `"ItemActivated"`/`"RowActivated"` from a single click)
+  now needs to read `"ItemDoubleClicked"`/`"RowDoubleClicked"` instead, or
+  listen for both to also catch Enter (see next entry).
+- Pressing Enter on a focused `list` with a selected row now also produces
+  an `"ItemActivated"` event dict (previously only a focused `data_table`'s
+  Enter did; a focused list's Enter fell through as a raw `"KeyPressed"`
+  dict instead). A Python app wiring up "open this row" from the keyboard
+  listens for `"ItemActivated"` on a `list` event the same way it already
+  would on a `data_table` one.

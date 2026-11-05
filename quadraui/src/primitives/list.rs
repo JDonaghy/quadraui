@@ -15,9 +15,13 @@
 //! row emits `ListViewEvent::SelectionChanged { idx }` (select); a
 //! double-click emits the distinct `ListViewEvent::ItemDoubleClicked { idx }`
 //! (open) rather than reusing `ItemActivated`, so an app can tell "select"
-//! from "open" apart — see `ItemActivated`'s own doc. Keyboard `j`/`k`/`Enter`
-//! emit the corresponding events. The app updates `selected_idx` and
-//! `scroll_offset` for the next frame.
+//! from "open" apart — see `ItemActivated`'s own doc. Keyboard `j`/`k`
+//! move the selection the same way `SelectionChanged` does; Enter activates
+//! the current selection as `ItemActivated`, mirroring the mouse's
+//! double-click rather than its single click. An app that wants "open this
+//! row" from mouse, keyboard, and a screen reader's default action alike
+//! listens for both `ItemActivated` and `ItemDoubleClicked`. The app
+//! updates `selected_idx` and `scroll_offset` for the next frame.
 
 use crate::event::Rect;
 use crate::primitives::scrollbar::Scrollbar;
@@ -1374,13 +1378,17 @@ pub(crate) mod native_surface_paint {
 pub enum ListViewEvent {
     /// Keyboard / mouse moved selection to a different row.
     SelectionChanged { idx: usize },
-    /// User confirmed a row via the keyboard (Enter). Documented meaning is
-    /// "click or Enter", but the pointer side is `ItemDoubleClicked` below —
-    /// a single click only ever emits `SelectionChanged`.
+    /// User pressed Enter while the list had focus and a row was selected
+    /// — the keyboard equivalent of [`Self::ItemDoubleClicked`]'s mouse
+    /// gesture, and the event [`crate::a11y::A11yAction::Click`] routes to
+    /// for a screen reader's own "activate" action. An app wiring up "open
+    /// this row" listens for both this and `ItemDoubleClicked`, since a
+    /// single click never emits either — only `SelectionChanged`.
     ItemActivated { idx: usize },
     /// User double-clicked a row — distinct from `SelectionChanged` (a
     /// plain click) so an app can tell "select" apart from "open" without
-    /// both folding into `ItemActivated`.
+    /// both folding into `ItemActivated`. See `ItemActivated`'s own doc for
+    /// the keyboard/screen-reader side of the same "open" meaning.
     ItemDoubleClicked { idx: usize },
     /// A key was pressed while the list had focus and the primitive
     /// did not consume it. App may interpret it (e.g. `q` closes the
