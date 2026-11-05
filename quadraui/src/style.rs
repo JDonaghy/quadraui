@@ -33,11 +33,12 @@
 //!   is this: [`crate::tui::draw_focus_ring`] always paints a 1-cell
 //!   box-drawing border regardless of what a GUI backend's style carries
 //!   (its own doc already says so — this struct doesn't change that).
-//! - **Cell-quantised** — a future spacing/padding token would round to
-//!   whole cells rather than being dropped outright, the same way
+//! - **Cell-quantised** — a spacing/padding token rounds to whole cells
+//!   rather than being dropped outright, the same way
 //!   `LayoutMetrics::cell_quantum` already quantises hit-test geometry
 //!   (`docs/decisions/DECISIONS.md` D-016's "Paint/click drift" note).
-//!   No token is shaped that way yet — see *Scope* below.
+//!   [`Self::row_padding_x`]/[`Self::tab_padding_x`] are this — see
+//!   their own docs for the exact rounding rule.
 //! - **Pre-blend** — a token whose pixel-backend refinement is alpha
 //!   compositing, which ratatui's `Buffer` has no primitive for.
 //!   [`Self::backdrop_opacity`] is this: [`crate::tui::draw_palette`]
@@ -84,6 +85,17 @@
 //! overlay primitive reads them. They follow the same cell-grid-no-op
 //! TUI story as the rest of this struct — see each field's own
 //! "TUI story" paragraph.
+//!
+//! [`Self::row_padding_x`] and [`Self::tab_padding_x`] are a third
+//! group of two: horizontal content insets rather than chrome sizes or
+//! overlay padding/radius/border. `row_padding_x` is read by the one
+//! shared [`crate::paint_surface::PaintSurface`] painter `List`/
+//! `TreeView`/`ContextMenu`/`Palette` all route every GTK/macOS/Win32
+//! rasteriser through; `tab_padding_x` is read by each backend's own
+//! `tab_bar.rs` painter instead, since tab-strip painting isn't on that
+//! shared path. Both are the cell-quantised TUI case the mapping
+//! section above describes — see each field's own doc for the rounding
+//! rule.
 //!
 //! Each further token lands as its own additive field, the same shape
 //! [`Self::focus_ring_width`] already has — `docs/decisions/DECISIONS.md`
@@ -335,17 +347,22 @@ pub struct Style {
     pub scrollbar_width: f32,
 
     /// Horizontal inset, in surface-native pixels, between a row's
-    /// edge and its leading/trailing content — the gap `List`, `TreeView`,
-    /// `ContextMenu` and `Palette` all reserve before painting a row's
-    /// leading chevron/icon/text and before its trailing detail/badge/
-    /// shortcut glyph. Consumed directly by the one shared
-    /// [`crate::paint_surface::PaintSurface`] painter each of those four
-    /// primitives routes every GTK/macOS/Win32 rasteriser through —
-    /// `primitives::{list,tree,context_menu,palette}::native_surface_paint`'s
+    /// left edge and its leading chevron/icon/text — the gap `List`,
+    /// `TreeView`, `ContextMenu` and `Palette` all reserve before
+    /// painting a row's leading content. Consumed directly by the one
+    /// shared [`crate::paint_surface::PaintSurface`] painter each of
+    /// those four primitives routes every GTK/macOS/Win32 rasteriser
+    /// through — `primitives::{list,tree,context_menu,palette}::native_surface_paint`'s
     /// own `paint`/`paint_with_glyphs` — so wiring this token there is
     /// one change per primitive, not one per backend, the same shape
     /// [`Self::scrollbar_width`]'s own doc describes for a future
     /// `TreeView` scrollbar wire-up.
+    ///
+    /// `ContextMenu` also uses this token as the trailing inset before
+    /// a row's check-glyph/submenu-arrow/shortcut; `List`/`TreeView`/
+    /// `Palette` still reserve their trailing detail/badge gap with a
+    /// fixed literal — a host-set `row_padding_x` only moves those
+    /// three primitives' leading edge today.
     ///
     /// **TUI story: cell-quantised, dropped below one cell.** A sub-cell
     /// inset has no grid column to paint into; a TUI rasteriser that

@@ -758,8 +758,8 @@ pub(crate) mod native_surface_paint {
     ///   fix. `true` on GTK/macOS, which both already reserve the row.
     /// - `style` supplies [`Style::row_padding_x`], the horizontal inset
     ///   a row's leading content (chevron-less here, so its icon/text)
-    ///   starts at — callers pass `&self.style()` (GTK/macOS); Windows
-    ///   passes `&Style::default()`, matching `win::list`'s own
+    ///   starts at — callers pass `&self.current_style` (GTK/macOS);
+    ///   Windows passes `&Style::default()`, matching `win::list`'s own
     ///   documented "no live theme either" gap.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
@@ -1384,6 +1384,51 @@ pub(crate) mod native_surface_paint {
             assert!(
                 row_text.len() < "x".repeat(50).len(),
                 "overlong row text must be shorter than the source, got {row_text:?}"
+            );
+        }
+
+        /// The issue's first acceptance bullet: a row's text starts
+        /// `row_padding_x` in from its rect. Painted with a non-default
+        /// [`Style::row_padding_x`] (15.0, not the 8.0 default) so
+        /// reverting the token back to the old hardcoded `2.0` literal
+        /// in `paint` would fail this test.
+        #[test]
+        fn row_text_starts_row_padding_x_in_from_the_row_rect() {
+            let list = vlist(1);
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let row = layout
+                .visible_items
+                .first()
+                .expect("one visible row")
+                .bounds;
+
+            let style = Style::default().with_row_padding_x(15.0);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &theme,
+                &style,
+            );
+
+            let (text_rect, _, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t, _)| t.starts_with("row 0"))
+                .expect("row text painted");
+            assert_eq!(
+                text_rect.x,
+                row.x + style.row_padding_x,
+                "row text must start row_padding_x in from the row's left edge"
             );
         }
     }

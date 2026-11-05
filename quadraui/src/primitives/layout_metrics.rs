@@ -186,8 +186,20 @@ pub mod pixel {
 /// **tree-local** coords (origin at 0, 0). Callers subtract
 /// `area.x`/`area.y` from absolute click coords before calling
 /// [`TreeViewLayout::hit_test`].
-pub fn tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
-    tree_layout_inner(tree, area, line_height, None)
+///
+/// `row_padding_x` is [`crate::style::Style::row_padding_x`] — the same
+/// value the shared [`crate::primitives::tree::native_surface_paint::paint`]
+/// uses as the row's leading cursor offset, so the `Chevron` hit region
+/// this fn computes lines up with where the chevron glyph is actually
+/// painted. Pass [`crate::style::Style::default`]'s value when no live
+/// `Style` is reachable.
+pub fn tree_layout(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    row_padding_x: f32,
+) -> TreeViewLayout {
+    tree_layout_inner(tree, area, line_height, None, row_padding_x)
 }
 
 /// Like [`tree_layout`], but measures the chevron glyph actually
@@ -202,8 +214,9 @@ pub fn tree_layout_measured(
     area: QRect,
     line_height: f64,
     measure: &dyn TextMeasure,
+    row_padding_x: f32,
 ) -> TreeViewLayout {
-    tree_layout_inner(tree, area, line_height, Some(measure))
+    tree_layout_inner(tree, area, line_height, Some(measure), row_padding_x)
 }
 
 fn tree_layout_inner(
@@ -211,6 +224,7 @@ fn tree_layout_inner(
     area: QRect,
     line_height: f64,
     measure: Option<&dyn TextMeasure>,
+    row_padding_x: f32,
 ) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
     let item_height = tree_row_pitch(tree, line_height);
@@ -225,7 +239,10 @@ fn tree_layout_inner(
             item_height as f32
         };
         // Chevron end x in tree-local pixels:
-        //   2px left margin + indent levels + glyph width + 4px gap.
+        //   row_padding_x left margin + indent levels + glyph width + 4px gap.
+        // `row_padding_x` must match the leading cursor offset
+        // `native_surface_paint::paint` actually paints the chevron at, or
+        // the hit region computed here drifts from the painted glyph.
         let chevron_end_x = if row.is_expanded.is_some() && show_chevrons {
             let glyph_w = match (measure, row.is_expanded) {
                 #[cfg(any(
@@ -238,7 +255,7 @@ fn tree_layout_inner(
                 ) as f64,
                 _ => line_height * 0.65,
             };
-            Some((2.0 + row.indent as f64 * indent_px + glyph_w + 4.0) as f32)
+            Some((row_padding_x as f64 + row.indent as f64 * indent_px + glyph_w + 4.0) as f32)
         } else {
             None
         };
@@ -1483,8 +1500,8 @@ mod tests {
         // measured here, not the configured string's.
         let tree = tree_with_expanded_row();
         let area = QRect::new(0.0, 0.0, 100.0, 80.0);
-        let estimated = tree_layout(&tree, area, 16.0);
-        let measured = tree_layout_measured(&tree, area, 16.0, &FakeMeasure);
+        let estimated = tree_layout(&tree, area, 16.0, 8.0);
+        let measured = tree_layout_measured(&tree, area, 16.0, &FakeMeasure, 8.0);
 
         // The Chevron hit-region's width *is* the row's chevron_end_x
         // (see `TreeView::layout`'s hit-region split).
@@ -1496,8 +1513,29 @@ mod tests {
         );
         // indent_px = (16.0 * 0.9).round() = 14.0; glyph_w = 6.0 ("▾" is one char).
         let indent_px = (16.0_f64 * 0.9).round();
-        let expected = (2.0 + 1.0 * indent_px + 6.0 + 4.0) as f32;
+        let expected = (8.0 + 1.0 * indent_px + 6.0 + 4.0) as f32;
         assert_eq!(measured_x, expected);
+    }
+
+    #[test]
+    fn tree_layout_chevron_end_x_tracks_row_padding_x() {
+        // The `Chevron` hit region's left margin must move with
+        // `row_padding_x`, the same way the painted glyph does in
+        // `native_surface_paint::paint` — otherwise paint and hit-test
+        // disagree about where the chevron is.
+        let tree = tree_with_expanded_row();
+        let area = QRect::new(0.0, 0.0, 100.0, 80.0);
+        let narrow = tree_layout(&tree, area, 16.0, 2.0);
+        let wide = tree_layout(&tree, area, 16.0, 12.0);
+
+        let narrow_x = narrow.hit_regions[0].0.width;
+        let wide_x = wide.hit_regions[0].0.width;
+        assert!(
+            (wide_x - narrow_x - 10.0).abs() < 0.01,
+            "chevron_end_x must shift by exactly the row_padding_x delta, \
+             got {} (narrow={narrow_x}, wide={wide_x})",
+            wide_x - narrow_x,
+        );
     }
 
     #[test]

@@ -46,8 +46,15 @@ pub fn mac_tree_layout(
     area: QRect,
     line_height: f64,
     font: &CTFont,
+    row_padding_x: f32,
 ) -> TreeViewLayout {
-    crate::primitives::layout_metrics::tree_layout_measured(tree, area, line_height, font)
+    crate::primitives::layout_metrics::tree_layout_measured(
+        tree,
+        area,
+        line_height,
+        font,
+        row_padding_x,
+    )
 }
 
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `ctx`. Returns the
@@ -79,10 +86,10 @@ pub unsafe fn draw_tree(
 ) -> TreeViewLayout {
     let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
     if w <= 0.0 || h <= 0.0 {
-        return mac_tree_layout(tree, area, line_height, font);
+        return mac_tree_layout(tree, area, line_height, font, style.row_padding_x);
     }
 
-    let layout = mac_tree_layout(tree, area, line_height, font);
+    let layout = mac_tree_layout(tree, area, line_height, font, style.row_padding_x);
 
     CGContextSaveGState(ctx);
     CGContextClipToRect(ctx, rect(x, y, w, h));
@@ -196,6 +203,7 @@ mod tests {
                 QRect::new(0.0, 0.0, W as f32, H as f32),
                 b.chrome_line_height() as f64,
                 &font(),
+                8.0,
             );
             *layout.borrow_mut() = Some(l);
         });
@@ -296,7 +304,7 @@ mod tests {
         // Area offset by (0, 60) — typical when a tree lives below an
         // MSV header + aux input.
         let area = QRect::new(0.0, 60.0, 240.0, 180.0);
-        let layout = mac_tree_layout(&tree, area, 16.0, &font());
+        let layout = mac_tree_layout(&tree, area, 16.0, &font(), 8.0);
         // Locality: first row's bounds.y must be 0, not 60.
         let first = &layout.visible_rows[0];
         assert_eq!(
@@ -333,8 +341,8 @@ mod tests {
         let tree = make_tree(vec![branch_row(0, "alpha", true)]);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
 
-        let estimated = crate::primitives::layout_metrics::tree_layout(&tree, area, 16.0);
-        let measured = mac_tree_layout(&tree, area, 16.0, &font());
+        let estimated = crate::primitives::layout_metrics::tree_layout(&tree, area, 16.0, 8.0);
+        let measured = mac_tree_layout(&tree, area, 16.0, &font(), 8.0);
 
         // The Chevron hit-region's width *is* the row's chevron_end_x
         // (see `TreeView::layout`'s hit-region split).
@@ -345,16 +353,16 @@ mod tests {
             "measured chevron end-x must use the real Menlo glyph width ({measured_x}), \
              not the line_height * 0.65 estimate ({est_x})",
         );
-        // Exact geometry: 2px left margin + one indent level
-        // (`round(line_height * 0.9)`) + the real glyph advance + 4px gap.
-        // The default `chevron_expanded` is swapped for the codicon
-        // `CHEVRON_DOWN` glyph before painting/measuring (see
+        // Exact geometry: `row_padding_x` left margin (8.0, passed above) +
+        // one indent level (`round(line_height * 0.9)`) + the real glyph
+        // advance + 4px gap. The default `chevron_expanded` is swapped for
+        // the codicon `CHEVRON_DOWN` glyph before painting/measuring (see
         // `tree::tree_chevron_glyph`), so that is what must be measured here.
         let glyph_w = crate::primitives::layout_metrics::TextMeasure::width_of(
             &font(),
             &crate::primitives::tree::tree_chevron_glyph(&tree.style, true),
         );
-        let expected = 2.0 + (16.0f32 * 0.9).round() + glyph_w + 4.0;
+        let expected = 8.0 + (16.0f32 * 0.9).round() + glyph_w + 4.0;
         assert!(
             (measured_x - expected).abs() < 0.01,
             "measured chevron end-x {measured_x} must equal the CTFont-measured \
@@ -444,8 +452,8 @@ mod tests {
         tree.style.row_height = Some(30);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
 
-        let small = mac_tree_layout(&tree, area, 14.0, &font());
-        let large = mac_tree_layout(&tree, area, 48.0, &font());
+        let small = mac_tree_layout(&tree, area, 14.0, &font(), 8.0);
+        let large = mac_tree_layout(&tree, area, 48.0, &font(), 8.0);
 
         assert_eq!(small.visible_rows.len(), large.visible_rows.len());
         for (s, l) in small.visible_rows.iter().zip(large.visible_rows.iter()) {
@@ -734,6 +742,7 @@ mod tests {
                 QRect::new(0.0, 0.0, W as f32, H as f32),
                 b.line_height() as f64,
                 &font(),
+                8.0,
             );
             *layout.borrow_mut() = Some(l);
         });

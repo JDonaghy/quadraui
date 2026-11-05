@@ -36,8 +36,13 @@ use crate::theme::Theme;
 /// chevron glyph width is an *estimate* (`line_height * 0.65`); callers
 /// with a live `pango::Layout` should prefer [`gtk_tree_layout_measured`]
 /// (`draw_tree` and `GtkBackend::tree_layout` both do).
-pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
-    crate::primitives::layout_metrics::tree_layout(tree, area, line_height)
+pub fn gtk_tree_layout(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    row_padding_x: f32,
+) -> TreeViewLayout {
+    crate::primitives::layout_metrics::tree_layout(tree, area, line_height, row_padding_x)
 }
 
 /// Like [`gtk_tree_layout`], but measures the chevron glyph actually
@@ -53,12 +58,19 @@ pub fn gtk_tree_layout_measured(
     line_height: f64,
     pango_layout: Option<&pango::Layout>,
     char_width: f64,
+    row_padding_x: f32,
 ) -> TreeViewLayout {
     let measure = PangoMeasure {
         pango_layout,
         char_width,
     };
-    crate::primitives::layout_metrics::tree_layout_measured(tree, area, line_height, &measure)
+    crate::primitives::layout_metrics::tree_layout_measured(
+        tree,
+        area,
+        line_height,
+        &measure,
+        row_padding_x,
+    )
 }
 
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `cr`. `nerd_fonts_enabled`
@@ -124,6 +136,7 @@ pub fn draw_tree(
         line_height,
         Some(layout),
         0.0,
+        style.row_padding_x,
     );
 
     let area = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
@@ -245,7 +258,7 @@ mod tests {
             );
         }
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = gtk_tree_layout(tree, area, LINE_HEIGHT);
+        let layout = gtk_tree_layout(tree, area, LINE_HEIGHT, 8.0);
         (surface, layout)
     }
 
@@ -575,7 +588,7 @@ mod tests {
     fn gtk_chevron_click_returns_chevron_hit() {
         let tree = make_tree(vec![branch(0, "src", true), leaf(1, "beta")]);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT);
+        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT, 8.0);
         // At indent=0 with default TreeStyle, chevron_end_x > 2.0.
         // Clicking at x=1.0 (well inside the chevron region) must give Chevron(0).
         let hit = layout.hit_test(1.0, layout.visible_rows[0].bounds.y + 1.0);
@@ -591,7 +604,7 @@ mod tests {
     fn gtk_body_click_returns_row_hit() {
         let tree = make_tree(vec![branch(0, "src", true)]);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT);
+        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT, 8.0);
         // The chevron is a small fraction of the row width. x=100 is safely past it.
         let hit = layout.hit_test(100.0, layout.visible_rows[0].bounds.y + 1.0);
         assert!(
@@ -606,7 +619,7 @@ mod tests {
     fn gtk_leaf_click_always_row_hit() {
         let tree = make_tree(vec![leaf(0, "main.rs")]);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT);
+        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT, 8.0);
         for x in [0.5_f32, 1.0, 5.0, 50.0] {
             let hit = layout.hit_test(x, layout.visible_rows[0].bounds.y + 1.0);
             assert!(
@@ -630,8 +643,9 @@ mod tests {
         let cr = Context::new(&surface).expect("Context::new");
         let pango_layout = pangocairo::functions::create_layout(&cr);
 
-        let estimated = gtk_tree_layout(&tree, area, LINE_HEIGHT);
-        let measured = gtk_tree_layout_measured(&tree, area, LINE_HEIGHT, Some(&pango_layout), 0.0);
+        let estimated = gtk_tree_layout(&tree, area, LINE_HEIGHT, 8.0);
+        let measured =
+            gtk_tree_layout_measured(&tree, area, LINE_HEIGHT, Some(&pango_layout), 0.0, 8.0);
 
         // The Chevron hit-region's width *is* the row's chevron_end_x
         // (see `TreeView::layout`'s hit-region split).
@@ -642,18 +656,19 @@ mod tests {
             "measured chevron end-x must use the real Pango glyph width ({measured_x}), \
              not the line_height * 0.65 estimate ({est_x})",
         );
-        // Exact geometry: 2px left margin + indent (0 here, `branch`'s
-        // `indent` field) * round(line_height * 0.9) + the real glyph
-        // advance + 4px gap. The default `chevron_expanded` is swapped for
-        // the codicon `CHEVRON_DOWN` glyph before painting/measuring (see
-        // `tree::tree_chevron_glyph`), so that is what must be measured here.
+        // Exact geometry: `row_padding_x` left margin (8.0, passed above) +
+        // indent (0 here, `branch`'s `indent` field) * round(line_height *
+        // 0.9) + the real glyph advance + 4px gap. The default
+        // `chevron_expanded` is swapped for the codicon `CHEVRON_DOWN`
+        // glyph before painting/measuring (see `tree::tree_chevron_glyph`),
+        // so that is what must be measured here.
         pango_layout.set_text(&crate::primitives::tree::tree_chevron_glyph(
             &tree.style,
             true,
         ));
         let glyph_w = pango_layout.pixel_size().0.max(0) as f32;
         let indent_px = (LINE_HEIGHT as f32 * 0.9).round();
-        let expected = 2.0 + tree.rows[0].indent as f32 * indent_px + glyph_w + 4.0;
+        let expected = 8.0 + tree.rows[0].indent as f32 * indent_px + glyph_w + 4.0;
         assert!(
             (measured_x - expected).abs() < 0.01,
             "measured chevron end-x {measured_x} must equal the Pango-measured \
@@ -681,8 +696,8 @@ mod tests {
         tree.style.row_height = Some(30);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
 
-        let small_font_layout = gtk_tree_layout(&tree, area, 14.0);
-        let large_font_layout = gtk_tree_layout(&tree, area, 48.0);
+        let small_font_layout = gtk_tree_layout(&tree, area, 14.0, 8.0);
+        let large_font_layout = gtk_tree_layout(&tree, area, 48.0, 8.0);
 
         assert_eq!(
             small_font_layout.visible_rows.len(),
@@ -743,7 +758,7 @@ mod tests {
                     /* nerd_fonts */ false,
                 );
                 let area = QRect::new(0.0, 0.0, W as f32, H as f32);
-                gtk_tree_layout(&tree, area, line_height)
+                gtk_tree_layout(&tree, area, line_height, 8.0)
             };
 
             for row_idx in 0..tree.rows.len() {
@@ -773,7 +788,7 @@ mod tests {
     fn layout_returns_local_coords_when_area_offset() {
         let tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
         let area = QRect::new(0.0, 60.0, 240.0, 180.0);
-        let layout = gtk_tree_layout(&tree, area, 16.0);
+        let layout = gtk_tree_layout(&tree, area, 16.0, 8.0);
 
         let first = &layout.visible_rows[0];
         assert_eq!(
@@ -846,7 +861,7 @@ mod tests {
             );
         }
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT);
+        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT, 8.0);
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
 

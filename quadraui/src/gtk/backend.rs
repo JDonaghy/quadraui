@@ -4105,6 +4105,7 @@ impl Backend for GtkBackend {
             self.resolved_row_height(self.current_line_height),
             pango_layout.as_ref(),
             char_w,
+            self.current_style.row_padding_x,
         )
     }
 

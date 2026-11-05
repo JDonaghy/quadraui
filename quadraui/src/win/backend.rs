@@ -2691,6 +2691,7 @@ impl Backend for WinBackend {
                 self.resolved_row_height(self.current_line_height),
                 self.nerd_fonts_enabled,
                 &self.current_theme,
+                &self.current_style,
             );
             return;
         }
@@ -4072,7 +4073,13 @@ impl Backend for WinBackend {
         let row_height = self.resolved_row_height(self.current_line_height);
         #[cfg(target_os = "windows")]
         if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::tree::win_tree_layout_measured(dwrite, rect, tree, row_height);
+            return super::tree::win_tree_layout_measured(
+                dwrite,
+                rect,
+                tree,
+                row_height,
+                self.current_style.row_padding_x,
+            );
         }
         // No live DWrite handle yet (fresh backend, device lost, or a
         // non-Windows host, where `win::tree` never compiles) — nominal
@@ -4086,6 +4093,7 @@ impl Backend for WinBackend {
             &NominalTextMeasure {
                 char_width: self.current_char_width,
             },
+            self.current_style.row_padding_x,
         )
     }
 

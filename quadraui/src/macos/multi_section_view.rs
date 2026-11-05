@@ -240,9 +240,9 @@ unsafe fn paint_body(
 
     match body {
         SectionBody::Tree(t) => {
-            // `nerd_fonts_enabled` isn't threaded through
-            // `draw_multi_section_view`'s call chain yet, so `false`
-            // preserves today's fallback-only behaviour for tree bodies nested in an MSV.
+            // `draw_multi_section_view`'s call chain has no
+            // `nerd_fonts_enabled` parameter, so `false` is
+            // fallback-only behaviour for tree bodies nested in an MSV.
             super::tree::draw_tree(
                 ctx,
                 font,
@@ -258,9 +258,9 @@ unsafe fn paint_body(
             );
         }
         SectionBody::List(l) => {
-            // `nerd_fonts_enabled` isn't threaded through
-            // `draw_multi_section_view`'s call chain yet, so `false`
-            // preserves today's behaviour (list-item icons not painted in MSV).
+            // `draw_multi_section_view`'s call chain has no
+            // `nerd_fonts_enabled` parameter, so `false` means
+            // list-item icons are not painted in an MSV.
             super::list::draw_list(
                 ctx,
                 font,

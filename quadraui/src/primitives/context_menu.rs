@@ -1447,4 +1447,129 @@ mod tests {
             assert!(!surface.runs.iter().any(|r| r == &default_codicon));
         }
     }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    mod row_padding_x_paint_surface {
+        use super::*;
+        use crate::accelerator::Platform;
+        use crate::paint_surface::PaintSurface;
+        use crate::style::Style;
+        use crate::theme::Theme;
+        use crate::types::{Color, StyledText};
+        use crate::{Point, Rect, Viewport};
+
+        /// Records every painted text run's rect (not just the glyph
+        /// string `glyph_override::RecordingSurface` needs) — the
+        /// geometry assertions below need to compare against the row's
+        /// own bounds.
+        #[derive(Default)]
+        struct RecordingSurface {
+            texts: Vec<(Rect, String)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(0.0, 0.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, _color: Color) {
+                self.texts.push((rect, text.to_string()));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: Point,
+                _to: Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(
+                &mut self,
+                _rect: Rect,
+                _image: &crate::Image,
+            ) -> crate::backend::ImagePaintResult {
+                crate::backend::ImagePaintResult::Unsupported
+            }
+        }
+
+        /// The issue's first acceptance bullet: a row's text starts
+        /// `row_padding_x` in from its rect. Painted with a non-default
+        /// [`Style::row_padding_x`] (15.0, not the 8.0 default) so
+        /// reverting the token back to a hardcoded literal in `paint`
+        /// would fail this test — both the leading label and the
+        /// trailing shortcut move with it.
+        #[test]
+        fn label_and_shortcut_sit_row_padding_x_in_from_the_row_edges() {
+            let mut item = cm_action("a", "Save");
+            item.detail = Some(StyledText::plain("Ctrl+S"));
+            let m = menu(vec![item]);
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let layout = m.layout(10.0, 10.0, viewport, 100.0, |_| {
+                ContextMenuItemMeasure::new(20.0)
+            });
+            let row = layout.visible_items[0].bounds;
+
+            let style = Style::default().with_row_padding_x(15.0);
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &Theme::default(),
+                &style,
+            );
+
+            let (label_rect, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t)| t == "Save")
+                .expect("label painted");
+            assert_eq!(
+                label_rect.x,
+                row.x + style.row_padding_x,
+                "label must start row_padding_x in from the row's left edge"
+            );
+
+            let (shortcut_rect, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t)| t == "Ctrl+S")
+                .expect("shortcut painted");
+            let shortcut_right = shortcut_rect.x + shortcut_rect.width;
+            let expected_right = row.x + row.width - style.row_padding_x;
+            assert!(
+                (shortcut_right - expected_right).abs() < 0.01,
+                "shortcut's right edge ({shortcut_right}) must sit row_padding_x in from \
+                 the row's right edge ({expected_right})"
+            );
+        }
+    }
 }
