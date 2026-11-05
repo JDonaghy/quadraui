@@ -35,6 +35,7 @@ use crate::primitives::multi_section_view::{
     Axis, EmptyBody, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
     SectionBody, SectionHeader,
 };
+use crate::style::Style;
 use crate::theme::Theme;
 use crate::types::StyledText;
 
@@ -81,6 +82,7 @@ pub unsafe fn draw_multi_section_view(
     h: f64,
     view: &MultiSectionView,
     theme: &Theme,
+    style: &Style,
     line_height: f64,
     char_width: f64,
     caret_visible: bool,
@@ -119,6 +121,7 @@ pub unsafe fn draw_multi_section_view(
                 s_layout.body_bounds,
                 &section.body,
                 theme,
+                style,
                 line_height,
                 char_width,
             );
@@ -219,6 +222,7 @@ unsafe fn paint_body(
     bounds: QRect,
     body: &SectionBody,
     theme: &Theme,
+    style: &Style,
     line_height: f64,
     char_width: f64,
 ) {
@@ -239,13 +243,37 @@ unsafe fn paint_body(
             // `nerd_fonts_enabled` isn't threaded through
             // `draw_multi_section_view`'s call chain yet, so `false`
             // preserves today's fallback-only behaviour for tree bodies nested in an MSV.
-            super::tree::draw_tree(ctx, font, bx, by, bw, bh, t, theme, line_height, false);
+            super::tree::draw_tree(
+                ctx,
+                font,
+                bx,
+                by,
+                bw,
+                bh,
+                t,
+                theme,
+                style,
+                line_height,
+                false,
+            );
         }
         SectionBody::List(l) => {
             // `nerd_fonts_enabled` isn't threaded through
             // `draw_multi_section_view`'s call chain yet, so `false`
             // preserves today's behaviour (list-item icons not painted in MSV).
-            super::list::draw_list(ctx, font, bx, by, bw, bh, l, theme, line_height, false);
+            super::list::draw_list(
+                ctx,
+                font,
+                bx,
+                by,
+                bw,
+                bh,
+                l,
+                theme,
+                style,
+                line_height,
+                false,
+            );
         }
         SectionBody::Form(f) => {
             draw_form_body(ctx, font, bx, by, bw, bh, f, theme, line_height);
