@@ -127,9 +127,8 @@ pub struct TextInput {
     #[serde(default)]
     pub scroll_col: usize,
     /// Whether the input has keyboard focus. Controls cursor visibility,
-    /// border color, and (where the rasteriser paints one — see
-    /// `native_surface_paint::paint` below) the focus-visible ring,
-    /// rasteriser-defined in each case.
+    /// border color, and — on a backend whose rasteriser paints one —
+    /// the focus-visible ring; each backend decides its own treatment.
     ///
     /// Carries no "how did focus arrive" information, same convention
     /// as [`crate::Button::focused`]: a host that wants VS Code's
@@ -1084,12 +1083,14 @@ impl TextInput {
 // itself.
 //
 // None of the three per-backend rasterisers strokes a focus-visible
-// ring yet (each is tracked as its own issue). When one does, it
-// computes the outset rect/radius/width through
+// ring: each backend's ring stroke is a separate, backend-specific
+// change, out of this module's declared files. A rasteriser that adds
+// one computes the outset rect/radius/width through
 // `crate::primitives::button::native_surface_paint::focus_ring_geometry`
 // — the same helper `Button`'s shared painter already calls — rather
 // than re-deriving the outset gap independently, so the ring matches
-// `Button`'s pixel-for-pixel.
+// `Button`'s pixel-for-pixel. That helper's own doc notes the square-
+// border caveat for `TextInput` specifically.
 #[cfg(all(feature = "macos", target_os = "macos"))]
 #[allow(dead_code)]
 mod native_surface_paint {
