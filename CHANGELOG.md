@@ -59,6 +59,11 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Fixed
+- GTK `DataTable` header, body and footer cells too wide for their column
+  now ellipsis-truncate via the shared `fit_text_prefix` (Pango-measured),
+  matching every other backend's `native_surface_paint`, instead of
+  clipping mid-glyph — the per-cell `cr.clip()` stays as an overflow
+  guard, not the primary truncation path.
 - Terminal grid floor raised to 3 columns so a 3-column-wide character
   can't panic vt100.
 - `Form`'s shared painter now clips to its own bounds (`surface_push_clip`/
