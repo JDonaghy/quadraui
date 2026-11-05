@@ -67,6 +67,12 @@ only a push to `main` runs this workflow.
   instead of hard-clipping an overlong label mid-glyph.
 
 ### Fixed
+- macOS `TabBar` painter (`macos::tab_bar`) now ellipsis-fits a tab's label
+  into whatever space is left on the strip via the shared
+  `primitives::tab_bar::fit_tab_label`, instead of dropping the whole tab
+  when its full (self-sized) width would overflow the bar — the close
+  glyph's hit box stays positioned off the fitted label, so it always lands
+  fully inside the tab's shrunk slot.
 - macOS `TabBar` painter (`macos::tab_bar`) now insets a tab's label, icon
   and close/dirty glyph from the tab edge by `Style::tab_padding_x` instead
   of a fixed 14px literal (default style value: 10px, VS Code's own tab
