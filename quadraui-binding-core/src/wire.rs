@@ -365,33 +365,39 @@ pub fn decode_layout_node<'de, D: Deserializer<'de>>(
 fn layout_node_from_value(what: &str, value: &Value) -> Result<LayoutNode, DecodeError> {
     if let Some(v) = obj_get(value, "row") {
         let children = layout_children_from_value(what, v)?;
-        let spacing = spacing_from_value(what, value, "\"row\"")?;
+        let spacing = spacing_from_value(what, value, "\"row\"", true)?;
         return Ok(LayoutNode::Row(LayoutContainer { children, spacing }));
     }
     if let Some(v) = obj_get(value, "column") {
         let children = layout_children_from_value(what, v)?;
-        let spacing = spacing_from_value(what, value, "\"column\"")?;
+        let spacing = spacing_from_value(what, value, "\"column\"", true)?;
         return Ok(LayoutNode::Column(LayoutContainer { children, spacing }));
     }
     if let Some(v) = obj_get(value, "split") {
-        reject_unsupported_spacing_keys(what, value, "a \"split\" node")?;
+        // `gap` is meaningful here -- the space between the split's two
+        // panes -- unlike `"tabs"`/`"panel"` below.
+        let spacing = spacing_from_value(what, value, "\"split\"", true)?;
         let split_value = must_be_dict(what, v, "\"split\"")?;
         return Ok(LayoutNode::Split(layout_split_from_value(
             what,
             split_value,
+            spacing,
         )?));
     }
     if let Some(v) = obj_get(value, "tabs") {
-        reject_unsupported_spacing_keys(what, value, "a \"tabs\" node")?;
+        let spacing = spacing_from_value(what, value, "\"tabs\"", false)?;
         let tabs_value = must_be_dict(what, v, "\"tabs\"")?;
-        return Ok(LayoutNode::Tabs(layout_tabs_from_value(what, tabs_value)?));
+        return Ok(LayoutNode::Tabs(layout_tabs_from_value(
+            what, tabs_value, spacing,
+        )?));
     }
     if let Some(v) = obj_get(value, "panel") {
-        reject_unsupported_spacing_keys(what, value, "a \"panel\" node")?;
+        let spacing = spacing_from_value(what, value, "\"panel\"", false)?;
         let panel_value = must_be_dict(what, v, "\"panel\"")?;
         return Ok(LayoutNode::Panel(layout_panel_from_value(
             what,
             panel_value,
+            spacing,
         )?));
     }
     if let Some(v) = obj_get(value, "sidebar_panel") {
@@ -415,10 +421,12 @@ fn layout_node_from_value(what: &str, value: &Value) -> Result<LayoutNode, Decod
 
 /// Rejects a `"padding"`/`"margin"`/`"gap"` spacing key found alongside a
 /// node `label` names, for a node kind that doesn't honour those keys yet
-/// — only `"row"`/`"column"` do (see [`spacing_from_value`]). Without
-/// this, `{"panel": {...}, "padding": 12}` would decode successfully and
-/// silently drop the key, which is a worse failure mode for an optional
-/// styling key than a decode error naming exactly what was ignored.
+/// — `"sidebar_panel"` and `"split_tree"` are the only ones left; every
+/// other node kind decodes spacing via [`spacing_from_value`] instead.
+/// Without this, `{"sidebar_panel": {...}, "padding": 12}` would decode
+/// successfully and silently drop the key, which is a worse failure mode
+/// for an optional styling key than a decode error naming exactly what was
+/// ignored.
 fn reject_unsupported_spacing_keys(
     what: &str,
     value: &Value,
@@ -427,7 +435,7 @@ fn reject_unsupported_spacing_keys(
     for key in ["padding", "margin", "gap"] {
         if obj_get(value, key).is_some() {
             return Err(DecodeError(format!(
-                "{what}: {label} does not support \"{key}\" yet -- only \"row\"/\"column\" nodes do"
+                "{what}: {label} does not support \"{key}\" yet -- only \"row\"/\"column\"/\"split\"/\"tabs\"/\"panel\" nodes do"
             )));
         }
     }
@@ -459,20 +467,39 @@ fn layout_children_from_value(what: &str, value: &Value) -> Result<Vec<LayoutNod
         .collect()
 }
 
-/// Decodes a `"row"`/`"column"` node's optional `"padding"`/`"margin"`/
-/// `"gap"` spacing keys — siblings of the `"row"`/`"column"` key itself in
-/// the same node dict, e.g. `{"row": [...], "padding": 12, "gap": 8}`.
-/// Every key is optional and defaults to [`Spacing::default`], so an
-/// existing `{"row": [...]}`/`{"column": [...]}` dict with none of them
-/// decodes to exactly the same (no-op) spacing as before this existed.
-fn spacing_from_value(what: &str, value: &Value, label: &str) -> Result<Spacing, DecodeError> {
+/// Decodes a layout node's optional `"padding"`/`"margin"`/`"gap"` spacing
+/// keys — siblings of the node's own key (`"row"`, `"split"`, ...) in the
+/// same node dict, e.g. `{"row": [...], "padding": 12, "gap": 8}`. Every
+/// key is optional and defaults to [`Spacing::default`], so an existing
+/// dict with none of them decodes to exactly the same (no-op) spacing as
+/// before this existed. `allow_gap` is false for a node kind where `"gap"`
+/// has no meaning (`"tabs"`/`"panel"` — there's no second sibling to space
+/// it from); `"gap"` present there is a decode error naming the key,
+/// rather than a silent no-op.
+fn spacing_from_value(
+    what: &str,
+    value: &Value,
+    label: &str,
+    allow_gap: bool,
+) -> Result<Spacing, DecodeError> {
     let context = format!("{what}: {label}");
+    if !allow_gap {
+        if let Some(_gap) = obj_get(value, "gap") {
+            return Err(DecodeError(format!(
+                "{context} does not support \"gap\" -- only \"row\"/\"column\"/\"split\" nodes do"
+            )));
+        }
+    }
     let padding = match obj_get(value, "padding") {
         Some(v) => edge_insets_from_value(v, &context)?,
         None => EdgeInsets::default(),
     };
     let margin = opt_f32(value, "margin", &context)?.unwrap_or(0.0);
-    let gap = opt_f32(value, "gap", &context)?.unwrap_or(0.0);
+    let gap = if allow_gap {
+        opt_f32(value, "gap", &context)?.unwrap_or(0.0)
+    } else {
+        0.0
+    };
     Ok(Spacing {
         padding,
         margin,
@@ -534,8 +561,15 @@ fn edge_insets_from_value(value: &Value, context: &str) -> Result<EdgeInsets, De
 /// `0.0`, a portable line count — [`crate::render::paint_layout`]'s
 /// `LayoutNode::Split` arm scales them by the backend's line height before
 /// painting). `"first"`/`"second"` are full child node dicts, recursively
-/// decoded by [`layout_node_from_value`].
-fn layout_split_from_value(what: &str, value: &Value) -> Result<LayoutSplit, DecodeError> {
+/// decoded by [`layout_node_from_value`]. `spacing` is the node's own
+/// `"padding"`/`"margin"`/`"gap"` siblings, already decoded by
+/// [`spacing_from_value`] in the caller (its `"gap"` is the space between
+/// the two panes).
+fn layout_split_from_value(
+    what: &str,
+    value: &Value,
+    spacing: Spacing,
+) -> Result<LayoutSplit, DecodeError> {
     let id = match obj_get(value, "id") {
         Some(v) => v
             .as_str()
@@ -570,6 +604,7 @@ fn layout_split_from_value(what: &str, value: &Value) -> Result<LayoutSplit, Dec
         },
         first: Box::new(first),
         second: Box::new(second),
+        spacing,
     })
 }
 
@@ -578,8 +613,15 @@ fn layout_split_from_value(what: &str, value: &Value) -> Result<LayoutSplit, Dec
 /// so a minimal `{"id": ...}` is enough) plus a required `"content"` child
 /// node, recursively decoded by [`layout_node_from_value`]. The `"content"`
 /// key is harmless noise to the `Panel` decode itself — `Panel` has no
-/// `deny_unknown_fields`.
-fn layout_panel_from_value(what: &str, value: &Value) -> Result<LayoutPanel, DecodeError> {
+/// `deny_unknown_fields`. `spacing` is the node's own `"padding"`/`"margin"`
+/// siblings, already decoded by [`spacing_from_value`] in the caller
+/// (`"gap"` is rejected there — a panel has no second sibling to space it
+/// from).
+fn layout_panel_from_value(
+    what: &str,
+    value: &Value,
+    spacing: Spacing,
+) -> Result<LayoutPanel, DecodeError> {
     let panel: Panel = decode_value(what, value)?;
     let id = panel.id.as_str().to_owned();
     let context = format!("{what}: panel {id:?}");
@@ -588,6 +630,7 @@ fn layout_panel_from_value(what: &str, value: &Value) -> Result<LayoutPanel, Dec
     Ok(LayoutPanel {
         panel,
         content: Box::new(content),
+        spacing,
     })
 }
 
@@ -689,8 +732,15 @@ fn split_tree_node_from_value(
 /// state rather than an error — a render callback that starts with zero
 /// tabs can still return a `tabs` node instead of special-casing the empty
 /// case itself, and `"selected"` is only validated against the tab count
-/// when there are tabs to select.
-fn layout_tabs_from_value(what: &str, value: &Value) -> Result<LayoutTabs, DecodeError> {
+/// when there are tabs to select. `spacing` is the node's own
+/// `"padding"`/`"margin"` siblings, already decoded by
+/// [`spacing_from_value`] in the caller (`"gap"` is rejected there — a tab
+/// group has no second sibling to space it from).
+fn layout_tabs_from_value(
+    what: &str,
+    value: &Value,
+    spacing: Spacing,
+) -> Result<LayoutTabs, DecodeError> {
     let id = match obj_get(value, "id") {
         Some(v) => v
             .as_str()
@@ -780,6 +830,7 @@ fn layout_tabs_from_value(what: &str, value: &Value) -> Result<LayoutTabs, Decod
         },
         entries,
         selected,
+        spacing,
     })
 }
 
@@ -1294,16 +1345,119 @@ mod tests {
         assert_eq!(container.spacing, Spacing::default());
     }
 
-    /// `"padding"`/`"margin"`/`"gap"` are only honoured on a `"row"`/
-    /// `"column"` node today -- a `"panel"` node carrying one is a decode
-    /// error instead of a silent no-op, so a render callback finds out
-    /// immediately that the key it set has no effect yet.
+    /// A `"panel"` node's `"padding"`/`"margin"` keys are siblings of the
+    /// `"panel"` key itself, decoded into [`crate::layout::Spacing`]
+    /// alongside the chrome/content.
     #[test]
-    fn panel_rejects_a_padding_key_it_does_not_support_yet() {
+    fn round_trips_a_panel_node_s_padding_and_margin() {
         let value = json!({
             "panel": {
                 "id": "p1",
                 "content": {"id": "p1-leaf", "button": {"id": "p1-leaf", "label": "Go"}},
+            },
+            "padding": 12,
+            "margin": 4,
+        });
+        let node = decode(&value).expect("valid panel with spacing");
+        let LayoutNode::Panel(panel) = node else {
+            panic!("expected a panel node");
+        };
+        assert_eq!(panel.spacing.padding, EdgeInsets::uniform(12.0));
+        assert_eq!(panel.spacing.margin, 4.0);
+        assert_eq!(panel.spacing.gap, 0.0);
+    }
+
+    /// `"gap"` has no meaning on a `"panel"` node -- there's no second
+    /// sibling to space it from -- so it's a decode error instead of a
+    /// silent no-op, same as it was for `padding`/`margin` before they
+    /// were supported.
+    #[test]
+    fn panel_rejects_a_gap_key_it_does_not_support() {
+        let value = json!({
+            "panel": {
+                "id": "p1",
+                "content": {"id": "p1-leaf", "button": {"id": "p1-leaf", "label": "Go"}},
+            },
+            "gap": 8,
+        });
+        let error = err(decode(&value));
+        assert!(error.0.contains("gap"), "{}", error.0);
+    }
+
+    /// A `"tabs"` node's `"padding"`/`"margin"` keys decode the same way a
+    /// `"panel"` node's do.
+    #[test]
+    fn round_trips_a_tabs_node_s_padding_and_margin() {
+        let value = json!({
+            "tabs": {
+                "id": "t1",
+                "tabs": [
+                    {"id": "one", "title": "One", "content": {"id": "one-leaf", "text_display": {"id": "one-leaf", "lines": []}}},
+                ],
+            },
+            "padding": 6,
+            "margin": 2,
+        });
+        let node = decode(&value).expect("valid tabs with spacing");
+        let LayoutNode::Tabs(tabs) = node else {
+            panic!("expected a tabs node");
+        };
+        assert_eq!(tabs.spacing.padding, EdgeInsets::uniform(6.0));
+        assert_eq!(tabs.spacing.margin, 2.0);
+        assert_eq!(tabs.spacing.gap, 0.0);
+    }
+
+    /// `"gap"` has no meaning on a `"tabs"` node either.
+    #[test]
+    fn tabs_rejects_a_gap_key_it_does_not_support() {
+        let value = json!({
+            "tabs": {
+                "id": "t1",
+                "tabs": [
+                    {"id": "one", "title": "One", "content": {"id": "one-leaf", "text_display": {"id": "one-leaf", "lines": []}}},
+                ],
+            },
+            "gap": 8,
+        });
+        let error = err(decode(&value));
+        assert!(error.0.contains("gap"), "{}", error.0);
+    }
+
+    /// A `"split"` node's `"padding"`/`"margin"`/`"gap"` keys all decode --
+    /// unlike `"tabs"`/`"panel"`, `"gap"` has a real meaning here: the
+    /// space between the two panes.
+    #[test]
+    fn round_trips_a_split_node_s_spacing_keys() {
+        let value = json!({
+            "split": {
+                "id": "s1",
+                "orientation": "horizontal",
+                "ratio": 0.5,
+                "first": {"id": "a", "button": {"id": "a", "label": "A"}},
+                "second": {"id": "b", "button": {"id": "b", "label": "B"}},
+            },
+            "padding": 10,
+            "margin": 3,
+            "gap": 6,
+        });
+        let node = decode(&value).expect("valid split with spacing");
+        let LayoutNode::Split(split) = node else {
+            panic!("expected a split node");
+        };
+        assert_eq!(split.spacing.padding, EdgeInsets::uniform(10.0));
+        assert_eq!(split.spacing.margin, 3.0);
+        assert_eq!(split.spacing.gap, 6.0);
+    }
+
+    /// A `"sidebar_panel"` node still rejects every spacing key -- only
+    /// `"row"`/`"column"`/`"split"`/`"tabs"`/`"panel"` nodes support any
+    /// of them.
+    #[test]
+    fn sidebar_panel_rejects_a_padding_key_it_does_not_support_yet() {
+        let value = json!({
+            "sidebar_panel": {
+                "id": "sb1",
+                "content": {"id": "sb1-leaf", "button": {"id": "sb1-leaf", "label": "Go"}},
             },
             "padding": 12,
         });
