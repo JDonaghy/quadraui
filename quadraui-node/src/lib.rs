@@ -182,10 +182,10 @@
 //! working correctly through the live session regardless (it only ever
 //! holds an `Rc` clone of state that moves, not copies, with the
 //! [`NodeAppLogic`]). A `waker()` handle obtained before `startTui`/`startNative`
-//! (on the `gtk` feature) keeps working too -- both swap [`QuiApp::current_waker`]
-//! to the live runner's own backend waker for the session's duration --
-//! see this doc's next paragraph for the `macos`/`win` features, which
-//! don't (yet) swap it.
+//! (on the `gtk` or `macos` feature) keeps working too -- both swap
+//! [`QuiApp::current_waker`] to the live runner's own backend waker for
+//! the session's duration -- see this doc's next paragraph for the `win`
+//! feature, which doesn't (yet) swap it.
 //!
 //! `GtkRunner`, like `TuiRunner`, exposes a `Backend::waker`-reachable
 //! accessor (`GtkRunner::waker`, captured off its own live `GtkBackend`
@@ -193,21 +193,28 @@
 //! closures), so [`QuiApp::start_native`]'s `gtk` arm swaps
 //! [`QuiApp::current_waker`] onto it the same way [`QuiApp::start_tui`]
 //! does for [`TuiRunner`]. `MacRunner`/`WinRunner` expose no comparable
-//! seam yet, nor an `app_mut()` one to reach back into the moved
-//! [`NodeAppLogic`] once construction has returned (their own `AppLogic`
-//! lives behind the backend's own event-loop/widget closures) -- this
-//! crate's own [`NativeLiveState`] is the side channel around that: a
-//! clone of the same `env`/`pending_error` cells the moved [`NodeAppLogic`]
-//! still carries, kept alongside the real runner inside [`LiveRunner`]'s
-//! `Gtk`/`Mac`/`Win` variants (`Gtk` alongside the real swap, needed for
-//! the same reason regardless of it). A `startNative` session on the
-//! `macos`/`win` features therefore never swaps [`QuiApp::current_waker`]
-//! (see [`QuiApp::start_native`]'s own doc for why): a `waker()` handle
-//! obtained before, during, or after one of those sessions keeps posting
-//! into the dormant headless queue for as long as the session runs, but
-//! since nothing ever drives that queue again once the session ends
-//! (every way it ends sets [`QuiApp::live_exited`], which makes every
-//! later `step()`/`run()` raise instead of ticking), those posts are never
+//! post-construction accessor, nor an `app_mut()` one to reach back into
+//! the moved [`NodeAppLogic`] once construction has returned (their own
+//! `AppLogic` lives behind the backend's own event-loop/widget closures)
+//! -- this crate's own [`NativeLiveState`] is the side channel around
+//! that: a clone of the same `env`/`pending_error` cells the moved
+//! [`NodeAppLogic`] still carries, kept alongside the real runner inside
+//! [`LiveRunner`]'s `Gtk`/`Mac`/`Win` variants (`Gtk` alongside the real
+//! swap, needed for the same reason regardless of it). The `macos`
+//! feature closes that gap a different way: [`NodeAppLogic::setup`] --
+//! called by every runner, synchronously, before construction returns --
+//! stashes `backend`'s own [`Backend::waker`] into
+//! [`NodeAppLogic::captured_waker`], a field [`QuiApp::start_native`]'s
+//! `macos` arm clones *before* `MacRunner::new_with` moves the rest of
+//! this struct, then reads right after that call returns, swapping
+//! [`QuiApp::current_waker`] onto it exactly like the `gtk` arm does. The
+//! `win` feature has no such hook wired (out of scope for the `macos`
+//! sub-issue that added this): a `waker()` handle obtained before,
+//! during, or after a `win`-feature session keeps posting into the
+//! dormant headless queue for as long as the session runs, but since
+//! nothing ever drives that queue again once the session ends (every way
+//! it ends sets [`QuiApp::live_exited`], which makes every later
+//! `step()`/`run()` raise instead of ticking), those posts are never
 //! actually delivered.
 //!
 //! [`QuiApp::waker`] returns a [`QuiAppWaker`] -- unlike `QuiApp` itself,
@@ -335,6 +342,17 @@ type NodeCallback = FunctionRef<Unknown<'static>, Unknown<'static>>;
 /// held for the instant of a clone or a swap, never across a call into the
 /// wrapped closure itself.
 type SharedWaker = Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>;
+
+/// A single [`Backend::waker`] closure, captured once by
+/// [`NodeAppLogic::setup`] and read back exactly once by
+/// [`QuiApp::start_native`]'s `macos` arm -- see
+/// [`NodeAppLogic::captured_waker`]'s own doc for why this exists. `Cell`
+/// rather than [`SharedWaker`]'s `Mutex`: this never needs to be `Sync`,
+/// since it is only ever written (inside `setup`, on the same thread
+/// constructing the runner) and taken (right after that same constructor
+/// call returns) from plain, single-threaded Rust code, never from a
+/// background thread the way a live [`QuiAppWaker`] clone is.
+type CapturedWaker = Rc<Cell<Option<Arc<dyn Fn(UserPayload) + Send + Sync>>>>;
 
 /// Side channel into a live native runner's [`NodeAppLogic`], kept outside
 /// the runner itself once construction has moved that logic in --
@@ -633,6 +651,21 @@ struct NodeAppLogic {
     /// directly) -- see [`NativeLiveState`]'s own doc for how `startNative`
     /// keeps writing into this cell from outside regardless.
     env: Rc<Cell<Option<Env>>>,
+    /// Captured by [`Self::setup`] off the live `backend` every runner
+    /// hands it exactly once, synchronously, before returning
+    /// (`TuiRunner::new`/`GtkRunner::new_with`/`MacRunner::new_with`/
+    /// `win::run::run` all call `app.setup(&mut backend)` before this
+    /// whole `NodeAppLogic` moves anywhere else). `TuiRunner`/`GtkRunner`
+    /// expose their own post-construction `.waker()`/`Backend::waker()`
+    /// accessor `QuiApp::start_tui`/`start_native`'s `gtk` arm reads
+    /// instead and never touch this field; `MacRunner` exposes no such
+    /// accessor once the `AppLogic` has moved in (see `start_native`'s own
+    /// doc), so this is the only window in which anything outside the
+    /// runner can still get at this session's waker -- `start_native`'s
+    /// `macos` arm clones this `Rc` before `MacRunner::new_with` moves the
+    /// rest of this struct, then `take()`s it right after that call
+    /// returns.
+    captured_waker: CapturedWaker,
 }
 
 impl NodeAppLogic {
@@ -674,9 +707,11 @@ impl AppLogic for NodeAppLogic {
 
     /// Replays [`Self::host`]'s accelerators and backend-settings fields
     /// onto `backend` -- [`BindingHost::setup`] -- mirrors `quadraui-py`'s
-    /// `PyAppLogic::setup`.
+    /// `PyAppLogic::setup`. Also stashes `backend`'s own [`Backend::waker`]
+    /// into [`Self::captured_waker`] -- see that field's own doc for why.
     fn setup(&mut self, backend: &mut dyn Backend) {
         self.host.setup(backend);
+        self.captured_waker.set(Some(backend.waker()));
     }
 
     /// With no render callback registered, paints [`Self::host`]'s six
@@ -2218,19 +2253,26 @@ impl QuiApp {
     /// like [`Self::start_tui`] does, onto `GtkRunner::waker()` -- the one
     /// closure that runner captures off its own live `GtkBackend` before
     /// `activate` moves the rest of it into that window's event-controller
-    /// closures. On `macos`/`win`, it does not: `MacRunner`/`WinRunner`
-    /// expose no `Backend::waker`-reachable accessor once their own
-    /// `AppLogic` has moved in, so a [`QuiAppWaker`] obtained during one of
-    /// those live native sessions keeps posting into the dormant headless
-    /// path's own queue instead -- and since nothing ever drives that
-    /// queue again once [`Self::live_exited`] is set (every way a native
-    /// session ends sets it; see that method's own doc), those payloads
-    /// are never delivered at all, not merely delayed. Mirrors
-    /// `quadraui-py`'s own documented asymmetry (see `QuiApp::current_waker`'s
-    /// doc there), but unlike that crate's blocking `run_native`, this
-    /// asymmetry outlives the call: a Node caller sees `startNative` return
-    /// immediately, so it is far more likely to still be holding a waker
-    /// obtained beforehand when the session later ends.
+    /// closures. On the `macos` feature it swaps too, just through a
+    /// different seam: `MacRunner` exposes no comparable post-construction
+    /// accessor once the moved `AppLogic` is behind it, so
+    /// [`NodeAppLogic::setup`] stashes `backend`'s own [`Backend::waker`]
+    /// into [`NodeAppLogic::captured_waker`] while it still can (every
+    /// runner calls `setup` synchronously, before construction returns),
+    /// and this arm reads it back right after `MacRunner::new_with`
+    /// returns. On `win`, neither seam is wired (out of scope for the
+    /// `macos` sub-issue that added the `setup`-based one): a
+    /// [`QuiAppWaker`] obtained during a live `win` session keeps posting
+    /// into the dormant headless path's own queue instead -- and since
+    /// nothing ever drives that queue again once [`Self::live_exited`] is
+    /// set (every way a native session ends sets it; see that method's own
+    /// doc), those payloads are never delivered at all, not merely
+    /// delayed. Mirrors `quadraui-py`'s own documented asymmetry for that
+    /// backend (see `QuiApp::current_waker`'s doc there), but unlike that
+    /// crate's blocking `run_native`, this asymmetry outlives the call: a
+    /// Node caller sees `startNative` return immediately, so it is far
+    /// more likely to still be holding a waker obtained beforehand when
+    /// the session later ends.
     ///
     /// Raises `LiveRunnerActiveError` if a live session is already
     /// running. Raises `NoNativeBackendError` if this binary was built
@@ -2341,6 +2383,15 @@ impl QuiApp {
                     env: app_logic.env.clone(),
                     pending_error: app_logic.pending_error.clone(),
                 };
+                // Cloned before `MacRunner::new_with` moves `app_logic`
+                // itself -- the same `Rc` `app_logic.setup()` writes into,
+                // synchronously, inside that call (see
+                // `NodeAppLogic::captured_waker`'s own doc). `take()` right
+                // after reads back the one `Backend::waker` this live
+                // session's `MacBackend` will ever hand out, since nothing
+                // outside `MacRunner` can reach it again once this call
+                // returns.
+                let captured_waker = app_logic.captured_waker.clone();
                 let exit_requested = Rc::new(Cell::new(false));
                 let config = quadraui::macos::RunConfig::new(
                     title.unwrap_or(quadraui::macos::RunConfig::default().title),
@@ -2352,6 +2403,17 @@ impl QuiApp {
                     },
                     config,
                 );
+                // Unlike `Win`, whose own runner exposes no comparable
+                // hook either but is out of this issue's scope, swapping
+                // this in mirrors `start_tui`'s/the `gtk` arm's own swap:
+                // a `waker()` handle obtained before, during, or after
+                // this call now delivers into this session's own event
+                // stream rather than the dormant headless queue --
+                // restored by `stop_live`/`step_once` once this session
+                // ends, exactly like those swaps are.
+                if let Some(waker) = captured_waker.take() {
+                    *app.current_waker.lock().unwrap_or_else(|e| e.into_inner()) = waker;
+                }
                 app.live = Some(LiveRunner::Mac(runner, state, exit_requested));
                 Ok(())
             }
