@@ -291,6 +291,42 @@ pub fn tab_icon_cols(icons: &[Option<TabIcon>], idx: usize) -> u16 {
     tab_icon_at(icons, idx).map_or(0, TabIcon::cols)
 }
 
+/// Compute the label text to paint inside a tab, after reserving the
+/// leading icon slot and the trailing close-button / dirty-dot slot.
+///
+/// `tab_width` is the tab's full measured width — [`TabMeasure::total_width`]
+/// for a layout built via [`TabBar::layout`]. `icon_width` is the width of
+/// the leading icon slot (before the label; `0.0` when the tab has no
+/// icon). `close_width` is the width of the trailing close-button /
+/// dirty-dot slot (after the label; `0.0` when the tab has no close
+/// button). Both are in the same unit as `tab_width` — char-cell counts
+/// for TUI, Pango/DirectWrite/Core Text pixel widths for GTK/Win/macOS.
+/// `measure` returns an arbitrary string's width in that same unit.
+///
+/// Delegates to [`crate::text_util::truncate_with_ellipsis`]: the label
+/// comes back unchanged when it already fits in `tab_width - icon_width -
+/// close_width`, and ellipsis-truncated otherwise. The returned string's
+/// measured width never exceeds that budget, so a backend that paints it
+/// flush against the icon/close slots can never overlap either one.
+///
+/// Every tab-bar backend calls this instead of re-deriving its own
+/// truncation — see [`crate::tui::tab_bar`]'s painter for the reference
+/// call, which derives `icon_width`/`close_width` from the same slot
+/// widths that built the tab's [`TabMeasure`].
+pub fn fit_tab_label<F>(
+    label: &str,
+    tab_width: f32,
+    icon_width: f32,
+    close_width: f32,
+    measure: F,
+) -> String
+where
+    F: Fn(&str) -> f32,
+{
+    let available = (tab_width - icon_width - close_width).max(0.0);
+    crate::text_util::truncate_with_ellipsis(label, available, measure).0
+}
+
 /// One tab in a `TabBar`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabItem {
@@ -1826,5 +1862,87 @@ mod tests {
             r#"{"codicon": "not-a-real-codicon-name", "color": {"r": 0, "g": 0, "b": 0, "a": 255}}"#,
         );
         assert!(result.is_err());
+    }
+
+    // ── fit_tab_label ────────────────────────────────────────────────────
+
+    /// Monospace measurer: one unit per `char`, like a TUI cell count.
+    fn mono_measure(s: &str) -> f32 {
+        s.chars().count() as f32
+    }
+
+    /// Proportional test measurer: a stand-in for Pango/DirectWrite/Core
+    /// Text pixel widths — each `char` costs a different width, so a
+    /// naive `char`-count budget would mis-measure it.
+    fn proportional_measure(s: &str) -> f32 {
+        s.chars()
+            .map(|c| if "mw".contains(c) { 12.0 } else { 7.0 })
+            .sum()
+    }
+
+    #[test]
+    fn fit_tab_label_returns_the_label_unchanged_when_it_fits() {
+        let fitted = fit_tab_label("main.rs", 20.0, 0.0, 2.0, mono_measure);
+        assert_eq!(fitted, "main.rs");
+    }
+
+    #[test]
+    fn fit_tab_label_truncates_with_ellipsis_on_a_monospace_measurer() {
+        // tab_width 10, icon slot 0, close slot 2 -> label budget 8 cells.
+        let fitted = fit_tab_label("a_very_long_filename.rs", 10.0, 0.0, 2.0, mono_measure);
+        assert!(
+            fitted.ends_with('…'),
+            "overlong label must end in an ellipsis, got {fitted:?}"
+        );
+        assert!(
+            mono_measure(&fitted) <= 10.0 - 2.0,
+            "fitted label {fitted:?} must fit the budget excluding the close slot"
+        );
+    }
+
+    #[test]
+    fn fit_tab_label_truncates_with_ellipsis_on_a_proportional_measurer() {
+        // Each tab reserves a leading icon slot (14 px) and a trailing
+        // close slot (14 px); label budget is whatever's left of
+        // `tab_width`.
+        let fitted = fit_tab_label("settings.json", 80.0, 14.0, 14.0, proportional_measure);
+        assert!(
+            fitted.ends_with('…'),
+            "overlong label must end in an ellipsis, got {fitted:?}"
+        );
+        let budget = 80.0 - 14.0 - 14.0;
+        assert!(
+            proportional_measure(&fitted) <= budget,
+            "fitted label {fitted:?} (width {}) must not exceed the {budget} budget",
+            proportional_measure(&fitted)
+        );
+    }
+
+    #[test]
+    fn fit_tab_label_never_overlaps_the_close_glyph_slot() {
+        // The close slot occupies the tab's last 2 units; the fitted
+        // label's measured width must never eat into it.
+        for label in [
+            "x",
+            "main.rs",
+            "a_very_long_filename_that_keeps_going.rs",
+            "日本語のファイル名.rs",
+        ] {
+            let fitted = fit_tab_label(label, 12.0, 1.0, 2.0, mono_measure);
+            let label_budget = 12.0 - 1.0 - 2.0;
+            assert!(
+                mono_measure(&fitted) <= label_budget,
+                "label {label:?} fitted to {fitted:?} (width {}) overlaps the close slot (budget {label_budget})",
+                mono_measure(&fitted)
+            );
+        }
+    }
+
+    #[test]
+    fn fit_tab_label_budget_too_small_for_any_text_returns_empty() {
+        // icon_width + close_width consume the whole tab; nothing left
+        // even for a bare ellipsis.
+        let fitted = fit_tab_label("main.rs", 4.0, 2.0, 2.0, mono_measure);
+        assert_eq!(fitted, "");
     }
 }
