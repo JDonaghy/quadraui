@@ -618,6 +618,10 @@ pub(crate) mod native_surface_paint {
     /// Scrollbar track width, shared by [`layout`] and [`paint`] so the
     /// two can't disagree on it — the `(6.0, 8.0)` pair GTK and Windows
     /// already agreed on (macOS's `(8.0, 8.0)` was the minority choice).
+    ///
+    /// Deliberately not [`crate::style::Style::scrollbar_width`] — see
+    /// that field's own doc for why `Palette`'s popup scrollbar stays at
+    /// its own narrower convention instead.
     pub(crate) const SB_W: f32 = 6.0;
     /// Minimum scrollbar thumb length, shared by [`layout`] and [`paint`].
     pub(crate) const MIN_THUMB_LEN: f32 = 8.0;

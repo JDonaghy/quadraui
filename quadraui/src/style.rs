@@ -71,10 +71,10 @@
 //! Code surface it mirrors.
 //!
 //! [`Self::scrollbar_width`] is a further single-owner token, the same
-//! shape as [`Self::backdrop_opacity`]: only `List`/`TreeView`/
-//! `DataTable`'s vertical scrollbar reads it (once a future PR wires
-//! the rasterisers to it — see that field's own doc), independent of
-//! the chrome-metric group's `row_height`.
+//! shape as [`Self::backdrop_opacity`]: `List`/`TreeView`'s shared
+//! vertical-scrollbar painters read it (`DataTable` keeps its own fixed
+//! override — see that field's own doc for why), independent of the
+//! chrome-metric group's `row_height`.
 //!
 //! A second group of five tokens — [`Self::tab_height`],
 //! [`Self::status_bar_height`], [`Self::activity_bar_width`],
@@ -315,29 +315,50 @@ pub struct Style {
     #[serde(default = "default_toolbar_height")]
     pub toolbar_height: f32,
 
-    /// Width, in surface-native pixels, of a `List`/`TreeView`/
-    /// `DataTable` vertical scrollbar track — independent of
-    /// [`Self::row_height`], since VS Code's overlay scrollbar is a
-    /// fixed 10px regardless of the row pitch it scrolls.
+    /// Width, in surface-native pixels, of a `List`/`TreeView` vertical
+    /// scrollbar track — independent of [`Self::row_height`], since VS
+    /// Code's overlay scrollbar is a fixed 10px regardless of the row
+    /// pitch it scrolls.
     ///
     /// **TUI story: no-op.** A terminal scrollbar is always exactly one
     /// cell wide; every TUI rasteriser for `List`/`TreeView`/`DataTable`
     /// keeps that one-cell track regardless of this field.
     ///
-    /// No pixel-backend rasteriser reads this field yet — `TreeView`
-    /// currently paints its vertical scrollbar at the fixed
+    /// Read by the one shared
+    /// [`crate::primitives::tree::native_surface_paint::paint`] and
+    /// [`crate::primitives::list::native_surface_paint::paint`] functions
+    /// every GTK/macOS/Win32 rasteriser routes its `TreeView`/`List`
+    /// vertical scrollbar paint through — via
+    /// [`crate::primitives::tree::TreeView::vscrollbar_with_track_width`]
+    /// / [`crate::primitives::list::ListView::vscrollbar_with_track_width`]
+    /// — so wiring either widget to this token is one change to its
+    /// shared painter, not one per backend. The previously-fixed
     /// [`crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`]
-    /// (`10.0`, already matching this field's default) through the single
-    /// shared [`crate::primitives::tree::native_surface_paint`] paint path
-    /// GTK, macOS and Win32 all call, so wiring the tree to this token is
-    /// one change to that shared function, not one per backend.
-    /// `DataTable` paints at the separate
+    /// constant (`10.0`, matching this field's default) remains as the
+    /// value each backend's own `Backend::tree_vscrollbar`/
+    /// `Backend::list_vscrollbar` hit-testing impl passes until a
+    /// per-backend follow-up threads a live `Style` through those too.
+    ///
+    /// **`DataTable` keeps its own fixed
     /// [`crate::primitives::layout_metrics::pixel::DATA_TABLE_SCROLLBAR_WIDTH`]
-    /// (`8.0`), so wiring it to this field — for the same reason as
-    /// [`Self::padding`] above, tracked separately from adding the
-    /// themeable seam here — would widen that scrollbar from `8.0` to
-    /// this field's `10.0` default unless that follow-up gives
-    /// `DataTable` its own override.
+    /// (`8.0`) override, deliberately not wired to this field.** Doing so
+    /// would require threading `&Style` through
+    /// [`crate::primitives::layout_metrics::pixel_data_table_layout`] and
+    /// therefore every backend's own `*_data_table_layout` resolver —
+    /// layout, not just paint, since `DataTable`'s column widths are
+    /// computed against the viewport width net of the scrollbar column —
+    /// which is per-backend wiring, not this shared-painter seam. It also
+    /// means `DataTable`'s scrollbar stays visually narrower than
+    /// `List`/`TreeView`'s; a later issue can add a `DataTable`-specific
+    /// width override field instead of widening this one and changing
+    /// `DataTable`'s look.
+    ///
+    /// `Palette`'s own scrollbar similarly keeps its narrower
+    /// `primitives::palette::native_surface_paint::SB_W` (`6.0`)
+    /// convention rather than reading this field — the popup's inline
+    /// command list was never part of this field's VS Code reference
+    /// (list/tree sidebar rows), so widening it to `10.0` would be a
+    /// visual change with no VS Code target to match, not a bug fix.
     ///
     /// Default `10.0` — VS Code's own list/tree overlay scrollbar width,
     /// matching the

@@ -411,10 +411,10 @@ impl TreeView {
     ///
     /// - `track_width` — width of the scrollbar column, occupying the
     ///   rightmost `track_width` of `area`: `1.0` on TUI (one cell), or
-    ///   [`crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`]
-    ///   on pixel backends. Deliberately independent of `row_height`:
-    ///   VS Code's list/tree scrollbar is a fixed 10px regardless of row
-    ///   pitch.
+    ///   [`crate::style::Style::scrollbar_width`] on pixel backends —
+    ///   [`native_surface_paint::paint`] passes `style.scrollbar_width`.
+    ///   Deliberately independent of `row_height`: VS Code's list/tree
+    ///   scrollbar is a fixed-width column regardless of row pitch.
     pub fn vscrollbar_with_track_width(
         &self,
         area: Rect,
@@ -694,14 +694,12 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        // Paint the vertical scrollbar when present. The track is a
-        // fixed pixel-backend width, independent of row pitch — see
-        // `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`'s doc.
-        if let Some(vsb) = tree.vscrollbar_with_track_width(
-            area,
-            item_height,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-        ) {
+        // Paint the vertical scrollbar when present. The track width is
+        // `Style::scrollbar_width`, independent of row pitch — see that
+        // field's own doc.
+        if let Some(vsb) =
+            tree.vscrollbar_with_track_width(area, item_height, style.scrollbar_width)
+        {
             crate::primitives::scrollbar::native_surface_paint::paint(&vsb, surface, theme);
         }
 
@@ -917,6 +915,40 @@ pub(crate) mod native_surface_paint {
                 expected.track,
                 surface.fills
             );
+        }
+
+        /// The painted track's width follows `Style::scrollbar_width`,
+        /// not the fixed `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`
+        /// constant — a host-set non-default width must actually reach
+        /// the paint surface.
+        #[test]
+        fn vertical_scrollbar_track_width_follows_style_token() {
+            let tree = make_tree((0..50).map(|i| leaf(i, &format!("row{i}"))).collect());
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
+            let style = Style::default().with_scrollbar_width(20.0);
+            let mut surface = RecordingSurface::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &Theme::default(),
+                &style,
+            );
+
+            let track_fill = surface
+                .fills
+                .iter()
+                .find(|(r, _)| (r.width - 20.0).abs() < 0.01)
+                .expect("expected a fill at the 20px-wide scrollbar track");
+            assert_eq!(track_fill.0.x, AREA.x + AREA.width - 20.0);
         }
 
         /// A branch row's default-style chevron paints as the codicon
