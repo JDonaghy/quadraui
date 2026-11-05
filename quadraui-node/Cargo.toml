@@ -23,9 +23,13 @@ crate-type = ["cdylib", "rlib"]
 # Mirrors `quadraui-py/Cargo.toml`'s own `gtk`/`macos`/`win` feature table
 # verbatim -- each forwards to `quadraui`'s and `quadraui-binding-core`'s
 # same-named feature rather than duplicating either crate's dependency list.
-# None of the three is wired to a napi-visible method yet (no `run_native`
-# analog exists on this crate's `QuiApp`); enabling one here only
-# type-checks the forwarded dependency graph, same as `quadraui-ffi` today.
+# All three feed `QuiApp::startNative` (see `lib.rs`'s module doc's "Live
+# run loop" section); `gtk` is buildable on every host, while `macos`/`win`
+# only produce a real runner when also built for that feature's own native
+# `target_os` -- enabling either on a different host still type-checks the
+# forwarded dependency graph (same as `quadraui-ffi` today) but
+# `startNative` itself raises `InternalError` there instead of opening a
+# window.
 gtk = ["quadraui/gtk", "quadraui-binding-core/gtk"]
 macos = ["quadraui/macos", "quadraui-binding-core/macos", "dep:objc2"]
 win = ["quadraui/win", "quadraui-binding-core/win"]

@@ -154,32 +154,46 @@
 //! the same externally-tagged JSON shape [`encode_via_json`] would give a
 //! derived enum, then convert that through `Env::to_js_value` directly.
 //!
-//! **Live run loop (`startTui`) / waker.** [`QuiApp`] otherwise only ever
-//! drives a headless `quadraui::tui::testing::TuiDriver`. `startTui` is
-//! this crate's one structural departure from `quadraui-py`'s own
-//! `run_tui`/`run_native`: those are *blocking* pump loops that only work
-//! because `py.detach` lets other Python threads run underneath; under
-//! Node a blocking pump would freeze the one libuv reactor the whole
-//! process shares, and a background-thread pump is impossible (every
-//! runner, `BindingHost`, and `InteractionEngine` are `Rc`-based, so
-//! `NodeAppLogic` is `!Send`). `startTui` instead `std::mem::take`s this
-//! app's whole [`NodeAppLogic`] out of [`QuiApp::driver`] into a real
-//! [`TuiRunner`] -- a live terminal takeover -- and stores it on
-//! [`QuiApp::live`]; [`QuiApp::step`]/[`QuiApp::run`] then drive that
-//! [`TuiRunner::step`] non-blocking pass by non-blocking pass instead of
-//! the headless driver's own `step_driver`, exactly as fit for a JS
-//! `setInterval`/`setImmediate` loop (see `js/index.ts`'s `pump` helper) as
-//! the headless path already was. [`QuiApp::check_not_live`] rejects every
-//! configuration method (`setHandler`, `insertButton`, `actions`, ...)
-//! once a live session is running, the same "configure once, up front,
-//! before starting" discipline `quadraui-py`'s own doc describes for
+//! **Live run loop (`startTui`/`startNative`) / waker.** [`QuiApp`]
+//! otherwise only ever drives a headless `quadraui::tui::testing::TuiDriver`.
+//! `startTui`/`startNative` are this crate's one structural departure from
+//! `quadraui-py`'s own `run_tui`/`run_native`: those are *blocking* pump
+//! loops that only work because `py.detach` lets other Python threads run
+//! underneath; under Node a blocking pump would freeze the one libuv
+//! reactor the whole process shares, and a background-thread pump is
+//! impossible (every runner, `BindingHost`, and `InteractionEngine` are
+//! `Rc`-based, so `NodeAppLogic` is `!Send`). Each instead `std::mem::take`s
+//! this app's whole [`NodeAppLogic`] out of [`QuiApp::driver`] into a real
+//! [`TuiRunner`] (`startTui`) or `GtkRunner`/`MacRunner`/`WinRunner`
+//! (`startNative`, wrapped in `quadraui_binding_core::NativeExitPolicy` --
+//! see [`QuiApp::start_native`]'s own doc) and stores it on [`QuiApp::live`]
+//! as a [`LiveRunner`]; [`QuiApp::step`]/[`QuiApp::run`] then drive that
+//! runner's own non-blocking `step()` pass by pass instead of the headless
+//! driver's own `step_driver`, exactly as fit for a JS `setInterval`/
+//! `setImmediate` loop (see `js/index.ts`'s `pump` helper) as the headless
+//! path already was. [`QuiApp::check_not_live`] rejects every configuration
+//! method (`setHandler`, `insertButton`, `actions`, ...) once a live
+//! session is running, the same "configure once, up front, before
+//! starting" discipline `quadraui-py`'s own doc describes for
 //! `run_tui`/`run_native` -- there, Python's blocking call makes that
 //! discipline unavoidable; here it has to be an explicit, checked
 //! contract, since control returns to JS after every `step()`. An
-//! `actions()`/`waker()` handle obtained *before* `startTui` keeps working
-//! correctly through the live session regardless (both only ever hold an
-//! `Rc`/`Arc` clone of state that moves, not copies, with the
-//! [`NodeAppLogic`] `startTui` relocates).
+//! `actions()`/`waker()` handle obtained *before* `startTui`/`startNative`
+//! keeps working correctly through the live session regardless (both only
+//! ever hold an `Rc`/`Arc` clone of state that moves, not copies, with the
+//! [`NodeAppLogic`] either relocates).
+//!
+//! `GtkRunner`/`MacRunner`/`WinRunner`, unlike `TuiRunner`, expose no
+//! `app_mut()`/`backend()` seam to reach back into the moved
+//! [`NodeAppLogic`] once construction has returned (their own `AppLogic`
+//! lives behind the backend's own event-loop/widget closures) -- this
+//! crate's own [`NativeLiveState`] is the side channel around that: a
+//! clone of the same `env`/`pending_error` cells the moved [`NodeAppLogic`]
+//! still carries, kept alongside the real runner inside [`LiveRunner`]'s
+//! `Gtk`/`Mac`/`Win` variants. A `startNative` session therefore never
+//! swaps [`QuiApp::current_waker`] either (see [`QuiApp::start_native`]'s
+//! own doc for why) -- the `Tui` variant is the only one
+//! [`LiveRunner::waker`] is ever called for.
 //!
 //! [`QuiApp::waker`] returns a [`QuiAppWaker`] -- unlike `QuiApp` itself,
 //! `Send + Sync`, so a background thread can hold and call it -- wrapping
@@ -244,6 +258,12 @@ use quadraui::{
 };
 #[cfg(test)]
 use quadraui_binding_core::callback_reaction;
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "macos", target_os = "macos"),
+    all(feature = "win", target_os = "windows")
+))]
+use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
     callback_reaction_for_render, caret_shape, click_down_up_events, color_depth_name,
     decode_extra_primitive, decode_render_output, decode_shell_config, dialog_severity, draw_bands,
@@ -287,55 +307,193 @@ type NodeCallback = FunctionRef<Unknown<'static>, Unknown<'static>>;
 /// wrapped closure itself.
 type SharedWaker = Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>;
 
-/// The real terminal- or window-backed runner [`QuiApp::start_tui`]/a
-/// future `startNative` moves this app's whole [`NodeAppLogic`] into --
+/// Side channel into a live native runner's [`NodeAppLogic`], kept outside
+/// the runner itself once construction has moved that logic in --
+/// `GtkRunner`/`MacRunner`/`WinRunner`, unlike [`TuiRunner`], expose no
+/// `app_mut()`/`backend()` seam to reach back into it afterwards (their own
+/// `AppLogic` lives behind the backend's own event-loop/widget closures).
+/// [`QuiApp::start_native`] clones both fields straight off the
+/// [`NodeAppLogic`] it is about to move (mirroring `quadraui-py`'s own
+/// `native_error`/`loop_error` `Rc` clones taken the same way ahead of its
+/// own `GtkRunner`/`MacRunner`/`WinRunner::new_with` call) and keeps the
+/// clones here so [`LiveRunner::set_env`]/[`LiveRunner::take_error`] can
+/// still write/read them while that logic is live inside the opaque
+/// runner. Not needed for [`LiveRunner::Tui`], whose own `TuiRunner::app_mut()`
+/// reaches the real field directly.
+#[cfg(any(
+    feature = "gtk",
+    all(feature = "macos", target_os = "macos"),
+    all(feature = "win", target_os = "windows"),
+    test
+))]
+struct NativeLiveState {
+    env: Rc<Cell<Option<Env>>>,
+    pending_error: Rc<RefCell<Option<Error>>>,
+}
+
+/// A runner stood in for a real `GtkRunner`/`MacRunner`/`WinRunner` by
+/// `#[cfg(test)]` code only, so [`QuiApp::check_not_live`]/[`QuiApp::live_exited`]'s
+/// shared state machine can be exercised with a scripted [`StepOutcome`]
+/// and no real display -- see this module's test for
+/// `check_not_live`/`live_exited` behaving identically for a non-`Tui`
+/// [`LiveRunner`] variant. Carries its own [`NativeLiveState`] exactly like
+/// a real native variant would, so the same `set_env`/`take_error` paths
+/// are covered too.
+#[cfg(test)]
+struct TestLiveRunner {
+    state: NativeLiveState,
+    outcome: Cell<StepOutcome>,
+}
+
+/// The real terminal- or window-backed runner [`QuiApp::start_tui`]/
+/// [`QuiApp::start_native`] moves this app's whole [`NodeAppLogic`] into --
 /// see this module's doc's "Live run loop" section for the overall shape.
-/// Only the TUI variant exists today; a `gtk`/`macos`/`win` variant is
-/// each a separate backend's own follow-on (this crate's `gtk`/`macos`/
-/// `win` Cargo features today only forward to `quadraui`'s/
-/// `quadraui-binding-core`'s same-named feature -- see `Cargo.toml`'s own
-/// comment -- with no napi-visible `startNative` method built on them
-/// yet). TUI is verified here, on any host, through the black-box
-/// `quadraui-node/tests/live_runner.test.ts` suite; a `startNative`
-/// variant needs its own backend-specific issue verified on that
-/// backend's own capability-lane host (`gtk` on a Linux box with GTK4
-/// installed, `macos`/`win` only on their own platform) -- the same
-/// one-backend-per-issue split `CLAUDE.md`'s own doc describes for
-/// `quadraui` itself, applied here one level down inside this single
-/// crate's own feature table.
+/// `Gtk`/`Mac`/`Win` each carry a [`NativeLiveState`] alongside the real
+/// runner instead of the runner itself, for the reason that type's own doc
+/// explains. `Mac` additionally carries the `exit_requested` flag
+/// [`quadraui_binding_core::NativeExitPolicy`] sets on any non-`WindowClose`
+/// `Reaction::Exit` (see that type's own doc for why only the `macos`
+/// feature without `gtk` also enabled needs this). TUI is verified here,
+/// on any host, through the black-box `quadraui-node/tests/live_runner.test.ts`
+/// suite; a real `Gtk`/`Mac`/`Win` session needs its own backend-specific
+/// issue verified on that backend's own capability-lane host (`gtk` on a
+/// Linux box with GTK4 installed, `macos`/`win` only on their own
+/// platform) -- the same one-backend-per-issue split `CLAUDE.md`'s own doc
+/// describes for `quadraui` itself, applied here one level down inside
+/// this single crate's own feature table; this crate's own `#[cfg(test)]`
+/// `TestLiveRunner` variant covers the shared, backend-neutral state
+/// machine without one.
 enum LiveRunner {
     /// A live terminal takeover via [`TuiRunner`] -- [`QuiApp::start_tui`].
-    Tui(TuiRunner<NodeAppLogic>),
+    /// `Box`ed because `TuiRunner<NodeAppLogic>` is far larger than every
+    /// other variant (a `gtk`-only build would otherwise size the whole
+    /// enum -- and every `Option<LiveRunner>`/match on it -- to this one
+    /// variant's footprint for no benefit to the variants that are
+    /// actually small).
+    Tui(Box<TuiRunner<NodeAppLogic>>),
+    /// A live GTK window -- [`QuiApp::start_native`]. Takes priority over
+    /// `Mac`/`Win` when more than one native feature is enabled, mirroring
+    /// `quadraui-py`'s own `run_native` priority.
+    #[cfg(feature = "gtk")]
+    Gtk(quadraui::gtk::GtkRunner, NativeLiveState),
+    /// A live AppKit window -- [`QuiApp::start_native`]. Only ever
+    /// constructed when also built for a macOS `target_os` and `gtk` is
+    /// not also enabled -- see `start_native`'s own doc for the arm that
+    /// covers every other combination of the `macos` feature.
+    #[cfg(all(feature = "macos", target_os = "macos", not(feature = "gtk")))]
+    Mac(quadraui::macos::MacRunner, NativeLiveState, Rc<Cell<bool>>),
+    /// A live Win32 window -- [`QuiApp::start_native`]. Only ever
+    /// constructed when also built for a Windows `target_os` and neither
+    /// `gtk` nor `macos` is also enabled -- mirrors `Mac`'s own doc.
+    #[cfg(all(
+        feature = "win",
+        target_os = "windows",
+        not(feature = "gtk"),
+        not(feature = "macos")
+    ))]
+    Win(quadraui::win::WinRunner, NativeLiveState),
+    /// Stands in for a real native variant in this module's own tests --
+    /// see [`TestLiveRunner`]'s own doc.
+    #[cfg(test)]
+    Test(TestLiveRunner),
 }
 
 impl LiveRunner {
-    /// Mutable access to whichever variant's own [`NodeAppLogic`] -- the
-    /// napi-rs analog of [`TuiDriver::app_mut`] for a live runner instead
-    /// of the headless driver, needed for the same reason: [`QuiApp::guarded`]
-    /// stashes its live `Env` on it before running its body.
-    fn app_mut(&mut self) -> &mut NodeAppLogic {
+    /// Writes `env` into whichever cell [`NodeAppLogic::render`]/`handle`/
+    /// `tick` will read it back from -- [`TuiRunner::app_mut`]'s real
+    /// `env` field for [`LiveRunner::Tui`] (the napi-rs analog of
+    /// [`TuiDriver::app_mut`] for a live runner instead of the headless
+    /// driver), or the [`NativeLiveState`] side channel for every other
+    /// variant, needed for the same reason [`QuiApp::guarded`] stashes its
+    /// live `Env` before running its body.
+    fn set_env(&mut self, env: Env) {
         match self {
-            LiveRunner::Tui(runner) => runner.app_mut(),
+            LiveRunner::Tui(runner) => runner.app_mut().env.set(Some(env)),
+            #[cfg(feature = "gtk")]
+            LiveRunner::Gtk(_, state) => state.env.set(Some(env)),
+            #[cfg(all(feature = "macos", target_os = "macos", not(feature = "gtk")))]
+            LiveRunner::Mac(_, state, _) => state.env.set(Some(env)),
+            #[cfg(all(
+                feature = "win",
+                target_os = "windows",
+                not(feature = "gtk"),
+                not(feature = "macos")
+            ))]
+            LiveRunner::Win(_, state) => state.env.set(Some(env)),
+            #[cfg(test)]
+            LiveRunner::Test(test) => test.state.env.set(Some(env)),
         }
     }
 
-    /// One non-blocking pass -- [`TuiRunner::step`] for the one variant
-    /// that exists today. Never blocks, mirroring every backend's own
-    /// non-blocking `step()` -- a `gtk`/`macos`/`win` variant drives its
-    /// own runner's `step()` the same way once it exists.
+    /// One non-blocking pass through whichever runner this variant wraps.
+    /// Never blocks, mirroring every backend's own non-blocking `step()`.
+    /// `Mac` folds its own `exit_requested` flag into the returned
+    /// [`StepOutcome`] right here, so [`QuiApp::step_once`]'s own
+    /// [`StepOutcome::Exited`] handling covers it without needing a second,
+    /// variant-specific check of its own.
     fn step(&mut self) -> io::Result<StepOutcome> {
         match self {
             LiveRunner::Tui(runner) => runner.step(),
+            #[cfg(feature = "gtk")]
+            LiveRunner::Gtk(runner, _) => Ok(runner.step()),
+            #[cfg(all(feature = "macos", target_os = "macos", not(feature = "gtk")))]
+            LiveRunner::Mac(runner, _, exit_requested) => {
+                let outcome = runner.step();
+                Ok(if exit_requested.get() {
+                    StepOutcome::Exited
+                } else {
+                    outcome
+                })
+            }
+            #[cfg(all(
+                feature = "win",
+                target_os = "windows",
+                not(feature = "gtk"),
+                not(feature = "macos")
+            ))]
+            LiveRunner::Win(runner, _) => runner
+                .step()
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string())),
+            #[cfg(test)]
+            LiveRunner::Test(test) => Ok(test.outcome.get()),
         }
     }
 
-    /// This variant's own [`Backend::waker`] closure -- read right after
-    /// construction to swap [`QuiApp::current_waker`] to it, and again
-    /// (via [`QuiApp::driver`]'s headless backend instead) once this
-    /// runner's own `step` reports [`StepOutcome::Exited`].
+    /// Takes and re-raises any error a registered callback recorded during
+    /// the [`Self::step`] pass that just ran -- [`take_pending_error`]'s
+    /// own [`NodeAppLogic::pending_error`] field for [`LiveRunner::Tui`],
+    /// or the [`NativeLiveState`] side channel's clone of the same cell for
+    /// every other variant.
+    fn take_error(&mut self) -> Result<()> {
+        match self {
+            LiveRunner::Tui(runner) => take_pending_error(runner.app_mut()),
+            #[cfg(feature = "gtk")]
+            LiveRunner::Gtk(_, state) => take_pending_error_cell(&state.pending_error),
+            #[cfg(all(feature = "macos", target_os = "macos", not(feature = "gtk")))]
+            LiveRunner::Mac(_, state, _) => take_pending_error_cell(&state.pending_error),
+            #[cfg(all(
+                feature = "win",
+                target_os = "windows",
+                not(feature = "gtk"),
+                not(feature = "macos")
+            ))]
+            LiveRunner::Win(_, state) => take_pending_error_cell(&state.pending_error),
+            #[cfg(test)]
+            LiveRunner::Test(test) => take_pending_error_cell(&test.state.pending_error),
+        }
+    }
+
+    /// This variant's own [`Backend::waker`] closure, read right after
+    /// construction to swap [`QuiApp::current_waker`] to it -- only ever
+    /// called for [`LiveRunner::Tui`] (see [`QuiApp::start_native`]'s own
+    /// doc for why a native session never swaps it: none of
+    /// `GtkRunner`/`MacRunner`/`WinRunner` expose a `Backend::waker`-reachable
+    /// accessor once their own `AppLogic` has moved in).
     fn waker(&self) -> Arc<dyn Fn(UserPayload) + Send + Sync> {
         match self {
             LiveRunner::Tui(runner) => runner.backend().waker(),
+            #[allow(unreachable_patterns)]
+            _ => unreachable!("waker() is only ever called for LiveRunner::Tui"),
         }
     }
 }
@@ -417,7 +575,14 @@ struct NodeAppLogic {
     /// from an earlier, already-returned call is simply overwritten before
     /// its next use and never read in between -- nothing here keeps an
     /// N-API `Env` alive past the native call that handed it out.
-    env: Cell<Option<Env>>,
+    ///
+    /// `Rc`-wrapped, like [`Self::pending_error`], rather than a bare
+    /// `Cell`: `GtkRunner`/`MacRunner`/`WinRunner` expose no `app_mut()`
+    /// seam once this whole `NodeAppLogic` has moved into one (unlike
+    /// `TuiRunner`, whose own `app_mut()` still reaches this field
+    /// directly) -- see [`NativeLiveState`]'s own doc for how `startNative`
+    /// keeps writing into this cell from outside regardless.
+    env: Rc<Cell<Option<Env>>>,
 }
 
 impl NodeAppLogic {
@@ -589,7 +754,16 @@ fn record_error(pending_error: &Rc<RefCell<Option<Error>>>, err: Error) {
 /// `step`/render pass that just ran -- mirrors `quadraui-py`'s
 /// `take_pending_error`.
 fn take_pending_error(app: &mut NodeAppLogic) -> Result<()> {
-    if let Some(err) = app.pending_error.borrow_mut().take() {
+    take_pending_error_cell(&app.pending_error)
+}
+
+/// [`take_pending_error`]'s shared tail, operating directly on the
+/// `Rc`-shared cell rather than through a [`NodeAppLogic`] -- the form
+/// [`LiveRunner::take_error`] needs for every variant but [`LiveRunner::Tui`],
+/// whose own `NodeAppLogic` is reachable only through a [`NativeLiveState`]
+/// clone of this same cell, never the real [`NodeAppLogic`] itself.
+fn take_pending_error_cell(pending_error: &Rc<RefCell<Option<Error>>>) -> Result<()> {
+    if let Some(err) = pending_error.borrow_mut().take() {
         return Err(err);
     }
     Ok(())
@@ -973,6 +1147,16 @@ fn live_runner_active_error(detail: impl std::fmt::Display) -> Error {
 /// app.
 fn live_runner_exited_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("LiveRunnerExitedError: {detail}"))
+}
+
+/// Mirrors [`invalid_descriptor_error`] for [`QuiApp::start_native`] called
+/// on a binary built with none of the `gtk`/`macos`/`win` features --
+/// there is no native runner at all to hand this app's [`NodeAppLogic`]
+/// off to. Only ever called from `start_native`'s own matching arm, which
+/// shares this exact `cfg` gate.
+#[cfg(not(any(feature = "gtk", feature = "macos", feature = "win")))]
+fn no_native_backend_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("NoNativeBackendError: {detail}"))
 }
 
 /// Mirrors [`invalid_descriptor_error`] for a slot id argument that is not
@@ -1481,10 +1665,10 @@ pub struct QuiApp {
     /// see [`QuiApp::check_not_dispatching`] and this struct's own doc for
     /// what this guards against.
     in_dispatch: Cell<bool>,
-    /// The live terminal/window takeover `startTui`/a future `startNative`
-    /// moved this app's whole [`NodeAppLogic`] into, if any -- see this
-    /// module's doc's "Live run loop" section. `None` until `startTui` is
-    /// called, and again once that runner's own `step` observes
+    /// The live terminal/window takeover `startTui`/`startNative` moved
+    /// this app's whole [`NodeAppLogic`] into, if any -- see this module's
+    /// doc's "Live run loop" section. `None` until one of them is called,
+    /// and again once that runner's own `step` observes
     /// [`StepOutcome::Exited`] (or `stopLive` is called explicitly).
     live: Option<LiveRunner>,
     /// Set the instant [`Self::live`] goes from `Some` back to `None` --
@@ -1912,10 +2096,212 @@ impl QuiApp {
             };
             let runner = TuiRunner::new_with(app_logic, config)
                 .map_err(|err| internal_error(format!("startTui: {err}")))?;
-            let live = LiveRunner::Tui(runner);
+            let live = LiveRunner::Tui(Box::new(runner));
             *app.current_waker.lock().unwrap_or_else(|e| e.into_inner()) = live.waker();
             app.live = Some(live);
             Ok(())
+        })
+    }
+
+    /// Moves this app's whole [`NodeAppLogic`] into a real native window --
+    /// `quadraui::gtk::GtkRunner` on the `gtk` feature,
+    /// `quadraui::macos::MacRunner` on the `macos` feature (only when also
+    /// built for a macOS `target_os`), or `quadraui::win::WinRunner` on the
+    /// `win` feature (only when also built for a Windows `target_os`) --
+    /// `gtk` wins when more than one native feature is enabled, then
+    /// `macos`, then `win`, mirroring `quadraui-py`'s own `run_native`
+    /// priority. Non-blocking like [`Self::start_tui`]: this call only
+    /// builds the window and returns immediately, wrapping the moved
+    /// [`NodeAppLogic`] in [`NativeExitPolicy`] so a handler-less
+    /// `WindowClose` still exits the window (mirroring `quadraui-py`'s own
+    /// `NativeAppLogic`) -- see this module's doc's "Live run loop"
+    /// section for the overall discipline.
+    ///
+    /// `title`/`app_id`/`icon_name`/`single_instance` mirror
+    /// `quadraui-py`'s own `run_native` arguments; which ones apply
+    /// depends on which native feature actually built this binary (`gtk`
+    /// uses all four, `macos`/`win` ignore `app_id` -- there is no
+    /// `GApplication`-style id on either platform -- and `single_instance`,
+    /// since neither `MacRunner::new_with` nor this binding's own
+    /// `WinRunner::new_with` call wires it).
+    ///
+    /// On the `macos` feature without `gtk` also enabled,
+    /// [`NativeExitPolicy`] downgrades any other `Reaction::Exit` to a
+    /// sticky `exit_requested` flag instead of letting it reach AppKit's
+    /// `[NSApp terminate:]` and end the whole process before this session
+    /// could; [`LiveRunner::step`] folds that flag into the
+    /// [`StepOutcome`] it returns, so [`Self::step_once`]'s own
+    /// [`StepOutcome::Exited`] handling already covers it.
+    ///
+    /// Unlike [`Self::start_tui`], this never swaps [`Self::current_waker`]:
+    /// `GtkRunner`/`MacRunner`/`WinRunner` expose no `Backend::waker`-reachable
+    /// accessor once their own `AppLogic` has moved in, so a [`QuiAppWaker`]
+    /// obtained during a live native session keeps posting into the
+    /// dormant headless path's own queue, delivered once `step`/`run`
+    /// resumes driving it after the session ends -- mirrors `quadraui-py`'s
+    /// own documented asymmetry (see `QuiApp::current_waker`'s doc there).
+    ///
+    /// Raises `LiveRunnerActiveError` if a live session is already
+    /// running. Raises `NoNativeBackendError` if this binary was built
+    /// with none of the `gtk`/`macos`/`win` features. Raises
+    /// `InternalError` if the `macos`/`win` feature is enabled but this
+    /// binary was not built for that feature's own native `target_os` (a
+    /// `cargo build`/`check` run that only type-checks the forwarded
+    /// dependency graph -- see `Cargo.toml`'s own comment) -- there is no
+    /// real runner to hand off to in that case regardless of what this
+    /// call passes -- or if the real takeover itself fails (no display on
+    /// `gtk`, not on the main thread on `macos`, a `WinRunner::new_with`
+    /// failure on `win`). This app's prior configuration (handlers,
+    /// inserted descriptors) is lost on any of these failures the same way
+    /// [`Self::start_tui`]'s own doc describes, since `std::mem::take`
+    /// already moved it out before the takeover attempt where one was
+    /// actually made.
+    #[napi(js_name = "startNative")]
+    pub fn start_native(
+        &mut self,
+        env: Env,
+        title: Option<String>,
+        app_id: Option<String>,
+        icon_name: Option<String>,
+        single_instance: Option<bool>,
+    ) -> Result<()> {
+        self.check_not_live()?;
+        self.guarded(env, |app| {
+            #[cfg(feature = "gtk")]
+            {
+                let app_logic = std::mem::take(app.driver.app_mut());
+                let state = NativeLiveState {
+                    env: app_logic.env.clone(),
+                    pending_error: app_logic.pending_error.clone(),
+                };
+                let defaults = quadraui::gtk::RunConfig::default();
+                let mut config = quadraui::gtk::RunConfig::new(
+                    app_id.unwrap_or(defaults.app_id),
+                    title.unwrap_or(defaults.title),
+                );
+                if let Some(icon_name) = icon_name {
+                    config = config.with_icon_name(icon_name);
+                }
+                config = config.with_single_instance(single_instance.unwrap_or(false));
+                let runner = quadraui::gtk::GtkRunner::new_with(
+                    NativeExitPolicy { inner: app_logic },
+                    config,
+                );
+                app.live = Some(LiveRunner::Gtk(runner, state));
+                Ok(())
+            }
+
+            #[cfg(all(feature = "macos", target_os = "macos", not(feature = "gtk")))]
+            {
+                // `app_id`/`icon_name`/`single_instance` have no macOS
+                // analog; accepted for signature parity with the `gtk`
+                // build and silently ignored here, mirroring
+                // `quadraui-py`'s own `run_native`.
+                let _ = (&app_id, &icon_name, single_instance);
+                if objc2::MainThreadMarker::new().is_none() {
+                    return Err(internal_error(
+                        "startNative must be called from the main thread to open a window on \
+                         macOS",
+                    ));
+                }
+                let app_logic = std::mem::take(app.driver.app_mut());
+                let state = NativeLiveState {
+                    env: app_logic.env.clone(),
+                    pending_error: app_logic.pending_error.clone(),
+                };
+                let exit_requested = Rc::new(Cell::new(false));
+                let config = quadraui::macos::RunConfig::new(
+                    title.unwrap_or(quadraui::macos::RunConfig::default().title),
+                );
+                let runner = quadraui::macos::MacRunner::new_with(
+                    NativeExitPolicy {
+                        inner: app_logic,
+                        exit_requested: exit_requested.clone(),
+                    },
+                    config,
+                );
+                app.live = Some(LiveRunner::Mac(runner, state, exit_requested));
+                Ok(())
+            }
+
+            // Reachable only when the `macos` feature is enabled on a
+            // non-Apple `target_os` -- e.g. a `cargo check -p quadraui-node
+            // --features macos` typecheck run on Linux or Windows.
+            // `quadraui::macos` is itself gated on `target_os = "macos"`,
+            // so there is no runner to hand off to here; this arm exists
+            // only to keep `startNative` buildable on other hosts, never
+            // to run for real.
+            #[cfg(all(feature = "macos", not(feature = "gtk"), not(target_os = "macos")))]
+            {
+                let _ = (&app, &title, &app_id, &icon_name, single_instance);
+                Err(internal_error(
+                    "startNative with the macos feature requires building for a macOS \
+                     target_os; this binary was built for a different platform",
+                ))
+            }
+
+            #[cfg(all(
+                feature = "win",
+                target_os = "windows",
+                not(feature = "gtk"),
+                not(feature = "macos")
+            ))]
+            {
+                // `app_id`/`icon_name` have no Windows analog;
+                // `single_instance` has no effect on `WinRunner::new_with`
+                // (only `win::run::run` wires it) -- all three accepted
+                // for signature parity and silently ignored, mirroring
+                // `quadraui-py`'s own `run_native`.
+                let _ = (&app_id, &icon_name, single_instance);
+                let app_logic = std::mem::take(app.driver.app_mut());
+                let state = NativeLiveState {
+                    env: app_logic.env.clone(),
+                    pending_error: app_logic.pending_error.clone(),
+                };
+                let defaults = quadraui::win::RunConfig::default();
+                let config = quadraui::win::RunConfig::new(title.unwrap_or(defaults.title));
+                // SAFETY: mirrors `quadraui-py`'s own `run_native`:
+                // constructed and stepped on the same OS thread for its
+                // whole lifetime, with no other window on that thread --
+                // exactly what this `guarded` call does.
+                let runner = unsafe {
+                    quadraui::win::WinRunner::new_with(
+                        NativeExitPolicy { inner: app_logic },
+                        &config,
+                    )
+                }
+                .map_err(|err| internal_error(format!("startNative: {err}")))?;
+                app.live = Some(LiveRunner::Win(runner, state));
+                Ok(())
+            }
+
+            // Reachable only when the `win` feature is enabled on a
+            // non-Windows `target_os`. `quadraui::win::WinRunner` is
+            // itself gated on `target_os = "windows"`, so there is no
+            // runner to hand off to here -- see the `macos` arm above's
+            // own doc for why this exists.
+            #[cfg(all(
+                feature = "win",
+                not(feature = "gtk"),
+                not(feature = "macos"),
+                not(target_os = "windows")
+            ))]
+            {
+                let _ = (&app, &title, &app_id, &icon_name, single_instance);
+                Err(internal_error(
+                    "startNative with the win feature requires building for a Windows \
+                     target_os; this binary was built for a different platform",
+                ))
+            }
+
+            #[cfg(not(any(feature = "gtk", feature = "macos", feature = "win")))]
+            {
+                let _ = (&app, &title, &app_id, &icon_name, single_instance);
+                Err(no_native_backend_error(
+                    "startNative requires this binary to be built with the gtk, macos, or win \
+                     feature -- none is enabled",
+                ))
+            }
         })
     }
 
@@ -2086,18 +2472,17 @@ impl QuiApp {
         Ok(())
     }
 
-    /// Mutable access to whichever [`NodeAppLogic`] is currently driving
-    /// this app -- [`Self::live`]'s own, if a live session is running,
-    /// otherwise [`Self::driver`]'s headless one. [`Self::guarded`] stashes
-    /// its live `Env` on whichever this returns, so a registered handler/
-    /// tick/render callback reached through either [`Self::step_once`] or
-    /// a direct [`Self::driver`] call (gated by [`Self::check_not_live`])
-    /// has one to call back into JS with -- see [`NodeAppLogic::env`]'s
-    /// doc.
-    fn active_app_mut(&mut self) -> &mut NodeAppLogic {
+    /// Writes `env` into whichever cell is currently driving this app --
+    /// [`LiveRunner::set_env`] if a live session is running, otherwise
+    /// [`Self::driver`]'s headless [`NodeAppLogic::env`] directly -- so a
+    /// registered handler/tick/render callback reached through either
+    /// [`Self::step_once`] or a direct [`Self::driver`] call (gated by
+    /// [`Self::check_not_live`]) has a live `Env` to call back into JS
+    /// with. See [`NodeAppLogic::env`]'s doc.
+    fn set_active_env(&mut self, env: Env) {
         match self.live.as_mut() {
-            Some(live) => live.app_mut(),
-            None => self.driver.app_mut(),
+            Some(live) => live.set_env(env),
+            None => self.driver.app_mut().env.set(Some(env)),
         }
     }
 
@@ -2120,7 +2505,7 @@ impl QuiApp {
     /// dispatching (see [`Self::check_not_dispatching`]), raises without
     /// running `body` at all -- mirrors `quadraui-py`'s `QuiApp::guarded`,
     /// plus the reentrancy guard PyO3's own runtime borrow check makes
-    /// unnecessary there. `env` is stashed on [`Self::active_app_mut`]
+    /// unnecessary there. `env` is stashed via [`Self::set_active_env`]
     /// before `body` runs, so a registered handler/tick/render callback
     /// `body` reaches (via `step_once`/`driver.render()`) has a live `Env`
     /// to call back into JS with -- see [`NodeAppLogic::env`]'s doc.
@@ -2131,7 +2516,7 @@ impl QuiApp {
                 "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
             ));
         }
-        self.active_app_mut().env.set(Some(env));
+        self.set_active_env(env);
         self.in_dispatch.set(true);
         let result = panic::catch_unwind(AssertUnwindSafe(|| body(self)));
         self.in_dispatch.set(false);
@@ -2174,9 +2559,9 @@ impl QuiApp {
         };
         let step_result = live.step();
         // Take any callback-raised error before possibly dropping `live`
-        // below -- once dropped, there is no more `NodeAppLogic` left to
-        // read it back off of.
-        let pending = take_pending_error(live.app_mut());
+        // below -- once dropped, there is no more `NodeAppLogic`/
+        // `NativeLiveState` left to read it back off of.
+        let pending = live.take_error();
         let outcome = match step_result {
             Ok(outcome) => outcome,
             Err(err) => {
@@ -3007,16 +3392,116 @@ mod tests {
         assert_eq!(wrapped, serde_json::json!({ "User": null }));
     }
 
-    // A `startTui` round trip (success or the no-real-tty failure path) is
+    // A `startTui`/`startNative` round trip (success or a failure path) is
     // deliberately not exercised as an in-process `#[test]` here:
     // `TuiRunner::new_with`'s very first step is `enable_raw_mode()`,
     // which -- if this test process happens to have a controlling
     // terminal at all, which a plain `cargo test` invocation sometimes
     // does -- would actually raw-mode it instead of failing fast, hanging
-    // or corrupting whatever terminal ran the test suite. `quadraui-py`'s
-    // own `test_run_tui.py` sidesteps exactly this by shelling out to a
-    // detached (`setsid`) subprocess per test; `quadraui-node/tests/`'s
-    // own black-box coverage does the same with `child_process.spawn`.
+    // or corrupting whatever terminal ran the test suite; a real native
+    // session needs an actual display/main-thread/window besides. `quadraui-py`'s
+    // own `test_run_tui.py` sidesteps the terminal case by shelling out to a
+    // detached (`setsid`) subprocess per test; `quadraui-node/tests/`'s own
+    // black-box coverage does the same with `child_process.spawn`. The two
+    // tests below cover the shared, backend-neutral state machine itself
+    // (`check_not_live`/`live_exited`/a pending error surfacing from
+    // `step()`) through the `#[cfg(test)]`-only `LiveRunner::Test` variant
+    // instead, which needs none of that.
+
+    /// `check_not_live`/`live_exited` apply the same way regardless of
+    /// which concrete runner [`QuiApp::live`] wraps -- exercised here via
+    /// the `#[cfg(test)]`-only [`LiveRunner::Test`] variant standing in for
+    /// a real `Gtk`/`Mac`/`Win` session, so `startNative`'s own share of
+    /// this state machine is covered without a display. Mirrors
+    /// `startTui`'s already-covered contract: every configuration method
+    /// raises `LiveRunnerActiveError` while live, a live session's own
+    /// `StepOutcome::Exited` drops it, sets `live_exited`, and restores
+    /// the headless waker, and a further `step()`/`run()` afterwards
+    /// raises `LiveRunnerExitedError` rather than silently ticking the
+    /// now-empty orphan.
+    #[test]
+    fn check_not_live_and_live_exited_behave_the_same_for_a_non_tui_live_runner() {
+        let mut app = QuiApp::new(5, 5).expect("valid dimensions");
+        app.live = Some(LiveRunner::Test(TestLiveRunner {
+            state: NativeLiveState {
+                env: Rc::new(Cell::new(None)),
+                pending_error: Rc::new(RefCell::new(None)),
+            },
+            outcome: Cell::new(StepOutcome::Continue),
+        }));
+
+        assert!(
+            app.check_not_live().is_err(),
+            "a live Test runner must reject configuration the same way a live Tui runner does"
+        );
+        assert!(
+            app.step(null_env_for_test())
+                .expect("StepOutcome::Continue must not itself be an error"),
+            "StepOutcome::Continue must report the app as still running"
+        );
+        assert!(
+            app.live.is_some(),
+            "a Continue outcome must not tear down the live session"
+        );
+
+        let LiveRunner::Test(test) = app.live.as_ref().expect("still live") else {
+            panic!("expected the Test variant");
+        };
+        test.outcome.set(StepOutcome::Exited);
+
+        assert!(
+            !app.step(null_env_for_test())
+                .expect("StepOutcome::Exited must not itself be an error"),
+            "StepOutcome::Exited must report the app as no longer running"
+        );
+        assert!(
+            app.live.is_none(),
+            "StepOutcome::Exited must drop the live session"
+        );
+        assert!(
+            app.live_exited.get(),
+            "StepOutcome::Exited must set live_exited"
+        );
+        assert!(
+            app.check_not_live().is_ok(),
+            "once dropped, check_not_live must stop rejecting configuration"
+        );
+        assert!(
+            app.step(null_env_for_test()).is_err(),
+            "a further step() after live_exited must raise LiveRunnerExitedError rather than \
+             silently ticking the now-empty orphan"
+        );
+    }
+
+    /// A pending error recorded through [`NativeLiveState::pending_error`]
+    /// while a native-shaped [`LiveRunner`] variant was stepping surfaces
+    /// out of `step()` the same way [`NodeAppLogic::pending_error`] does
+    /// for [`LiveRunner::Tui`] -- [`LiveRunner::take_error`]'s own
+    /// contract, exercised here via [`LiveRunner::Test`] since no real
+    /// native variant is safe to drive in an in-process `#[test]`.
+    #[test]
+    fn a_pending_error_recorded_through_native_live_state_surfaces_from_step() {
+        let mut app = QuiApp::new(5, 5).expect("valid dimensions");
+        let pending_error = Rc::new(RefCell::new(None));
+        app.live = Some(LiveRunner::Test(TestLiveRunner {
+            state: NativeLiveState {
+                env: Rc::new(Cell::new(None)),
+                pending_error: pending_error.clone(),
+            },
+            outcome: Cell::new(StepOutcome::Continue),
+        }));
+        record_error(&pending_error, internal_error("boom"));
+
+        assert!(
+            app.step(null_env_for_test()).is_err(),
+            "a pending error recorded through the side channel must surface out of step()"
+        );
+        assert!(
+            app.live.is_some(),
+            "StepOutcome::Continue plus a pending error must not itself tear down the \
+             session, mirroring the Tui arm's own ordering"
+        );
+    }
 
     /// `callback_reaction` (the pure function every callback-return mapping
     /// in this crate goes through -- see [`bool_from_return`]) treats only

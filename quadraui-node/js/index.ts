@@ -116,6 +116,10 @@ exports.LiveRunnerActiveError = LiveRunnerActiveError;
 class LiveRunnerExitedError extends QuadrauiError {}
 exports.LiveRunnerExitedError = LiveRunnerExitedError;
 
+/** `startNative` called on a binary built with none of the `gtk`/`macos`/`win` features -- there is no native runner to open a window with. */
+class NoNativeBackendError extends QuadrauiError {}
+exports.NoNativeBackendError = NoNativeBackendError;
+
 /**
  * Every subclass above, keyed by both its own name and the tag its native
  * `Error.message` prefix carries (the two always match -- see
@@ -137,6 +141,7 @@ const ERROR_CLASSES_BY_TAG: Record<string, new (message: string) => QuadrauiErro
   ReentrantCallError,
   LiveRunnerActiveError,
   LiveRunnerExitedError,
+  NoNativeBackendError,
 };
 exports.ERROR_CLASSES = Object.freeze({ ...ERROR_CLASSES_BY_TAG });
 
@@ -267,12 +272,15 @@ export interface PumpHandle {
  * Drives `app.step()` repeatedly on a timer, cooperatively yielding to the
  * rest of Node's event loop between calls instead of looping synchronously
  * -- the JS-side half of the non-blocking run-loop contract `startTui`/
- * `step` establish on the Rust side (see `quadraui-node/src/lib.rs`'s
- * module doc's "Live run loop" section). `step()` itself never blocks
- * (`startTui` moves this app onto a non-blocking `TuiRunner::step`, and the
- * headless path was always non-blocking), so a `setInterval` cadence here
- * never starves a concurrent timer/microtask/I/O callback the way a tight
- * synchronous loop calling `step()` forever would.
+ * `startNative`/`step` establish on the Rust side (see
+ * `quadraui-node/src/lib.rs`'s module doc's "Live run loop" section).
+ * `step()` itself never blocks (`startTui`/`startNative` each move this app
+ * onto a non-blocking runner `step()`, and the headless path was always
+ * non-blocking), so a `setInterval` cadence here never starves a
+ * concurrent timer/microtask/I/O callback the way a tight synchronous loop
+ * calling `step()` forever would. Works unchanged for a `startNative`
+ * session -- it drives the same `step()`/`stopLive()` surface as a
+ * `startTui` one.
  *
  * Stops automatically once `step()` reports the app has exited (returns
  * `false`), or earlier if the returned handle's `stop()` is called.
@@ -281,13 +289,14 @@ export interface PumpHandle {
  *
  * If `step()` itself throws (a registered handler threw, or a callback
  * raised a pending error `step()` surfaces), this stops the interval and,
- * if `app` is a live `startTui` session (has a `stopLive` method), calls
- * it to restore the terminal (raw mode off, leave alternate screen) before
- * rethrowing -- otherwise an uncaught exception inside `setInterval`'s
- * callback would tear the process down with the terminal left in whatever
- * state `startTui` last left it in, since the Rust-side live runner's own
- * cleanup (raw mode off, leave alternate screen) never runs on an abrupt
- * process exit.
+ * if `app` is a live `startTui`/`startNative` session (has a `stopLive`
+ * method), calls it to tear the session down (terminal: raw mode off,
+ * leave alternate screen; native: destroy the window, where the runner
+ * supports it) before rethrowing -- otherwise an uncaught exception inside
+ * `setInterval`'s callback would tear the process down with the session
+ * left exactly as `startTui`/`startNative` last left it, since the
+ * Rust-side live runner's own cleanup never runs on an abrupt process
+ * exit.
  */
 function pump(
   app: { step(): boolean; stopLive?(): boolean },
