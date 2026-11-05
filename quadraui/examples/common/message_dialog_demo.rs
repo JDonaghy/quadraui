@@ -50,10 +50,12 @@ impl MessageDialogDemo {
     /// [`native_dialog_options`] below to drive the native alert instead.
     /// Has no `table`/`input`, so the mapping always succeeds.
     ///
-    /// "Discard" is tinted with [`quadraui::Theme::danger_bg`] rather
-    /// than a hardcoded red literal, so this demo's destructive button
+    /// "Discard" is tinted with `theme.error_fg` rather than a
+    /// hardcoded red literal, so this demo's destructive button label
     /// recolours along with the rest of the app when a host overrides
-    /// `theme.error_fg` (the field `danger_bg` derives from).
+    /// `theme.error_fg`. `tint` is consumed only as a label foreground
+    /// (see `DialogButton::tint`), so this must stay a foreground role,
+    /// not one of the `*_bg` accessors.
     fn dialog(&self, theme: &Theme) -> Dialog {
         Dialog {
             id: WidgetId::new("message-dialog-demo:confirm"),
@@ -74,7 +76,7 @@ impl MessageDialogDemo {
                     label: "Discard".to_string(),
                     is_default: false,
                     is_cancel: false,
-                    tint: Some(theme.danger_bg()),
+                    tint: Some(theme.error_fg),
                 },
             ],
             severity: Some(DialogSeverity::Warning),
