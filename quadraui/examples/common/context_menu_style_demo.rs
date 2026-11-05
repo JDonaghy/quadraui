@@ -50,14 +50,16 @@ impl ContextMenuStyleDemo {
         ContextMenu {
             id: WidgetId::new("menu-style-demo"),
             items: vec![
-                // `C3`: a leading icon on the first item — paints the
-                // bundled `files` codicon on GUI and its `CP` fallback
-                // on TUI (or on GUI with `set_nerd_fonts(false)`).
+                action_item("ctx.cut", "Cut"),
+                // `C3`: a leading icon on "Copy" — paints the bundled
+                // `files` codicon on GUI and its `C` fallback on TUI (or
+                // on GUI with `set_nerd_fonts(false)`); only the fallback
+                // string's first `char` renders in the TUI gutter's
+                // single cell.
                 ContextMenuItem {
-                    icon: Icon::codicon("files", "CP"),
+                    icon: Icon::codicon("files", "C"),
                     ..action_item("ctx.copy", "Copy")
                 },
-                action_item("ctx.cut", "Cut"),
                 action_item("ctx.paste", "Paste"),
                 ContextMenuItem::default(), // separator
                 action_item("ctx.about", "About this demo"),

@@ -236,6 +236,12 @@ pub struct ContextMenuItem {
     /// with [`crate::types::Icon::codicon`] for a bundled codicon, or
     /// [`crate::types::Icon::new`] for an app-supplied glyph/fallback
     /// pair.
+    ///
+    /// Unlike `checked`, `icon` has no `Some(false)`-style reservation
+    /// without a fill: the gutter is per-item, not per-menu, so in a menu
+    /// where only some items carry an icon, those items' labels shift
+    /// right relative to the rest. Give every item in the menu an icon
+    /// (or none) to keep labels aligned to one gutter.
     #[serde(default)]
     pub icon: Option<Icon>,
     /// Nested submenu. When `Some`, activating the item opens the child
