@@ -59,6 +59,14 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `primitives::button::native_surface_paint::focus_ring_geometry`: the
+  shared pixel geometry (outset rect, corner radius, `Style::focus_ring_width`
+  stroke width) for a primitive's focus-visible ring, factored out of
+  `Button`'s own ring paint so `TextInput`'s per-backend rasterisers compute
+  the identical ring instead of re-deriving it independently.
+  `TextInput::has_focus`'s doc now documents the same
+  `ring.is_focused(id) && ring.is_focus_visible()` composition convention
+  `Button::focused` already follows.
 - `primitives::tab_bar::fit_tab_label`: a shared label-fit helper for
   `TabBar` — given a tab's measured width, its leading icon slot and
   trailing close/dirty-dot slot, and a measurer closure, returns the

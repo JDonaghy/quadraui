@@ -237,6 +237,47 @@ pub(crate) mod native_surface_paint {
     use crate::style::Style;
     use crate::theme::Theme;
 
+    /// Outset gap between a primitive's own edge and its focus-visible
+    /// ring, in surface-native units (GTK/macOS points, Win-GUI DIPs).
+    const FOCUS_RING_GAP: f32 = 2.0;
+
+    /// Resolved pixel geometry for a primitive's focus-visible ring:
+    /// the outset rect to stroke, the corner radius to stroke it with,
+    /// and the stroke width.
+    pub(crate) struct FocusRingGeometry {
+        pub(crate) rect: Rect,
+        pub(crate) corner_radius: f32,
+        pub(crate) width: f32,
+    }
+
+    /// Shared geometry for a focus-visible ring drawn around `bounds`:
+    /// an outset stroke rect ([`FOCUS_RING_GAP`] clear of `bounds` on
+    /// every side), the same `corner_radius` the primitive's own fill/
+    /// border paint with, and the stroke width [`Style::focus_ring_width`]
+    /// configures. Every `PaintSurface`-backed rasteriser that strokes a
+    /// ring computes it through here — this module's own [`paint`] below,
+    /// and `TextInput`'s macOS twin
+    /// (`crate::primitives::text_input::native_surface_paint::paint`) —
+    /// so widening `Style::focus_ring_width` widens every primitive's
+    /// ring identically, instead of drifting through independently
+    /// hand-tuned literals per primitive.
+    pub(crate) fn focus_ring_geometry(
+        bounds: Rect,
+        corner_radius: f32,
+        style: &Style,
+    ) -> FocusRingGeometry {
+        FocusRingGeometry {
+            rect: Rect::new(
+                bounds.x - FOCUS_RING_GAP,
+                bounds.y - FOCUS_RING_GAP,
+                bounds.width + FOCUS_RING_GAP * 2.0,
+                bounds.height + FOCUS_RING_GAP * 2.0,
+            ),
+            corner_radius,
+            width: style.focus_ring_width,
+        }
+    }
+
     /// Paint a [`Button`] into `rect` on `surface`, returning
     /// [`ButtonLayout`] for host click dispatch. `style` supplies the
     /// corner radius the fill/border paint with.
@@ -306,18 +347,12 @@ pub(crate) mod native_surface_paint {
         // `focused` itself on click rather than on Tab — see
         // `crate::compose::FocusRing::is_focus_visible`.
         if button.focused && !button.disabled {
-            let ring_gap = 2.0;
-            let ring_rect = Rect::new(
-                rect.x - ring_gap,
-                rect.y - ring_gap,
-                rect.width + ring_gap * 2.0,
-                rect.height + ring_gap * 2.0,
-            );
+            let ring = focus_ring_geometry(rect, style.corner_radius, style);
             surface.surface_stroke_rounded_rect(
-                ring_rect,
-                style.corner_radius,
+                ring.rect,
+                ring.corner_radius,
                 theme.focus_ring_color(),
-                style.focus_ring_width,
+                ring.width,
             );
         }
 
@@ -388,6 +423,33 @@ pub(crate) mod native_surface_paint {
         }
 
         const RECT: Rect = Rect::new(10.0, 10.0, 60.0, 20.0);
+
+        #[test]
+        fn focus_ring_geometry_outsets_by_the_shared_gap() {
+            let bounds = Rect::new(10.0, 10.0, 60.0, 20.0);
+            let style = Style::default().with_focus_ring_width(3.0);
+
+            let ring = focus_ring_geometry(bounds, 4.0, &style);
+
+            assert_eq!(ring.rect, Rect::new(8.0, 8.0, 64.0, 24.0));
+            assert_eq!(ring.corner_radius, 4.0);
+            assert_eq!(ring.width, 3.0);
+        }
+
+        #[test]
+        fn focus_ring_geometry_reads_width_from_style_not_a_fixed_literal() {
+            let bounds = Rect::new(0.0, 0.0, 10.0, 10.0);
+            let narrow =
+                focus_ring_geometry(bounds, 0.0, &Style::default().with_focus_ring_width(1.0));
+            let wide =
+                focus_ring_geometry(bounds, 0.0, &Style::default().with_focus_ring_width(8.0));
+
+            assert_eq!(narrow.width, 1.0);
+            assert_eq!(wide.width, 8.0);
+            // Only the stroke width changes — the outset gap is shared,
+            // not derived from `Style::focus_ring_width` itself.
+            assert_eq!(narrow.rect, wide.rect);
+        }
 
         #[test]
         fn focused_button_paints_a_ring_stroke_in_the_theme_ring_colour() {
