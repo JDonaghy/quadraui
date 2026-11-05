@@ -21,10 +21,63 @@
 //! A caller may choose its own `min_thumb_len` value (cells vs. pixels,
 //! 1 vs. 8, etc.) — that is a per-surface *policy knob* `fit_thumb`
 //! takes as a parameter.
+//!
+//! ## Idle fade
+//!
+//! [`idle_fade_opacity`] is the overlay-scrollbar fade curve: full
+//! opacity for [`FADE_HOLD`] after the last hover/scroll/drag, then a
+//! linear fade to `0.0` over [`FADE_OUT`], built on
+//! [`crate::transition::Transition`] so it shares its deterministic,
+//! headless-clock-friendly contract (pass a fixed [`std::time::Instant`]
+//! captured once at test setup, advance `now` by adding a
+//! [`std::time::Duration`]). The function itself only answers "how
+//! opaque should the bar be right now" — it does not track *when* a
+//! widget was last interacted with; that timestamp is per-widget,
+//! backend-driven state (mouse-move/scroll/drag events differ by
+//! backend) a host feeds in. [`native_surface_paint::paint_with_opacity`]
+//! is the render-side half of the seam: the same track/thumb fill
+//! [`native_surface_paint::paint`] already does, scaled by an opacity
+//! multiplier a caller computed via [`idle_fade_opacity`].
 
 use crate::event::Rect;
+use crate::transition::Transition;
 use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
+
+/// How long an overlay scrollbar stays fully visible after the last
+/// hover/scroll/drag interaction, before [`idle_fade_opacity`] starts
+/// fading it out — VS Code holds the bar at full opacity for a beat
+/// rather than snapping it invisible the instant activity stops.
+pub const FADE_HOLD: Duration = Duration::from_millis(400);
+
+/// How long the fade-out itself takes once [`FADE_HOLD`] elapses.
+pub const FADE_OUT: Duration = Duration::from_millis(800);
+
+/// Opacity multiplier (`0.0..=1.0`) for an overlay scrollbar that was
+/// last interacted with (hovered, scrolled, or dragged) at
+/// `last_interaction`, sampled at `now`.
+///
+/// Full opacity for [`FADE_HOLD`] after `last_interaction`, then a
+/// linear ramp down to `0.0` over the following [`FADE_OUT`] — a thin
+/// wrapper around [`Transition::progress_at`] run in reverse (`1.0 -
+/// progress`). `now` at or before `last_interaction` returns `1.0`
+/// rather than going negative, the same clamp [`Transition::progress_at`]
+/// itself applies.
+///
+/// Tests build a deterministic headless clock the same way
+/// [`Transition`]'s own doc describes: capture `Instant::now()` once,
+/// then advance `now` by adding a [`Duration`] rather than sleeping.
+pub fn idle_fade_opacity(last_interaction: Instant, now: Instant) -> f32 {
+    if now <= last_interaction {
+        return 1.0;
+    }
+    if now.duration_since(last_interaction) <= FADE_HOLD {
+        return 1.0;
+    }
+    let fade = Transition::starting_at(last_interaction + FADE_HOLD, FADE_OUT);
+    1.0 - fade.progress_at(now)
+}
 
 /// Orientation of a scrollbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -452,11 +505,32 @@ pub(crate) mod native_surface_paint {
     /// hover/drag. See this module's doc for the one known divergence
     /// re-verified (already fixed) while unifying three
     /// per-backend copies into this one.
+    ///
+    /// Equivalent to [`paint_with_opacity`] at `opacity = 1.0` — callers
+    /// that don't yet track an idle-fade timestamp (see
+    /// [`crate::primitives::scrollbar::idle_fade_opacity`]) keep calling
+    /// this.
     pub(crate) fn paint(scrollbar: &Scrollbar, surface: &mut dyn PaintSurface, theme: &Theme) {
+        paint_with_opacity(scrollbar, surface, theme, 1.0);
+    }
+
+    /// Like [`paint`], but scales every fill's alpha by `opacity`
+    /// (`0.0..=1.0`) on top of the hover/drag weighting — the render-side
+    /// half of the overlay idle-fade seam
+    /// [`crate::primitives::scrollbar::idle_fade_opacity`] computes.
+    /// `opacity <= 0.0` paints nothing at all, the same early return as
+    /// a zero-size track, so a fully faded-out bar costs no draw calls.
+    pub(crate) fn paint_with_opacity(
+        scrollbar: &Scrollbar,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        opacity: f32,
+    ) {
         let track = scrollbar.track;
-        if track.width <= 0.0 || track.height <= 0.0 {
+        if track.width <= 0.0 || track.height <= 0.0 || opacity <= 0.0 {
             return;
         }
+        let opacity = opacity.min(1.0) as f64;
 
         let track_alpha = if scrollbar.hovered || scrollbar.dragging {
             0.35
@@ -474,7 +548,10 @@ pub(crate) mod native_surface_paint {
             0.65
         };
 
-        surface.surface_fill_rect(track, theme.scrollbar_track.with_alpha(track_alpha));
+        surface.surface_fill_rect(
+            track,
+            theme.scrollbar_track.with_alpha(track_alpha * opacity),
+        );
 
         let thumb_rect = match scrollbar.axis {
             ScrollAxis::Vertical => Rect::new(
@@ -494,7 +571,7 @@ pub(crate) mod native_surface_paint {
         surface.surface_fill_rounded_rect(
             thumb_rect,
             thumb_radius,
-            theme.scrollbar_thumb.with_alpha(thumb_alpha),
+            theme.scrollbar_thumb.with_alpha(thumb_alpha * opacity),
         );
     }
 
@@ -681,6 +758,53 @@ pub(crate) mod native_surface_paint {
             assert_eq!(thumb_rect.y, track.y);
             assert_eq!(thumb_rect.height, track.height);
             assert!(thumb_rect.width > 0.0 && thumb_rect.width <= track.width);
+        }
+
+        #[test]
+        fn zero_opacity_paints_nothing() {
+            let sb = vertical_bar(0.0, 200.0, 50.0);
+            let mut surface = RecordingSurface::default();
+            paint_with_opacity(&sb, &mut surface, &Theme::default(), 0.0);
+            assert!(
+                surface.fills.is_empty(),
+                "a fully faded-out scrollbar should paint no fills"
+            );
+        }
+
+        #[test]
+        fn partial_opacity_scales_both_fills_alpha_down() {
+            let sb = vertical_bar(0.0, 200.0, 50.0);
+            let theme = Theme::default();
+
+            let mut full = RecordingSurface::default();
+            paint_with_opacity(&sb, &mut full, &theme, 1.0);
+
+            let mut half = RecordingSurface::default();
+            paint_with_opacity(&sb, &mut half, &theme, 0.5);
+
+            assert_eq!(full.fills.len(), half.fills.len());
+            for ((_, full_color), (_, half_color)) in full.fills.iter().zip(half.fills.iter()) {
+                assert!(
+                    half_color.a < full_color.a,
+                    "half opacity should paint a dimmer fill: full a={}, half a={}",
+                    full_color.a,
+                    half_color.a
+                );
+            }
+        }
+
+        #[test]
+        fn paint_is_full_opacity_paint_with_opacity() {
+            let sb = vertical_bar(0.0, 200.0, 50.0);
+            let theme = Theme::default();
+
+            let mut via_paint = RecordingSurface::default();
+            paint(&sb, &mut via_paint, &theme);
+
+            let mut via_opacity = RecordingSurface::default();
+            paint_with_opacity(&sb, &mut via_opacity, &theme, 1.0);
+
+            assert_eq!(via_paint.fills, via_opacity.fills);
         }
     }
 }
@@ -986,5 +1110,47 @@ mod tests {
         assert_eq!(wheel_row_delta(-0.1, 1.0), 1);
         assert_eq!(wheel_row_delta(0.0, 1.0), 0);
         assert_eq!(wheel_row_delta(f32::NAN, 1.0), 0);
+    }
+
+    // ── idle_fade_opacity ────────────────────────────────────────────
+    //
+    // Every test builds its own headless clock the way `Transition`'s
+    // own doc describes: capture `Instant::now()` once, then advance
+    // `now` by adding a `Duration` — never `std::thread::sleep`.
+
+    #[test]
+    fn idle_fade_opacity_is_full_during_the_hold_window() {
+        let last = Instant::now();
+        assert_eq!(idle_fade_opacity(last, last), 1.0);
+        assert_eq!(idle_fade_opacity(last, last + FADE_HOLD), 1.0);
+    }
+
+    #[test]
+    fn idle_fade_opacity_ramps_down_linearly_after_the_hold_window() {
+        let last = Instant::now();
+        let mid = last + FADE_HOLD + FADE_OUT / 2;
+        let opacity = idle_fade_opacity(last, mid);
+        assert!(
+            (opacity - 0.5).abs() < 1e-3,
+            "expected ~0.5 opacity halfway through the fade, got {opacity}"
+        );
+    }
+
+    #[test]
+    fn idle_fade_opacity_reaches_zero_after_the_full_idle_interval() {
+        let last = Instant::now();
+        let after = last + FADE_HOLD + FADE_OUT;
+        assert_eq!(idle_fade_opacity(last, after), 0.0);
+        // Staying idle even longer doesn't go negative.
+        assert_eq!(
+            idle_fade_opacity(last, after + Duration::from_secs(10)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn idle_fade_opacity_clamps_to_full_when_now_precedes_last_interaction() {
+        let last = Instant::now() + Duration::from_secs(1);
+        assert_eq!(idle_fade_opacity(last, Instant::now()), 1.0);
     }
 }

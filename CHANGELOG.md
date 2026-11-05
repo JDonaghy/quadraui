@@ -133,6 +133,21 @@ only a push to `main` runs this workflow.
   `false`) is pixel-unchanged.
 
 ### Added
+- The shared `primitives::{tree,list}::native_surface_paint` painters every
+  GTK/macOS/Win32 rasteriser's `TreeView`/`List` vertical scrollbar routes
+  through now read `Style::scrollbar_width` instead of the fixed
+  `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH` constant (`ListView` gained
+  a new `vscrollbar_with_track_width` method, mirroring `TreeView`'s own, so
+  its existing `vscrollbar` stays backward-compatible). `DataTable` keeps
+  its own fixed `pixel::DATA_TABLE_SCROLLBAR_WIDTH` (`8.0`) override and
+  `Palette` keeps its own `6.0` convention — neither reads this token; see
+  `Style::scrollbar_width`'s own doc for why. `primitives::scrollbar` also
+  gained `idle_fade_opacity` (a `Transition`-based, headless-clock-testable
+  opacity curve for an overlay scrollbar's hover/scroll-then-idle fade) and
+  `native_surface_paint::paint_with_opacity` (the render-side multiplier
+  hook `paint` now delegates to at `opacity = 1.0`) — the backend-neutral
+  seam a follow-up per-backend issue wires to a live last-interaction
+  timestamp.
 - `Style::row_padding_x`/`Style::tab_padding_x` — the horizontal inset a
   `List`/`TreeView`/`ContextMenu`/`Palette` row's leading content starts
   at (`row_padding_x`, default `8.0`; `ContextMenu` also uses it for its

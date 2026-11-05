@@ -114,6 +114,10 @@ pub mod pixel {
     pub const PIPELINE_BORDER_WIDTH: f64 = 1.0;
 
     /// [`crate::DataTable`] width reserved for the vertical scrollbar.
+    ///
+    /// Deliberately not [`crate::style::Style::scrollbar_width`] — see
+    /// that field's own doc for why `DataTable` keeps this fixed
+    /// override instead of reading the shared token.
     pub const DATA_TABLE_SCROLLBAR_WIDTH: f32 = 8.0;
 
     /// Nominal pixel width of one terminal cell — the fallback
@@ -130,6 +134,14 @@ pub mod pixel {
     /// backends, matching VS Code's list/tree scrollbar (10px) — see
     /// [`super::tree_row_pitch`]'s doc for why the column width must not
     /// be derived from row pitch. TUI passes `1.0` (one cell) instead.
+    ///
+    /// The shared [`crate::primitives::tree::native_surface_paint::paint`]
+    /// / [`crate::primitives::list::native_surface_paint::paint`] functions
+    /// read [`crate::style::Style::scrollbar_width`] instead of this
+    /// constant (which equals its default, `10.0`); this constant remains
+    /// the value each backend's own `Backend::tree_vscrollbar`/
+    /// `Backend::list_vscrollbar` hit-testing implementation passes until
+    /// a per-backend follow-up threads a live `Style` through those too.
     pub const TREE_VSCROLLBAR_WIDTH: f32 = 10.0;
 
     /// [`crate::Form`] horizontal padding (both sides combined) reserved

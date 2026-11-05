@@ -412,7 +412,31 @@ impl ListView {
     ///   thumb length (i.e. `1.0` on TUI — one cell wide, one cell tall
     ///   minimum thumb).
     pub fn vscrollbar(&self, area: Rect, row_height: f32) -> Option<Scrollbar> {
+        self.vscrollbar_with_track_width(area, row_height, row_height)
+    }
+
+    /// Like [`vscrollbar`](Self::vscrollbar), but with an explicit
+    /// `track_width` instead of defaulting it to `row_height` — the same
+    /// split [`crate::primitives::tree::TreeView::vscrollbar_with_track_width`]
+    /// already has.
+    ///
+    /// - `track_width` — width of the scrollbar column, occupying the
+    ///   rightmost `track_width` of `area`: `1.0` on TUI (one cell), or
+    ///   [`crate::style::Style::scrollbar_width`] on pixel backends —
+    ///   [`native_surface_paint::paint`] passes `style.scrollbar_width`.
+    ///   `row_height` still serves as the row-counting pitch (how many
+    ///   rows fit the track height) and the minimum thumb length,
+    ///   independent of the column's own width.
+    pub fn vscrollbar_with_track_width(
+        &self,
+        area: Rect,
+        row_height: f32,
+        track_width: f32,
+    ) -> Option<Scrollbar> {
         if !self.show_v_scrollbar {
+            return None;
+        }
+        if row_height <= 0.0 || track_width <= 0.0 {
             return None;
         }
         let total = self.items.len() as f32;
@@ -421,12 +445,11 @@ impl ListView {
         }
         // Track occupies the rightmost content column; its height spans the
         // content rows (below the title in flat mode, between borders in
-        // bordered mode).
+        // bordered mode). The column sits `row_height` inside the right
+        // border in `bordered` mode (so it never overlaps the border
+        // stroke itself), `track_width` wide either way.
         let (track_x, track_y, track_h) = if self.bordered {
-            // In bordered mode: right border at area.x + area.width - 1,
-            // so the track sits at area.x + area.width - 2*row_height (last
-            // content column), spanning from top-border to bottom-border.
-            let x = area.x + area.width - 2.0 * row_height;
+            let x = area.x + area.width - row_height - track_width;
             let y = area.y + row_height;
             let h = (area.height - 2.0 * row_height).max(0.0);
             (x, y, h)
@@ -438,7 +461,7 @@ impl ListView {
             } else {
                 0.0
             };
-            let x = area.x + area.width - row_height;
+            let x = area.x + area.width - track_width;
             let y = area.y + title_h;
             let h = (area.height - title_h).max(0.0);
             (x, y, h)
@@ -451,7 +474,7 @@ impl ListView {
         if total <= visible {
             return None;
         }
-        let track = Rect::new(track_x, track_y, row_height, track_h);
+        let track = Rect::new(track_x, track_y, track_width, track_h);
         Some(Scrollbar::vertical(
             self.id,
             track,
@@ -996,7 +1019,11 @@ pub(crate) mod native_surface_paint {
         }
 
         // ── Vertical scrollbar ─────────────────────────────────────
-        if let Some(vsb) = list.vscrollbar(area, line_height) {
+        // Track width is `Style::scrollbar_width`, independent of row
+        // pitch — see that field's own doc.
+        if let Some(vsb) =
+            list.vscrollbar_with_track_width(area, line_height, style.scrollbar_width)
+        {
             crate::primitives::scrollbar::native_surface_paint::paint(&vsb, surface, theme);
         }
 
@@ -1117,7 +1144,7 @@ pub(crate) mod native_surface_paint {
             );
 
             let expected = list
-                .vscrollbar(AREA, LINE_HEIGHT)
+                .vscrollbar_with_track_width(AREA, LINE_HEIGHT, Style::default().scrollbar_width)
                 .expect("50 rows in an 80px/16px viewport must need a v-scrollbar");
             assert!(
                 surface
@@ -1131,6 +1158,38 @@ pub(crate) mod native_surface_paint {
                 expected.track,
                 surface.fills
             );
+        }
+
+        /// The painted track's width follows `Style::scrollbar_width`,
+        /// not `line_height` — a host-set non-default width must
+        /// actually reach the paint surface.
+        #[test]
+        fn vertical_scrollbar_track_width_follows_style_token() {
+            let list = vlist(50);
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let style = Style::default().with_scrollbar_width(20.0);
+            let mut surface = RecordingSurface::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &Theme::default(),
+                &style,
+            );
+
+            let track_fill = surface
+                .fills
+                .iter()
+                .find(|(r, _)| (r.width - 20.0).abs() < 0.01)
+                .expect("expected a fill at the 20px-wide scrollbar track");
+            assert_eq!(track_fill.0.x, AREA.x + AREA.width - 20.0);
         }
 
         #[test]
