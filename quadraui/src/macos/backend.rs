@@ -2444,13 +2444,14 @@ impl Backend for MacBackend {
     fn list_vscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
         // macOS ListView vertical-scrollbar rasteriser not yet implemented.
         // Delegate to the primitive's geometry method using pixel units:
-        // each "row" is `resolved_row_height` tall (the primitive
-        // column-width parameter is reused as row_height here, same as
-        // for TUI) — matches `draw_list`'s own row pitch.
+        // each "row" is `resolved_row_height` tall, matching `draw_list`'s
+        // own row pitch. `scrollbar_width` sets the track's column width so
+        // this hit-test agrees exactly with what `draw_list` paints.
         let row_h = self.resolved_row_height(self.chrome_line_height() as f64) as f32;
-        list.vscrollbar(
+        list.vscrollbar_with_track_width(
             crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height),
             row_h,
+            self.current_style.scrollbar_width,
         )
     }
     fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
@@ -9490,6 +9491,48 @@ mod tests {
             crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH
         );
         assert!(sb.thumb_len >= 50.0);
+    }
+
+    /// `list_vscrollbar`'s track width must follow a host-set
+    /// `Style::scrollbar_width`, the same live field
+    /// `native_surface_paint::paint` reads — so the painted track and
+    /// the hit-tested track can never drift apart, at the default width
+    /// or a host override.
+    #[test]
+    fn mac_backend_list_vscrollbar_track_width_follows_style_token() {
+        let mut backend = MacBackend::new();
+        let list = ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..30)
+                .map(|i| crate::ListItem {
+                    text: crate::types::StyledText::plain(format!("row {i}")),
+                    detail: None,
+                    icon: None,
+                    decoration: crate::types::Decoration::default(),
+                })
+                .collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: true,
+        };
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+
+        let default_sb = Backend::list_vscrollbar(&backend, rect, &list)
+            .expect("30 rows must overflow a 100px viewport");
+        assert_eq!(
+            default_sb.track.width,
+            backend.current_style().scrollbar_width
+        );
+
+        backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
+        let overridden_sb = Backend::list_vscrollbar(&backend, rect, &list)
+            .expect("30 rows must overflow a 100px viewport");
+        assert_eq!(overridden_sb.track.width, 24.0);
     }
 
     /// `menu_bar_layout`/`draw_menu_bar` twin of

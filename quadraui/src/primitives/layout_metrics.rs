@@ -138,10 +138,14 @@ pub mod pixel {
     /// The shared [`crate::primitives::tree::native_surface_paint::paint`]
     /// / [`crate::primitives::list::native_surface_paint::paint`] functions
     /// read [`crate::style::Style::scrollbar_width`] instead of this
-    /// constant (which equals its default, `10.0`); this constant remains
-    /// the value each backend's own `Backend::tree_vscrollbar`/
-    /// `Backend::list_vscrollbar` hit-testing implementation passes until
-    /// a per-backend follow-up threads a live `Style` through those too.
+    /// constant (which equals its default, `10.0`). Each backend's own
+    /// `Backend::list_vscrollbar` hit-testing implementation passes that
+    /// same live `self.current_style.scrollbar_width`, so paint and
+    /// hit-test can't drift apart at a non-default style. `Backend::
+    /// tree_vscrollbar` still passes this constant literally — a
+    /// per-backend follow-up threads a live `Style` through it too, which
+    /// is a no-op today since the constant equals the style field's
+    /// default.
     pub const TREE_VSCROLLBAR_WIDTH: f32 = 10.0;
 
     /// [`crate::Form`] horizontal padding (both sides combined) reserved

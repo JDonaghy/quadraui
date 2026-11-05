@@ -135,9 +135,27 @@ only a push to `main` runs this workflow.
   its existing `vscrollbar` stays backward-compatible). `DataTable` keeps
   its own fixed `pixel::DATA_TABLE_SCROLLBAR_WIDTH` (`8.0`) override and
   `Palette` keeps its own `6.0` convention — neither reads this token; see
-  `Style::scrollbar_width`'s own doc for why. `primitives::scrollbar` also
-  gained `idle_fade_opacity` (a `Transition`-based, headless-clock-testable
-  opacity curve for an overlay scrollbar's hover/scroll-then-idle fade) and
+  `Style::scrollbar_width`'s own doc for why. Every GTK/macOS/Win32
+  backend's `Backend::list_vscrollbar` hit-test now also passes
+  `self.current_style.scrollbar_width` (via `vscrollbar_with_track_width`),
+  the same field the shared painter reads, so `List`'s painted track and
+  its hit-tested track can never drift apart at a non-default width;
+  `Backend::tree_vscrollbar` still passes the fixed constant (a no-op
+  today, since it equals this field's default). Win32's own `List`
+  rasteriser (`win::list::draw_list`) now takes the live `&Style` its
+  `WinBackend` caller holds instead of building a local `Style::default()`,
+  so a host-set `scrollbar_width` reaches the Win32 list scrollbar the
+  same as GTK/macOS. `ListView::vscrollbar`/`vscrollbar_with_track_width`
+  already returned `None` once every row fits the viewport — the "always
+  visible bar" acceptance item was never a painter bug — and that's now
+  pinned by a shared-painter test asserting no scrollbar fill is emitted
+  when content fits; `Palette` keeping its own narrower `6.0` scrollbar
+  convention instead of this token stays an explicit, documented scope
+  exclusion (see `Style::scrollbar_width`'s own doc), not an oversight.
+  `primitives::scrollbar` also gained `idle_fade_opacity` (a
+  `Transition`-based, headless-clock-testable opacity curve for an
+  overlay scrollbar's hover/scroll-then-idle fade, built on the new
+  `SCROLLBAR_FADE_HOLD`/`SCROLLBAR_FADE_OUT` constants) and
   `native_surface_paint::paint_with_opacity` (the render-side multiplier
   hook `paint` now delegates to at `opacity = 1.0`) — the backend-neutral
   seam a follow-up per-backend issue wires to a live last-interaction
