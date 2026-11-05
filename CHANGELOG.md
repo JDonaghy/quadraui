@@ -59,6 +59,13 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Fixed
+- macOS `Backend::set_cursor` no longer reverts to the arrow on the next
+  mouse move: `MacBackend` now stashes the requested `PointerShape`, and
+  `QuadraView` installs an `NSTrackingArea` (`CursorUpdate`,
+  `EnabledDuringMouseDrag`) that reapplies it from `cursorUpdate:` /
+  `resetCursorRects` on every subsequent move, including mid-drag. The
+  `AppShell` sidebar/main-content divider now sets this resize cursor
+  automatically on hover and drag, on every backend.
 - `quadraui-binding-core`'s `data_table_key_event` now maps Enter on a
   focused `DataTable` to `DataTableEvent::RowActivated { idx }` — the
   keyboard equivalent of a pointer double-click — instead of being a no-op;

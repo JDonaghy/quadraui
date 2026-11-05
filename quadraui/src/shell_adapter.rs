@@ -18,7 +18,7 @@ use crate::event::{Point, Rect};
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig, ShellContext};
 use crate::types::WidgetId;
-use crate::{ActivityBarEvent, Backend, MouseButton, UiEvent};
+use crate::{ActivityBarEvent, Backend, MouseButton, PointerShape, ResizeEdge, UiEvent};
 
 /// Adapts a [`ShellApp`] into an [`AppLogic`] by composing it with an
 /// [`AppShell`] and an optional [`BottomPanelController`].
@@ -108,6 +108,57 @@ impl<A: ShellApp> ShellAdapter<A> {
         );
         self.app.on_shell_event_ctx(ev, &ctx);
         Reaction::Redraw
+    }
+
+    /// Shows the OS horizontal-resize cursor while `position` hovers the
+    /// sidebar/main-content divider, or while `dragging` is `true` (a
+    /// `SidebarResized` this same dispatch just produced) — and the
+    /// default arrow everywhere else. Mirrors VS Code's own divider
+    /// affordance. Called from [`Self::handle`] on every `MouseMoved`,
+    /// *before* the app's own [`ShellApp::handle`] runs, so an app that
+    /// wants a different shape for whatever else it's hovering still
+    /// gets the last word — [`Backend::set_cursor`] is stateless, last
+    /// caller wins, same as every other backend already assumes.
+    ///
+    /// Routed through [`Backend::set_cursor`], which already degrades to
+    /// a no-op `false` on backends with nothing to show it on (the TUI's
+    /// trait default) — no new capability or per-backend wiring needed
+    /// here.
+    fn update_divider_cursor(
+        &self,
+        backend: &mut dyn Backend,
+        area: Rect,
+        position: Point,
+        dragging: bool,
+    ) {
+        let shape = if self.divider_resize_cursor_active(backend, area, position, dragging) {
+            PointerShape::Resize(ResizeEdge::East)
+        } else {
+            PointerShape::Default
+        };
+        backend.set_cursor(shape);
+    }
+
+    /// The decision half of [`Self::update_divider_cursor`], split out so
+    /// it's testable without a `Backend::set_cursor` spy: `true` iff the
+    /// resize cursor should be showing right now — either `position` is
+    /// over the sidebar/main-content divider, or a drag of it
+    /// (`dragging`) is already in progress (so the cursor doesn't flicker
+    /// back to the arrow mid-drag if the pointer briefly outruns the
+    /// divider's own, narrower hit rect).
+    fn divider_resize_cursor_active(
+        &self,
+        backend: &dyn Backend,
+        area: Rect,
+        position: Point,
+        dragging: bool,
+    ) -> bool {
+        dragging
+            || self
+                .shell
+                .layout_for(backend, area)
+                .divider_bounds
+                .is_some_and(|d| d.contains(position))
     }
 }
 
@@ -364,6 +415,17 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         }
 
         let shell_ev = self.shell.handle(&event, backend, area);
+
+        // The sidebar/main-content resize divider gets the OS resize
+        // cursor while the pointer hovers or drags it, and the default
+        // arrow everywhere else — mirrors VS Code's own divider affordance.
+        // Must run before the `match` below returns early for
+        // `SidebarResized` (the drag-in-progress case).
+        if let UiEvent::MouseMoved { position, .. } = &event {
+            let dragging = matches!(shell_ev, AppShellEvent::SidebarResized { .. });
+            self.update_divider_cursor(backend, area, *position, dragging);
+        }
+
         match &shell_ev {
             AppShellEvent::PanelChanged { panel_id } => {
                 self.active_panel_id = Some(*panel_id);
@@ -640,6 +702,52 @@ mod tests {
 
         let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
         assert!(layout.sidebar_content_bounds.is_some());
+    }
+
+    /// [`ShellAdapter::divider_resize_cursor_active`] — the decision half
+    /// of the "resize cursor over the sidebar divider" behaviour
+    /// `handle()` wires on every `MouseMoved` — is `true` exactly while
+    /// hovering the divider or mid-drag, `false` everywhere else. Backs
+    /// the macOS `NSTrackingArea`/`cursorUpdate:` fix (which needs a live
+    /// AppKit window to exercise end-to-end) with a cross-backend,
+    /// headless check of the one piece `Backend::set_cursor` itself
+    /// can't observe without a spy.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn divider_resize_cursor_active_covers_hover_drag_and_miss() {
+        let config = ShellConfig::new(
+            "t",
+            vec![PanelDefinition {
+                id: WidgetId::new("panel:p"),
+                icon: "P".to_string(),
+                tooltip: "Panel".to_string(),
+                title: "PANEL".to_string(),
+            }],
+        );
+        let adapter = build_shell_adapter(NoopApp, config);
+        let backend = crate::tui::backend::TuiBackend::new();
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let divider = adapter
+            .shell
+            .layout_for(&backend, area)
+            .divider_bounds
+            .expect("sidebar visible with one panel lays out a divider");
+        let on_divider = Point::new(divider.x + divider.width / 2.0, divider.y + 1.0);
+        let off_divider = Point::new(divider.x + divider.width + 5.0, divider.y + 1.0);
+
+        assert!(
+            adapter.divider_resize_cursor_active(&backend, area, on_divider, false),
+            "hovering the divider itself must show the resize cursor"
+        );
+        assert!(
+            !adapter.divider_resize_cursor_active(&backend, area, off_divider, false),
+            "away from the divider, not dragging, must show the default arrow"
+        );
+        assert!(
+            adapter.divider_resize_cursor_active(&backend, area, off_divider, true),
+            "an in-progress drag must keep the resize cursor even once the pointer outruns \
+             the divider's own, narrower hit rect"
+        );
     }
 
     /// `ShellApp::setup_shell` fires once, right after `ShellApp::setup`,
