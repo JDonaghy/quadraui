@@ -17,6 +17,7 @@ use gtk4::pango;
 
 use super::{cairo_rgb, rounded_rect_path};
 use crate::primitives::list::{ListView, ListViewLayout};
+use crate::style::Style;
 use crate::theme::Theme;
 
 /// Compute the GTK pixel-unit layout for a [`ListView`] without painting —
@@ -97,6 +98,7 @@ pub fn draw_list(
     h: f64,
     list: &ListView,
     theme: &Theme,
+    style: &Style,
     line_height: f64,
     nerd_fonts_enabled: bool,
 ) {
@@ -139,6 +141,7 @@ pub fn draw_list(
         /* supports_hscrollbar */ true,
         &mut surface,
         theme,
+        style,
     );
 
     if list.bordered {
@@ -228,6 +231,7 @@ mod tests {
                 H as f64,
                 &list,
                 &test_theme(),
+                &Style::default(),
                 LINE_HEIGHT,
                 false,
             );

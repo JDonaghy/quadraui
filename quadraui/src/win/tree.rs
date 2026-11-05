@@ -114,6 +114,12 @@ pub fn draw_tree(
     nerd_fonts_enabled: bool,
     theme: &Theme,
 ) -> TreeViewLayout {
+    // This fn's own parameter list has no `style` slot yet, unlike
+    // `theme` — `Style::default()` matches `win::list::draw_list`'s own
+    // `Theme::default()` precedent (see that fn's doc) rather than
+    // widening this fn's signature ahead of a consumer that needs a
+    // non-default `Style::row_padding_x` on Windows specifically.
+    let style = crate::style::Style::default();
     let layout = win_tree_layout_measured(dwrite, rect, tree, line_height);
 
     let mut surface = super::surface::D2dSurface {
@@ -128,6 +134,7 @@ pub fn draw_tree(
         nerd_fonts_enabled,
         &mut surface,
         theme,
+        &style,
     );
 
     layout

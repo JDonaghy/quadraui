@@ -774,7 +774,12 @@ pub(crate) mod native_surface_paint {
             let (_, lh) = surface.surface_measure_text(&label_text);
             let text_y = row.y + (row.height - lh) / 2.0;
             surface.surface_draw_text_run(
-                Rect::new(row.x + 8.0, text_y, (row.width - 8.0).max(0.0), lh),
+                Rect::new(
+                    row.x + style.row_padding_x,
+                    text_y,
+                    (row.width - style.row_padding_x).max(0.0),
+                    lh,
+                ),
                 &label_text,
                 label_fg,
             );
@@ -782,7 +787,12 @@ pub(crate) mod native_surface_paint {
             if item.checked == Some(true) {
                 let (cw, ch) = surface.surface_measure_text(&check_glyph);
                 surface.surface_draw_icon_glyph(
-                    Rect::new(row.x + 8.0, text_y, cw.max(1.0), ch.max(1.0)),
+                    Rect::new(
+                        row.x + style.row_padding_x,
+                        text_y,
+                        cw.max(1.0),
+                        ch.max(1.0),
+                    ),
                     &check_glyph,
                     label_fg,
                 );
@@ -798,7 +808,12 @@ pub(crate) mod native_surface_paint {
                 // hint would never fire anyway.
                 let (aw, ah) = surface.surface_measure_text(&submenu_arrow_glyph);
                 surface.surface_draw_icon_glyph(
-                    Rect::new(row.x + row.width - aw - 8.0, text_y, aw.max(1.0), ah),
+                    Rect::new(
+                        row.x + row.width - aw - style.row_padding_x,
+                        text_y,
+                        aw.max(1.0),
+                        ah,
+                    ),
                     &submenu_arrow_glyph,
                     label_fg,
                 );
@@ -806,7 +821,12 @@ pub(crate) mod native_surface_paint {
                 if !shortcut.is_empty() {
                     let (sw, sh) = surface.surface_measure_text(&shortcut);
                     surface.surface_draw_text_run(
-                        Rect::new(row.x + row.width - sw - 8.0, text_y, sw.max(1.0), sh),
+                        Rect::new(
+                            row.x + row.width - sw - style.row_padding_x,
+                            text_y,
+                            sw.max(1.0),
+                            sh,
+                        ),
                         &shortcut,
                         theme.muted_fg,
                     );

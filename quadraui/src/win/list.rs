@@ -111,9 +111,11 @@ pub fn draw_list(
     line_height: f32,
 ) -> ListViewLayout {
     use super::text::fill_rect;
+    use crate::style::Style;
     use crate::theme::Theme;
 
     let theme = Theme::default();
+    let style = Style::default();
     let char_width = dwrite
         .measure_text("M")
         .map(|(w, _)| w)
@@ -145,6 +147,7 @@ pub fn draw_list(
         true,
         &mut surface,
         &theme,
+        &style,
     );
 
     // The `bordered` frame is drawn *after* the shared content paint so it

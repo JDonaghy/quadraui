@@ -916,7 +916,7 @@ pub(crate) mod native_surface_paint {
                 surface.surface_fill_rect(Rect::new(row_x, row_y, row_w, row_h), theme.selected_bg);
             }
 
-            let mut cursor_x = row_x + 8.0;
+            let mut cursor_x = row_x + style.row_padding_x;
 
             let prefix = if is_selected { "\u{25b6} " } else { "  " };
             let (pw, ph) = surface.surface_measure_text(prefix);

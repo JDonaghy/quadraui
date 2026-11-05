@@ -18,6 +18,7 @@ use gtk4::pango;
 use super::toolbar::PangoMeasure;
 use crate::event::Rect as QRect;
 use crate::primitives::tree::{TreeView, TreeViewLayout};
+use crate::style::Style;
 use crate::theme::Theme;
 
 /// Compute the layout the GTK rasteriser would produce for `tree` in
@@ -107,6 +108,7 @@ pub fn draw_tree(
     h: f64,
     tree: &TreeView,
     theme: &Theme,
+    style: &Style,
     line_height: f64,
     nerd_fonts_enabled: bool,
 ) {
@@ -138,6 +140,7 @@ pub fn draw_tree(
         nerd_fonts_enabled,
         &mut surface,
         theme,
+        style,
     );
 
     layout.set_attributes(None);
@@ -236,6 +239,7 @@ mod tests {
                 H as f64,
                 tree,
                 &test_theme(),
+                &Style::default(),
                 LINE_HEIGHT,
                 /* nerd_fonts */ false,
             );
@@ -734,6 +738,7 @@ mod tests {
                     H as f64,
                     &tree,
                     &test_theme(),
+                    &Style::default(),
                     line_height,
                     /* nerd_fonts */ false,
                 );
@@ -835,6 +840,7 @@ mod tests {
                 H as f64,
                 &tree,
                 &theme,
+                &Style::default(),
                 LINE_HEIGHT,
                 /* nerd_fonts */ false,
             );
@@ -926,6 +932,7 @@ mod tests {
                 H as f64,
                 &tree,
                 &test_theme(),
+                &Style::default(),
                 LINE_HEIGHT,
                 false,
             );

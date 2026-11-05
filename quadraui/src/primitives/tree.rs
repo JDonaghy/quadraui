@@ -463,6 +463,7 @@ impl TreeView {
 pub(crate) mod native_surface_paint {
     use super::{TreeRowEditState, TreeView, TreeViewLayout};
     use crate::paint_surface::PaintSurface;
+    use crate::style::Style;
     use crate::text_util::{safe_prefix, snap_to_char_boundary};
     use crate::theme::Theme;
     use crate::types::Decoration;
@@ -479,7 +480,12 @@ pub(crate) mod native_surface_paint {
     /// native units; row pitch (header vs. leaf/branch) is derived from
     /// it via [`crate::primitives::layout_metrics::tree_row_pitch`], the
     /// same formula `tree_layout` itself used. `nerd_fonts_enabled`
-    /// selects `Icon::glyph` vs. `Icon::fallback`.
+    /// selects `Icon::glyph` vs. `Icon::fallback`. `style` supplies
+    /// [`Style::row_padding_x`], the horizontal inset a row's leading
+    /// chevron/icon/text starts at — GTK/macOS callers pass
+    /// `&self.style()`; `win::tree::draw_tree` passes `&Style::default()`,
+    /// matching `win::list`'s own documented "no live theme either" gap.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         tree: &TreeView,
         area: Rect,
@@ -488,6 +494,7 @@ pub(crate) mod native_surface_paint {
         nerd_fonts_enabled: bool,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        style: &Style,
     ) {
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
@@ -546,7 +553,7 @@ pub(crate) mod native_surface_paint {
             let row_rect = Rect::new(row_x, row_y, row_w, row_h);
             surface.surface_fill_rect(row_rect, row_bg);
 
-            let mut cursor_x = row_x + 2.0 + row.indent as f32 * indent_px;
+            let mut cursor_x = row_x + style.row_padding_x + row.indent as f32 * indent_px;
 
             if let Some(expanded) = row.is_expanded {
                 if tree.style.show_chevrons {
@@ -882,6 +889,7 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
             );
 
             let item_height =
@@ -927,6 +935,7 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
             );
 
             assert!(
@@ -967,6 +976,7 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
             );
 
             assert!(
@@ -1013,6 +1023,7 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
             );
 
             let row1 = &layout.visible_rows[1];
@@ -1054,6 +1065,7 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
             );
 
             assert!(
@@ -1084,6 +1096,7 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
             );
 
             let row1 = &layout.visible_rows[1];
@@ -1121,6 +1134,7 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
             );
 
             assert!(surface
@@ -1155,6 +1169,7 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
             );
 
             let (badge_bw, _) = surface.surface_measure_text("U");
@@ -1212,6 +1227,7 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
             );
 
             assert!(

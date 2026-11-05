@@ -333,6 +333,49 @@ pub struct Style {
     /// constant.
     #[serde(default = "default_scrollbar_width")]
     pub scrollbar_width: f32,
+
+    /// Horizontal inset, in surface-native pixels, between a row's
+    /// edge and its leading/trailing content — the gap `List`, `TreeView`,
+    /// `ContextMenu` and `Palette` all reserve before painting a row's
+    /// leading chevron/icon/text and before its trailing detail/badge/
+    /// shortcut glyph. Consumed directly by the one shared
+    /// [`crate::paint_surface::PaintSurface`] painter each of those four
+    /// primitives routes every GTK/macOS/Win32 rasteriser through —
+    /// `primitives::{list,tree,context_menu,palette}::native_surface_paint`'s
+    /// own `paint`/`paint_with_glyphs` — so wiring this token there is
+    /// one change per primitive, not one per backend, the same shape
+    /// [`Self::scrollbar_width`]'s own doc describes for a future
+    /// `TreeView` scrollbar wire-up.
+    ///
+    /// **TUI story: cell-quantised, dropped below one cell.** A sub-cell
+    /// inset has no grid column to paint into; a TUI rasteriser that
+    /// wants to honour this token rounds it up to whole cells first —
+    /// `ceil(row_padding_x / nominal_cell_px)`, the same nominal-cell-width
+    /// fallback [`Self::padding`]'s own doc describes — *except* that a
+    /// result below one whole cell is dropped to `0` rather than forced
+    /// up to a 1-cell minimum: a terminal list row is already flush
+    /// against its own border character, and forcing every row's text
+    /// one full cell inward by default would look like a layout bug, not
+    /// VS Code's much subtler sub-cell inset. No TUI primitive reads this
+    /// field yet, for the same reason as [`Self::padding`] above.
+    ///
+    /// Default `8.0` — VS Code's own list/tree/menu row horizontal inset.
+    #[serde(default = "default_row_padding_x")]
+    pub row_padding_x: f32,
+
+    /// Horizontal inset, in surface-native pixels, between a tab strip's
+    /// edge and a tab label's text. Defined here alongside
+    /// [`Self::row_padding_x`] but consumed by each GUI backend's own
+    /// `tab_bar.rs` painter rather than a primitive shared across
+    /// backends — see the per-backend follow-up issues this field's
+    /// introducing change tracks.
+    ///
+    /// **TUI story: cell-quantised, dropped below one cell** — the same
+    /// rule as [`Self::row_padding_x`]'s own doc.
+    ///
+    /// Default `10.0` — VS Code's own tab label horizontal inset.
+    #[serde(default = "default_tab_padding_x")]
+    pub tab_padding_x: f32,
 }
 
 /// `#[serde(default)]` value for [`Style::tab_height`] — a struct
@@ -379,6 +422,18 @@ fn default_scrollbar_width() -> f32 {
     10.0
 }
 
+/// `#[serde(default)]` value for [`Style::row_padding_x`] — see
+/// [`default_tab_height`].
+fn default_row_padding_x() -> f32 {
+    8.0
+}
+
+/// `#[serde(default)]` value for [`Style::tab_padding_x`] — see
+/// [`default_tab_height`].
+fn default_tab_padding_x() -> f32 {
+    10.0
+}
+
 impl Default for Style {
     fn default() -> Self {
         Self {
@@ -395,6 +450,8 @@ impl Default for Style {
             row_height: 22.0,
             toolbar_height: 35.0,
             scrollbar_width: 10.0,
+            row_padding_x: 8.0,
+            tab_padding_x: 10.0,
         }
     }
 }
@@ -499,6 +556,20 @@ impl Style {
     #[must_use]
     pub fn with_scrollbar_width(mut self, scrollbar_width: f32) -> Self {
         self.scrollbar_width = scrollbar_width;
+        self
+    }
+
+    /// Set [`Self::row_padding_x`].
+    #[must_use]
+    pub fn with_row_padding_x(mut self, row_padding_x: f32) -> Self {
+        self.row_padding_x = row_padding_x;
+        self
+    }
+
+    /// Set [`Self::tab_padding_x`].
+    #[must_use]
+    pub fn with_tab_padding_x(mut self, tab_padding_x: f32) -> Self {
+        self.tab_padding_x = tab_padding_x;
         self
     }
 }
@@ -695,5 +766,49 @@ mod tests {
         let style: Style =
             serde_json::from_str(json).expect("deserialize without backdrop_opacity");
         assert_eq!(style.backdrop_opacity, 1.0);
+    }
+
+    /// Pins the VS-Code-matching defaults for the row/tab padding
+    /// tokens, so a future edit to either is a deliberate, reviewed
+    /// visual change.
+    #[test]
+    fn defaults_match_vs_code_row_and_tab_padding() {
+        let style = Style::default();
+        assert_eq!(style.row_padding_x, 8.0);
+        assert_eq!(style.tab_padding_x, 10.0);
+    }
+
+    /// Same proof as `with_focus_ring_width_builder_overrides_only_that_field`,
+    /// for [`Style::row_padding_x`] and [`Style::tab_padding_x`].
+    #[test]
+    fn row_and_tab_padding_builders_each_override_only_their_own_field() {
+        let defaults = Style::default();
+
+        let row_padding_x = defaults.with_row_padding_x(12.0);
+        assert_eq!(row_padding_x.row_padding_x, 12.0);
+        assert_eq!(row_padding_x.tab_padding_x, defaults.tab_padding_x);
+
+        let tab_padding_x = defaults.with_tab_padding_x(14.0);
+        assert_eq!(tab_padding_x.tab_padding_x, 14.0);
+        assert_eq!(tab_padding_x.row_padding_x, defaults.row_padding_x);
+    }
+
+    /// A JSON payload serialized before [`Style::row_padding_x`] /
+    /// [`Style::tab_padding_x`] existed has no such keys;
+    /// `#[serde(default = "…")]` must deserialize them at the VS Code
+    /// defaults rather than erroring.
+    #[test]
+    fn deserializing_without_row_or_tab_padding_defaults_to_vs_code_values() {
+        let json = r#"{
+            "focus_ring_width": 2.0,
+            "padding": 8.0,
+            "corner_radius": 6.0,
+            "border_width": 1.0,
+            "shadow_elevation": 1,
+            "control_height": 26.0
+        }"#;
+        let style: Style = serde_json::from_str(json).expect("deserialize without row/tab padding");
+        assert_eq!(style.row_padding_x, 8.0);
+        assert_eq!(style.tab_padding_x, 10.0);
     }
 }
