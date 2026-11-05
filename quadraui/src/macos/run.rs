@@ -710,12 +710,17 @@ define_class!(
         //   covering the view (`InVisibleRect`, so it never needs
         //   recreating on resize) with the `CursorUpdate` option —
         //   this is what makes AppKit call `cursorUpdate:` on every
-        //   subsequent mouse move, where previously no owner was
-        //   registered for cursor updates at all.
+        //   subsequent mouse move.
         //   `EnabledDuringMouseDrag` keeps those calls coming while a
         //   mouse button is held, so a divider drag that calls
         //   `set_cursor` on `MouseDown` keeps its resize cursor for
         //   the whole drag instead of only the first frame.
+        //   `ActiveAlways` (rather than the conventional
+        //   `ActiveInKeyWindow`) keeps this view re-asserting its own
+        //   cursor even while another app is frontmost — matching
+        //   `NSCursor::set()`'s own global, not-key-window-scoped
+        //   behavior, which the rest of this mechanism exists to keep
+        //   current.
         // - `cursorUpdate:` re-applies `MacBackend::requested_cursor()`
         //   every time AppKit invokes it.
         // - `resetCursorRects` is AppKit's older, rect-based cursor
@@ -762,17 +767,43 @@ define_class!(
             *self.ivars().cursor_tracking_area.borrow_mut() = Some(area);
         }
 
-        /// See the "Pointer cursor" section doc above.
+        /// See the "Pointer cursor" section doc above. `try_borrow`, not
+        /// `borrow`: AppKit can dispatch this selector while
+        /// `AppLogic::handle` is still holding `backend.borrow_mut()`
+        /// further up this exact call stack — `MacBackend::show_context_menu`
+        /// blocks in `popUpMenuPositioningItem:atLocation:inView:` and
+        /// `services.rs`'s `NSOpenPanel`/`NSSavePanel`/`NSAlert` all block in
+        /// `runModal()`, each spinning a *nested* AppKit run loop that keeps
+        /// delivering `cursorUpdate:` (the tracking area above is
+        /// `ActiveAlways` + `EnabledDuringMouseDrag`) while the mouse moves
+        /// over the view. A plain `.borrow()` here would hit
+        /// `BorrowMutError` and panic straight across this `define_class!`
+        /// trampoline's C ABI boundary — no `catch_unwind` sits between here
+        /// and the nested run loop's caller, so that panic aborts the
+        /// process instead of unwinding — the same hazard
+        /// `viewDidChangeEffectiveAppearance` documents and guards against
+        /// above. Dropping one cursor re-apply under contention is
+        /// invisible; aborting the host process is not.
         #[unsafe(method(cursorUpdate:))]
         fn objc_cursor_update(&self, _event: &NSEvent) {
-            let shape = self.ivars().backend.borrow().requested_cursor();
+            let Ok(backend) = self.ivars().backend.try_borrow() else {
+                return;
+            };
+            let shape = backend.requested_cursor();
+            drop(backend);
             mac_cursor_for_shape(shape).set();
         }
 
-        /// See the "Pointer cursor" section doc above.
+        /// See the "Pointer cursor" section doc above, and
+        /// `cursorUpdate:`'s doc for why this borrows with `try_borrow`
+        /// rather than `borrow`.
         #[unsafe(method(resetCursorRects))]
         fn objc_reset_cursor_rects(&self) {
-            let shape = self.ivars().backend.borrow().requested_cursor();
+            let Ok(backend) = self.ivars().backend.try_borrow() else {
+                return;
+            };
+            let shape = backend.requested_cursor();
+            drop(backend);
             self.addCursorRect_cursor(self.bounds(), &mac_cursor_for_shape(shape));
         }
 

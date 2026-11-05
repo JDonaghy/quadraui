@@ -65,7 +65,10 @@ only a push to `main` runs this workflow.
   `EnabledDuringMouseDrag`) that reapplies it from `cursorUpdate:` /
   `resetCursorRects` on every subsequent move, including mid-drag. The
   `AppShell` sidebar/main-content divider now sets this resize cursor
-  automatically on hover and drag, on every backend.
+  automatically on hover and drag, on every backend, and keeps it even
+  when the app's own `ShellApp::handle` sets a different cursor for the
+  same `MouseMoved`. `PointerShape::ColResize`/`RowResize` now map to
+  macOS's horizontal/vertical resize cursors instead of the plain arrow.
 - `quadraui-binding-core`'s `data_table_key_event` now maps Enter on a
   focused `DataTable` to `DataTableEvent::RowActivated { idx }` — the
   keyboard equivalent of a pointer double-click — instead of being a no-op;

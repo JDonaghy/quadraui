@@ -110,42 +110,23 @@ impl<A: ShellApp> ShellAdapter<A> {
         Reaction::Redraw
     }
 
-    /// Shows the OS horizontal-resize cursor while `position` hovers the
-    /// sidebar/main-content divider, or while `dragging` is `true` (a
-    /// `SidebarResized` this same dispatch just produced) — and the
-    /// default arrow everywhere else. Mirrors VS Code's own divider
-    /// affordance. Called from [`Self::handle`] on every `MouseMoved`,
-    /// *before* the app's own [`ShellApp::handle`] runs, so an app that
-    /// wants a different shape for whatever else it's hovering still
-    /// gets the last word — [`Backend::set_cursor`] is stateless, last
-    /// caller wins, same as every other backend already assumes.
+    /// `true` iff the OS horizontal-resize cursor should be showing right
+    /// now for the sidebar/main-content divider — either `position` is
+    /// over it, or a drag of it (`dragging`) is already in progress (so
+    /// the cursor doesn't flicker back to the arrow mid-drag if the
+    /// pointer briefly outruns the divider's own, narrower hit rect).
+    /// Mirrors VS Code's own divider affordance.
     ///
-    /// Routed through [`Backend::set_cursor`], which already degrades to
-    /// a no-op `false` on backends with nothing to show it on (the TUI's
-    /// trait default) — no new capability or per-backend wiring needed
-    /// here.
-    fn update_divider_cursor(
-        &self,
-        backend: &mut dyn Backend,
-        area: Rect,
-        position: Point,
-        dragging: bool,
-    ) {
-        let shape = if self.divider_resize_cursor_active(backend, area, position, dragging) {
-            PointerShape::Resize(ResizeEdge::East)
-        } else {
-            PointerShape::Default
-        };
-        backend.set_cursor(shape);
-    }
-
-    /// The decision half of [`Self::update_divider_cursor`], split out so
-    /// it's testable without a `Backend::set_cursor` spy: `true` iff the
-    /// resize cursor should be showing right now — either `position` is
-    /// over the sidebar/main-content divider, or a drag of it
-    /// (`dragging`) is already in progress (so the cursor doesn't flicker
-    /// back to the arrow mid-drag if the pointer briefly outruns the
-    /// divider's own, narrower hit rect).
+    /// Split from the two call sites that act on it (see [`Self::handle`])
+    /// rather than folding the decision and the [`Backend::set_cursor`]
+    /// call into one method, for two reasons: it's testable without a
+    /// `set_cursor` spy, and the divider is shell chrome the app knows
+    /// nothing about — an app with its own `MouseMoved` cursor logic
+    /// (e.g. `examples/common/full_chrome_demo.rs`'s window-edge resize
+    /// cursor) must not have its choice silently erased by a
+    /// `PointerShape::Default` reset for every point that isn't the
+    /// divider, which a single "divider shape, else the default arrow"
+    /// method would do.
     fn divider_resize_cursor_active(
         &self,
         backend: &dyn Backend,
@@ -417,13 +398,32 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         let shell_ev = self.shell.handle(&event, backend, area);
 
         // The sidebar/main-content resize divider gets the OS resize
-        // cursor while the pointer hovers or drags it, and the default
-        // arrow everywhere else — mirrors VS Code's own divider affordance.
-        // Must run before the `match` below returns early for
-        // `SidebarResized` (the drag-in-progress case).
+        // cursor while the pointer hovers or drags it — mirrors VS Code's
+        // own divider affordance. `divider_active` alone decides *whether*
+        // the resize cursor is showing; applying it is split into two
+        // sites so an ordinary hover frame only ever pays for one
+        // `Backend::set_cursor` call:
+        //
+        // - Here, only for an in-progress drag (`SidebarResized`): the
+        //   `match` below returns early for that case via
+        //   `notify_shell_event`, before `self.app.handle` ever runs, so
+        //   nothing downstream would apply it otherwise.
+        // - At the bottom of this function, after `self.app.handle` runs,
+        //   for the hover-only case (`dragging` false) — see
+        //   that call site's comment for why the shell needs the last
+        //   word there too.
+        //
+        // Applying it in both places on every active frame (rather than
+        // just the one each case needs) would double the
+        // `Backend::set_cursor` cost (an `NSCursor::set()`/
+        // `gdk_surface_set_cursor` call) for every ordinary hover move.
+        let mut divider_active = false;
         if let UiEvent::MouseMoved { position, .. } = &event {
             let dragging = matches!(shell_ev, AppShellEvent::SidebarResized { .. });
-            self.update_divider_cursor(backend, area, *position, dragging);
+            divider_active = self.divider_resize_cursor_active(backend, area, *position, dragging);
+            if dragging {
+                backend.set_cursor(PointerShape::Resize(ResizeEdge::East));
+            }
         }
 
         match &shell_ev {
@@ -550,6 +550,20 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
 
         if self.apply_requested_panel(backend, area) {
             reaction = Reaction::Redraw;
+        }
+
+        // Reaching here with `divider_active` true means the pointer is
+        // hovering the divider but not dragging it (a drag returned early
+        // above, via the `SidebarResized` match arm), so `self.app.handle`
+        // above just ran with no cursor applied yet for this move — and
+        // may have set its own, e.g. `examples/common/full_chrome_demo.rs`'s
+        // `MouseMoved` arm, which sets `PointerShape::Default` for every
+        // point that isn't a window edge, including the divider. Assert
+        // the shell's own cursor last, so its chrome keeps the word over
+        // the app's blanket default; a no-op whenever the divider isn't
+        // active, leaving the app's choice alone.
+        if divider_active {
+            backend.set_cursor(PointerShape::Resize(ResizeEdge::East));
         }
 
         reaction
@@ -747,6 +761,212 @@ mod tests {
             adapter.divider_resize_cursor_active(&backend, area, off_divider, true),
             "an in-progress drag must keep the resize cursor even once the pointer outruns \
              the divider's own, narrower hit rect"
+        );
+    }
+
+    /// Full-`handle()` wiring (not just the `divider_resize_cursor_active`
+    /// predicate above): a `MouseMoved` over the sidebar divider must
+    /// reach [`Backend::set_cursor`] with [`PointerShape::Resize`], and a
+    /// `MouseMoved` away from it must not touch the cursor at all. Uses
+    /// [`crate::testing::RecordingBackend`] as the spy `Backend::set_cursor`
+    /// itself doesn't otherwise let a test observe.
+    #[test]
+    fn handle_sets_resize_cursor_over_divider_and_leaves_it_alone_elsewhere() {
+        let config = ShellConfig::new(
+            "t",
+            vec![PanelDefinition {
+                id: WidgetId::new("panel:p"),
+                icon: "P".to_string(),
+                tooltip: "Panel".to_string(),
+                title: "PANEL".to_string(),
+            }],
+        );
+        let mut adapter = build_shell_adapter(NoopApp, config);
+        let mut backend = crate::testing::RecordingBackend::new();
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let divider = adapter
+            .shell
+            .layout_for(&backend, area)
+            .divider_bounds
+            .expect("sidebar visible with one panel lays out a divider");
+        let on_divider = Point::new(divider.x + divider.width / 2.0, divider.y + 1.0);
+        let off_divider = Point::new(divider.x + divider.width + 5.0, divider.y + 1.0);
+
+        adapter.handle(
+            UiEvent::MouseMoved {
+                position: on_divider,
+                buttons: crate::event::ButtonMask::default(),
+            },
+            &mut backend,
+        );
+        assert_eq!(
+            backend.cursor_calls,
+            vec![PointerShape::Resize(ResizeEdge::East)],
+            "hovering the divider must set the OS resize cursor exactly once — twice would \
+             mean the hover-only path is paying for both the pre- and post-`app.handle` \
+             apply sites instead of just the one it needs"
+        );
+
+        backend.cursor_calls.clear();
+        adapter.handle(
+            UiEvent::MouseMoved {
+                position: off_divider,
+                buttons: crate::event::ButtonMask::default(),
+            },
+            &mut backend,
+        );
+        assert!(
+            backend.cursor_calls.is_empty(),
+            "away from the divider, `handle()` must not call `set_cursor` at all — \
+             the shell has no opinion there and must leave the app's own choice alone"
+        );
+    }
+
+    /// Covers the other apply site: a `MouseMoved` that arrives mid-drag
+    /// (`AppShellEvent::SidebarResized`) returns early via
+    /// `notify_shell_event`, never reaching `self.app.handle` — so the
+    /// resize cursor must come from the pre-`app.handle` apply site, not
+    /// the post-`app.handle` one, and must be applied exactly once.
+    #[test]
+    fn handle_sets_resize_cursor_exactly_once_while_dragging_the_divider() {
+        let config = ShellConfig::new(
+            "t",
+            vec![PanelDefinition {
+                id: WidgetId::new("panel:p"),
+                icon: "P".to_string(),
+                tooltip: "Panel".to_string(),
+                title: "PANEL".to_string(),
+            }],
+        );
+        let mut adapter = build_shell_adapter(NoopApp, config);
+        let mut backend = crate::testing::RecordingBackend::new();
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let divider = adapter
+            .shell
+            .layout_for(&backend, area)
+            .divider_bounds
+            .expect("sidebar visible with one panel lays out a divider");
+        let on_divider = Point::new(divider.x + divider.width / 2.0, divider.y + 1.0);
+
+        // Arm the drag directly against `AppShell::handle` — not through
+        // `ShellAdapter::handle` — so this stays on `RecordingBackend`:
+        // `ShellAdapter::handle`'s own modal-stack check runs
+        // unconditionally for every `MouseDown` (see its doc), and
+        // `RecordingBackend::modal_stack_handle` is deliberately
+        // `unimplemented!()` (see that struct's doc). `AppShell::handle`
+        // itself never touches the modal stack, so this reaches the same
+        // `drag_offset` arming `ShellAdapter::handle` would have, without
+        // needing a live backend.
+        adapter.shell.handle(
+            &crate::event::mouse_down(
+                MouseButton::Left,
+                on_divider.x,
+                on_divider.y,
+                crate::Modifiers::default(),
+            ),
+            &backend,
+            area,
+        );
+        assert!(
+            backend.cursor_calls.is_empty(),
+            "arming the drag is a MouseDown, not a MouseMoved — no cursor logic runs yet"
+        );
+
+        // Drag the pointer away from the divider's own hit rect while the
+        // button stays down — `AppShell` reports `SidebarResized` for
+        // this regardless of exact position, since the drag is already
+        // in progress.
+        adapter.handle(
+            UiEvent::MouseMoved {
+                position: Point::new(on_divider.x + 20.0, on_divider.y),
+                buttons: crate::event::ButtonMask {
+                    left: true,
+                    ..Default::default()
+                },
+            },
+            &mut backend,
+        );
+        assert_eq!(
+            backend.cursor_calls,
+            vec![PointerShape::Resize(ResizeEdge::East)],
+            "an in-progress divider drag must show the resize cursor exactly once, from the \
+             pre-`app.handle` apply site — the post-`app.handle` site must not also fire, \
+             since `SidebarResized` returns before `self.app.handle` ever runs"
+        );
+    }
+
+    /// The shell's own divider chrome must win the cursor back from an
+    /// app that sets its own `PointerShape` on every `MouseMoved` — the
+    /// shape `examples/common/full_chrome_demo.rs` takes (a window-edge
+    /// resize cursor, `PointerShape::Default` everywhere else). Without
+    /// this, that pattern would silently erase the divider's resize
+    /// cursor the instant `ShellApp::handle` ran after it.
+    #[test]
+    fn handle_shell_divider_cursor_wins_over_an_app_that_sets_its_own_cursor() {
+        struct SetsDefaultCursorOnEveryMove;
+
+        impl ShellApp for SetsDefaultCursorOnEveryMove {
+            fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+
+            fn handle(
+                &mut self,
+                event: UiEvent,
+                backend: &mut dyn Backend,
+                _ctx: &ShellContext,
+            ) -> Reaction {
+                if matches!(event, UiEvent::MouseMoved { .. }) {
+                    backend.set_cursor(PointerShape::Default);
+                }
+                Reaction::Continue
+            }
+        }
+
+        let config = ShellConfig::new(
+            "t",
+            vec![PanelDefinition {
+                id: WidgetId::new("panel:p"),
+                icon: "P".to_string(),
+                tooltip: "Panel".to_string(),
+                title: "PANEL".to_string(),
+            }],
+        );
+        let mut adapter = build_shell_adapter(SetsDefaultCursorOnEveryMove, config);
+        let mut backend = crate::testing::RecordingBackend::new();
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let divider = adapter
+            .shell
+            .layout_for(&backend, area)
+            .divider_bounds
+            .expect("sidebar visible with one panel lays out a divider");
+        let on_divider = Point::new(divider.x + divider.width / 2.0, divider.y + 1.0);
+        let off_divider = Point::new(divider.x + divider.width + 5.0, divider.y + 1.0);
+
+        adapter.handle(
+            UiEvent::MouseMoved {
+                position: on_divider,
+                buttons: crate::event::ButtonMask::default(),
+            },
+            &mut backend,
+        );
+        assert_eq!(
+            backend.cursor_calls.last(),
+            Some(&PointerShape::Resize(ResizeEdge::East)),
+            "the shell's divider chrome must have the last word over the app's own \
+             blanket Default, since the app has no idea the divider is there"
+        );
+
+        backend.cursor_calls.clear();
+        adapter.handle(
+            UiEvent::MouseMoved {
+                position: off_divider,
+                buttons: crate::event::ButtonMask::default(),
+            },
+            &mut backend,
+        );
+        assert_eq!(
+            backend.cursor_calls,
+            vec![PointerShape::Default],
+            "away from the divider, the app's own cursor choice must stand untouched"
         );
     }
 

@@ -327,10 +327,12 @@ pub struct MacBackend {
     /// right native cursor on every subsequent mouse move — including
     /// mid-drag — instead of reverting to the arrow the instant the
     /// one-shot `NSCursor::set()` call in `set_cursor` gets overwritten
-    /// by AppKit's own tracking. `Cell`, not a plain field: read from
-    /// `QuadraView` (an `&self` responder method) while `set_cursor`
-    /// writes it through `&mut self`.
-    requested_cursor: Cell<PointerShape>,
+    /// by AppKit's own tracking. A plain field: `QuadraView` reaches it
+    /// through a `try_borrow()`/`borrow()` on the shared
+    /// `Rc<RefCell<MacBackend>>`, which already hands back `&MacBackend`,
+    /// so there's no `&self`-vs-`&mut self` aliasing to route around with
+    /// a `Cell`.
+    requested_cursor: PointerShape,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
     // /. Picks `Icon::glyph` vs `Icon::fallback` in
     /// `draw_activity_bar` and (since #804) `draw_tree`. Set via
@@ -620,11 +622,17 @@ fn mac_cursor_kind(shape: PointerShape) -> MacCursorKind {
             | ResizeEdge::SouthEast
             | ResizeEdge::SouthWest,
         ) => MacCursorKind::Arrow,
+        // `ColResize`/`RowResize` are the in-content divider counterparts
+        // of `Resize(East|West)`/`Resize(North|South)` above — same two
+        // AppKit glyphs, just reached from a sash/column-border drag
+        // rather than a window-edge one.
+        PointerShape::ColResize => MacCursorKind::ResizeLeftRight,
+        PointerShape::RowResize => MacCursorKind::ResizeUpDown,
         // AppKit has first-class cursors for several of these
         // (`NSCursor::iBeamCursor`/`pointingHandCursor`/etc.) but none are
-        // wired up yet, so every shape beyond `Default`/`Resize` falls back
-        // to the plain arrow — a deliberate no-regression default, not a
-        // missing case.
+        // wired up yet, so every shape beyond `Default`/`Resize`/
+        // `ColResize`/`RowResize` falls back to the plain arrow — a
+        // deliberate no-regression default, not a missing case.
         _ => MacCursorKind::Arrow,
     }
 }
@@ -743,7 +751,7 @@ impl MacBackend {
             minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             window: None,
             pending_window_press: WindowDragArm::new(),
-            requested_cursor: Cell::new(PointerShape::Default),
+            requested_cursor: PointerShape::Default,
             nerd_fonts_enabled: true,
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
@@ -771,7 +779,7 @@ impl MacBackend {
     /// for keeps winning on every later mouse move — not just the one
     /// frame `set_cursor` happened to run on.
     pub(crate) fn requested_cursor(&self) -> PointerShape {
-        self.requested_cursor.get()
+        self.requested_cursor
     }
 
     /// Install the closure [`Backend::waker`]'s returned handle invokes on
@@ -2088,7 +2096,7 @@ impl Backend for MacBackend {
         if self.window.is_none() {
             return false;
         }
-        self.requested_cursor.set(shape);
+        self.requested_cursor = shape;
         // `NSCursor::set` is a safe method — called from `AppLogic::handle`
         // (via `Backend::set_cursor`), which only ever runs on the main
         // thread inside the live AppKit run loop.
@@ -6383,10 +6391,10 @@ mod tests {
         // `desktop::ALL_RESIZE_EDGES`: N, S, E, W, NE, NW, SE, SW, then
         // `Text`/`Pointer`/`Grab`/`Grabbing`/`Crosshair`/`Wait`/
         // `NotAllowed`/`ColResize`/`RowResize`). The four corner edges and
-        // every variant past `Resize` fall back to the plain arrow — see
-        // `mac_cursor_kind`'s doc for why there's no public
-        // diagonal-resize `NSCursor` to use instead, and no AppKit mapping
-        // wired up yet for the new shapes.
+        // every variant past `Resize`/`ColResize`/`RowResize` fall back to
+        // the plain arrow — see `mac_cursor_kind`'s doc for why there's no
+        // public diagonal-resize `NSCursor` to use instead, and no AppKit
+        // mapping wired up yet for the remaining shapes.
         let expected = [
             MacCursorKind::Arrow,
             MacCursorKind::ResizeUpDown,
@@ -6397,15 +6405,15 @@ mod tests {
             MacCursorKind::Arrow,
             MacCursorKind::Arrow,
             MacCursorKind::Arrow,
-            MacCursorKind::Arrow, // Text
-            MacCursorKind::Arrow, // Pointer
-            MacCursorKind::Arrow, // Grab
-            MacCursorKind::Arrow, // Grabbing
-            MacCursorKind::Arrow, // Crosshair
-            MacCursorKind::Arrow, // Wait
-            MacCursorKind::Arrow, // NotAllowed
-            MacCursorKind::Arrow, // ColResize
-            MacCursorKind::Arrow, // RowResize
+            MacCursorKind::Arrow,           // Text
+            MacCursorKind::Arrow,           // Pointer
+            MacCursorKind::Arrow,           // Grab
+            MacCursorKind::Arrow,           // Grabbing
+            MacCursorKind::Arrow,           // Crosshair
+            MacCursorKind::Arrow,           // Wait
+            MacCursorKind::Arrow,           // NotAllowed
+            MacCursorKind::ResizeLeftRight, // ColResize
+            MacCursorKind::ResizeUpDown,    // RowResize
         ];
         let shapes = crate::desktop::all_pointer_shapes();
         assert_eq!(
