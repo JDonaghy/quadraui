@@ -123,6 +123,12 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     // `NSNormalWindowLevel` living in `NSWindow` above.
     ("NSStatusBar", "NSStatusBar"),
     ("NSStatusItem", "NSStatusItem"),
+    // Both live in the `NSTrackingArea` header, same shape as `NSImage`/
+    // `NSColor`/`NSAlert`. `NSView::addTrackingArea:` — the method
+    // `QuadraView::updateTrackingAreas` hands the area to — is cfg'd on
+    // this same feature, so the two rows below cover it too.
+    ("NSTrackingArea", "NSTrackingArea"),
+    ("NSTrackingAreaOptions", "NSTrackingArea"),
     ("NSVariableStatusItemLength", "NSStatusBar"),
     ("NSView", "NSView"),
     ("NSViewFrameDidChangeNotification", "NSView"),
