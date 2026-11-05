@@ -3445,6 +3445,7 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 view,
                 &theme,
+                &self.current_style,
                 line_height,
                 char_width,
                 caret_visible,
