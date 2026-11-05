@@ -90,7 +90,7 @@ pub use editor::{draw_editor, editor_col_at_x};
 pub use events::{wire_da_events, wire_da_events_with_scroll_direction};
 pub use form::draw_settings_chrome;
 pub use image::draw_image;
-pub use list::{draw_list, gtk_list_layout};
+pub use list::{draw_list, draw_list_with_state, gtk_list_layout};
 pub use menu_bar::{draw_menu_bar, gtk_menu_bar_layout};
 pub use menu_overlay::MenuOverlay;
 pub use message_list::draw_message_list;
@@ -133,7 +133,7 @@ pub use text_input::{draw_text_input, gtk_text_input_layout};
 pub use toast::gtk_toast_stack_layout;
 pub use toolbar::{draw_toolbar, draw_toolbar_with_options, gtk_toolbar_layout};
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
-pub use tree::{draw_tree, gtk_tree_layout, gtk_tree_layout_measured};
+pub use tree::{draw_tree, draw_tree_with_state, gtk_tree_layout, gtk_tree_layout_measured};
 
 /// Convert a `quadraui::Color` (0-255 RGBA) into Cairo's normalised
 /// `(r, g, b)` tuple. Alpha is dropped — Cairo supports

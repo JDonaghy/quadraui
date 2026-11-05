@@ -785,6 +785,14 @@ pub(crate) mod native_surface_paint {
     ///   starts at — callers pass `&self.current_style` (GTK/macOS);
     ///   Windows passes `&Style::default()`, matching `win::list`'s own
     ///   documented "no live theme either" gap.
+    /// - `hovered_idx` / `pressed_idx` — index into `list.items` (not
+    ///   `vis_item.item_idx` offset by anything) to tint via
+    ///   [`Theme::list_hover_bg`] / [`Theme::list_pressed_bg`]. `None`
+    ///   paints byte-for-byte what this function painted before hover
+    ///   support existed. Applied on top of whatever background the row
+    ///   already has (selected, header, or base fill) — pressed takes
+    ///   priority over hover, matching every other
+    ///   `InteractionState`-adjacent rasteriser in this crate.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         list: &ListView,
@@ -797,6 +805,8 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         style: &Style,
+        hovered_idx: Option<usize>,
+        pressed_idx: Option<usize>,
     ) {
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
@@ -890,6 +900,13 @@ pub(crate) mod native_surface_paint {
                 theme.header_bg
             } else {
                 base_bg
+            };
+            let row_bg = if Some(vis_item.item_idx) == pressed_idx {
+                theme.list_pressed_bg(row_bg)
+            } else if Some(vis_item.item_idx) == hovered_idx {
+                theme.list_hover_bg(row_bg)
+            } else {
+                row_bg
             };
 
             let row_rect = Rect::new(row_x, row_y, row_w, row_h);
@@ -1142,6 +1159,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             let expected = list
@@ -1255,6 +1274,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
             assert!(list.vscrollbar(AREA, LINE_HEIGHT).is_none());
             // Every recorded fill must stay within the list's own bounds
@@ -1297,6 +1318,8 @@ pub(crate) mod native_surface_paint {
                 &mut supported,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
             assert!(
                 !supported.fills.is_empty(),
@@ -1316,6 +1339,8 @@ pub(crate) mod native_surface_paint {
                 &mut unsupported,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
             // Every fill must stay within the row content area — none of
             // them may be the bottom-row-height h-scrollbar track, which
@@ -1352,6 +1377,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             let row1 = layout
@@ -1399,6 +1426,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &Theme::default(),
                 &Style::default(),
+                None,
+                None,
             );
 
             assert!(
@@ -1429,6 +1458,8 @@ pub(crate) mod native_surface_paint {
                 &mut nerd_surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
             assert!(nerd_surface.texts.iter().any(|(_, t, _)| t == "nf-glyph"));
 
@@ -1444,6 +1475,8 @@ pub(crate) mod native_surface_paint {
                 &mut ascii_surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
             assert!(ascii_surface.texts.iter().any(|(_, t, _)| t == "F"));
         }
@@ -1471,6 +1504,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             let row_text = surface

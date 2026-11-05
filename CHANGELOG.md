@@ -218,6 +218,19 @@ only a push to `main` runs this workflow.
   a background thread's `post`/`wake`/`postAfter` call is actually
   delivered while a GTK native session is running instead of only before
   or after one.
+- `Backend::draw_list_with_state`/`draw_tree_with_state` — additive
+  `hovered_idx`/`pressed_idx: Option<usize>` twins of `draw_list`/
+  `draw_tree` that tint the hovered/pressed row via the new
+  `Theme::list_hover_bg`/`list_pressed_bg`/`tree_hover_bg`/`tree_pressed_bg`
+  accessor methods (derived from existing fields, no new `Theme` field).
+  Index-keyed rather than `InteractionState`-keyed — see `interaction.rs`'s
+  module doc for why `ListItem`/`TreeRow` rows stay out of the
+  `WidgetId`-keyed store. New `compose::ListHoverTracker`/
+  `TreeHoverTracker` do the mouse-move-to-row-index bookkeeping, built on
+  the same engine `compose::ToolbarHoverTracker` now shares. Implemented
+  for real on GTK (verified headlessly via `GtkDriver`); every other
+  backend's default forwards to the existing `draw_list`/`draw_tree`,
+  unchanged.
 - `Theme::success_fg`/`success_bg`/`danger_bg`/`warning_bg`/`info_bg` —
   accessor methods (not new fields, per `theme.rs`'s "adding a field here
   is a BREAKING change" rule) giving `Toast` and `Form` validation a VS

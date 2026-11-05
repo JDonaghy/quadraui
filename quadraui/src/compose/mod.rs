@@ -106,6 +106,6 @@ pub use tab_group::{
     TabGroupController, TabGroupEvent, TabGroupLayout,
 };
 pub use toast_stack::{ToastStackController, ToastStackEvent};
-pub use toolbar_hover_tracker::ToolbarHoverTracker;
+pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker, TreeHoverTracker};
 pub use tree_controller::{TreeController, TreeControllerEvent};
 pub use workspace::{WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout};
