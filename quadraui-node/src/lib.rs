@@ -181,11 +181,11 @@
 //! `actions()` handle obtained *before* `startTui`/`startNative` keeps
 //! working correctly through the live session regardless (it only ever
 //! holds an `Rc` clone of state that moves, not copies, with the
-//! [`NodeAppLogic`]). A `waker()` handle obtained before `startTui`/`startNative`
-//! (on the `gtk` or `macos` feature) keeps working too -- both swap
-//! [`QuiApp::current_waker`] to the live runner's own backend waker for
-//! the session's duration -- see this doc's next paragraph for the `win`
-//! feature, which doesn't (yet) swap it.
+//! [`NodeAppLogic`]). A `waker()` handle obtained before `startTui`/
+//! `startNative` (on the `gtk`, `macos`, or `win` feature) keeps working
+//! too -- all three swap [`QuiApp::current_waker`] to the live runner's
+//! own backend waker for the session's duration -- see this doc's next
+//! paragraph for how each gets there.
 //!
 //! `GtkRunner`, like `TuiRunner`, exposes a `Backend::waker`-reachable
 //! accessor (`GtkRunner::waker`, captured off its own live `GtkBackend`
@@ -200,22 +200,15 @@
 //! that: a clone of the same `env`/`pending_error` cells the moved
 //! [`NodeAppLogic`] still carries, kept alongside the real runner inside
 //! [`LiveRunner`]'s `Gtk`/`Mac`/`Win` variants (`Gtk` alongside the real
-//! swap, needed for the same reason regardless of it). The `macos`
-//! feature closes that gap a different way: [`NodeAppLogic::setup`] --
-//! called by every runner, synchronously, before construction returns --
-//! stashes `backend`'s own [`Backend::waker`] into
+//! swap, needed for the same reason regardless of it). The `macos` and
+//! `win` features close that gap a different way: [`NodeAppLogic::setup`]
+//! -- called by every runner, synchronously, before construction returns
+//! -- stashes `backend`'s own [`Backend::waker`] into
 //! [`NodeAppLogic::captured_waker`], a field [`QuiApp::start_native`]'s
-//! `macos` arm clones *before* `MacRunner::new_with` moves the rest of
-//! this struct, then reads right after that call returns, swapping
-//! [`QuiApp::current_waker`] onto it exactly like the `gtk` arm does. The
-//! `win` feature has no such hook wired (out of scope for the `macos`
-//! sub-issue that added this): a `waker()` handle obtained before,
-//! during, or after a `win`-feature session keeps posting into the
-//! dormant headless queue for as long as the session runs, but since
-//! nothing ever drives that queue again once the session ends (every way
-//! it ends sets [`QuiApp::live_exited`], which makes every later
-//! `step()`/`run()` raise instead of ticking), those posts are never
-//! actually delivered.
+//! `macos`/`win` arms each clone *before* `MacRunner::new_with`/
+//! `WinRunner::new_with` moves the rest of this struct, then read right
+//! after that call returns, swapping [`QuiApp::current_waker`] onto it
+//! exactly like the `gtk` arm does.
 //!
 //! [`QuiApp::waker`] returns a [`QuiAppWaker`] -- unlike `QuiApp` itself,
 //! `Send + Sync`, so a background thread can hold and call it -- wrapping
@@ -2253,26 +2246,34 @@ impl QuiApp {
     /// like [`Self::start_tui`] does, onto `GtkRunner::waker()` -- the one
     /// closure that runner captures off its own live `GtkBackend` before
     /// `activate` moves the rest of it into that window's event-controller
-    /// closures. On the `macos` feature it swaps too, just through a
-    /// different seam: `MacRunner` exposes no comparable post-construction
-    /// accessor once the moved `AppLogic` is behind it, so
-    /// [`NodeAppLogic::setup`] stashes `backend`'s own [`Backend::waker`]
-    /// into [`NodeAppLogic::captured_waker`] while it still can (every
-    /// runner calls `setup` synchronously, before construction returns),
-    /// and this arm reads it back right after `MacRunner::new_with`
-    /// returns. On `win`, neither seam is wired (out of scope for the
-    /// `macos` sub-issue that added the `setup`-based one): a
-    /// [`QuiAppWaker`] obtained during a live `win` session keeps posting
-    /// into the dormant headless path's own queue instead -- and since
-    /// nothing ever drives that queue again once [`Self::live_exited`] is
-    /// set (every way a native session ends sets it; see that method's own
-    /// doc), those payloads are never delivered at all, not merely
-    /// delayed. Mirrors `quadraui-py`'s own documented asymmetry for that
-    /// backend (see `QuiApp::current_waker`'s doc there), but unlike that
-    /// crate's blocking `run_native`, this asymmetry outlives the call: a
-    /// Node caller sees `startNative` return immediately, so it is far
-    /// more likely to still be holding a waker obtained beforehand when
-    /// the session later ends.
+    /// closures. On the `macos`/`win` features it swaps too, just through
+    /// a different seam: neither `MacRunner` nor `WinRunner` exposes a
+    /// comparable post-construction accessor once the moved `AppLogic` is
+    /// behind it, so [`NodeAppLogic::setup`] stashes `backend`'s own
+    /// [`Backend::waker`] into [`NodeAppLogic::captured_waker`] while it
+    /// still can (every runner calls `setup` synchronously, before
+    /// construction returns), and this arm reads it back right after
+    /// `MacRunner::new_with`/`WinRunner::new_with` returns.
+    ///
+    /// On the `win` feature, [`LiveRunner::step`] drives `WinRunner::step()`
+    /// exactly once per call and never its blocking `pump()` -- the same
+    /// non-blocking discipline this module's doc's "Live run loop" section
+    /// describes for every variant. But that single call is not immune to
+    /// Win32's own nested message loop: dragging this window's standard
+    /// (non-CSD; see `quadraui::win::run`'s module doc) title bar or resize
+    /// border sends `WM_NCLBUTTONDOWN`, which `wndproc` does not intercept,
+    /// so it falls through to `DefWindowProcW` -- and `DefWindowProcW`'s own
+    /// handling of that message is a synchronous modal loop that pumps
+    /// `WM_SIZE`/`WM_PAINT` reentrantly (repainting the window live as the
+    /// user drags) but does not return control to `WinRunner::step()`, and
+    /// therefore not to the JS caller that invoked it, until the user
+    /// releases the mouse button. A concurrent `setTimeout`/`setInterval`
+    /// cannot fire for the whole duration of that one drag, since the one
+    /// libuv reactor this process shares stays blocked inside that single
+    /// `step()` call the entire time -- an OS-level property of the
+    /// standard window frame, not something a future change to this
+    /// binding's own pump cadence could route around without replacing
+    /// that frame with a custom one `quadraui::win` paints itself.
     ///
     /// Raises `LiveRunnerActiveError` if a live session is already
     /// running. Raises `NoNativeBackendError` if this binary was built
@@ -2452,6 +2453,15 @@ impl QuiApp {
                     env: app_logic.env.clone(),
                     pending_error: app_logic.pending_error.clone(),
                 };
+                // Cloned before `WinRunner::new_with` moves `app_logic`
+                // itself -- the same `Rc` `app_logic.setup()` writes into,
+                // synchronously, inside that call (see
+                // `NodeAppLogic::captured_waker`'s own doc). `take()` right
+                // after reads back the one `Backend::waker` this live
+                // session's `WinBackend` will ever hand out, since nothing
+                // outside `WinRunner` can reach it again once this call
+                // returns.
+                let captured_waker = app_logic.captured_waker.clone();
                 let defaults = quadraui::win::RunConfig::default();
                 let config = quadraui::win::RunConfig::new(title.unwrap_or(defaults.title));
                 // SAFETY: mirrors `quadraui-py`'s own `run_native`:
@@ -2465,6 +2475,15 @@ impl QuiApp {
                     )
                 }
                 .map_err(|err| internal_error(format!("startNative: {err}")))?;
+                // Mirrors the `macos` arm's own swap: a `waker()` handle
+                // obtained before, during, or after this call now delivers
+                // into this session's own event stream rather than the
+                // dormant headless queue -- restored by `stop_live`/
+                // `step_once` once this session ends, exactly like those
+                // swaps are.
+                if let Some(waker) = captured_waker.take() {
+                    *app.current_waker.lock().unwrap_or_else(|e| e.into_inner()) = waker;
+                }
                 app.live = Some(LiveRunner::Win(runner, state));
                 Ok(())
             }
