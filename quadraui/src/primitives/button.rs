@@ -252,20 +252,29 @@ pub(crate) mod native_surface_paint {
 
     /// Shared geometry for a focus-visible ring drawn around `bounds`:
     /// an outset stroke rect ([`FOCUS_RING_GAP`] clear of `bounds` on
-    /// every side), the same `corner_radius` the primitive's own fill/
-    /// border paint with, and the stroke width [`Style::focus_ring_width`]
-    /// configures. Every `PaintSurface`-backed rasteriser that strokes a
-    /// ring computes it through here — this module's own [`paint`] below,
-    /// and `TextInput`'s macOS twin
-    /// (`crate::primitives::text_input::native_surface_paint::paint`) —
-    /// so widening `Style::focus_ring_width` widens every primitive's
-    /// ring identically, instead of drifting through independently
-    /// hand-tuned literals per primitive.
-    pub(crate) fn focus_ring_geometry(
-        bounds: Rect,
-        corner_radius: f32,
-        style: &Style,
-    ) -> FocusRingGeometry {
+    /// every side), `style.corner_radius` (read from `style` itself, so
+    /// there is no separate radius argument for a call site to drift
+    /// from the primitive's own fill/border radius), and the stroke
+    /// width [`Style::focus_ring_width`] configures. This module's own
+    /// [`paint`] below computes its ring through here; a per-backend
+    /// `TextInput` rasteriser that adds a ring stroke should too, rather
+    /// than re-deriving the outset gap independently, so widening
+    /// `Style::focus_ring_width` widens every primitive's ring
+    /// identically instead of drifting through hand-tuned literals.
+    ///
+    /// Distinct from [`crate::backend::Backend::draw_focus_ring`], which
+    /// every backend already implements by stroking the bare rect with
+    /// `theme.accent_fg` — no outset gap, square corners, and not
+    /// `Theme::focus_ring_color`. The two conventions aren't unified
+    /// here; a caller choosing between them gets a differently-shaped
+    /// ring either way.
+    ///
+    /// Note for a rasteriser that calls this with `TextInput`'s own
+    /// bounds: `TextInput`'s border is always stroked square
+    /// (`surface_stroke_rect`, no radius), so a ring stroked at
+    /// `style.corner_radius` > 0 traces a rounded outline around a
+    /// square input unless the call site strokes the ring square too.
+    pub(crate) fn focus_ring_geometry(bounds: Rect, style: &Style) -> FocusRingGeometry {
         FocusRingGeometry {
             rect: Rect::new(
                 bounds.x - FOCUS_RING_GAP,
@@ -273,7 +282,7 @@ pub(crate) mod native_surface_paint {
                 bounds.width + FOCUS_RING_GAP * 2.0,
                 bounds.height + FOCUS_RING_GAP * 2.0,
             ),
-            corner_radius,
+            corner_radius: style.corner_radius,
             width: style.focus_ring_width,
         }
     }
@@ -347,7 +356,7 @@ pub(crate) mod native_surface_paint {
         // `focused` itself on click rather than on Tab — see
         // `crate::compose::FocusRing::is_focus_visible`.
         if button.focused && !button.disabled {
-            let ring = focus_ring_geometry(rect, style.corner_radius, style);
+            let ring = focus_ring_geometry(rect, style);
             surface.surface_stroke_rounded_rect(
                 ring.rect,
                 ring.corner_radius,
@@ -427,9 +436,11 @@ pub(crate) mod native_surface_paint {
         #[test]
         fn focus_ring_geometry_outsets_by_the_shared_gap() {
             let bounds = Rect::new(10.0, 10.0, 60.0, 20.0);
-            let style = Style::default().with_focus_ring_width(3.0);
+            let style = Style::default()
+                .with_corner_radius(4.0)
+                .with_focus_ring_width(3.0);
 
-            let ring = focus_ring_geometry(bounds, 4.0, &style);
+            let ring = focus_ring_geometry(bounds, &style);
 
             assert_eq!(ring.rect, Rect::new(8.0, 8.0, 64.0, 24.0));
             assert_eq!(ring.corner_radius, 4.0);
@@ -437,12 +448,23 @@ pub(crate) mod native_surface_paint {
         }
 
         #[test]
+        fn focus_ring_geometry_reads_corner_radius_from_style_not_a_separate_argument() {
+            let bounds = Rect::new(10.0, 10.0, 60.0, 20.0);
+            let style = Style::default().with_corner_radius(9.0);
+
+            let ring = focus_ring_geometry(bounds, &style);
+
+            // There's no independent radius argument to drift from
+            // `style.corner_radius` — the helper always reads it from
+            // `style` itself.
+            assert_eq!(ring.corner_radius, 9.0);
+        }
+
+        #[test]
         fn focus_ring_geometry_reads_width_from_style_not_a_fixed_literal() {
             let bounds = Rect::new(0.0, 0.0, 10.0, 10.0);
-            let narrow =
-                focus_ring_geometry(bounds, 0.0, &Style::default().with_focus_ring_width(1.0));
-            let wide =
-                focus_ring_geometry(bounds, 0.0, &Style::default().with_focus_ring_width(8.0));
+            let narrow = focus_ring_geometry(bounds, &Style::default().with_focus_ring_width(1.0));
+            let wide = focus_ring_geometry(bounds, &Style::default().with_focus_ring_width(8.0));
 
             assert_eq!(narrow.width, 1.0);
             assert_eq!(wide.width, 8.0);

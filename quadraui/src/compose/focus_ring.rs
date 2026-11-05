@@ -316,30 +316,46 @@ mod tests {
         assert_eq!(ring.current(), Some(&WidgetId::new("only")));
     }
 
-    /// A headless proof that `TextInput` follows the same `has_focus`
-    /// composition convention [`FocusRing::is_focus_visible`]'s type
-    /// doc describes for `Button::focused`: a Tab-reached text input
-    /// reports focus-visible, a clicked one doesn't — even though the
-    /// click did move focus to it. Every rasteriser that paints a
-    /// ring (or, on TUI, a focus-tinted border) keys off the single
-    /// composed bool below, never off `is_focused` alone.
+    /// A headless, end-to-end proof that a real rasteriser — TUI's
+    /// `draw_text_input`, whose border-tint-on-`has_focus` treatment is
+    /// [`crate::tui::text_input`]'s existing focus story — paints a
+    /// visibly different border depending on how focus last moved
+    /// through [`FocusRing`], via the composed
+    /// `ring.is_focused(id) && ring.is_focus_visible()` bool
+    /// [`FocusRing::is_focus_visible`]'s type doc describes. Unlike a
+    /// test that only re-reads the expression it just assigned, this
+    /// one paints both states into a `Buffer` and asserts the actual
+    /// cell colour, so it fails if either `FocusRing`'s composition or
+    /// `draw_text_input`'s border-tint logic regresses.
+    #[cfg(feature = "tui")]
     #[test]
-    fn focused_text_input_reports_focus_visible_after_tab_not_after_click() {
-        use crate::TextInput;
+    fn focused_text_input_paints_a_different_border_after_tab_than_after_click() {
+        use crate::tui::draw_text_input;
+        use crate::{TextInput, Theme};
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
 
         let id = WidgetId::new("search:input");
         let mut ring = FocusRing::new(vec![id.clone()]);
-        let mut input = TextInput::new(id.clone());
+        let mut input = TextInput::new(id.clone()).with_lines(vec!["hi".to_string()]);
+        let theme = Theme::default();
+        let rect = Rect::new(0, 0, 10, 3);
+        // Sample the top border edge, not a corner (paints the same
+        // colour) and not the content row.
+        let border_fg = |buf: &Buffer| buf[(1, 0)].fg;
 
-        // `FocusRing::new` starts focus-visible, as if Tab just landed
-        // here.
+        // Tab: `advance()` is the real keyboard-move path, not just
+        // `FocusRing::new`'s initial state.
+        ring.advance();
         input.has_focus = ring.is_focused(&id) && ring.is_focus_visible();
         assert!(
             input.has_focus,
             "a Tab-reached text input must report focus-visible"
         );
+        let mut buf_tab = Buffer::empty(rect);
+        draw_text_input(&mut buf_tab, rect, &input, &theme);
 
-        // A mouse click re-focuses the same widget via `set`.
+        // Click: `set` re-focuses the same widget via the pointer path.
         ring.set(&id);
         input.has_focus = ring.is_focused(&id) && ring.is_focus_visible();
         assert!(
@@ -350,13 +366,30 @@ mod tests {
             !input.has_focus,
             "a mouse click must suppress the text input's focus-visible ring"
         );
+        let mut buf_click = Buffer::empty(rect);
+        draw_text_input(&mut buf_click, rect, &input, &theme);
 
-        // Shift+Tab afterwards restores it.
+        assert_ne!(
+            border_fg(&buf_tab),
+            border_fg(&buf_click),
+            "the painted border colour must differ between the Tab-reached \
+             and clicked states"
+        );
+
+        // Shift+Tab afterwards restores both the composed bool and the
+        // painted border.
         ring.retreat();
         input.has_focus = ring.is_focused(&id) && ring.is_focus_visible();
         assert!(
             input.has_focus,
             "a subsequent keyboard move restores focus-visible"
+        );
+        let mut buf_retreat = Buffer::empty(rect);
+        draw_text_input(&mut buf_retreat, rect, &input, &theme);
+        assert_eq!(
+            border_fg(&buf_tab),
+            border_fg(&buf_retreat),
+            "Shift+Tab repaints the same focus-visible border Tab did"
         );
     }
 }
