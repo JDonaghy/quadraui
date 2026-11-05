@@ -102,6 +102,76 @@ pub fn draw_list(
     line_height: f64,
     nerd_fonts_enabled: bool,
 ) {
+    draw_list_impl(
+        cr,
+        layout,
+        x,
+        y,
+        w,
+        h,
+        list,
+        theme,
+        style,
+        line_height,
+        nerd_fonts_enabled,
+        None,
+        None,
+    )
+}
+
+/// [`draw_list`], tinting the hovered/pressed row's background —
+/// `hovered_idx` / `pressed_idx` are indices into `list.items`, same as
+/// [`crate::Backend::draw_list_with_state`]. `None` for both paints
+/// byte-for-byte what [`draw_list`] paints.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_list_with_state(
+    cr: &Context,
+    layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    list: &ListView,
+    theme: &Theme,
+    style: &Style,
+    line_height: f64,
+    nerd_fonts_enabled: bool,
+    hovered_idx: Option<usize>,
+    pressed_idx: Option<usize>,
+) {
+    draw_list_impl(
+        cr,
+        layout,
+        x,
+        y,
+        w,
+        h,
+        list,
+        theme,
+        style,
+        line_height,
+        nerd_fonts_enabled,
+        hovered_idx,
+        pressed_idx,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_list_impl(
+    cr: &Context,
+    layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    list: &ListView,
+    theme: &Theme,
+    style: &Style,
+    line_height: f64,
+    nerd_fonts_enabled: bool,
+    hovered_idx: Option<usize>,
+    pressed_idx: Option<usize>,
+) {
     if w <= 0.0 || h <= 0.0 {
         return;
     }
@@ -142,6 +212,8 @@ pub fn draw_list(
         &mut surface,
         theme,
         style,
+        hovered_idx,
+        pressed_idx,
     );
 
     if list.bordered {
@@ -478,5 +550,122 @@ mod multi_select_driver_tests {
             },
         ));
         assert_eq!(driver.app().selected, vec![1, 4]);
+    }
+}
+
+/// Headless pixel round-trip for [`crate::Backend::draw_list_with_state`]:
+/// a plain `MouseMoved` (no button held, unlike [`GtkDriver::mouse_move`]'s
+/// drag-move) over a row tints its background via
+/// [`crate::theme::Theme::list_hover_bg`], and moving off the row restores
+/// the original pixel — the acceptance case quadraui#2034 asks for.
+#[cfg(test)]
+mod hover_driver_tests {
+    use crate::gtk::testing::GtkDriver;
+    use crate::runner::{AppLogic, Reaction};
+    use crate::{
+        Backend, Decoration, ListHoverTracker, ListItem, ListItemMeasure, ListView, Point, Rect,
+        StyledText, UiEvent, WidgetId,
+    };
+
+    const VIEWPORT_W: f32 = 80.0;
+    const VIEWPORT_H: f32 = 40.0;
+    const ROW_H: f32 = 10.0;
+
+    fn item(label: &str) -> ListItem {
+        ListItem {
+            text: StyledText::plain(label.to_string()),
+            icon: None,
+            detail: None,
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn sample_list() -> ListView {
+        ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..4).map(|i| item(&format!("row {i}"))).collect(),
+            // No row selected, so `Theme::selected_bg` never masks the
+            // hover tint this test is probing for.
+            selected_idx: usize::MAX,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        }
+    }
+
+    struct ListApp {
+        list: ListView,
+        hover: ListHoverTracker,
+    }
+
+    impl ListApp {
+        fn new() -> Self {
+            Self {
+                list: sample_list(),
+                hover: ListHoverTracker::new(),
+            }
+        }
+    }
+
+    impl AppLogic for ListApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_list_with_state(
+                Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H),
+                &self.list,
+                self.hover.hovered_idx(),
+                None,
+            );
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::MouseMoved { position, .. } = event else {
+                return Reaction::Continue;
+            };
+            let layout = self
+                .list
+                .layout(VIEWPORT_W, VIEWPORT_H, 0.0, |_| ListItemMeasure::new(ROW_H));
+            if self.hover.update(&layout, position.x, position.y) {
+                Reaction::Redraw
+            } else {
+                Reaction::Continue
+            }
+        }
+    }
+
+    fn mouse_moved(x: f32, y: f32) -> UiEvent {
+        UiEvent::MouseMoved {
+            position: Point::new(x, y),
+            buttons: Default::default(),
+        }
+    }
+
+    #[test]
+    fn hovering_a_row_tints_its_background_and_moving_off_clears_it() {
+        let mut driver = GtkDriver::new(ListApp::new(), VIEWPORT_W as i32, VIEWPORT_H as i32);
+        let probe_x = 4;
+        let probe_y = (ROW_H / 2.0) as i32; // inside row 0's band
+        let base = driver.pixel(probe_x, probe_y);
+
+        driver.dispatch(mouse_moved(4.0, ROW_H / 2.0));
+        let hovered = driver.pixel(probe_x, probe_y);
+        assert_ne!(
+            hovered, base,
+            "hovering row 0 at ({probe_x}, {probe_y}) should tint its background"
+        );
+
+        // Below the last row (4 rows of 10px in a 40px-tall viewport) is
+        // the empty tail — hovering there clears the tracker entirely.
+        driver.dispatch(mouse_moved(4.0, VIEWPORT_H - 1.0));
+        let cleared = driver.pixel(probe_x, probe_y);
+        assert_eq!(
+            cleared, base,
+            "moving off row 0 should restore its original background"
+        );
     }
 }

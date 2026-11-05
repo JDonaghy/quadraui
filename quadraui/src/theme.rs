@@ -669,6 +669,42 @@ impl Theme {
         base.blend(self.accent_fg, 0.26)
     }
 
+    /// Background tint for a hovered [`crate::ListView`] row, blended
+    /// from `base` (the row's own resting background — `selected_bg`,
+    /// `header_bg`, or the list's base fill) toward [`Self::foreground`]
+    /// at a low alpha.
+    ///
+    /// Blends toward `foreground` rather than [`Self::accent_fg`] like
+    /// [`Self::button_hover_bg`] does: a row hover is a neutral "under
+    /// the cursor" cue (VS Code's own list hover is a flat grey, not an
+    /// accent tint), reserving accent colouring for the row that's
+    /// actually selected.
+    pub fn list_hover_bg(&self, base: Color) -> Color {
+        base.blend(self.foreground, 0.08)
+    }
+
+    /// Background tint for a pressed [`crate::ListView`] row — like
+    /// [`Self::list_hover_bg`], but blended at a higher alpha so a
+    /// press reads as visibly deeper than a hover.
+    pub fn list_pressed_bg(&self, base: Color) -> Color {
+        base.blend(self.foreground, 0.16)
+    }
+
+    /// Background tint for a hovered [`crate::TreeView`] row. Same
+    /// derivation as [`Self::list_hover_bg`] — `ListView` and `TreeView`
+    /// are both flat, vertically-stacked row primitives, so they share
+    /// one hover/pressed visual language rather than each growing its
+    /// own slightly different tint.
+    pub fn tree_hover_bg(&self, base: Color) -> Color {
+        self.list_hover_bg(base)
+    }
+
+    /// Background tint for a pressed [`crate::TreeView`] row. See
+    /// [`Self::tree_hover_bg`].
+    pub fn tree_pressed_bg(&self, base: Color) -> Color {
+        self.list_pressed_bg(base)
+    }
+
     // ── Terminal find-highlight lift ────────────────────────────
     //
     // `tui/terminal.rs`, `gtk/terminal.rs`, and `macos/terminal.rs`
@@ -1542,6 +1578,41 @@ mod tests {
             "pressed ({pressed:?}) should sit further from the resting colour \
              ({base:?}) than hover ({hovered:?})"
         );
+    }
+
+    #[test]
+    fn list_hover_bg_shifts_toward_foreground_without_new_field() {
+        let theme = Theme::default();
+        let base = theme.background;
+        let hovered = theme.list_hover_bg(base);
+        assert_ne!(
+            hovered, base,
+            "hovering a list row should visibly tint its resting background"
+        );
+        assert_ne!(
+            hovered,
+            theme.button_hover_bg(base),
+            "a list row's hover tint is its own derivation, not a Button alias"
+        );
+    }
+
+    #[test]
+    fn list_pressed_bg_is_a_deeper_tint_than_hover() {
+        let theme = Theme::default();
+        let base = theme.background;
+        let hovered = theme.list_hover_bg(base);
+        let pressed = theme.list_pressed_bg(base);
+        assert_ne!(pressed, hovered, "pressed must read differently from hover");
+    }
+
+    #[test]
+    fn tree_hover_and_pressed_bg_match_list_s_derivation() {
+        // `ListView` and `TreeView` share one row hover/pressed visual
+        // language — see `Theme::tree_hover_bg`'s doc.
+        let theme = Theme::default();
+        let base = theme.background;
+        assert_eq!(theme.tree_hover_bg(base), theme.list_hover_bg(base));
+        assert_eq!(theme.tree_pressed_bg(base), theme.list_pressed_bg(base));
     }
 
     // ── Success / warning / danger / info roles ──────────────────────────

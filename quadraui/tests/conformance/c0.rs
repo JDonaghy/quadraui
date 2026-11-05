@@ -394,6 +394,34 @@ pub const CASES: &[Case] = &[
             b.draw_list(area, &list);
         },
     },
+    // `draw_list_with_state` is an additive trait default that forwards to
+    // `draw_list`, ignoring both indices, until a backend overrides it to
+    // tint hover/pressed. This row proves the default reaches a rasteriser
+    // and still paints observable content on every backend.
+    Case {
+        method: "draw_list_with_state",
+        needle: Some("c0listhv"),
+        paint: |b, area| {
+            let list = ListView {
+                id: id("list-hover"),
+                title: None,
+                items: vec![ListItem {
+                    text: StyledText::plain("c0listhv"),
+                    icon: None,
+                    detail: None,
+                    decoration: Decoration::Normal,
+                }],
+                selected_idx: usize::MAX,
+                scroll_offset: 0,
+                has_focus: false,
+                bordered: false,
+                h_scroll: 0,
+                max_content_width: None,
+                show_v_scrollbar: false,
+            };
+            b.draw_list_with_state(area, &list, Some(0), None);
+        },
+    },
     Case {
         method: "draw_tree",
         needle: Some("c0tree"),
@@ -417,6 +445,35 @@ pub const CASES: &[Case] = &[
                 has_focus: false,
             };
             b.draw_tree(area, &tree);
+        },
+    },
+    // `draw_tree_with_state` is an additive trait default that forwards to
+    // `draw_tree`, ignoring both indices, until a backend overrides it to
+    // tint hover/pressed. This row proves the default reaches a rasteriser
+    // and still paints observable content on every backend.
+    Case {
+        method: "draw_tree_with_state",
+        needle: Some("c0treehv"),
+        paint: |b, area| {
+            let tree = TreeView {
+                id: id("tree-hover"),
+                rows: vec![TreeRow {
+                    path: vec![0],
+                    indent: 0,
+                    icon: None,
+                    text: StyledText::plain("c0treehv"),
+                    badge: None,
+                    is_expanded: None,
+                    decoration: Decoration::Normal,
+                    edit: None,
+                }],
+                selection_mode: SelectionMode::Single,
+                selected_path: None,
+                scroll_offset: 0,
+                style: TreeStyle::default(),
+                has_focus: false,
+            };
+            b.draw_tree_with_state(area, &tree, Some(0), None);
         },
     },
     Case {

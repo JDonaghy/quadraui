@@ -485,6 +485,13 @@ pub(crate) mod native_surface_paint {
     /// chevron/icon/text starts at — GTK/macOS callers pass
     /// `&self.current_style`; `win::tree::draw_tree` passes
     /// `&self.current_style` the same way (see that fn's own doc).
+    ///
+    /// `hovered_idx` / `pressed_idx` — index into `tree.rows` to tint via
+    /// [`Theme::tree_hover_bg`] / [`Theme::tree_pressed_bg`]. `None`
+    /// paints byte-for-byte what this function painted before hover
+    /// support existed. See `primitives::list::native_surface_paint::paint`'s
+    /// matching doc for the priority rule (pressed over hover, applied
+    /// on top of whatever background the row already has).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         tree: &TreeView,
@@ -495,6 +502,8 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         style: &Style,
+        hovered_idx: Option<usize>,
+        pressed_idx: Option<usize>,
     ) {
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
@@ -548,6 +557,14 @@ pub(crate) mod native_surface_paint {
                     Decoration::Warning => (theme.warning_fg, theme.tab_bar_bg),
                     _ => (theme.foreground, theme.tab_bar_bg),
                 }
+            };
+
+            let row_bg = if Some(vis_row.row_idx) == pressed_idx {
+                theme.tree_pressed_bg(row_bg)
+            } else if Some(vis_row.row_idx) == hovered_idx {
+                theme.tree_hover_bg(row_bg)
+            } else {
+                row_bg
             };
 
             let row_rect = Rect::new(row_x, row_y, row_w, row_h);
@@ -892,6 +909,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             let item_height =
@@ -976,6 +995,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             assert!(
@@ -1021,6 +1042,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             assert!(
@@ -1072,6 +1095,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             let row1 = &layout.visible_rows[1];
@@ -1118,6 +1143,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             assert!(
@@ -1153,6 +1180,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             let row1 = &layout.visible_rows[1];
@@ -1195,6 +1224,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             assert!(surface
@@ -1234,6 +1265,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             let (badge_bw, _) = surface.surface_measure_text("U");
@@ -1296,6 +1329,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             assert!(
