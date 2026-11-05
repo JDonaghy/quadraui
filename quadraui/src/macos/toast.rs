@@ -198,10 +198,10 @@ mod tests {
         let px = (t.bounds.x + t.bounds.width - pixel::TOAST_DISMISS_WIDTH - 4.0) as u32;
         let py = (t.bounds.y + t.bounds.height - 2.0) as u32;
         let (r, g, b, _) = surface.pixel(px, py);
-        // Error severity's fallback tint is `theme.error_fg` — see
+        // Error severity's fallback tint is `theme.danger_bg()` — see
         // `primitives::toast::native_surface_paint::severity_bg`, the
         // shared implementation of this formula.
-        let expected = theme.error_fg;
+        let expected = theme.danger_bg();
         assert_eq!((r, g, b), (expected.r, expected.g, expected.b));
     }
 

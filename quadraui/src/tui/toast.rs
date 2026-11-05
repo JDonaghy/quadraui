@@ -92,10 +92,10 @@ fn toast_height(toast: &Toast, width: f32) -> f32 {
 
 fn severity_bg(severity: ToastSeverity, theme: &Theme) -> crate::types::Color {
     match severity {
-        ToastSeverity::Info => theme.surface_bg,
-        ToastSeverity::Success => crate::types::Color::rgb(30, 80, 30),
-        ToastSeverity::Warning => crate::types::Color::rgb(100, 80, 20),
-        ToastSeverity::Error => theme.error_fg,
+        ToastSeverity::Info => theme.info_bg(),
+        ToastSeverity::Success => theme.success_bg(),
+        ToastSeverity::Warning => theme.warning_bg(),
+        ToastSeverity::Error => theme.danger_bg(),
     }
 }
 
