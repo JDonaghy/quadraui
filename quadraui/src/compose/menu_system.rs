@@ -31,9 +31,10 @@ use crate::{FontRole, Key, Modifiers, MouseButton, NamedKey};
 /// (whose `char_width` isn't meaningful for chrome text — see
 /// `Backend::measure_text`'s own doc). Mirrors [`ContextMenu::
 /// measure_generic_width`]'s per-item accounting (a leading `✓ ` slot
-/// when [`ContextMenuItem::checked`] is `Some(_)`, a trailing gap plus
-/// either a `▶` submenu arrow or [`ContextMenuItem::detail`]'s text) but
-/// measures the real chrome-font advance instead of counting characters.
+/// when [`ContextMenuItem::checked`] is `Some(_)`, or the same slot for
+/// [`ContextMenuItem::icon`] when `checked` is unset, plus a trailing gap
+/// plus either a `▶` submenu arrow or [`ContextMenuItem::detail`]'s text)
+/// but measures the real chrome-font advance instead of counting characters.
 /// [`ContextMenuItem::key_equivalent`]-rendered shortcuts aren't counted,
 /// same omission `measure_generic_width` documents for itself.
 fn dropdown_width(backend: &dyn Backend, items: &[ContextMenuItem], lh: f32) -> f32 {
@@ -68,7 +69,7 @@ fn dropdown_width(backend: &dyn Backend, items: &[ContextMenuItem], lh: f32) -> 
         .map(|item| {
             let label: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
             let mut w = backend.measure_text(&label, role).0;
-            if item.checked.is_some() {
+            if item.checked.is_some() || item.icon.is_some() {
                 w += checked_w;
             }
             if item.submenu.is_some() {
@@ -1569,6 +1570,32 @@ mod tests {
 
         assert!(checked_w > plain_w, "checked={checked_w}, plain={plain_w}");
         assert!(submenu_w > plain_w, "submenu={submenu_w}, plain={plain_w}");
+    }
+
+    /// An `icon`-only item (no `checked` state) reserves the same leading
+    /// gutter width a `checked` item does — menu-bar dropdowns paint
+    /// through this same `native_surface_paint` path, which prefixes an
+    /// icon'd item's label with the same two-space gutter a checked
+    /// item's `✓ ` uses, so a dropdown that doesn't reserve for `icon`
+    /// would let that shifted label clip at the right edge.
+    #[test]
+    fn dropdown_width_reserves_space_for_icon_same_as_checked() {
+        let backend = MockBackend::new();
+        let plain = [action("a", "Reveal in Explorer")];
+        let mut with_icon = plain.clone();
+        with_icon[0].icon = Some(crate::types::Icon::new("G", "F"));
+        let mut checked = plain.clone();
+        checked[0].checked = Some(true);
+
+        let plain_w = dropdown_width(&backend, &plain, 1.0);
+        let icon_w = dropdown_width(&backend, &with_icon, 1.0);
+        let checked_w = dropdown_width(&backend, &checked, 1.0);
+
+        assert!(icon_w > plain_w, "icon={icon_w}, plain={plain_w}");
+        assert_eq!(
+            icon_w, checked_w,
+            "icon and checked reserve the same shared gutter width"
+        );
     }
 
     /// Separators never gate the width computation on their own (empty)

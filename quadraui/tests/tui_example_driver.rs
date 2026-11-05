@@ -9653,10 +9653,10 @@ fn context_menu_style_demo_click_activates_item() {
 
 /// The "Copy" item's `ContextMenuItem::icon` paints its resolved glyph in
 /// the row's leading gutter column — `TuiDriver` defaults to nerd fonts
-/// off, so that's the icon's plain-text fallback's first `char`
-/// (`Icon::codicon("files", "CP")`'s `C`), immediately left of the label
-/// with no gap (the TUI rasteriser always starts the label exactly one
-/// column after the gutter cell).
+/// off, so that's the icon's plain-text fallback (`Icon::codicon("files",
+/// "C")`'s `C`), immediately left of the label with no gap (the TUI
+/// rasteriser always starts the label exactly one column after the
+/// gutter cell).
 #[test]
 fn context_menu_style_demo_copy_item_shows_icon_glyph() {
     let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 60, 12);

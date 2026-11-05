@@ -3905,12 +3905,8 @@ impl Backend for GtkBackend {
         // additive-only and so cannot take a live `&Style`) so this live
         // backend path honours `Self::set_style` overrides.
         let style = self.style();
-        // `paint_with_glyphs(None, ...)` reproduces `paint`'s own
-        // check-mark/submenu-arrow defaults exactly; the one thing it
-        // additionally needs is `self.nerd_fonts_enabled`, so that an
-        // item's own `ContextMenuItem::icon` resolves its Nerd Font
-        // glyph rather than always falling back to plain text on this
-        // live path.
+        // `None` keeps `paint_with_glyphs`'s check/arrow defaults; the
+        // flag resolves an item's own `ContextMenuItem::icon`.
         let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let mut surface = crate::gtk::surface::CairoSurface {
             cr,

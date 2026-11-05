@@ -3833,12 +3833,8 @@ impl Backend for WinBackend {
                 target: &surface.target,
                 dwrite: Some(dwrite),
             };
-            // `paint_with_glyphs(None, ...)` reproduces `paint`'s own
-            // check-mark/submenu-arrow defaults exactly; the one thing it
-            // additionally needs is `self.nerd_fonts_enabled`, so that an
-            // item's own `ContextMenuItem::icon` resolves its Nerd Font
-            // glyph rather than always falling back to plain text on
-            // this live path.
+            // `None` keeps `paint_with_glyphs`'s check/arrow defaults;
+            // the flag resolves an item's own `ContextMenuItem::icon`.
             return crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
                 menu,
                 layout,

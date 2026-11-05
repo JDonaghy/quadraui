@@ -666,13 +666,51 @@ mod tests {
         draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
         let inner_x = layout.bounds.x.round() as u16;
         let row_y = layout.visible_items[0].bounds.y.round() as u16;
-        // `nerd_fonts_enabled = false` (what `draw_context_menu` always
-        // passes) resolves to the icon's fallback — the glyph, not the
-        // ASCII fallback, so this stays "F" rather than "G".
+        // `draw_context_menu` always resolves with `nerd_fonts_enabled =
+        // false`, so the icon resolves to its ASCII fallback "F", not the
+        // glyph "G". `item_icon_paints_nerd_font_glyph_when_enabled` below
+        // pins the `nerd_fonts_enabled = true` path through
+        // `draw_context_menu_with_glyphs`.
         assert_eq!(
             cell_char(&buf, inner_x, row_y),
             'F',
             "item icon should paint its resolved fallback glyph at inner_x",
+        );
+    }
+
+    #[test]
+    fn item_icon_paints_nerd_font_glyph_when_enabled() {
+        use crate::primitives::context_menu::ContextMenuItem;
+        use crate::types::Icon;
+        let menu = ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![ContextMenuItem {
+                id: Some(WidgetId::new("new-file")),
+                label: StyledText {
+                    spans: vec![StyledSpan::plain("New File")],
+                },
+                icon: Some(Icon::new("G", "F")),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let layout = menu.layout(
+            2.0,
+            1.0,
+            crate::event::Rect::new(0.0, 0.0, 30.0, 10.0),
+            20.0,
+            |_| ContextMenuItemMeasure::new(1.0),
+        );
+        draw_context_menu_with_glyphs(&mut buf, &menu, &layout, &Theme::default(), None, true);
+        let inner_x = layout.bounds.x.round() as u16;
+        let row_y = layout.visible_items[0].bounds.y.round() as u16;
+        assert_eq!(
+            cell_char(&buf, inner_x, row_y),
+            'G',
+            "item icon should paint its Nerd Font glyph when nerd_fonts_enabled is true",
         );
     }
 

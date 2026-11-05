@@ -52,15 +52,16 @@ impl ContextMenuDemo {
             id: WidgetId::new("gallery:context-menu"),
             items: vec![
                 // `C3`: a leading icon on "Cut"/"Copy" — the bundled
-                // `edit`/`files` codicons on GUI, their `X`/`CP`
+                // `edit`/`files` codicons on GUI, their `X`/`C`
                 // fallbacks on TUI (or on GUI with
-                // `set_nerd_fonts(false)`).
+                // `set_nerd_fonts(false)`); only the fallback string's
+                // first `char` renders in the TUI gutter's single cell.
                 ContextMenuItem {
                     icon: Icon::codicon("edit", "X"),
                     ..action_item("gallery:ctx:cut", "Cut", Some(KeyBinding::Cut))
                 },
                 ContextMenuItem {
-                    icon: Icon::codicon("files", "CP"),
+                    icon: Icon::codicon("files", "C"),
                     ..action_item("gallery:ctx:copy", "Copy", Some(KeyBinding::Copy))
                 },
                 action_item("gallery:ctx:paste", "Paste", Some(KeyBinding::Paste)),
@@ -287,5 +288,10 @@ mod tests {
                 Some("gallery:ctx:about".to_string()),
             ]
         );
+        // Pins that "Cut"/"Copy" actually resolved an `Icon` — a typo'd
+        // codicon name in `Icon::codicon` silently yields `None` with no
+        // other test failure, dropping the icon unnoticed.
+        assert!(menu.items[0].icon.is_some(), "Cut should carry an icon");
+        assert!(menu.items[1].icon.is_some(), "Copy should carry an icon");
     }
 }

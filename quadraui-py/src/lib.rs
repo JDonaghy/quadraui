@@ -3195,7 +3195,8 @@ impl QuiApp {
     /// Opens a right-click-style popup menu at `position` (view-local
     /// coordinates) built from `items` — a list of dicts, each matching
     /// `ContextMenuItem`'s shape (`id`, `label`, `detail`, `disabled`,
-    /// `checked`, `submenu`; see `quadraui::ContextMenuItem`'s own doc). The
+    /// `checked`, `icon`, `key_equivalent`, `submenu`; see
+    /// `quadraui::ContextMenuItem`'s own doc). The
     /// popup is routed through the same `compose::ContextMenuController`
     /// every in-window backend shares, so a click on an item, an Up/Down +
     /// Enter, or Escape/click-outside all resolve the same way regardless

@@ -178,14 +178,19 @@ only a push to `main` runs this workflow.
 - `ContextMenuItem::icon: Option<Icon>` — an optional leading icon, painted
   in the same reserved gutter column `ContextMenuItem::checked`'s `✓` uses
   (a checkable item's state mark always wins that shared slot over its own
-  icon). GTK/macOS/Win paint the resolved codicon/Nerd Font glyph through
-  `native_surface_paint::paint_with_glyphs`, which the live
-  `Backend::draw_context_menu` path on every GUI backend now calls instead
-  of the glyph-override-blind `paint`, so `Backend::nerd_fonts_enabled`
+  icon). GTK/macOS/Win/TUI all paint the resolved codicon/Nerd Font glyph
+  through their respective `*::draw_context_menu` `Backend` methods, which
+  now call the glyph-override-aware paint path (`native_surface_paint::
+  paint_with_glyphs` on GUI, `tui::draw_context_menu_with_glyphs` on TUI)
+  instead of the glyph-override-blind one, so `Backend::nerd_fonts_enabled`
   resolves an item's icon the same way it already does for `ListItem`/
   `TreeRow`; TUI paints the resolved glyph's first `char` in the same
   single-cell gutter `checked` already uses. `#[serde(default)]`, so
-  existing on-disk/wire `ContextMenuItem` JSON keeps decoding unchanged.
+  existing on-disk/wire `ContextMenuItem` JSON keeps decoding unchanged —
+  but `ContextMenuItem` is not `#[non_exhaustive]`, so an exhaustive Rust
+  struct literal (no `..Default::default()`/`..action_item(...)`) needs a
+  new `icon: None` arm, which is a breaking change for that call site and
+  needs the minor version bump at the next develop→main promotion.
 - `Icon::codicon(name, fallback) -> Option<Icon>` and
   `TabIcon::codicon(name, color) -> Option<TabIcon>` build an icon from the
   bundled codicon font's name table (`"folder"`, `"file-code"`,

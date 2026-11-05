@@ -3501,12 +3501,24 @@ impl Backend for TuiBackend {
         // See draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&menu.id);
         let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
         // Issue #1117: the returned `Vec` is derived from `layout` (an
         // argument, not frame state) below regardless of whether painting
         // happens, so a missing frame only skips the paint, not the hit
         // data a host still needs to route clicks.
         if let Some(frame) = self.current_frame_mut() {
-            crate::tui::draw_context_menu(frame.buffer_mut(), menu, layout, &theme);
+            // No app-supplied glyph overrides on this path (that's
+            // `draw_context_menu_with_glyphs`'s job) — but an item's own
+            // `icon` still needs `nerd_fonts_enabled` to resolve its glyph
+            // instead of always falling back to ASCII.
+            crate::tui::draw_context_menu_with_glyphs(
+                frame.buffer_mut(),
+                menu,
+                layout,
+                &theme,
+                None,
+                nerd_fonts,
+            );
         } else {
             debug_assert!(
                 false,
