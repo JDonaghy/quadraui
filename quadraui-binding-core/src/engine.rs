@@ -2834,6 +2834,7 @@ mod tests {
                         "Body",
                     )),
                 })),
+                spacing: crate::layout::Spacing::default(),
             });
             paint_layout(backend, area, &node, &mut hits, &|id| {
                 self.engine.chrome_interaction(id)

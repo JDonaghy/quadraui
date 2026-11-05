@@ -100,6 +100,12 @@ only a push to `main` runs this workflow.
   `false`) is pixel-unchanged.
 
 ### Added
+- `quadraui-binding-core`'s render-callback layout tree now accepts
+  `"padding"`/`"margin"` on a `"split"`, `"tabs"` or `"panel"` node, and
+  `"gap"` on a `"split"` node (the space between its two panes) — the
+  same wire shape and cell-quantised TUI degrade `"row"`/`"column"` nodes
+  already had. `"gap"` stays a decode error on `"tabs"`/`"panel"`, which
+  have no second sibling to space it from.
 - `gtk::GtkRunner::waker() -> Arc<dyn Fn(UserPayload) + Send + Sync>` — this
   runner's own live window's `Backend::waker` closure, captured off its
   `GtkBackend` before `activate` moves the rest of it into that window's
