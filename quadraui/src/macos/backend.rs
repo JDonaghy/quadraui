@@ -320,6 +320,17 @@ pub struct MacBackend {
     /// type's doc comment) — so the `origin_x`/`origin_y` `arm()`
     /// arguments are always `0.0` and go unread.
     pending_window_press: WindowDragArm<Retained<NSEvent>>,
+    /// The [`PointerShape`] most recently requested via
+    /// [`Backend::set_cursor`]. `macos::run`'s `QuadraView` reads this
+    /// through [`Self::requested_cursor`] from its `cursorUpdate:` /
+    /// `resetCursorRects` overrides, so AppKit keeps re-applying the
+    /// right native cursor on every subsequent mouse move — including
+    /// mid-drag — instead of reverting to the arrow the instant the
+    /// one-shot `NSCursor::set()` call in `set_cursor` gets overwritten
+    /// by AppKit's own tracking. `Cell`, not a plain field: read from
+    /// `QuadraView` (an `&self` responder method) while `set_cursor`
+    /// writes it through `&mut self`.
+    requested_cursor: Cell<PointerShape>,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
     // /. Picks `Icon::glyph` vs `Icon::fallback` in
     /// `draw_activity_bar` and (since #804) `draw_tree`. Set via
@@ -621,7 +632,7 @@ fn mac_cursor_kind(shape: PointerShape) -> MacCursorKind {
 /// Vend the shared `NSCursor` singleton for a [`PointerShape`], via
 /// [`mac_cursor_kind`]. The only AppKit-touching half of the
 /// mapping; see [`MacCursorKind`] for why the two halves are separate.
-fn mac_cursor_for_shape(shape: PointerShape) -> Retained<NSCursor> {
+pub(crate) fn mac_cursor_for_shape(shape: PointerShape) -> Retained<NSCursor> {
     // `resizeUpDownCursor`/`resizeLeftRightCursor` are deprecated in AppKit
     // in favour of `rowResizeCursorInDirections:`/`columnResizeCursorInDirections:`
     // (divider-drag) or `frameResizeCursorFromPosition:inDirections:` (rectangular
@@ -732,6 +743,7 @@ impl MacBackend {
             minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             window: None,
             pending_window_press: WindowDragArm::new(),
+            requested_cursor: Cell::new(PointerShape::Default),
             nerd_fonts_enabled: true,
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
@@ -749,6 +761,17 @@ impl MacBackend {
     /// / [`Backend::set_cursor`] — mirrors `GtkBackend::set_window`.
     pub(crate) fn set_window(&mut self, window: Retained<NSWindow>) {
         self.window = Some(window);
+    }
+
+    /// The [`PointerShape`] last requested via [`Backend::set_cursor`] —
+    /// `Default` before the first call. Read by `macos::run`'s
+    /// `cursorUpdate:` / `resetCursorRects` `QuadraView` overrides (via
+    /// [`mac_cursor_for_shape`]) every time AppKit re-evaluates which
+    /// cursor belongs over the content view, so the shape an app asked
+    /// for keeps winning on every later mouse move — not just the one
+    /// frame `set_cursor` happened to run on.
+    pub(crate) fn requested_cursor(&self) -> PointerShape {
+        self.requested_cursor.get()
     }
 
     /// Install the closure [`Backend::waker`]'s returned handle invokes on
@@ -2040,8 +2063,10 @@ impl Backend for MacBackend {
         true
     }
 
-    /// Sets the cursor via `NSCursor::set()`, not the `push`/`pop`
-    /// pairing AppKit's own `cursorUpdate:`/tracking-area handlers
+    /// Stashes `shape` (read back by `macos::run`'s `cursorUpdate:` /
+    /// `resetCursorRects` overrides via [`Self::requested_cursor`]) and
+    /// applies it immediately via plain `NSCursor::set()` — not the
+    /// `push`/`pop` pairing AppKit's own tracking-area handlers
     /// conventionally use. That pairing exists to *restore* whatever
     /// cursor was showing before a transient region was entered; this
     /// backend has no such transient-region concept — `Backend::set_cursor`
@@ -2054,10 +2079,16 @@ impl Backend for MacBackend {
     /// hover cursor that must restore the ambient one), that's a new,
     /// deliberately-scoped API on top of this one — not a reason to
     /// replace this plain `.set()`.
+    ///
+    /// The immediate `.set()` call alone doesn't survive AppKit's own
+    /// cursor-rect machinery kicking in on the next mouse move — see
+    /// [`Self::requested_cursor`]'s doc for the half of the fix that
+    /// makes it stick.
     fn set_cursor(&mut self, shape: PointerShape) -> bool {
         if self.window.is_none() {
             return false;
         }
+        self.requested_cursor.set(shape);
         // `NSCursor::set` is a safe method — called from `AppLogic::handle`
         // (via `Backend::set_cursor`), which only ever runs on the main
         // thread inside the live AppKit run loop.
@@ -6112,6 +6143,68 @@ mod tests {
             &mut b,
             PointerShape::Resize(ResizeEdge::North)
         ));
+    }
+
+    /// Mirrors `set_cursor_false_without_window`: a rejected `set_cursor`
+    /// call must leave [`MacBackend::requested_cursor`] untouched — the
+    /// early-return guard runs before the stash, not after it — so
+    /// `macos::run`'s `cursorUpdate:`/`resetCursorRects` overrides never
+    /// see a shape the backend itself rejected.
+    #[test]
+    fn set_cursor_without_window_does_not_update_requested_cursor() {
+        let mut b = MacBackend::new();
+        assert_eq!(b.requested_cursor(), PointerShape::Default);
+        assert!(!Backend::set_cursor(
+            &mut b,
+            PointerShape::Resize(ResizeEdge::East)
+        ));
+        assert_eq!(b.requested_cursor(), PointerShape::Default);
+    }
+
+    /// The half of the set-cursor-sticks fix that's testable without a
+    /// live `NSWindow`/AppKit event loop: once `set_cursor` accepts a
+    /// shape (window present), [`MacBackend::requested_cursor`] reports
+    /// it back — the state `macos::run`'s `cursorUpdate:` /
+    /// `resetCursorRects` overrides re-apply on every later mouse move.
+    /// The AppKit-side half (the `NSTrackingArea` actually firing
+    /// `cursorUpdate:`, and the native cursor glyph it leaves on
+    /// screen) needs a live window + run loop and is covered by the
+    /// operator-run smoke tier instead — see this test's sibling
+    /// `titlebar_control_inset_is_narrow_on_a_live_window` for the same
+    /// headless-test-binary limitation.
+    #[test]
+    fn set_cursor_updates_requested_cursor_on_a_live_window() {
+        use objc2::msg_send;
+        use objc2_app_kit::{NSBackingStoreType, NSWindowStyleMask};
+
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(800.0, 600.0));
+        let style = NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Closable
+            | NSWindowStyleMask::Resizable
+            | NSWindowStyleMask::Miniaturizable;
+        // SAFETY: see `titlebar_control_inset_is_narrow_on_a_live_window`'s
+        // identical construction above.
+        let window: Retained<NSWindow> = unsafe {
+            msg_send![
+                mtm.alloc::<NSWindow>(),
+                initWithContentRect: content_rect,
+                styleMask: style,
+                backing: NSBackingStoreType::Buffered,
+                defer: false,
+            ]
+        };
+
+        let mut b = MacBackend::new();
+        b.set_window(window);
+        assert_eq!(b.requested_cursor(), PointerShape::Default);
+        assert!(Backend::set_cursor(
+            &mut b,
+            PointerShape::Resize(ResizeEdge::East)
+        ));
+        assert_eq!(b.requested_cursor(), PointerShape::Resize(ResizeEdge::East));
     }
 
     /// Same no-window guard as the three tests above —
