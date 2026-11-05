@@ -340,15 +340,44 @@ pub fn mac_tab_bar_native_layout_icons(
     for (tab_idx, tab) in bar.tabs.iter().enumerate().skip(bar.scroll_offset) {
         let (tab_name_w, _) = measure_text(font, &tab.label);
         let icon_extra = icon_extras[tab_idx];
-        let tab_content_w = tab_pad + icon_extra + tab_name_w + close_extra_for(tab_idx) + tab_pad;
-        let slot_w = tab_content_w + tab_outer_gap;
-        if x + slot_w > effective_tab_area {
-            break;
-        }
+        let close_extra = close_extra_for(tab_idx);
+        let leading = tab_pad + icon_extra;
+        let trailing = close_extra + tab_pad;
+        let full_content_w = leading + tab_name_w + trailing;
+        let full_slot_w = full_content_w + tab_outer_gap;
+        let remaining = (effective_tab_area - x).max(0.0);
+
+        // A tab whose full (untruncated) width would overflow the strip
+        // gets its label ellipsis-fitted into whatever space is actually
+        // left, via the shared `crate::primitives::tab_bar::fit_tab_label`,
+        // instead of being dropped from the strip outright. `name_w` below
+        // is the possibly-truncated label's own measured width, and the
+        // close-button hit box is positioned off it, so the glyph always
+        // lands inside this tab's (possibly shrunk) slot.
+        let (name_w, content_w, truncated) = if full_slot_w <= remaining {
+            (tab_name_w, full_content_w, false)
+        } else {
+            let truncated_budget = (remaining - tab_outer_gap).max(0.0);
+            if leading + trailing > truncated_budget {
+                // Not even room for this tab's own padding/close slot —
+                // nothing left on the strip to show it in.
+                break;
+            }
+            let fitted = crate::primitives::tab_bar::fit_tab_label(
+                &tab.label,
+                truncated_budget as f32,
+                leading as f32,
+                trailing as f32,
+                |s| measure_text(font, s).0 as f32,
+            );
+            let (fitted_w, _) = measure_text(font, &fitted);
+            (fitted_w, leading + fitted_w + trailing, true)
+        };
+        let slot_w = content_w + tab_outer_gap;
         let bounds = Rect::new(x as f32, 0.0, slot_w as f32, height as f32);
 
         let close_bounds = if bar.show_tab_close && tab.is_closable {
-            let close_x = x + tab_pad + icon_extra + tab_name_w + tab_inner_gap;
+            let close_x = x + tab_pad + icon_extra + name_w + tab_inner_gap;
             let cb = Rect::new(
                 (close_x - CLOSE_PAD) as f32,
                 0.0,
@@ -369,6 +398,11 @@ pub fn mac_tab_bar_native_layout_icons(
         });
 
         x += slot_w;
+        if truncated {
+            // The strip is full — this tab consumed whatever space was
+            // left, so nothing after it can fit either.
+            break;
+        }
     }
 
     // Close regions before body regions — matches `TabBar::layout`'s own
@@ -556,6 +590,15 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
         style.tab_padding_x as f64
     };
     let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
+    let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
+    // Measured the same way `mac_tab_bar_native_layout_icons` sizes the
+    // close-button reservation, so the label-fit budget below agrees with
+    // the slot geometry it's derived from.
+    let close_w = if bar.show_tab_close {
+        measure_text(font, &crate::codicon::CLOSE.to_string()).0
+    } else {
+        0.0
+    };
 
     // Single source of truth for geometry — `Backend::tab_bar_layout_icons`
     // calls the same function with the same sidecar, so the no-paint twin
@@ -663,7 +706,24 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
             );
         }
 
-        // Tab label.
+        // Tab label. A label wider than this tab's slot is ellipsis-fitted
+        // through the shared `crate::primitives::tab_bar::fit_tab_label`
+        // instead of being drawn past the slot's edge — `tab_content_w` is
+        // exactly the budget `mac_tab_bar_native_layout_icons` sized this
+        // tab's close-button hit box around, so a truncated label can
+        // never paint over the close glyph.
+        let close_extra = if bar.show_tab_close && tab.is_closable {
+            tab_inner_gap + close_w
+        } else {
+            0.0
+        };
+        let fitted_label = crate::primitives::tab_bar::fit_tab_label(
+            &tab.label,
+            tab_content_w as f32,
+            (tab_pad + icon_extra) as f32,
+            (close_extra + tab_pad) as f32,
+            |s| measure_text(font, s).0 as f32,
+        );
         let fg_col = match (tab.is_active, tab.is_preview) {
             (true, true) => theme.tab_preview_active_fg,
             (true, false) => theme.tab_active_fg,
@@ -673,7 +733,7 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
         draw_text(
             ctx,
             font,
-            &tab.label,
+            &fitted_label,
             slot_x + tab_pad + icon_extra,
             text_y_offset,
             color_to_cg(fg_col),
@@ -2140,6 +2200,94 @@ mod tests {
             (wide_label_x - default_label_x - 16.0).abs() < 0.01,
             "widening tab_padding_x by 16.0 (10.0 -> 26.0) should shift the label \
              by exactly 16.0 (default {default_label_x}, wide {wide_label_x})",
+        );
+    }
+
+    /// A label wider than the tab strip it has to fit in is ellipsis-fitted
+    /// through the shared `crate::primitives::tab_bar::fit_tab_label`
+    /// instead of being dropped from the strip (the pre-fit behaviour: the
+    /// tab's slot was always sized to its full label, so an overlong label
+    /// at the head of a narrow strip pushed the whole tab's `x + slot_w`
+    /// past `effective_tab_area` and the loop broke before even painting
+    /// it). The close glyph's hit box — and the glyph itself — must still
+    /// land fully inside the narrow strip.
+    #[test]
+    #[allow(deprecated)]
+    fn overlong_label_in_a_narrow_strip_ends_in_ellipsis_and_close_glyph_stays_fully_visible() {
+        const NARROW_W: f64 = 110.0;
+
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: "a_very_long_filename_for_this_single_tab.rs".into(),
+                is_active: true,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: true,
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+
+        let surface = BitmapSurface::new(NARROW_W as u32, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = backend_with_test_fonts();
+        backend.set_painted_text_recording(true);
+        backend.begin_frame(Viewport::new(NARROW_W as f32, H as f32, 1.0));
+        let hits = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let h = b.draw_tab_bar(QRect::new(0.0, 0.0, NARROW_W as f32, H as f32), &bar, None);
+            *hits.borrow_mut() = Some(h);
+        });
+        let hits = hits.into_inner().unwrap();
+        let runs = backend.text_runs().to_vec();
+        backend.end_frame();
+
+        assert_eq!(
+            hits.slot_positions.len(),
+            1,
+            "the narrow strip must still show the tab (ellipsis-fitted), not drop it"
+        );
+
+        let label_run = runs
+            .iter()
+            .find(|r| r.text != crate::codicon::CLOSE.to_string() && r.text.contains('…'))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected an ellipsis-truncated label run among painted runs, got {:?}",
+                    runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            label_run.text.ends_with('…'),
+            "label run {:?} must end in an ellipsis",
+            label_run.text
+        );
+        assert!(
+            (label_run.text.chars().count() as f64) < bar.tabs[0].label.chars().count() as f64,
+            "the painted label {:?} must be shorter than the original {:?}",
+            label_run.text,
+            bar.tabs[0].label,
+        );
+
+        let (close_lo, close_hi) =
+            hits.close_bounds[0].expect("a closable tab must still report a close-button hit box");
+        assert!(
+            close_hi <= NARROW_W,
+            "close hit box [{close_lo}, {close_hi}] must stay inside the {NARROW_W}-wide strip"
+        );
+
+        let close_run = runs
+            .iter()
+            .find(|r| r.text.contains(crate::codicon::CLOSE))
+            .expect("the close glyph must still be painted");
+        assert!(
+            (close_run.bounds.x as f64) >= 0.0
+                && (close_run.bounds.x + close_run.bounds.width) as f64 <= NARROW_W,
+            "close glyph run {close_run:?} must be fully visible inside the {NARROW_W}-wide strip"
         );
     }
 }
