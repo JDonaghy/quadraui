@@ -59,6 +59,11 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Fixed
+- `Form`'s shared painter now clips to its own bounds (`surface_push_clip`/
+  `surface_pop_clip`) on every backend, so a row whose content overflows a
+  layout-clamped height — e.g. `Toggle`'s checkbox-size floor on a thin,
+  scroll-clipped last row — never bleeds past the form into whatever a host
+  paints below it (a status bar, another section).
 - macOS `Backend::set_cursor` no longer reverts to the arrow on the next
   mouse move: `MacBackend` now stashes the requested `PointerShape`, and
   `QuadraView` installs an `NSTrackingArea` (`CursorUpdate`,

@@ -1071,6 +1071,16 @@ mod native_surface_paint {
             flayout.viewport_width,
             flayout.viewport_height,
         );
+        // Clip every row paint to `form_rect`: a row's own geometry is
+        // already height-clamped by `Form::layout` (see its "Row
+        // clipping" doc), but a control that draws at its *unclamped*
+        // glyph/box height (e.g. a checkbox's fixed box size, or a
+        // validation message's own line) can still paint a few pixels
+        // past the clamped row — and past the form's own bottom edge —
+        // into whatever the host paints below it (a status bar, another
+        // section). The clip is the backstop that keeps that bleed from
+        // reaching the screen regardless of backend.
+        surface.surface_push_clip(form_rect);
         surface.surface_fill_rect(form_rect, theme.tab_bar_bg);
         let left_label_width = left_label_column_width(form, surface);
 
@@ -1713,6 +1723,7 @@ mod native_surface_paint {
                 surface.surface_draw_text_run(Rect::new(row_rect.x + 8.0, my, mw, mh), msg, color);
             }
         }
+        surface.surface_pop_clip();
     }
 
     /// Horizontal inset (in pixels) between a text input box's stroked
@@ -1921,7 +1932,7 @@ mod native_surface_paint {
         use crate::primitives::form::{ControlWidth, FormField, ToggleGroupItem};
         use crate::primitives::layout_metrics::{form_field_measure, form_row_height, TextMeasure};
         use crate::types::{StyledSpan, WidgetId};
-        use crate::Image;
+        use crate::{FormFieldMeasure, Image};
 
         /// Records every drawing verb `paint` issues, so a paint
         /// assertion can run on any host — no cairo, Core Graphics or
@@ -1941,6 +1952,13 @@ mod native_surface_paint {
             /// `surface_stroke_rect` call, so tests can assert the drawn
             /// checkbox / text-input-box borders.
             strokes: Vec<(Rect, Color, f32)>,
+            /// Every rect passed to `surface_push_clip`, in push order —
+            /// so a regression test can assert `paint` clips to the
+            /// form's own bounds exactly once.
+            clip_pushes: Vec<Rect>,
+            /// Count of `surface_pop_clip` calls, so a test can assert
+            /// every push is balanced.
+            clip_pops: usize,
         }
 
         /// 6 units per character — same fixed-width stand-in the
@@ -1999,8 +2017,12 @@ mod native_surface_paint {
                 _stroke_width: f32,
             ) {
             }
-            fn surface_push_clip(&mut self, _rect: Rect) {}
-            fn surface_pop_clip(&mut self) {}
+            fn surface_push_clip(&mut self, rect: Rect) {
+                self.clip_pushes.push(rect);
+            }
+            fn surface_pop_clip(&mut self) {
+                self.clip_pops += 1;
+            }
             fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
                 ImagePaintResult::Unsupported
             }
@@ -2051,6 +2073,108 @@ mod native_surface_paint {
                 control_width: Default::default(),
                 min_control_width: None,
             }
+        }
+
+        /// Two toggle rows at `row_h = 20.0` in a viewport only 23px
+        /// tall: the second (last) row's layout-clamped height is 3px —
+        /// far below `Toggle`'s own checkbox-size floor of 10px (see
+        /// the `box_size` clamp in `paint`'s `FieldKind::Toggle` arm).
+        /// Without a pixel clip, that floor pushes the checkbox's fill
+        /// rect below the row *and* past the form's own bottom edge —
+        /// the exact "last row paints under the status bar" shape.
+        fn two_toggle_form_overflowing_its_viewport() -> (Form, f32) {
+            let row_h = 20.0_f32;
+            let viewport_height = row_h + 3.0;
+            let form = Form {
+                id: WidgetId::new("settings"),
+                fields: vec![
+                    FormField {
+                        id: WidgetId::new("toggle-0"),
+                        label: StyledText::plain("Setting 1"),
+                        kind: FieldKind::Toggle { value: false },
+                        hint: StyledText::default(),
+                        disabled: false,
+                        validation: None,
+                        label_position: None,
+                        label_align: None,
+                        label_width: None,
+                        tab_index: None,
+                        control_width: None,
+                        min_control_width: None,
+                    },
+                    FormField {
+                        id: WidgetId::new("toggle-1"),
+                        label: StyledText::plain("Setting 2"),
+                        kind: FieldKind::Toggle { value: true },
+                        hint: StyledText::default(),
+                        disabled: false,
+                        validation: None,
+                        label_position: None,
+                        label_align: None,
+                        label_width: None,
+                        tab_index: None,
+                        control_width: None,
+                        min_control_width: None,
+                    },
+                ],
+                focused_field: None,
+                scroll_offset: 0,
+                has_focus: false,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
+                control_width: Default::default(),
+                min_control_width: None,
+            };
+            (form, viewport_height)
+        }
+
+        /// Regression: `paint` must clip to the form's own bounds on
+        /// every backend, so a row whose content overflows a
+        /// layout-clamped height (the `Toggle` checkbox floor above)
+        /// never bleeds past the form into whatever a host paints below
+        /// it (a status bar, another section).
+        #[test]
+        fn paint_clips_to_the_forms_own_bounds_when_scrolled() {
+            let (form, viewport_height) = two_toggle_form_overflowing_its_viewport();
+            let row_h = 20.0_f32;
+            let flayout = form.layout(320.0, viewport_height, |_| FormFieldMeasure::new(row_h));
+            let mut surface = RecordingSurface::default();
+            paint(
+                &form,
+                &flayout,
+                &mut surface,
+                &Theme::default(),
+                crate::Point::new(0.0, 0.0),
+            );
+
+            let form_rect = Rect::new(0.0, 0.0, 320.0, viewport_height);
+            assert_eq!(
+                surface.clip_pushes,
+                vec![form_rect],
+                "paint must push exactly one clip, at the form's own bounds"
+            );
+            assert_eq!(
+                surface.clip_pops, 1,
+                "every surface_push_clip must be balanced by surface_pop_clip"
+            );
+
+            // Prove the clip is load-bearing, not vacuous: the second
+            // toggle's checked checkbox fill (`surface_fill_rounded_rect`,
+            // recorded into the same `fills` list) geometrically
+            // overflows past the form's clipped bottom edge — exactly
+            // what a backend's `surface_push_clip` must cut off.
+            let bottom = form_rect.y + form_rect.height;
+            let overflowing = surface
+                .fills
+                .iter()
+                .any(|(rect, _)| rect.y + rect.height > bottom);
+            assert!(
+                overflowing,
+                "expected the last row's checkbox fill to extend past the \
+                 form's clipped bottom edge ({bottom}) — otherwise this \
+                 test doesn't exercise the bleed the clip guards against"
+            );
         }
 
         /// The pill a selected item paints: full item width, inset 2 at
