@@ -181,28 +181,34 @@
 //! `actions()` handle obtained *before* `startTui`/`startNative` keeps
 //! working correctly through the live session regardless (it only ever
 //! holds an `Rc` clone of state that moves, not copies, with the
-//! [`NodeAppLogic`]). A `waker()` handle obtained before `startTui` keeps
-//! working too -- `start_tui` swaps [`QuiApp::current_waker`] to the live
-//! `TuiRunner`'s own backend waker for the session's duration -- but one
-//! obtained before `startNative` does not: see this doc's next paragraph.
+//! [`NodeAppLogic`]). A `waker()` handle obtained before `startTui`/`startNative`
+//! (on the `gtk` feature) keeps working too -- both swap [`QuiApp::current_waker`]
+//! to the live runner's own backend waker for the session's duration --
+//! see this doc's next paragraph for the `macos`/`win` features, which
+//! don't (yet) swap it.
 //!
-//! `GtkRunner`/`MacRunner`/`WinRunner`, unlike `TuiRunner`, expose no
-//! `app_mut()`/`backend()` seam to reach back into the moved
+//! `GtkRunner`, like `TuiRunner`, exposes a `Backend::waker`-reachable
+//! accessor (`GtkRunner::waker`, captured off its own live `GtkBackend`
+//! before `activate` moves it into that window's event-controller
+//! closures), so [`QuiApp::start_native`]'s `gtk` arm swaps
+//! [`QuiApp::current_waker`] onto it the same way [`QuiApp::start_tui`]
+//! does for [`TuiRunner`]. `MacRunner`/`WinRunner` expose no comparable
+//! seam yet, nor an `app_mut()` one to reach back into the moved
 //! [`NodeAppLogic`] once construction has returned (their own `AppLogic`
 //! lives behind the backend's own event-loop/widget closures) -- this
 //! crate's own [`NativeLiveState`] is the side channel around that: a
 //! clone of the same `env`/`pending_error` cells the moved [`NodeAppLogic`]
 //! still carries, kept alongside the real runner inside [`LiveRunner`]'s
-//! `Gtk`/`Mac`/`Win` variants. A `startNative` session therefore never
-//! swaps [`QuiApp::current_waker`] either (see [`QuiApp::start_native`]'s
-//! own doc for why) -- [`QuiApp::start_tui`] is the only caller that ever
-//! reads a runner's own `Backend::waker` back off it, since it is the only
-//! variant with a `backend()` seam to read one through. A `waker()` handle
-//! obtained before `startNative` keeps posting into the dormant headless queue for
-//! as long as the session runs, but since nothing ever drives that queue
-//! again once the session ends (every way it ends sets
-//! [`QuiApp::live_exited`], which makes every later `step()`/`run()` raise
-//! instead of ticking), those posts are never actually delivered.
+//! `Gtk`/`Mac`/`Win` variants (`Gtk` alongside the real swap, needed for
+//! the same reason regardless of it). A `startNative` session on the
+//! `macos`/`win` features therefore never swaps [`QuiApp::current_waker`]
+//! (see [`QuiApp::start_native`]'s own doc for why): a `waker()` handle
+//! obtained before, during, or after one of those sessions keeps posting
+//! into the dormant headless queue for as long as the session runs, but
+//! since nothing ever drives that queue again once the session ends
+//! (every way it ends sets [`QuiApp::live_exited`], which makes every
+//! later `step()`/`run()` raise instead of ticking), those posts are never
+//! actually delivered.
 //!
 //! [`QuiApp::waker`] returns a [`QuiAppWaker`] -- unlike `QuiApp` itself,
 //! `Send + Sync`, so a background thread can hold and call it -- wrapping
@@ -333,8 +339,11 @@ type SharedWaker = Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>;
 /// Side channel into a live native runner's [`NodeAppLogic`], kept outside
 /// the runner itself once construction has moved that logic in --
 /// `GtkRunner`/`MacRunner`/`WinRunner`, unlike [`TuiRunner`], expose no
-/// `app_mut()`/`backend()` seam to reach back into it afterwards (their own
-/// `AppLogic` lives behind the backend's own event-loop/widget closures).
+/// `app_mut()` seam to reach back into it afterwards (their own `AppLogic`
+/// lives behind the backend's own event-loop/widget closures) -- `GtkRunner`'s
+/// own `waker()` accessor (see this crate's module doc's "Live run loop"
+/// section) is narrower than that: just the one closure, not the backend
+/// or the moved `AppLogic` it wraps.
 /// [`QuiApp::start_native`] clones both fields straight off the
 /// [`NodeAppLogic`] it is about to move (mirroring `quadraui-py`'s own
 /// `native_error`/`loop_error` `Rc` clones taken the same way ahead of its
@@ -2164,11 +2173,10 @@ impl QuiApp {
             let runner = TuiRunner::new_with(app_logic, config)
                 .map_err(|err| internal_error(format!("startTui: {err}")))?;
             // Read the waker off `runner`'s own backend before it is
-            // boxed/wrapped in `LiveRunner::Tui` -- the only `LiveRunner`
-            // variant with a `Backend::waker`-reachable accessor (see
-            // `LiveRunner`'s own doc), so reading it here rather than
-            // through a `LiveRunner`-wide method lets the type system
-            // enforce that invariant instead of a runtime match arm.
+            // boxed/wrapped in `LiveRunner::Tui` -- `start_native`'s own
+            // `gtk` arm reads `GtkRunner::waker()` the same way, just
+            // through that type's own narrower accessor rather than a full
+            // `backend()` seam (see `LiveRunner`'s own doc).
             let waker = runner.backend().waker();
             *app.current_waker.lock().unwrap_or_else(|e| e.into_inner()) = waker;
             app.live = Some(LiveRunner::Tui(Box::new(runner)));
@@ -2206,14 +2214,18 @@ impl QuiApp {
     /// [`StepOutcome`] it returns, so [`Self::step_once`]'s own
     /// [`StepOutcome::Exited`] handling already covers it.
     ///
-    /// Unlike [`Self::start_tui`], this never swaps [`Self::current_waker`]:
-    /// `GtkRunner`/`MacRunner`/`WinRunner` expose no `Backend::waker`-reachable
-    /// accessor once their own `AppLogic` has moved in, so a [`QuiAppWaker`]
-    /// obtained during a live native session keeps posting into the
-    /// dormant headless path's own queue instead -- and since nothing ever
-    /// drives that queue again once [`Self::live_exited`] is set (every way
-    /// a native session ends sets it; see that method's own doc), those
-    /// payloads are never delivered at all, not merely delayed. Mirrors
+    /// On the `gtk` feature, this swaps [`Self::current_waker`] exactly
+    /// like [`Self::start_tui`] does, onto `GtkRunner::waker()` -- the one
+    /// closure that runner captures off its own live `GtkBackend` before
+    /// `activate` moves the rest of it into that window's event-controller
+    /// closures. On `macos`/`win`, it does not: `MacRunner`/`WinRunner`
+    /// expose no `Backend::waker`-reachable accessor once their own
+    /// `AppLogic` has moved in, so a [`QuiAppWaker`] obtained during one of
+    /// those live native sessions keeps posting into the dormant headless
+    /// path's own queue instead -- and since nothing ever drives that
+    /// queue again once [`Self::live_exited`] is set (every way a native
+    /// session ends sets it; see that method's own doc), those payloads
+    /// are never delivered at all, not merely delayed. Mirrors
     /// `quadraui-py`'s own documented asymmetry (see `QuiApp::current_waker`'s
     /// doc there), but unlike that crate's blocking `run_native`, this
     /// asymmetry outlives the call: a Node caller sees `startNative` return
@@ -2294,6 +2306,19 @@ impl QuiApp {
                     NativeExitPolicy { inner: app_logic },
                     config,
                 );
+                // Unlike `Mac`/`Win`, `GtkRunner` does expose a
+                // `Backend::waker`-reachable accessor (`GtkRunner::waker`),
+                // captured off its own live window before `activate` moved
+                // the real `GtkBackend` into that window's event-controller
+                // closures -- see that method's own doc. Swapping it in
+                // here mirrors `start_tui`'s own swap, so a `waker()`
+                // handle obtained before, during, or after this call
+                // delivers into this session's own event stream rather
+                // than the dormant headless queue -- restored by
+                // `stop_live`/`step_once` once this session ends, exactly
+                // like `start_tui`'s own swap is.
+                let waker = runner.waker();
+                *app.current_waker.lock().unwrap_or_else(|e| e.into_inner()) = waker;
                 app.live = Some(LiveRunner::Gtk(runner, state));
                 Ok(())
             }
@@ -2462,10 +2487,11 @@ impl QuiApp {
     /// refuses a poisoned app, and this is the one direct `&self` read of
     /// [`Self::current_waker`] that would otherwise skip that check.
     /// Unlike most other configuration methods, this does **not** raise
-    /// while a live session is running. During a `startTui` session,
-    /// [`Self::current_waker`] has been swapped to the live `TuiRunner`'s
-    /// own backend waker, so a handle obtained then still posts correctly
-    /// -- during a `startNative` session it has not (see
+    /// while a live session is running. During a `startTui` session, or a
+    /// `startNative` session on the `gtk` feature, [`Self::current_waker`]
+    /// has been swapped to the live runner's own backend waker, so a
+    /// handle obtained then still posts correctly -- during a
+    /// `startNative` session on `macos`/`win` it has not (see
     /// [`QuiApp::start_native`]'s own doc for why), so a handle obtained
     /// then posts into the dormant headless queue instead, never actually
     /// delivered.
@@ -2477,6 +2503,30 @@ impl QuiApp {
             ));
         }
         Ok(QuiAppWaker(Arc::clone(&self.current_waker)))
+    }
+
+    /// Which native *feature* (if any) this build was compiled with -- `gtk`
+    /// wins over `macos`, and both win over `win`, when more than one is
+    /// enabled, mirroring [`Self::start_native`]'s own priority order. A
+    /// build configuration report, not a promise that a window can
+    /// actually open: `"macos"`/`"win"` is reported for any `target_os`,
+    /// including a Linux/Windows typecheck build where `startNative` can
+    /// only raise `InternalError` for the platform mismatch. Lets a test
+    /// tell builds apart without the backend-specific side effects
+    /// `startNative` itself would have (opening a real window, a
+    /// `GApplication` id check that only applies to GTK, ...) -- the
+    /// napi-rs analog of `quadraui-py`'s own `_NATIVE_BACKEND` module
+    /// attribute. Not part of the stable JS API.
+    #[napi(js_name = "nativeBackend")]
+    pub fn native_backend() -> Option<String> {
+        #[cfg(feature = "gtk")]
+        return Some("gtk".to_string());
+        #[cfg(all(feature = "macos", not(feature = "gtk")))]
+        return Some("macos".to_string());
+        #[cfg(all(feature = "win", not(feature = "gtk"), not(feature = "macos")))]
+        return Some("win".to_string());
+        #[cfg(not(any(feature = "gtk", feature = "macos", feature = "win")))]
+        return None;
     }
 }
 
@@ -2638,7 +2688,10 @@ impl QuiApp {
     /// headless backend's waker -- called once a live session's own `step`
     /// observes [`StepOutcome::Exited`] (or [`Self::stop_live`] tears one
     /// down early), undoing [`Self::start_tui`]'s swap to that session's
-    /// own backend's waker instead.
+    /// own backend's waker, or [`Self::start_native`]'s `gtk` arm's
+    /// equivalent swap onto `GtkRunner::waker()`. A harmless no-op on
+    /// `macos`/`win`, which never swapped [`Self::current_waker`] away
+    /// from this in the first place.
     fn restore_headless_waker(&self) {
         *self.current_waker.lock().unwrap_or_else(|e| e.into_inner()) =
             self.driver.backend().waker();

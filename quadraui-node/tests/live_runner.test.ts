@@ -218,25 +218,33 @@ test("startTui accepts mouse: false and fails the same way without a real tty", 
   assert.match(stdout, /START_TUI_RAISED:InternalError: startTui:/);
 });
 
-test("startNative raises NoNativeBackendError on a build with no gtk/macos/win feature, and leaves the headless app usable", () => {
-  // This suite is built and run with no native feature enabled (the
-  // `tui`-only default -- see `quadraui-node/Cargo.toml`'s own `[features]`
-  // comment), so `startNative` here always takes the "no native backend
-  // compiled" path; a real `gtk`/`macos`/`win` takeover is each its own
-  // backend-specific issue's own test, run only on that backend's own
-  // capability-lane host.
+{
   const { QuiApp, NoNativeBackendError } = require("../js/index.ts");
-  const app = new QuiApp(10, 10);
-  app.insertButton({ id: "demo:ok", label: "OK", focused: true });
-  assert.throws(
-    () => app.startNative(),
-    (err: unknown) => {
-      assert.ok(err instanceof NoNativeBackendError);
-      assert.match((err as Error).message, /NoNativeBackendError: startNative/);
-      return true;
+  // `QuiApp.nativeBackend()` reports which native feature (if any) this
+  // build was compiled with -- see that method's own doc. With one
+  // enabled, `startNative` takes a real backend's own arm instead of the
+  // "no native backend compiled" one this test exercises; that arm's own
+  // behaviour is each backend's own capability-lane test (e.g.
+  // `tests/live_runner_gtk.test.ts` for `gtk`), not this platform-neutral
+  // suite.
+  const nativeBackend: string | null = QuiApp.nativeBackend();
+  test(
+    "startNative raises NoNativeBackendError on a build with no gtk/macos/win feature, and leaves the headless app usable",
+    { skip: nativeBackend !== null && `built with the ${nativeBackend} native feature` },
+    () => {
+      const app = new QuiApp(10, 10);
+      app.insertButton({ id: "demo:ok", label: "OK", focused: true });
+      assert.throws(
+        () => app.startNative(),
+        (err: unknown) => {
+          assert.ok(err instanceof NoNativeBackendError);
+          assert.match((err as Error).message, /NoNativeBackendError: startNative/);
+          return true;
+        },
+      );
+      // The headless app must still work afterwards -- `startNative` never
+      // moved anything out of it on this failure path.
+      assert.match(app.screen(), /OK/);
     },
   );
-  // The headless app must still work afterwards -- `startNative` never
-  // moved anything out of it on this failure path.
-  assert.match(app.screen(), /OK/);
-});
+}

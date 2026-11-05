@@ -139,6 +139,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gtk4::cairo::Context;
@@ -531,6 +532,12 @@ pub struct GtkRunner {
     gapp: Application,
     context: glib::MainContext,
     smoke_failed: Rc<Cell<bool>>,
+    /// This runner's own live [`GtkBackend`]'s [`Backend::waker`] closure,
+    /// captured once in [`Self::new_with`] before `backend` is moved into
+    /// [`activate`]'s event-controller closures — see [`Self::waker`]'s own
+    /// doc for why a caller needs this rather than reaching `backend`
+    /// directly the way [`crate::tui::TuiRunner::backend`] does.
+    waker: Arc<dyn Fn(crate::UserPayload) + Send + Sync>,
 }
 
 /// Best-effort check for whether a GTK display is currently reachable,
@@ -635,6 +642,13 @@ impl GtkRunner {
         // [`Self::smoke_failed`].
         let smoke_failed_handle = smoke_failed.clone();
 
+        // Captured before `backend` moves into `activate` below -- this is
+        // the one point where this runner still owns a direct reference to
+        // the `GtkBackend` instance driving its own window, rather than the
+        // `Rc<RefCell<_>>` clones `activate`'s event controllers keep. See
+        // [`Self::waker`]'s own doc for why a caller needs this.
+        let waker = backend.borrow().waker();
+
         activate(
             &gapp,
             app,
@@ -649,6 +663,7 @@ impl GtkRunner {
             gapp,
             context: glib::MainContext::default(),
             smoke_failed: smoke_failed_handle,
+            waker,
         }
     }
 
@@ -680,6 +695,23 @@ impl GtkRunner {
     /// `examples/gtk_embedded.rs` for the pairing with `scripts/gtk_smoke.sh`.
     pub fn smoke_failed(&self) -> bool {
         self.smoke_failed.get()
+    }
+
+    /// This runner's own live window's [`Backend::waker`] closure: calling
+    /// it (from any thread) delivers a [`crate::UserPayload`] as a
+    /// `UiEvent::User` the next time this runner's own `step`/`pump`
+    /// iterates the GLib main context — unlike [`crate::tui::TuiRunner::backend`],
+    /// which hands back the live `TuiBackend` itself, this hands back only
+    /// the one closure a caller needs to reach this runner's loop from
+    /// elsewhere, since nothing else about the backend driving an active
+    /// GTK window is safe to reach from outside the GTK main thread. Lets
+    /// an embedding host (e.g. `quadraui-node`'s own `startNative`) swap a
+    /// shared waker handle onto this runner's own window for the duration
+    /// of a live session, the same way it already does for
+    /// [`crate::tui::TuiRunner`] — see that host's own `start_native` doc
+    /// for the swap.
+    pub fn waker(&self) -> Arc<dyn Fn(crate::UserPayload) + Send + Sync> {
+        self.waker.clone()
     }
 
     /// One non-blocking pass: `glib::MainContext::iteration(false)` —
