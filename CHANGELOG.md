@@ -100,6 +100,15 @@ only a push to `main` runs this workflow.
   `false`) is pixel-unchanged.
 
 ### Added
+- `gtk::GtkRunner::waker() -> Arc<dyn Fn(UserPayload) + Send + Sync>` — this
+  runner's own live window's `Backend::waker` closure, captured off its
+  `GtkBackend` before `activate` moves the rest of it into that window's
+  event-controller closures. Lets an embedding host (`quadraui-node`'s own
+  `startNative`) swap a shared waker handle onto a live `GtkRunner` session
+  the same way it already could for `tui::TuiRunner::backend().waker()`, so
+  a background thread's `post`/`wake`/`postAfter` call is actually
+  delivered while a GTK native session is running instead of only before
+  or after one.
 - `Theme::success_fg`/`success_bg`/`danger_bg`/`warning_bg`/`info_bg` —
   accessor methods (not new fields, per `theme.rs`'s "adding a field here
   is a BREAKING change" rule) giving `Toast` and `Form` validation a VS
