@@ -71,6 +71,20 @@ pub(crate) const NAMES: &[(&str, char)] = &[
     ("error", '\u{ea87}'),
     ("info", '\u{ea74}'),
     ("pass-filled", '\u{ebb3}'),
+    ("play", '\u{eb2c}'),
+    ("debug-pause", '\u{ead1}'),
+    ("flag", '\u{ec3f}'),
+    ("check", '\u{eab2}'),
+    ("close", '\u{ea76}'),
+    ("circle", '\u{eabc}'),
+    ("dash", '\u{eacc}'),
+    ("sync", '\u{ea77}'),
+    ("history", '\u{ea82}'),
+    ("chevron-right", '\u{eab6}'),
+    ("chevron-down", '\u{eab4}'),
+    ("layout", '\u{ebeb}'),
+    ("layers", '\u{ebd2}'),
+    ("database", '\u{eace}'),
 ];
 
 /// Resolve a codicon.css name (e.g. `"folder"`) to its codepoint in the

@@ -1447,11 +1447,19 @@ pub(crate) mod native_surface_paint {
         let row_text_y = |th: f32| (bounds.y + (bounds.height - th) * 0.4).round();
 
         if header.show_chevron {
-            let chevron = if collapsed { "\u{25B8}" } else { "\u{25BE}" };
-            let (cw, ch) = surface.surface_measure_text(chevron);
+            // Same codicon chevron `TreeView`'s own GUI paint substitutes
+            // for its default `▾`/`▸` (`crate::primitives::tree::tree_chevron_glyph`),
+            // so a section header reads as the same control as the tree
+            // it expands/collapses, not a mismatched plain-text one.
+            let chevron = if collapsed {
+                crate::codicon::CHEVRON_RIGHT.to_string()
+            } else {
+                crate::codicon::CHEVRON_DOWN.to_string()
+            };
+            let (cw, ch) = surface.surface_measure_text(&chevron);
             surface.surface_draw_text_run(
                 Rect::new(left_x, row_text_y(ch), cw, ch),
-                chevron,
+                &chevron,
                 theme.header_fg,
             );
             left_x += cw + 4.0;
@@ -1871,6 +1879,67 @@ pub(crate) mod native_surface_paint {
             assert!(
                 surface.clips.is_empty(),
                 "every pushed clip must be popped by the time paint_header returns"
+            );
+        }
+
+        /// The leading chevron paints the same codicon glyph `TreeView`'s own
+        /// GUI paint path substitutes for its default `▾`/`▸`
+        /// (`crate::codicon::CHEVRON_DOWN`/`CHEVRON_RIGHT`), not the plain
+        /// Unicode triangle — a GUI section header must match the tree
+        /// control it expands/collapses.
+        #[test]
+        fn paint_header_chevron_is_the_codicon_glyph_not_plain_unicode() {
+            let mut header = header_with("Results", vec![]);
+            header.show_chevron = true;
+
+            let mut expanded = RecordingSurface::default();
+            paint_header(
+                &mut expanded,
+                Rect::new(0.0, 0.0, 120.0, 20.0),
+                &header,
+                false,
+                &Theme::default(),
+            );
+            assert!(
+                expanded
+                    .texts
+                    .iter()
+                    .any(|(_, text, ..)| text == crate::codicon::CHEVRON_DOWN.to_string().as_str()),
+                "expanded header must paint the codicon CHEVRON_DOWN glyph, got {:?}",
+                expanded.texts
+            );
+            assert!(
+                !expanded
+                    .texts
+                    .iter()
+                    .any(|(_, text, ..)| text == "\u{25BE}"),
+                "expanded header must not paint the plain Unicode ▾, got {:?}",
+                expanded.texts
+            );
+
+            let mut collapsed = RecordingSurface::default();
+            paint_header(
+                &mut collapsed,
+                Rect::new(0.0, 0.0, 120.0, 20.0),
+                &header,
+                true,
+                &Theme::default(),
+            );
+            assert!(
+                collapsed
+                    .texts
+                    .iter()
+                    .any(|(_, text, ..)| text == crate::codicon::CHEVRON_RIGHT.to_string().as_str()),
+                "collapsed header must paint the codicon CHEVRON_RIGHT glyph, got {:?}",
+                collapsed.texts
+            );
+            assert!(
+                !collapsed
+                    .texts
+                    .iter()
+                    .any(|(_, text, ..)| text == "\u{25B8}"),
+                "collapsed header must not paint the plain Unicode ▸, got {:?}",
+                collapsed.texts
             );
         }
 

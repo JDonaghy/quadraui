@@ -65,8 +65,30 @@ only a push to `main` runs this workflow.
   previously only Up/Down mapped to `RowSelected` and Enter fell through
   unhandled. A no-op when nothing is selected, since there is no row to
   activate.
+- `MultiSectionView`'s GTK/macOS/Win section-header chevron now paints the
+  same codicon `CHEVRON_DOWN`/`CHEVRON_RIGHT` glyph `TreeView`'s own GUI
+  paint path substitutes for its default `▾`/`▸`, instead of the plain
+  Unicode triangle — a section header now reads as the same control as the
+  tree it expands/collapses. `PipelineView`'s GTK/macOS/Win stage status
+  icon likewise paints a codicon (`check`/`circle-filled`/`close`/`circle`/
+  `dash`/`history`) in place of `status_glyph`'s plain `✓`/`●`/`✗`/`·`/`─`/
+  `↻`, and `Board`'s card badge icon paints a codicon in place of
+  `badge_icon`'s plain `✓`/`●`/`↩`/`✗`/`·`; TUI is unaffected on all three
+  (`status_glyph`, `badge_icon` and the `▾`/`▸` defaults are unchanged
+  there).
+- `compose::FilePickerController`/`FolderPickerController`'s folder/file row
+  icons now use `Icon::codicon` (glyph = the real codicon, fallback = the
+  same emoji they always painted), so a GUI host paints a vector icon
+  instead of the raw 📁/📄/⚙ emoji while TUI (`nerd_fonts_enabled` defaults
+  `false`) is pixel-unchanged.
 
 ### Added
+- `Icon::codicon` gained twelve more names (`"play"`, `"debug-pause"`,
+  `"flag"`, `"check"`, `"close"`, `"circle"`, `"dash"`, `"sync"`,
+  `"history"`, `"layout"`, `"layers"`, `"database"`, plus
+  `"chevron-right"`/`"chevron-down"` aliasing the existing `TreeView`
+  chevron codepoints) covering the toolbar, pipeline, section-header and
+  activity-bar chrome glyphs a GUI app's own icon table needs.
 - `Icon::codicon(name, fallback) -> Option<Icon>` and
   `TabIcon::codicon(name, color) -> Option<TabIcon>` build an icon from the
   bundled codicon font's name table (`"folder"`, `"file-code"`,
