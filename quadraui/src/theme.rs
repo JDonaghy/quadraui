@@ -741,6 +741,69 @@ impl Theme {
         Color::rgba(99, 148, 255, 77)
     }
 
+    // ── Success / warning / danger / info roles ──────────────────────────
+    //
+    // `Theme` has `error_fg` / `warning_fg` (text-ish foregrounds) and
+    // `git_added` (a green already themed per-palette), but no "success"
+    // role and no fill colours a `Toast`/banner/validation strip can paint
+    // a tinted background with. Every accessor below derives from a field
+    // that already exists, so it costs nothing in a downstream exhaustive
+    // palette literal (`exhaustive_theme_literal_still_compiles` below) —
+    // same reasoning as [`Self::tab_active_border_top`].
+    //
+    // **Overriding one of these in an app**: there is no independent
+    // field to set, by design — recolour the field it derives from
+    // instead. `success_fg`/`success_bg` track [`Self::git_added`];
+    // `danger_bg` tracks [`Self::error_fg`]; `warning_bg` tracks
+    // [`Self::warning_fg`]; `info_bg` tracks [`Self::accent_bg`]. A host
+    // embedding this crate (vimcode, kubeui, or a `quadraui-py`/
+    // `quadraui-node` script via `set_theme`) that wants its own
+    // "success" colour independent of its git-added colour sets
+    // `git_added` to that colour — there is no separate
+    // `ThemeOverrides` map; the existing field *is* the override point.
+
+    /// Foreground for a "success" indicator (a passed check, a saved
+    /// confirmation). Tracks [`Self::git_added`] — both default palettes
+    /// already carry a themed green there, and an app that recolours its
+    /// git-added marker gets a matching success colour for free.
+    pub fn success_fg(&self) -> Color {
+        self.git_added
+    }
+
+    /// Background fill for a "success" banner/toast/validation strip — a
+    /// subtle tint of [`Self::background`] toward [`Self::success_fg`],
+    /// rather than an opaque, saturated green: VS Code's own
+    /// notification/banner backgrounds are a low-alpha tint over the
+    /// editor surface, not a solid colour block.
+    pub fn success_bg(&self) -> Color {
+        self.background.blend(self.success_fg(), 0.25)
+    }
+
+    /// Background fill for a "danger"/destructive banner/toast/validation
+    /// strip — a subtle tint of [`Self::background`] toward
+    /// [`Self::error_fg`]. Same "tint, not solid fill" shape as
+    /// [`Self::success_bg`].
+    pub fn danger_bg(&self) -> Color {
+        self.background.blend(self.error_fg, 0.25)
+    }
+
+    /// Background fill for a "warning" banner/toast/validation strip — a
+    /// subtle tint of [`Self::background`] toward [`Self::warning_fg`].
+    /// Same "tint, not solid fill" shape as [`Self::success_bg`].
+    pub fn warning_bg(&self) -> Color {
+        self.background.blend(self.warning_fg, 0.25)
+    }
+
+    /// Background fill for an "info" banner/toast — a subtle tint of
+    /// [`Self::background`] toward [`Self::accent_bg`]. Same "tint, not
+    /// solid fill" shape as [`Self::success_bg`]; `accent_bg` is this
+    /// crate's existing "this is an accent/highlighted surface" colour
+    /// (reused from the find-replace toggle lift), so an info banner
+    /// tracks whatever accent colour the app already set.
+    pub fn info_bg(&self) -> Color {
+        self.background.blend(self.accent_bg, 0.25)
+    }
+
     // ── Light default palette ───────────────────────────────────────────
 
     /// A coherent **light** palette, structured field-for-field like
@@ -1466,6 +1529,106 @@ mod tests {
             "pressed ({pressed:?}) should sit further from the resting colour \
              ({base:?}) than hover ({hovered:?})"
         );
+    }
+
+    // ── Success / warning / danger / info roles ──────────────────────────
+
+    /// `success_fg` is a lossless alias for `git_added` — both default
+    /// palettes already carry a themed green there, and a method with no
+    /// backing field costs nothing in `exhaustive_theme_literal_still_compiles`.
+    #[test]
+    fn success_fg_tracks_git_added_on_both_default_themes() {
+        for theme in [Theme::default(), Theme::light_default()] {
+            assert_eq!(theme.success_fg(), theme.git_added);
+        }
+    }
+
+    /// Every `*_bg` role is a visible tint of `background`, not an
+    /// identical or fully-opaque-foreground colour — the "banner", not
+    /// "solid block", shape every accessor's doc promises.
+    #[test]
+    fn severity_bg_roles_are_visible_tints_of_background_on_both_default_themes() {
+        for theme in [Theme::default(), Theme::light_default()] {
+            for (name, bg) in [
+                ("success_bg", theme.success_bg()),
+                ("danger_bg", theme.danger_bg()),
+                ("warning_bg", theme.warning_bg()),
+                ("info_bg", theme.info_bg()),
+            ] {
+                assert_ne!(
+                    bg, theme.background,
+                    "{name} must visibly tint the background, not equal it"
+                );
+            }
+        }
+    }
+
+    /// `danger_bg`/`warning_bg`/`info_bg` each track a *different*
+    /// existing field (`error_fg`/`warning_fg`/`accent_bg`) — asserting
+    /// them mutually distinct on the dark default catches an accessor
+    /// accidentally wired to the wrong source field.
+    #[test]
+    fn severity_bg_roles_are_mutually_distinct() {
+        let theme = Theme::default();
+        let roles = [
+            theme.success_bg(),
+            theme.danger_bg(),
+            theme.warning_bg(),
+            theme.info_bg(),
+        ];
+        for (i, a) in roles.iter().enumerate() {
+            for (j, b) in roles.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "severity bg role {i} and {j} must not collide");
+                }
+            }
+        }
+    }
+
+    /// No new `Theme` field — every role is reachable off a value built
+    /// field-by-field (no `..Default::default()` spread), same shape as
+    /// `chart_series_is_reachable_off_a_non_default_theme`. `success_fg`
+    /// derives only from `git_added` (untouched below), so it must match
+    /// the default exactly; `danger_bg` also derives from `background`
+    /// (changed below), so it is checked against the hand-computed blend
+    /// instead of the default's own value.
+    #[test]
+    fn severity_roles_are_reachable_off_a_non_default_theme() {
+        let themed = Theme {
+            background: Color::rgb(250, 250, 250),
+            foreground: Color::rgb(10, 10, 10),
+            ..Theme::default()
+        };
+        assert_eq!(themed.success_fg(), Theme::default().success_fg());
+        assert_eq!(
+            themed.danger_bg(),
+            themed.background.blend(themed.error_fg, 0.25)
+        );
+    }
+
+    /// An app that wants its own "success" colour, independent of its
+    /// git-added marker, recolours `git_added` itself — there is no
+    /// separate storage for `success_fg`/`success_bg` to miss. This is
+    /// the override mechanism the module doc above describes.
+    #[test]
+    fn success_roles_follow_a_custom_git_added_override() {
+        let theme = Theme {
+            git_added: Color::rgb(10, 200, 10),
+            ..Theme::default()
+        };
+        assert_eq!(theme.success_fg(), Color::rgb(10, 200, 10));
+        assert_ne!(theme.success_bg(), Theme::default().success_bg());
+    }
+
+    /// Same override contract as `success_roles_follow_a_custom_git_added_override`,
+    /// for `danger_bg`/`error_fg`.
+    #[test]
+    fn danger_bg_follows_a_custom_error_fg_override() {
+        let theme = Theme {
+            error_fg: Color::rgb(255, 0, 0),
+            ..Theme::default()
+        };
+        assert_ne!(theme.danger_bg(), Theme::default().danger_bg());
     }
 }
 

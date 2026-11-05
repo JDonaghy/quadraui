@@ -1097,18 +1097,20 @@ mod native_surface_paint {
             // strip below it, instead of painting the message on top of
             // the label at the same vertical centre.
             let validation_info = field.validation.as_ref().and_then(|vs| {
-                let (color, msg) = match vs {
-                    ValidationState::Error(m) => (theme.error_fg, m.as_str()),
-                    ValidationState::Warning(m) => (theme.warning_fg, m.as_str()),
+                let (color, strip_bg, msg) = match vs {
+                    ValidationState::Error(m) => (theme.error_fg, theme.danger_bg(), m.as_str()),
+                    ValidationState::Warning(m) => {
+                        (theme.warning_fg, theme.warning_bg(), m.as_str())
+                    }
                 };
                 if msg.is_empty() {
                     None
                 } else {
-                    Some((color, msg))
+                    Some((color, strip_bg, msg))
                 }
             });
             let message_h = validation_info
-                .map(|(_, msg)| surface.surface_measure_text(msg).1)
+                .map(|(_, _, msg)| surface.surface_measure_text(msg).1)
                 .unwrap_or(0.0);
             let row_h = (row_h_full - message_h).max(row_h_full * 0.5);
 
@@ -1704,11 +1706,19 @@ mod native_surface_paint {
                 }
             }
 
-            if let Some((color, msg)) = validation_info {
+            if let Some((color, strip_bg, msg)) = validation_info {
                 // Message strip: below the content strip computed
-                // above, not overlapping the label.
+                // above, not overlapping the label. Tinted with the
+                // severity's own `Theme::danger_bg`/`warning_bg` so the
+                // strip reads as a small banner (VS Code's own
+                // validation-message styling), not just coloured text on
+                // the plain row background.
                 let strip_y = row_rect.y + row_h;
                 let strip_h = (row_h_full - row_h).max(0.0);
+                surface.surface_fill_rect(
+                    Rect::new(row_rect.x, strip_y, row_rect.width, strip_h),
+                    strip_bg,
+                );
                 surface.surface_fill_rect(
                     Rect::new(
                         row_rect.x + 2.0,

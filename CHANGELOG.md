@@ -98,6 +98,15 @@ only a push to `main` runs this workflow.
   `false`) is pixel-unchanged.
 
 ### Added
+- `Theme::success_fg`/`success_bg`/`danger_bg`/`warning_bg`/`info_bg` —
+  accessor methods (not new fields, per `theme.rs`'s "adding a field here
+  is a BREAKING change" rule) giving `Toast`, `Form` validation, and
+  `DialogButton::tint` a VS Code-like success/warning/danger/info palette
+  derived from existing fields (`git_added`, `error_fg`, `warning_fg`,
+  `accent_bg`). `Toast`'s severity tint and `Form`'s validation-message
+  strip now paint through these instead of hardcoded RGB literals; an app
+  overrides a role by recolouring the field it derives from (e.g.
+  `set_theme({"error_fg": ...})` also recolours `danger_bg`).
 - `Icon::codicon` gained twelve more names (`"play"`, `"debug-pause"`,
   `"flag"`, `"check"`, `"close"`, `"circle"`, `"dash"`, `"sync"`,
   `"history"`, `"layout"`, `"layers"`, `"database"`, plus

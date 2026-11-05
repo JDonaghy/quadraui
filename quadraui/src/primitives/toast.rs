@@ -699,8 +699,11 @@ impl ToastOverlay {
 // action-padding/box-width constants below match every pre-migration
 // per-backend constant's value exactly.
 //
-// `severity_bg`'s colour formula (the `Success`/`Warning` hardcoded RGB,
-// `Info`/`Error` theme fields) is unchanged.
+// `severity_bg` resolves every severity through a dedicated `Theme`
+// accessor (`success_bg`/`warning_bg`/`danger_bg`/`info_bg`) rather than a
+// mix of hardcoded RGB literals and raw foreground fields, so a themed
+// app's success/warning/danger/info colours stay consistent across every
+// primitive that needs one of these roles, not just toasts.
 //
 // # Divergences found — reported, not silently resolved
 //
@@ -764,13 +767,14 @@ pub(crate) mod native_surface_paint {
 
     /// Severity → fallback background tint, used when `Toast::accent` is
     /// `None`. Duplicated across `tui::toast` (out of scope for the
-    /// `PaintSurface` migration).
+    /// `PaintSurface` migration) — both read the same `Theme` accessors,
+    /// so they stay in sync without a shared function.
     fn severity_bg(severity: ToastSeverity, theme: &Theme) -> Color {
         match severity {
-            ToastSeverity::Info => theme.surface_bg,
-            ToastSeverity::Success => Color::rgb(30, 80, 30),
-            ToastSeverity::Warning => Color::rgb(100, 80, 20),
-            ToastSeverity::Error => theme.error_fg,
+            ToastSeverity::Info => theme.info_bg(),
+            ToastSeverity::Success => theme.success_bg(),
+            ToastSeverity::Warning => theme.warning_bg(),
+            ToastSeverity::Error => theme.danger_bg(),
         }
     }
 
@@ -1206,7 +1210,7 @@ pub(crate) mod native_surface_paint {
                 300.0,
                 16.0,
             );
-            assert_eq!(surface.fills[0].1, theme.error_fg);
+            assert_eq!(surface.fills[0].1, theme.danger_bg());
         }
 
         /// Regression: the dismiss glyph and action label must be painted

@@ -31,7 +31,7 @@
 use quadraui::{
     native_dialog_options, AppLogic, Backend, Color, Dialog, DialogButton, DialogSeverity,
     InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
-    UiEvent, WidgetId,
+    Theme, UiEvent, WidgetId,
 };
 
 pub struct MessageDialogDemo {
@@ -49,7 +49,12 @@ impl MessageDialogDemo {
     /// `Backend::draw_dialog` for the in-canvas fallback — mapped through
     /// [`native_dialog_options`] below to drive the native alert instead.
     /// Has no `table`/`input`, so the mapping always succeeds.
-    fn dialog(&self) -> Dialog {
+    ///
+    /// "Discard" is tinted with [`quadraui::Theme::danger_bg`] rather
+    /// than a hardcoded red literal, so this demo's destructive button
+    /// recolours along with the rest of the app when a host overrides
+    /// `theme.error_fg` (the field `danger_bg` derives from).
+    fn dialog(&self, theme: &Theme) -> Dialog {
         Dialog {
             id: WidgetId::new("message-dialog-demo:confirm"),
             title: StyledText::plain("Discard unsaved changes?"),
@@ -69,7 +74,7 @@ impl MessageDialogDemo {
                     label: "Discard".to_string(),
                     is_default: false,
                     is_cancel: false,
-                    tint: Some(Color::rgb(200, 60, 60)),
+                    tint: Some(theme.danger_bg()),
                 },
             ],
             severity: Some(DialogSeverity::Warning),
@@ -130,7 +135,7 @@ impl AppLogic for MessageDialogDemo {
                 key: Key::Char('m'),
                 ..
             } => {
-                let dialog = self.dialog();
+                let dialog = self.dialog(&backend.theme());
                 // Always `Some` here (no table/input on `dialog()` above) —
                 // real callers must still check, and fall back to
                 // `Backend::draw_dialog` when this returns `None`.
