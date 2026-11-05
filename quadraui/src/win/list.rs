@@ -150,6 +150,13 @@ pub fn draw_list(
         &mut surface,
         &theme,
         style,
+        // `hovered_idx` / `pressed_idx`: row tinting is not wired on this
+        // backend — `WinBackend` uses the `Backend::draw_list_with_state`
+        // default, which forwards to `draw_list` and drops both indices.
+        // `None` keeps this paint pixel-identical to the visual contract
+        // documented above.
+        None,
+        None,
     );
 
     // The `bordered` frame is drawn *after* the shared content paint so it
