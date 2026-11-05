@@ -6,9 +6,11 @@
 // all produced by `quadraui-binding-core`'s `InteractionEngine` and
 // reaching JS exactly as the typed `UiEvent::DataTable`/`UiEvent::List`
 // shape, not as a raw `MouseDown`/`DoubleClick` plus a `"hit"` dict the
-// handler would have to re-interpret itself. Ports
+// handler would have to re-interpret itself. Also covers Enter on a
+// focused `ListView` with a selection synthesizing `ItemActivated`, the
+// keyboard equivalent of `ItemDoubleClicked`. Ports
 // `quadraui-py/tests/test_data_table_interactions.py`'s click cases plus
-// `quadraui-py/src/lib.rs`'s list double-click test.
+// `quadraui-py/src/lib.rs`'s list double-click and Enter-activation tests.
 //
 // Run against a built addon, e.g.:
 //
@@ -162,5 +164,41 @@ test("double click on a list item emits ItemDoubleClicked, not ItemActivated", (
         event.List[1].ItemDoubleClicked?.idx === 1,
     ),
     `expected a List ItemDoubleClicked{idx: 1}, got: ${JSON.stringify(received)}`,
+  );
+});
+
+test("enter on a focused list item emits the semantic ItemActivated, not ItemDoubleClicked", () => {
+  const app = new QuiApp(40, 10);
+  app.insertList({
+    id: "list:main",
+    items: [
+      { text: { spans: [{ text: "Alpha", fg: null, bg: null }] } },
+      { text: { spans: [{ text: "Beta", fg: null, bg: null }] } },
+    ],
+    selected_idx: 0,
+  });
+  assert.ok(app.screenContains("Alpha"));
+
+  const received: any[] = [];
+  app.setHandler((event: unknown) => received.push(event));
+  // A click on row 0 (already the preset selection) focuses the list
+  // (click-to-focus); the Enter that follows is then routed to the
+  // now-focused list.
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: 0.0, y: 0.0 }, modifiers: {} },
+  });
+  app.pushEvent({
+    KeyPressed: { key: { Named: "Enter" }, modifiers: {}, repeat: false },
+  });
+  app.run(2);
+
+  assert.ok(
+    received.some(
+      (event) =>
+        event.List &&
+        event.List[0] === "list:main" &&
+        event.List[1].ItemActivated?.idx === 0,
+    ),
+    `expected a List ItemActivated{idx: 0}, got: ${JSON.stringify(received)}`,
   );
 });

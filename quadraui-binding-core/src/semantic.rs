@@ -50,6 +50,37 @@ fn data_table_key_event(
     Some(UiEvent::DataTable(id, DataTableEvent::RowSelected { idx }))
 }
 
+/// Enter on a focused `List` with at least one row activates the current
+/// selection — the keyboard equivalent of [`data_table_key_event`]'s own
+/// Enter handling, and of a `List` row's pointer double-click
+/// (`ListViewEvent::ItemDoubleClicked`). `selected_idx` is always a valid
+/// index into a non-empty `ListView::items` (the field has no `None`
+/// state), so the only case with nothing to activate is an empty list
+/// (`total_items == 0`), which returns `None` and leaves
+/// [`focus_scoped_key_event`] to fall through to the raw
+/// `ListViewEvent::KeyPressed`. Every other key also returns `None` for the
+/// same fallthrough — `List`'s own Up/Down/`j`/`k` navigation stays the
+/// app's to interpret from that `KeyPressed`, unlike `DataTable`'s, since a
+/// `List`'s selection is tracked by the app already instead of inside this
+/// semantic layer.
+fn list_key_event(
+    id: WidgetId,
+    key: &Key,
+    selected_idx: usize,
+    total_items: usize,
+) -> Option<UiEvent> {
+    if total_items == 0 {
+        return None;
+    }
+    if matches!(key, Key::Named(NamedKey::Enter)) {
+        return Some(UiEvent::List(
+            id,
+            ListViewEvent::ItemActivated { idx: selected_idx },
+        ));
+    }
+    None
+}
+
 /// `NumberInput`'s own value as `FormEvent`'s payload would show it:
 /// `NumberInput::precision` decimal places, matching
 /// `native_surface_paint::display_text`'s own formatting so a standalone
@@ -398,13 +429,15 @@ pub fn key_to_focus_string(key: &Key) -> String {
 /// Routes a raw `KeyPressed` to whichever leaf the `FocusManager` names as
 /// focused, wrapping it into that leaf's own semantic `KeyPressed` variant
 /// (or, for a focused `DataTable`'s Up/Down/Enter, straight into
-/// [`data_table_key_event`]'s `RowSelected`/`RowActivated`). `Button` has
+/// [`data_table_key_event`]'s `RowSelected`/`RowActivated`; or, for a
+/// focused `List`'s Enter with at least one row, straight into
+/// [`list_key_event`]'s `ItemActivated`). `Button` has
 /// no semantic key variant at all, so a key focused on one passes through
 /// as the original
 /// `UiEvent::KeyPressed` unchanged; the same happens for any other key a
-/// focused `DataTable` doesn't recognize, and when `focused` names a leaf
-/// absent from this frame's hit map (for example a tree that scrolled out
-/// of the render).
+/// focused `DataTable`/`List` doesn't recognize, and when `focused` names a
+/// leaf absent from this frame's hit map (for example a tree that scrolled
+/// out of the render).
 pub fn focus_scoped_key_event(
     focused: WidgetId,
     raw_key: &Key,
@@ -437,13 +470,21 @@ pub fn focus_scoped_key_event(
                     },
                 ))
             }
-            PaintedHit::List { id, .. } if *id == focused => Some(UiEvent::List(
-                *id,
-                ListViewEvent::KeyPressed {
-                    key: key.clone(),
-                    modifiers,
-                },
-            )),
+            PaintedHit::List {
+                id,
+                selected_idx,
+                total_items,
+                ..
+            } if *id == focused => list_key_event(*id, raw_key, *selected_idx, *total_items)
+                .or_else(|| {
+                    Some(UiEvent::List(
+                        *id,
+                        ListViewEvent::KeyPressed {
+                            key: key.clone(),
+                            modifiers,
+                        },
+                    ))
+                }),
             PaintedHit::TabBar { id, .. } if *id == focused => Some(UiEvent::TabBar(
                 *id,
                 TabBarEvent::KeyPressed {

@@ -65,6 +65,16 @@ pub enum PaintedHit {
         id: WidgetId,
         area: Rect,
         layout: ListViewLayout,
+        /// The list's current row selection and item count, as painted —
+        /// read by [`crate::semantic::focus_scoped_key_event`] so Enter on
+        /// a focused list can be resolved against what was actually
+        /// painted, the same way [`Self::DataTable`]'s `selected_idx`/
+        /// `total_rows` feed its own Enter handling. `selected_idx` is
+        /// `ListView::selected_idx` verbatim (always a valid index into a
+        /// non-empty list); `total_items` is `ListView::items.len()`, and
+        /// `0` is what tells the key handler there is no row to activate.
+        selected_idx: usize,
+        total_items: usize,
     },
     DataTable {
         id: WidgetId,
@@ -317,7 +327,9 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                     TreeViewHit::Empty => {}
                 }
             }
-            PaintedHit::List { id, area, layout } => {
+            PaintedHit::List {
+                id, area, layout, ..
+            } => {
                 if !area.contains(point) {
                     continue;
                 }

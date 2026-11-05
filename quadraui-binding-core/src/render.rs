@@ -146,6 +146,8 @@ pub fn draw_bands(
                 id: list.id,
                 area: rect,
                 layout,
+                selected_idx: list.selected_idx,
+                total_items: list.items.len(),
             });
         }
     }
@@ -726,7 +728,13 @@ pub fn paint_leaf(
         LeafDescriptor::List(list) => {
             backend.draw_list(area, list);
             let layout = backend.list_layout(area, list);
-            hits.push(PaintedHit::List { id, area, layout });
+            hits.push(PaintedHit::List {
+                id,
+                area,
+                layout,
+                selected_idx: list.selected_idx,
+                total_items: list.items.len(),
+            });
         }
         LeafDescriptor::Tree(tree) => {
             let (content_rect, scrollbar, viewport_rows) =

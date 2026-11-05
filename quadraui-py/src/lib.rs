@@ -7462,6 +7462,127 @@ def handle(event):
         });
     }
 
+    /// Enter on a focused list item must emit the semantic
+    /// `ListViewEvent::ItemActivated` -- the keyboard equivalent of
+    /// [`double_click_over_a_list_item_emits_a_semantic_item_double_clicked_event`]'s
+    /// mouse gesture, so a Python app wired to `ItemActivated` for "open"
+    /// also works from the keyboard, not just a mouse or a screen reader's
+    /// default action.
+    #[test]
+    fn enter_on_a_focused_list_item_emits_a_semantic_item_activated_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'list': {
+        'id': 'list:main',
+        'items': [
+            {'text': {'spans': [{'text': 'Alpha', 'fg': None, 'bg': None}]}},
+            {'text': {'spans': [{'text': 'Beta', 'fg': None, 'bg': None}]}},
+        ],
+        'selected_idx': 0,
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Alpha").expect("render must not raise"),
+                "the first item must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Alpha")
+                .expect("first item's label must be on screen");
+
+            // `render()` is a static Python function that always reports
+            // `selected_idx: 0` — a click on "Alpha" (already row 0) only
+            // needs to focus the list (click-to-focus), the same
+            // click-then-key sequence
+            // `test_down_arrow_on_a_focused_table_selects_the_next_row`
+            // relies on for `DataTable`.
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            let event_dict = received_list
+                .get_item(received_list.len() - 1)
+                .expect("last item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let list_payload = event_dict
+                .get_item("List")
+                .expect("dict lookup")
+                .expect("Enter on a focused list must dispatch a List key, not a raw KeyPressed")
+                .cast_into::<PyTuple>()
+                .expect("List must pythonize to a (id, event) tuple");
+            let widget: String = list_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the list's own id must be a string");
+            assert_eq!(widget, "list:main", "the widget id must be the list's own");
+            let inner = list_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner ListViewEvent must pythonize to a dict");
+            let activated = inner
+                .get_item("ItemActivated")
+                .expect("dict lookup")
+                .expect("Enter on a focused list with a selection must carry an ItemActivated key")
+                .cast_into::<PyDict>()
+                .expect("ItemActivated payload must be a dict");
+            let idx: usize = activated
+                .get_item("idx")
+                .expect("dict lookup")
+                .expect("idx key must be present")
+                .extract()
+                .expect("idx must be an int");
+            assert_eq!(idx, 0, "the activated item's own index must be reported");
+        });
+    }
+
     /// A Ctrl-click on a list item is a multi-select gesture
     /// `ListViewEvent::SelectionChanged` can't represent (it carries no
     /// modifiers), so `semantic_event_for_hit` leaves it unmapped: the raw

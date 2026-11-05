@@ -13,8 +13,13 @@
 //! A single click on a row → `DataTableEvent::RowSelected { idx }` (select);
 //! a double-click → the distinct `DataTableEvent::RowDoubleClicked { idx }`
 //! (open), so an app can tell "select" from "open" apart — see
-//! `RowActivated`'s own doc. The app updates `selected_idx`, `scroll_offset`,
-//! and sort state for the next frame.
+//! `RowActivated`'s own doc. Up/Down move the selection the same way
+//! `RowSelected` does; Enter activates the current selection as
+//! `RowActivated`, mirroring the mouse's double-click rather than its
+//! single click. An app that wants "open this row" from mouse and
+//! keyboard alike listens for both `RowActivated` and `RowDoubleClicked`.
+//! The app updates `selected_idx`, `scroll_offset`, and sort state for the
+//! next frame.
 //!
 //! When `footer` is `Some`, render it pinned below the (possibly
 //! shorter) visible body — laid out against the same resolved
@@ -316,15 +321,18 @@ pub struct DataTable {
 pub enum DataTableEvent {
     /// User clicked a column header — app should toggle sort.
     HeaderClicked { col: usize },
-    /// User confirmed a row via the keyboard (Enter). Documented meaning is
-    /// "click or Enter", but the pointer side is `RowDoubleClicked` below —
-    /// a single click only ever emits `RowSelected`.
+    /// User pressed Enter while the table had focus and a row was selected
+    /// — the keyboard equivalent of [`Self::RowDoubleClicked`]'s mouse
+    /// gesture. An app wiring up "open this row" listens for both this and
+    /// `RowDoubleClicked`, since a single click or arrow-key move never
+    /// emits either — only `RowSelected`.
     RowActivated { idx: usize },
     /// User selected a row — arrow-key navigation or a plain single click.
     RowSelected { idx: usize },
     /// User double-clicked a row — distinct from `RowSelected` (a plain
     /// click) so an app can tell "select" apart from "open" without both
-    /// folding into `RowActivated`.
+    /// folding into `RowActivated`. See `RowActivated`'s own doc for the
+    /// keyboard/screen-reader side of the same "open" meaning.
     RowDoubleClicked { idx: usize },
     /// User scrolled the table.
     Scroll { delta: i32, modifiers: Modifiers },
