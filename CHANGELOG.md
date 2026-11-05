@@ -58,6 +58,14 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Added
+- `primitives::tab_bar::fit_tab_label`: a shared label-fit helper for
+  `TabBar` — given a tab's measured width, its leading icon slot and
+  trailing close/dirty-dot slot, and a measurer closure, returns the
+  label text to paint, ellipsis-truncating via `text_util::truncate_with_ellipsis`
+  when it doesn't fit. The TUI painter (`tui::tab_bar`) now calls it
+  instead of hard-clipping an overlong label mid-glyph.
+
 ### Fixed
 - macOS `TabBar` painter (`macos::tab_bar`) now insets a tab's label, icon
   and close/dirty glyph from the tab edge by `Style::tab_padding_x` instead

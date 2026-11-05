@@ -363,8 +363,29 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         };
         let tab_end = tab_x + tab_width;
 
+        // The label's cell budget is whatever sits between the leading
+        // bracket/icon slot and `label_end` (the close glyph, trailing
+        // bracket, or tab edge). A label that doesn't fit is
+        // ellipsis-truncated through the shared
+        // `primitives::tab_bar::fit_tab_label` rather than hard-clipped
+        // mid-glyph — the same `…`-costs-one-cell convention
+        // `truncate_with_ellipsis` uses everywhere else in the crate.
+        let leading_slot = (lead + icon_cols) as f32;
+        let trailing_slot = (tab_end.saturating_sub(label_end)) as f32;
+        let fitted_label = crate::primitives::tab_bar::fit_tab_label(
+            &tab.label,
+            tab_width as f32,
+            leading_slot,
+            trailing_slot,
+            |s| crate::text_util::display_width(s) as f32,
+        );
+
         // Filename (after the last ": ") carries the underline accent.
-        let prefix_len = tab.label.rfind(": ").map(|p| p + 2).unwrap_or(0);
+        // Computed off the fitted label so an ellipsis-truncated cut
+        // before the ": " boundary falls back to treating the whole
+        // visible text as "filename" rather than indexing stale offsets
+        // from the untruncated original.
+        let prefix_len = fitted_label.rfind(": ").map(|p| p + 2).unwrap_or(0);
 
         // Stride by display width, not by `char`: a double-width
         // glyph (CJK, many emoji) must land in two columns, mirroring the
@@ -372,7 +393,7 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         // `tab_bar_layout` (backend.rs) measure `label_end`'s budget with
         // the same `display_width` function, so the two sides agree.
         let mut x = tab_x + lead + icon_cols;
-        for (ci, ch) in tab.label.chars().enumerate() {
+        for (ci, ch) in fitted_label.chars().enumerate() {
             if x >= label_end {
                 break;
             }
@@ -1013,6 +1034,81 @@ mod tests {
             layout.hit_test(8.5, 0.0),
             TabBarHit::Tab(0),
             "the separator column must stay part of the tab it follows, not a dead zone"
+        );
+    }
+
+    /// A narrow, fixed-width tab strip — the shape a caller builds when it
+    /// caps every tab to the same width regardless of label length (VS
+    /// Code's fixed-width tab convention), rather than TUI's own default
+    /// measurer which sizes a tab to its label's exact need. An overlong
+    /// label is ellipsis-truncated via the shared
+    /// `primitives::tab_bar::fit_tab_label` instead of hard-clipped
+    /// mid-glyph, and the truncated run never reaches into the close
+    /// glyph's cell.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return
+    fn overlong_label_in_a_narrow_fixed_width_tab_ends_in_ellipsis_and_never_overlaps_close_glyph()
+    {
+        let label = "a_very_long_filename_for_this_single_tab.rs";
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: label.into(),
+                is_active: true,
+                ..Default::default()
+            }],
+            right_segments: vec![],
+            active_accent: None,
+            scroll_offset: 0,
+            show_tab_close: true,
+            compact: false,
+        };
+        // Every tab is pinned to 14 cells total (12-cell label budget + a
+        // 2-cell close button) no matter how long its label is — unlike
+        // `measure_tab` above, this does NOT derive from `display_width(label)`.
+        let layout = bar.layout(
+            40.0,
+            1.0,
+            0.0,
+            |_| TabMeasure::new(14.0, 2.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert_eq!(
+            layout.visible_tabs.len(),
+            1,
+            "the 14-cell-wide tab must still fit inside the 40-cell bar"
+        );
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
+        let hits = draw_tab_bar(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+        );
+
+        let (close_start, _close_end) =
+            hits.close_bounds[0].expect("a closable tab reports close_bounds");
+        let close_start = close_start as u16;
+
+        // Collect every cell painted before the close button — this is
+        // exactly the budget `fit_tab_label` had to fit the label into.
+        let label_run: String = (0..close_start).map(|x| cell_char(&buf, x, 0)).collect();
+
+        assert!(
+            label_run.ends_with('…'),
+            "overlong label must end in an ellipsis, got {label_run:?}"
+        );
+        assert_eq!(
+            crate::text_util::display_width(&label_run),
+            12,
+            "the ellipsis-truncated run must fill its 12-cell label budget, got {label_run:?}"
+        );
+        assert_eq!(
+            cell_char(&buf, close_start, 0),
+            TAB_CLOSE_CHAR,
+            "the close glyph must land right after the truncated label, not be overwritten by it"
         );
     }
 }
