@@ -65,6 +65,14 @@ only a push to `main` runs this workflow.
   label text to paint, ellipsis-truncating via `text_util::truncate_with_ellipsis`
   when it doesn't fit. The TUI painter (`tui::tab_bar`) now calls it
   instead of hard-clipping an overlong label mid-glyph.
+- macOS `Backend::draw_scrollbar` now fades in on scroll and back out on
+  idle: `MacBackend::note_scroll_activity` (called from `macos::run`'s
+  `scrollWheel:` handler on every trackpad/wheel delta) resets a
+  per-backend last-interaction clock that `draw_scrollbar` feeds into
+  `primitives::scrollbar::idle_fade_opacity`, painting via the shared
+  `native_surface_paint::paint_with_opacity`. A scrollbar that has never
+  seen a scroll event paints at opacity `0.0` (hidden) until the first one
+  arrives.
 
 ### Fixed
 - macOS `TabBar` painter (`macos::tab_bar`) now ellipsis-fits a tab's label
