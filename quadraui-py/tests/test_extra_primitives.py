@@ -541,6 +541,83 @@ def test_insert_extra_form_renders_mixed_fields_with_label_position_and_validati
     assert app.screen_contains("[x]")
 
 
+def test_insert_extra_form_control_width_aligns_fields_regardless_of_mode():
+    # Acceptance criterion: every field kind starts its control at one
+    # shared column, regardless of each field's own `control_width`
+    # mode. Both values below are the same length, so if the two
+    # fields' controls start at the same column, both values start at
+    # the same column in their own (different) screen row.
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "form",
+        {
+            "id": "settings",
+            "fields": [
+                {
+                    "id": "fill",
+                    "label": {"spans": [{"text": "Fill", "fg": None, "bg": None}]},
+                    "kind": {"TextInput": {"value": "stretches"}},
+                },
+                {
+                    "id": "content",
+                    "label": {"spans": [{"text": "Content", "fg": None, "bg": None}]},
+                    "kind": {"TextInput": {"value": "shortval1"}},
+                    "control_width": "Content",
+                },
+            ],
+        },
+    )
+    lines = app.screen().splitlines()
+    fill_col = next(line.find("stretches") for line in lines if "stretches" in line)
+    content_col = next(line.find("shortval1") for line in lines if "shortval1" in line)
+    assert fill_col != -1
+    assert fill_col == content_col
+
+
+def test_insert_extra_form_control_width_fixed_truncates_without_a_floor():
+    # A `Fixed` control narrower than the value's own length truncates
+    # it (TUI draws only as many characters as fit the box).
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "form",
+        {
+            "id": "settings",
+            "fields": [
+                {
+                    "id": "clipped",
+                    "label": {"spans": [{"text": "A", "fg": None, "bg": None}]},
+                    "kind": {"TextInput": {"value": "exactwidth"}},
+                    "control_width": {"Fixed": 4.0},
+                }
+            ],
+        },
+    )
+    assert not app.screen_contains("exactwidth")
+
+
+def test_insert_extra_form_control_width_min_control_width_prevents_clipping():
+    # The same too-narrow `Fixed` control from the previous test, but
+    # with `min_control_width` floored above the value's own length —
+    # the value now renders in full instead of being truncated.
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "form",
+        {
+            "id": "settings",
+            "fields": [
+                {
+                    "id": "floored",
+                    "label": {"spans": [{"text": "A", "fg": None, "bg": None}]},
+                    "kind": {"TextInput": {"value": "exactwidth"}},
+                    "control_width": {"Fixed": 4.0},
+                    "min_control_width": 14.0,
+                }
+            ],
+        },
+    )
+    assert app.screen_contains("exactwidth")
+
+
 def test_form_toggle_click_routes_through_form_controller():
     # `FormEvent::ButtonClicked` was never emitted anywhere -- `"form"`
     # painted via `Form`'s own plain, non-interactive `ExtraPaint::paint`

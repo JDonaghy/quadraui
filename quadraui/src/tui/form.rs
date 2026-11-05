@@ -60,6 +60,73 @@ fn field_is_focused(form: &Form, field: &FormField) -> bool {
             .is_some_and(|id| id == &field.id)
 }
 
+/// `field`'s control column at its own natural, unstretched size (in
+/// cells) — what [`ControlWidth::Content`] resolves to, and the floor
+/// [`ControlWidth::Fill`]/[`ControlWidth::Fixed`] still have to beat via
+/// [`Form::resolved_min_control_width`]. Only field kinds whose control
+/// paints a left-anchored box/value (every kind `draw_form` dispatches
+/// outside the item-based `ToggleGroup`/`ButtonRow`/`Toolbar`/
+/// `SegmentedControl` quartet, which already pack their items flush
+/// left of the label and don't participate in this column) need an
+/// entry; everything else returns `0` and is never consulted.
+fn natural_content_width(field: &FormField) -> usize {
+    match &field.kind {
+        FieldKind::Toggle { .. } => 3,
+        FieldKind::TextInput {
+            value, placeholder, ..
+        }
+        | FieldKind::PasswordInput {
+            value, placeholder, ..
+        }
+        | FieldKind::TextArea {
+            value, placeholder, ..
+        } => {
+            let shown = if value.is_empty() {
+                placeholder.as_str()
+            } else {
+                value.as_str()
+            };
+            shown.chars().count() + 2
+        }
+        FieldKind::Button => field.label.visible_width() + 4,
+        FieldKind::ReadOnly { value } => value.visible_width(),
+        FieldKind::Slider { value, .. } => 12 + 2 + format!("{value:.2}").chars().count() + 2,
+        FieldKind::ColorPicker { .. } => 2 + 7,
+        FieldKind::Dropdown {
+            options,
+            selected_idx,
+        } => {
+            options
+                .get(*selected_idx)
+                .map(|o| o.visible_width())
+                .unwrap_or(0)
+                + 4
+        }
+        FieldKind::ComboBox(combo) => combo.text.chars().count() + 2,
+        FieldKind::DatePicker(picker) => {
+            picker.focused.format(picker.locale.format).chars().count()
+        }
+        _ => 0,
+    }
+}
+
+/// Resolve `field`'s control-column width in cells: the form's
+/// [`Form::resolved_control_width`] mode applied against `available`
+/// (remaining cells after the label column, for `Fill`) and `field`'s
+/// own [`natural_content_width`] (for `Content`), floored by
+/// [`Form::resolved_min_control_width`]. `Fixed` cells are already
+/// whole numbers in the descriptor (the same dual-unit convention as
+/// `label_width`), rounded up just in case a binding hands in a
+/// fractional value.
+fn resolved_control_width_cells(form: &Form, field: &FormField, available: usize) -> usize {
+    let content_width = natural_content_width(field) as f32;
+    let min_width = form.resolved_min_control_width(field);
+    let width =
+        form.resolved_control_width(field)
+            .resolve(content_width, available as f32, min_width);
+    (width.ceil().max(0.0) as usize).max(1)
+}
+
 /// X offset where a field's input/items start, after its resolved
 /// label column (or 0/1 when there's no reserved column to clear).
 /// `no_label_fallback` is the start column when the field has no
@@ -202,10 +269,31 @@ struct RowCtx<'a> {
     field_fg: ratatui::style::Color,
     dim_fg: ratatui::style::Color,
     accent_fg: ratatui::style::Color,
-    label_end: usize,
-    no_label: bool,
     is_focused: bool,
     theme: &'a Theme,
+    /// Whether this field has no reserved label column — an empty
+    /// label, `Hidden`, or a `Top`-positioned field's own input row.
+    /// Consulted only by [`draw_field_text_input`]/
+    /// [`draw_field_password_input`], which paint their opening `[` one
+    /// cell to the *left* of `control_start` in this case so the
+    /// value's text content — not the bracket — lines up with
+    /// `control_start`, matching a `Top` label's own column (see
+    /// `form_label_placement_top_label_sits_above_its_value`).
+    no_label: bool,
+    /// Column where this field's control (checkbox / input / slider /
+    /// dropdown / …) starts — right after the shared label column, the
+    /// same for every field so every control lines up in one column
+    /// regardless of `FieldKind` (D1's whole point). The label column's
+    /// end plus one cell for a labeled field, `1` for one without.
+    control_start: usize,
+    /// This field's resolved control-column width in cells, from
+    /// [`resolved_control_width_cells`] — `Fill` stretches to the row's
+    /// right edge, `Fixed`/`Content` are exact/natural sizes, both
+    /// floored by `Form::resolved_min_control_width`. Only consulted by
+    /// `draw_field_*` helpers whose control can stretch (a checkbox's
+    /// glyph, for instance, ignores it and just repositions to
+    /// `control_start`).
+    control_width: usize,
 }
 
 /// Draw a [`Form`] into `area` on `buf`.
@@ -451,6 +539,17 @@ fn build_row_ctx<'a>(
         }
     };
 
+    // The control column starts right after the shared label column —
+    // the same column for every field regardless of `FieldKind`, which
+    // is what gives the row a single aligned control edge instead of
+    // each kind separately hugging the row's right edge. Fields with no
+    // reserved label column (`no_label`) start their control at column
+    // 1, mirroring `field_items_start_x`'s `no_label_fallback` for the
+    // item-based kinds.
+    let control_start = if no_label { 1 } else { label_end + 1 };
+    let available = (area.width as usize).saturating_sub(control_start);
+    let control_width = resolved_control_width_cells(form, field, available);
+
     RowCtx {
         area,
         y: input_y,
@@ -459,10 +558,11 @@ fn build_row_ctx<'a>(
         field_fg,
         dim_fg: colors.dim_fg,
         accent_fg: colors.accent_fg,
-        label_end,
-        no_label,
         is_focused,
         theme,
+        no_label,
+        control_start,
+        control_width,
     }
 }
 
@@ -494,21 +594,14 @@ fn draw_field_toggle(buf: &mut Buffer, ctx: &RowCtx, value: bool) {
         row_bg,
         field_fg,
         accent_fg,
-        label_end,
-        no_label,
+        control_start,
         ..
     } = *ctx;
 
     let glyph = if value { "[x]" } else { "[ ]" };
-    let w = glyph.chars().count();
-    let start_col = if no_label {
-        1
-    } else {
-        (area.width as usize).saturating_sub(w + 2)
-    };
-    if start_col > label_end + 1 || no_label {
+    if control_start < area.width as usize {
         let input_fg = if value { accent_fg } else { field_fg };
-        for (col, ch) in (start_col..).zip(glyph.chars()) {
+        for (col, ch) in (control_start..).zip(glyph.chars()) {
             if col >= area.width as usize {
                 break;
             }
@@ -531,24 +624,15 @@ fn draw_field_text_input(
         row_bg,
         field_fg,
         dim_fg,
-        label_end,
         no_label,
+        control_start,
+        control_width,
         ..
     } = *ctx;
 
     let shown = if value.is_empty() { placeholder } else { value };
     let input_fg = if value.is_empty() { dim_fg } else { field_fg };
-
-    let (start_col, desired) = if no_label {
-        let sc = 1usize;
-        let avail = (area.width as usize).saturating_sub(sc + 2);
-        (sc, shown.chars().count().min(avail))
-    } else {
-        let max_input = (area.width as usize * 2 / 3).max(10);
-        let d = shown.chars().count().min(max_input);
-        let sc = (area.width as usize).saturating_sub(d + 2);
-        (sc, d)
-    };
+    let desired = control_width.saturating_sub(2).min(shown.chars().count());
 
     let (sel_lo, sel_hi) = if value.is_empty() {
         (0, 0)
@@ -559,13 +643,23 @@ fn draw_field_text_input(
         }
     };
 
-    if start_col > label_end + 1 || no_label {
-        if start_col > 0 && start_col - 1 < area.width as usize {
-            set_cell(buf, area.x + (start_col - 1) as u16, y, '[', dim_fg, row_bg);
+    // A no-label field's content starts exactly at `control_start` —
+    // the bracket sits one cell to its *left* instead of taking
+    // `control_start`'s own cell, so the value's text lines up with a
+    // `Top` label's own column one row up. A labeled field has no such
+    // column to match, so its bracket takes `control_start` itself.
+    let (bracket_col, text_col) = if no_label {
+        (control_start.saturating_sub(1), control_start)
+    } else {
+        (control_start, control_start + 1)
+    };
+
+    if control_start < area.width as usize {
+        if bracket_col < area.width as usize {
+            set_cell(buf, area.x + bracket_col as u16, y, '[', dim_fg, row_bg);
         }
-        let mut col = start_col;
         let mut byte = 0usize;
-        for ch in shown.chars().take(desired) {
+        for (col, ch) in (text_col..).zip(shown.chars().take(desired)) {
             if col >= area.width as usize {
                 break;
             }
@@ -576,17 +670,11 @@ fn draw_field_text_input(
                 (input_fg, row_bg)
             };
             set_cell(buf, area.x + col as u16, y, ch, ch_fg, ch_bg);
-            col += 1;
             byte += ch.len_utf8();
         }
-        let bracket_col = if no_label {
-            (area.width as usize).saturating_sub(1)
-        } else {
-            col
-        };
-        if bracket_col < area.width as usize {
-            set_cell(buf, area.x + bracket_col as u16, y, ']', dim_fg, row_bg);
-        }
+        let closing_col =
+            (control_start + control_width.max(2) - 1).min((area.width as usize).saturating_sub(1));
+        set_cell(buf, area.x + closing_col as u16, y, ']', dim_fg, row_bg);
 
         if let Some(cur) = cursor {
             if !value.is_empty() {
@@ -599,7 +687,7 @@ fn draw_field_text_input(
                     byte += ch.len_utf8();
                     char_idx += 1;
                 }
-                let cursor_col = start_col + char_idx;
+                let cursor_col = text_col + char_idx;
                 if cursor_col < area.width as usize {
                     let ch = shown.chars().nth(char_idx).unwrap_or(' ');
                     set_cell(buf, area.x + cursor_col as u16, y, ch, row_bg, field_fg);
@@ -618,12 +706,18 @@ fn draw_field_button(buf: &mut Buffer, ctx: &RowCtx, field: &crate::primitives::
         field_fg,
         dim_fg,
         accent_fg,
-        label_end,
         no_label,
+        control_start,
         is_focused,
         ..
     } = *ctx;
 
+    // A standalone `Button`'s caption *is* `field.label` — unlike every
+    // other kind, there's no separate column-label/value split, so it
+    // doesn't participate in the shared control column: it keeps its
+    // own content-sized `<label>` box, right-anchored against the
+    // row's edge.
+    let label_end = if no_label { 0 } else { control_start - 1 };
     for x in area.x..area.x + (label_end as u16).min(area.width) {
         set_cell(buf, x, y, ' ', default_fg, row_bg);
     }
@@ -664,30 +758,21 @@ fn draw_field_read_only(buf: &mut Buffer, ctx: &RowCtx, value: &crate::types::St
         row_bg,
         field_fg,
         dim_fg,
-        label_end,
-        no_label,
+        control_start,
         ..
     } = *ctx;
 
-    let w = value.visible_width();
-    let start_col = if no_label {
-        1
-    } else {
-        (area.width as usize).saturating_sub(w + 2)
-    };
-    if start_col > label_end + 1 || no_label {
-        // Was unconditionally painted in `dim_fg`
-        // (`theme.muted_fg`), so a focused (`selected_bg`)
-        // `ReadOnly` row's value stayed in the same dim colour
-        // as an unfocused one — unreadable on `selected_bg`,
-        // unlike every other field kind here, which derives its
-        // value colour from `field_fg` (focus/disabled-aware).
-        // Mirrors the `native_surface_paint::paint` fix.
+    if control_start < area.width as usize {
+        // Painted in `field_fg` (focus/disabled-aware), not
+        // unconditionally in `dim_fg` (`theme.muted_fg`) — a focused
+        // (`selected_bg`) row's value stays readable the same way
+        // every other field kind here does. Mirrors the
+        // `native_surface_paint::paint` fix.
         draw_styled_text(
             buf,
             area,
             y,
-            start_col,
+            control_start,
             value,
             field_fg,
             row_bg,
@@ -705,29 +790,41 @@ fn draw_field_slider(buf: &mut Buffer, ctx: &RowCtx, value: f32, min: f32, max: 
         field_fg,
         dim_fg,
         accent_fg,
-        label_end,
+        control_start,
+        control_width,
         ..
     } = *ctx;
 
     let range = (max - min).max(f32::EPSILON);
     let frac = ((value - min) / range).clamp(0.0, 1.0);
-    let track_cells: usize = 12;
-    let filled = (frac * track_cells as f32).round() as usize;
     let value_str = format!("{value:.2}");
-    let total = track_cells + 2 + value_str.chars().count() + 2;
-    let start_col = (area.width as usize).saturating_sub(total + 2);
-    if start_col > label_end + 1 {
-        let mut col = start_col;
+    // The track stretches to fill whatever the resolved `control_width`
+    // leaves after its own brackets and value text — `Content` resolves
+    // `control_width` from the same `12 + 2 + len + 2` budget
+    // `natural_content_width` assumes, so this recovers exactly 12
+    // there; `Fill`/`Fixed` grow or shrink the track instead.
+    let track_cells = control_width
+        .saturating_sub(2 + 2 + value_str.chars().count())
+        .max(3);
+    let filled = (frac * track_cells as f32).round() as usize;
+
+    if control_start < area.width as usize {
+        let mut col = control_start;
         set_cell(buf, area.x + col as u16, y, '[', dim_fg, row_bg);
         col += 1;
         for i in 0..track_cells {
+            if col >= area.width as usize {
+                break;
+            }
             let ch = if i < filled { '=' } else { '-' };
             let fg = if i < filled { accent_fg } else { dim_fg };
             set_cell(buf, area.x + col as u16, y, ch, fg, row_bg);
             col += 1;
         }
-        set_cell(buf, area.x + col as u16, y, ']', dim_fg, row_bg);
-        col += 2;
+        if col < area.width as usize {
+            set_cell(buf, area.x + col as u16, y, ']', dim_fg, row_bg);
+        }
+        col += 3;
         for ch in value_str.chars() {
             if col >= area.width as usize {
                 break;
@@ -744,24 +841,22 @@ fn draw_field_color_picker(buf: &mut Buffer, ctx: &RowCtx, value: crate::types::
         y,
         row_bg,
         field_fg,
-        label_end,
+        control_start,
         ..
     } = *ctx;
 
     let hex = format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b);
-    let total = 2 + hex.chars().count();
-    let start_col = (area.width as usize).saturating_sub(total + 2);
-    if start_col > label_end + 1 {
+    if control_start < area.width as usize {
         let swatch_fg = ratatui::style::Color::Rgb(value.r, value.g, value.b);
         set_cell(
             buf,
-            area.x + start_col as u16,
+            area.x + control_start as u16,
             y,
             '\u{25A0}',
             swatch_fg,
             row_bg,
         );
-        for (col, ch) in (start_col + 2..).zip(hex.chars()) {
+        for (col, ch) in (control_start + 2..).zip(hex.chars()) {
             if col >= area.width as usize {
                 break;
             }
@@ -782,29 +877,26 @@ fn draw_field_dropdown(
         row_bg,
         field_fg,
         dim_fg,
-        label_end,
+        control_start,
         is_focused,
         theme,
         ..
     } = *ctx;
 
     let chosen = options.get(selected_idx).cloned().unwrap_or_default();
-    let label_w = chosen.visible_width();
-    let total = label_w + 4;
-    let start_col = (area.width as usize).saturating_sub(total + 1);
-    if start_col > label_end + 1 {
+    if control_start < area.width as usize {
         draw_styled_text(
             buf,
             area,
             y,
-            start_col + 1,
+            control_start,
             &chosen,
             field_fg,
             row_bg,
             Decoration::Normal,
             dim_fg,
         );
-        let chev_col = start_col + 1 + label_w + 1;
+        let chev_col = control_start + chosen.visible_width() + 1;
         if chev_col < area.width as usize {
             set_cell(buf, area.x + chev_col as u16, y, '\u{25BE}', dim_fg, row_bg);
         }
@@ -987,8 +1079,7 @@ fn draw_field_date_picker(
         y,
         row_bg,
         field_fg,
-        label_end,
-        no_label,
+        control_start,
         is_focused,
         ..
     } = *ctx;
@@ -1004,14 +1095,8 @@ fn draw_field_date_picker(
         picker.selected.unwrap_or(picker.focused)
     };
     let text = date.format(picker.locale.format);
-    let total = text.chars().count();
-    let start_col = if no_label {
-        1
-    } else {
-        (area.width as usize).saturating_sub(total + 2)
-    };
-    if start_col > label_end + 1 || no_label {
-        for (col, ch) in (start_col..).zip(text.chars()) {
+    if control_start < area.width as usize {
+        for (col, ch) in (control_start..).zip(text.chars()) {
             if col >= area.width as usize {
                 break;
             }
@@ -1039,19 +1124,12 @@ fn draw_field_combo_box(
         row_bg,
         field_fg,
         dim_fg,
-        label_end,
-        no_label,
+        control_start,
         ..
     } = *ctx;
 
-    let total = combo.text.chars().count() + 2;
-    let start_col = if no_label {
-        1
-    } else {
-        (area.width as usize).saturating_sub(total + 2)
-    };
-    if start_col > label_end + 1 || no_label {
-        let mut col = start_col;
+    if control_start < area.width as usize {
+        let mut col = control_start;
         for ch in combo.text.chars() {
             if col >= area.width as usize {
                 break;
@@ -1107,6 +1185,9 @@ fn draw_field_text_area(
         row_bg,
         field_fg,
         dim_fg,
+        no_label,
+        control_start,
+        control_width,
         ..
     } = *ctx;
 
@@ -1114,8 +1195,18 @@ fn draw_field_text_area(
     let input_fg = if value.is_empty() { dim_fg } else { field_fg };
     let rows = visible_rows;
 
-    // Paint each row of the text area.
-    let avail_w = (area.width as usize).saturating_sub(2); // inside brackets
+    // Shares `draw_field_text_input`'s bracket/text column split so a
+    // `TextArea` joins the same control column as every other field
+    // kind instead of spanning the full row width over the label.
+    let (bracket_col, text_col) = if no_label {
+        (control_start.saturating_sub(1), control_start)
+    } else {
+        (control_start, control_start + 1)
+    };
+    let closing_col =
+        (control_start + control_width.max(2) - 1).min((area.width as usize).saturating_sub(1));
+    let avail_w = closing_col.saturating_sub(text_col);
+
     let mut chars_iter = shown.chars();
     for row in 0..rows {
         let row_y = y + row as u16;
@@ -1130,11 +1221,16 @@ fn draw_field_text_area(
             }
         }
 
-        // Left bracket on first column.
-        set_cell(buf, area.x, row_y, '[', dim_fg, row_bg);
+        if control_start >= area.width as usize {
+            continue;
+        }
+
+        if bracket_col < area.width as usize {
+            set_cell(buf, area.x + bracket_col as u16, row_y, '[', dim_fg, row_bg);
+        }
 
         // Content characters for this row.
-        let mut col = 1usize;
+        let mut col = text_col;
         for _ in 0..avail_w {
             if let Some(ch) = chars_iter.next() {
                 if col < area.width as usize {
@@ -1146,10 +1242,8 @@ fn draw_field_text_area(
             }
         }
 
-        // Right bracket at last column.
-        let bracket_col = (area.width as usize).saturating_sub(1);
-        if bracket_col < area.width as usize {
-            set_cell(buf, area.x + bracket_col as u16, row_y, ']', dim_fg, row_bg);
+        if closing_col < area.width as usize {
+            set_cell(buf, area.x + closing_col as u16, row_y, ']', dim_fg, row_bg);
         }
     }
 
@@ -1165,7 +1259,7 @@ fn draw_field_text_area(
                 byte += ch.len_utf8();
                 char_idx += 1;
             }
-            let cursor_col = 1 + char_idx;
+            let cursor_col = text_col + char_idx;
             if cursor_col < area.width as usize {
                 let ch = value.chars().nth(char_idx).unwrap_or(' ');
                 set_cell(buf, area.x + cursor_col as u16, y, ch, row_bg, field_fg);
@@ -1188,8 +1282,9 @@ fn draw_field_password_input(
         row_bg,
         field_fg,
         dim_fg,
-        label_end,
         no_label,
+        control_start,
+        control_width,
         ..
     } = *ctx;
 
@@ -1201,38 +1296,30 @@ fn draw_field_password_input(
         masked.as_str()
     };
     let input_fg = if value.is_empty() { dim_fg } else { field_fg };
+    let desired = control_width.saturating_sub(2).min(shown.chars().count());
 
-    let (start_col, desired) = if no_label {
-        let sc = 1usize;
-        let avail = (area.width as usize).saturating_sub(sc + 2);
-        (sc, shown.chars().count().min(avail))
+    // See `draw_field_text_input`'s matching comment: a no-label
+    // field's value text lines up with `control_start` itself, with
+    // the bracket one cell to its left.
+    let (bracket_col, text_col) = if no_label {
+        (control_start.saturating_sub(1), control_start)
     } else {
-        let max_input = (area.width as usize * 2 / 3).max(10);
-        let d = shown.chars().count().min(max_input);
-        let sc = (area.width as usize).saturating_sub(d + 2);
-        (sc, d)
+        (control_start, control_start + 1)
     };
 
-    if start_col > label_end + 1 || no_label {
-        if start_col > 0 && start_col - 1 < area.width as usize {
-            set_cell(buf, area.x + (start_col - 1) as u16, y, '[', dim_fg, row_bg);
+    if control_start < area.width as usize {
+        if bracket_col < area.width as usize {
+            set_cell(buf, area.x + bracket_col as u16, y, '[', dim_fg, row_bg);
         }
-        let mut col = start_col;
-        for ch in shown.chars().take(desired) {
+        for (col, ch) in (text_col..).zip(shown.chars().take(desired)) {
             if col >= area.width as usize {
                 break;
             }
             set_cell(buf, area.x + col as u16, y, ch, input_fg, row_bg);
-            col += 1;
         }
-        let bracket_col = if no_label {
-            (area.width as usize).saturating_sub(1)
-        } else {
-            col
-        };
-        if bracket_col < area.width as usize {
-            set_cell(buf, area.x + bracket_col as u16, y, ']', dim_fg, row_bg);
-        }
+        let closing_col =
+            (control_start + control_width.max(2) - 1).min((area.width as usize).saturating_sub(1));
+        set_cell(buf, area.x + closing_col as u16, y, ']', dim_fg, row_bg);
 
         // Cursor (byte offset into original value, rendered at
         // the masked character position).
@@ -1247,7 +1334,7 @@ fn draw_field_password_input(
                     byte += ch.len_utf8();
                     char_idx += 1;
                 }
-                let cursor_col = start_col + char_idx;
+                let cursor_col = text_col + char_idx;
                 if cursor_col < area.width as usize {
                     let ch = masked.chars().nth(char_idx).unwrap_or(' ');
                     set_cell(buf, area.x + cursor_col as u16, y, ch, row_bg, field_fg);
@@ -1429,6 +1516,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("wrap"),
@@ -1441,6 +1530,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
             ],
             focused_field: Some(WidgetId::new("wrap")),
@@ -1449,6 +1540,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -1466,17 +1559,17 @@ mod tests {
         let row0: String = (1..7).map(|x| cell_char(&buf, x, 0)).collect();
         assert_eq!(row0, "Editor");
 
-        // Toggle row: "wrap" label + "[x]" right-aligned.
+        // Toggle row: "wrap" label, then "[x]" right after the shared
+        // label column — not hugging the row's right edge.
         let row1: String = (0..5).map(|x| cell_char(&buf, x, 1)).collect();
         assert!(row1.contains("wrap"));
-        // "[x]" near the right edge.
         let mut found_x = false;
-        for x in 20..30 {
+        for x in 5..10 {
             if cell_char(&buf, x, 1) == 'x' {
                 found_x = true;
             }
         }
-        assert!(found_x, "expected '[x]' near right edge");
+        assert!(found_x, "expected '[x]' right after the label column");
     }
 
     #[test]
@@ -1508,6 +1601,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("dd"),
@@ -1523,6 +1618,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
             ],
             focused_field: if focused {
@@ -1535,6 +1632,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -1545,9 +1644,10 @@ mod tests {
         let theme = Theme::default();
         draw_form(&mut buf, Rect::new(0, 0, 30, 6), &f, &theme);
 
-        // Compact row (y=1) still shows the selected option ("beta")
-        // right-aligned, same as an unfocused Dropdown.
-        let row1: String = (18..30).map(|x| cell_char(&buf, x, 1)).collect();
+        // Compact row (y=1) still shows the selected option ("beta"),
+        // same as an unfocused Dropdown — this field's label is empty
+        // so its control starts at column 1.
+        let row1: String = (1..10).map(|x| cell_char(&buf, x, 1)).collect();
         assert!(row1.contains("beta"), "row1={row1:?}");
 
         // Popup rows start directly below the compact row: one row per
@@ -1576,8 +1676,9 @@ mod tests {
         let f = make_dropdown_form(false);
         draw_form(&mut buf, Rect::new(0, 0, 30, 6), &f, &Theme::default());
 
-        // Compact row still shows the selected option.
-        let row1: String = (18..30).map(|x| cell_char(&buf, x, 1)).collect();
+        // Compact row still shows the selected option, starting at
+        // column 1 (this field's label is empty).
+        let row1: String = (1..10).map(|x| cell_char(&buf, x, 1)).collect();
         assert!(row1.contains("beta"), "row1={row1:?}");
 
         // No popup rows are painted below the compact row — they stay
@@ -1615,6 +1716,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: Some(WidgetId::new("note")),
             scroll_offset: 0,
@@ -1622,6 +1725,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         // `Theme::default()` sets `header_fg == foreground` (both the
         // neutral dark `fg` literal), which would make this test pass
@@ -1714,6 +1819,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -1721,11 +1828,16 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
         draw_form(&mut buf, Rect::new(0, 0, 30, 3), &f, &Theme::default());
 
-        // Row fills full width: '[' at col 0, text at col 1, ']' at col 29.
+        // No label to reserve a column for: '[' at col 0, text at col
+        // 1 (so the value lines up with a `Top` label's own column one
+        // row up), and — `Fill` being the default `control_width` —
+        // ']' stretches to the row's right edge.
         let row: String = (0..30).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(
             row.starts_with("[test"),
@@ -1770,6 +1882,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -1777,6 +1891,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -1921,6 +2037,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -1928,6 +2046,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -2105,6 +2225,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2112,6 +2234,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
@@ -2146,6 +2270,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2153,6 +2279,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
@@ -2183,6 +2311,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2190,6 +2320,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
@@ -2217,6 +2349,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2224,6 +2358,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 3));
         let vis = &layout.visible_fields[0];
@@ -2260,6 +2396,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2267,12 +2405,67 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 6), &form, &Theme::default());
         let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 6));
         assert_eq!(
             layout.visible_fields[0].bounds.height, 3.0,
             "TextArea with visible_rows=3 should be 3 cells tall"
+        );
+    }
+
+    #[test]
+    fn textarea_joins_the_shared_control_column_and_does_not_clobber_its_label() {
+        let form = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("desc"),
+                label: label("Description"),
+                kind: FieldKind::TextArea {
+                    value: "hi".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    visible_rows: 2,
+                },
+                hint: label(""),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 5));
+        draw_form(&mut buf, Rect::new(0, 0, 40, 5), &form, &Theme::default());
+
+        let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(
+            row[1..].starts_with("Description"),
+            "label must still be painted, not clobbered by the control: {row:?}"
+        );
+        // Labels start at column 1 (column 0 is the row's left border);
+        // `control_start` is `label_end + 1` where `label_end = 1 +
+        // col_width` (see `build_row_ctx`) — "Description".len() == 11,
+        // so the control starts at column 13, right after the label,
+        // not at column 0 like the bare `[hi...` a painter that ignores
+        // `control_start` would draw over the label.
+        assert_eq!(
+            cell_char(&buf, 13, 0),
+            '[',
+            "TextArea's control box should start right after the label: {row:?}"
         );
     }
 
@@ -2299,6 +2492,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2306,6 +2501,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let col0 = cell_char(&buf, 0, 0);
@@ -2333,6 +2530,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2340,6 +2539,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let col0 = cell_char(&buf, 0, 0);
@@ -2392,6 +2593,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2399,6 +2602,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -2543,6 +2748,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2550,6 +2757,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -2627,6 +2836,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2634,6 +2845,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
@@ -2660,12 +2873,12 @@ mod tests {
             "no leftover glyph past the label's measured display width"
         );
 
-        // The ReadOnly value ("OK", visible_width 2) is right-aligned via
-        // `area.width - (w + 2)` = 30 - 4 = 26, independent of the label —
-        // confirm it painted where that formula (which now agrees with the
-        // label's actual painted extent) says it should.
-        assert_eq!(cell_char(&buf, 26, 0), 'O');
-        assert_eq!(cell_char(&buf, 27, 0), 'K');
+        // The ReadOnly value ("OK") starts right after the label column
+        // (col 1 + visible_width 7 + 1 margin = col 9), not hugging the
+        // row's right edge — confirming the control column lines up
+        // with the label's actual painted extent.
+        assert_eq!(cell_char(&buf, 9, 0), 'O');
+        assert_eq!(cell_char(&buf, 10, 0), 'K');
     }
 
     #[test]
@@ -2700,6 +2913,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2707,6 +2922,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
@@ -2745,6 +2962,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -2762,6 +2981,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let area = Rect::new(0, 0, 30, 4);
         let mut buf = Buffer::empty(area);
@@ -2803,6 +3024,8 @@ mod tests {
             label_position: LabelPosition::Left,
             label_align: LabelAlign::End,
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         // Force an explicit column width wider than either label so
         // `End` alignment has room to shift "ID" rightward within it.
@@ -2843,6 +3066,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let area = Rect::new(0, 0, 30, 2);
         let mut buf = Buffer::empty(area);
@@ -2884,6 +3109,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);

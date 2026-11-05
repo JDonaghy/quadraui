@@ -1,17 +1,20 @@
 //! `Form` demo — adapted from `quadraui/examples/common/form_all_fields.rs`,
-//! `form_groups.rs` and `form_scroll.rs`.
+//! `form_groups.rs`, `form_scroll.rs` and `form_label_placement.rs`.
 //!
-//! Three variants cover the `Form` primitive's range: every `FieldKind`
+//! Four variants cover the `Form` primitive's range: every `FieldKind`
 //! laid out statically, a small interactive search/replace panel
 //! (toggle group, button row, an embedded toolbar field, and
-//! [`FocusRing`]-driven Tab/Shift+Tab cycling), and a 20-field settings
-//! panel long enough to need [`FormController`]'s built-in scrollbar.
+//! [`FocusRing`]-driven Tab/Shift+Tab cycling), a 20-field settings panel
+//! long enough to need [`FormController`]'s built-in scrollbar, and a
+//! label-placement reference sheet exercising `label_position` /
+//! `label_align` / `label_width` (an aligned `Left` label column shared by
+//! two fields, plus `Top`, `Inline` and `Hidden` variants on the rest).
 
 use quadraui::{
     Backend, BackendCaps, ButtonRowItem, CalendarDate, Color, DatePicker, FieldKind, FocusRing,
     Form, FormController, FormControllerEvent, FormEvent, FormField, FormHit, InteractionState,
-    Key, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
-    ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
+    Key, LabelAlign, LabelPosition, MouseButton, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -63,6 +66,8 @@ impl SearchReplaceState {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("toggles"),
@@ -93,6 +98,8 @@ impl SearchReplaceState {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("replace"),
@@ -110,6 +117,8 @@ impl SearchReplaceState {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("buttons"),
@@ -143,6 +152,8 @@ impl SearchReplaceState {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
             ],
             focused_field: self.focus.current().cloned(),
@@ -151,6 +162,8 @@ impl SearchReplaceState {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -206,6 +219,8 @@ fn scroll_form_from_toggles(toggles: &[bool]) -> Form {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         })
         .collect();
     Form {
@@ -217,6 +232,8 @@ fn scroll_form_from_toggles(toggles: &[bool]) -> Form {
         label_position: Default::default(),
         label_align: Default::default(),
         label_width: None,
+        control_width: Default::default(),
+        min_control_width: None,
     }
 }
 
@@ -259,6 +276,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("line-numbers"),
@@ -271,6 +290,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("name"),
@@ -288,6 +309,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("save"),
@@ -300,6 +323,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("version"),
@@ -314,6 +339,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("font-size"),
@@ -331,6 +358,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("accent"),
@@ -345,6 +374,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("theme"),
@@ -363,6 +394,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("notes"),
@@ -380,6 +413,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("password"),
@@ -397,6 +432,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("scope"),
@@ -412,6 +449,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("flags"),
@@ -430,6 +469,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("actions"),
@@ -449,6 +490,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("toolbar"),
@@ -473,6 +516,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
             FormField {
                 id: WidgetId::new("due-date"),
@@ -488,6 +533,8 @@ fn build_all_fields_form() -> Form {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             },
         ],
         focused_field: None,
@@ -496,6 +543,76 @@ fn build_all_fields_form() -> Form {
         label_position: Default::default(),
         label_align: Default::default(),
         label_width: None,
+        control_width: Default::default(),
+        min_control_width: None,
+    }
+}
+
+/// Label-placement reference sheet — variant 3 ("Label placement"). No
+/// interactive state: a static form, same shape as
+/// `examples/common/form_label_placement.rs`'s "server profile" form.
+/// "ID" and "Owner" share the form-level `Left` label column; leaving
+/// `label_width: None` sizes that shared column to the widest `Left`
+/// label on every backend (`Form::label_width` is TUI cells on TUI but
+/// device pixels on GTK/macOS/Win32, so a single literal can't aim at
+/// both — `None`'s "widest label" rule is the only width that aligns on
+/// both unit systems). "Role" overrides to `Top`, "Notes" to `Inline`,
+/// and "Internal key" to `Hidden`.
+fn build_label_placement_form() -> Form {
+    let field =
+        |id: &str, label: &str, value: &str, label_position: Option<LabelPosition>| -> FormField {
+            FormField {
+                id: WidgetId::new(id),
+                label: StyledText::plain(label),
+                kind: FieldKind::TextInput {
+                    value: value.to_string(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position,
+                label_align: None,
+                label_width: None,
+                control_width: None,
+                min_control_width: None,
+                tab_index: None,
+            }
+        };
+    Form {
+        id: WidgetId::new("gallery:form:label-placement"),
+        fields: vec![
+            field("role", "Role", "Operator", Some(LabelPosition::Top)),
+            field("id", "ID", "srv-042", None),
+            field("owner", "Owner", "ops-team", None),
+            field("notes", "Notes", "", Some(LabelPosition::Inline)),
+            FormField {
+                id: WidgetId::new("internal-key"),
+                label: StyledText::plain("Internal key"),
+                kind: FieldKind::ReadOnly {
+                    value: StyledText::plain("xk-9f21"),
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: Some(LabelPosition::Hidden),
+                label_align: None,
+                label_width: None,
+                control_width: None,
+                min_control_width: None,
+                tab_index: None,
+            },
+        ],
+        focused_field: None,
+        scroll_offset: 0,
+        has_focus: true,
+        label_position: LabelPosition::Left,
+        label_align: LabelAlign::End,
+        label_width: None,
+        control_width: Default::default(),
+        min_control_width: None,
     }
 }
 
@@ -561,7 +678,12 @@ impl Demo for FormDemo {
     }
 
     fn variants(&self) -> &'static [&'static str] {
-        &["All field kinds", "Search & replace", "Scrolling"]
+        &[
+            "All field kinds",
+            "Search & replace",
+            "Scrolling",
+            "Label placement",
+        ]
     }
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
@@ -580,7 +702,7 @@ impl Demo for FormDemo {
                     &InteractionState::new(),
                 );
             }
-            _ => {
+            2 => {
                 self.scroll.fc.render(backend, form_rect);
                 let bar = Self::status_bar(
                     &format!(
@@ -596,6 +718,12 @@ impl Demo for FormDemo {
                     &InteractionState::new(),
                 );
             }
+            // `variants()` has exactly four entries, so this wildcard is
+            // reached only by variant 3 ("Label placement") — `handle`'s
+            // matching wildcard below is reached only by variant 2
+            // ("Scrolling"); each comment names its own variant so the
+            // two stay in sync.
+            _ => backend.draw_form(area, &build_label_placement_form()),
         }
     }
 
@@ -645,6 +773,11 @@ impl Demo for FormDemo {
                 },
                 _ => Reaction::Continue,
             },
+            3 => Reaction::Continue,
+            // `variants()` has exactly four entries, so this wildcard is
+            // reached only by variant 2 ("Scrolling") — `render`'s matching
+            // wildcard is reached only by variant 3 ("Label placement");
+            // each comment names its own variant so the two stay in sync.
             _ => {
                 self.scroll.fc.set_form(self.scroll.build_form());
                 self.scroll.fc.set_backend_info(backend.line_height());
@@ -688,11 +821,13 @@ impl Demo for FormDemo {
                 "form": self.search_replace.build_form(),
                 "last_action": self.search_replace.last_action,
             }),
-            _ => serde_json::json!({
+            2 => serde_json::json!({
                 "scroll_offset": self.scroll.fc.scroll_offset(),
                 "toggles_on": self.scroll.toggles.iter().filter(|&&v| v).count(),
                 "last_action": self.scroll.last_action,
             }),
+            _ => serde_json::to_value(build_label_placement_form())
+                .unwrap_or(serde_json::Value::Null),
         }
     }
 
@@ -726,6 +861,34 @@ mod tests {
         let state = ScrollState::new();
         assert_eq!(state.toggles.len(), 20);
         assert!(state.toggles.iter().all(|&v| !v));
+    }
+
+    #[test]
+    fn label_placement_form_shares_an_aligned_left_label_column() {
+        let form = build_label_placement_form();
+        assert_eq!(form.label_position, LabelPosition::Left);
+        assert_eq!(form.label_align, LabelAlign::End);
+        assert_eq!(form.label_width, None);
+        // "ID" and "Owner" fall back to the form-level default (`None`).
+        for id in ["id", "owner"] {
+            let field = form.fields.iter().find(|f| f.id.as_str() == id).unwrap();
+            assert_eq!(field.label_position, None);
+        }
+    }
+
+    #[test]
+    fn label_placement_form_overrides_top_inline_and_hidden_per_field() {
+        let form = build_label_placement_form();
+        let position_of = |id: &str| {
+            form.fields
+                .iter()
+                .find(|f| f.id.as_str() == id)
+                .unwrap()
+                .label_position
+        };
+        assert_eq!(position_of("role"), Some(LabelPosition::Top));
+        assert_eq!(position_of("notes"), Some(LabelPosition::Inline));
+        assert_eq!(position_of("internal-key"), Some(LabelPosition::Hidden));
     }
 
     #[test]

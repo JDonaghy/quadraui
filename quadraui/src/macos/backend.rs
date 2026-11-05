@@ -7487,12 +7487,12 @@ mod tests {
 
     // ── Form (#808, PaintSurface Phase 2a) ──────────────────────────
 
-    /// `macos::form::draw_form` previously matched only 10 of 14
-    /// `FieldKind` variants and silently fell through on `Slider` /
-    /// `ColorPicker` / `Dropdown` / `TextArea`, painting nothing beyond
-    /// label and row background. It now routes through the shared
-    /// `primitives::form::paint`. This scans each field's row past where
-    /// its label ends for a pixel that isn't the row background.
+    /// `macos::form::draw_form` routes every `FieldKind` through the
+    /// shared `primitives::form::paint`, which never silently drops a
+    /// variant. This scans each field's row past where its shared
+    /// label column ends — `primitives::form::left_control_column_start`,
+    /// the painter's own control column, independent of `ControlWidth`
+    /// mode — for a pixel that isn't the row background.
     #[test]
     fn mac_backend_draw_form_paints_the_four_field_kinds_macos_used_to_drop() {
         use super::super::headless::BitmapSurface;
@@ -7514,6 +7514,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }
         }
 
@@ -7565,6 +7567,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
 
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
@@ -7590,9 +7594,18 @@ mod tests {
         let theme = Theme::default();
         let bg = (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b);
 
+        // The painter's own control column, asked for rather than
+        // re-derived here: every field in this form has a non-empty
+        // label and the default (`Left`) label position, which is
+        // exactly `left_control_column_start`'s domain. `backend` is
+        // the same `PaintSurface` `draw_form` painted through, so the
+        // label column it measures is the one that was painted.
         for vf in &flayout.visible_fields {
             let field = &form.fields[vf.field_idx];
-            let x0 = (vf.bounds.x + vf.bounds.width * 0.6) as u32;
+            let control_start = crate::primitives::form::left_control_column_start(
+                &form, field, vf.bounds, &backend,
+            );
+            let x0 = (control_start as u32).min(W);
             let x1 = ((vf.bounds.x + vf.bounds.width) as u32).min(W);
             let y0 = vf.bounds.y as u32;
             let y1 = ((vf.bounds.y + vf.bounds.height) as u32).min(H);
@@ -7609,11 +7622,10 @@ mod tests {
             }
             assert!(
                 painted_beyond_label,
-                "field {:?} ({:?}) must paint something in the right ~40% of its \
-                 row (past the label) — this is exactly the #808 silent-drop bug: \
-                 pre-fix, macos::form::draw_form's `_ => {{}}` matched Slider/\
-                 ColorPicker/Dropdown/TextArea and painted only the row background \
-                 there",
+                "field {:?} ({:?}) must paint something past its shared label \
+                 column (x >= {x0}) — a `_ => {{}}` fallthrough for Slider/\
+                 ColorPicker/Dropdown/TextArea in `macos::form::draw_form` would \
+                 paint only the row background there",
                 field.id, field.kind,
             );
         }

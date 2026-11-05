@@ -1245,6 +1245,16 @@ path = "examples/gtk_form_scroll.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_form_control_width"
+path = "examples/tui_form_control_width.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_form_control_width"
+path = "examples/gtk_form_control_width.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_folder_picker"
 path = "examples/tui_folder_picker.rs"
 required-features = ["tui"]
@@ -2023,14 +2033,28 @@ name = "gtk_form_visibility"
 path = "examples/gtk_form_visibility.rs"
 required-features = ["gtk"]
 
-# Label placement/alignment/width demo. TUI-only for now (see the module
-# doc in examples/common/form_label_placement.rs for the GTK/macOS/Win
-# follow-up); the explicit `required-features` keeps this file out of
-# non-`tui` example builds the way the note above describes.
+# Label placement/alignment/width demo, one leg per backend. Each entry's
+# explicit `required-features` keeps it out of other backends' example
+# builds the way the note above describes.
 [[example]]
 name = "tui_form_label_placement"
 path = "examples/tui_form_label_placement.rs"
 required-features = ["tui"]
+
+[[example]]
+name = "gtk_form_label_placement"
+path = "examples/gtk_form_label_placement.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "macos_form_label_placement"
+path = "examples/macos_form_label_placement.rs"
+required-features = ["macos"]
+
+[[example]]
+name = "win_form_label_placement"
+path = "examples/win_form_label_placement.rs"
+required-features = ["win"]
 
 # `Icon::codicon(name)` demo — a `TreeView` whose rows carry codicon
 # icons. Both entries are mandatory, same reasoning as the

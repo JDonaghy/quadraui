@@ -92,6 +92,8 @@ mod folder_picker_app;
 mod form_all_fields;
 #[path = "../examples/common/form_combo_box.rs"]
 mod form_combo_box;
+#[path = "../examples/common/form_control_width.rs"]
+mod form_control_width;
 #[path = "../examples/common/form_date_picker.rs"]
 mod form_date_picker;
 #[path = "../examples/common/form_dropdown.rs"]
@@ -219,6 +221,7 @@ use focus_demo::{FocusDemo, LEFT_ID, RIGHT_ID, STATUS_ID};
 use folder_picker_app::FolderPickerApp;
 use form_all_fields::FormAllFieldsApp;
 use form_combo_box::FormComboBoxApp;
+use form_control_width::FormControlWidthApp;
 use form_date_picker::FormDatePickerApp;
 use form_dropdown::FormDropdownApp;
 use form_groups::FormGroupsApp;
@@ -5707,6 +5710,118 @@ fn form_all_fields_paints_every_field_kind_value() {
     }
 }
 
+// ─── FormControlWidthApp: Fill / Fixed / Content control-width modes ────
+//
+// All three rows share one label column ("Fill"/"Fixed"/"Content"), so
+// their controls all start at the same column regardless of mode — only
+// each mode's resolved *width* differs. D1's acceptance criterion: "one
+// aligned control column, no clipped input."
+
+#[test]
+fn form_control_width_all_modes_share_the_same_control_column() {
+    let driver = TuiDriver::new(FormControlWidthApp::new(), 60, 10);
+
+    let fill = driver
+        .find_bounds("stretches")
+        .expect("Fill row's value is painted");
+    let fixed = driver
+        .find_bounds("exact width")
+        .expect("Fixed row's value is painted");
+    let content = driver
+        .find_bounds("sized to value")
+        .expect("Content row's value is painted");
+
+    assert_eq!(
+        fill.x,
+        fixed.x,
+        "Fill and Fixed controls should start at the same column:\n{}",
+        driver.screen()
+    );
+    assert_eq!(
+        fill.x,
+        content.x,
+        "Fill and Content controls should start at the same column:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_control_width_fill_stretches_to_the_row_right_edge() {
+    let driver = TuiDriver::new(FormControlWidthApp::new(), 60, 10);
+    let fill = driver
+        .find_bounds("stretches")
+        .expect("Fill row's value is painted");
+    let row = driver
+        .screen()
+        .lines()
+        .nth(fill.y as usize)
+        .unwrap_or_default()
+        .to_string();
+    // `Fill` stretches to the row's right edge, so its closing `]`
+    // lands at the last column of the row, whatever that row's width
+    // happens to be.
+    let last_col = row.chars().count().saturating_sub(1);
+    assert_eq!(
+        row.chars().nth(last_col),
+        Some(']'),
+        "Fill's box should reach the row's right edge:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_control_width_fixed_ignores_content_length() {
+    let driver = TuiDriver::new(FormControlWidthApp::new(), 60, 10);
+    let fixed = driver
+        .find_bounds("exact width")
+        .expect("Fixed row's value is painted");
+    let row = driver
+        .screen()
+        .lines()
+        .nth(fixed.y as usize)
+        .unwrap_or_default()
+        .to_string();
+    // `Fixed(20.0)`'s box spans `[control_start, control_start + 20)`.
+    // `fixed.x` is the value text's column, one past `control_start`
+    // (the `[` cell) — so the closing `]` is 18 columns further right,
+    // whatever column the control column itself starts at.
+    const FIXED_WIDTH: usize = 20;
+    let closing_col = fixed.x as usize + FIXED_WIDTH - 2;
+    assert_eq!(
+        row.chars().nth(closing_col),
+        Some(']'),
+        "Fixed's box should close at its exact configured width:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_control_width_content_sizes_to_its_own_value() {
+    let driver = TuiDriver::new(FormControlWidthApp::new(), 60, 10);
+    let content = driver
+        .find_bounds("sized to value")
+        .expect("Content row's value is painted");
+    let row = driver
+        .screen()
+        .lines()
+        .nth(content.y as usize)
+        .unwrap_or_default()
+        .to_string();
+    // `Content`'s box is sized to its own value's natural width (the
+    // value's char count + 2 for brackets). `content.x` is the value
+    // text's column, one past `control_start` — the closing `]` lands
+    // `value_len` columns further right, whatever column the control
+    // column itself starts at.
+    let value_len = "sized to value".chars().count();
+    let closing_col = content.x as usize + value_len;
+    assert_eq!(
+        row.chars().nth(closing_col),
+        Some(']'),
+        "Content's box should close right after its own value:\n{}",
+        driver.screen()
+    );
+}
+
 // ─── FormComboBoxApp: FieldKind::ComboBox routed through FormController ──────
 //
 // `FormController` forwards every key straight into the embedded
@@ -9947,9 +10062,10 @@ fn form_label_placement_aligned_label_column_shares_a_right_edge() {
     let driver = TuiDriver::new(FormLabelPlacementApp::new(), 100, 20);
 
     // "ID" and "Owner" both use the form-level default `label_position:
-    // Left` + `label_align: End` + `label_width: Some(14.0)`: their label
-    // text should end flush against the same right edge, even though "ID"
-    // and "Owner" are different lengths.
+    // Left` + `label_align: End` + `label_width: None`, which sizes the
+    // shared column to the widest `Left` label: their label text should
+    // end flush against the same right edge, even though "ID" and "Owner"
+    // are different lengths.
     let id_label = driver.find_bounds("ID").expect("'ID' label is painted");
     let owner_label = driver
         .find_bounds("Owner")

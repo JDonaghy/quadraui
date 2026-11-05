@@ -113,6 +113,26 @@ only a push to `main` runs this workflow.
   pre-existing selection/border focus treatment — ringing those too
   needs threading `Style` through several more per-backend paint
   wrappers each and is tracked as follow-up work, not done here.
+- `ControlWidth` (`Fill` / `Fixed(px)` / `Content`) plus `Form::control_width`/
+  `FormField::control_width` and `Form::min_control_width`/
+  `FormField::min_control_width` — every non-item-based `FieldKind`
+  (`Toggle`, `TextInput`, `PasswordInput`, `TextArea`, `ReadOnly`, `Slider`,
+  `ColorPicker`, `Dropdown`, `ComboBox`, `DatePicker`) now starts its control
+  at one shared column right after the label, instead of each kind
+  separately hugging the row's right edge. `Fill` (the default) stretches
+  the control to the row's right edge; `Fixed` is an exact width (cells for
+  TUI, device pixels for GTK/macOS/Win, the same dual-unit convention as
+  `label_width`); `Content` sizes to the control's own natural content,
+  repositioned but otherwise matching the pre-existing behaviour.
+  `min_control_width` floors the resolved width so a narrow `Fixed`/`Content`
+  column never clips its value below a usable size — a text input whose
+  column is narrower than its value now clips the value at the box's inner
+  edge on GTK/macOS/Win too, rather than drawing it through the box's
+  border. All additive
+  `#[serde(default)]` fields. `examples/common/form_control_width.rs`
+  (`tui_form_control_width` / `gtk_form_control_width`) exercises all three
+  modes side by side; `tests/tui_example_driver.rs`'s `form_control_width_*`
+  tests cover each mode headlessly on TUI.
 - `Style::scrollbar_width` (default `10.0`, matching the existing
   `TREE_VSCROLLBAR_WIDTH` constant) — a themeable seam for the
   `List`/`TreeView`/`DataTable` vertical scrollbar track width.
@@ -294,6 +314,13 @@ only a push to `main` runs this workflow.
   layout produces and crossterm resolves it, clearing `SHIFT` as it does.
   Not a compile break, but a consumer matching such a chord on the base-key
   glyph plus `shift` has to match the shifted glyph instead.
+- `Form`/`FormField`'s new `control_width` defaults to `ControlWidth::Fill`,
+  so every existing form on every backend repositions its controls from the
+  row's right edge to the shared column right after the label on the next
+  `quadraui` bump — not a compile break (the field is additive), but a
+  visible layout change for any consumer that builds `Form`/`FormField`
+  literals (`grep -rn 'FormField\s*{\|Form\s*{' ~/src/coord-tui/src
+  ~/src/vimcode/src` finds both building forms, so both repaint).
 
 ### Fixed
 - `compose::MenuSystem::set_menus` no longer leaves `open_item`/`submenu_path`
