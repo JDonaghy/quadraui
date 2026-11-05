@@ -175,6 +175,17 @@ only a push to `main` runs this workflow.
   `"chevron-right"`/`"chevron-down"` aliasing the existing `TreeView`
   chevron codepoints) covering the toolbar, pipeline, section-header and
   activity-bar chrome glyphs a GUI app's own icon table needs.
+- `ContextMenuItem::icon: Option<Icon>` — an optional leading icon, painted
+  in the same reserved gutter column `ContextMenuItem::checked`'s `✓` uses
+  (a checkable item's state mark always wins that shared slot over its own
+  icon). GTK/macOS/Win paint the resolved codicon/Nerd Font glyph through
+  `native_surface_paint::paint_with_glyphs`, which the live
+  `Backend::draw_context_menu` path on every GUI backend now calls instead
+  of the glyph-override-blind `paint`, so `Backend::nerd_fonts_enabled`
+  resolves an item's icon the same way it already does for `ListItem`/
+  `TreeRow`; TUI paints the resolved glyph's first `char` in the same
+  single-cell gutter `checked` already uses. `#[serde(default)]`, so
+  existing on-disk/wire `ContextMenuItem` JSON keeps decoding unchanged.
 - `Icon::codicon(name, fallback) -> Option<Icon>` and
   `TabIcon::codicon(name, color) -> Option<TabIcon>` build an icon from the
   bundled codicon font's name table (`"folder"`, `"file-code"`,

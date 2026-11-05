@@ -197,7 +197,7 @@ pub enum ResolvedContextMenuPlacement {
 ///
 /// Construct items via the struct literal with `..Default::default()`
 /// — only the fields you care about need to be set, the rest
-/// (`detail`, `key_equivalent`, `checked`, `submenu`) default to
+/// (`detail`, `key_equivalent`, `checked`, `icon`, `submenu`) default to
 /// `None`, `disabled` to `false`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextMenuItem {
@@ -228,6 +228,16 @@ pub struct ContextMenuItem {
     /// so a column of items aligns visually.
     #[serde(default)]
     pub checked: Option<bool>,
+    /// Optional leading icon, painted in the same reserved gutter column
+    /// [`Self::checked`]'s `✓` uses. Only shown when `checked` is `None`
+    /// — a checkable item's state mark always takes priority over a
+    /// decorative icon in that one shared slot, the same way a tree row
+    /// never shows both a chevron and an icon in the same cell. Build one
+    /// with [`crate::types::Icon::codicon`] for a bundled codicon, or
+    /// [`crate::types::Icon::new`] for an app-supplied glyph/fallback
+    /// pair.
+    #[serde(default)]
+    pub icon: Option<Icon>,
     /// Nested submenu. When `Some`, activating the item opens the child
     /// menu instead of firing an action. The TUI rasteriser renders a `▶`
     /// affordance and a pull-right popup (see
@@ -526,9 +536,12 @@ impl ContextMenu {
     /// `crate::primitives::dialog::Dialog::measure_generic`.
     ///
     /// Per item, counts: a 2-char prefix slot when `checked` is
-    /// `Some(_)` (mirrors the `"✓ "` / `"  "` prefix both
+    /// `Some(_)` or [`ContextMenuItem::icon`] is `Some(_)` (mirrors the
+    /// `"✓ "` / icon-glyph / `"  "` prefix both
     /// `tui::context_menu::draw_context_menu` and this module's
-    /// `native_surface_paint::paint` reserve); the label text; and,
+    /// `native_surface_paint::paint` reserve — the two share one slot,
+    /// so the reservation is never doubled when both are set); the label
+    /// text; and,
     /// when present, a 1-char gap plus either a 1-char `▶` submenu
     /// arrow or [`ContextMenuItem::detail`]'s length — whichever
     /// trailing content the item carries. [`ContextMenuItem::key_equivalent`]-rendered
@@ -561,7 +574,11 @@ impl ContextMenu {
     /// label, and optional trailing submenu arrow / detail text. See
     /// [`Self::measure_generic_width`]'s doc for the exact accounting.
     fn item_content_chars(item: &ContextMenuItem) -> usize {
-        let prefix_len = if item.checked.is_some() { 2 } else { 0 };
+        let prefix_len = if item.checked.is_some() || item.icon.is_some() {
+            2
+        } else {
+            0
+        };
         let label_len: usize = item
             .label
             .spans
@@ -745,11 +762,12 @@ pub(crate) mod native_surface_paint {
             let item = &menu.items[vis.item_idx];
             let row = vis.bounds;
 
-            // Reserve a fixed-width leading slot for the check glyph so
-            // a column of mixed checked/unchecked items aligns —
-            // `Some(false)`/`None` reserve it with two plain spaces,
-            // `Some(true)` fills it with the codicon check glyph
-            // painted *separately* via `surface_draw_icon_glyph`
+            // Reserve a fixed-width leading slot for the check glyph /
+            // item icon so a column of mixed items aligns — `checked ==
+            // Some(false)` or an item with neither reserves it with two
+            // plain spaces, `checked == Some(true)` or `icon.is_some()`
+            // fills it with the codicon check glyph or the item's own
+            // icon, painted *separately* via `surface_draw_icon_glyph`
             // (below) rather than embedded in this plain
             // `surface_draw_text_run` call: a PUA codepoint baked into
             // an ordinary text run resolves through whatever font that
@@ -757,9 +775,12 @@ pub(crate) mod native_surface_paint {
             // guaranteed to be the fallback-wrapped description
             // `surface_draw_icon_glyph` resolves through — the same
             // reason the submenu pull-right arrow below gets its own
-            // draw call instead of living in this label string.
+            // draw call instead of living in this label string. A
+            // checkable item's state mark always wins that one slot over
+            // a decorative icon — see [`ContextMenuItem::icon`]'s doc.
             let has_check_slot = item.checked.is_some();
-            let label_text: String = if has_check_slot {
+            let has_icon_slot = !has_check_slot && item.icon.is_some();
+            let label_text: String = if has_check_slot || has_icon_slot {
                 std::iter::once("  ".to_string())
                     .chain(item.label.spans.iter().map(|s| s.text.clone()))
                     .collect()
@@ -796,6 +817,16 @@ pub(crate) mod native_surface_paint {
                     &check_glyph,
                     label_fg,
                 );
+            } else if has_icon_slot {
+                if let Some(icon) = &item.icon {
+                    let glyph = icon.resolve(nerd_fonts_enabled);
+                    let (iw, ih) = surface.surface_measure_text(glyph);
+                    surface.surface_draw_icon_glyph(
+                        Rect::new(row.x + 8.0, text_y, iw.max(1.0), ih.max(1.0)),
+                        glyph,
+                        label_fg,
+                    );
+                }
             }
 
             if item.submenu.is_some() {
@@ -1261,6 +1292,38 @@ mod tests {
     }
 
     #[test]
+    fn measure_generic_width_icon_reserves_leading_space() {
+        let plain = menu(vec![cm_action("a", "Reveal")]);
+        let mut icon_items = vec![cm_action("a", "Reveal")];
+        icon_items[0].icon = Some(crate::types::Icon::new("G", "F"));
+        let with_icon = menu(icon_items);
+        assert!(
+            with_icon.measure_generic_width(1.0, 0.0) > plain.measure_generic_width(1.0, 0.0),
+            "icon reserves extra leading width"
+        );
+    }
+
+    #[test]
+    fn measure_generic_width_icon_and_checked_do_not_double_reserve() {
+        // The icon and the check mark share one leading slot (the icon
+        // is only shown when `checked` is `None`) — an item carrying
+        // both must not reserve width twice.
+        let mut checked_only = vec![cm_action("a", "Reveal")];
+        checked_only[0].checked = Some(true);
+        let checked_only_menu = menu(checked_only);
+
+        let mut both = vec![cm_action("a", "Reveal")];
+        both[0].checked = Some(true);
+        both[0].icon = Some(crate::types::Icon::new("G", "F"));
+        let both_menu = menu(both);
+
+        assert_eq!(
+            both_menu.measure_generic_width(1.0, 0.0),
+            checked_only_menu.measure_generic_width(1.0, 0.0),
+        );
+    }
+
+    #[test]
     fn measure_generic_width_detail_reserves_trailing_space() {
         let plain = menu(vec![cm_action("a", "Save")]);
         let mut detail_items = vec![cm_action("a", "Save")];
@@ -1445,6 +1508,81 @@ mod tests {
             assert!(surface.runs.iter().any(|r| r == ">"));
             let default_codicon = crate::codicon::CHEVRON_RIGHT.to_string();
             assert!(!surface.runs.iter().any(|r| r == &default_codicon));
+        }
+
+        /// An item's own [`ContextMenuItem::icon`] paints its resolved
+        /// glyph in the leading slot when `checked` is `None`.
+        /// `nerd_fonts_enabled` selects `Icon::glyph` vs. `Icon::fallback`,
+        /// same as every other icon-bearing row primitive.
+        #[test]
+        fn item_icon_paints_resolved_glyph() {
+            let mut item = cm_action("a", "New File");
+            item.icon = Some(crate::types::Icon::new("G", "F"));
+            let (m, layout) = popup_layout(item);
+
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_with_glyphs(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                true,
+            );
+            assert!(
+                surface.runs.iter().any(|r| r == "G"),
+                "expected the icon's nerd-font glyph among {:?}",
+                surface.runs
+            );
+
+            let mut fallback_surface = RecordingSurface::default();
+            native_surface_paint::paint_with_glyphs(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut fallback_surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                false,
+            );
+            assert!(
+                fallback_surface.runs.iter().any(|r| r == "F"),
+                "expected the icon's plain-text fallback among {:?}",
+                fallback_surface.runs
+            );
+        }
+
+        /// A checked item's check mark wins the shared leading slot over
+        /// its own icon — the icon never paints when `checked` is
+        /// `Some(_)`.
+        #[test]
+        fn checked_state_wins_shared_slot_over_icon() {
+            let mut item = cm_action("a", "Word Wrap");
+            item.checked = Some(true);
+            item.icon = Some(crate::types::Icon::new("G", "F"));
+            let (m, layout) = popup_layout(item);
+
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_with_glyphs(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                true,
+            );
+            let expected_check = crate::codicon::CHECK.to_string();
+            assert!(surface.runs.iter().any(|r| r == &expected_check));
+            assert!(
+                !surface.runs.iter().any(|r| r == "G"),
+                "icon must not paint when checked wins the shared slot: {:?}",
+                surface.runs
+            );
         }
     }
 
