@@ -79,6 +79,23 @@ const ACCENT_HEIGHT: f64 = 1.0;
 const CELL_WIDTH_SAMPLE: &str = "ABCDabcd0123.:_";
 /// Slack added either side of the close glyph when building its hit box.
 const CLOSE_PAD: f64 = 2.0;
+/// Tolerance (points) for comparing a tab's full, untruncated content width
+/// against its paint-time budget before reaching for
+/// [`crate::primitives::tab_bar::fit_tab_label`].
+///
+/// The paint loop's budget (`tab_content_w` in `draw_tab_bar_icons_with_glyphs`)
+/// comes from [`TabBarHits::slot_positions`], which stores `Rect { x: f32,
+/// width: f32 }` — so the `f64` geometry [`mac_tab_bar_native_layout_icons`]
+/// computed takes a lossy `f64 -> f32 -> f64` round trip before paint sees
+/// it. A label that fits its slot *exactly* can therefore measure a few f32
+/// ulps wider than the rounded budget, which would send it through
+/// `fit_tab_label` and drop a character it never needed to lose. This
+/// tolerance is many orders of magnitude larger than that rounding error
+/// (bounded by roughly `width * f32::EPSILON`, i.e. well under 1e-3 for any
+/// tab-bar-scale width) and many orders of magnitude smaller than the width
+/// of a single rendered character, so it absorbs the round trip without
+/// masking a genuine overflow.
+const LABEL_FIT_TOLERANCE: f64 = 1e-3;
 /// Gap between a tab's icon glyph (see [`TabIcon`]) and its label.
 /// Same value as [`crate::gtk::tab_bar`]'s `TAB_ICON_GAP`, so a decorated
 /// tab is the same shape on both pixel backends.
@@ -128,6 +145,31 @@ pub(crate) fn mac_tab_icon_extras(
             None => 0.0,
         })
         .collect()
+}
+
+/// `(leading, trailing)` space reserved around a tab's label, in the same
+/// units its slot geometry is computed in. `leading` is the tab's left
+/// padding plus any icon reservation; `trailing` is the close-button
+/// reservation (when present) plus the tab's right padding.
+///
+/// Shared by [`mac_tab_bar_native_layout_icons`]'s layout loop and
+/// [`draw_tab_bar_icons_with_glyphs`]'s paint loop, both of which call
+/// [`crate::primitives::tab_bar::fit_tab_label`] with these two numbers —
+/// going through one function keeps the two call sites from ever deriving
+/// different `leading`/`trailing` for the same tab.
+fn tab_label_budget(tab_pad: f64, icon_extra: f64, close_extra: f64) -> (f64, f64) {
+    (tab_pad + icon_extra, close_extra + tab_pad)
+}
+
+/// Whether a tab's full, untruncated content width already fits inside
+/// `tab_content_w` once [`LABEL_FIT_TOLERANCE`] absorbs the budget's
+/// `f64 -> f32 -> f64` round trip (see that constant's doc). When this
+/// returns `true` the paint loop paints the label unchanged instead of
+/// calling [`crate::primitives::tab_bar::fit_tab_label`], which keeps a
+/// fully-fitting label from losing a character to the round trip's
+/// one-ulp rounding noise.
+fn label_fits_without_truncation(full_content_w: f64, tab_content_w: f64) -> bool {
+    full_content_w <= tab_content_w + LABEL_FIT_TOLERANCE
 }
 
 /// Per-tab extra width (points) reserved for an icon glyph plus
@@ -341,8 +383,7 @@ pub fn mac_tab_bar_native_layout_icons(
         let (tab_name_w, _) = measure_text(font, &tab.label);
         let icon_extra = icon_extras[tab_idx];
         let close_extra = close_extra_for(tab_idx);
-        let leading = tab_pad + icon_extra;
-        let trailing = close_extra + tab_pad;
+        let (leading, trailing) = tab_label_budget(tab_pad, icon_extra, close_extra);
         let full_content_w = leading + tab_name_w + trailing;
         let full_slot_w = full_content_w + tab_outer_gap;
         let remaining = (effective_tab_area - x).max(0.0);
@@ -399,8 +440,12 @@ pub fn mac_tab_bar_native_layout_icons(
 
         x += slot_w;
         if truncated {
-            // The strip is full — this tab consumed whatever space was
-            // left, so nothing after it can fit either.
+            // This tab already consumed every point of slack the strip had
+            // left (`truncated_budget` above), and the minimum width any
+            // further tab could claim is `2 * tab_pad` for its own padding
+            // alone — more than the at-most-one-glyph-plus-ellipsis slack a
+            // truncated fit can leave behind. So no tab after this one can
+            // fit either.
             break;
         }
     }
@@ -709,21 +754,32 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
         // Tab label. A label wider than this tab's slot is ellipsis-fitted
         // through the shared `crate::primitives::tab_bar::fit_tab_label`
         // instead of being drawn past the slot's edge — `tab_content_w` is
-        // exactly the budget `mac_tab_bar_native_layout_icons` sized this
-        // tab's close-button hit box around, so a truncated label can
-        // never paint over the close glyph.
+        // the budget `mac_tab_bar_native_layout_icons` sized this tab's
+        // close-button hit box around, after that budget's own
+        // `f64 -> f32 -> f64` round trip through `TabBarHits::slot_positions`
+        // (see [`LABEL_FIT_TOLERANCE`]'s doc). A truncated label can never
+        // paint over the close glyph; the tolerance check below only
+        // decides whether a *fully-fitting* label gets ellipsis-fitted at
+        // all, which the round trip could otherwise trigger spuriously.
         let close_extra = if bar.show_tab_close && tab.is_closable {
             tab_inner_gap + close_w
         } else {
             0.0
         };
-        let fitted_label = crate::primitives::tab_bar::fit_tab_label(
-            &tab.label,
-            tab_content_w as f32,
-            (tab_pad + icon_extra) as f32,
-            (close_extra + tab_pad) as f32,
-            |s| measure_text(font, s).0 as f32,
-        );
+        let (leading, trailing) = tab_label_budget(tab_pad, icon_extra, close_extra);
+        let (tab_name_w, _) = measure_text(font, &tab.label);
+        let full_content_w = leading + tab_name_w + trailing;
+        let fitted_label = if label_fits_without_truncation(full_content_w, tab_content_w) {
+            tab.label.clone()
+        } else {
+            crate::primitives::tab_bar::fit_tab_label(
+                &tab.label,
+                tab_content_w as f32,
+                leading as f32,
+                trailing as f32,
+                |s| measure_text(font, s).0 as f32,
+            )
+        };
         let fg_col = match (tab.is_active, tab.is_preview) {
             (true, true) => theme.tab_preview_active_fg,
             (true, false) => theme.tab_active_fg,
@@ -2205,12 +2261,9 @@ mod tests {
 
     /// A label wider than the tab strip it has to fit in is ellipsis-fitted
     /// through the shared `crate::primitives::tab_bar::fit_tab_label`
-    /// instead of being dropped from the strip (the pre-fit behaviour: the
-    /// tab's slot was always sized to its full label, so an overlong label
-    /// at the head of a narrow strip pushed the whole tab's `x + slot_w`
-    /// past `effective_tab_area` and the loop broke before even painting
-    /// it). The close glyph's hit box — and the glyph itself — must still
-    /// land fully inside the narrow strip.
+    /// instead of being dropped from the strip. The close glyph's hit box
+    /// — and the glyph itself — must still land fully inside the narrow
+    /// strip.
     #[test]
     #[allow(deprecated)]
     fn overlong_label_in_a_narrow_strip_ends_in_ellipsis_and_close_glyph_stays_fully_visible() {
@@ -2280,6 +2333,180 @@ mod tests {
             "close hit box [{close_lo}, {close_hi}] must stay inside the {NARROW_W}-wide strip"
         );
 
+        let close_run = runs
+            .iter()
+            .find(|r| r.text.contains(crate::codicon::CLOSE))
+            .expect("the close glyph must still be painted");
+        assert!(
+            (close_run.bounds.x as f64) >= 0.0
+                && (close_run.bounds.x + close_run.bounds.width) as f64 <= NARROW_W,
+            "close glyph run {close_run:?} must be fully visible inside the {NARROW_W}-wide strip"
+        );
+    }
+
+    /// Reproduces the review's reported numbers: a label whose true
+    /// content width is `21.6` points lands against a budget that took an
+    /// `f64 -> f32 -> f64` round trip through `TabBarHits::slot_positions`
+    /// and came back one ulp short, at `21.599998`. Without the tolerance
+    /// this would wrongly be judged an overflow and sent through
+    /// `fit_tab_label`, ellipsising a label that fits exactly.
+    #[test]
+    fn label_fits_without_truncation_absorbs_f32_round_trip_noise() {
+        assert!(label_fits_without_truncation(21.6, 21.599998));
+        assert!(label_fits_without_truncation(28.8, 28.799995));
+        assert!(label_fits_without_truncation(43.2, 43.199982));
+        assert!(label_fits_without_truncation(50.4, 50.399994));
+
+        // A genuine overflow — a budget meaningfully short of the content
+        // width — must still be reported as not fitting.
+        assert!(!label_fits_without_truncation(50.0, 10.0));
+        assert!(!label_fits_without_truncation(21.6, 20.0));
+    }
+
+    /// A label that genuinely fits its slot must paint unchanged — the
+    /// non-overflow path must never reach for `fit_tab_label`. Swept
+    /// across a range of label lengths (rather than one hand-picked width)
+    /// so a regression anywhere in that range — e.g. the f32 round-trip
+    /// noise `label_fits_without_truncation` exists to absorb — shows up
+    /// as a failure here.
+    #[test]
+    #[allow(deprecated)]
+    fn fully_fitting_labels_never_get_an_ellipsis() {
+        for len in 1..=30usize {
+            let label = "a".repeat(len);
+            let bar = TabBar {
+                id: WidgetId::new("tabs"),
+                tabs: vec![TabItem {
+                    label: label.clone(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                }],
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: true,
+                compact: false,
+            };
+
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = backend_with_test_fonts();
+            backend.set_painted_text_recording(true);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                b.draw_tab_bar(QRect::new(0.0, 0.0, W as f32, H as f32), &bar, None);
+            });
+            let runs = backend.text_runs().to_vec();
+            backend.end_frame();
+
+            let label_run = runs
+                .iter()
+                .find(|r| r.text != crate::codicon::CLOSE.to_string())
+                .unwrap_or_else(|| panic!("a {len}-char label must be painted, got {runs:?}"));
+            assert_eq!(
+                label_run.text, label,
+                "a {len}-char label fitting a {W}-wide strip must paint unchanged, got {:?}",
+                label_run.text
+            );
+        }
+    }
+
+    /// A label truncated by the overflow path, on a tab decorated with an
+    /// icon, must reserve the icon's width identically on the hit-box side
+    /// (`mac_tab_bar_native_layout_icons`'s close-button hit box, via
+    /// `tab_label_budget`'s `leading`) and the paint side
+    /// (`draw_tab_bar_icons_with_glyphs`'s `fit_tab_label` call, via the
+    /// same `tab_label_budget`) — the one place those two `leading`
+    /// derivations could silently diverge.
+    #[test]
+    #[allow(deprecated)]
+    fn overlong_label_with_icon_in_a_narrow_strip_reserves_icon_width_on_both_paint_and_hit_sides()
+    {
+        const NARROW_W: f64 = 150.0;
+
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: "a_very_long_filename_for_this_single_tab.rs".into(),
+                is_active: true,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: true,
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+        let icons = vec![Some(TabIcon {
+            glyph: "R".into(),
+            color: Color::rgb(220, 120, 60),
+        })];
+
+        let surface = BitmapSurface::new(NARROW_W as u32, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = backend_with_test_fonts();
+        backend.set_painted_text_recording(true);
+        backend.begin_frame(Viewport::new(NARROW_W as f32, H as f32, 1.0));
+        let hits = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let h = b.draw_tab_bar_icons(
+                QRect::new(0.0, 0.0, NARROW_W as f32, H as f32),
+                &bar,
+                &icons,
+                None,
+            );
+            *hits.borrow_mut() = Some(h);
+        });
+        let hits = hits.into_inner().unwrap();
+        let runs = backend.text_runs().to_vec();
+        backend.end_frame();
+
+        assert_eq!(
+            hits.slot_positions.len(),
+            1,
+            "the narrow strip must still show the decorated tab"
+        );
+
+        let icon_run = runs
+            .iter()
+            .find(|r| r.text == "R")
+            .expect("the icon glyph must be painted");
+        let label_run = runs
+            .iter()
+            .find(|r| {
+                r.text != "R" && r.text != crate::codicon::CLOSE.to_string() && r.text.contains('…')
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected an ellipsis-truncated label run among painted runs, got {:?}",
+                    runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            label_run.text.ends_with('…'),
+            "label run {:?} must end in an ellipsis",
+            label_run.text
+        );
+        // The label must start to the right of the icon, on both the
+        // painted glyph and the hit-box side — exactly `tab_label_budget`'s
+        // `leading`, shared by layout and paint.
+        assert!(
+            (label_run.bounds.x as f64) > (icon_run.bounds.x + icon_run.bounds.width) as f64,
+            "label run {:?} must start after the icon run {:?}",
+            label_run,
+            icon_run,
+        );
+
+        let (close_lo, close_hi) =
+            hits.close_bounds[0].expect("a closable tab must still report a close-button hit box");
+        assert!(
+            close_hi <= NARROW_W,
+            "close hit box [{close_lo}, {close_hi}] must stay inside the {NARROW_W}-wide strip"
+        );
         let close_run = runs
             .iter()
             .find(|r| r.text.contains(crate::codicon::CLOSE))
