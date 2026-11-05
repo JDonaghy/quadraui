@@ -26,6 +26,7 @@ use core_text::font::CTFont;
 
 use super::text::measure_text;
 use crate::primitives::list::{ListView, ListViewLayout};
+use crate::style::Style;
 use crate::theme::Theme;
 
 /// Compute the layout the macOS rasteriser would produce for `list`
@@ -93,6 +94,7 @@ pub unsafe fn draw_list(
     h: f64,
     list: &ListView,
     theme: &Theme,
+    style: &Style,
     line_height: f64,
     nerd_fonts_enabled: bool,
 ) -> ListViewLayout {
@@ -129,6 +131,7 @@ pub unsafe fn draw_list(
         /* supports_hscrollbar */ true,
         &mut surface,
         theme,
+        style,
     );
 
     CGContextRestoreGState(ctx);

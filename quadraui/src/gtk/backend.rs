@@ -2401,6 +2401,7 @@ impl Backend for GtkBackend {
             rect.height as f64,
             tree,
             &self.current_theme,
+            &self.current_style,
             self.resolved_row_height(self.current_line_height),
             self.nerd_fonts_enabled,
         );
@@ -2430,6 +2431,7 @@ impl Backend for GtkBackend {
             rect.height as f64,
             list,
             &self.current_theme,
+            &self.current_style,
             self.resolved_row_height(self.current_line_height),
             self.nerd_fonts_enabled,
         );
@@ -4068,6 +4070,7 @@ impl Backend for GtkBackend {
             rect.height as f64,
             view,
             &theme,
+            &self.current_style,
             line_height,
             nerd_fonts,
             caret_visible,

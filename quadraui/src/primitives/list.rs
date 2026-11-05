@@ -732,6 +732,7 @@ mod vscrollbar_tests {
 pub(crate) mod native_surface_paint {
     use super::{ListView, ListViewLayout};
     use crate::paint_surface::PaintSurface;
+    use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::Decoration;
     use crate::Rect;
@@ -755,6 +756,11 @@ pub(crate) mod native_surface_paint {
     ///   scrollbar"), so painting one there without a reservation would
     ///   overlap the last content row — a new (and wrong) visual, not a
     ///   fix. `true` on GTK/macOS, which both already reserve the row.
+    /// - `style` supplies [`Style::row_padding_x`], the horizontal inset
+    ///   a row's leading content (chevron-less here, so its icon/text)
+    ///   starts at — callers pass `&self.style()` (GTK/macOS); Windows
+    ///   passes `&Style::default()`, matching `win::list`'s own
+    ///   documented "no live theme either" gap.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         list: &ListView,
@@ -766,6 +772,7 @@ pub(crate) mod native_surface_paint {
         supports_hscrollbar: bool,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        style: &Style,
     ) {
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
@@ -872,7 +879,7 @@ pub(crate) mod native_surface_paint {
             // the selected row with `theme.selected_bg`, so the chevron
             // is a redundant terminal affordance here (the TUI painter
             // still draws it — it has no row-fill cue to lean on).
-            let mut cursor_x = row_x + 2.0 - h_off_px;
+            let mut cursor_x = row_x + style.row_padding_x - h_off_px;
 
             if let Some(ref icon) = item.icon {
                 let glyph = if nerd_fonts_enabled {
@@ -1106,6 +1113,7 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut surface,
                 &theme,
+                &Style::default(),
             );
 
             let expected = list
@@ -1144,6 +1152,7 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut surface,
                 &theme,
+                &Style::default(),
             );
             assert!(list.vscrollbar(AREA, LINE_HEIGHT).is_none());
             // Every recorded fill must stay within the list's own bounds
@@ -1185,6 +1194,7 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut supported,
                 &theme,
+                &Style::default(),
             );
             assert!(
                 !supported.fills.is_empty(),
@@ -1203,6 +1213,7 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut unsupported,
                 &theme,
+                &Style::default(),
             );
             // Every fill must stay within the row content area — none of
             // them may be the bottom-row-height h-scrollbar track, which
@@ -1238,6 +1249,7 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut surface,
                 &theme,
+                &Style::default(),
             );
 
             let row1 = layout
@@ -1284,6 +1296,7 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut surface,
                 &Theme::default(),
+                &Style::default(),
             );
 
             assert!(
@@ -1313,6 +1326,7 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut nerd_surface,
                 &theme,
+                &Style::default(),
             );
             assert!(nerd_surface.texts.iter().any(|(_, t, _)| t == "nf-glyph"));
 
@@ -1327,6 +1341,7 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut ascii_surface,
                 &theme,
+                &Style::default(),
             );
             assert!(ascii_surface.texts.iter().any(|(_, t, _)| t == "F"));
         }
@@ -1353,6 +1368,7 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut surface,
                 &theme,
+                &Style::default(),
             );
 
             let row_text = surface

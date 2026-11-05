@@ -113,6 +113,17 @@ only a push to `main` runs this workflow.
   `false`) is pixel-unchanged.
 
 ### Added
+- `Style::row_padding_x`/`Style::tab_padding_x` — the horizontal inset a
+  `List`/`TreeView`/`ContextMenu`/`Palette` row's leading/trailing content
+  starts at (`row_padding_x`, default `8.0`) and a tab strip's label
+  reserves from its edge (`tab_padding_x`, default `10.0`, consumed by
+  each backend's own `tab_bar.rs` in a follow-up). The shared
+  `primitives::{list,tree,context_menu,palette}::native_surface_paint`
+  painters every GTK/macOS/Win32 rasteriser calls now read
+  `row_padding_x` directly, so a GUI list/tree/menu/palette row's text no
+  longer paints flush against its own edge. TUI is cell-quantised and
+  drops below one cell (see `style.rs`'s module doc); no TUI primitive
+  reads either field yet.
 - `quadraui-binding-core`'s render-callback layout tree now accepts
   `"padding"`/`"margin"` on a `"split"`, `"tabs"` or `"panel"` node, and
   `"gap"` on a `"split"` node (the space between its two panes) — the

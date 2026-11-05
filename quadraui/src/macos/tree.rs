@@ -19,6 +19,7 @@ use core_text::font::CTFont;
 use super::cg::{rect, CGContextClipToRect, CGContextRestoreGState, CGContextSaveGState};
 use crate::event::Rect as QRect;
 use crate::primitives::tree::{TreeView, TreeViewLayout};
+use crate::style::Style;
 use crate::theme::Theme;
 
 /// Compute the layout the macOS rasteriser would produce for `tree`
@@ -72,6 +73,7 @@ pub unsafe fn draw_tree(
     h: f64,
     tree: &TreeView,
     theme: &Theme,
+    style: &Style,
     line_height: f64,
     nerd_fonts_enabled: bool,
 ) -> TreeViewLayout {
@@ -97,6 +99,7 @@ pub unsafe fn draw_tree(
         nerd_fonts_enabled,
         &mut surface,
         theme,
+        style,
     );
 
     CGContextRestoreGState(ctx);

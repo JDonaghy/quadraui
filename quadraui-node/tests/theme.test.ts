@@ -211,6 +211,25 @@ test("setStyle overrides the scrollbar width token and round trips", () => {
   assert.deepEqual(after.padding, before.padding);
 });
 
+// `Style::row_padding_x`/`Style::tab_padding_x` reach `QuiApp` through the
+// same `#[serde(default)]`-decoded `setStyle` object every other `Style`
+// field already does -- no binding-side change needed to carry a new
+// descriptor field.
+test("setStyle overrides the row and tab padding tokens and round trips", () => {
+  const app = new QuiApp(20, 5);
+  const before: any = app.style();
+  assert.equal(before.row_padding_x, 8.0);
+  assert.equal(before.tab_padding_x, 10.0);
+
+  app.setStyle({ row_padding_x: 12.0, tab_padding_x: 14.0 });
+
+  const after: any = app.style();
+  assert.equal(after.row_padding_x, 12.0);
+  assert.equal(after.tab_padding_x, 14.0);
+  // Unrelated token is untouched.
+  assert.deepEqual(after.padding, before.padding);
+});
+
 test("setStyle rejects an undefined value instead of raising on the app", () => {
   // Same `Object.keys`-reports-an-`undefined`-value gap as `setTheme`, on
   // `setStyle`'s own merge path.

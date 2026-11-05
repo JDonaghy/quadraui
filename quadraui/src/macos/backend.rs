@@ -2296,6 +2296,7 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 tree,
                 &theme,
+                &self.current_style,
                 line_height,
                 self.nerd_fonts_enabled,
             );
@@ -2324,6 +2325,7 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 list,
                 &theme,
+                &self.current_style,
                 line_height,
                 self.nerd_fonts_enabled,
             );
