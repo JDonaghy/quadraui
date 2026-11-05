@@ -22,10 +22,10 @@
 //! running — including `Theme::light_default()`.
 
 use quadraui::{
-    AppShellEvent, AppShellLayout, Backend, Decoration, InteractionState, Key, ListItem, ListView,
-    ListViewHit, Modifiers, NamedKey, PanelDefinition, Reaction, Rect, ShellApp, ShellConfig,
-    ShellContext, StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar, TabBarHit, TabItem,
-    TextDisplay, TextDisplayLine, UiEvent, WidgetId,
+    AppShellEvent, AppShellLayout, Backend, Decoration, Icon, InteractionState, Key, ListItem,
+    ListView, ListViewHit, Modifiers, NamedKey, PanelDefinition, Reaction, Rect, ShellApp,
+    ShellConfig, ShellContext, StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar,
+    TabBarHit, TabItem, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
 };
 
 use crate::registry::registry;
@@ -54,6 +54,14 @@ pub const GROUPS: [&str; 5] = ["Content", "Chrome", "Containers", "Overlays", "D
 /// [`group_panel_id`] and click its center, rather than `driver.find(..)`
 /// scraping for this glyph.
 const GROUP_ICONS: [&str; 5] = ["1", "2", "3", "4", "5"];
+
+/// `Icon::codicon` names, parallel to [`GROUPS`], registered via
+/// [`ShellConfig::with_panel_icon`] in [`GalleryApp::config`]. A GUI
+/// backend (`nerd_fonts_enabled` defaults `true`) paints these vector
+/// glyphs; TUI's fallback is still [`GROUP_ICONS`]' plain digit, so
+/// [`group_icon`]/[`GROUP_ICONS`]'s collision-avoidance rationale above
+/// is unaffected.
+const GROUP_CODICONS: [&str; 5] = ["files", "layout", "package", "layers", "database"];
 
 /// The activity-bar icon glyph for `GROUPS[index]` — the glyph
 /// `TuiDriver::find()` should search for to click that group, in
@@ -214,9 +222,15 @@ impl GalleryApp {
                 title: group.to_uppercase(),
             })
             .collect();
-        ShellConfig::new("quadraui gallery", panels)
+        let mut config = ShellConfig::new("quadraui gallery", panels)
             .with_bottom_panel(8.0)
-            .with_bottom_panel_limits(4.0, 24.0)
+            .with_bottom_panel_limits(4.0, 24.0);
+        for i in 0..GROUPS.len() {
+            if let Some(icon) = Icon::codicon(GROUP_CODICONS[i], GROUP_ICONS[i]) {
+                config = config.with_panel_icon(group_panel_id(i), icon);
+            }
+        }
+        config
     }
 
     fn active_group_name(&self) -> &'static str {
@@ -971,6 +985,31 @@ mod tests {
             "GalleryApp::new should select the first registered demo whose \
              group is GROUPS[0], or None when that group has no demos yet"
         );
+    }
+
+    /// `config()` registers a codicon glyph override for every group
+    /// panel, falling back to the plain digit [`GROUP_ICONS`] on TUI
+    /// (`nerd_fonts_enabled` defaults `false` there), so the GUI activity
+    /// bar paints a real vector icon instead of "1".."5" without
+    /// disturbing `GROUP_ICONS`/[`group_icon`]'s own collision-avoidance
+    /// contract.
+    #[test]
+    fn config_registers_a_codicon_override_per_group_falling_back_to_its_digit() {
+        let config = GalleryApp::config();
+        assert_eq!(config.panel_icons.len(), GROUPS.len());
+        for i in 0..GROUPS.len() {
+            let (id, icon) = config
+                .panel_icons
+                .iter()
+                .find(|(id, _)| *id == group_panel_id(i))
+                .unwrap_or_else(|| panic!("no panel icon override registered for group {i}"));
+            assert_eq!(*id, group_panel_id(i));
+            assert_eq!(icon.fallback, GROUP_ICONS[i]);
+            assert_ne!(
+                icon.glyph, GROUP_ICONS[i],
+                "group {i}'s glyph half must be the real codicon, not the TUI digit"
+            );
+        }
     }
 
     #[test]

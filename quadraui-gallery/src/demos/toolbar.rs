@@ -6,8 +6,8 @@
 //! full surface.
 
 use quadraui::{
-    Backend, BackendCaps, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Icon, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -94,6 +94,39 @@ impl ToolbarDemo {
                 },
             ])
             .with_focused_index(self.focused_index)
+    }
+
+    /// Nerd-Font glyph + ASCII fallback pair for each action button, keyed
+    /// by id — [`ToolbarIcons::apply`] bakes the right half into the
+    /// returned `Toolbar` depending on `backend.nerd_fonts_enabled()`
+    /// (`true` by default on GTK/macOS/Win, `false` on TUI), so a GUI host
+    /// paints VS-Code-style codicons while a terminal keeps the plain
+    /// Unicode glyphs declared in [`Self::toolbar`].
+    fn icons() -> ToolbarIcons {
+        ToolbarIcons::new()
+            .with(
+                WidgetId::new("gallery:toolbar:continue"),
+                Icon::codicon("play", "▶").expect("\"play\" is a registered codicon name"),
+            )
+            .with(
+                WidgetId::new("gallery:toolbar:pause"),
+                Icon::codicon("debug-pause", "⏸")
+                    .expect("\"debug-pause\" is a registered codicon name"),
+            )
+            .with(
+                WidgetId::new("gallery:toolbar:filter"),
+                Icon::codicon("gear", "⚙").expect("\"gear\" is a registered codicon name"),
+            )
+            .with(
+                WidgetId::new("gallery:toolbar:debug"),
+                Icon::codicon("flag", "⚑").expect("\"flag\" is a registered codicon name"),
+            )
+    }
+
+    /// [`Self::toolbar`] with [`Self::icons`] resolved against `backend`'s
+    /// Nerd-Font flag — the form actually painted and hit-tested.
+    fn painted_toolbar(&self, variant: usize, backend: &dyn Backend) -> Toolbar {
+        Self::icons().apply(&self.toolbar(variant), backend.nerd_fonts_enabled())
     }
 
     fn toolbar_rect(area: Rect, backend: &dyn Backend) -> Rect {
@@ -212,7 +245,7 @@ impl Demo for ToolbarDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height();
         let rect = Self::toolbar_rect(area, backend);
-        let bar = self.toolbar(variant);
+        let bar = self.painted_toolbar(variant, backend);
         let _ = backend.draw_toolbar_interactive(rect, &bar, &self.interaction);
 
         let hint_rect = Rect::new(area.x, area.y + lh, area.width, lh);
@@ -277,7 +310,7 @@ impl Demo for ToolbarDemo {
             }
             UiEvent::MouseMoved { .. } | UiEvent::MouseDown { .. } | UiEvent::MouseUp { .. } => {
                 let rect = Self::toolbar_rect(area, backend);
-                let bar = self.toolbar(variant);
+                let bar = self.painted_toolbar(variant, backend);
                 let layout = backend.toolbar_layout(rect, &bar);
                 let hit_test = |x: f32, y: f32| match layout.hit_test(x, y) {
                     ToolbarHit::Button(id) => Some(id),
@@ -339,6 +372,33 @@ mod tests {
         // the first focus stop must be "Pause" (index 1), not index 0.
         demo.advance_focus(0, true);
         assert_eq!(demo.focused_index, Some(1));
+    }
+
+    /// [`ToolbarDemo::icons`] resolves to the codicon glyph when Nerd
+    /// Fonts are enabled (the GUI default) and to the demo's plain
+    /// Unicode glyph otherwise (the TUI default), for every button that
+    /// carries an override.
+    #[test]
+    fn icons_resolve_to_codicon_glyph_or_plain_unicode_fallback() {
+        let demo = ToolbarDemo::new();
+        let bar = demo.toolbar(0);
+        let gui = ToolbarDemo::icons().apply(&bar, true);
+        let tui = ToolbarDemo::icons().apply(&bar, false);
+
+        let icon_of = |b: &Toolbar, id: &str| -> Option<String> {
+            b.buttons.iter().find_map(|btn| match btn {
+                ToolbarButton::Action { id: bid, icon, .. } if bid.as_str() == id => icon.clone(),
+                _ => None,
+            })
+        };
+
+        assert_eq!(
+            icon_of(&tui, "gallery:toolbar:continue"),
+            Some("▶".to_string())
+        );
+        let gui_continue = icon_of(&gui, "gallery:toolbar:continue").unwrap();
+        assert_ne!(gui_continue, "▶");
+        assert!(!gui_continue.is_empty());
     }
 
     #[test]
