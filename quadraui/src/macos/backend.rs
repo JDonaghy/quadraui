@@ -9991,7 +9991,7 @@ mod tests {
         let cx = (vt.bounds.x + vt.bounds.width / 2.0) as u32;
         let cy = (vt.bounds.y + vt.bounds.height / 2.0) as u32;
         let (r, g, b, _a) = surface.pixel(cx, cy);
-        let success_bg = Color::rgb(30, 80, 30);
+        let success_bg = Theme::default().success_bg();
         assert_ne!(
             (r, g, b),
             (success_bg.r, success_bg.g, success_bg.b),
@@ -10023,7 +10023,10 @@ mod tests {
         let cx = (vt.bounds.x + vt.bounds.width / 2.0) as u32;
         let cy = (vt.bounds.y + vt.bounds.height / 2.0) as u32;
         let (r, g, b, _a) = surface.pixel(cx, cy);
-        let success_bg = Color::rgb(30, 80, 30);
+        // `Success` severity's fallback tint, resolved through the same
+        // `Theme` accessor as
+        // `primitives::toast::native_surface_paint::severity_bg`.
+        let success_bg = Theme::default().success_bg();
         assert_eq!(
             (r, g, b),
             (success_bg.r, success_bg.g, success_bg.b),
