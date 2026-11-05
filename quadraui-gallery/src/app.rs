@@ -225,8 +225,8 @@ impl GalleryApp {
         let mut config = ShellConfig::new("quadraui gallery", panels)
             .with_bottom_panel(8.0)
             .with_bottom_panel_limits(4.0, 24.0);
-        for i in 0..GROUPS.len() {
-            if let Some(icon) = Icon::codicon(GROUP_CODICONS[i], GROUP_ICONS[i]) {
+        for (i, (codicon, label)) in GROUP_CODICONS.iter().zip(GROUP_ICONS.iter()).enumerate() {
+            if let Some(icon) = Icon::codicon(codicon, *label) {
                 config = config.with_panel_icon(group_panel_id(i), icon);
             }
         }
