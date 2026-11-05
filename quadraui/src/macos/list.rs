@@ -132,6 +132,12 @@ pub unsafe fn draw_list(
         &mut surface,
         theme,
         style,
+        // `hovered_idx` / `pressed_idx`: row tinting is not wired on this
+        // backend — `MacBackend` uses the `Backend::draw_list_with_state`
+        // default, which forwards to `draw_list` and drops both indices.
+        // `None` keeps this paint pixel-identical to the contract above.
+        None,
+        None,
     );
 
     CGContextRestoreGState(ctx);
