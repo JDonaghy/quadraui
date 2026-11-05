@@ -23,7 +23,11 @@
 //! Takes the live theme as a `&Theme` parameter, matching every other
 //! Win-GUI rasteriser's convention — the caller
 //! ([`crate::win::WinBackend::draw_tree`]) passes `&self.current_theme`,
-//! the same field `Backend::set_theme` writes.
+//! the same field `Backend::set_theme` writes. Takes the live
+//! [`crate::style::Style`] the same way — `&self.current_style`,
+//! written by `Backend::set_style` — so a host-set
+//! [`crate::style::Style::row_padding_x`] reaches both the chevron paint
+//! and the `Chevron` hit region [`win_tree_layout_measured`] computes.
 //!
 //! `WinBackend` tracks a `nerd_fonts_enabled` flag the same way
 //! `TuiBackend`/`GtkBackend`/`MacBackend` do, and this rasteriser picks
@@ -50,8 +54,13 @@ use crate::theme::Theme;
 /// Thin wrapper over [`crate::primitives::layout_metrics::tree_layout`]
 /// — the row-pitch/chevron math is identical across every pixel backend,
 /// so it lives there once instead of once per backend.
-pub fn win_tree_layout(tree: &TreeView, rect: Rect, line_height: f32) -> TreeViewLayout {
-    crate::primitives::layout_metrics::tree_layout(tree, rect, line_height as f64)
+pub fn win_tree_layout(
+    tree: &TreeView,
+    rect: Rect,
+    line_height: f32,
+    row_padding_x: f32,
+) -> TreeViewLayout {
+    crate::primitives::layout_metrics::tree_layout(tree, rect, line_height as f64, row_padding_x)
 }
 
 /// Like [`win_tree_layout`], but measures the chevron glyph actually
@@ -71,8 +80,15 @@ pub fn win_tree_layout_measured(
     rect: Rect,
     tree: &TreeView,
     line_height: f32,
+    row_padding_x: f32,
 ) -> TreeViewLayout {
-    crate::primitives::layout_metrics::tree_layout_measured(tree, rect, line_height as f64, measure)
+    crate::primitives::layout_metrics::tree_layout_measured(
+        tree,
+        rect,
+        line_height as f64,
+        measure,
+        row_padding_x,
+    )
 }
 
 /// Draw a [`TreeView`] into `rect` (DIPs) on `target`. Returns the
@@ -105,6 +121,12 @@ pub fn win_tree_layout_measured(
 /// `row.icon.fallback` when `false` — pass `WinBackend`'s own
 /// flag (set via [`crate::Backend::set_nerd_fonts`]), same convention
 /// as the TUI/GTK/macOS `draw_tree` rasterisers.
+///
+/// `style` supplies [`crate::style::Style::row_padding_x`]; the caller
+/// ([`crate::win::WinBackend::draw_tree`]) passes `&self.current_style`,
+/// the same field `Backend::set_style` writes, matching `theme`'s own
+/// `&self.current_theme` convention.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_tree(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -113,14 +135,9 @@ pub fn draw_tree(
     line_height: f32,
     nerd_fonts_enabled: bool,
     theme: &Theme,
+    style: &crate::style::Style,
 ) -> TreeViewLayout {
-    // This fn's own parameter list has no `style` slot yet, unlike
-    // `theme` — `Style::default()` matches `win::list::draw_list`'s own
-    // `Theme::default()` precedent (see that fn's doc) rather than
-    // widening this fn's signature ahead of a consumer that needs a
-    // non-default `Style::row_padding_x` on Windows specifically.
-    let style = crate::style::Style::default();
-    let layout = win_tree_layout_measured(dwrite, rect, tree, line_height);
+    let layout = win_tree_layout_measured(dwrite, rect, tree, line_height, style.row_padding_x);
 
     let mut surface = super::surface::D2dSurface {
         target,
@@ -134,7 +151,7 @@ pub fn draw_tree(
         nerd_fonts_enabled,
         &mut surface,
         theme,
-        &style,
+        style,
     );
 
     layout
@@ -144,6 +161,7 @@ pub fn draw_tree(
 mod tests {
     use super::*;
     use crate::primitives::tree::{TreeRow, TreeViewHit};
+    use crate::style::Style;
     use crate::types::{Badge, Decoration, Icon, SelectionMode, StyledText, TreeStyle, WidgetId};
     use crate::win::testing::HeadlessSurface;
 
@@ -215,9 +233,10 @@ mod tests {
                     LINE_HEIGHT,
                     false,
                     &Theme::default(),
+                    &Style::default(),
                 );
             })
-            .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT))
+            .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT, 8.0))
             .expect("paint tree");
 
         assert_eq!(layout.visible_rows.len(), 4, "all four rows should fit");
@@ -259,7 +278,7 @@ mod tests {
     fn chevron_and_body_hit_split() {
         let tree = make_tree(vec![branch(0, "src", true)]);
         let rect = Rect::new(0.0, 0.0, W, H);
-        let layout = win_tree_layout(&tree, rect, LINE_HEIGHT);
+        let layout = win_tree_layout(&tree, rect, LINE_HEIGHT, 8.0);
 
         let hit = layout.hit_test(1.0, layout.visible_rows[0].bounds.y + 1.0);
         assert!(matches!(hit, TreeViewHit::Chevron(0)), "got {:?}", hit);
@@ -290,9 +309,10 @@ mod tests {
                     LINE_HEIGHT,
                     false,
                     &Theme::default(),
+                    &Style::default(),
                 );
             })
-            .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT))
+            .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT, 8.0))
             .expect("paint");
 
         let first = layout.visible_rows.first().expect("has visible rows");
@@ -312,7 +332,7 @@ mod tests {
     fn click_below_last_row_returns_empty() {
         let tree = make_tree(vec![leaf(0, "a"), leaf(1, "b")]);
         let rect = Rect::new(0.0, 0.0, W, H);
-        let layout = win_tree_layout(&tree, rect, LINE_HEIGHT);
+        let layout = win_tree_layout(&tree, rect, LINE_HEIGHT, 8.0);
         let last = layout.visible_rows.last().expect("has rows");
         let hit = layout.hit_test(10.0, last.bounds.y + last.bounds.height + 5.0);
         assert!(matches!(hit, TreeViewHit::Empty), "got {:?}", hit);
@@ -337,11 +357,12 @@ mod tests {
                     LINE_HEIGHT,
                     false,
                     &Theme::default(),
+                    &Style::default(),
                 );
             })
-            .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT))
+            .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT, 8.0))
             .expect("paint");
-        let no_paint = win_tree_layout(&tree, rect, LINE_HEIGHT);
+        let no_paint = win_tree_layout(&tree, rect, LINE_HEIGHT, 8.0);
         assert_eq!(painted, no_paint);
     }
 
@@ -382,6 +403,7 @@ mod tests {
                         LINE_HEIGHT,
                         nerd_fonts_enabled,
                         &Theme::default(),
+                        &Style::default(),
                     );
                 })
                 .expect("paint");
@@ -459,6 +481,7 @@ mod tests {
                         LINE_HEIGHT,
                         false,
                         &Theme::default(),
+                        &Style::default(),
                     );
                 })
                 .expect("paint");
@@ -531,9 +554,10 @@ mod tests {
                         LINE_HEIGHT,
                         false,
                         &Theme::default(),
+                        &Style::default(),
                     );
                 })
-                .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT))
+                .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT, 8.0))
                 .expect("paint tree");
 
             let theme = Theme::default();
@@ -596,6 +620,7 @@ mod tests {
                     LINE_HEIGHT,
                     false,
                     &Theme::default(),
+                    &Style::default(),
                 );
             })
             .expect("paint tree");
@@ -624,8 +649,8 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, W, H);
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
 
-        let estimated = win_tree_layout(&tree, rect, LINE_HEIGHT);
-        let measured = win_tree_layout_measured(&dwrite, rect, &tree, LINE_HEIGHT);
+        let estimated = win_tree_layout(&tree, rect, LINE_HEIGHT, 8.0);
+        let measured = win_tree_layout_measured(&dwrite, rect, &tree, LINE_HEIGHT, 8.0);
 
         // The Chevron hit-region's width *is* the row's chevron_end_x
         // (see `TreeView::layout`'s hit-region split).
@@ -645,7 +670,8 @@ mod tests {
             true,
         ));
         let indent_px = (LINE_HEIGHT * 0.9).round();
-        let expected = 2.0 + tree.rows[0].indent as f32 * indent_px + glyph_w + 4.0;
+        // `row_padding_x` left margin (8.0, passed above) + indent + glyph + 4px gap.
+        let expected = 8.0 + tree.rows[0].indent as f32 * indent_px + glyph_w + 4.0;
         assert!(
             (measured_x - expected).abs() < 0.01,
             "measured chevron end-x {measured_x} must equal the DirectWrite-measured \
@@ -682,6 +708,7 @@ mod tests {
                     LINE_HEIGHT,
                     false,
                     &Theme::default(),
+                    &Style::default(),
                 );
             })
             .expect("paint with chevron override");
@@ -708,6 +735,7 @@ mod tests {
                     LINE_HEIGHT,
                     false,
                     &Theme::default(),
+                    &Style::default(),
                 );
             })
             .expect("paint with default style");

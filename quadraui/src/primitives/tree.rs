@@ -483,8 +483,8 @@ pub(crate) mod native_surface_paint {
     /// selects `Icon::glyph` vs. `Icon::fallback`. `style` supplies
     /// [`Style::row_padding_x`], the horizontal inset a row's leading
     /// chevron/icon/text starts at — GTK/macOS callers pass
-    /// `&self.style()`; `win::tree::draw_tree` passes `&Style::default()`,
-    /// matching `win::list`'s own documented "no live theme either" gap.
+    /// `&self.current_style`; `win::tree::draw_tree` passes
+    /// `&self.current_style` the same way (see that fn's own doc).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         tree: &TreeView,
@@ -877,8 +877,12 @@ pub(crate) mod native_surface_paint {
         #[test]
         fn paints_vertical_scrollbar_track_when_overflowing() {
             let tree = make_tree((0..50).map(|i| leaf(i, &format!("row{i}"))).collect());
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -923,8 +927,12 @@ pub(crate) mod native_surface_paint {
             let mut rows = vec![leaf(0, "branch")];
             rows[0].is_expanded = Some(true);
             let tree = make_tree(rows);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -964,8 +972,12 @@ pub(crate) mod native_surface_paint {
             let mut tree = make_tree(rows);
             tree.style.chevron_expanded = "+".into();
             tree.style.chevron_collapsed = "-".into();
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1011,8 +1023,12 @@ pub(crate) mod native_surface_paint {
                 placeholder: None,
             });
             let tree = make_tree(rows);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1053,8 +1069,12 @@ pub(crate) mod native_surface_paint {
                 placeholder: None,
             });
             let tree = make_tree(rows);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1084,8 +1104,12 @@ pub(crate) mod native_surface_paint {
             let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
             tree.selected_path = Some(vec![1]);
             tree.has_focus = true;
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1122,8 +1146,12 @@ pub(crate) mod native_surface_paint {
             let mut warn_row = leaf(1, "careful");
             warn_row.decoration = Decoration::Warning;
             let tree = make_tree(vec![err_row, warn_row]);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1157,8 +1185,12 @@ pub(crate) mod native_surface_paint {
             let mut row = leaf(0, "BACKEND_SPECULATIVE_EXECUTION_MODULE");
             row.badge = Some(Badge::plain("U"));
             let tree = make_tree(vec![row]);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1215,8 +1247,12 @@ pub(crate) mod native_surface_paint {
                 spans: vec![StyledSpan::plain(""), StyledSpan::plain("ok")],
             };
             let tree = make_tree(vec![row]);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1234,6 +1270,56 @@ pub(crate) mod native_surface_paint {
                 surface.texts.iter().any(|(_, t, _)| t == "ok"),
                 "a span after an empty, non-truncated span must still paint, got texts: {:?}",
                 surface.texts
+            );
+        }
+
+        /// The issue's first acceptance bullet: a row's text starts
+        /// `row_padding_x` in from its rect. `show_chevrons = false` on
+        /// an otherwise-branch row (`is_expanded: Some(_)`) isolates the
+        /// leading inset from the chevron glyph and the leaf-only
+        /// `line_height * 0.8` offset, so the only thing between the
+        /// row's edge and the label is `row_padding_x` itself. Painted
+        /// with a non-default value (15.0, not the 8.0 default) so
+        /// reverting the token back to the old hardcoded `2.0` literal
+        /// in `paint` would fail this test.
+        #[test]
+        fn row_text_starts_row_padding_x_in_from_the_row_rect() {
+            let mut row = leaf(0, "alpha");
+            row.is_expanded = Some(true);
+            let mut tree = make_tree(vec![row]);
+            tree.style.show_chevrons = false;
+
+            let style = Style::default().with_row_padding_x(15.0);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                style.row_padding_x,
+            );
+            let row_bounds = layout.visible_rows[0].bounds;
+
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+                &style,
+            );
+
+            let (text_rect, _, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t, _)| t == "alpha")
+                .expect("row text painted");
+            assert_eq!(
+                text_rect.x,
+                AREA.x + row_bounds.x + style.row_padding_x,
+                "row text must start row_padding_x in from the row's left edge"
             );
         }
     }

@@ -1394,6 +1394,45 @@ pub(crate) mod native_surface_paint {
             );
         }
 
+        /// The issue's first acceptance bullet: a row's text starts
+        /// `row_padding_x` in from its rect — the selection-prefix run
+        /// (`"▶ "`/`"  "`) is the first thing `paint` draws at a row's
+        /// leading edge, so its `x` is the inset to assert on. Painted
+        /// with a non-default [`Style::row_padding_x`] (15.0, not the
+        /// 8.0 default) so reverting the token back to the old
+        /// hardcoded `8.0` literal in `paint` would fail this test.
+        #[test]
+        fn row_prefix_starts_row_padding_x_in_from_the_row_rect() {
+            let p = sample();
+            let (palette_layout, rows_h) = layout(AREA.width, AREA.height, &p, LINE_HEIGHT);
+            let row = palette_layout.visible_items[0].bounds;
+
+            let style = Style::default().with_row_padding_x(15.0);
+            let mut surface = RecordingSurface::default();
+            paint(
+                &p,
+                AREA,
+                &palette_layout,
+                rows_h,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &Theme::default(),
+                &style,
+            );
+
+            let (prefix_rect, _, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t, _)| t == "\u{25b6} ")
+                .expect("selected row's prefix run painted");
+            assert_eq!(
+                prefix_rect.x,
+                AREA.x + row.x + style.row_padding_x,
+                "row prefix must start row_padding_x in from the row's left edge"
+            );
+        }
+
         /// `PaletteMode::Input` hides the item list, so there is nothing
         /// for a separator to separate — none is painted.
         #[test]

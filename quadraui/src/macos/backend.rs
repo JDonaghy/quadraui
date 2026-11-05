@@ -3464,6 +3464,7 @@ impl Backend for MacBackend {
             rect,
             self.resolved_row_height(self.chrome_line_height),
             &self.chrome_font,
+            self.current_style.row_padding_x,
         )
     }
     fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<crate::Scrollbar> {

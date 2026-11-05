@@ -1089,7 +1089,7 @@ mod tests {
             SectionBody::Tree(t) => t,
             _ => panic!("expected tree body"),
         };
-        let tree_layout = gtk_tree_layout(tree_ref, body_b, LINE_HEIGHT);
+        let tree_layout = gtk_tree_layout(tree_ref, body_b, LINE_HEIGHT, 8.0);
 
         let header_h = (LINE_HEIGHT * 1.2).round();
         let item_h = (LINE_HEIGHT * 1.4).round();

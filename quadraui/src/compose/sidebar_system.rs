@@ -647,11 +647,17 @@ impl SidebarSystem {
         // geometry — including `TreeStyle::row_height`, which it honors via
         // `tree_row_pitch`. Deriving any of it locally from `lh` would
         // re-introduce a copy that silently ignores that style field.
-        // No live `TextMeasure` is reachable from this `&self` call site (no
-        // cached backend handle on `SidebarSystem`), so the chevron end-x is
-        // the `line_height * 0.65` estimate — same as every other caller of
-        // `layout_metrics::tree_layout`.
-        crate::primitives::layout_metrics::tree_layout(tree, body_b, lh as f64)
+        // No live `TextMeasure` or `Style` is reachable from this `&self`
+        // call site (no cached backend handle on `SidebarSystem`), so the
+        // chevron end-x is the `line_height * 0.65` estimate with
+        // `Style::default().row_padding_x` as the left margin — same as
+        // every other no-live-handle caller of `layout_metrics::tree_layout`.
+        crate::primitives::layout_metrics::tree_layout(
+            tree,
+            body_b,
+            lh as f64,
+            crate::style::Style::default().row_padding_x,
+        )
     }
 
     fn handle_key(
