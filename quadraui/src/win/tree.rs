@@ -172,7 +172,9 @@ mod tests {
     use super::*;
     use crate::primitives::tree::{TreeRow, TreeViewHit};
     use crate::style::Style;
-    use crate::types::{Badge, Decoration, Icon, SelectionMode, StyledText, TreeStyle, WidgetId};
+    use crate::types::{
+        Badge, Color, Decoration, Icon, SelectionMode, StyledText, TreeStyle, WidgetId,
+    };
     use crate::win::testing::HeadlessSurface;
 
     const W: f32 = 200.0;
@@ -638,12 +640,17 @@ mod tests {
         let theme = Theme::default();
         let probe_x = (expected.track.x + expected.track.width / 2.0) as u32;
         let probe_y = (expected.track.y + expected.track.height / 2.0) as u32;
-        let px = surface.pixel_at(probe_x.min(W as u32 - 1), probe_y.min(H as u32 - 1));
+        assert!(
+            probe_x < W as u32 && probe_y < H as u32,
+            "probe ({probe_x}, {probe_y}) fell outside the {W}x{H} surface — \
+             the v-scrollbar track geometry is off-rect"
+        );
+        let px = surface.pixel_at(probe_x, probe_y);
         assert_ne!(
             (px.r, px.g, px.b),
             (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
             "expected the v-scrollbar track at ({probe_x}, {probe_y}) to be painted \
-             (non-background) — the #1075 regression this test guards"
+             (non-background)"
         );
     }
 
@@ -689,16 +696,32 @@ mod tests {
         );
     }
 
+    /// Reference alpha blend, independent of production code, for the
+    /// expected pixel colour in
+    /// `scrollbar_track_width_follows_style_override` — mirrors
+    /// `win::scrollbar`'s own `expected_alpha_blend` helper.
+    fn expected_alpha_blend(base: Color, over: Color, alpha: f32) -> Color {
+        let mix =
+            |b: u8, o: u8| -> u8 { (b as f32 * (1.0 - alpha) + o as f32 * alpha).round() as u8 };
+        Color::rgb(
+            mix(base.r, over.r),
+            mix(base.g, over.g),
+            mix(base.b, over.b),
+        )
+    }
+
     /// The painted v-scrollbar track follows a host-set
     /// `Style::scrollbar_width`, not the fixed `TREE_VSCROLLBAR_WIDTH`
     /// literal — mirrors `primitives::tree`'s own
     /// `vertical_scrollbar_track_width_follows_style_token` test, but
     /// exercises this backend's own `draw_tree` entry point. Probes just
     /// inside the widened track's leading edge — a region the fixed
-    /// 10px-wide track would have left as plain background — so a
-    /// regression back to the literal width would fail here even though
-    /// the narrower, always-present slice nearer the right edge would
-    /// still paint something.
+    /// 10px-wide track would have left as plain background — against the
+    /// exact expected blend (`tab_bar_bg` at 20% toward `scrollbar_track`,
+    /// the not-hovered/not-dragging `track_alpha` `native_surface_paint`
+    /// uses), so a future paint that merely touches this pixel without
+    /// being the real track (a hover tint, a long row label) can't
+    /// satisfy the assertion vacuously.
     #[test]
     fn scrollbar_track_width_follows_style_override() {
         let tree = make_tree((0..40).map(|i| leaf(i, &format!("row-{i}"))).collect());
@@ -730,13 +753,21 @@ mod tests {
         let theme = Theme::default();
         let probe_x = (expected.track.x + 2.0) as u32;
         let probe_y = (expected.track.y + expected.track.height / 2.0) as u32;
-        let px = surface.pixel_at(probe_x.min(W as u32 - 1), probe_y.min(H as u32 - 1));
-        assert_ne!(
+        assert!(
+            probe_x < W as u32 && probe_y < H as u32,
+            "probe ({probe_x}, {probe_y}) fell outside the {W}x{H} surface — \
+             the overridden-width v-scrollbar track geometry is off-rect"
+        );
+        let px = surface.pixel_at(probe_x, probe_y);
+        // Not hovered/dragging: track_alpha = 0.20 (see the shared `paint`).
+        let expected_color = expected_alpha_blend(theme.tab_bar_bg, theme.scrollbar_track, 0.20);
+        assert_eq!(
             (px.r, px.g, px.b),
-            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            (expected_color.r, expected_color.g, expected_color.b),
             "expected the 24px-wide v-scrollbar track's leading edge at \
-             ({probe_x}, {probe_y}) to be painted — a fixed 10px-wide track \
-             would have left this region as plain background"
+             ({probe_x}, {probe_y}) to be painted the track colour blended \
+             over tab_bar_bg — a fixed 10px-wide track would have left this \
+             region as plain background instead"
         );
     }
 
@@ -750,8 +781,10 @@ mod tests {
     /// pixel-identical frames; any stray pixel would be an extra,
     /// separately painted scrollbar. Mirrors
     /// `macos::tree::tree_controller_render_does_not_double_paint_scrollbar`.
-    /// Windows-only: needs a real `attach_headless` Direct2D handle.
-    #[cfg(target_os = "windows")]
+    /// Uses a real `attach_headless` Direct2D handle — this whole file is
+    /// already `#[cfg(target_os = "windows")]`-gated at the `mod tree;`
+    /// declaration in `win::mod`, so every test here is Windows-only
+    /// regardless of any per-test attribute.
     #[test]
     fn tree_controller_render_does_not_double_paint_scrollbar() {
         use crate::event::Viewport;

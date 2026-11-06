@@ -154,6 +154,16 @@ only a push to `main` runs this workflow.
   override now reaches the hit-tested geometry, matching what
   `draw_tree`'s shared painter already paints and the same convention
   `Backend::list_vscrollbar` already follows.
+- Win-GUI `Backend::draw_scrollbar` (`win::backend`) now follows the overlay
+  scrollbar idle-fade seam (`primitives::scrollbar::idle_fade_opacity`)
+  instead of painting at permanent full opacity: `win::run`'s
+  `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` handler resets the fade clock on every
+  wheel/trackpad delta via the new `WinBackend::note_scroll_activity`, and
+  `draw_scrollbar` paints through `native_surface_paint::paint_with_opacity`
+  at the resulting opacity — mirroring the macOS leg
+  (`MacBackend::note_scroll_activity`/`scrollbar_fade_opacity`). New test
+  seams `WinBackend::set_scroll_last_interaction`/`set_fade_clock_override`
+  let a headless pixel test assert the fade curve deterministically.
 - macOS `Backend::draw_focus_ring` (`macos::backend`) no longer strokes over
   a tooltip or toast painted earlier the same frame. `super::run::render_frame`
   paints the generic tab-stop focus ring *after* `AppLogic::render` returns
