@@ -1,19 +1,19 @@
-//! `ToolbarHoverTracker` — host-side state holder that converts
-//! `MouseMoved` events into `hovered_id: Option<WidgetId>` for the
-//! `Toolbar` primitive.
+//! Host-side hover trackers: convert `MouseMoved` events into the
+//! "which item is under the cursor" answer a primitive's rasteriser
+//! needs, without the host hand-rolling screen-space-to-layout
+//! conversion itself.
 //!
-//! The toolbar rasterisers accept a `hovered_id` so they can tint the
-//! matching button's background, but the host has to track which
-//! button the mouse is over across mouse-move events — the rasteriser
-//! itself is stateless. Doing that by hand means converting from
-//! screen-space coordinates back through a `ToolbarLayout` per move
-//! event, plus remembering to clear the hover when the cursor leaves
-//! the bar. Easy to forget; easy to get wrong.
-//!
-//! This helper owns that bookkeeping: feed it mouse-move events
-//! together with the current layout, ask it for the active
-//! `hovered_id` at render time, and pass that straight to
-//! `Backend::draw_toolbar`.
+//! Every tracker here ([`ToolbarHoverTracker`], [`ListHoverTracker`],
+//! [`TreeHoverTracker`]) is a thin, item-typed wrapper over the same
+//! private [`HoverCore`] engine: feed it a layout's `hit_test` result
+//! on every mouse move, and it tells you whether the hovered item
+//! changed (so you know to redraw) and what it is now. The item type
+//! differs per primitive — [`crate::Toolbar`] buttons have a stable
+//! [`WidgetId`], but [`crate::ListView`]/[`crate::TreeView`] rows don't
+//! (see `interaction.rs`'s module doc for why [`crate::InteractionState`]
+//! stays `WidgetId`-keyed and these two trackers use a row index
+//! instead) — so each wrapper picks the item type its primitive's
+//! `*Hit` enum actually produces.
 //!
 //! ## Usage
 //!
@@ -44,21 +44,69 @@
 //! }
 //! ```
 
+use crate::primitives::list::{ListViewHit, ListViewLayout};
 use crate::primitives::toolbar::{ToolbarHit, ToolbarLayout};
+use crate::primitives::tree::{TreeViewHit, TreeViewLayout};
 use crate::types::WidgetId;
+
+/// Shared bookkeeping every tracker in this module wraps: "what's the
+/// current item, and did it just change?" — one `Option<T>` plus the
+/// equality check every `update`/`clear` call needs. Not `pub`: each
+/// primitive's tracker is the public-facing, correctly-typed wrapper.
+#[derive(Debug, Clone)]
+struct HoverCore<T: Clone + PartialEq> {
+    current: Option<T>,
+}
+
+// Manual `Default` rather than `#[derive(Default)]`: the derive would
+// require `T: Default` even though `Option<T>`'s own `None` default
+// doesn't need one — and every tracker's item type here (`WidgetId`,
+// `usize`) is `Copy`/`Clone` but not all are `Default`.
+impl<T: Clone + PartialEq> Default for HoverCore<T> {
+    fn default() -> Self {
+        Self { current: None }
+    }
+}
+
+impl<T: Clone + PartialEq> HoverCore<T> {
+    fn new() -> Self {
+        Self { current: None }
+    }
+
+    /// Returns `true` if `new` differs from the stored value (caller
+    /// should redraw).
+    fn set(&mut self, new: Option<T>) -> bool {
+        if new != self.current {
+            self.current = new;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn clear(&mut self) -> bool {
+        self.set(None)
+    }
+
+    fn current(&self) -> Option<&T> {
+        self.current.as_ref()
+    }
+}
 
 /// Tracks the toolbar button currently under the mouse. Cheap to keep
 /// per toolbar (or per panel, if a panel hosts multiple) — one
 /// `Option<WidgetId>` plus a single `hit_test` call per mouse-move.
 #[derive(Debug, Default, Clone)]
 pub struct ToolbarHoverTracker {
-    hovered: Option<WidgetId>,
+    core: HoverCore<WidgetId>,
 }
 
 impl ToolbarHoverTracker {
     /// Construct an empty tracker. No button is hovered initially.
     pub fn new() -> Self {
-        Self { hovered: None }
+        Self {
+            core: HoverCore::new(),
+        }
     }
 
     /// Update the hover state from a mouse-position + the current
@@ -69,36 +117,117 @@ impl ToolbarHoverTracker {
             ToolbarHit::Button(id) => Some(id),
             ToolbarHit::Empty => None,
         };
-        if new_hover != self.hovered {
-            self.hovered = new_hover;
-            true
-        } else {
-            false
-        }
+        self.core.set(new_hover)
     }
 
     /// Clear the hover state — call from `MouseLeft` handlers (or
     /// when the toolbar is dismissed) so the highlight doesn't stick
     /// after the cursor has left.
     pub fn clear(&mut self) -> bool {
-        if self.hovered.is_some() {
-            self.hovered = None;
-            true
-        } else {
-            false
-        }
+        self.core.clear()
     }
 
     /// Borrowed view of the current hovered id, ready to pass straight
     /// to `Backend::draw_toolbar(..., hovered_id, ...)`.
     pub fn hovered_id(&self) -> Option<&WidgetId> {
-        self.hovered.as_ref()
+        self.core.current()
     }
 
     /// Owned copy of the current hovered id. Convenience for hosts
     /// that need to compare against other state.
     pub fn current(&self) -> Option<WidgetId> {
-        self.hovered
+        self.core.current().copied()
+    }
+}
+
+/// Tracks the [`crate::ListView`] row index currently under the mouse.
+///
+/// Row-index-keyed rather than [`WidgetId`]-keyed — a `ListItem` has no
+/// stable id of its own (see `interaction.rs`'s module doc) — so this
+/// is the dedicated tracker [`crate::Backend::draw_list_with_state`]
+/// hosts feed instead of an [`crate::InteractionState`].
+#[derive(Debug, Default, Clone)]
+pub struct ListHoverTracker {
+    core: HoverCore<usize>,
+}
+
+impl ListHoverTracker {
+    /// Construct an empty tracker. No row is hovered initially.
+    pub fn new() -> Self {
+        Self {
+            core: HoverCore::new(),
+        }
+    }
+
+    /// Update the hover state from a mouse position + the current
+    /// list layout. Returns `true` if the hovered row changed (caller
+    /// should redraw), `false` if it stayed the same. Hovering the
+    /// title row or empty space below the last item clears the hover,
+    /// same as the cursor leaving the list entirely.
+    pub fn update(&mut self, layout: &ListViewLayout, x: f32, y: f32) -> bool {
+        let new_hover = match layout.hit_test(x, y) {
+            ListViewHit::Item(idx) => Some(idx),
+            ListViewHit::Title | ListViewHit::Empty => None,
+        };
+        self.core.set(new_hover)
+    }
+
+    /// Clear the hover state — call from `MouseLeft` handlers so the
+    /// highlight doesn't stick after the cursor has left the list.
+    pub fn clear(&mut self) -> bool {
+        self.core.clear()
+    }
+
+    /// The currently hovered item index, ready to pass straight to
+    /// `Backend::draw_list_with_state(..., hovered_idx, ...)`.
+    pub fn hovered_idx(&self) -> Option<usize> {
+        self.core.current().copied()
+    }
+}
+
+/// Tracks the [`crate::TreeView`] row index currently under the mouse.
+///
+/// Like [`ListHoverTracker`], row-index-keyed rather than
+/// [`WidgetId`]-keyed since a `TreeRow` has no stable id of its own —
+/// only a [`crate::TreePath`] that shifts as siblings expand/collapse.
+/// A hovered [`TreeViewHit::Chevron`] counts as hovering its row (the
+/// chevron is part of the row's visual band), so the row background
+/// tints the same way whether the cursor sits over the glyph or the
+/// label.
+#[derive(Debug, Default, Clone)]
+pub struct TreeHoverTracker {
+    core: HoverCore<usize>,
+}
+
+impl TreeHoverTracker {
+    /// Construct an empty tracker. No row is hovered initially.
+    pub fn new() -> Self {
+        Self {
+            core: HoverCore::new(),
+        }
+    }
+
+    /// Update the hover state from a mouse position + the current
+    /// tree layout. Returns `true` if the hovered row changed (caller
+    /// should redraw), `false` if it stayed the same.
+    pub fn update(&mut self, layout: &TreeViewLayout, x: f32, y: f32) -> bool {
+        let new_hover = match layout.hit_test(x, y) {
+            TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => Some(idx),
+            TreeViewHit::Empty => None,
+        };
+        self.core.set(new_hover)
+    }
+
+    /// Clear the hover state — call from `MouseLeft` handlers so the
+    /// highlight doesn't stick after the cursor has left the tree.
+    pub fn clear(&mut self) -> bool {
+        self.core.clear()
+    }
+
+    /// The currently hovered row index, ready to pass straight to
+    /// `Backend::draw_tree_with_state(..., hovered_idx, ...)`.
+    pub fn hovered_idx(&self) -> Option<usize> {
+        self.core.current().copied()
     }
 }
 
@@ -174,6 +303,143 @@ mod tests {
         assert!(t.clear());
         assert!(t.hovered_id().is_none());
         // Clearing an already-empty tracker is a no-op (returns false).
+        assert!(!t.clear());
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+    use crate::primitives::list::{ListItem, ListItemMeasure, ListView};
+    use crate::types::{Decoration, StyledText};
+
+    fn item(label: &str) -> ListItem {
+        ListItem {
+            text: StyledText::plain(label.to_string()),
+            icon: None,
+            detail: None,
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn sample_layout() -> ListViewLayout {
+        let list = ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: vec![item("a"), item("b"), item("c")],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        list.layout(40.0, 10.0, 0.0, |_| ListItemMeasure::new(1.0))
+    }
+
+    #[test]
+    fn update_records_row_under_cursor() {
+        let layout = sample_layout();
+        let mut t = ListHoverTracker::new();
+        assert!(t.update(&layout, 1.0, 1.0));
+        assert_eq!(t.hovered_idx(), Some(1));
+    }
+
+    #[test]
+    fn update_returns_false_when_unchanged() {
+        let layout = sample_layout();
+        let mut t = ListHoverTracker::new();
+        assert!(t.update(&layout, 1.0, 0.0));
+        assert!(!t.update(&layout, 2.0, 0.0));
+    }
+
+    #[test]
+    fn update_clears_when_cursor_leaves_rows() {
+        let layout = sample_layout();
+        let mut t = ListHoverTracker::new();
+        assert!(t.update(&layout, 1.0, 0.0));
+        // Below the last row (3 rows of height 1.0 inside a 10.0-tall
+        // viewport) is the empty tail.
+        assert!(t.update(&layout, 1.0, 9.0));
+        assert!(t.hovered_idx().is_none());
+    }
+
+    #[test]
+    fn clear_resets_hover_state() {
+        let layout = sample_layout();
+        let mut t = ListHoverTracker::new();
+        t.update(&layout, 1.0, 0.0);
+        assert!(t.clear());
+        assert!(t.hovered_idx().is_none());
+        assert!(!t.clear());
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use crate::primitives::tree::{TreeRow, TreeRowMeasure, TreeView};
+    use crate::types::{Decoration, SelectionMode, StyledText, TreeStyle};
+
+    fn row(path: Vec<u16>, label: &str) -> TreeRow {
+        TreeRow {
+            path,
+            indent: 0,
+            icon: None,
+            text: StyledText::plain(label.to_string()),
+            badge: None,
+            is_expanded: None,
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    fn sample_layout() -> TreeViewLayout {
+        let tree = TreeView {
+            id: WidgetId::new("t"),
+            rows: vec![row(vec![0], "a"), row(vec![1], "b"), row(vec![2], "c")],
+            selection_mode: SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: 0,
+            style: TreeStyle::default(),
+            has_focus: true,
+        };
+        tree.layout(40.0, 10.0, |_| TreeRowMeasure::new(1.0))
+    }
+
+    #[test]
+    fn update_records_row_under_cursor() {
+        let layout = sample_layout();
+        let mut t = TreeHoverTracker::new();
+        assert!(t.update(&layout, 1.0, 1.0));
+        assert_eq!(t.hovered_idx(), Some(1));
+    }
+
+    #[test]
+    fn update_returns_false_when_unchanged() {
+        let layout = sample_layout();
+        let mut t = TreeHoverTracker::new();
+        assert!(t.update(&layout, 1.0, 0.0));
+        assert!(!t.update(&layout, 2.0, 0.0));
+    }
+
+    #[test]
+    fn update_clears_when_cursor_leaves_rows() {
+        let layout = sample_layout();
+        let mut t = TreeHoverTracker::new();
+        assert!(t.update(&layout, 1.0, 0.0));
+        assert!(t.update(&layout, 1.0, 9.0));
+        assert!(t.hovered_idx().is_none());
+    }
+
+    #[test]
+    fn clear_resets_hover_state() {
+        let layout = sample_layout();
+        let mut t = TreeHoverTracker::new();
+        t.update(&layout, 1.0, 0.0);
+        assert!(t.clear());
+        assert!(t.hovered_idx().is_none());
         assert!(!t.clear());
     }
 }

@@ -130,11 +130,11 @@ def test_clicking_a_panel_title_bar_sets_the_click_s_widget_to_the_panel_id():
     assert mouse_downs[0]["widget"] == "panel:outer", received
 
 
-def test_clicking_a_sidebar_panel_toolbar_button_sets_the_click_s_widget_to_its_id():
+def test_clicking_a_sidebar_panel_toolbar_button_emits_toolbar_button_clicked():
     # The lone toolbar button starts at the toolbar's own x=0, row 0.
     # `quadraui-binding-core`'s `InteractionEngine` records the sidebar
-    # panel's own chrome layout as a hit, so the raw `MouseDown` carries
-    # the button's own id as `widget`.
+    # panel's own chrome layout (and its embedded toolbar) as a hit, so the
+    # click is delivered as a typed `Toolbar` event naming the bar and button.
     app = QuiApp(40, 20)
 
     def render():
@@ -159,9 +159,11 @@ def test_clicking_a_sidebar_panel_toolbar_button_sets_the_click_s_widget_to_its_
     )
     app.run(1)
 
-    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
-    assert mouse_downs, received
-    assert mouse_downs[0]["widget"] == "refine", received
+    toolbar_events = [event["Toolbar"] for event in received if "Toolbar" in event]
+    assert toolbar_events, received
+    bar, payload = toolbar_events[0]
+    assert bar == "sidebar:outer:toolbar", received
+    assert payload == {"ButtonClicked": {"id": "refine", "is_active": True}}, received
 
 
 def test_sidebar_panel_renders_nested_content():
@@ -418,6 +420,53 @@ def test_panel_rejects_a_gap_key_it_does_not_support():
                 "content": _text("text:body", "X"),
             },
             "gap": 8,
+        }
+
+    app.set_render(render)
+    with pytest.raises(InvalidDescriptorError):
+        app.screen()
+
+
+def test_tabs_accepts_an_optional_focused_index():
+    # An optional "focused_index" key marks a tab keyboard-focused
+    # (painted as reverse video on TUI, see `tui::tab_bar`'s own test for
+    # the pixel-level treatment). Passing it must not raise and must not
+    # change which tab's content is shown -- that's still "selected"'s job.
+    app = QuiApp(10, 8)
+
+    def render():
+        return {
+            "tabs": {
+                "id": "tabbar:1",
+                "selected": 0,
+                "focused_index": 1,
+                "tabs": [
+                    {"id": "one", "title": "One", "content": _text("text:one", "O")},
+                    {"id": "two", "title": "Two", "content": _text("text:two", "T")},
+                ],
+            }
+        }
+
+    app.set_render(render)
+    lines = app.screen().splitlines()
+    assert "One" in lines[0]
+    assert "Two" in lines[0]
+    assert "O" in "".join(lines[1:])
+
+
+def test_tabs_rejects_an_out_of_range_focused_index():
+    # Same out-of-range convention "selected" already uses.
+    app = QuiApp(10, 8)
+
+    def render():
+        return {
+            "tabs": {
+                "id": "tabbar:1",
+                "focused_index": 5,
+                "tabs": [
+                    {"id": "one", "title": "One", "content": _text("text:one", "O")},
+                ],
+            }
         }
 
     app.set_render(render)

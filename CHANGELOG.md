@@ -85,6 +85,33 @@ only a push to `main` runs this workflow.
   identity (TUI/GTK/Win32 already report row-notch units); `MacBackend`
   overrides it to divide by `line_height()` since `NSEvent.scrollingDeltaY`
   passes through as real points.
+- `compose::HoverTooltipTracker<T>`: the delay + auto-dismiss state
+  machine a hover-driven tooltip needs on top of
+  `ToolbarHoverTracker`/`ListHoverTracker`/`TreeHoverTracker`'s plain
+  "what's hovered" answer — shows after a configurable delay, hides on
+  pointer leave, an explicit dismiss (click/Escape), or a timeout.
+  Headless-clock-friendly: every method takes a caller-supplied `u64`
+  millisecond timestamp rather than reading the wall clock, so it is
+  deterministically testable from Rust and, once a binding wires it up,
+  from Python/node too.
+- `Style::tooltip_delay_ms`: how long the pointer has to hover before a
+  tooltip shows (default `500`, VS Code's own hover-card delay) — the
+  delay `HoverTooltipTracker::tick` waits out. No-op on TUI.
+- `Button::tooltip`: optional hover tooltip text, `None` by default —
+  the same "host decides when to show it" contract
+  `ActivityItem::tooltip`/`Panel::tooltip`/`Toolbar`'s per-button
+  tooltip already carry, now also on the standalone `Button` primitive.
+  No-op on TUI (no hover UI there).
+- `UiEvent::Toolbar(WidgetId, ToolbarEvent)`: a `Toolbar` `Action` button
+  click (mouse, via the new `Toolbar::click`) or Enter/Space on the
+  keyboard-focused button (`Toolbar::activate_focused`) now carries the
+  clicked button's id and its new `is_active` state, instead of staying an
+  untyped `MouseDown`. Wired through `quadraui-binding-core`'s
+  `semantic_event_for_hit`/`focus_scoped_key_event` for every place a
+  `Toolbar` can appear (standalone/`Extra`, `SidebarPanel` header), so
+  `quadraui-py`/`quadraui-node` apps receive the same typed event a native
+  Rust `AppLogic` would build by hand. `Toolbar` now also opts into
+  `ExtraPaint::tab_stop` whenever it has at least one enabled `Action`.
 - `primitives::button::native_surface_paint::focus_ring_geometry`: the
   shared pixel geometry (outset rect, corner radius, `Style::focus_ring_width`
   stroke width) for a primitive's focus-visible ring, factored out of
@@ -112,8 +139,29 @@ only a push to `main` runs this workflow.
   strokes it square (matching `TextInput`'s own square border) via
   `primitives::button::native_surface_paint::focus_ring_geometry`, the
   same geometry `Button`'s ring already uses.
+- `TabChrome::focused_index`: an optional keyboard-focused-tab index,
+  additive on the existing chrome sidecar (not a new `TabBar` field — see
+  that field's doc for why) so it breaks no exhaustive `TabBar` literal.
+  `TabBar::handle_focus_key` turns `Left`/`Right`/`Enter`/`Space` into
+  `TabBarEvent::FocusMoved`/`TabActivated`. TUI (`tui::tab_bar`) paints the
+  focused tab in reverse video when `focused_index` is set; GTK/macOS/Win
+  ring painting is tracked in follow-up per-backend issues. The `"tabs"`
+  layout-node dict (quadraui-py/quadraui-node) grew a matching optional
+  `"focused_index"` key.
 
 ### Fixed
+- macOS `Backend::draw_focus_ring` (`macos::backend`) no longer strokes over
+  a tooltip or toast painted earlier the same frame. `super::run::render_frame`
+  paints the generic tab-stop focus ring *after* `AppLogic::render` returns
+  (so it stays visible on top of ordinary widget content), which also put it
+  on top of any tooltip/toast `render` had drawn over the same rect,
+  inverting the overlay-order contract documented on
+  `Backend::draw_focus_ring` itself: tooltip/toast stay topmost of all. The
+  ring now skips only the part of its own perimeter stroke band (not the
+  whole focused rect) that a tooltip/toast bound recorded this frame
+  actually overlaps, so a toast or tooltip that lands entirely inside a
+  large focused widget — never touching the stroke itself — still gets its
+  ring.
 - macOS `TabBar` painter (`macos::tab_bar`) now ellipsis-fits a tab's label
   into whatever space is left on the strip via the shared
   `primitives::tab_bar::fit_tab_label`, instead of dropping the whole tab
@@ -244,6 +292,19 @@ only a push to `main` runs this workflow.
   a background thread's `post`/`wake`/`postAfter` call is actually
   delivered while a GTK native session is running instead of only before
   or after one.
+- `Backend::draw_list_with_state`/`draw_tree_with_state` — additive
+  `hovered_idx`/`pressed_idx: Option<usize>` twins of `draw_list`/
+  `draw_tree` that tint the hovered/pressed row via the new
+  `Theme::list_hover_bg`/`list_pressed_bg`/`tree_hover_bg`/`tree_pressed_bg`
+  accessor methods (derived from existing fields, no new `Theme` field).
+  Index-keyed rather than `InteractionState`-keyed — see `interaction.rs`'s
+  module doc for why `ListItem`/`TreeRow` rows stay out of the
+  `WidgetId`-keyed store. New `compose::ListHoverTracker`/
+  `TreeHoverTracker` do the mouse-move-to-row-index bookkeeping, built on
+  the same engine `compose::ToolbarHoverTracker` now shares. Implemented
+  for real on GTK (verified headlessly via `GtkDriver`); every other
+  backend's default forwards to the existing `draw_list`/`draw_tree`,
+  unchanged.
 - `Theme::success_fg`/`success_bg`/`danger_bg`/`warning_bg`/`info_bg` —
   accessor methods (not new fields, per `theme.rs`'s "adding a field here
   is a BREAKING change" rule) giving `Toast` and `Form` validation a VS

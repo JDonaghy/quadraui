@@ -210,6 +210,23 @@ pub enum ToolbarButton {
     },
 }
 
+/// Semantic event a [`Toolbar`] click or Enter/Space activation stands for.
+///
+/// Built by [`Toolbar::click`] (mouse) and [`Toolbar::activate_focused`]
+/// (keyboard) — both the TUI/GTK click routers (via `UiEvent::Toolbar`) and
+/// `quadraui-binding-core`'s `semantic_event_for_hit`/`focus_scoped_key_event`
+/// (for the `quadraui-py`/`quadraui-node` bindings) go through one of those
+/// two constructors rather than building this variant by hand, so a click
+/// and the matching keyboard activation always carry the identical shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolbarEvent {
+    /// An [`ToolbarButton::Action`] button was activated. `is_active`
+    /// carries the button's *new* active state (its pre-click `is_active`
+    /// flipped) — see [`Toolbar::click`]'s doc for why every action click
+    /// reports this, not just a toggle's.
+    ButtonClicked { id: WidgetId, is_active: bool },
+}
+
 // ── Nerd-Font icon overrides ─────────────────────────────────────────────────
 
 /// Per-button Nerd-Font glyph + ASCII fallback pairs for a [`Toolbar`],
@@ -574,6 +591,47 @@ impl Toolbar {
     pub fn with_focused_index(mut self, focused_index: Option<usize>) -> Self {
         self.focused_index = focused_index;
         self
+    }
+
+    /// The semantic event a click on the `Action` button `id` stands for.
+    ///
+    /// `None` when `id` doesn't name an enabled [`ToolbarButton::Action`] in
+    /// [`Self::buttons`] — a `Separator`/`Label`, a disabled action, or an id
+    /// this toolbar doesn't contain — mirroring [`crate::Switch::click`]'s
+    /// "disabled means inert" contract. `is_active` carries the matched
+    /// button's *pre-click* `is_active` flipped, the same convention
+    /// `Switch::click`'s `value` uses, so a toggle button's handler can
+    /// apply the reported state directly; a plain (non-toggle) action
+    /// button's handler simply ignores the field.
+    pub fn click(&self, id: WidgetId) -> Option<ToolbarEvent> {
+        self.buttons.iter().find_map(|button| match button {
+            ToolbarButton::Action {
+                id: button_id,
+                enabled,
+                is_active,
+                ..
+            } if *button_id == id && *enabled => Some(ToolbarEvent::ButtonClicked {
+                id,
+                is_active: !is_active,
+            }),
+            _ => None,
+        })
+    }
+
+    /// The semantic event Enter/Space on the keyboard-focused button
+    /// ([`Self::focused_index`]) stands for.
+    ///
+    /// `None` when nothing is focused, the index is out of range, or the
+    /// item at that index isn't an enabled `Action` (same gate [`Self::click`]
+    /// applies) — a `Separator`/`Label`/disabled item never becomes
+    /// [`Self::focused_index`] in a well-behaved host, but this stays
+    /// defensive rather than panicking on a stale index.
+    pub fn activate_focused(&self) -> Option<ToolbarEvent> {
+        let idx = self.focused_index?;
+        match self.buttons.get(idx)? {
+            ToolbarButton::Action { id, .. } => self.click(*id),
+            ToolbarButton::Separator | ToolbarButton::Label { .. } => None,
+        }
     }
 
     /// Compute the full rendering + hit-test layout for this toolbar.
@@ -1357,5 +1415,107 @@ mod tests {
         let bar = Toolbar::new(WidgetId::new("bar")).with_focused_index(Some(2));
         assert_eq!(bar.focused_index, Some(2));
         assert_eq!(bar.with_focused_index(None).focused_index, None);
+    }
+
+    /// `click` on an enabled `Action` reports the matched id with
+    /// `is_active` flipped from `false` to `true` — the "new state" half of
+    /// the contract every click (toggle or not) carries.
+    #[test]
+    fn click_on_enabled_action_flips_is_active_to_true() {
+        let bar = Toolbar::new(WidgetId::new("bar"))
+            .with_buttons(vec![mk_action("filter", "Filter", true)]);
+        assert_eq!(
+            bar.click(WidgetId::new("filter")),
+            Some(ToolbarEvent::ButtonClicked {
+                id: WidgetId::new("filter"),
+                is_active: true,
+            })
+        );
+    }
+
+    /// A second click on an already-active toggle flips `is_active` back to
+    /// `false` — proves the reported state tracks the descriptor's current
+    /// value, not a hardcoded `true`.
+    #[test]
+    fn click_on_an_already_active_button_flips_is_active_to_false() {
+        let bar = Toolbar::new(WidgetId::new("bar")).with_buttons(vec![ToolbarButton::Action {
+            id: WidgetId::new("filter"),
+            label: "Filter".to_string(),
+            icon: None,
+            key_hint: None,
+            enabled: true,
+            is_active: true,
+            tooltip: String::new(),
+        }]);
+        assert_eq!(
+            bar.click(WidgetId::new("filter")),
+            Some(ToolbarEvent::ButtonClicked {
+                id: WidgetId::new("filter"),
+                is_active: false,
+            })
+        );
+    }
+
+    /// `click` on a disabled action, a `Separator`/`Label`'s own
+    /// (non-existent) id, or an id this toolbar doesn't contain at all —
+    /// every one of those is inert, mirroring `Switch::click`'s "disabled
+    /// means inert" contract.
+    #[test]
+    fn click_is_none_for_disabled_or_unknown_or_non_action_ids() {
+        let bar = Toolbar::new(WidgetId::new("bar")).with_buttons(vec![
+            mk_action("disabled", "Disabled", false),
+            ToolbarButton::Separator,
+            ToolbarButton::Label {
+                text: "2 of 5".to_string(),
+                fg: None,
+            },
+        ]);
+        assert_eq!(bar.click(WidgetId::new("disabled")), None);
+        assert_eq!(bar.click(WidgetId::new("does-not-exist")), None);
+    }
+
+    /// `activate_focused` with no [`Toolbar::focused_index`] set is a
+    /// no-op — nothing for Enter/Space to activate.
+    #[test]
+    fn activate_focused_is_none_when_nothing_is_focused() {
+        let bar = Toolbar::new(WidgetId::new("bar"))
+            .with_buttons(vec![mk_action("filter", "Filter", true)]);
+        assert_eq!(bar.activate_focused(), None);
+    }
+
+    /// `activate_focused` resolves [`Toolbar::focused_index`] to the same
+    /// event a mouse click on that same button would produce — Enter/Space
+    /// and a click converge on one shape.
+    #[test]
+    fn activate_focused_matches_a_click_on_the_same_button() {
+        let bar = Toolbar::new(WidgetId::new("bar"))
+            .with_buttons(vec![
+                mk_action("filter", "Filter", true),
+                mk_action("reset", "Reset", true),
+            ])
+            .with_focused_index(Some(1));
+        assert_eq!(bar.activate_focused(), bar.click(WidgetId::new("reset")));
+    }
+
+    /// A stale or out-of-range `focused_index` (e.g. a button just removed
+    /// or disabled out from under it) doesn't panic — `activate_focused`
+    /// stays defensive rather than trusting the index unconditionally.
+    #[test]
+    fn activate_focused_is_none_for_an_out_of_range_index() {
+        let bar = Toolbar::new(WidgetId::new("bar"))
+            .with_buttons(vec![mk_action("filter", "Filter", true)])
+            .with_focused_index(Some(5));
+        assert_eq!(bar.activate_focused(), None);
+    }
+
+    /// `focused_index` pointing at a `Separator`/`Label` (never a
+    /// well-behaved host's own state, but not guaranteed either) is also a
+    /// no-op, not a panic.
+    #[test]
+    fn activate_focused_is_none_for_a_non_action_item() {
+        let bar = Toolbar::new(WidgetId::new("bar"))
+            .with_buttons(vec![ToolbarButton::Separator])
+            .with_focused_index(Some(0));
+        assert_eq!(bar.activate_focused(), None);
     }
 }

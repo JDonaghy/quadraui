@@ -8,7 +8,7 @@ use quadraui::{
     ActivityBar, ActivityBarEvent, ComboBox, ComboBoxEvent, DataTableEvent, DatePicker,
     DatePickerEvent, FormEvent, Key, ListViewEvent, Modifiers, NamedKey, NumberInput,
     NumberInputEvent, RadioGroup, RadioGroupEvent, StatusBar, StatusBarEvent, Switch, SwitchEvent,
-    TabBarEvent, TextDisplayEvent, TextInput, TreeEvent, UiEvent, WidgetId,
+    TabBar, TabBarEvent, TextDisplayEvent, TextInput, Toolbar, TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
@@ -79,6 +79,25 @@ fn list_key_event(
         ));
     }
     None
+}
+
+/// Left/Right navigation and Enter/Space activation for a focused `TabBar`
+/// — the keyboard half of the seam [`quadraui::TabChrome::focused_index`]
+/// composes with on the paint side. Delegates to
+/// [`TabBar::handle_focus_key`] (the primitive's own pure helper) using the
+/// `focused_index`/`tab_count` [`crate::hit::PaintedHit::TabBar`] recorded
+/// at paint time, the same way [`data_table_key_event`] reads its hit's
+/// `selected_idx`/`total_rows`. Returns `None` for any key
+/// `handle_focus_key` doesn't recognize (or when `tab_count == 0`),
+/// leaving [`focus_scoped_key_event`] to fall through to the raw
+/// `TabBarEvent::KeyPressed` the same way `list_key_event`'s callers do.
+fn tab_bar_key_event(
+    id: WidgetId,
+    key: &str,
+    focused_index: Option<usize>,
+    tab_count: usize,
+) -> Option<UiEvent> {
+    TabBar::handle_focus_key(focused_index, tab_count, key).map(|ev| UiEvent::TabBar(id, ev))
 }
 
 /// `NumberInput`'s own value as `FormEvent`'s payload would show it:
@@ -379,13 +398,22 @@ pub fn semantic_event_for_hit(
                         ActivityBarEvent::ItemClicked { id },
                     ))
                 } else {
-                    // `Toolbar` has no typed `UiEvent` of its own — `id`
-                    // (the clicked button's own id, per `hit_test_painted`'s
-                    // `ExtraChrome` convention) stays the raw `MouseDown`'s
-                    // `widget`, same as a plain `Button` click.
-                    None
+                    let toolbar = extra_as::<Toolbar>(extra)?;
+                    Some(UiEvent::Toolbar(*bar, toolbar.click(id)?))
                 }
             }
+            _ => None,
+        }),
+        // `bar` is the embedded `Toolbar`'s own id (see
+        // `HitDetail::SidebarPanelToolbarButton`'s doc) — look up that same
+        // `PaintedHit::SidebarPanel` entry to get the descriptor back and
+        // reuse `Toolbar::click`, exactly like the standalone/chrome case
+        // above.
+        HitDetail::SidebarPanelToolbarButton { bar } => hit_map.iter().find_map(|hit| match hit {
+            PaintedHit::SidebarPanel {
+                toolbar: Some(toolbar),
+                ..
+            } if toolbar.id == *bar => Some(UiEvent::Toolbar(*bar, toolbar.click(id)?)),
             _ => None,
         }),
         _ => None,
@@ -485,13 +513,21 @@ pub fn focus_scoped_key_event(
                         },
                     ))
                 }),
-            PaintedHit::TabBar { id, .. } if *id == focused => Some(UiEvent::TabBar(
-                *id,
-                TabBarEvent::KeyPressed {
-                    key: key.clone(),
-                    modifiers,
-                },
-            )),
+            PaintedHit::TabBar {
+                id,
+                focused_index,
+                tab_count,
+                ..
+            } if *id == focused => tab_bar_key_event(*id, &key, *focused_index, *tab_count)
+                .or_else(|| {
+                    Some(UiEvent::TabBar(
+                        *id,
+                        TabBarEvent::KeyPressed {
+                            key: key.clone(),
+                            modifiers,
+                        },
+                    ))
+                }),
             PaintedHit::TextDisplay { id, .. } if *id == focused => Some(UiEvent::TextDisplay(
                 *id,
                 TextDisplayEvent::KeyPressed {
@@ -534,9 +570,124 @@ pub fn focus_scoped_key_event(
                 if let Some(date_picker) = extra_as::<DatePicker>(extra) {
                     return date_picker_key_event(*id, date_picker, &key);
                 }
+                if let Some(toolbar) = extra_as::<Toolbar>(extra) {
+                    // Enter/Space activates whichever button
+                    // `Toolbar::focused_index` names (set by the host, same
+                    // convention `TabChrome::focused_index` documents);
+                    // every other key is left to the raw fallback since
+                    // `Toolbar` has no `KeyPressed` variant of its own to
+                    // wrap it in.
+                    if matches!(raw_key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
+                        return Some(UiEvent::Toolbar(*id, toolbar.activate_focused()?));
+                    }
+                    return None;
+                }
                 None
             }
             _ => None,
         })
         .unwrap_or(fallback)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quadraui::{Rect, TabBarLayout};
+
+    /// A minimal [`PaintedHit::TabBar`] with `tab_count` tabs and no
+    /// close/scroll/right-segment chrome — the `hit_test`-reachable fields
+    /// `focus_scoped_key_event` never touches are left empty, same as
+    /// [`crate::drag::tab_bar_for_right_segment`]'s own test fixtures.
+    fn tab_bar_hit(id: WidgetId, focused_index: Option<usize>, tab_count: usize) -> PaintedHit {
+        PaintedHit::TabBar {
+            id,
+            area: Rect::new(0.0, 0.0, 40.0, 1.0),
+            layout: TabBarLayout {
+                bar_width: 40.0,
+                bar_height: 1.0,
+                visible_tabs: Vec::new(),
+                visible_segments: Vec::new(),
+                scroll_left: None,
+                scroll_right: None,
+                hit_regions: Vec::new(),
+                resolved_scroll_offset: 0,
+            },
+            focused_index,
+            tab_count,
+        }
+    }
+
+    /// `ArrowRight` on a focused `"tabs"` node with a `focused_index` of
+    /// `0` moves the focus to tab `1` — [`TabBarEvent::FocusMoved`], not
+    /// the raw `TabBarEvent::KeyPressed` fallback. This is the keyboard
+    /// half of the seam [`quadraui::TabChrome::focused_index`] composes on
+    /// the paint side: an app only sees `FocusMoved` here because
+    /// [`focus_scoped_key_event`]'s `PaintedHit::TabBar` arm now tries
+    /// [`tab_bar_key_event`] before falling back to `KeyPressed`.
+    #[test]
+    fn arrow_right_on_a_focused_tab_bar_moves_focus() {
+        let id = WidgetId::new("tabs");
+        let hit_map = vec![tab_bar_hit(id, Some(0), 3)];
+        let text_editors = TextEditorCache::default();
+        let event = focus_scoped_key_event(
+            id,
+            &Key::Named(NamedKey::Right),
+            Modifiers::default(),
+            &hit_map,
+            &text_editors,
+        );
+        assert_eq!(
+            event,
+            UiEvent::TabBar(id, TabBarEvent::FocusMoved { index: 1 })
+        );
+    }
+
+    /// `Enter` on a focused `"tabs"` node activates the currently focused
+    /// tab — [`TabBarEvent::TabActivated`], the keyboard equivalent of a
+    /// pointer click on the tab, mirroring `data_table_key_event`'s own
+    /// Enter-activates-the-selection handling.
+    #[test]
+    fn enter_on_a_focused_tab_bar_activates_it() {
+        let id = WidgetId::new("tabs");
+        let hit_map = vec![tab_bar_hit(id, Some(2), 3)];
+        let text_editors = TextEditorCache::default();
+        let event = focus_scoped_key_event(
+            id,
+            &Key::Named(NamedKey::Enter),
+            Modifiers::default(),
+            &hit_map,
+            &text_editors,
+        );
+        assert_eq!(
+            event,
+            UiEvent::TabBar(id, TabBarEvent::TabActivated { index: 2 })
+        );
+    }
+
+    /// A key `TabBar::handle_focus_key` doesn't recognize (`Escape`) falls
+    /// through to the raw `TabBarEvent::KeyPressed`, same as it always
+    /// did before the `FocusMoved`/`TabActivated` synthesis existed.
+    #[test]
+    fn unrecognized_key_on_a_focused_tab_bar_falls_back_to_key_pressed() {
+        let id = WidgetId::new("tabs");
+        let hit_map = vec![tab_bar_hit(id, Some(0), 3)];
+        let text_editors = TextEditorCache::default();
+        let event = focus_scoped_key_event(
+            id,
+            &Key::Named(NamedKey::Escape),
+            Modifiers::default(),
+            &hit_map,
+            &text_editors,
+        );
+        assert_eq!(
+            event,
+            UiEvent::TabBar(
+                id,
+                TabBarEvent::KeyPressed {
+                    key: "Escape".to_string(),
+                    modifiers: Modifiers::default(),
+                }
+            )
+        );
+    }
 }

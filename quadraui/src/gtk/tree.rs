@@ -124,6 +124,76 @@ pub fn draw_tree(
     line_height: f64,
     nerd_fonts_enabled: bool,
 ) {
+    draw_tree_impl(
+        cr,
+        layout,
+        x,
+        y,
+        w,
+        h,
+        tree,
+        theme,
+        style,
+        line_height,
+        nerd_fonts_enabled,
+        None,
+        None,
+    )
+}
+
+/// [`draw_tree`], tinting the hovered/pressed row's background —
+/// `hovered_idx` / `pressed_idx` are indices into `tree.rows`, same as
+/// [`crate::Backend::draw_tree_with_state`]. `None` for both paints
+/// byte-for-byte what [`draw_tree`] paints.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_tree_with_state(
+    cr: &Context,
+    layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    tree: &TreeView,
+    theme: &Theme,
+    style: &Style,
+    line_height: f64,
+    nerd_fonts_enabled: bool,
+    hovered_idx: Option<usize>,
+    pressed_idx: Option<usize>,
+) {
+    draw_tree_impl(
+        cr,
+        layout,
+        x,
+        y,
+        w,
+        h,
+        tree,
+        theme,
+        style,
+        line_height,
+        nerd_fonts_enabled,
+        hovered_idx,
+        pressed_idx,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_tree_impl(
+    cr: &Context,
+    layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    tree: &TreeView,
+    theme: &Theme,
+    style: &Style,
+    line_height: f64,
+    nerd_fonts_enabled: bool,
+    hovered_idx: Option<usize>,
+    pressed_idx: Option<usize>,
+) {
     if w <= 0.0 || h <= 0.0 {
         return;
     }
@@ -154,6 +224,8 @@ pub fn draw_tree(
         &mut surface,
         theme,
         style,
+        hovered_idx,
+        pressed_idx,
     );
 
     layout.set_attributes(None);
@@ -1194,5 +1266,125 @@ mod multi_select_driver_tests {
             },
         ));
         assert_eq!(driver.app().selected, vec![1, 4]);
+    }
+}
+
+/// Headless pixel round-trip for [`crate::Backend::draw_tree_with_state`]:
+/// a plain `MouseMoved` over a row tints its background via
+/// [`crate::theme::Theme::tree_hover_bg`], and moving off the row
+/// restores the original pixel — the tree half of the acceptance case
+/// quadraui#2034 asks for (see `gtk::list::hover_driver_tests` for the
+/// `ListView` twin).
+#[cfg(test)]
+mod hover_driver_tests {
+    use crate::gtk::testing::GtkDriver;
+    use crate::primitives::tree::TreeRowMeasure;
+    use crate::runner::{AppLogic, Reaction};
+    use crate::{
+        Backend, Decoration, Point, Rect, SelectionMode, StyledText, TreeHoverTracker, TreeRow,
+        TreeView, UiEvent, WidgetId,
+    };
+
+    const VIEWPORT_W: f32 = 80.0;
+    const VIEWPORT_H: f32 = 40.0;
+    const ROW_H: f32 = 10.0;
+
+    fn leaf(idx: u16, label: &str) -> TreeRow {
+        TreeRow {
+            path: vec![idx],
+            indent: 0,
+            icon: None,
+            text: StyledText::plain(label.to_string()),
+            badge: None,
+            is_expanded: None,
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    fn sample_tree() -> TreeView {
+        TreeView {
+            id: WidgetId::new("t"),
+            rows: (0..4).map(|i| leaf(i, &format!("row {i}"))).collect(),
+            selection_mode: SelectionMode::Single,
+            // No row selected, so `Theme::selected_bg` never masks the
+            // hover tint this test is probing for.
+            selected_path: None,
+            scroll_offset: 0,
+            style: Default::default(),
+            has_focus: true,
+        }
+    }
+
+    struct TreeApp {
+        tree: TreeView,
+        hover: TreeHoverTracker,
+    }
+
+    impl TreeApp {
+        fn new() -> Self {
+            Self {
+                tree: sample_tree(),
+                hover: TreeHoverTracker::new(),
+            }
+        }
+    }
+
+    impl AppLogic for TreeApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_tree_with_state(
+                Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H),
+                &self.tree,
+                self.hover.hovered_idx(),
+                None,
+            );
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::MouseMoved { position, .. } = event else {
+                return Reaction::Continue;
+            };
+            let layout = self
+                .tree
+                .layout(VIEWPORT_W, VIEWPORT_H, |_| TreeRowMeasure::new(ROW_H));
+            if self.hover.update(&layout, position.x, position.y) {
+                Reaction::Redraw
+            } else {
+                Reaction::Continue
+            }
+        }
+    }
+
+    fn mouse_moved(x: f32, y: f32) -> UiEvent {
+        UiEvent::MouseMoved {
+            position: Point::new(x, y),
+            buttons: Default::default(),
+        }
+    }
+
+    #[test]
+    fn hovering_a_row_tints_its_background_and_moving_off_clears_it() {
+        let mut driver = GtkDriver::new(TreeApp::new(), VIEWPORT_W as i32, VIEWPORT_H as i32);
+        let probe_x = 4;
+        let probe_y = (ROW_H / 2.0) as i32; // inside row 0's band
+        let base = driver.pixel(probe_x, probe_y);
+
+        driver.dispatch(mouse_moved(4.0, ROW_H / 2.0));
+        let hovered = driver.pixel(probe_x, probe_y);
+        assert_ne!(
+            hovered, base,
+            "hovering row 0 at ({probe_x}, {probe_y}) should tint its background"
+        );
+
+        // Below the last row (4 rows of 10px in a 40px-tall viewport) is
+        // the empty tail — hovering there clears the tracker entirely.
+        driver.dispatch(mouse_moved(4.0, VIEWPORT_H - 1.0));
+        let cleared = driver.pixel(probe_x, probe_y);
+        assert_eq!(
+            cleared, base,
+            "moving off row 0 should restore its original background"
+        );
     }
 }

@@ -11,7 +11,8 @@ use serde::{Deserialize, Deserializer};
 
 use quadraui::{
     Backend, Button, DataTable, InteractionState, ListView, Rect, Scrollbar, Split, SplitDirection,
-    SplitHit, SplitLayout, TabBar, TextDisplay, TextDisplayLayout, TextRegion, TreeView, WidgetId,
+    SplitHit, SplitLayout, TabBar, TabChrome, TextDisplay, TextDisplayLayout, TextRegion, TreeView,
+    WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -191,6 +192,8 @@ pub fn draw_bands(
                 id: tab_bar.id,
                 area: rect,
                 layout,
+                focused_index: None,
+                tab_count: tab_bar.tabs.len(),
             });
         }
     }
@@ -425,11 +428,29 @@ pub fn paint_layout(
             let area = tabs.spacing.inset(area, char_width, line_height);
             let strip_height = (3.0 * backend.line_height()).min(area.height);
             let strip_rect = Rect::new(area.x, area.y, area.width, strip_height);
-            let layout = backend.draw_tab_bar_layout(strip_rect, &tabs.tab_bar, None);
+            // `focused_index` threads through `TabChrome` rather than
+            // `tabs.tab_bar` itself, so `None` (the common case) composes
+            // to `TabChrome::default()`. Neither `Backend` the bindings
+            // actually render with (`TuiBackend`, `GtkBackend`) takes the
+            // trait-default `draw_tab_bar_with_chrome_layout` passthrough
+            // to `draw_tab_bar_layout` — both override it with their own
+            // measurer and paint call. `TuiBackend`'s override reproduces
+            // plain `draw_tab_bar_layout` exactly for `TabChrome::default()`
+            // — see `tui::backend::tests::draw_tab_bar_with_chrome_layout_default_chrome_matches_draw_tab_bar_layout`,
+            // which asserts this at the trait-method level this call site
+            // uses, not just at the free-function level.
+            // `GtkBackend`'s equivalent is unverified by an equivalent
+            // test; its own `draw_tab_bar_with_chrome_layout` is at
+            // `gtk/backend.rs`.
+            let chrome = TabChrome::default().with_focused_index(tabs.focused_index);
+            let layout =
+                backend.draw_tab_bar_with_chrome_layout(strip_rect, &tabs.tab_bar, None, &chrome);
             hits.push(PaintedHit::TabBar {
                 id: tabs.tab_bar.id,
                 area: strip_rect,
                 layout,
+                focused_index: tabs.focused_index,
+                tab_count: tabs.tab_bar.tabs.len(),
             });
             let content_rect = Rect::new(
                 area.x,
@@ -478,6 +499,7 @@ pub fn paint_layout(
             hits.push(PaintedHit::SidebarPanel {
                 id: sidebar_node.sidebar_panel.id,
                 layout: layout.clone(),
+                toolbar: sidebar_node.sidebar_panel.toolbar.clone(),
             });
             paint_layout(
                 backend,
@@ -767,7 +789,13 @@ pub fn paint_leaf(
         }
         LeafDescriptor::TabBar(tab_bar) => {
             let layout = backend.draw_tab_bar_layout(area, tab_bar, None);
-            hits.push(PaintedHit::TabBar { id, area, layout });
+            hits.push(PaintedHit::TabBar {
+                id,
+                area,
+                layout,
+                focused_index: None,
+                tab_count: tab_bar.tabs.len(),
+            });
         }
         LeafDescriptor::Extra(extra) => {
             let interaction = chrome_interaction(id);

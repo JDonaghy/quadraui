@@ -2408,6 +2408,37 @@ impl Backend for GtkBackend {
         layout.set_font_description(saved_font.as_ref());
     }
 
+    fn draw_tree_with_state(
+        &mut self,
+        rect: QRect,
+        tree: &TreeView,
+        hovered_idx: Option<usize>,
+        pressed_idx: Option<usize>,
+    ) {
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_tree_with_state called outside enter_frame_scope");
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
+        crate::gtk::draw_tree_with_state(
+            cr,
+            layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            tree,
+            &self.current_theme,
+            &self.current_style,
+            self.resolved_row_height(self.current_line_height),
+            self.nerd_fonts_enabled,
+            hovered_idx,
+            pressed_idx,
+        );
+        layout.set_font_description(saved_font.as_ref());
+    }
+
     fn draw_list(&mut self, rect: QRect, list: &ListView) {
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
@@ -2434,6 +2465,37 @@ impl Backend for GtkBackend {
             &self.current_style,
             self.resolved_row_height(self.current_line_height),
             self.nerd_fonts_enabled,
+        );
+        layout.set_font_description(saved_font.as_ref());
+    }
+
+    fn draw_list_with_state(
+        &mut self,
+        rect: QRect,
+        list: &ListView,
+        hovered_idx: Option<usize>,
+        pressed_idx: Option<usize>,
+    ) {
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_list_with_state called outside enter_frame_scope");
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
+        crate::gtk::draw_list_with_state(
+            cr,
+            layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            list,
+            &self.current_theme,
+            &self.current_style,
+            self.resolved_row_height(self.current_line_height),
+            self.nerd_fonts_enabled,
+            hovered_idx,
+            pressed_idx,
         );
         layout.set_font_description(saved_font.as_ref());
     }

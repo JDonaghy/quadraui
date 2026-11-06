@@ -2282,6 +2282,51 @@ pub trait Backend: sealed::Sealed {
     /// (a terminal cell can't be subdivided).
     fn draw_tree(&mut self, rect: Rect, tree: &TreeView);
     fn draw_list(&mut self, rect: Rect, list: &ListView);
+
+    /// [`Self::draw_tree`], tinting the hovered/pressed row's background
+    /// via [`crate::Theme::tree_hover_bg`] / [`crate::Theme::tree_pressed_bg`].
+    ///
+    /// Index-keyed rather than [`crate::InteractionState`]-keyed, unlike
+    /// [`Self::draw_button_with_state`] — see `interaction.rs`'s module
+    /// doc for why a tree row has no stable id to key off. Feed
+    /// [`crate::compose::TreeHoverTracker`] from `MouseMoved` and pass
+    /// its `hovered_idx()` here; `pressed_idx` follows the same
+    /// left-button-down bookkeeping a host already does for
+    /// `TreeView::rows` clicks.
+    ///
+    /// Additive over [`Self::draw_tree`], not a replacement — the
+    /// default forwards to it (ignoring both indices), so every
+    /// existing call site and implementor keeps compiling unchanged.
+    fn draw_tree_with_state(
+        &mut self,
+        rect: Rect,
+        tree: &TreeView,
+        _hovered_idx: Option<usize>,
+        _pressed_idx: Option<usize>,
+    ) {
+        self.draw_tree(rect, tree)
+    }
+
+    /// [`Self::draw_list`], tinting the hovered/pressed row's background
+    /// via [`crate::Theme::list_hover_bg`] / [`crate::Theme::list_pressed_bg`].
+    ///
+    /// Index-keyed for the same reason [`Self::draw_tree_with_state`]
+    /// is — see that method's doc. Feed
+    /// [`crate::compose::ListHoverTracker`] from `MouseMoved` and pass
+    /// its `hovered_idx()` here.
+    ///
+    /// Additive over [`Self::draw_list`], not a replacement — the
+    /// default forwards to it (ignoring both indices), so every
+    /// existing call site and implementor keeps compiling unchanged.
+    fn draw_list_with_state(
+        &mut self,
+        rect: Rect,
+        list: &ListView,
+        _hovered_idx: Option<usize>,
+        _pressed_idx: Option<usize>,
+    ) {
+        self.draw_list(rect, list)
+    }
     /// Draw `table` into `rect` and return its layout for hit-testing.
     /// Coordinate frame: **LOCAL** — `hit_regions` / row bounds are
     /// relative to `rect`'s origin, matching [`Self::data_table_layout`].

@@ -277,4 +277,76 @@ mod tests {
         let (_surface, layout) = paint_via_backend(&stack);
         assert!(layout.visible_toasts.is_empty());
     }
+
+    /// The overlay-order contract documented on
+    /// [`crate::Backend::draw_focus_ring`] — tooltip/toast topmost of all —
+    /// must hold on macOS even when the base layer underneath is a
+    /// bordered, focused [`TextInput`] (e.g. the `clipboard_demo`
+    /// example's editor), not empty space: a toast opened over it must
+    /// still show its own fill, not get painted over by the editor's own
+    /// border/background, nor by the generic focus ring `draw_focus_ring`
+    /// strokes around that same focused editor on this same frame. Mirrors
+    /// `quadraui-binding-core::host::tests::toast_paints_over_a_bordered_focused_editor`,
+    /// directly against `MacBackend` instead of through a binding host.
+    #[test]
+    fn toast_paints_over_a_bordered_focused_text_input() {
+        use crate::primitives::text_input::TextInput;
+
+        let stack = sample_stack();
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.set_skip_animations(true);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+        let mut editor = TextInput::new(WidgetId::new("editor"));
+        editor.lines = vec!["fn main() {}".to_string()];
+        editor.has_focus = true;
+        let editor_rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_text_input(editor_rect, &editor);
+            let l = b.draw_toast_overlay(editor_rect, &stack);
+            *layout.borrow_mut() = Some(l);
+            // The chrome-level focus ring the runner strokes around
+            // `editor_rect` once `AppLogic::render` returns — must not
+            // land on top of the toast just painted above.
+            b.draw_focus_ring(editor_rect);
+        });
+        backend.end_frame();
+
+        let layout = layout.into_inner().unwrap();
+        let t = &layout.visible_toasts[0];
+        let probe_x = (t.bounds.x + t.bounds.width - pixel::TOAST_DISMISS_WIDTH - 4.0) as u32;
+        let probe_y = (t.bounds.y + t.bounds.height - 2.0) as u32;
+        let (r, g, b, _a) = surface.pixel(probe_x, probe_y);
+        // `t2`'s (the nearest-corner, topmost toast) `Error` severity tint.
+        let danger_bg = Theme::default().danger_bg();
+        assert_eq!(
+            (r, g, b),
+            (danger_bg.r, danger_bg.g, danger_bg.b),
+            "the toast must paint over the bordered, focused editor underneath it, \
+             not get overwritten by its border/background or its focus ring",
+        );
+
+        // The toast stack is inset from `editor_rect` by `TOAST_MARGIN`
+        // (see `primitives::layout_metrics::pixel::TOAST_MARGIN`), so it
+        // never reaches the editor's own edges — the ring must still
+        // paint there, on the far (top-left) side from the bottom-right
+        // toast stack.
+        let theme = Theme::default();
+        let (r, g, b, _a) = surface.pixel(2, 0);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must still paint around the focused editor where the \
+             toast, inset within it, never reaches",
+        );
+    }
 }

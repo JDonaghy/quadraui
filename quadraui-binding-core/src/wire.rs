@@ -796,6 +796,15 @@ fn layout_tabs_from_value(
 
     let show_tab_close = opt_bool(value, "closable", &context)?.unwrap_or(true);
     let scroll_offset = opt_usize(value, "scroll_offset", &context)?.unwrap_or(0);
+    let focused_index = opt_usize(value, "focused_index", &context)?;
+    if let Some(idx) = focused_index {
+        if !items.is_empty() && idx >= items.len() {
+            return Err(DecodeError(format!(
+                "{context} \"focused_index\" {idx} is out of range for {len} tab(s)",
+                len = items.len()
+            )));
+        }
+    }
     let right_segments: Vec<TabBarSegment> = match obj_get(value, "right_segments") {
         Some(v) => {
             if !v.is_array() {
@@ -831,6 +840,7 @@ fn layout_tabs_from_value(
         entries,
         selected,
         spacing,
+        focused_index,
     })
 }
 
@@ -1513,6 +1523,89 @@ mod tests {
         assert!(!tabs.tab_bar.tabs[0].is_active);
         assert!(tabs.tab_bar.tabs[1].is_active);
         assert_eq!(tabs.entries.len(), 2);
+    }
+
+    /// A `"tabs"` node's optional `"focused_index"` key decodes to
+    /// `LayoutTabs::focused_index`, independent of `"selected"` — a py/
+    /// node app can keyboard-focus a different tab than the one whose
+    /// content is currently shown.
+    #[test]
+    fn round_trips_a_tabs_node_s_focused_index() {
+        let value = json!({
+            "tabs": {
+                "id": "t1",
+                "selected": 1,
+                "focused_index": 0,
+                "tabs": [
+                    {"id": "one", "title": "One", "content": {"id": "one-leaf", "text_display": {"id": "one-leaf", "lines": []}}},
+                    {"id": "two", "title": "Two", "content": {"id": "two-leaf", "text_display": {"id": "two-leaf", "lines": []}}},
+                ],
+            }
+        });
+        let node = decode(&value).expect("valid tabs");
+        let LayoutNode::Tabs(tabs) = node else {
+            panic!("expected a tabs node");
+        };
+        assert_eq!(tabs.focused_index, Some(0));
+        assert_eq!(tabs.selected, 1);
+    }
+
+    /// Omitting `"focused_index"` entirely decodes to `None` — no
+    /// keyboard-focus treatment painted, matching every other optional
+    /// `"tabs"` key's absent-means-default convention.
+    #[test]
+    fn tabs_node_focused_index_defaults_to_none() {
+        let value = json!({
+            "tabs": {
+                "id": "t1",
+                "tabs": [
+                    {"id": "one", "title": "One", "content": {"id": "one-leaf", "text_display": {"id": "one-leaf", "lines": []}}},
+                ],
+            }
+        });
+        let node = decode(&value).expect("valid tabs");
+        let LayoutNode::Tabs(tabs) = node else {
+            panic!("expected a tabs node");
+        };
+        assert_eq!(tabs.focused_index, None);
+    }
+
+    /// A `"focused_index"` past the end of `"tabs"` is a decode error, the
+    /// same out-of-range convention `"selected"` already uses.
+    #[test]
+    fn tabs_node_rejects_an_out_of_range_focused_index() {
+        let value = json!({
+            "tabs": {
+                "id": "t1",
+                "focused_index": 5,
+                "tabs": [
+                    {"id": "one", "title": "One", "content": {"id": "one-leaf", "text_display": {"id": "one-leaf", "lines": []}}},
+                ],
+            }
+        });
+        let error = err(decode(&value));
+        assert!(error.0.contains("focused_index"), "{}", error.0);
+    }
+
+    /// `"focused_index": 0` on an empty `"tabs"` array decodes without
+    /// error — the same `!items.is_empty() && idx >= items.len()` escape
+    /// hatch `"selected"` already uses two blocks up, so a `0` default
+    /// payload for an as-yet-empty tab group doesn't trip the range check
+    /// before there's anything to be out of range of.
+    #[test]
+    fn tabs_node_allows_a_zero_focused_index_on_an_empty_tab_list() {
+        let value = json!({
+            "tabs": {
+                "id": "t1",
+                "focused_index": 0,
+                "tabs": [],
+            }
+        });
+        let node = decode(&value).expect("valid tabs");
+        let LayoutNode::Tabs(tabs) = node else {
+            panic!("expected a tabs node");
+        };
+        assert_eq!(tabs.focused_index, Some(0));
     }
 
     /// A `"panel"` node decodes its chrome generically and recurses into

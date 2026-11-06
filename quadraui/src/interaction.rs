@@ -45,9 +45,20 @@
 //! - `draw_tab_bar(.., hovered_close_tab: Option<usize>)`
 //! - `draw_data_table(.., hovered_idx: Option<usize>)`
 //! - `draw_chart(.., hovered_point: Option<(usize, usize)>)`
+//! - [`crate::Backend::draw_list_with_state`] /
+//!   [`crate::Backend::draw_tree_with_state`] (`hovered_idx: Option<usize>,
+//!   pressed_idx: Option<usize>`)
 //!
 //! These would need stable ids for their items before moving into
-//! `InteractionState`.
+//! `InteractionState`. `ListView`/`TreeView` rows join this group rather
+//! than taking an `InteractionState` the way `draw_button_with_state`
+//! does: a `ListItem`/`TreeRow` carries no [`WidgetId`] of its own, and
+//! minting one per row index on the fly would permanently intern a new
+//! string per distinct (list id, row index) pair ever shown — an
+//! unbounded leak for a growing log pane. [`crate::compose::ListHoverTracker`]
+//! / [`crate::compose::TreeHoverTracker`] track the hovered row index
+//! instead, the same shape `draw_data_table`'s own host-side tracking
+//! already uses.
 //!
 //! ## Ownership
 //!

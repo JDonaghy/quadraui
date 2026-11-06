@@ -102,6 +102,21 @@ pub struct Button {
     /// gate activation.
     #[serde(default)]
     pub focused: bool,
+    /// Hover tooltip text, shown via a host's own
+    /// [`crate::compose::HoverTooltipTracker`] after
+    /// [`crate::Style::tooltip_delay_ms`] of continuous pointer hover
+    /// and hidden on pointer leave, a click, or a timeout. `None` (the
+    /// default) means no tooltip — a host that wants one sets this
+    /// field directly, the same way every other field here is set.
+    /// Same "host decides when to show it, the primitive just carries
+    /// the text" contract [`crate::primitives::activity_bar::ActivityItem::tooltip`]
+    /// already documents.
+    ///
+    /// **TUI story: no-op.** [`Button`] has no hover UI on a terminal —
+    /// `crate::tui::button`'s rasteriser never reads this field, the
+    /// same as `ActivityItem::tooltip`'s own TUI story.
+    #[serde(default)]
+    pub tooltip: Option<String>,
 }
 
 impl Button {
@@ -117,6 +132,7 @@ impl Button {
             variant: ButtonVariant::Primary,
             disabled: false,
             focused: false,
+            tooltip: None,
         }
     }
 
@@ -623,9 +639,26 @@ mod tests {
         let mut b = button();
         b.variant = ButtonVariant::Secondary;
         b.focused = true;
+        b.tooltip = Some("Save the current file".to_string());
         let json = serde_json::to_string(&b).unwrap();
         let back: Button = serde_json::from_str(&json).unwrap();
         assert_eq!(b, back);
+    }
+
+    #[test]
+    fn new_has_no_tooltip_by_default() {
+        assert_eq!(button().tooltip, None);
+    }
+
+    /// A JSON payload serialized before [`Button::tooltip`] existed has
+    /// no such key; `#[serde(default)]` must deserialize it as `None`
+    /// rather than erroring, so a consumer's persisted descriptor from
+    /// an earlier `quadraui` version keeps loading.
+    #[test]
+    fn deserializing_without_tooltip_defaults_to_none() {
+        let json = r#"{"id": "dialog:ok", "label": "OK"}"#;
+        let b: Button = serde_json::from_str(json).expect("deserialize without tooltip");
+        assert_eq!(b.tooltip, None);
     }
 
     #[test]

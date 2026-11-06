@@ -7,9 +7,10 @@
 //! fields (a Python callable, a JS function value, ...) and an
 //! [`crate::engine::InteractionEngine`]; [`render_overlays`] is the one
 //! render-time call every binding's `AppLogic::render` makes after painting
-//! its own slots, so the anchored-overlay z-order (dialog > float > menus >
-//! toast > tooltip, in the exact order below) is written down once instead
-//! of copy-pasted per binding.
+//! its own slots, so the anchored-overlay z-order — context menu, float,
+//! rich-text popup, completions, dialog, tooltip, toast topmost of all, in
+//! the exact order [`render_overlays`]'s own body paints them — is written
+//! down once instead of copy-pasted per binding.
 //!
 //! [`NativeExitPolicy`] wraps a binding's own `AppLogic` for the duration of
 //! a `run_native`-style call into a real `GtkRunner`/`MacRunner`/`WinRunner`:
@@ -756,7 +757,9 @@ mod tests {
 
     use quadraui::backend::MessageDialogOptions;
     use quadraui::tui::testing::TuiDriver;
-    use quadraui::{AppLogic, Backend, Button, Reaction, Rect, Toast, ToastSeverity, UiEvent};
+    use quadraui::{
+        AppLogic, Backend, Button, Reaction, Rect, TextInput, Toast, ToastSeverity, UiEvent,
+    };
 
     use super::*;
     use crate::engine::EventSink;
@@ -856,6 +859,81 @@ mod tests {
             driver.screen_contains("Saved"),
             "the toast opened alongside the dialog must still paint through \
              the same render_overlays call"
+        );
+    }
+
+    /// An [`AppLogic`] whose `render` paints a focused, bordered
+    /// [`TextInput`] across the whole viewport directly (not through a
+    /// [`BindingHost`] slot — `TextInput` is a `"text_input"` additive
+    /// extra, and this test only needs its border painted, not its full
+    /// extra-slot wiring) before calling [`render_overlays`], so a toast
+    /// opened on top of it has to paint over real bordered chrome, not
+    /// just empty space.
+    struct BorderedEditorLogic {
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for BorderedEditorLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let mut editor = TextInput::new(WidgetId::new("editor"));
+            editor.lines = vec!["fn main() {}".to_string()];
+            editor.has_focus = true;
+            backend.draw_text_input(rect, &editor);
+            render_overlays(&self.engine, backend, Vec::new());
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            Vec::new()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// The paint-order contract [`render_overlays`]'s own doc states —
+    /// "dialog > float > menus > toast > tooltip" at the module level,
+    /// toast last of all in this function's own body — must hold even
+    /// when the base layer underneath is a *bordered, focused* editor,
+    /// not empty space: a toast opened over it must still show its own
+    /// text, not get painted over by the editor's own border/background.
+    #[test]
+    fn toast_paints_over_a_bordered_focused_editor() {
+        let logic = BorderedEditorLogic {
+            engine: InteractionEngine::default(),
+            sink: RefCell::new(RecordingSink),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+
+        let (_backend, app) = driver.parts_mut();
+        app.engine.show_toast(
+            Toast {
+                id: WidgetId::new("toast"),
+                title: "Saved".to_string(),
+                body: String::new(),
+                severity: ToastSeverity::Info,
+                actions: Vec::new(),
+                accent: None,
+            },
+            quadraui::ToastCorner::BottomRight,
+        );
+
+        driver.render();
+
+        assert!(
+            driver.screen_contains("fn main"),
+            "the editor's own content must still paint"
+        );
+        assert!(
+            driver.screen_contains("Saved"),
+            "the toast must paint over the bordered editor underneath it, \
+             not get overwritten by its border/background"
         );
     }
 }

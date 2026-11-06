@@ -107,6 +107,12 @@ pub unsafe fn draw_tree(
         &mut surface,
         theme,
         style,
+        // `hovered_idx` / `pressed_idx`: row tinting is not wired on this
+        // backend — `MacBackend` uses the `Backend::draw_tree_with_state`
+        // default, which forwards to `draw_tree` and drops both indices.
+        // `None` keeps this paint pixel-identical to the contract above.
+        None,
+        None,
     );
 
     CGContextRestoreGState(ctx);

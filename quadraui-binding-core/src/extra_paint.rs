@@ -15,7 +15,7 @@ use quadraui::{
     InteractionState, MenuBar, MessageList, Minimap, MultiSectionView, NumberInput, NumberInputHit,
     Palette, PipelineView, Point, ProgressBar, RadioGroup, Rect, ScrollAxis, ScrollView, Scrollbar,
     Spinner, StatusBar, StatusBarHit, Switch, SwitchHit, Terminal, TextInput, TextRegion, Toolbar,
-    WidgetId,
+    ToolbarButton, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -548,6 +548,19 @@ impl ExtraPaint for Toolbar {
             .filter(|item| item.clickable)
             .filter_map(|item| item.action_id.map(|id| (item.bounds, id)))
             .collect()
+    }
+
+    /// A tab stop whenever at least one button could ever be
+    /// [`Self::activate_focused`]'s target — matching `Switch`'s own
+    /// "interactive, so focusable" rule. A toolbar with no enabled
+    /// `Action` (all separators/labels, or every action disabled) is
+    /// skipped, the same way an empty `List`/`Tree` still counts (unlike
+    /// those, nothing here could ever be activated, so there is no reason
+    /// to spend a tab stop on it).
+    fn tab_stop(&self) -> bool {
+        self.buttons
+            .iter()
+            .any(|button| matches!(button, ToolbarButton::Action { enabled: true, .. }))
     }
 }
 

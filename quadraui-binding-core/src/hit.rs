@@ -10,7 +10,7 @@ use quadraui::{
     ButtonHit, ButtonLayout, DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, PanelHit,
     PanelLayout, Point, PressZone, Rect, Scrollbar, SidebarPanelHit, SidebarPanelLayout, SplitHit,
     SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout, TextDisplayHit, TextDisplayLayout,
-    TreePath, TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    Toolbar, TreePath, TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -93,6 +93,17 @@ pub enum PaintedHit {
         id: WidgetId,
         area: Rect,
         layout: TabBarLayout,
+        /// The bar's own tab count and keyboard-focused tab, as painted —
+        /// read by [`crate::semantic::focus_scoped_key_event`] so an arrow
+        /// key or Enter on a focused `TabBar` resolves through
+        /// [`quadraui::TabBar::handle_focus_key`] the same way
+        /// [`Self::List`]'s `selected_idx`/`total_items` feed
+        /// [`crate::semantic::list_key_event`]. `focused_index` is `None`
+        /// for a bare `TabBar` leaf (no [`quadraui::TabChrome`] involved)
+        /// and for a `"tabs"` layout node whose `focused_index` wasn't set;
+        /// `tab_count` is `TabBar::tabs.len()` regardless.
+        focused_index: Option<usize>,
+        tab_count: usize,
     },
     /// `area` is the absolute rect this display was painted into;
     /// `layout` is in a frame relative to `area`'s origin **shifted down by
@@ -145,10 +156,18 @@ pub enum PaintedHit {
     /// A [`quadraui::SidebarPanel`]'s chrome layout, in the ABSOLUTE frame.
     /// Mirrors [`Self::Panel`]: a `SidebarPanelHit::ToolbarButton` resolves
     /// to the clicked button's own id; `SidebarPanelHit::Content` is left
-    /// to the content subtree pushed after this entry.
+    /// to the content subtree pushed after this entry. `toolbar` is a
+    /// clone of [`quadraui::SidebarPanel::toolbar`] as painted — `None`
+    /// whenever `layout.toolbar_bounds` is (no header slot reserved);
+    /// `Some` otherwise, kept alongside the layout (which only carries
+    /// bounds, not the button descriptors) so
+    /// [`crate::semantic::semantic_event_for_hit`] can resolve a
+    /// `SidebarPanelToolbarButton` hit into a typed `UiEvent::Toolbar`
+    /// the same way [`Self::Extra`]'s own `Toolbar` chrome does.
     SidebarPanel {
         id: WidgetId,
         layout: SidebarPanelLayout,
+        toolbar: Option<Toolbar>,
     },
     /// One additive primitive (anything registered in a binding's own
     /// `EXTRA_PRIMITIVES` decode table),
@@ -240,8 +259,14 @@ pub enum HitDetail {
     PanelTitleBar,
     /// Landed on a [`quadraui::SidebarPanel`]'s toolbar button. `id`
     /// resolves to the matched hit returned alongside this detail as the
-    /// clicked button's own id, same as `PanelAction`.
-    SidebarPanelToolbarButton,
+    /// clicked button's own id, same as `PanelAction`. `bar` is the
+    /// embedded [`quadraui::Toolbar`]'s own id (not the `SidebarPanel`'s),
+    /// carried here so [`crate::semantic::semantic_event_for_hit`] can look
+    /// the toolbar back up in the hit map and build its typed
+    /// `UiEvent::Toolbar`, mirroring `ExtraChrome::bar`.
+    SidebarPanelToolbarButton {
+        bar: WidgetId,
+    },
     /// Landed before the thumb on a tree's vertical scrollbar track
     /// (page-up zone). Handled directly in the binding's own event handler, which
     /// replaces the raw click with `UiEvent::ScrollOffsetChanged` — never
@@ -369,7 +394,9 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                     DataTableHit::Empty => {}
                 }
             }
-            PaintedHit::TabBar { id, area, layout } => {
+            PaintedHit::TabBar {
+                id, area, layout, ..
+            } => {
                 if !area.contains(point) {
                     continue;
                 }
@@ -442,9 +469,17 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 PanelHit::TitleBar(panel_id) => return Some((panel_id, HitDetail::PanelTitleBar)),
                 PanelHit::Content(_) | PanelHit::Outside => {}
             },
-            PaintedHit::SidebarPanel { layout, .. } => match layout.hit_test(point.x, point.y) {
+            PaintedHit::SidebarPanel {
+                id,
+                layout,
+                toolbar,
+            } => match layout.hit_test(point.x, point.y) {
                 SidebarPanelHit::ToolbarButton(button_id) => {
-                    return Some((button_id, HitDetail::SidebarPanelToolbarButton))
+                    // `layout.toolbar_bounds` (hence this arm) is only
+                    // `Some` when the panel's own `toolbar` is `Some` too
+                    // — see `SidebarPanel::layout`'s `match &self.toolbar`.
+                    let bar = toolbar.as_ref().map(|t| t.id).unwrap_or(*id);
+                    return Some((button_id, HitDetail::SidebarPanelToolbarButton { bar }));
                 }
                 SidebarPanelHit::ToolbarEmpty
                 | SidebarPanelHit::Content { .. }
