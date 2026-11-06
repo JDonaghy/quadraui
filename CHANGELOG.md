@@ -240,6 +240,14 @@ only a push to `main` runs this workflow.
   `compose::HoverTooltipTracker` through real `GtkDriver` `MouseMoved`
   dispatch + the new `GtkDriver::tick` seam to show/hide a tooltip from
   pointer input.
+- GTK's `TabBar` rasteriser (`gtk::tab_bar::draw_tab_bar_icons_with_chrome_and_glyphs`)
+  now ellipsis-fits the one tab the strip has room to show only partially,
+  through the shared `primitives::tab_bar::fit_tab_label`, instead of
+  dropping that tab from the strip outright: the shared `TabBar::layout`
+  engine only ever shows a tab at its full measured width or omits it, so
+  this shrinks that tab's measured label width and recomputes the layout
+  when a shortened label would fit the remaining strip space, keeping its
+  close glyph fully on-screen.
 - GTK `Backend::draw_scrollbar` (`gtk::backend`) now follows the overlay
   scrollbar idle-fade seam (`primitives::scrollbar::idle_fade_opacity`)
   instead of painting at permanent full opacity: `gtk::run`'s scroll
