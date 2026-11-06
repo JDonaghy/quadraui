@@ -20,7 +20,11 @@
 //! Win-GUI rasteriser's convention — the caller
 //! ([`crate::win::WinBackend::draw_tab_bar_icons`] /
 //! `draw_tab_bar_icons_layout`) passes `&self.current_theme`, the same
-//! field `Backend::set_theme` writes.
+//! field `Backend::set_theme` writes. Likewise takes `&Style` for
+//! [`Style::tab_padding_x`] — the left+right inset inside a tab's
+//! background fill that the icon/label/close glyph sit inside of — via
+//! `&self.current_style`, the same field `Backend::set_current_style`
+//! writes.
 //!
 //! Scope: no [`crate::TabChrome`] / bracket-frame support (the `Backend`
 //! trait gives `draw_tab_bar_with_chrome` / `tab_bar_layout_with_chrome`
@@ -53,6 +57,7 @@ use crate::event::Rect;
 use crate::primitives::layout_metrics::TextMeasure;
 #[cfg(target_os = "windows")]
 use crate::primitives::tab_bar::TabBarGlyphs;
+use crate::style::Style;
 #[cfg(target_os = "windows")]
 use crate::theme::Theme;
 // `TabBarHits` is `#[deprecated]` — this module still
@@ -62,8 +67,6 @@ use crate::theme::Theme;
 #[allow(deprecated)]
 use crate::{tab_icon_at, TabBar, TabBarHits, TabBarLayout, TabChrome, TabIcon};
 
-/// Left+right padding (DIPs) inside a tab's background fill.
-const TAB_PAD_DIP: f32 = 14.0;
 /// Gap (DIPs) between a tab's label and its close glyph.
 const TAB_INNER_GAP_DIP: f32 = 10.0;
 /// Gap (DIPs) between adjacent tabs.
@@ -125,11 +128,17 @@ fn tab_glyph_text(
 /// [`super::backend::WinBackend`] can call this directly with a
 /// [`super::backend`]-local nominal measurer when no live `DWrite`
 /// handle exists yet.
+///
+/// `style.tab_padding_x` sets the left+right inset (DIPs) inside a tab's
+/// background fill that [`paint_tab_bar_icons_from_layout`] paints the
+/// icon/label/close glyph inside of — both reach into `style` for the
+/// same value, so paint and layout can never disagree about the inset.
 fn pixel_layout(
     measure: &dyn TextMeasure,
     rect: Rect,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
+    style: &Style,
 ) -> (TabBarLayout, usize, usize) {
     let tab_name_widths: Vec<f32> = bar
         .tabs
@@ -143,7 +152,7 @@ fn pixel_layout(
         bar,
         rect.width,
         rect.height,
-        TAB_PAD_DIP,
+        style.tab_padding_x,
         TAB_INNER_GAP_DIP,
         TAB_OUTER_GAP_DIP,
         &tab_name_widths,
@@ -161,8 +170,9 @@ fn compute_layout(
     rect: Rect,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
+    style: &Style,
 ) -> TabBarLayout {
-    pixel_layout(measure, rect, bar, icons).0
+    pixel_layout(measure, rect, bar, icons, style).0
 }
 
 #[allow(deprecated)] // builds the deprecated `TabBarHits` — issue #823
@@ -189,16 +199,23 @@ pub fn win_tab_bar_layout_icons(
     rect: Rect,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
+    style: &Style,
 ) -> TabBarHits {
-    let (layout, corrected_scroll_offset, available_cols) = pixel_layout(measure, rect, bar, icons);
+    let (layout, corrected_scroll_offset, available_cols) =
+        pixel_layout(measure, rect, bar, icons, style);
     hits_from_layout(rect, bar, &layout, corrected_scroll_offset, available_cols)
 }
 
 /// Compute a [`TabBar`]'s layout without painting — the icon-less twin of
 /// [`win_tab_bar_layout_icons`].
 #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-pub fn win_tab_bar_layout(measure: &dyn TextMeasure, rect: Rect, bar: &TabBar) -> TabBarHits {
-    win_tab_bar_layout_icons(measure, rect, bar, &[])
+pub fn win_tab_bar_layout(
+    measure: &dyn TextMeasure,
+    rect: Rect,
+    bar: &TabBar,
+    style: &Style,
+) -> TabBarHits {
+    win_tab_bar_layout_icons(measure, rect, bar, &[], style)
 }
 
 /// Compute a [`TabBar`]'s [`TabBarLayout`] without painting, for a bar
@@ -212,8 +229,9 @@ pub fn win_tab_bar_native_layout_icons(
     rect: Rect,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
+    style: &Style,
 ) -> TabBarLayout {
-    compute_layout(measure, rect, bar, icons)
+    compute_layout(measure, rect, bar, icons, style)
 }
 
 /// Compute a [`TabBar`]'s [`TabBarLayout`] without painting — the
@@ -222,8 +240,9 @@ pub fn win_tab_bar_native_layout(
     measure: &dyn TextMeasure,
     rect: Rect,
     bar: &TabBar,
+    style: &Style,
 ) -> TabBarLayout {
-    win_tab_bar_native_layout_icons(measure, rect, bar, &[])
+    win_tab_bar_native_layout_icons(measure, rect, bar, &[], style)
 }
 
 /// Draw a [`TabBar`] with per-tab icon glyphs into `rect` (DIPs)
@@ -247,7 +266,7 @@ pub fn win_tab_bar_native_layout(
 /// - **Right segments:** painted in `tab_inactive_fg`, or `tab_active_fg`
 ///   when `seg.is_active`.
 #[cfg(target_os = "windows")]
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+#[allow(deprecated, clippy::too_many_arguments)] // returns the deprecated `TabBarHits` — issue #823
 pub fn draw_tab_bar_icons(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -256,6 +275,7 @@ pub fn draw_tab_bar_icons(
     icons: &[Option<TabIcon>],
     hovered_close_tab: Option<usize>,
     theme: &Theme,
+    style: &Style,
 ) -> TabBarHits {
     draw_tab_bar_icons_with_glyphs(
         target,
@@ -265,6 +285,7 @@ pub fn draw_tab_bar_icons(
         icons,
         hovered_close_tab,
         theme,
+        style,
         None,
         false,
     )
@@ -290,10 +311,12 @@ pub fn draw_tab_bar_icons_with_glyphs(
     icons: &[Option<TabIcon>],
     hovered_close_tab: Option<usize>,
     theme: &Theme,
+    style: &Style,
     glyphs: Option<&TabBarGlyphs>,
     nerd_fonts_enabled: bool,
 ) -> TabBarHits {
-    let (layout, corrected_scroll_offset, available_cols) = pixel_layout(dwrite, rect, bar, icons);
+    let (layout, corrected_scroll_offset, available_cols) =
+        pixel_layout(dwrite, rect, bar, icons, style);
     paint_tab_bar_icons_from_layout(
         target,
         dwrite,
@@ -303,6 +326,7 @@ pub fn draw_tab_bar_icons_with_glyphs(
         hovered_close_tab,
         &layout,
         theme,
+        style,
         glyphs,
         nerd_fonts_enabled,
     );
@@ -316,6 +340,7 @@ pub fn draw_tab_bar_icons_with_glyphs(
 /// it, so the two can never paint different pixels — only the return
 /// value differs.
 #[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
 pub fn draw_tab_bar_icons_layout(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -324,8 +349,9 @@ pub fn draw_tab_bar_icons_layout(
     icons: &[Option<TabIcon>],
     hovered_close_tab: Option<usize>,
     theme: &Theme,
+    style: &Style,
 ) -> TabBarLayout {
-    let layout = compute_layout(dwrite, rect, bar, icons);
+    let layout = compute_layout(dwrite, rect, bar, icons, style);
     paint_tab_bar_icons_from_layout(
         target,
         dwrite,
@@ -335,6 +361,7 @@ pub fn draw_tab_bar_icons_layout(
         hovered_close_tab,
         &layout,
         theme,
+        style,
         None,
         false,
     );
@@ -356,6 +383,7 @@ fn paint_tab_bar_icons_from_layout(
     hovered_close_tab: Option<usize>,
     layout: &TabBarLayout,
     theme: &Theme,
+    style: &Style,
     glyphs: Option<&TabBarGlyphs>,
     nerd_fonts_enabled: bool,
 ) {
@@ -397,7 +425,7 @@ fn paint_tab_bar_icons_from_layout(
         } else {
             theme.tab_inactive_fg
         };
-        let mut cursor_x = tab_rect.x + TAB_PAD_DIP;
+        let mut cursor_x = tab_rect.x + style.tab_padding_x;
 
         if let Some(icon) = tab_icon_at(icons, vt.tab_idx) {
             let (iw, ih) = dwrite.measure_text(&icon.glyph).unwrap_or((0.0, 0.0));
@@ -496,8 +524,18 @@ pub fn draw_tab_bar(
     bar: &TabBar,
     hovered_close_tab: Option<usize>,
     theme: &Theme,
+    style: &Style,
 ) -> TabBarHits {
-    draw_tab_bar_icons(target, dwrite, rect, bar, &[], hovered_close_tab, theme)
+    draw_tab_bar_icons(
+        target,
+        dwrite,
+        rect,
+        bar,
+        &[],
+        hovered_close_tab,
+        theme,
+        style,
+    )
 }
 
 /// Draw a [`TabBar`] with no per-tab icons, returning [`TabBarLayout`]
@@ -511,8 +549,18 @@ pub fn draw_tab_bar_layout(
     bar: &TabBar,
     hovered_close_tab: Option<usize>,
     theme: &Theme,
+    style: &Style,
 ) -> TabBarLayout {
-    draw_tab_bar_icons_layout(target, dwrite, rect, bar, &[], hovered_close_tab, theme)
+    draw_tab_bar_icons_layout(
+        target,
+        dwrite,
+        rect,
+        bar,
+        &[],
+        hovered_close_tab,
+        theme,
+        style,
+    )
 }
 
 // Tests below paint through a real `DWrite`/`HeadlessSurface` — the module's
@@ -572,14 +620,15 @@ mod tests {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(0.0, 0.0, W, H);
+        let style = Style::default();
 
         surface
             .paint(|target| {
-                draw_tab_bar(target, &dwrite, rect, &bar, None, &Theme::default());
+                draw_tab_bar(target, &dwrite, rect, &bar, None, &Theme::default(), &style);
             })
             .expect("paint tab bar");
 
-        let layout = compute_layout(&dwrite, rect, &bar, &[]);
+        let layout = compute_layout(&dwrite, rect, &bar, &[], &style);
         assert_eq!(layout.visible_tabs.len(), 2, "both tabs should fit");
 
         for vt in &layout.visible_tabs {
@@ -614,7 +663,7 @@ mod tests {
         // Right segment's `TabBarHits.right_segment_bounds[0]` must agree
         // (in absolute coordinates) with where the layout's own
         // `visible_segments[0]` says it painted.
-        let hits = win_tab_bar_layout(&dwrite, rect, &bar);
+        let hits = win_tab_bar_layout(&dwrite, rect, &bar, &style);
         let vs = &layout.visible_segments[0];
         assert_eq!(
             hits.right_segment_bounds[0],
@@ -632,6 +681,7 @@ mod tests {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(5.0, 0.0, W, H);
+        let style = Style::default();
 
         let surface = HeadlessSurface::new((W + 5.0) as u32, H as u32).expect("create surface");
         let mut painted = None;
@@ -644,11 +694,12 @@ mod tests {
                     &bar,
                     None,
                     &Theme::default(),
+                    &style,
                 ));
             })
             .expect("paint");
         let painted = painted.expect("draw_tab_bar ran");
-        let no_paint = win_tab_bar_layout(&dwrite, rect, &bar);
+        let no_paint = win_tab_bar_layout(&dwrite, rect, &bar, &style);
 
         assert_eq!(painted, no_paint);
     }
@@ -665,6 +716,7 @@ mod tests {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(5.0, 0.0, W, H);
+        let style = Style::default();
 
         let surface = HeadlessSurface::new((W + 5.0) as u32, H as u32).expect("create surface");
         let mut painted = None;
@@ -677,11 +729,12 @@ mod tests {
                     &bar,
                     None,
                     &Theme::default(),
+                    &style,
                 ));
             })
             .expect("paint");
         let painted = painted.expect("draw_tab_bar_layout ran");
-        let no_paint = win_tab_bar_native_layout(&dwrite, rect, &bar);
+        let no_paint = win_tab_bar_native_layout(&dwrite, rect, &bar, &style);
 
         assert_eq!(painted, no_paint);
     }
@@ -699,9 +752,10 @@ mod tests {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(0.0, 0.0, W, H);
+        let style = Style::default();
 
-        let hits = win_tab_bar_layout(&dwrite, rect, &bar);
-        let native = win_tab_bar_native_layout(&dwrite, rect, &bar);
+        let hits = win_tab_bar_layout(&dwrite, rect, &bar, &style);
+        let native = win_tab_bar_native_layout(&dwrite, rect, &bar, &style);
         let mut native_as_hits = tab_bar_hits_from_layout(&native, &bar);
         shift_tab_bar_hits(&mut native_as_hits, rect.x as f64);
 
@@ -729,6 +783,7 @@ mod tests {
         let mut dirty_bar = bar();
         dirty_bar.tabs[0].is_dirty = true;
         let rect = Rect::new(0.0, 0.0, W, H);
+        let style = Style::default();
 
         let glyphs = TabBarGlyphs::new()
             .with_close_glyph("x")
@@ -746,6 +801,7 @@ mod tests {
                     &[],
                     None,
                     &Theme::default(),
+                    &style,
                     Some(&glyphs),
                     true,
                 );
@@ -779,6 +835,7 @@ mod tests {
                     &[],
                     None,
                     &Theme::default(),
+                    &style,
                     None,
                     true,
                 );
@@ -869,6 +926,72 @@ mod tests {
                 .any(|r| r.text.contains(crate::codicon::CLOSE)),
             "expected the default codicon close glyph among painted runs, got {:?}",
             default.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    /// `Style::tab_padding_x` sets the label's leading inset: with no icon
+    /// decorating the tab, the label text run's painted `x` origin sits
+    /// exactly `slot_x + tab_padding_x` from the tab's own slot edge, both
+    /// at the default style and at a distinctly wider one — proving the
+    /// token actually drives the paint rather than the assertion holding
+    /// by coincidence at the default. Drives the real `Backend::draw_tab_bar`
+    /// entry point on `WinBackend` — the same choke point
+    /// `backend_trait_close_dirty_glyph_override_paints_app_glyph_default_paints_codicon`
+    /// exercises above — via the painted-text-run recorder, rather than
+    /// calling [`draw_tab_bar_icons_with_glyphs`] directly.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn tab_padding_x_sets_the_labels_leading_inset() {
+        use crate::backend::Backend;
+        use crate::win::backend::WinBackend;
+
+        let mut single = bar();
+        single.tabs.truncate(1);
+        single.tabs[0].is_closable = false;
+        single.show_tab_close = false;
+        single.right_segments.clear();
+
+        let label_x_for_style = |style: Style| -> (f32, f32) {
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            let mut backend = WinBackend::new();
+            backend
+                .attach_headless(surface.target().clone(), W as u32, H as u32)
+                .expect("attach headless surface");
+            backend.set_current_style(style);
+            backend.set_painted_text_recording(true);
+            backend.begin_frame(crate::event::Viewport::new(W, H, 1.0));
+            let hits = backend.draw_tab_bar(Rect::new(0.0, 0.0, W, H), &single, None);
+            backend.end_frame();
+            let slot_x = hits.slot_positions[0].0 as f32;
+            let runs = backend.text_runs().to_vec();
+            let label_run = runs
+                .iter()
+                .find(|r| r.text == "main.rs")
+                .expect("label must have painted a text run");
+            (label_run.bounds.x, slot_x)
+        };
+
+        let default_style = Style::default();
+        let (default_label_x, default_slot_x) = label_x_for_style(default_style);
+        assert!(
+            (default_label_x - (default_slot_x + default_style.tab_padding_x)).abs() < 0.01,
+            "label x {default_label_x} should sit tab_padding_x={} in from slot edge {default_slot_x}",
+            default_style.tab_padding_x,
+        );
+
+        // A distinctly different inset must move the label by exactly the
+        // difference.
+        let wide_style = Style::default().with_tab_padding_x(26.0);
+        let (wide_label_x, wide_slot_x) = label_x_for_style(wide_style);
+        assert!(
+            (wide_label_x - (wide_slot_x + wide_style.tab_padding_x)).abs() < 0.01,
+            "label x {wide_label_x} should sit tab_padding_x={} in from slot edge {wide_slot_x}",
+            wide_style.tab_padding_x,
+        );
+        assert!(
+            (wide_label_x - default_label_x - 16.0).abs() < 0.01,
+            "widening tab_padding_x by 16.0 (10.0 -> 26.0) should shift the label \
+             by exactly 16.0 (default {default_label_x}, wide {wide_label_x})",
         );
     }
 }

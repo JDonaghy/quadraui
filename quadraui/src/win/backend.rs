@@ -3223,6 +3223,7 @@ impl Backend for WinBackend {
                 icons,
                 hovered_close_tab,
                 &self.current_theme,
+                &self.current_style,
             );
         }
         // No surface/DWrite yet — compute the real layout via the same
@@ -3237,6 +3238,7 @@ impl Backend for WinBackend {
             rect,
             bar,
             icons,
+            &self.current_style,
         )
     }
 
@@ -3261,6 +3263,7 @@ impl Backend for WinBackend {
                 icons,
                 hovered_close_tab,
                 &self.current_theme,
+                &self.current_style,
             );
         }
         // See `draw_tab_bar_icons`'s doc.
@@ -3272,6 +3275,7 @@ impl Backend for WinBackend {
             rect,
             bar,
             icons,
+            &self.current_style,
         )
     }
 
@@ -3303,6 +3307,7 @@ impl Backend for WinBackend {
                 &[],
                 hovered_close_tab,
                 &self.current_theme,
+                &self.current_style,
                 glyphs,
                 self.nerd_fonts_enabled,
             );
@@ -3397,7 +3402,13 @@ impl Backend for WinBackend {
     ) -> TabBarHits {
         #[cfg(target_os = "windows")]
         if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::tab_bar::win_tab_bar_layout_icons(dwrite, rect, bar, icons);
+            return super::tab_bar::win_tab_bar_layout_icons(
+                dwrite,
+                rect,
+                bar,
+                icons,
+                &self.current_style,
+            );
         }
         super::tab_bar::win_tab_bar_layout_icons(
             &NominalTextMeasure {
@@ -3406,6 +3417,7 @@ impl Backend for WinBackend {
             rect,
             bar,
             icons,
+            &self.current_style,
         )
     }
 
@@ -3421,7 +3433,13 @@ impl Backend for WinBackend {
     ) -> TabBarLayout {
         #[cfg(target_os = "windows")]
         if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::tab_bar::win_tab_bar_native_layout_icons(dwrite, rect, bar, icons);
+            return super::tab_bar::win_tab_bar_native_layout_icons(
+                dwrite,
+                rect,
+                bar,
+                icons,
+                &self.current_style,
+            );
         }
         super::tab_bar::win_tab_bar_native_layout_icons(
             &NominalTextMeasure {
@@ -3430,6 +3448,7 @@ impl Backend for WinBackend {
             rect,
             bar,
             icons,
+            &self.current_style,
         )
     }
 
