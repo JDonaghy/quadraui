@@ -113,6 +113,11 @@ only a push to `main` runs this workflow.
   strokes it square (matching `TextInput`'s own square border) via
   `primitives::button::native_surface_paint::focus_ring_geometry`, the
   same geometry `Button`'s ring already uses.
+- Win-GUI `TextInput` painter (`win::text_input`) now paints the same
+  focus-visible ring when `TextInput::has_focus` is set, via the shared
+  `primitives::button::native_surface_paint::focus_ring_geometry` helper
+  and Direct2D's `stroke_rect` — stroked square, matching `TextInput`'s
+  own square border, same as the macOS treatment above.
 - `TabChrome::focused_index`: an optional keyboard-focused-tab index,
   additive on the existing chrome sidecar (not a new `TabBar` field — see
   that field's doc for why) so it breaks no exhaustive `TabBar` literal.

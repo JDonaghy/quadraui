@@ -3826,12 +3826,14 @@ impl Backend for WinBackend {
             // `TextInput` is chrome, not `EditorClassPrimitive`-listed —
             // same `chrome_dwrite`-preferring swap as `Self::draw_palette`.
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            let style = self.style();
             return super::text_input::draw_text_input(
                 &surface.target,
                 dwrite,
                 rect,
                 ti,
                 &self.current_theme,
+                &style,
                 self.current_line_height,
                 self.current_char_width,
             );
