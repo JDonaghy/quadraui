@@ -216,6 +216,16 @@ impl MenuSystem {
     }
 
     /// Draw the menu bar and any open dropdown (including nested submenus).
+    ///
+    /// The dropdown/submenu levels paint through the plain
+    /// [`Backend::draw_context_menu`], not
+    /// [`Backend::draw_context_menu_with_state`]: a dropdown row's hover
+    /// already drives [`Self::dropdown_selected`] /
+    /// [`Self::submenu_selected`] (keyboard and mouse both move the same
+    /// selection cursor, which the submenu machinery below keys off of),
+    /// so `draw_context_menu`'s `is_selected` highlight already is the
+    /// hover cue there — a second, independent `InteractionState` feed
+    /// would just double the bookkeeping for the same visual signal.
     pub fn render(&self, backend: &mut dyn Backend, bar_rect: Rect) {
         let bar = self.build_menu_bar();
         let _ = backend.draw_menu_bar_with_state(bar_rect, &bar, &self.bar_interaction());

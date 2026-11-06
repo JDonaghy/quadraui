@@ -2639,27 +2639,30 @@ pub trait Backend: sealed::Sealed {
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits;
 
-    /// [`Self::draw_tab_bar`], plus a single [`InteractionState`] keyed
-    /// by [`WidgetId`] — the same seam [`Self::draw_button_with_state`] /
-    /// [`Self::draw_toolbar_interactive`] already use — alongside the
-    /// existing positional `hovered_close_tab` (which stays index-keyed;
-    /// see `interaction.rs`'s module doc for why the close-glyph hover
-    /// doesn't join `InteractionState`).
+    /// [`Self::draw_tab_bar`], plus a `hovered_tab` index naming the
+    /// whole tab (not its close glyph) the mouse is over.
+    ///
+    /// Index-keyed, like the existing `hovered_close_tab`, rather than
+    /// [`InteractionState`]-keyed by [`WidgetId`]: [`TabItem`] carries
+    /// no id of its own — only [`TabBar::id`], one per *bar*, which
+    /// can't name *which* tab within it is hovered — so this joins
+    /// `draw_tab_bar`'s own `hovered_close_tab` in `interaction.rs`'s
+    /// "Methods that remain positional" table rather than taking an
+    /// `InteractionState`.
     ///
     /// Additive over [`Self::draw_tab_bar`], not a replacement — the
-    /// default forwards to it (ignoring `interaction`), so every
+    /// default forwards to it (ignoring `hovered_tab`), so every
     /// existing implementor keeps compiling unchanged. A backend's own
     /// whole-tab hover/pressed treatment (painting a tab's own
-    /// background when `interaction.is_hovered(&tab.id)` /
-    /// `is_pressed(&tab.id)`) is implemented per backend, not here — see
-    /// the module doc's "Methods that remain positional" table.
+    /// background when `Some(i) == hovered_tab`) is implemented per
+    /// backend, not here.
     #[allow(deprecated)]
     fn draw_tab_bar_with_state(
         &mut self,
         rect: Rect,
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
-        _interaction: &InteractionState,
+        _hovered_tab: Option<usize>,
     ) -> TabBarHits {
         self.draw_tab_bar(rect, bar, hovered_close_tab)
     }
@@ -2688,6 +2691,25 @@ pub trait Backend: sealed::Sealed {
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
     ) -> TabBarLayout;
+
+    /// [`Self::draw_tab_bar_layout`], plus a `hovered_tab` index naming
+    /// the whole tab the mouse is over — the [`TabBarLayout`]-returning
+    /// twin of [`Self::draw_tab_bar_with_state`], reachable from the
+    /// `py`/`node` paint path (`quadraui-binding-core`'s renderer calls
+    /// `draw_tab_bar_layout`, never the deprecated `draw_tab_bar`).
+    ///
+    /// Additive over [`Self::draw_tab_bar_layout`], not a replacement —
+    /// the default forwards to it (ignoring `hovered_tab`), so every
+    /// existing implementor keeps compiling unchanged.
+    fn draw_tab_bar_layout_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        _hovered_tab: Option<usize>,
+    ) -> TabBarLayout {
+        self.draw_tab_bar_layout(rect, bar, hovered_close_tab)
+    }
     /// Draw a tab bar with per-tab icon glyphs — VS Code's coloured
     /// language/file-type badge on each tab.
     ///

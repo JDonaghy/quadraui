@@ -381,8 +381,14 @@ pub(crate) mod native_surface_paint {
             let item = &bar.items[vi.item_idx];
             let is_active =
                 bar.open_item == Some(vi.item_idx) || bar.focused_item == Some(vi.item_idx);
-            let is_pressed = interaction.is_some_and(|i| i.is_pressed(&item.id));
-            let is_hovered = interaction.is_some_and(|i| i.is_hovered(&item.id));
+            // Gated on `!item.disabled`, mirroring `vis.clickable`'s gate
+            // in `primitives::context_menu`'s equivalent: `MenuSystem`
+            // happens to exclude disabled items from `focused_item`
+            // already, but a host feeding its own `InteractionState`
+            // through this seam directly must not get a tint on an item
+            // that can't be clicked.
+            let is_pressed = !item.disabled && interaction.is_some_and(|i| i.is_pressed(&item.id));
+            let is_hovered = !item.disabled && interaction.is_some_and(|i| i.is_hovered(&item.id));
 
             let (fg, bg) = if is_active {
                 (theme.tab_active_fg, theme.tab_active_bg)
@@ -391,12 +397,20 @@ pub(crate) mod native_surface_paint {
             } else {
                 (theme.tab_inactive_fg, theme.tab_bar_bg)
             };
+            // `is_active` (open or keyboard-focused) outranks `is_hovered`
+            // here: `focused_item` is also how the closed bar represents
+            // "mouse is over this item" (see `MenuSystem::bar_interaction`),
+            // so the two flags are frequently true for the same item. Were
+            // hover checked first, that item would downgrade from
+            // `tab_active_bg` to the fainter `menu_item_hover_bg` the moment
+            // it is hovered — a weaker highlight than before hovering,
+            // which is backwards. Pressed still wins over both.
             let row_bg = if is_pressed {
                 Some(theme.menu_item_pressed_bg(theme.tab_bar_bg))
-            } else if is_hovered {
-                Some(theme.menu_item_hover_bg(theme.tab_bar_bg))
             } else if is_active {
                 Some(bg)
+            } else if is_hovered {
+                Some(theme.menu_item_hover_bg(theme.tab_bar_bg))
             } else {
                 None
             };
@@ -745,6 +759,37 @@ pub(crate) mod native_surface_paint {
         }
 
         #[test]
+        fn hovering_the_closed_bars_focused_item_keeps_active_bg_not_hover_bg() {
+            // Mirrors `MenuSystem::bar_interaction`'s own production
+            // feed on a closed bar: `handle_mouse_moved` sets
+            // `focused_item = Some(i)` for the hovered item, so `i` is
+            // both `is_active` (via `focused_item`) and `is_hovered`
+            // (via the fed `InteractionState`) at once. The stronger
+            // `tab_active_bg` must win, not the fainter hover tint.
+            let mut bar = drift_bar();
+            bar.open_item = None;
+            bar.focused_item = Some(0);
+            let layout = drift_layout(&bar);
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(WidgetId::new("file")));
+            let mut surface = RecordingSurface::default();
+            paint_interactive(&bar, &layout, &mut surface, &theme, &interaction);
+
+            let hover_bg = theme.menu_item_hover_bg(theme.tab_bar_bg);
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == hover_bg),
+                "the focused (hovered) item must not downgrade to the hover tint: {:?}",
+                surface.fills
+            );
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == theme.tab_active_bg),
+                "the focused (hovered) item must keep theme.tab_active_bg: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
         fn leaving_the_item_clears_the_hover_fill() {
             let bar = idle_bar();
             let layout = drift_layout(&bar);
@@ -757,6 +802,34 @@ pub(crate) mod native_surface_paint {
             assert!(
                 !surface.fills.iter().any(|(_, c)| *c == hover_bg),
                 "no item is hovered, so no item should paint the hover tint: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn disabled_item_is_never_tinted_even_when_fed_as_hovered() {
+            // `MenuSystem` happens to exclude disabled items from
+            // `focused_item` already, but a host that feeds its own
+            // `InteractionState` through this seam directly must not
+            // get a tint on an item that can't be clicked.
+            let mut bar = idle_bar();
+            bar.items[0].disabled = true;
+            let layout = drift_layout(&bar);
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(WidgetId::new("file")));
+            interaction.set_pressed(Some(WidgetId::new("file")));
+            let mut surface = RecordingSurface::default();
+            paint_interactive(&bar, &layout, &mut surface, &theme, &interaction);
+
+            let hover_bg = theme.menu_item_hover_bg(theme.tab_bar_bg);
+            let pressed_bg = theme.menu_item_pressed_bg(theme.tab_bar_bg);
+            assert!(
+                !surface
+                    .fills
+                    .iter()
+                    .any(|(_, c)| *c == hover_bg || *c == pressed_bg),
+                "a disabled item fed as hovered/pressed must not tint: {:?}",
                 surface.fills
             );
         }

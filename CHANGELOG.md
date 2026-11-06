@@ -60,14 +60,14 @@ only a push to `main` runs this workflow.
 ## [Unreleased]
 ### Added
 - `Backend::draw_context_menu_with_state`/`draw_palette_with_state`/
-  `draw_menu_bar_with_state`/`draw_tab_bar_with_state`: the hover/pressed
-  seam for `ContextMenu`/`Palette`/`MenuBar`/`TabBar`, reading a single
-  `InteractionState` the same way `draw_button_with_state`/
-  `draw_toolbar_interactive` already do. Each defaults to its existing
-  positional method (ignoring `interaction`), so no backend breaks.
-  `Theme::menu_item_hover_bg`/`menu_item_pressed_bg` (new accessor
-  methods, derived from `list_hover_bg`/`list_pressed_bg` — no new
-  `Theme` field) supply the tint. The shared
+  `draw_menu_bar_with_state`: the hover/pressed seam for
+  `ContextMenu`/`Palette`/`MenuBar`, reading a single `InteractionState`
+  the same way `draw_button_with_state`/`draw_toolbar_interactive`
+  already do. Each defaults to its existing positional method (ignoring
+  `interaction`), so no backend breaks. `Theme::menu_item_hover_bg`/
+  `menu_item_pressed_bg` (new accessor methods, derived from
+  `list_hover_bg`/`list_pressed_bg` — no new `Theme` field) supply the
+  tint. The shared
   `primitives::{context_menu,palette,menu_bar}::native_surface_paint`
   painters implement the actual hover/pressed treatment (new
   `paint_interactive`/`paint_with_glyphs_interactive` entry points,
@@ -82,8 +82,19 @@ only a push to `main` runs this workflow.
   host (`quadraui-py`/`quadraui-node`) writes any hover-tracking code of
   its own. `quadraui-binding-core`'s `Palette` `ExtraPaint` impl does
   the same for the create row via its existing generic chrome-hit
-  bookkeeping. `TabBar`'s own whole-tab hover is a per-backend follow-up
-  (GTK/macOS/Win32) — the TUI backend is unchanged.
+  bookkeeping.
+- `Backend::draw_tab_bar_with_state`/`draw_tab_bar_layout_with_state`:
+  the hover/pressed seam for `TabBar`, taking a `hovered_tab:
+  Option<usize>` index alongside the existing `hovered_close_tab`
+  rather than an `InteractionState` — `TabItem` carries no `WidgetId`
+  of its own, only `TabBar::id` (one per bar), which can't name which
+  tab within it is hovered (see `interaction.rs`'s module doc). Both
+  default to their existing method (ignoring `hovered_tab`), so no
+  backend breaks; `draw_tab_bar_layout_with_state` is reachable from
+  `quadraui-binding-core`'s paint path, which calls
+  `draw_tab_bar_layout`, never the deprecated `draw_tab_bar`. Painting
+  a tab's own hover/pressed background is a per-backend follow-up
+  (GTK/macOS/Win32) — no backend overrides either method yet.
 - `ListPaintState`/`TreePaintState`/`DataTablePaintState`: per-frame,
   `#[non_exhaustive]` paint-time state (`hovered_idx`, `pressed_idx`,
   `scroll_px: Option<f32>`) for `ListView`/`TreeView`/`DataTable`,

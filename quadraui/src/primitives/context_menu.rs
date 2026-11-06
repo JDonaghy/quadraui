@@ -833,12 +833,19 @@ pub(crate) mod native_surface_paint {
                 && item_id.is_some_and(|id| interaction.is_some_and(|i| i.is_pressed(&id)));
             let is_hovered = vis.clickable
                 && item_id.is_some_and(|id| interaction.is_some_and(|i| i.is_hovered(&id)));
+            // `is_selected` (the keyboard-moved cursor) outranks
+            // `is_hovered` here: a mouse can hover the very row the
+            // keyboard last selected, and `theme.selected_bg` is meant
+            // to read as the stronger of the two cues. Were hover
+            // checked first, hovering the selected row would downgrade
+            // it to the fainter `menu_item_hover_bg`. Pressed still wins
+            // over both.
             let row_bg = if is_pressed {
                 Some(theme.menu_item_pressed_bg(bg))
-            } else if is_hovered {
-                Some(theme.menu_item_hover_bg(bg))
             } else if is_selected {
                 Some(theme.selected_bg)
+            } else if is_hovered {
+                Some(theme.menu_item_hover_bg(bg))
             } else {
                 None
             };
@@ -1896,10 +1903,15 @@ mod tests {
 
         #[test]
         fn hovered_item_paints_menu_item_hover_bg() {
+            // Hovers "other" (index 1), not "copy" (index 0, the
+            // `menu()` helper's default `selected_idx`) — hovering the
+            // keyboard-selected row is covered separately below, and
+            // paints `theme.selected_bg` instead; see
+            // `hovering_the_selected_row_keeps_selected_bg_not_hover_bg`.
             let (m, layout) = popup("copy");
             let theme = Theme::default();
             let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(WidgetId::new("copy")));
+            interaction.set_hovered(Some(WidgetId::new("other")));
             let mut surface = RecordingSurface::default();
             native_surface_paint::paint_interactive(
                 &m,
@@ -1914,6 +1926,39 @@ mod tests {
             assert!(
                 surface.fills.iter().any(|(_, c)| *c == expected),
                 "hovered item must paint Theme::menu_item_hover_bg: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn hovering_the_selected_row_keeps_selected_bg_not_hover_bg() {
+            // "copy" is index 0, the `menu()` helper's default
+            // `selected_idx` — hovering it with the mouse must not
+            // downgrade its stronger `theme.selected_bg` highlight to
+            // the fainter hover tint.
+            let (m, layout) = popup("copy");
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(WidgetId::new("copy")));
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_interactive(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                &interaction,
+            );
+            let hover_bg = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == hover_bg),
+                "the keyboard-selected row must not downgrade to the hover tint when hovered: {:?}",
+                surface.fills
+            );
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == theme.selected_bg),
+                "the keyboard-selected row must keep theme.selected_bg while hovered: {:?}",
                 surface.fills
             );
         }
