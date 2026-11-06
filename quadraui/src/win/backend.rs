@@ -734,6 +734,29 @@ pub struct WinBackend {
     /// with no WinAPI dependency, same rationale as `zones`/`user_events`
     /// above.
     caret_blink: crate::caret_blink::CaretBlinkState,
+    /// Timestamp of the most recent mouse-wheel scroll, fed in by
+    /// `super::run`'s `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` handler via
+    /// [`Self::note_scroll_activity`] — the Win-GUI twin of
+    /// `MacBackend::scroll_fade_last_interaction`. [`Self::new`] seeds
+    /// this with its own construction instant rather than `None`, so a
+    /// scrollbar painted immediately after startup (a live app's first
+    /// frame, a headless pixel test, a gallery capture) still shows at
+    /// full opacity like VS Code's overlay scrollbars briefly do on
+    /// load, instead of starting invisible. With no further scroll
+    /// activity it fades out exactly like any other idle period. `None`
+    /// is a reachable test seam ([`Self::set_scroll_last_interaction`])
+    /// for "never interacted, already fully faded". Not `target_os`-gated:
+    /// the field itself has no WinAPI dependency, same rationale as
+    /// `current_pointer_shape` above — only the real `WM_MOUSEWHEEL`
+    /// handler that would populate it needs a real host.
+    scroll_fade_last_interaction: Option<std::time::Instant>,
+    /// Test seam overriding "now" for
+    /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
+    /// instead of [`std::time::Instant::now`], so pixel tests can assert
+    /// the fade curve deterministically without a real sleep — the
+    /// Win-GUI twin of `MacBackend::scroll_fade_clock_override`. `None`
+    /// (the default) uses real wall-clock time, as a live app does.
+    scroll_fade_clock_override: Option<std::time::Instant>,
 }
 
 impl WinBackend {
@@ -823,6 +846,8 @@ impl WinBackend {
             overlay_bounds_this_frame: Vec::new(),
             frame_scheduler: crate::runtime::FrameScheduler::new(),
             caret_blink: crate::caret_blink::CaretBlinkState::default(),
+            scroll_fade_last_interaction: Some(std::time::Instant::now()),
+            scroll_fade_clock_override: None,
         }
     }
 
@@ -905,6 +930,67 @@ impl WinBackend {
     /// [`Self::current_theme`].
     pub fn current_style(&self) -> &crate::Style {
         &self.current_style
+    }
+
+    /// Record that a mouse-wheel scroll just arrived, resetting the
+    /// overlay scrollbar's idle-fade clock to "now". `super::run`'s
+    /// `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` handler calls this for every
+    /// message it receives before dispatching the translated
+    /// [`UiEvent::Scroll`] — mirrors `MacBackend::note_scroll_activity`.
+    ///
+    /// [`UiEvent::Scroll`]: crate::UiEvent::Scroll
+    pub fn note_scroll_activity(&mut self) {
+        self.scroll_fade_last_interaction = Some(self.fade_now());
+    }
+
+    /// Test seam: pin the overlay scrollbar's last-interaction instant
+    /// directly instead of going through a synthetic
+    /// [`Self::note_scroll_activity`] call. `None` resets to "never
+    /// scrolled" (fully faded). Mirrors `MacBackend::set_scroll_last_interaction`.
+    pub fn set_scroll_last_interaction(&mut self, at: Option<std::time::Instant>) {
+        self.scroll_fade_last_interaction = at;
+    }
+
+    /// The overlay scrollbar's current last-interaction instant —
+    /// [`Self::new`]'s own construction time until a real scroll (or a
+    /// test) resets it. `None` once explicitly cleared via
+    /// [`Self::set_scroll_last_interaction`].
+    pub fn scroll_last_interaction(&self) -> Option<std::time::Instant> {
+        self.scroll_fade_last_interaction
+    }
+
+    /// Test seam: override what [`Self::fade_now`] returns, so a pixel
+    /// test can assert the fade curve at an exact offset from the last
+    /// interaction without a real sleep. `None` (the default) falls
+    /// back to [`std::time::Instant::now`]. Mirrors
+    /// `MacBackend::set_fade_clock_override`.
+    pub fn set_fade_clock_override(&mut self, now: Option<std::time::Instant>) {
+        self.scroll_fade_clock_override = now;
+    }
+
+    /// "Now", for overlay-scrollbar fade purposes — real wall-clock
+    /// time unless a test pinned [`Self::set_fade_clock_override`].
+    fn fade_now(&self) -> std::time::Instant {
+        self.scroll_fade_clock_override
+            .unwrap_or_else(std::time::Instant::now)
+    }
+
+    /// Opacity multiplier [`Backend::draw_scrollbar`] paints the track
+    /// and thumb at: `0.0` if [`Self::scroll_last_interaction`] has been
+    /// explicitly cleared to `None`, otherwise
+    /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
+    /// sampled at [`Self::fade_now`]. Mirrors `MacBackend::scrollbar_fade_opacity`.
+    ///
+    /// Only read from [`Backend::draw_scrollbar`]'s `target_os =
+    /// "windows"` painted path (`self.surface` itself is `cfg`-gated to
+    /// that target) — see [`Self::drain_user_events`]'s doc for why that
+    /// reads as dead code on a non-Windows `cargo check` and isn't.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    fn scrollbar_fade_opacity(&self) -> f32 {
+        match self.scroll_fade_last_interaction {
+            Some(last) => crate::primitives::scrollbar::idle_fade_opacity(last, self.fade_now()),
+            None => 0.0,
+        }
     }
 
     /// Resolve the row pitch `draw_list`/`draw_tree`/`draw_data_table`
@@ -4480,13 +4566,20 @@ impl Backend for WinBackend {
     /// is attached. See [`Self::draw_status_bar`]'s doc for the "surface
     /// not attached yet" fallback posture. `rect` is unused on the
     /// painted path — `scrollbar.track` is authoritative, mirroring
-    /// `MacBackend::draw_scrollbar`/`GtkBackend::draw_scrollbar`.
+    /// `MacBackend::draw_scrollbar`/`GtkBackend::draw_scrollbar`. Paints
+    /// through [`crate::primitives::scrollbar::native_surface_paint::paint_with_opacity`]
+    /// at [`Self::scrollbar_fade_opacity`] so the bar follows the same
+    /// overlay idle-fade curve as the macOS leg, rather than staying
+    /// permanently opaque.
     fn draw_scrollbar(&mut self, rect: Rect, scrollbar: &Scrollbar) {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() {
             let _ = rect;
             let theme = self.current_theme;
-            crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, self, &theme);
+            let opacity = self.scrollbar_fade_opacity();
+            crate::primitives::scrollbar::native_surface_paint::paint_with_opacity(
+                scrollbar, self, &theme, opacity,
+            );
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
@@ -6742,8 +6835,9 @@ mod tests {
         let expected_row_h = ((backend.current_line_height as f64 * 1.4).round()) as f32;
         assert_eq!(
             sb.track.width,
-            backend.current_style().scrollbar_width,
-            "track width must follow the live Style::scrollbar_width token"
+            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+            "default track width must match the TREE_VSCROLLBAR_WIDTH literal, \
+             independent of whatever Style::scrollbar_width happens to read"
         );
         assert!(
             sb.thumb_len >= expected_row_h,
@@ -6758,18 +6852,24 @@ mod tests {
     /// track and the hit-tested track can never drift apart, at the
     /// default width or a host override. Mirrors
     /// `win_backend_list_vscrollbar_track_width_follows_style_token`.
-    /// Pure geometry, no `target_os = "windows"` gate needed.
+    /// Pure geometry, no `target_os = "windows"` gate needed. `rect` is
+    /// 200px wide — wider than the 24px override below — so the track
+    /// (`area.x + area.width - track_width`) stays inside its own rect
+    /// instead of hanging off the left edge the way a narrower fixture
+    /// would.
     #[test]
     fn win_backend_tree_vscrollbar_track_width_follows_style_token() {
         let mut backend = WinBackend::new();
         let tree = flat_tree(15);
-        let rect = Rect::new(0.0, 0.0, 20.0, 300.0);
+        let rect = Rect::new(0.0, 0.0, 200.0, 300.0);
 
         let default_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
             .expect("15 rows at the real 22px row pitch overflow a 300px viewport");
         assert_eq!(
             default_sb.track.width,
-            backend.current_style().scrollbar_width
+            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+            "default track width must match the TREE_VSCROLLBAR_WIDTH literal, \
+             independent of whatever Style::scrollbar_width happens to read"
         );
 
         backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
@@ -6981,7 +7081,12 @@ mod tests {
 
         let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
             .expect("15 rows at a 50px override overflow a 300px viewport (6 visible)");
-        assert_eq!(sb.track.width, backend.current_style().scrollbar_width);
+        assert_eq!(
+            sb.track.width,
+            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+            "default track width must match the TREE_VSCROLLBAR_WIDTH literal, \
+             independent of whatever Style::scrollbar_width happens to read"
+        );
         assert!(sb.thumb_len >= 50.0);
     }
 
