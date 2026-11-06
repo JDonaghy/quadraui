@@ -960,6 +960,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &Theme::default(),
                 &style,
+                None,
+                None,
             );
 
             let track_fill = surface
@@ -1376,6 +1378,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &style,
+                None,
+                None,
             );
 
             let (text_rect, _, _) = surface
