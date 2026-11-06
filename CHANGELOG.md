@@ -155,6 +155,14 @@ only a push to `main` runs this workflow.
   actually overlaps, so a toast or tooltip that lands entirely inside a
   large focused widget — never touching the stroke itself — still gets its
   ring.
+- Win-GUI `Backend::draw_focus_ring` (`win::backend`) no longer strokes over
+  a tooltip or toast painted earlier the same frame — the same
+  `super::run::render_frame`-calls-the-ring-after-`AppLogic::render` ordering
+  bug `macos::backend::MacBackend::draw_focus_ring`'s fix above addresses,
+  now closed on Win-GUI too. `WinBackend` records every tooltip/toast bound
+  painted this frame and skips the portion of the ring's perimeter stroke
+  band that overlaps one, so a toast or tooltip inset entirely inside a
+  large focused widget still leaves the ring intact.
 - macOS `TabBar` painter (`macos::tab_bar`) now ellipsis-fits a tab's label
   into whatever space is left on the strip via the shared
   `primitives::tab_bar::fit_tab_label`, instead of dropping the whole tab
