@@ -155,6 +155,40 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
+        // `InteractionState`-carrying counterpart to `draw_tab_bar`. The
+        // state names the bar's own id as hovered so a backend that
+        // honours the seam takes its hover branch rather than only the
+        // untinted path; the label must still reach the frame either way.
+        method: "draw_tab_bar_with_state",
+        needle: Some("c0tabsstate"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar_id = id("tab-bar-state");
+            let bar = TabBar {
+                id: bar_id,
+                tabs: vec![TabItem {
+                    label: " c0tabsstate ".to_string(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: false,
+                }],
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: false,
+                compact: false,
+            };
+            let interaction = InteractionState::from_parts(Some(bar_id), None);
+            let _ = b.draw_tab_bar_with_state(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &bar,
+                None,
+                &interaction,
+            );
+        },
+    },
+    Case {
         method: "draw_tab_bar_icons",
         needle: Some("c0icontabs"),
         paint: |b, area| {
@@ -789,6 +823,35 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
+        // `InteractionState`-carrying counterpart to `draw_palette`. The
+        // state names the palette's own id — the one stable id a
+        // `Palette` carries — as hovered, so a backend that honours the
+        // seam tints its pinned create-action row.
+        method: "draw_palette_with_state",
+        needle: Some("c0paltstate"),
+        paint: |b, area| {
+            let palette_id = id("palette-state");
+            let palette = Palette {
+                id: palette_id,
+                title: "Palette".to_string(),
+                items: vec![PaletteItem {
+                    text: StyledText::plain("c0paltstate"),
+                    detail: None,
+                    icon: None,
+                    match_positions: vec![],
+                    depth: 0,
+                    expandable: false,
+                    expanded: false,
+                }],
+                show_query: true,
+                mode: PaletteMode::List,
+                ..Default::default()
+            };
+            let interaction = InteractionState::from_parts(Some(palette_id), None);
+            b.draw_palette_with_state(area, &palette, &interaction);
+        },
+    },
+    Case {
         method: "draw_settings_chrome",
         needle: Some("c0sett"),
         paint: |b, area| {
@@ -924,6 +987,40 @@ pub const CASES: &[Case] = &[
                 ContextMenuItemMeasure::new(lh)
             });
             let _ = b.draw_context_menu(&menu, &layout);
+        },
+    },
+    Case {
+        // `InteractionState`-carrying counterpart to
+        // `draw_context_menu`. The state names the single item's id as
+        // hovered so a backend that honours the seam takes its tint
+        // branch; the item label must still reach the frame either way.
+        method: "draw_context_menu_with_state",
+        needle: Some("c0ctxmstate"),
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            let item_id = id("context-menu-state-item");
+            let menu = ContextMenu {
+                id: id("context-menu-state"),
+                items: vec![ContextMenuItem {
+                    id: Some(item_id),
+                    label: StyledText::plain("c0ctxmstate"),
+                    detail: None,
+                    disabled: false,
+                    key_equivalent: None,
+                    checked: None,
+                    icon: None,
+                    submenu: None,
+                }],
+                selected_idx: 0,
+                bg: None,
+                placement: ContextMenuPlacement::AnchorPoint,
+            };
+            let layout = menu.layout(0.0, 0.0, area, cw * 20.0, |_| {
+                ContextMenuItemMeasure::new(lh)
+            });
+            let interaction = InteractionState::from_parts(Some(item_id), None);
+            let _ = b.draw_context_menu_with_state(&menu, &layout, &interaction);
         },
     },
     Case {
@@ -1205,6 +1302,32 @@ pub const CASES: &[Case] = &[
                 focused_item: None,
             };
             let _ = b.draw_menu_bar(Rect::new(0.0, 0.0, area.width, lh), &bar);
+        },
+    },
+    Case {
+        // `InteractionState`-carrying counterpart to `draw_menu_bar`.
+        // The state names the single top-level item's id as hovered so a
+        // backend that honours the seam takes its tint branch; the item
+        // label must still reach the frame either way.
+        method: "draw_menu_bar_with_state",
+        needle: Some("c0menustate"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let item_id = id("menu-bar-state-item");
+            let bar = MenuBar {
+                id: id("menu-bar-state"),
+                items: vec![MenuBarItem {
+                    id: item_id,
+                    label: "c0menustate".to_string(),
+                    disabled: false,
+                    submenu: None,
+                }],
+                open_item: None,
+                focused_item: None,
+            };
+            let interaction = InteractionState::from_parts(Some(item_id), None);
+            let _ =
+                b.draw_menu_bar_with_state(Rect::new(0.0, 0.0, area.width, lh), &bar, &interaction);
         },
     },
     // ── More chrome-only primitives ────────────────────────────────────
