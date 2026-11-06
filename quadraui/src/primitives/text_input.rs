@@ -1086,9 +1086,9 @@ impl TextInput {
 // the outset rect/width `crate::primitives::button::native_surface_paint::
 // focus_ring_geometry` resolves from `style.focus_ring_width` — the same
 // helper `Button`'s shared painter calls — so the ring matches `Button`'s
-// pixel-for-pixel. `TextInput`'s own border always strokes square
-// (`surface_stroke_rect`, no radius; see this module's own border stroke
-// below), so the ring strokes square too via `surface_stroke_rect`
+// outset gap and stroke width. `TextInput`'s own border always strokes
+// square (`surface_stroke_rect`, no radius; see this module's own border
+// stroke below), so the ring strokes square too via `surface_stroke_rect`
 // rather than `surface_stroke_rounded_rect`, ignoring the geometry's
 // `corner_radius` — matching a rounded ring to a square border would
 // trace a mismatched outline.
@@ -1343,25 +1343,34 @@ mod native_surface_paint {
             assert!(surface.text_runs.is_empty());
         }
 
-        /// Focused paints the outset ring stroke (in
-        /// `theme.focus_ring_color()`, distinct from the border stroke);
-        /// unfocused paints neither.
+        /// Focused paints an outset stroke at exactly
+        /// `focus_ring_geometry(rect, &style).rect`, with
+        /// `style.focus_ring_width` — geometry the border stroke (always
+        /// `rect` itself, at width `1.0`) can't satisfy, so this can't
+        /// pass from the border stroke alone; unfocused paints no stroke
+        /// at that outset rect at all.
         #[test]
         fn focus_ring_strokes_only_when_focused() {
             let theme = Theme::default();
             let style = Style::default();
             let rect = Rect::new(0.0, 0.0, 200.0, 20.0);
+            let ring = focus_ring_geometry(rect, &style);
+            assert_ne!(
+                ring.rect, rect,
+                "ring rect must be outset from the border rect for this test to discriminate them"
+            );
 
             let focused = sample(vec!["hello"], 0, 3);
             let layout = focused.layout(rect, TextInputMeasure::new(16.0, 8.0));
             let mut surface = RecordingSurface::default();
             paint(&focused, &layout, &mut surface, &theme, &style);
             assert!(
-                surface
-                    .strokes
-                    .iter()
-                    .any(|(_, c, _)| *c == theme.focus_ring_color()),
-                "expected a ring-colored stroke when focused, strokes were {:?}",
+                surface.strokes.iter().any(|(r, c, w)| {
+                    *r == ring.rect
+                        && *c == theme.focus_ring_color()
+                        && *w == style.focus_ring_width
+                }),
+                "expected a ring stroke at the outset geometry when focused, strokes were {:?}",
                 surface.strokes,
             );
 
@@ -1371,11 +1380,8 @@ mod native_surface_paint {
             let mut surface = RecordingSurface::default();
             paint(&unfocused, &layout, &mut surface, &theme, &style);
             assert!(
-                !surface
-                    .strokes
-                    .iter()
-                    .any(|(_, c, _)| *c == theme.focus_ring_color()),
-                "expected no ring-colored stroke when unfocused, strokes were {:?}",
+                !surface.strokes.iter().any(|(r, _, _)| *r == ring.rect),
+                "expected no stroke at the outset geometry when unfocused, strokes were {:?}",
                 surface.strokes,
             );
         }
