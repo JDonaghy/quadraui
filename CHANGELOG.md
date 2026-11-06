@@ -141,9 +141,11 @@ only a push to `main` runs this workflow.
   `super::run::render_frame`-calls-the-ring-after-`AppLogic::render` ordering
   bug `macos::backend::MacBackend::draw_focus_ring`'s fix above addresses,
   now closed on Win-GUI too. `WinBackend` records every tooltip/toast bound
-  painted this frame and skips the portion of the ring's perimeter stroke
-  band that overlaps one, so a toast or tooltip inset entirely inside a
-  large focused widget still leaves the ring intact.
+  painted this frame; if any one of them overlaps the ring's perimeter
+  stroke band anywhere (not the whole focused rect), `draw_focus_ring`
+  skips painting the ring entirely for that call, so a toast or tooltip
+  inset entirely inside a large focused widget, never touching the stroke
+  band, still leaves the ring intact.
 - macOS `TabBar` painter (`macos::tab_bar`) now ellipsis-fits a tab's label
   into whatever space is left on the strip via the shared
   `primitives::tab_bar::fit_tab_label`, instead of dropping the whole tab
