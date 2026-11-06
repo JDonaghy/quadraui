@@ -194,6 +194,16 @@ only a push to `main` runs this workflow.
   (`MacBackend::note_scroll_activity`/`scrollbar_fade_opacity`). New test
   seams `WinBackend::set_scroll_last_interaction`/`set_fade_clock_override`
   let a headless pixel test assert the fade curve deterministically.
+- GTK `TabBar` painter (`gtk::tab_bar`) now insets a tab's label, icon and
+  close/dirty glyph from the tab edge by `Style::tab_padding_x` instead of
+  a fixed 14px literal (default style value: 10px, VS Code's own tab
+  inset) — tab widths and hit rects grow to match, mirroring
+  `row_padding_x`'s treatment in the shared list/tree/menu/palette
+  painter and the macOS `TabBar`'s own `tab_padding_x` wiring. `GtkBackend`'s
+  no-paint `tab_bar_layout`/`resolve_tab_bar_layout` twins (and their
+  `_with_chrome` variants) read the same style token, so paint and
+  hit-test geometry cannot drift apart. `bar.compact` keeps its own fixed
+  2px inset, unaffected by this token.
 - macOS `Backend::draw_focus_ring` (`macos::backend`) no longer strokes over
   a tooltip or toast painted earlier the same frame. `super::run::render_frame`
   paints the generic tab-stop focus ring *after* `AppLogic::render` returns
