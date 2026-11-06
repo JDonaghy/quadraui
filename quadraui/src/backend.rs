@@ -2273,14 +2273,25 @@ pub trait Backend: sealed::Sealed {
     /// `TreeView::rows` clicks.
     ///
     /// Additive over [`Self::draw_tree`], not a replacement — the
-    /// default forwards to it (ignoring both indices), so every
-    /// existing call site and implementor keeps compiling unchanged.
+    /// default forwards to it (ignoring both indices and
+    /// `focus_ring_visible`), so every existing call site and
+    /// implementor keeps compiling unchanged.
+    ///
+    /// `focus_ring_visible` strokes a `Theme::focus_ring_color` ring
+    /// at `Style::focus_ring_width` around the row
+    /// [`crate::TreeView::selected_path`] points at. Not the same
+    /// signal as [`crate::TreeView::has_focus`] — see that field's doc
+    /// for why some hosts set it as a persistent "currently showing"
+    /// indicator unrelated to real keyboard focus. Pass
+    /// `ring.is_focused(&tree.id) && ring.is_focus_visible()` from a
+    /// host's own [`crate::compose::FocusRing`] instead.
     fn draw_tree_with_state(
         &mut self,
         rect: Rect,
         tree: &TreeView,
         _hovered_idx: Option<usize>,
         _pressed_idx: Option<usize>,
+        _focus_ring_visible: bool,
     ) {
         self.draw_tree(rect, tree)
     }
@@ -2294,14 +2305,25 @@ pub trait Backend: sealed::Sealed {
     /// its `hovered_idx()` here.
     ///
     /// Additive over [`Self::draw_list`], not a replacement — the
-    /// default forwards to it (ignoring both indices), so every
-    /// existing call site and implementor keeps compiling unchanged.
+    /// default forwards to it (ignoring both indices and
+    /// `focus_ring_visible`), so every existing call site and
+    /// implementor keeps compiling unchanged.
+    ///
+    /// `focus_ring_visible` strokes a `Theme::focus_ring_color` ring
+    /// at `Style::focus_ring_width` around the row
+    /// [`crate::ListView::selected_idx`] points at. Not the same
+    /// signal as [`crate::ListView::has_focus`] — see that field's doc
+    /// for why some hosts set it as a persistent "currently showing"
+    /// indicator unrelated to real keyboard focus. Pass
+    /// `ring.is_focused(&list.id) && ring.is_focus_visible()` from a
+    /// host's own [`crate::compose::FocusRing`] instead.
     fn draw_list_with_state(
         &mut self,
         rect: Rect,
         list: &ListView,
         _hovered_idx: Option<usize>,
         _pressed_idx: Option<usize>,
+        _focus_ring_visible: bool,
     ) {
         self.draw_list(rect, list)
     }

@@ -50,6 +50,13 @@ use crate::types::WidgetId;
 /// computes that bool as `ring.is_focused(id) && ring.is_focus_visible()`
 /// rather than `ring.is_focused(id)` alone. [`crate::Button::focused`]
 /// and [`crate::TextInput::has_focus`] both follow this convention.
+/// [`crate::ListView`]/[`crate::TreeView`] don't: their `has_focus`
+/// field is also used by some hosts as a persistent "currently
+/// showing" indicator unrelated to real keyboard focus (see
+/// [`crate::ListView::has_focus`]'s doc), so their GUI focus-visible
+/// ring reads a separate `focus_ring_visible` parameter on
+/// [`crate::Backend::draw_list_with_state`]/
+/// [`crate::Backend::draw_tree_with_state`] instead of this field.
 #[derive(Debug, Clone)]
 pub struct FocusRing {
     items: Vec<WidgetId>,
@@ -390,6 +397,333 @@ mod tests {
             border_fg(&buf_tab),
             border_fg(&buf_retreat),
             "Shift+Tab repaints the same focus-visible border Tab did"
+        );
+    }
+
+    /// The same end-to-end proof as
+    /// `focused_text_input_paints_a_different_border_after_tab_than_after_click`,
+    /// for [`crate::ListView`]'s shared GUI painter
+    /// ([`crate::primitives::list::native_surface_paint::paint`]):
+    /// `ring.advance()` (the real Tab path) composes a visible ring,
+    /// `ring.set()` (the real click path) suppresses it, and this test
+    /// asserts the actual recorded stroke rather than re-reading the
+    /// composed bool it just assigned.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[test]
+    fn focused_list_row_paints_a_ring_after_tab_than_after_click() {
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::paint_surface::PaintSurface;
+        use crate::primitives::list::{ListItem, ListItemMeasure, ListView};
+        use crate::style::Style;
+        use crate::types::{Color, StyledText};
+        use crate::{Rect, Theme};
+
+        #[derive(Default)]
+        struct RecordingSurface {
+            strokes: Vec<(Rect, Color, f32)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
+            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::event::Point,
+                _to: crate::event::Point,
+                _color: Color,
+                _sw: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(
+                &mut self,
+                _rect: Rect,
+                _image: &crate::Image,
+            ) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        let id = WidgetId::new("sidebar:list");
+        let mut ring = FocusRing::new(vec![id.clone()]);
+        let theme = Theme::default();
+        let style = Style::default();
+        let area = Rect::new(0.0, 0.0, 100.0, 80.0);
+        const LINE_HEIGHT: f32 = 16.0;
+
+        // `has_focus: true` throughout: it's the "is this the active
+        // list" signal (and gates the pre-existing `selected_bg` fill,
+        // unchanged by this issue), *not* the focus-visible signal the
+        // ring reads — see `ListView::has_focus`'s own doc for why the
+        // two are kept separate. The ring reads `focus_ring_visible`,
+        // composed from `ring` below exactly like
+        // `Backend::draw_list_with_state`'s own doc describes.
+        let list = ListView {
+            id: id.clone(),
+            title: None,
+            items: vec![ListItem {
+                text: StyledText::plain("alpha"),
+                icon: None,
+                detail: None,
+                decoration: Default::default(),
+            }],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+
+        let paint_and_count_strokes = |focus_ring_visible: bool| -> usize {
+            let layout = list.layout(area.width, area.height, 0.0, |_| {
+                ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let mut surface = RecordingSurface::default();
+            crate::primitives::list::native_surface_paint::paint(
+                &list,
+                area,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &theme,
+                &style,
+                None,
+                None,
+                focus_ring_visible,
+            );
+            surface.strokes.len()
+        };
+
+        // Tab: `advance()` is the real keyboard-move path.
+        ring.advance();
+        let focus_ring_visible = ring.is_focused(&id) && ring.is_focus_visible();
+        assert!(
+            focus_ring_visible,
+            "a Tab-reached list must report focus-visible"
+        );
+        assert_eq!(
+            paint_and_count_strokes(focus_ring_visible),
+            1,
+            "a Tab-reached list's selected row must paint a ring"
+        );
+
+        // Click: `set` re-focuses the same widget via the pointer path.
+        ring.set(&id);
+        let focus_ring_visible = ring.is_focused(&id) && ring.is_focus_visible();
+        assert!(
+            ring.is_focused(&id),
+            "the click did move focus to this list"
+        );
+        assert!(
+            !focus_ring_visible,
+            "a mouse click must suppress the list's focus-visible ring"
+        );
+        assert_eq!(
+            paint_and_count_strokes(focus_ring_visible),
+            0,
+            "a clicked list's selected row must paint no ring"
+        );
+
+        // Shift+Tab afterwards restores the ring.
+        ring.retreat();
+        let focus_ring_visible = ring.is_focused(&id) && ring.is_focus_visible();
+        assert!(
+            focus_ring_visible,
+            "a subsequent keyboard move restores focus-visible"
+        );
+        assert_eq!(
+            paint_and_count_strokes(focus_ring_visible),
+            1,
+            "Shift+Tab repaints the same ring Tab did"
+        );
+    }
+
+    /// Same proof as `focused_list_row_paints_a_ring_after_tab_than_after_click`,
+    /// for [`crate::TreeView`]'s shared GUI painter
+    /// ([`crate::primitives::tree::native_surface_paint::paint`]).
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[test]
+    fn focused_tree_row_paints_a_ring_after_tab_than_after_click() {
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::paint_surface::PaintSurface;
+        use crate::primitives::tree::{TreeRow, TreeView};
+        use crate::style::Style;
+        use crate::types::{Color, Decoration, SelectionMode, StyledText, TreeStyle};
+        use crate::{Rect, Theme};
+
+        #[derive(Default)]
+        struct RecordingSurface {
+            strokes: Vec<(Rect, Color, f32)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
+            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::event::Point,
+                _to: crate::event::Point,
+                _color: Color,
+                _sw: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(
+                &mut self,
+                _rect: Rect,
+                _image: &crate::Image,
+            ) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        let id = WidgetId::new("sidebar:tree");
+        let mut ring = FocusRing::new(vec![id.clone()]);
+        let theme = Theme::default();
+        let style = Style::default();
+        let area = Rect::new(0.0, 0.0, 100.0, 80.0);
+        const LINE_HEIGHT: f32 = 16.0;
+
+        // `has_focus: true` throughout — see
+        // `focused_list_row_paints_a_ring_after_tab_than_after_click`'s
+        // matching comment for why.
+        let tree = TreeView {
+            id: id.clone(),
+            rows: vec![TreeRow {
+                path: vec![0],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain("alpha"),
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+                edit: None,
+            }],
+            selection_mode: SelectionMode::Single,
+            selected_path: Some(vec![0]),
+            scroll_offset: 0,
+            style: TreeStyle::default(),
+            has_focus: true,
+        };
+
+        let paint_and_count_strokes = |focus_ring_visible: bool| -> usize {
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                area,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
+            let mut surface = RecordingSurface::default();
+            crate::primitives::tree::native_surface_paint::paint(
+                &tree,
+                area,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+                &style,
+                None,
+                None,
+                focus_ring_visible,
+            );
+            surface.strokes.len()
+        };
+
+        // Tab: `advance()` is the real keyboard-move path.
+        ring.advance();
+        let focus_ring_visible = ring.is_focused(&id) && ring.is_focus_visible();
+        assert!(
+            focus_ring_visible,
+            "a Tab-reached tree must report focus-visible"
+        );
+        assert_eq!(
+            paint_and_count_strokes(focus_ring_visible),
+            1,
+            "a Tab-reached tree's selected row must paint a ring"
+        );
+
+        // Click: `set` re-focuses the same widget via the pointer path.
+        ring.set(&id);
+        let focus_ring_visible = ring.is_focused(&id) && ring.is_focus_visible();
+        assert!(
+            ring.is_focused(&id),
+            "the click did move focus to this tree"
+        );
+        assert!(
+            !focus_ring_visible,
+            "a mouse click must suppress the tree's focus-visible ring"
+        );
+        assert_eq!(
+            paint_and_count_strokes(focus_ring_visible),
+            0,
+            "a clicked tree's selected row must paint no ring"
+        );
+
+        // Shift+Tab afterwards restores the ring.
+        ring.retreat();
+        let focus_ring_visible = ring.is_focused(&id) && ring.is_focus_visible();
+        assert!(
+            focus_ring_visible,
+            "a subsequent keyboard move restores focus-visible"
+        );
+        assert_eq!(
+            paint_and_count_strokes(focus_ring_visible),
+            1,
+            "Shift+Tab repaints the same ring Tab did"
         );
     }
 }

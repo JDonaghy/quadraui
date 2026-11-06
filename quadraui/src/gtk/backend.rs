@@ -2414,6 +2414,7 @@ impl Backend for GtkBackend {
         tree: &TreeView,
         hovered_idx: Option<usize>,
         pressed_idx: Option<usize>,
+        focus_ring_visible: bool,
     ) {
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
@@ -2435,6 +2436,7 @@ impl Backend for GtkBackend {
             self.nerd_fonts_enabled,
             hovered_idx,
             pressed_idx,
+            focus_ring_visible,
         );
         layout.set_font_description(saved_font.as_ref());
     }
@@ -2475,6 +2477,7 @@ impl Backend for GtkBackend {
         list: &ListView,
         hovered_idx: Option<usize>,
         pressed_idx: Option<usize>,
+        focus_ring_visible: bool,
     ) {
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
@@ -2496,6 +2499,7 @@ impl Backend for GtkBackend {
             self.nerd_fonts_enabled,
             hovered_idx,
             pressed_idx,
+            focus_ring_visible,
         );
         layout.set_font_description(saved_font.as_ref());
     }

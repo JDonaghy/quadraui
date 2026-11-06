@@ -113,6 +113,10 @@ pub unsafe fn draw_tree(
         // `None` keeps this paint pixel-identical to the contract above.
         None,
         None,
+        // Same reasoning for the focus-visible ring: this backend has
+        // no `Backend::draw_tree_with_state` override to compose
+        // `focus_ring_visible` from, so it never shows here yet.
+        false,
     );
 
     CGContextRestoreGState(ctx);

@@ -80,6 +80,19 @@ pub struct TreeView {
     #[serde(default)]
     pub scroll_offset: usize,
     pub style: TreeStyle,
+    /// Whether this tree currently holds keyboard focus. Gates the
+    /// focused row's highlight (`Theme::selected_bg` vs. the unfocused
+    /// `Theme::inactive_selected_bg`).
+    ///
+    /// Deliberately **not** the same "host pre-composes
+    /// `ring.is_focused(id) && ring.is_focus_visible()`" convention
+    /// [`crate::Button::focused`]/[`crate::TextInput::has_focus`]
+    /// follow — see [`crate::ListView::has_focus`]'s matching doc for
+    /// why a focus-visible ring can't ride on this field. The GUI
+    /// focus-visible ring instead reads
+    /// [`crate::Backend::draw_tree_with_state`]'s own
+    /// `focus_ring_visible` parameter — pass
+    /// `ring.is_focused(&tree.id) && ring.is_focus_visible()` there.
     #[serde(default)]
     pub has_focus: bool,
 }
@@ -492,6 +505,16 @@ pub(crate) mod native_surface_paint {
     /// support existed. See `primitives::list::native_surface_paint::paint`'s
     /// matching doc for the priority rule (pressed over hover, applied
     /// on top of whatever background the row already has).
+    ///
+    /// `focus_ring_visible` — when `true`, strokes a
+    /// `Theme::focus_ring_color` ring at `Style::focus_ring_width`,
+    /// flush with the row at [`TreeView::selected_path`]'s bounds, on
+    /// top of whatever background that row already has. Separate from
+    /// [`TreeView::has_focus`] (see that field's doc for why) — the
+    /// caller passes `ring.is_focused(&tree.id) &&
+    /// ring.is_focus_visible()` here, not `tree.has_focus`. `false`
+    /// paints byte-for-byte what this function painted before the ring
+    /// existed.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         tree: &TreeView,
@@ -504,6 +527,7 @@ pub(crate) mod native_surface_paint {
         style: &Style,
         hovered_idx: Option<usize>,
         pressed_idx: Option<usize>,
+        focus_ring_visible: bool,
     ) {
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
@@ -569,6 +593,23 @@ pub(crate) mod native_surface_paint {
 
             let row_rect = Rect::new(row_x, row_y, row_w, row_h);
             surface.surface_fill_rect(row_rect, row_bg);
+
+            // Focus-visible ring: a square stroke flush with the
+            // focused row's own bounds, in `Theme::focus_ring_color` at
+            // `Style::focus_ring_width` — see
+            // `crate::primitives::list::native_surface_paint::paint`'s
+            // matching comment for why this one isn't outset like
+            // `Button`'s/`TextInput`'s. Gated on `focus_ring_visible`,
+            // not `tree.has_focus` — see this fn's own doc and
+            // `TreeView::has_focus`'s doc for why the two are kept
+            // separate.
+            if is_selected && focus_ring_visible {
+                surface.surface_stroke_rect(
+                    row_rect,
+                    theme.focus_ring_color(),
+                    style.focus_ring_width,
+                );
+            }
 
             let mut cursor_x = row_x + style.row_padding_x + row.indent as f32 * indent_px;
 
@@ -801,13 +842,14 @@ pub(crate) mod native_surface_paint {
         };
         use crate::Image;
 
-        /// Records every fill + text-run call — mirrors
+        /// Records every fill + stroke + text-run call — mirrors
         /// `primitives::list::native_surface_paint`'s `RecordingSurface`
         /// test double, scoped to the verbs this primitive uses, so this
         /// test runs on any host without Cairo/Core Graphics/Direct2D.
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color, f32)>,
             texts: Vec<(Rect, String, Color)>,
             clips: Vec<Rect>,
         }
@@ -833,14 +875,17 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
                 self.fills.push((rect, color));
             }
-            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
             fn surface_stroke_rounded_rect(
                 &mut self,
-                _rect: Rect,
+                rect: Rect,
                 _radius: f32,
-                _color: Color,
-                _stroke_width: f32,
+                color: Color,
+                stroke_width: f32,
             ) {
+                self.strokes.push((rect, color, stroke_width));
             }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.texts.push((rect, text.to_string(), color));
@@ -911,6 +956,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
 
             let item_height =
@@ -962,6 +1008,7 @@ pub(crate) mod native_surface_paint {
                 &style,
                 None,
                 None,
+                false,
             );
 
             let track_fill = surface
@@ -999,6 +1046,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
 
             assert!(
@@ -1046,6 +1094,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
 
             assert!(
@@ -1099,6 +1148,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
 
             let row1 = &layout.visible_rows[1];
@@ -1147,6 +1197,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
 
             assert!(
@@ -1184,6 +1235,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
 
             let row1 = &layout.visible_rows[1];
@@ -1195,6 +1247,142 @@ pub(crate) mod native_surface_paint {
                         && (r.y - row1.bounds.y).abs() < 0.01
                         && *c == theme.selected_bg),
                 "selected row must paint theme.selected_bg at its own bounds"
+            );
+        }
+
+        /// The focused row's ring strokes exactly at the selected row's
+        /// own bounds, in `Theme::focus_ring_color` at
+        /// `Style::focus_ring_width` — and only there. Discriminated
+        /// from `selected_row_paints_selected_bg` above by checking
+        /// `surface.strokes` (a distinct call) rather than
+        /// `surface.fills`, so this test can't pass on the pre-existing
+        /// fill alone.
+        #[test]
+        fn focused_row_paints_a_ring_at_its_own_bounds() {
+            let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+            tree.selected_path = Some(vec![1]);
+            tree.has_focus = true;
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
+            let style = Style::default().with_focus_ring_width(3.0);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+                &style,
+                None,
+                None,
+                /* focus_ring_visible */ true,
+            );
+
+            let row1 = &layout.visible_rows[1];
+            assert!(
+                surface
+                    .strokes
+                    .iter()
+                    .any(|(r, c, w)| (r.x - row1.bounds.x).abs() < 0.01
+                        && (r.y - row1.bounds.y).abs() < 0.01
+                        && (r.width - row1.bounds.width).abs() < 0.01
+                        && (r.height - row1.bounds.height).abs() < 0.01
+                        && *c == theme.focus_ring_color()
+                        && (*w - 3.0).abs() < 0.01),
+                "focused row must stroke a ring at its own bounds with \
+                 Style::focus_ring_width, got strokes: {:?}",
+                surface.strokes
+            );
+            assert_eq!(
+                surface.strokes.len(),
+                1,
+                "only the focused row gets a ring, got strokes: {:?}",
+                surface.strokes
+            );
+        }
+
+        /// `focus_ring_visible: false` paints no ring even on a row
+        /// that is genuinely selected (`tree.has_focus: true` here) —
+        /// the default a call site gets unless it explicitly composes
+        /// `ring.is_focused(id) && ring.is_focus_visible()`. Paired
+        /// with `no_ring_without_a_selected_row_even_when_focus_ring_visible`
+        /// below: either gate alone must suppress the ring.
+        #[test]
+        fn no_ring_when_focus_ring_visible_is_false() {
+            let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+            tree.selected_path = Some(vec![1]);
+            tree.has_focus = true;
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
+            let mut surface = RecordingSurface::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                None,
+                /* focus_ring_visible */ false,
+            );
+            assert!(
+                surface.strokes.is_empty(),
+                "focus_ring_visible: false must paint no ring even on a \
+                 selected, has_focus: true row, got strokes: {:?}",
+                surface.strokes
+            );
+        }
+
+        /// `focus_ring_visible: true` alone doesn't paint a ring when
+        /// nothing is selected-and-focused (`tree.has_focus: false`
+        /// here) — the ring stays scoped to
+        /// [`TreeView::selected_path`]'s row via `is_selected`. The row
+        /// still shows the unfocused, muted `inactive_selected_bg`
+        /// fill — only the ring is gated this way.
+        #[test]
+        fn no_ring_without_a_selected_row_even_when_focus_ring_visible() {
+            let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+            tree.selected_path = Some(vec![1]);
+            tree.has_focus = false;
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
+            let mut surface = RecordingSurface::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                None,
+                /* focus_ring_visible */ true,
+            );
+            assert!(
+                surface.strokes.is_empty(),
+                "an unfocused tree must paint no ring even when \
+                 focus_ring_visible: true, got strokes: {:?}",
+                surface.strokes
             );
         }
 
@@ -1228,6 +1416,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
 
             assert!(surface
@@ -1269,6 +1458,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
 
             let (badge_bw, _) = surface.surface_measure_text("U");
@@ -1333,6 +1523,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
 
             assert!(
@@ -1380,6 +1571,7 @@ pub(crate) mod native_surface_paint {
                 &style,
                 None,
                 None,
+                false,
             );
 
             let (text_rect, _, _) = surface

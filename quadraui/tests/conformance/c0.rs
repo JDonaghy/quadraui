@@ -419,7 +419,7 @@ pub const CASES: &[Case] = &[
                 max_content_width: None,
                 show_v_scrollbar: false,
             };
-            b.draw_list_with_state(area, &list, Some(0), None);
+            b.draw_list_with_state(area, &list, Some(0), None, false);
         },
     },
     Case {
@@ -473,7 +473,7 @@ pub const CASES: &[Case] = &[
                 style: TreeStyle::default(),
                 has_focus: false,
             };
-            b.draw_tree_with_state(area, &tree, Some(0), None);
+            b.draw_tree_with_state(area, &tree, Some(0), None, false);
         },
     },
     Case {
