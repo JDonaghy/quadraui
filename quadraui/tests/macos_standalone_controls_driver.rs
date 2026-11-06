@@ -94,7 +94,7 @@ impl StandaloneControlsApp {
         // A leading icon, `6.0` px clear of the label — exercises
         // `Button::icon`/`icon_position`/`icon_gap` on the one control
         // whose ordering/spacing this driver actually probes.
-        button.icon = Some(Icon::new("\u{f0c7}", "S"));
+        button.icon = Some(Icon::codicon("save", "S").expect("\"save\" is a real codicon name"));
         button.icon_gap = 6.0;
         let mut danger = Button::new(WidgetId::new("demo:delete"), "Delete");
         danger.variant = ButtonVariant::Danger;
@@ -337,8 +337,10 @@ fn mouse_click_toggles_the_switch_without_requiring_focus() {
 }
 
 /// A pixel offset from each button's own left edge, at mid-height, that
-/// always lands on the fill rather than its centred label/icon text —
-/// see `quadraui::macos::button`'s own `FILL_PROBE_X` doc for why.
+/// always lands on the fill rather than its centred label/icon text:
+/// `Style::default().padding == 8.0` is the inset
+/// `native_surface_paint::paint` never draws label/icon content inside
+/// of, and `6 < 8` sits inside that padding band.
 const FILL_PROBE_X: f32 = 6.0;
 
 fn fill_pixel(driver: &MacDriver<StandaloneControlsApp>, bounds: Rect) -> (u8, u8, u8, u8) {
@@ -398,8 +400,11 @@ fn hover_changes_the_button_fill_on_pointer_enter() {
 fn leading_icon_paints_before_the_label_icon_gap_apart() {
     let driver = MacDriver::new(StandaloneControlsApp::new(), CANVAS_W, CANVAS_H);
 
+    let save_glyph = Icon::codicon("save", "S")
+        .expect("\"save\" is a real codicon name")
+        .glyph;
     let icon_bounds = driver
-        .find_bounds("\u{f0c7}")
+        .find_bounds(&save_glyph)
         .expect("the Save button's leading icon must paint a text run");
     let label_bounds = driver
         .find_bounds("Save")
