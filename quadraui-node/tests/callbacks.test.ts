@@ -169,7 +169,7 @@ test("setRender rejects a gap key on a tabs node", () => {
 });
 
 test("setRender accepts an optional focused_index on a tabs node", () => {
-  // B2d: "focused_index" marks a tab keyboard-focused (reverse video on
+  // "focused_index" marks a tab keyboard-focused (reverse video on
   // TUI; see `tui::tab_bar`'s own test for the pixel-level treatment).
   // Passing it must not raise and must not change which tab's content is
   // shown -- that's still "selected"'s job.
@@ -205,10 +205,15 @@ test("setRender accepts an optional focused_index on a tabs node", () => {
       ],
     },
   }));
-  const screen = app.screen();
-  assert.match(screen, /One/);
-  assert.match(screen, /Two/);
-  assert.match(screen, /O/);
+  const lines = app.screen().split("\n");
+  assert.match(lines[0], /One/);
+  assert.match(lines[0], /Two/);
+  // Excludes the strip row (`lines[0]`) — `"One"`'s own `O` would
+  // trivially satisfy a screen-wide `/O/`, without proving the content
+  // pane (tab 0's selected text, not tab 1's keyboard-focused one) ever
+  // rendered. The Python twin
+  // (`test_tabs_accepts_an_optional_focused_index`) asserts the same way.
+  assert.match(lines.slice(1).join("\n"), /O/);
 });
 
 test("setRender rejects an out-of-range focused_index on a tabs node", () => {

@@ -8311,6 +8311,101 @@ fn tab_chrome_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the tab chrome demo");
 }
 
+/// `Right` moves keyboard focus onto tab 1 (`lib.rs`) and the composed
+/// [`quadraui::TabChrome::focused_index`] paints it in reverse video —
+/// the acceptance list's "focus moves with arrow keys" plus "focus-visible
+/// after keyboard navigation", exercised end to end through the real
+/// `event -> handle -> render` path rather than the primitive's own
+/// cell-level unit test.
+#[test]
+fn tab_chrome_demo_right_arrow_moves_focus_and_shows_it_in_reverse_video() {
+    let mut driver = TuiDriver::new(TabChromeDemo::new(), 100, 10);
+    let (x, y) = driver
+        .tab_center(&tab_chrome_bar_id(), 1)
+        .expect("tab 1 should have painted geometry");
+    let before = driver
+        .style_at(x as u16, y as u16)
+        .expect("lib.rs cell should be inside the screen");
+
+    driver.press_named(quadraui::NamedKey::Right);
+
+    assert!(
+        driver.screen_contains(" focus lib.rs "),
+        "Right should move keyboard focus onto tab 1:\n{}",
+        driver.screen()
+    );
+    let after = driver
+        .style_at(x as u16, y as u16)
+        .expect("lib.rs cell should be inside the screen");
+    assert_ne!(
+        before,
+        after,
+        "the focused tab's fg/bg should swap once focus becomes visible:\n{}",
+        driver.screen()
+    );
+    assert_eq!(
+        (before.fg, before.bg),
+        (after.bg, after.fg),
+        "the swap should be a plain fg/bg reversal, not a colour change:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking a tab suppresses the focus ring even though the click itself
+/// also moves keyboard focus onto the clicked tab — the acceptance list's
+/// "suppressed after a click", and [`quadraui::compose::FocusRing::set`]'s
+/// documented convention. Compares against a driver that activates the
+/// same tab purely by clicking (no prior keyboard move at all): if the
+/// click truly suppresses the ring, the two end states must be visually
+/// identical.
+#[test]
+fn tab_chrome_demo_click_suppresses_focus_visible() {
+    let bar = tab_chrome_bar_id();
+
+    let mut click_only = TuiDriver::new(TabChromeDemo::new(), 100, 10);
+    let (cx, cy) = click_only
+        .tab_center(&bar, 1)
+        .expect("tab 1 should have painted geometry");
+    click_only.click(cx, cy);
+    let click_only_style = click_only
+        .style_at(cx as u16, cy as u16)
+        .expect("lib.rs cell should be inside the screen");
+
+    let mut keyboard_then_click = TuiDriver::new(TabChromeDemo::new(), 100, 10);
+    keyboard_then_click.press_named(quadraui::NamedKey::Right);
+    let (kx, ky) = keyboard_then_click
+        .tab_center(&bar, 1)
+        .expect("tab 1 should have painted geometry");
+    let focused_style = keyboard_then_click
+        .style_at(kx as u16, ky as u16)
+        .expect("lib.rs cell should be inside the screen");
+    keyboard_then_click.click(kx, ky);
+    let after_click_style = keyboard_then_click
+        .style_at(kx as u16, ky as u16)
+        .expect("lib.rs cell should be inside the screen");
+
+    assert!(
+        keyboard_then_click.screen_contains(" activated lib.rs "),
+        "the click should still activate tab 1:\n{}",
+        keyboard_then_click.screen()
+    );
+    assert_ne!(
+        focused_style,
+        after_click_style,
+        "the click should clear the reverse-video focus ring the \
+         preceding Right arrow had shown:\n{}",
+        keyboard_then_click.screen()
+    );
+    assert_eq!(
+        after_click_style,
+        click_only_style,
+        "a tab activated by click alone, and the same tab activated by \
+         click after a keyboard focus move, must render identically — \
+         the ring stays suppressed either way:\n{}",
+        keyboard_then_click.screen()
+    );
+}
+
 // ─── ActivityStyleDemo: VS-Code-style row fill through
 //     Backend::draw_activity_bar_with_style ───────────────────────────────
 //

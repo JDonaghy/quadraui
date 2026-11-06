@@ -16,10 +16,20 @@
 //! tab it landed on, and it is also why closing never needs to be undone
 //! for the demo to stay exercisable: the *other* tab has no close button
 //! to confuse the click routing with.
+//!
+//! The demo also composes [`TabChrome::focused_index`] with its own
+//! keyboard-vs-pointer focus-visible state, the way that field's doc asks
+//! every caller to: `Left`/`Right` move keyboard focus one tab via
+//! [`TabBar::handle_focus_key`] and the ring stays visible (reverse-video
+//! paints on `chrome()`'s composed index); `Enter`/`Space` activate the
+//! focused tab; a click focuses+activates a tab without showing the ring
+//! — [`Self::chrome`] passes `None` instead of `self.focused` whenever
+//! [`Self::focus_visible`] is `false`, same suppression convention
+//! [`quadraui::compose::FocusRing::set`] documents for its own click path.
 
 use quadraui::{
     AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, TabBar, TabChrome, TabFrame, TabItem, UiEvent, WidgetId,
+    StatusBarSegment, TabBar, TabBarEvent, TabChrome, TabFrame, TabItem, UiEvent, WidgetId,
 };
 
 /// Tab labels, index-stable across activation (only `is_active` /
@@ -29,6 +39,13 @@ pub const LABELS: [&str; 2] = ["main.rs", "lib.rs"];
 pub struct TabChromeDemo {
     active: usize,
     last_action: String,
+    /// Keyboard-focused tab, independent of [`Self::active`] until
+    /// `Enter`/`Space` activates it. `None` until the first `Left`/`Right`
+    /// — [`TabBar::handle_focus_key`]'s own "nothing focused yet" state.
+    focused: Option<usize>,
+    /// Whether [`Self::focused`] should paint — true after a keyboard
+    /// move, false after a click. See the module doc.
+    focus_visible: bool,
 }
 
 impl TabChromeDemo {
@@ -36,6 +53,8 @@ impl TabChromeDemo {
         Self {
             active: 0,
             last_action: "ready".to_string(),
+            focused: None,
+            focus_visible: false,
         }
     }
 
@@ -62,8 +81,14 @@ impl TabChromeDemo {
         }
     }
 
+    /// Composes keyboard focus with focus-visible — the one step
+    /// [`TabChrome::focused_index`]'s doc delegates to every caller.
+    /// `self.focused` only reaches the chrome (and so only paints
+    /// reverse-video) when [`Self::focus_visible`] is set; a click
+    /// leaves `self.focused` alone but this still passes `None`.
     fn chrome(&self) -> TabChrome {
-        TabChrome::new(TabFrame::Brackets)
+        let focused_index = self.focus_visible.then_some(self.focused).flatten();
+        TabChrome::new(TabFrame::Brackets).with_focused_index(focused_index)
     }
 
     /// Bottom hint line — the driver test's window onto "closed" vs.
@@ -136,6 +161,10 @@ impl AppLogic for TabChromeDemo {
                 for (i, close) in hits.close_bounds.iter().enumerate() {
                     if let Some((start, end)) = close {
                         if end > start && (*start..*end).contains(&(x as f64)) {
+                            // A click always suppresses the focus ring, even
+                            // when it lands on the close glyph rather than
+                            // the tab body — see the module doc.
+                            self.focus_visible = false;
                             self.last_action = format!("closed {}", LABELS[i]);
                             return Reaction::Redraw;
                         }
@@ -144,6 +173,8 @@ impl AppLogic for TabChromeDemo {
                 for (i, (start, end)) in hits.slot_positions.iter().enumerate() {
                     if end > start && (*start..*end).contains(&(x as f64)) {
                         self.active = i;
+                        self.focused = Some(i);
+                        self.focus_visible = false;
                         self.last_action = format!("activated {}", LABELS[i]);
                         return Reaction::Redraw;
                     }
@@ -161,6 +192,36 @@ impl AppLogic for TabChromeDemo {
                 self.active = (self.active + 1) % LABELS.len();
                 self.last_action = format!("activated {}", LABELS[self.active]);
                 Reaction::Redraw
+            }
+            // `Left`/`Right` move keyboard focus; `Enter`/`Space` activate
+            // it — [`TabBar::handle_focus_key`] decides which, the same
+            // helper `quadraui-binding-core`'s `focus_scoped_key_event`
+            // calls for a py/node app's `"tabs"` node.
+            UiEvent::KeyPressed {
+                key: Key::Named(named),
+                ..
+            } if matches!(named, NamedKey::Left | NamedKey::Right | NamedKey::Enter) => {
+                let key_str = match named {
+                    NamedKey::Left => "Left",
+                    NamedKey::Right => "Right",
+                    NamedKey::Enter => "Enter",
+                    _ => unreachable!(),
+                };
+                match TabBar::handle_focus_key(self.focused, LABELS.len(), key_str) {
+                    Some(TabBarEvent::FocusMoved { index }) => {
+                        self.focused = Some(index);
+                        self.focus_visible = true;
+                        self.last_action = format!("focus {}", LABELS[index]);
+                        Reaction::Redraw
+                    }
+                    Some(TabBarEvent::TabActivated { index }) => {
+                        self.active = index;
+                        self.focus_visible = true;
+                        self.last_action = format!("activated {}", LABELS[index]);
+                        Reaction::Redraw
+                    }
+                    _ => Reaction::Continue,
+                }
             }
             _ => Reaction::Continue,
         }

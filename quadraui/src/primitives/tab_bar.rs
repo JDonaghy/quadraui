@@ -749,6 +749,10 @@ pub struct TabChrome {
     /// currently *visible* (the most recent interaction was a click), the
     /// same convention [`Toolbar::focused_index`] documents.
     ///
+    /// An index `>= tabs.len()` paints nothing (no reverse-video, no
+    /// panic) on TUI — see `tui::tab_bar::draw_tab_bar_with_chrome_*`,
+    /// which only ever compares against an actually-visible tab's index.
+    ///
     /// A sidecar field rather than one on [`TabBar`] itself, for the same
     /// reason [`Self::active_frame`] is: `TabBar` is built with
     /// exhaustive literals throughout this repo (including the sealed
@@ -1127,6 +1131,7 @@ impl TabBar {
 /// defined for plugin invariants §10 — plugin-declared tab bars will
 /// consume events directly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum TabBarEvent {
     /// User clicked a tab body (not its close button) — index is into
     /// `tabs`, matching the visible order (scroll_offset still applies).
@@ -2023,7 +2028,7 @@ mod tests {
         assert_eq!(fitted, "");
     }
 
-    // ── Keyboard-focusable seam (B2d) ─────────────────────────────────────
+    // ── Keyboard-focusable seam ───────────────────────────────────────────
 
     #[test]
     fn handle_focus_key_left_right_move_and_clamp() {
