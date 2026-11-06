@@ -1,8 +1,13 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::TabBar`].
 //!
-//! Calls [`TabBar::layout`] (the D6 layout API) with DirectWrite pixel
-//! measurers, then paints from the resolved `visible_tabs` /
-//! `visible_segments`. Converts to [`TabBarHits`] via the shared
+//! [`pixel_layout`] measures and positions tabs by hand with DirectWrite
+//! pixel measurers — like `macos::tab_bar`'s `mac_tab_bar_native_layout_icons`,
+//! not the shared `TabBar::layout` D6 API — so a tab whose full label
+//! would overflow the strip gets it ellipsis-fitted through
+//! [`crate::primitives::tab_bar::fit_tab_label`] into whatever space is
+//! actually left, instead of being dropped from the strip outright. Paint
+//! loops consume the resolved `visible_tabs` / `visible_segments`.
+//! Converts to [`TabBarHits`] via the shared
 //! [`crate::backend::tab_bar_hits_from_layout`] / `shift_tab_bar_hits`
 //! helpers, the same ones the TUI and GTK backends use — see
 //! `Backend::tab_bar_layout`'s doc for why that shift matters.
@@ -65,7 +70,12 @@ use crate::theme::Theme;
 // `Backend` tab-bar methods `WinBackend` implements still return it, so
 // the import needs the same allow every use site below does.
 #[allow(deprecated)]
-use crate::{tab_icon_at, TabBar, TabBarHits, TabBarLayout, TabChrome, TabIcon};
+use crate::{tab_icon_at, TabBar, TabBarHits, TabBarLayout, TabIcon};
+// Only the `#[cfg(all(test, target_os = "windows"))]` module below needs
+// `TabChrome` — `pixel_layout` has no `TabChrome` parameter (win has no
+// bracket-chrome support; see this module's "Scope" doc).
+#[cfg(all(test, target_os = "windows"))]
+use crate::TabChrome;
 
 /// Gap (DIPs) between a tab's label and its close glyph.
 const TAB_INNER_GAP_DIP: f32 = 10.0;
@@ -78,11 +88,11 @@ const TAB_ICON_GAP_DIP: f32 = 6.0;
 #[cfg(target_os = "windows")]
 const TAB_ACTIVE_ACCENT_DIP: f32 = 2.0;
 
-/// Only used by the paint loop below (for hover-rect/close-glyph
-/// positioning) — the shared [`pixel_layout`] re-measures the same glyph
-/// itself via `measure`, so paint and layout can never disagree about its
-/// width even though each measures it once.
-#[cfg(target_os = "windows")]
+/// The codicon close glyph's measured width, or `0.0` when the bar paints
+/// no close button at all. Used by both [`pixel_layout`] (to size the
+/// close-button reservation the label-fit budget below is derived from)
+/// and the paint loop (for hover-rect/close-glyph positioning) — one
+/// function means layout and paint can never disagree about this width.
 fn close_glyph_width(measure: &dyn TextMeasure, bar: &TabBar) -> f32 {
     if bar.show_tab_close {
         // The codicon close glyph — `measure` (a live `&DWrite`)
@@ -116,18 +126,49 @@ fn tab_glyph_text(
         .unwrap_or_else(|| default.to_string())
 }
 
+/// `(leading, trailing)` space reserved around a tab's label — `leading`
+/// is the tab's left padding plus any icon reservation, `trailing` is the
+/// close-button reservation (when the tab has one) plus the tab's right
+/// padding. Both [`pixel_layout`]'s layout loop and
+/// [`paint_tab_bar_icons_from_layout`]'s paint loop call
+/// [`crate::primitives::tab_bar::fit_tab_label`] with these two numbers,
+/// so routing both through one function keeps them from ever deriving a
+/// different budget for the same tab.
+fn tab_label_budget(tab_pad: f32, icon_extra: f32, close_extra: f32) -> (f32, f32) {
+    (tab_pad + icon_extra, close_extra + tab_pad)
+}
+
+/// Per-tab close-button reservation: [`TAB_INNER_GAP_DIP`] plus the close
+/// glyph's own width (`close_glyph_w`, from [`close_glyph_width`]) when
+/// `bar` shows a close button for this tab, `0.0` otherwise. Shared by
+/// [`pixel_layout`] and the paint loop so a tab's close-button budget
+/// can't drift between the two.
+fn close_extra_for(bar: &TabBar, tab_idx: usize, close_glyph_w: f32) -> f32 {
+    if bar.show_tab_close && bar.tabs[tab_idx].is_closable {
+        TAB_INNER_GAP_DIP + close_glyph_w
+    } else {
+        0.0
+    }
+}
+
 /// Compute `(layout, corrected_scroll_offset, available_cols)` for `bar`
 /// against `rect`'s dimensions, measuring every tab/segment via `measure`.
 /// Shared by every paint and no-paint entry point in this module so they
 /// can never disagree on geometry.
 ///
-/// Wraps the shared [`crate::primitives::layout_metrics::pixel_tab_bar_layout`].
-/// Windows has no bracket-chrome support yet (see this module's "Scope" doc),
-/// so `chrome` is always [`TabChrome::default`]. Pure geometry over
-/// [`TextMeasure`] — no Direct2D/DirectWrite type needed, so
-/// [`super::backend::WinBackend`] can call this directly with a
-/// [`super::backend`]-local nominal measurer when no live `DWrite`
-/// handle exists yet.
+/// Pure geometry over [`TextMeasure`] — no Direct2D/DirectWrite type
+/// needed, so [`super::backend::WinBackend`] can call this directly with a
+/// [`super::backend`]-local nominal measurer when no live `DWrite` handle
+/// exists yet. Windows has no bracket-chrome support (see this module's
+/// "Scope" doc), so there is no `TabChrome` parameter to thread through.
+///
+/// A tab whose full (untruncated) width would overflow the strip gets its
+/// label ellipsis-fitted into whatever space is actually left, via the
+/// shared [`crate::primitives::tab_bar::fit_tab_label`], instead of being
+/// dropped from the strip outright — mirroring `macos::tab_bar`'s
+/// `mac_tab_bar_native_layout_icons`. The close-button hit region is
+/// positioned off the fitted label's own measured width, so it always
+/// lands fully inside the tab's (possibly shrunk) slot.
 ///
 /// `style.tab_padding_x` sets the left+right inset (DIPs) inside a tab's
 /// background fill that [`paint_tab_bar_icons_from_layout`] paints the
@@ -140,6 +181,11 @@ fn pixel_layout(
     icons: &[Option<TabIcon>],
     style: &Style,
 ) -> (TabBarLayout, usize, usize) {
+    let width = rect.width;
+    let height = rect.height;
+    let tab_pad = style.tab_padding_x;
+    let close_glyph_w = close_glyph_width(measure, bar);
+
     let tab_name_widths: Vec<f32> = bar
         .tabs
         .iter()
@@ -148,18 +194,168 @@ fn pixel_layout(
     let icon_extras: Vec<f32> = (0..bar.tabs.len())
         .map(|i| icon_extra_width(measure, icons, i))
         .collect();
-    crate::primitives::layout_metrics::pixel_tab_bar_layout(
-        bar,
-        rect.width,
-        rect.height,
-        style.tab_padding_x,
-        TAB_INNER_GAP_DIP,
-        TAB_OUTER_GAP_DIP,
-        &tab_name_widths,
-        &icon_extras,
-        &TabChrome::default(),
-        measure,
-    )
+
+    // ── Right-aligned segments: reserved before tabs get their budget ──
+    let seg_widths: Vec<f32> = bar
+        .right_segments
+        .iter()
+        .map(|s| measure.width_of(&s.text))
+        .collect();
+    let total_seg_width: f32 = seg_widths.iter().sum();
+    let segs_fit = !bar.right_segments.is_empty() && total_seg_width <= width;
+    let right_area_width = if segs_fit { total_seg_width } else { 0.0 };
+    // The area tabs budget against for scroll-offset/`available_cols`
+    // engine feedback — always reserves the segments' full width,
+    // regardless of `segs_fit`, matching the shared
+    // `primitives::layout_metrics::pixel_tab_bar_layout`'s convention.
+    let effective_tab_area = (width - total_seg_width).max(0.0);
+    // The area the visible-tabs loop below actually paints into — only
+    // excludes the segments' width when they fit (and will be painted).
+    let tab_area_no_scroll = (width - right_area_width).max(0.0);
+
+    // ── Per-tab full (untruncated) slot widths — scroll-offset input ───
+    let full_slot_widths: Vec<f32> = (0..bar.tabs.len())
+        .map(|i| {
+            let close_extra = close_extra_for(bar, i, close_glyph_w);
+            let (leading, trailing) = tab_label_budget(tab_pad, icon_extras[i], close_extra);
+            leading + tab_name_widths[i] + trailing + TAB_OUTER_GAP_DIP
+        })
+        .collect();
+    let total_tab_width: f32 = full_slot_widths.iter().sum();
+
+    // Win has no scroll arrows (always `scroll_arrow_width: 0.0`), so once
+    // everything no longer fits the caller owns scroll — honour
+    // `bar.scroll_offset` as-is (clamped), matching
+    // `TabBar::layout`'s own "caller owns scroll" branch.
+    let resolved_scroll_offset = if total_tab_width <= tab_area_no_scroll + f32::EPSILON {
+        0
+    } else {
+        bar.scroll_offset.min(bar.tabs.len().saturating_sub(1))
+    };
+
+    let active_idx = bar.tabs.iter().position(|t| t.is_active);
+    let corrected_scroll_offset = match active_idx {
+        Some(active) => TabBar::fit_active_scroll_offset(
+            active,
+            bar.tabs.len(),
+            effective_tab_area as usize,
+            |i| full_slot_widths[i].ceil() as usize,
+        ),
+        None => bar.scroll_offset,
+    };
+
+    // ── Visible tabs ─────────────────────────────────────────────────
+    let mut visible_tabs: Vec<crate::VisibleTab> = Vec::new();
+    let mut close_regions: Vec<(Rect, crate::TabBarHit)> = Vec::new();
+    let mut body_regions: Vec<(Rect, crate::TabBarHit)> = Vec::new();
+    let mut x = 0.0_f32;
+    for (i, tab) in bar.tabs.iter().enumerate().skip(resolved_scroll_offset) {
+        let name_w = tab_name_widths[i];
+        let icon_extra = icon_extras[i];
+        let close_extra = close_extra_for(bar, i, close_glyph_w);
+        let (leading, trailing) = tab_label_budget(tab_pad, icon_extra, close_extra);
+        let full_content_w = leading + name_w + trailing;
+        let full_slot_w = full_content_w + TAB_OUTER_GAP_DIP;
+        let remaining = (tab_area_no_scroll - x).max(0.0);
+
+        let (name_w_used, content_w, truncated) = if full_slot_w <= remaining + f32::EPSILON {
+            (name_w, full_content_w, false)
+        } else {
+            let truncated_budget = (remaining - TAB_OUTER_GAP_DIP).max(0.0);
+            if leading + trailing > truncated_budget {
+                // Not even room for this tab's own padding/close slot —
+                // nothing left on the strip to show it in.
+                break;
+            }
+            let fitted = crate::primitives::tab_bar::fit_tab_label(
+                &tab.label,
+                truncated_budget,
+                leading,
+                trailing,
+                |s| measure.width_of(s),
+            );
+            let fitted_w = measure.width_of(&fitted);
+            (fitted_w, leading + fitted_w + trailing, true)
+        };
+        let slot_w = content_w + TAB_OUTER_GAP_DIP;
+        let bounds = Rect::new(x, 0.0, slot_w, height);
+
+        let has_close = bar.show_tab_close && tab.is_closable;
+        let close_bounds = if has_close {
+            let close_w = TAB_INNER_GAP_DIP + close_glyph_w;
+            let cb = Rect::new(x + leading + name_w_used, 0.0, close_w, height);
+            close_regions.push((cb, crate::TabBarHit::TabClose(i)));
+            Some(cb)
+        } else {
+            None
+        };
+
+        body_regions.push((bounds, crate::TabBarHit::Tab(i)));
+        visible_tabs.push(crate::VisibleTab {
+            tab_idx: i,
+            bounds,
+            close_bounds,
+        });
+
+        x += slot_w;
+        if truncated {
+            // This tab already consumed every point of slack the strip had
+            // left, and the minimum width any further tab could claim is
+            // its own padding alone — more than the at-most-one-glyph-
+            // plus-ellipsis slack a truncated fit can leave behind. So no
+            // tab after this one can fit either.
+            break;
+        }
+    }
+
+    // Close regions before body regions, matching `TabBar::layout`'s own
+    // hit-region ordering, so `hit_test` returns the more-specific close
+    // hit when the pointer is on the × glyph.
+    let mut hit_regions: Vec<(Rect, crate::TabBarHit)> =
+        Vec::with_capacity(close_regions.len() + body_regions.len());
+    hit_regions.extend(close_regions);
+    hit_regions.extend(body_regions);
+
+    // ── Right-aligned segments ───────────────────────────────────────
+    let mut visible_segments: Vec<crate::VisibleSegment> = Vec::with_capacity(seg_widths.len());
+    if segs_fit {
+        let mut seg_x = width - right_area_width;
+        for (i, seg) in bar.right_segments.iter().enumerate() {
+            let w = seg_widths[i];
+            let bounds = Rect::new(seg_x, 0.0, w, height);
+            let clickable = seg.id.is_some();
+            if let Some(id) = &seg.id {
+                hit_regions.push((bounds, crate::TabBarHit::RightSegment(*id)));
+            }
+            visible_segments.push(crate::VisibleSegment {
+                segment_idx: i,
+                bounds,
+                clickable,
+            });
+            seg_x += w;
+        }
+    }
+
+    let sample_w =
+        measure.width_of(crate::primitives::layout_metrics::pixel::TAB_CELL_WIDTH_SAMPLE);
+    let char_w = (sample_w
+        / crate::primitives::layout_metrics::pixel::TAB_CELL_WIDTH_SAMPLE
+            .chars()
+            .count() as f32)
+        .max(1.0);
+    let available_cols = (effective_tab_area / char_w).floor().max(0.0) as usize;
+
+    let layout = TabBarLayout {
+        bar_width: width,
+        bar_height: height,
+        visible_tabs,
+        visible_segments,
+        scroll_left: None,
+        scroll_right: None,
+        hit_regions,
+        resolved_scroll_offset,
+    };
+    (layout, corrected_scroll_offset, available_cols)
 }
 
 /// Compute the [`TabBarLayout`] half of [`pixel_layout`] — the icon-less
@@ -426,6 +622,7 @@ fn paint_tab_bar_icons_from_layout(
             theme.tab_inactive_fg
         };
         let mut cursor_x = tab_rect.x + style.tab_padding_x;
+        let icon_extra = icon_extra_width(dwrite, icons, vt.tab_idx);
 
         if let Some(icon) = tab_icon_at(icons, vt.tab_idx) {
             let (iw, ih) = dwrite.measure_text(&icon.glyph).unwrap_or((0.0, 0.0));
@@ -434,14 +631,32 @@ fn paint_tab_bar_icons_from_layout(
             cursor_x += iw + TAB_ICON_GAP_DIP;
         }
 
-        let (name_w, name_h) = dwrite.measure_text(&tab.label).unwrap_or((0.0, 0.0));
+        // A label wider than this tab's slot is ellipsis-fitted through
+        // the shared `crate::primitives::tab_bar::fit_tab_label` instead
+        // of being drawn past the slot's edge. `tab_content_w` is
+        // `vt.bounds.width` with the inter-tab gap removed — the exact
+        // budget `pixel_layout` sized this tab's close-button hit box
+        // around (same `f32` values, no lossy round trip), so re-deriving
+        // it here can never disagree with what the layout already fit.
+        let close_extra = close_extra_for(bar, vt.tab_idx, close_w);
+        let (leading, trailing) = tab_label_budget(style.tab_padding_x, icon_extra, close_extra);
+        let tab_content_w = (vt.bounds.width - TAB_OUTER_GAP_DIP).max(0.0);
+        let fitted_label = crate::primitives::tab_bar::fit_tab_label(
+            &tab.label,
+            tab_content_w,
+            leading,
+            trailing,
+            |s| dwrite.measure_text(s).map(|(w, _)| w).unwrap_or(0.0),
+        );
+
+        let (name_w, name_h) = dwrite.measure_text(&fitted_label).unwrap_or((0.0, 0.0));
         let label_rect = Rect::new(
             cursor_x,
             tab_rect.y + (tab_rect.height - name_h) / 2.0,
             name_w,
             name_h,
         );
-        let _ = dwrite.draw_text(target, &tab.label, label_rect, fg);
+        let _ = dwrite.draw_text(target, &fitted_label, label_rect, fg);
 
         if bar.show_tab_close && tab.is_closable {
             if let Some(cb) = vt.close_bounds {
@@ -992,6 +1207,81 @@ mod tests {
             (wide_label_x - default_label_x - 16.0).abs() < 0.01,
             "widening tab_padding_x by 16.0 (10.0 -> 26.0) should shift the label \
              by exactly 16.0 (default {default_label_x}, wide {wide_label_x})",
+        );
+    }
+
+    /// A label wider than the tab strip it has to fit in is ellipsis-fitted
+    /// through the shared `crate::primitives::tab_bar::fit_tab_label`
+    /// instead of being dropped from the strip. Drives the real
+    /// `Backend::draw_tab_bar` entry point on `WinBackend`, matching the
+    /// macOS sibling test `overlong_label_in_a_narrow_strip_ends_in_ellipsis_and_close_glyph_stays_fully_visible`.
+    /// The close glyph's hit box — and the glyph itself — must still land
+    /// fully inside the narrow strip.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn overlong_label_in_a_narrow_strip_ends_in_ellipsis_and_close_glyph_stays_fully_visible() {
+        use crate::backend::Backend;
+        use crate::win::backend::WinBackend;
+
+        const NARROW_W: f32 = 110.0;
+
+        let mut single = bar();
+        single.tabs.truncate(1);
+        single.tabs[0].label = "a_very_long_filename_for_this_single_tab.rs".into();
+        single.right_segments.clear();
+
+        let surface = HeadlessSurface::new(NARROW_W as u32, H as u32).expect("create surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), NARROW_W as u32, H as u32)
+            .expect("attach headless surface");
+        backend.set_painted_text_recording(true);
+        backend.begin_frame(crate::event::Viewport::new(NARROW_W, H, 1.0));
+        let hits = backend.draw_tab_bar(Rect::new(0.0, 0.0, NARROW_W, H), &single, None);
+        backend.end_frame();
+        let runs = backend.text_runs().to_vec();
+
+        assert_eq!(
+            hits.slot_positions.len(),
+            1,
+            "the narrow strip must still show the tab (ellipsis-fitted), not drop it"
+        );
+
+        let label_run = runs
+            .iter()
+            .find(|r| !r.text.contains(crate::codicon::CLOSE) && r.text.contains('…'))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected an ellipsis-truncated label run among painted runs, got {:?}",
+                    runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            label_run.text.ends_with('…'),
+            "label run {:?} must end in an ellipsis",
+            label_run.text
+        );
+        assert!(
+            (label_run.text.chars().count() as f64) < single.tabs[0].label.chars().count() as f64,
+            "the painted label {:?} must be shorter than the original {:?}",
+            label_run.text,
+            single.tabs[0].label,
+        );
+
+        let (close_lo, close_hi) =
+            hits.close_bounds[0].expect("a closable tab must still report a close-button hit box");
+        assert!(
+            close_hi <= NARROW_W as f64,
+            "close hit box [{close_lo}, {close_hi}] must stay inside the {NARROW_W}-wide strip"
+        );
+
+        let close_run = runs
+            .iter()
+            .find(|r| r.text.contains(crate::codicon::CLOSE))
+            .expect("the close glyph must still be painted");
+        assert!(
+            close_run.bounds.x >= 0.0 && close_run.bounds.x + close_run.bounds.width <= NARROW_W,
+            "close glyph run {close_run:?} must be fully visible inside the {NARROW_W}-wide strip"
         );
     }
 }
