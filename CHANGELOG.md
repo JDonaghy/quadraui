@@ -143,6 +143,12 @@ only a push to `main` runs this workflow.
   reverse-video/`▶`-prefix treatment, unchanged.
 
 ### Fixed
+- Win `Backend::tree_vscrollbar` (`win::backend`) now resolves its track
+  width from the live `Style::scrollbar_width` instead of the fixed
+  `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH` literal — a host-set
+  override now reaches the hit-tested geometry, matching what
+  `draw_tree`'s shared painter already paints and the same convention
+  `Backend::list_vscrollbar` already follows.
 - macOS `Backend::draw_focus_ring` (`macos::backend`) no longer strokes over
   a tooltip or toast painted earlier the same frame. `super::run::render_frame`
   paints the generic tab-stop focus ring *after* `AppLogic::render` returns

@@ -647,6 +647,161 @@ mod tests {
         );
     }
 
+    /// A tree whose rows all fit the viewport must paint no v-scrollbar
+    /// track at all — `TreeView::vscrollbar_with_track_width` returns
+    /// `None` for a non-overflowing tree, and the shared painter skips
+    /// the fill entirely in that case (see `native_surface_paint::paint`'s
+    /// doc). Probes the full column the track would occupy if painting
+    /// one unconditionally, not just the single row's own bounds.
+    #[test]
+    fn no_scrollbar_track_painted_when_content_fits() {
+        let tree = make_tree(vec![leaf(0, "only-row")]);
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        surface
+            .paint(|target| {
+                draw_tree(
+                    target,
+                    &dwrite,
+                    rect,
+                    &tree,
+                    LINE_HEIGHT,
+                    false,
+                    &Theme::default(),
+                    &Style::default(),
+                );
+            })
+            .expect("paint tree");
+
+        let theme = Theme::default();
+        // Well below the single row, inside the column a v-scrollbar
+        // track would occupy if painted unconditionally.
+        let probe_x = (rect.x + rect.width - 2.0) as u32;
+        let probe_y = (rect.y + rect.height / 2.0) as u32;
+        let px = surface.pixel_at(probe_x, probe_y);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "a tree whose single row fits the viewport must not paint a \
+             v-scrollbar track at ({probe_x}, {probe_y})"
+        );
+    }
+
+    /// The painted v-scrollbar track follows a host-set
+    /// `Style::scrollbar_width`, not the fixed `TREE_VSCROLLBAR_WIDTH`
+    /// literal — mirrors `primitives::tree`'s own
+    /// `vertical_scrollbar_track_width_follows_style_token` test, but
+    /// exercises this backend's own `draw_tree` entry point. Probes just
+    /// inside the widened track's leading edge — a region the fixed
+    /// 10px-wide track would have left as plain background — so a
+    /// regression back to the literal width would fail here even though
+    /// the narrower, always-present slice nearer the right edge would
+    /// still paint something.
+    #[test]
+    fn scrollbar_track_width_follows_style_override() {
+        let tree = make_tree((0..40).map(|i| leaf(i, &format!("row-{i}"))).collect());
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let item_height =
+            crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT as f64) as f32;
+        let style = Style::default().with_scrollbar_width(24.0);
+        let expected = tree
+            .vscrollbar_with_track_width(rect, item_height, style.scrollbar_width)
+            .expect("40 rows in this viewport must need a v-scrollbar");
+
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        surface
+            .paint(|target| {
+                draw_tree(
+                    target,
+                    &dwrite,
+                    rect,
+                    &tree,
+                    LINE_HEIGHT,
+                    false,
+                    &Theme::default(),
+                    &style,
+                );
+            })
+            .expect("paint tree");
+
+        let theme = Theme::default();
+        let probe_x = (expected.track.x + 2.0) as u32;
+        let probe_y = (expected.track.y + expected.track.height / 2.0) as u32;
+        let px = surface.pixel_at(probe_x.min(W as u32 - 1), probe_y.min(H as u32 - 1));
+        assert_ne!(
+            (px.r, px.g, px.b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "expected the 24px-wide v-scrollbar track's leading edge at \
+             ({probe_x}, {probe_y}) to be painted — a fixed 10px-wide track \
+             would have left this region as plain background"
+        );
+    }
+
+    /// `TreeController::render` must not double-paint the v-scrollbar:
+    /// `WinBackend` reports `tree_paints_own_scrollbar() == true`, meaning
+    /// its `draw_tree` already paints the tree's overlay scrollbar over
+    /// the tree's own content, so `TreeController::render` passes the
+    /// full rect to `draw_tree` and skips a separate `draw_scrollbar`
+    /// call. Rendering the same rows through `TreeController::render` and
+    /// through a bare `Backend::draw_tree` call must produce
+    /// pixel-identical frames; any stray pixel would be an extra,
+    /// separately painted scrollbar. Mirrors
+    /// `macos::tree::tree_controller_render_does_not_double_paint_scrollbar`.
+    /// Windows-only: needs a real `attach_headless` Direct2D handle.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn tree_controller_render_does_not_double_paint_scrollbar() {
+        use crate::event::Viewport;
+        use crate::win::backend::WinBackend;
+        use crate::Backend;
+
+        const PW: u32 = 200;
+        const PH: u32 = 200;
+
+        let rows: Vec<TreeRow> = (0..40).map(|i| leaf(i, &format!("row{i}"))).collect();
+        let rect = Rect::new(0.0, 0.0, PW as f32, PH as f32);
+
+        let reference_surface = HeadlessSurface::new(PW, PH).expect("create surface");
+        let mut reference = WinBackend::new();
+        reference
+            .attach_headless(reference_surface.target().clone(), PW, PH)
+            .expect("attach headless surface");
+        let tree = make_tree(rows.clone());
+        reference.begin_frame(Viewport::new(PW as f32, PH as f32, 1.0));
+        reference.draw_tree(rect, &tree);
+        reference.end_frame();
+
+        let surface = HeadlessSurface::new(PW, PH).expect("create surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), PW, PH)
+            .expect("attach headless surface");
+        let mut controller = crate::compose::TreeController::new("tree");
+        controller.set_rows(rows);
+        backend.begin_frame(Viewport::new(PW as f32, PH as f32, 1.0));
+        assert!(
+            backend.tree_paints_own_scrollbar(),
+            "Win owns the tree scrollbar paint"
+        );
+        controller.render(&mut backend, rect);
+        backend.end_frame();
+
+        for y in 0..PH {
+            for x in 0..PW {
+                assert_eq!(
+                    surface.pixel_at(x, y),
+                    reference_surface.pixel_at(x, y),
+                    "pixel ({x}, {y}) differs between TreeController::render and a \
+                     draw_tree-only reference frame — TreeController painted \
+                     something extra, i.e. a second scrollbar"
+                );
+            }
+        }
+    }
+
     /// [`win_tree_layout_measured`] must size the chevron end-x from the
     /// real DirectWrite glyph width of the glyph paint actually draws
     /// (the codicon substitute for the default style, an app override
