@@ -2900,9 +2900,13 @@ impl Backend for MacBackend {
     /// [`Self::draw_tab_bar_icons`], but honouring an optional
     /// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
     /// close/dirty mark — `glyphs: None` reproduces
-    /// [`Self::draw_tab_bar_icons`] exactly. `chrome` is unused: this
-    /// rasteriser has no bracket-chrome support, matching the trait
-    /// default's own posture of ignoring `chrome` on backends without it.
+    /// [`Self::draw_tab_bar_icons`] exactly. `chrome.active_frame` is
+    /// unused: this rasteriser has no bracket-chrome support, matching the
+    /// trait default's own posture of ignoring that knob on backends
+    /// without it. `chrome.focused_index` *is* honoured: it paints a
+    /// focus-visible ring on the named tab (see
+    /// [`super::tab_bar::draw_tab_bar_icons_with_glyphs`]'s paint-loop
+    /// comment for the ring geometry).
     #[allow(deprecated)] // returns the deprecated `TabBarHits`
     fn draw_tab_bar_with_chrome_and_glyphs(
         &mut self,
@@ -2912,7 +2916,6 @@ impl Backend for MacBackend {
         chrome: &crate::primitives::tab_bar::TabChrome,
         glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
     ) -> TabBarHits {
-        let _ = chrome;
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
@@ -2943,6 +2946,7 @@ impl Backend for MacBackend {
                 self.nerd_fonts_enabled,
                 None,
                 None,
+                chrome.focused_index,
             );
             CGContextRestoreGState(ctx);
             crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
@@ -3073,6 +3077,7 @@ impl Backend for MacBackend {
                 self.nerd_fonts_enabled,
                 hovered_tab,
                 pressed_tab,
+                None,
             );
             CGContextRestoreGState(ctx);
             crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
@@ -3125,6 +3130,7 @@ impl Backend for MacBackend {
                 self.nerd_fonts_enabled,
                 hovered_tab,
                 pressed_tab,
+                None,
             );
             CGContextRestoreGState(ctx);
         }

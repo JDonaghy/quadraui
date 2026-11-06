@@ -252,6 +252,16 @@ only a push to `main` runs this workflow.
   pass `false` until they grow their own `_with_state` override, same gap
   `hovered_idx`/`pressed_idx` already have there. TUI keeps its existing
   reverse-video/`▶`-prefix treatment, unchanged.
+- macOS: `Backend::draw_tab_bar_with_chrome_and_glyphs` now honours
+  `TabChrome::focused_index`, painting a `Theme::focus_ring_color` ring at
+  `Style::focus_ring_width` around the named tab's whole slot —
+  `macos/tab_bar.rs`'s `draw_tab_bar_icons_with_glyphs` reuses the same
+  `focus_ring_geometry` helper `TextInput`/`Button` already share, so the
+  ring matches their outset gap and stroke width. Previously this chrome
+  knob was read but discarded on macOS (`active_frame` bracket framing
+  still is — unsupported on this backend). `focused_index: None` (a click)
+  paints no ring, matching `TabChrome::focused_index`'s own
+  focus-visible-suppression convention.
 
 ### Changed
 - **Breaking (TUI rasteriser helpers):** `quadraui::tui::draw_button` and
