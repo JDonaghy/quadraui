@@ -144,6 +144,7 @@ impl SCSidebar {
                         selection_mode: SelectionMode::Single,
                         selected_path: s.selected_path.clone(),
                         scroll_offset: s.scroll_offset,
+                        scroll_px: None,
                         style: Default::default(),
                         has_focus: !self.commit_input_active && self.active_section == Some(idx),
                     }),

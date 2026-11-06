@@ -61,6 +61,7 @@ fn build_table(nrows: usize, ncols: usize) -> DataTable {
         rows,
         selected_idx: Some(nrows / 2),
         scroll_offset: nrows / 2,
+        scroll_px: None,
         sort: Some((0, quadraui::SortDirection::Ascending)),
         has_focus: true,
         show_scrollbar: true,

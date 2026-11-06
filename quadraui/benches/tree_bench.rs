@@ -47,6 +47,7 @@ fn build_tree(nrows: usize) -> TreeView {
         selection_mode: SelectionMode::Single,
         selected_path: Some(vec![(nrows / 2000) as u16, ((nrows / 2) % 1000) as u16]),
         scroll_offset: nrows / 2,
+        scroll_px: None,
         style: TreeStyle::default(),
         has_focus: true,
     }
