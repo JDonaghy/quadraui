@@ -286,6 +286,16 @@ pub struct MacBackend {
     /// [`crate::testing::FrameInventory::zones`] via
     /// [`super::testing::MacDriver::inventory`].
     zones: Vec<ZoneRec>,
+    /// Bounds of every tooltip/toast painted so far this frame, via
+    /// [`Backend::draw_tooltip_with_chrome`]/[`Backend::draw_toast_overlay`].
+    /// Cleared at the start of each frame by [`Backend::begin_frame`], same
+    /// per-frame lifecycle as `zones`.
+    ///
+    /// [`Backend::draw_focus_ring`] reads this to skip the portion of the
+    /// generic focus-ring convention that would otherwise stroke on top of
+    /// an overlay drawn earlier in the same frame — tooltip/toast must stay
+    /// topmost (see that method's own doc for the regression this guards).
+    overlay_bounds_this_frame: Vec<Rect>,
     /// Whether [`Self::enter_frame_scope`] should wrap its closure in
     /// [`super::text::start_recording_text`] / `stop_recording_text` and
     /// stash the result into `text_runs`. Off by default — the live
@@ -616,6 +626,15 @@ fn union_ns_rect(a: NSRect, b: NSRect) -> NSRect {
     }
 }
 
+/// Whether rects `a` and `b` share any area — used by
+/// [`MacBackend::draw_focus_ring`] to avoid stroking on top of a
+/// tooltip/toast painted earlier this frame; see
+/// `overlay_bounds_this_frame`'s own doc. A shared edge with zero overlap
+/// width/height doesn't count as overlapping.
+fn rects_overlap(a: Rect, b: Rect) -> bool {
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+}
+
 /// Map a [`PointerShape`] to the [`MacCursorKind`] it should show.
 /// Mirrors `gtk::backend::pointer_shape_cursor_name`, but `NSCursor`'s
 /// public API (`objc2-app-kit`'s binding of it — see
@@ -765,6 +784,7 @@ impl MacBackend {
                 std::time::Instant::now(),
             )),
             zones: Vec::new(),
+            overlay_bounds_this_frame: Vec::new(),
             painted_text_recording: false,
             skip_animations: false,
             text_runs: Vec::new(),
@@ -1574,6 +1594,10 @@ impl Backend for MacBackend {
         // `enter_frame_scope`) until whatever reads them after the frame
         // (e.g. `MacDriver::inventory`).
         self.zones.clear();
+        // Clear last frame's tooltip/toast bounds — see
+        // `overlay_bounds_this_frame`'s own doc. Same per-frame lifecycle
+        // as `zones`.
+        self.overlay_bounds_this_frame.clear();
         // Clear the focused activity bar — re-set by `draw_activity_bar`
         // during this render pass if a bar is still keyboard-focused. Same
         // per-frame lifecycle as `zones`, matching `GtkBackend::begin_frame`.
@@ -1991,9 +2015,29 @@ impl Backend for MacBackend {
         self.focus.set_focus(id)
     }
 
+    /// Strokes the generic tab-stop focus-ring convention around `rect`.
+    ///
+    /// Called by [`super::run::render_frame`] *after* `AppLogic::render`
+    /// returns, deliberately — so the ring paints on top of whatever the
+    /// focused widget's own content drew (see `focus_demo`'s module doc:
+    /// "the ring overlays rather than clears"). That same lateness means
+    /// it would also paint on top of a tooltip or toast `render` drew
+    /// over this same rect, inverting the overlay-order contract
+    /// (`quadraui-binding-core::host::render_overlays`'s doc: "tooltip,
+    /// toast topmost of all"). Skipping the stroke wherever it would land
+    /// on a tooltip/toast bound recorded this frame — see
+    /// `overlay_bounds_this_frame` — keeps the ring out of the way of an
+    /// overlay without needing to defer either paint call.
     fn draw_focus_ring(&mut self, rect: Rect) {
         let theme = self.current_theme;
         let stroke_width = self.current_style.focus_ring_width;
+        if self
+            .overlay_bounds_this_frame
+            .iter()
+            .any(|overlay| rects_overlap(rect, *overlay))
+        {
+            return;
+        }
         self.surface_stroke_rect(rect, theme.accent_fg, stroke_width);
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
@@ -3323,6 +3367,10 @@ impl Backend for MacBackend {
             &theme,
             &style,
         );
+        // See `overlay_bounds_this_frame`'s own doc: a later
+        // `draw_focus_ring` call this same frame must not stroke over this
+        // tooltip.
+        self.overlay_bounds_this_frame.push(layout.bounds);
     }
     fn draw_context_menu(
         &mut self,
@@ -3988,6 +4036,12 @@ impl Backend for MacBackend {
         if still_animating {
             self.request_frame_in(Duration::from_millis(16));
         }
+
+        // See `overlay_bounds_this_frame`'s own doc: a later
+        // `draw_focus_ring` call this same frame must not stroke over any
+        // of these.
+        self.overlay_bounds_this_frame
+            .extend(layout.visible_toasts.iter().map(|t| t.bounds));
 
         layout
     }
@@ -10243,6 +10297,118 @@ mod tests {
             (r, g, b),
             (success_bg.r, success_bg.g, success_bg.b),
             "toast should be painted at its resting position once the slide finishes",
+        );
+    }
+
+    // ── overlay order: tooltip/toast stay topmost of the focus ring ──────
+
+    /// `super::run::render_frame` calls `Backend::draw_focus_ring` *after*
+    /// `AppLogic::render` returns (see that method's own doc), so an app
+    /// that paints a toast overlapping the currently-focused widget's rect
+    /// — e.g. a toast that lands over a focused, bordered editor — must
+    /// not have the generic focus-ring convention stroke on top of it on
+    /// the very same frame. Regression for the overlay-order seam
+    /// (tooltip/toast topmost of all, `quadraui-binding-core::host::render_overlays`'s
+    /// doc).
+    #[test]
+    fn draw_focus_ring_does_not_paint_over_a_toast_from_the_same_frame() {
+        use super::super::headless::BitmapSurface;
+
+        let overlay = sample_toast_overlay();
+        let mut backend = MacBackend::new();
+        backend.set_current_font(super::super::text::make_font("Menlo", 14.0).expect("Menlo"));
+        backend.set_skip_animations(true);
+
+        let surface = BitmapSurface::new(TOAST_W, TOAST_H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        backend.begin_frame(Viewport::new(TOAST_W as f32, TOAST_H as f32, 1.0));
+        let toast_bounds = std::cell::RefCell::new(Rect::new(0.0, 0.0, 0.0, 0.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let layout = b.draw_toast_overlay(
+                Rect::new(0.0, 0.0, TOAST_W as f32, TOAST_H as f32),
+                &overlay,
+            );
+            let vt = layout.visible_toasts[0].bounds;
+            *toast_bounds.borrow_mut() = vt;
+            // A tab-stop focus ring whose rect is the toast's own bounds —
+            // the worst case, a toast that lands exactly over the focused
+            // widget it was raised from.
+            b.draw_focus_ring(vt);
+        });
+        backend.end_frame();
+
+        let vt = *toast_bounds.borrow();
+        let success_bg = Theme::default().success_bg();
+        let theme = Theme::default();
+        // Probe right at the toast's edge, where the ring would have
+        // stroked had it not been skipped.
+        let probe_x = (vt.x + vt.width / 2.0) as u32;
+        let probe_y = vt.y as u32;
+        let (r, g, b, _a) = surface.pixel(probe_x, probe_y);
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must not stroke over a toast painted earlier this frame",
+        );
+        // The toast's own fill is still intact at its centre.
+        let cx = (vt.x + vt.width / 2.0) as u32;
+        let cy = (vt.y + vt.height / 2.0) as u32;
+        let (r, g, b, _a) = surface.pixel(cx, cy);
+        assert_eq!(
+            (r, g, b),
+            (success_bg.r, success_bg.g, success_bg.b),
+            "the toast's own fill must still paint",
+        );
+    }
+
+    /// Same contract as the toast regression above, for a tooltip anchored
+    /// directly over the currently-focused widget — the exact "hover
+    /// tooltip over a focused, bordered widget" scenario this issue's
+    /// acceptance criteria name.
+    #[test]
+    fn draw_focus_ring_does_not_paint_over_a_tooltip_from_the_same_frame() {
+        use super::super::headless::BitmapSurface;
+        use crate::primitives::tooltip::{ResolvedPlacement, Tooltip, TooltipLayout};
+
+        const W: u32 = 200;
+        const H: u32 = 100;
+        let rect = Rect::new(20.0, 20.0, 100.0, 30.0);
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+        let tooltip = Tooltip::new(WidgetId::new("tip"), "Hover text");
+        let layout = TooltipLayout {
+            bounds: rect,
+            resolved_placement: ResolvedPlacement::Bottom,
+        };
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_tooltip(&tooltip, &layout);
+            // The focused widget this tooltip is anchored to shares the
+            // tooltip's own bounds exactly — the ring must yield.
+            b.draw_focus_ring(rect);
+        });
+        backend.end_frame();
+
+        let theme = Theme::default();
+        let probe_x = (rect.x + rect.width / 2.0) as u32;
+        let probe_y = rect.y as u32;
+        let (r, g, b, _a) = surface.pixel(probe_x, probe_y);
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must not stroke over a tooltip painted earlier this frame",
         );
     }
 }

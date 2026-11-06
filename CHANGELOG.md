@@ -114,6 +114,14 @@ only a push to `main` runs this workflow.
   `"focused_index"` key.
 
 ### Fixed
+- macOS `Backend::draw_focus_ring` (`macos::backend`) no longer strokes over
+  a tooltip or toast painted earlier the same frame: `super::run::render_frame`
+  paints the generic tab-stop focus ring *after* `AppLogic::render` returns
+  (so it stays visible on top of ordinary widget content), which previously
+  also put it on top of any tooltip/toast `render` had drawn over the same
+  rect, inverting the overlay-order contract (`quadraui-binding-core::host::
+  render_overlays`'s doc: "tooltip, toast topmost of all"). The ring now
+  skips any rect that overlaps a tooltip/toast bound recorded this frame.
 - macOS `TabBar` painter (`macos::tab_bar`) now ellipsis-fits a tab's label
   into whatever space is left on the strip via the shared
   `primitives::tab_bar::fit_tab_label`, instead of dropping the whole tab
