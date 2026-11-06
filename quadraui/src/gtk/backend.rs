@@ -2960,6 +2960,7 @@ impl Backend for GtkBackend {
             bar,
             icons,
             &self.current_theme,
+            &self.current_style,
             hovered_close_tab,
         );
         pango_layout.set_font_description(saved_font.as_ref());
@@ -2999,6 +3000,7 @@ impl Backend for GtkBackend {
             bar,
             icons,
             &self.current_theme,
+            &self.current_style,
             hovered_close_tab,
         );
         pango_layout.set_font_description(saved_font.as_ref());
@@ -3033,6 +3035,7 @@ impl Backend for GtkBackend {
             &[],
             chrome,
             &self.current_theme,
+            &self.current_style,
             hovered_close_tab,
         );
         pango_layout.set_font_description(saved_font.as_ref());
@@ -3072,6 +3075,7 @@ impl Backend for GtkBackend {
             &[],
             chrome,
             &self.current_theme,
+            &self.current_style,
             hovered_close_tab,
             glyphs,
             nerd_fonts_enabled,
@@ -3108,6 +3112,7 @@ impl Backend for GtkBackend {
             &[],
             chrome,
             &self.current_theme,
+            &self.current_style,
             hovered_close_tab,
         );
         pango_layout.set_font_description(saved_font.as_ref());
@@ -3293,7 +3298,11 @@ impl Backend for GtkBackend {
                 .collect(),
         };
 
-        let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
+        let tab_pad: f32 = if bar.compact {
+            2.0
+        } else {
+            self.current_style.tab_padding_x
+        };
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
         let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
 
@@ -3379,7 +3388,11 @@ impl Backend for GtkBackend {
                 .collect(),
         };
 
-        let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
+        let tab_pad: f32 = if bar.compact {
+            2.0
+        } else {
+            self.current_style.tab_padding_x
+        };
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
         let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
 
@@ -3442,7 +3455,11 @@ impl Backend for GtkBackend {
             pl.set_font_description(Some(&ui_font_desc));
         }
 
-        let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
+        let tab_pad: f32 = if bar.compact {
+            2.0
+        } else {
+            self.current_style.tab_padding_x
+        };
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
         let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
 
@@ -3508,7 +3525,11 @@ impl Backend for GtkBackend {
             pl.set_font_description(Some(&ui_font_desc));
         }
 
-        let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
+        let tab_pad: f32 = if bar.compact {
+            2.0
+        } else {
+            self.current_style.tab_padding_x
+        };
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
         let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
 

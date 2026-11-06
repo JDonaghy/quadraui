@@ -29,10 +29,15 @@ use crate::primitives::layout_metrics::TextMeasure;
 // struct's doc for the replacement plan.
 #[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarLayout, TabChrome, TabFrame};
+use crate::style::Style;
 use crate::theme::Theme;
 
-/// Per-tab padding (left + right) inside the tab background fill.
-const TAB_PAD: f64 = 14.0;
+/// Per-tab padding (left + right) inside the tab background fill, in
+/// `bar.compact` mode. A compact strip (used where vertical space is at
+/// a premium) keeps this fixed literal rather than scaling with
+/// [`Style::tab_padding_x`] — the non-compact case reads that style token
+/// instead, so a host-set value only ever widens the normal strip.
+const TAB_PAD_COMPACT: f64 = 2.0;
 /// Gap between the tab label and the close glyph.
 const TAB_INNER_GAP: f64 = 10.0;
 /// Gap between adjacent tabs.
@@ -231,6 +236,7 @@ pub fn draw_tab_bar(
     row_height: f64,
     bar: &TabBar,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
     draw_tab_bar_icons(
@@ -244,6 +250,7 @@ pub fn draw_tab_bar(
         bar,
         &[],
         theme,
+        style,
         hovered_close_tab,
     )
 }
@@ -278,6 +285,7 @@ pub fn draw_tab_bar_icons(
     bar: &TabBar,
     icons: &[Option<crate::primitives::tab_bar::TabIcon>],
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
     draw_tab_bar_icons_with_chrome(
@@ -292,6 +300,7 @@ pub fn draw_tab_bar_icons(
         icons,
         &TabChrome::default(),
         theme,
+        style,
         hovered_close_tab,
     )
 }
@@ -313,6 +322,7 @@ pub fn draw_tab_bar_with_chrome(
     bar: &TabBar,
     chrome: &TabChrome,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
     draw_tab_bar_with_chrome_and_glyphs(
@@ -326,6 +336,7 @@ pub fn draw_tab_bar_with_chrome(
         bar,
         chrome,
         theme,
+        style,
         hovered_close_tab,
         None,
         false,
@@ -349,6 +360,7 @@ pub fn draw_tab_bar_with_chrome_and_glyphs(
     bar: &TabBar,
     chrome: &TabChrome,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
     glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
     nerd_fonts_enabled: bool,
@@ -365,6 +377,7 @@ pub fn draw_tab_bar_with_chrome_and_glyphs(
         &[],
         chrome,
         theme,
+        style,
         hovered_close_tab,
         glyphs,
         nerd_fonts_enabled,
@@ -392,6 +405,7 @@ pub fn draw_tab_bar_icons_with_chrome(
     icons: &[Option<crate::primitives::tab_bar::TabIcon>],
     chrome: &TabChrome,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
     draw_tab_bar_icons_with_chrome_and_glyphs(
@@ -406,6 +420,7 @@ pub fn draw_tab_bar_icons_with_chrome(
         icons,
         chrome,
         theme,
+        style,
         hovered_close_tab,
         None,
         false,
@@ -433,6 +448,7 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
     icons: &[Option<crate::primitives::tab_bar::TabIcon>],
     chrome: &TabChrome,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
     glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
     nerd_fonts_enabled: bool,
@@ -440,7 +456,11 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
     let tab_row_height = row_height;
     let text_y_offset = y_offset + (tab_row_height - line_height) / 2.0;
 
-    let tab_pad = if bar.compact { 2.0 } else { TAB_PAD };
+    let tab_pad = if bar.compact {
+        TAB_PAD_COMPACT
+    } else {
+        style.tab_padding_x as f64
+    };
     let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
     let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
 
@@ -846,6 +866,7 @@ mod tests {
                 ROW_H as f64,
                 &bar,
                 &theme,
+                &Style::default(),
                 None,
             );
         }
@@ -931,6 +952,7 @@ mod tests {
             ROW_H as f64,
             &bar,
             &theme,
+            &Style::default(),
             None,
         );
 
@@ -949,6 +971,7 @@ mod tests {
             &bar,
             &icons,
             &theme,
+            &Style::default(),
             None,
         );
 
@@ -1004,6 +1027,7 @@ mod tests {
                 ROW_H as f64,
                 &bar,
                 &theme,
+                &Style::default(),
                 None,
             );
         }
@@ -1062,6 +1086,7 @@ mod tests {
                 ROW_H as f64,
                 &bar,
                 &theme,
+                &Style::default(),
                 None,
             );
         }
@@ -1125,6 +1150,7 @@ mod tests {
             ROW_H as f64,
             &bar,
             &theme,
+            &Style::default(),
             None,
         );
 
@@ -1140,6 +1166,7 @@ mod tests {
             &bar,
             &chrome,
             &theme,
+            &Style::default(),
             None,
         );
 
@@ -1228,6 +1255,7 @@ mod tests {
                     row_h,
                     &bar,
                     &theme,
+                    &Style::default(),
                     None,
                 );
             }
@@ -1282,6 +1310,7 @@ mod tests {
                 ROW_H_F,
                 &bar,
                 &theme,
+                &Style::default(),
                 None,
             );
         }
@@ -1343,6 +1372,7 @@ mod tests {
                 ROW_H as f64,
                 &bar,
                 &theme,
+                &Style::default(),
                 None,
             );
             layout = l;
@@ -1406,6 +1436,7 @@ mod tests {
             ROW_H as f64,
             &bar,
             &theme,
+            &Style::default(),
             None,
         );
 
@@ -1469,6 +1500,7 @@ mod tests {
                 ROW_H as f64,
                 &bar,
                 &theme,
+                &Style::default(),
                 None,
             );
             layout = l;
@@ -1479,9 +1511,10 @@ mod tests {
         let data = surface.data().expect("surface data");
 
         let bounds = layout.visible_tabs[0].bounds;
-        // Sample inside the tab's left padding (`TAB_PAD`), well clear of
-        // the label glyphs — a column through the text would show the
-        // label's foreground colour instead of the background fill.
+        // Sample inside the tab's left padding (`Style::tab_padding_x`),
+        // well clear of the label glyphs — a column through the text
+        // would show the label's foreground colour instead of the
+        // background fill.
         let x = bounds.x as i32 + 3;
         let active_bg = theme.tab_active_bg;
         let bar_bg = theme.tab_bar_bg;
@@ -1528,6 +1561,7 @@ mod tests {
             ROW_H as f64,
             &bar,
             &theme,
+            &Style::default(),
             None,
         );
 
@@ -1556,6 +1590,91 @@ mod tests {
             other => {
                 panic!("click at the close region's centre expected TabClose(0), got {other:?}")
             }
+        }
+    }
+
+    /// `Style::tab_padding_x` sets the label's leading inset: with no
+    /// icon decorating the tab, the label's painted text run sits exactly
+    /// `slot_x + tab_padding_x` in from the tab's own slot origin — not a
+    /// fixed literal. Checked at both the default style value and a
+    /// distinctly wider one, via the thread-local text-run sink
+    /// `gtk::painted_text::show_layout` feeds — a direct assertion on the
+    /// ink column, not an inference from pixel colour.
+    #[test]
+    fn tab_padding_x_sets_the_labels_leading_inset() {
+        let bar = make_bar_without_right_segments();
+        let theme = make_theme();
+
+        let label_x_for_style = |style: Style| -> (f64, f64) {
+            let surface =
+                ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+
+            let previous = crate::testing::install_text_run_sink();
+            let (_, layout) = draw_tab_bar(
+                &cr,
+                &pango_layout,
+                0.0,
+                W as f64,
+                LINE_H,
+                0.0,
+                ROW_H as f64,
+                &bar,
+                &theme,
+                &style,
+                None,
+            );
+            let runs = crate::testing::take_text_run_sink(previous);
+
+            let slot_x = layout.visible_tabs[0].bounds.x as f64;
+            let run = runs
+                .iter()
+                .find(|r| r.text == "main.rs")
+                .expect("label must have painted a text run");
+            (run.bounds.x as f64, slot_x)
+        };
+
+        let default_style = Style::default();
+        let (default_label_x, default_slot_x) = label_x_for_style(default_style.clone());
+        assert!(
+            (default_label_x - (default_slot_x + default_style.tab_padding_x as f64)).abs()
+                < 0.01,
+            "label x {default_label_x} should sit tab_padding_x={} in from slot edge {default_slot_x}",
+            default_style.tab_padding_x,
+        );
+
+        let wide_style = Style::default().with_tab_padding_x(26.0);
+        let (wide_label_x, wide_slot_x) = label_x_for_style(wide_style.clone());
+        assert!(
+            (wide_label_x - (wide_slot_x + wide_style.tab_padding_x as f64)).abs() < 0.01,
+            "label x {wide_label_x} should sit tab_padding_x={} in from slot edge {wide_slot_x}",
+            wide_style.tab_padding_x,
+        );
+
+        assert!(
+            (wide_label_x - default_label_x - 16.0).abs() < 0.01,
+            "widening tab_padding_x by 16.0 (10.0 -> 26.0) should shift the label \
+             by exactly that amount: default={default_label_x}, wide={wide_label_x}"
+        );
+    }
+
+    /// Single-tab bar with no right segments — a minimal fixture for the
+    /// label-inset test above, where any extra painted text (a right
+    /// segment) would be noise for the `find`-by-text-equality lookup.
+    fn make_bar_without_right_segments() -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: "main.rs".to_string(),
+                is_active: false,
+                ..Default::default()
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: false,
+            compact: false,
         }
     }
 }
