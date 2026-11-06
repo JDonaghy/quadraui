@@ -591,6 +591,7 @@ mod hover_driver_tests {
             // hover tint this test is probing for.
             selected_idx: usize::MAX,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,

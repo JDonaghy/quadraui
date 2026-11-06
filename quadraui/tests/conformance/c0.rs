@@ -414,6 +414,7 @@ pub const CASES: &[Case] = &[
                 }],
                 selected_idx: usize::MAX,
                 scroll_offset: 0,
+                scroll_px: None,
                 has_focus: false,
                 bordered: false,
                 h_scroll: 0,
@@ -472,6 +473,7 @@ pub const CASES: &[Case] = &[
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
                 scroll_offset: 0,
+                scroll_px: None,
                 style: TreeStyle::default(),
                 has_focus: false,
             };

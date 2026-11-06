@@ -1298,6 +1298,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             // Item 0 is `selected_idx` with `has_focus: true`, so its
@@ -1339,6 +1341,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
             let selected_fill = surface
                 .fills

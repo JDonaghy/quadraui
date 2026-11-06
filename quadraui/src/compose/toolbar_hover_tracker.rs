@@ -329,6 +329,7 @@ mod list_tests {
             items: vec![item("a"), item("b"), item("c")],
             selected_idx: 0,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -402,6 +403,7 @@ mod tree_tests {
             selection_mode: SelectionMode::Single,
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         };

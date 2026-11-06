@@ -590,6 +590,7 @@ mod multi_select_driver_tests {
             items: (0..5).map(|i| item(&format!("row {i}"))).collect(),
             selected_idx: 0,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,

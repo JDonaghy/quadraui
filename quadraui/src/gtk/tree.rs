@@ -1311,6 +1311,7 @@ mod hover_driver_tests {
             // hover tint this test is probing for.
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             style: Default::default(),
             has_focus: true,
         }

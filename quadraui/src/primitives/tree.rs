@@ -1023,6 +1023,8 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &Style::default(),
+                None,
+                None,
             );
 
             let selected_fill = surface
