@@ -1049,6 +1049,95 @@ mod tests {
         );
     }
 
+    /// Paint `tree` through the real `GtkBackend::draw_tree` trait
+    /// method rather than the free `draw_tree` function
+    /// `paint_then_layout` uses above — the shape
+    /// `tree_controller_render_does_not_double_paint_scrollbar` needs for
+    /// a pixel-identical reference frame. Mirrors
+    /// `macos::tree::paint_via_backend`.
+    fn paint_via_backend(tree: &TreeView) -> ImageSurface {
+        use crate::gtk::GtkBackend;
+        use crate::Backend;
+
+        let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let mut backend = GtkBackend::new();
+            backend.set_current_theme(test_theme());
+            backend.set_current_line_height(LINE_HEIGHT);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_tree(QRect::new(0.0, 0.0, W as f32, H as f32), tree);
+            });
+        }
+        surface
+    }
+
+    /// `TreeController::render` must not double-paint the v-scrollbar:
+    /// `GtkBackend` reports `tree_paints_own_scrollbar() == true`,
+    /// meaning its `draw_tree` already paints the tree's overlay
+    /// scrollbar over the tree's own content. `TreeController::render`
+    /// therefore passes the full rect to `draw_tree` and skips a
+    /// separate `draw_scrollbar` call. Rendering the same rows through
+    /// `TreeController::render` and through a bare `draw_tree` call must
+    /// produce pixel-identical frames; any stray pixel would be an
+    /// extra, separately painted scrollbar. Mirrors
+    /// `macos::tree::tree_controller_render_does_not_double_paint_scrollbar`.
+    #[test]
+    fn tree_controller_render_does_not_double_paint_scrollbar() {
+        use crate::gtk::GtkBackend;
+        use crate::Backend;
+
+        let rows: Vec<TreeRow> = (0..40).map(|i| leaf(i, &format!("row{i}"))).collect();
+        let tree = make_tree(rows.clone());
+        let mut reference = paint_via_backend(&tree);
+
+        let mut controller = crate::TreeController::new("tree");
+        controller.set_rows(rows);
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let mut backend = GtkBackend::new();
+            backend.set_current_theme(test_theme());
+            backend.set_current_line_height(LINE_HEIGHT);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                assert!(
+                    b.tree_paints_own_scrollbar(),
+                    "GTK owns the tree scrollbar paint"
+                );
+                controller.render(b, area);
+            });
+        }
+
+        let ref_stride = reference.stride() as usize;
+        let stride = surface.stride() as usize;
+        assert_eq!(
+            stride, ref_stride,
+            "both surfaces share the same W/H/format"
+        );
+        let ref_data = reference.data().expect("reference surface data");
+        let data = surface.data().expect("surface data");
+        for y in 0..H {
+            for x in 0..W {
+                let off = y as usize * stride + x as usize * 4;
+                assert_eq!(
+                    data[off..off + 4],
+                    ref_data[off..off + 4],
+                    "pixel ({x}, {y}) differs between TreeController::render and a \
+                     draw_tree-only reference frame — TreeController painted \
+                     something extra, i.e. a second scrollbar"
+                );
+            }
+        }
+    }
+
     /// Before the `native_surface_paint` migration,
     /// `paint`'s row-being-edited path did not yet exist on Windows at
     /// all (`win::tree::draw_tree` painted the row's stale label
