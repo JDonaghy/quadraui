@@ -8,7 +8,7 @@ use quadraui::{
     ActivityBar, ActivityBarEvent, ComboBox, ComboBoxEvent, DataTableEvent, DatePicker,
     DatePickerEvent, FormEvent, Key, ListViewEvent, Modifiers, NamedKey, NumberInput,
     NumberInputEvent, RadioGroup, RadioGroupEvent, StatusBar, StatusBarEvent, Switch, SwitchEvent,
-    TabBar, TabBarEvent, TextDisplayEvent, TextInput, TreeEvent, UiEvent, WidgetId,
+    TabBar, TabBarEvent, TextDisplayEvent, TextInput, Toolbar, TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
@@ -398,13 +398,22 @@ pub fn semantic_event_for_hit(
                         ActivityBarEvent::ItemClicked { id },
                     ))
                 } else {
-                    // `Toolbar` has no typed `UiEvent` of its own — `id`
-                    // (the clicked button's own id, per `hit_test_painted`'s
-                    // `ExtraChrome` convention) stays the raw `MouseDown`'s
-                    // `widget`, same as a plain `Button` click.
-                    None
+                    let toolbar = extra_as::<Toolbar>(extra)?;
+                    Some(UiEvent::Toolbar(*bar, toolbar.click(id)?))
                 }
             }
+            _ => None,
+        }),
+        // `bar` is the embedded `Toolbar`'s own id (see
+        // `HitDetail::SidebarPanelToolbarButton`'s doc) — look up that same
+        // `PaintedHit::SidebarPanel` entry to get the descriptor back and
+        // reuse `Toolbar::click`, exactly like the standalone/chrome case
+        // above.
+        HitDetail::SidebarPanelToolbarButton { bar } => hit_map.iter().find_map(|hit| match hit {
+            PaintedHit::SidebarPanel {
+                toolbar: Some(toolbar),
+                ..
+            } if toolbar.id == *bar => Some(UiEvent::Toolbar(*bar, toolbar.click(id)?)),
             _ => None,
         }),
         _ => None,
@@ -560,6 +569,18 @@ pub fn focus_scoped_key_event(
                 }
                 if let Some(date_picker) = extra_as::<DatePicker>(extra) {
                     return date_picker_key_event(*id, date_picker, &key);
+                }
+                if let Some(toolbar) = extra_as::<Toolbar>(extra) {
+                    // Enter/Space activates whichever button
+                    // `Toolbar::focused_index` names (set by the host, same
+                    // convention `TabChrome::focused_index` documents);
+                    // every other key is left to the raw fallback since
+                    // `Toolbar` has no `KeyPressed` variant of its own to
+                    // wrap it in.
+                    if matches!(raw_key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
+                        return Some(UiEvent::Toolbar(*id, toolbar.activate_focused()?));
+                    }
+                    return None;
                 }
                 None
             }

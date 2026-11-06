@@ -76,6 +76,16 @@ only a push to `main` runs this workflow.
   `ActivityItem::tooltip`/`Panel::tooltip`/`Toolbar`'s per-button
   tooltip already carry, now also on the standalone `Button` primitive.
   No-op on TUI (no hover UI there).
+- `UiEvent::Toolbar(WidgetId, ToolbarEvent)`: a `Toolbar` `Action` button
+  click (mouse, via the new `Toolbar::click`) or Enter/Space on the
+  keyboard-focused button (`Toolbar::activate_focused`) now carries the
+  clicked button's id and its new `is_active` state, instead of staying an
+  untyped `MouseDown`. Wired through `quadraui-binding-core`'s
+  `semantic_event_for_hit`/`focus_scoped_key_event` for every place a
+  `Toolbar` can appear (standalone/`Extra`, `SidebarPanel` header), so
+  `quadraui-py`/`quadraui-node` apps receive the same typed event a native
+  Rust `AppLogic` would build by hand. `Toolbar` now also opts into
+  `ExtraPaint::tab_stop` whenever it has at least one enabled `Action`.
 - `primitives::button::native_surface_paint::focus_ring_geometry`: the
   shared pixel geometry (outset rect, corner radius, `Style::focus_ring_width`
   stroke width) for a primitive's focus-visible ring, factored out of

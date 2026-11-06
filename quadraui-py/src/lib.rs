@@ -6485,6 +6485,139 @@ def handle(event):
         });
     }
 
+    /// A standalone `toolbar` leaf: a click on its (enabled) `Action`
+    /// button must be replaced by the semantic `UiEvent::Toolbar` it
+    /// stands for — the clicked button's own id, and `is_active` flipped
+    /// from its starting `False` to `True` — rather than staying a raw
+    /// `MouseDown`.
+    #[test]
+    fn mouse_down_over_a_toolbar_button_emits_a_semantic_toolbar_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'id': 'toolbar:main', 'toolbar': {
+        'id': 'toolbar:main',
+        'buttons': [
+            {'Action': {
+                'id': 'filter', 'label': 'Filter', 'icon': None,
+                'key_hint': None, 'enabled': True, 'is_active': False,
+                'tooltip': '',
+            }},
+        ],
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app = QuiApp::new(40, 5, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Filter")
+                    .expect("render must not raise"),
+                "the toolbar's button label must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Filter")
+                .expect("the button's label must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "a toolbar button click carries no leading FocusChanged -- only the bar's own \
+                 id (not the clicked button's) is a tab stop"
+            );
+            let event_dict = received_list
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let toolbar_payload = event_dict
+                .get_item("Toolbar")
+                .expect("dict lookup")
+                .expect("a toolbar click must dispatch a Toolbar key, not a raw MouseDown")
+                .cast_into::<PyTuple>()
+                .expect("Toolbar must pythonize to a (id, event) tuple");
+            assert_eq!(toolbar_payload.len(), 2, "Toolbar must carry (id, event)");
+            let bar_id: String = toolbar_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the toolbar's own id must be a string");
+            assert_eq!(
+                bar_id, "toolbar:main",
+                "the widget id must be the toolbar's own"
+            );
+            let inner = toolbar_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner ToolbarEvent must pythonize to a dict");
+            let clicked = inner
+                .get_item("ButtonClicked")
+                .expect("dict lookup")
+                .expect("a button click must carry a ButtonClicked key")
+                .cast_into::<PyDict>()
+                .expect("ButtonClicked payload must be a dict");
+            let button_id: String = clicked
+                .get_item("id")
+                .expect("dict lookup")
+                .expect("id key must be present")
+                .extract()
+                .expect("id must be a string");
+            assert_eq!(
+                button_id, "filter",
+                "the clicked button's own id must be reported"
+            );
+            let is_active: bool = clicked
+                .get_item("is_active")
+                .expect("dict lookup")
+                .expect("is_active key must be present")
+                .extract()
+                .expect("is_active must be a bool");
+            assert!(
+                is_active,
+                "the pre-click is_active (False) must be reported flipped (True)"
+            );
+        });
+    }
+
     /// Two `tree` leaves side by side in a `Row`: `Tab` cycles focus between
     /// them (via core's shared `preprocess_event`/`FocusManager` pipeline,
     /// driven by `PyAppLogic::tab_stops`), and a plain key then routes to

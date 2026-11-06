@@ -499,6 +499,7 @@ pub fn paint_layout(
             hits.push(PaintedHit::SidebarPanel {
                 id: sidebar_node.sidebar_panel.id,
                 layout: layout.clone(),
+                toolbar: sidebar_node.sidebar_panel.toolbar.clone(),
             });
             paint_layout(
                 backend,
