@@ -209,7 +209,13 @@ pub enum ListViewHit {
 }
 
 /// Fully-resolved list-view layout.
+///
+/// `#[non_exhaustive]`: a backend-returned value, never constructed by a
+/// consumer via struct literal (same convention as the sibling
+/// [`crate::DataTableLayout`]), so a future field add here is additive —
+/// no `cargo-semver-checks` `constructible_struct_adds_field` finding.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ListViewLayout {
     pub viewport_width: f32,
     pub viewport_height: f32,
@@ -402,8 +408,11 @@ impl ListView {
         // set). The first item's height is the uniform row-height basis
         // for the pixel conversion — the same approximation
         // `vscrollbar`/`hscrollbar` already make for thumb sizing on
-        // lists with per-row-varying heights.
-        let row_height_basis = if self.items.is_empty() {
+        // lists with per-row-varying heights. Only measured when
+        // `scroll_px` is actually in play — `measure_item` can do real
+        // text-measurement work (Pango layout on GTK), and `None` never
+        // reads this value.
+        let row_height_basis = if scroll_px.is_none() || self.items.is_empty() {
             1.0
         } else {
             measure_item(0).height

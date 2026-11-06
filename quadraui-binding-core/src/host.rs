@@ -217,6 +217,14 @@ impl BindingHost {
             data_table: self.data_table.as_ref(),
             tab_bar: self.tab_bar.as_ref(),
             extra: &self.extra_slots,
+            // `BindingHost`'s slots are set directly from Rust fields, not
+            // decoded from a raw dict, so there is no `scroll_px` key to
+            // lift out here — a host that wants pixel-precise scrolling
+            // drives `Backend::draw_*_with_state` itself instead of this
+            // helper.
+            list_scroll_px: None,
+            tree_scroll_px: None,
+            data_table_scroll_px: None,
         }
     }
 }

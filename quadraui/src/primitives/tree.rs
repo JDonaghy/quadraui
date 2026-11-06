@@ -214,7 +214,13 @@ pub enum TreeViewHit {
 
 /// Fully-resolved tree-view layout. Backends iterate `visible_rows` for
 /// painting and call [`Self::hit_test`] for clicks.
+///
+/// `#[non_exhaustive]`: a backend-returned value, never constructed by a
+/// consumer via struct literal (same convention as the sibling
+/// [`crate::DataTableLayout`]), so a future field add here is additive —
+/// no `cargo-semver-checks` `constructible_struct_adds_field` finding.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct TreeViewLayout {
     /// Viewport width in the measurer's unit.
     pub viewport_width: f32,
@@ -368,8 +374,11 @@ impl TreeView {
         // write it back and self-correct. The first row's height is the
         // uniform row-height basis for the pixel conversion — the same
         // approximation `vscrollbar` already makes for thumb sizing on
-        // trees with per-row-varying heights (leaf vs. branch).
-        let row_height_basis = if self.rows.is_empty() {
+        // trees with per-row-varying heights (leaf vs. branch). Only
+        // measured when `scroll_px` is actually in play — `measure_row`
+        // can do real text-measurement work (Pango layout on GTK), and
+        // `None` never reads this value.
+        let row_height_basis = if scroll_px.is_none() || self.rows.is_empty() {
             1.0
         } else {
             measure_row(0).height

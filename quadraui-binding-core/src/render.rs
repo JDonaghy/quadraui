@@ -37,6 +37,15 @@ pub struct RenderFrame {
     pub tab_bar: Option<TabBar>,
     /// Additive primitive slots present in this frame, keyed by kind name.
     pub extra: HashMap<String, Rc<dyn ExtraPaint>>,
+    /// Optional pixel-precise scroll position lifted out of the `"list"`
+    /// slot's raw dict by [`crate::scroll_px_from_value`] — `None` unless
+    /// the dict set a numeric `"scroll_px"` key, in which case it wins
+    /// over [`ListView::scroll_offset`] in [`draw_bands`].
+    pub list_scroll_px: Option<f32>,
+    /// Same as `list_scroll_px`, for the `"tree"` slot.
+    pub tree_scroll_px: Option<f32>,
+    /// Same as `list_scroll_px`, for the `"data_table"` slot.
+    pub data_table_scroll_px: Option<f32>,
 }
 
 /// Decodes a render callback's returned `dict` into a [`RenderFrame`] —
@@ -66,6 +75,9 @@ impl RenderFrame {
             data_table: self.data_table.as_ref(),
             tab_bar: self.tab_bar.as_ref(),
             extra: &self.extra,
+            list_scroll_px: self.list_scroll_px,
+            tree_scroll_px: self.tree_scroll_px,
+            data_table_scroll_px: self.data_table_scroll_px,
         }
     }
 }
@@ -84,6 +96,15 @@ pub struct RenderRefs<'a> {
     /// Additive primitive slots, keyed by kind name. Painted after the six
     /// fixed bands above, in a binding's own `EXTRA_PRIMITIVES` order.
     pub extra: &'a HashMap<String, Rc<dyn ExtraPaint>>,
+    /// See [`RenderFrame::list_scroll_px`]. `None` for a `RenderRefs` a
+    /// binding builds by hand from its own static fields (no dict to
+    /// lift a `scroll_px` out of) — [`draw_bands`] paints exactly as
+    /// before in that case.
+    pub list_scroll_px: Option<f32>,
+    /// See [`RenderFrame::tree_scroll_px`].
+    pub tree_scroll_px: Option<f32>,
+    /// See [`RenderFrame::data_table_scroll_px`].
+    pub data_table_scroll_px: Option<f32>,
 }
 
 /// Paints each present slot top-to-bottom in a fixed-height band, skipping
@@ -141,7 +162,8 @@ pub fn draw_bands(
     }
     if let Some(list) = refs.list {
         if let Some(rect) = next_band(4.0) {
-            backend.draw_list(rect, list);
+            let state = quadraui::ListPaintState::default().with_scroll_px(refs.list_scroll_px);
+            backend.draw_list_with_state(rect, list, &state, false);
             let layout = backend.list_layout(rect, list);
             hits.push(PaintedHit::List {
                 id: list.id,
@@ -155,7 +177,7 @@ pub fn draw_bands(
     if let Some(tree) = refs.tree {
         if let Some(rect) = next_band(4.0) {
             let (content_rect, scrollbar, viewport_rows) =
-                draw_tree_with_scrollbar(backend, rect, tree);
+                draw_tree_with_scrollbar_and_state(backend, rect, tree, refs.tree_scroll_px);
             let layout = backend.tree_layout(content_rect, tree);
             hits.push(PaintedHit::Tree {
                 id: tree.id,
@@ -174,7 +196,9 @@ pub fn draw_bands(
     }
     if let Some(data_table) = refs.data_table {
         if let Some(rect) = next_band(4.0) {
-            let layout = backend.draw_data_table(rect, data_table, None);
+            let state =
+                quadraui::DataTablePaintState::default().with_scroll_px(refs.data_table_scroll_px);
+            let layout = backend.draw_data_table_with_state(rect, data_table, &state);
             hits.push(PaintedHit::DataTable {
                 id: data_table.id,
                 area: rect,
@@ -689,35 +713,58 @@ pub fn draw_tree_with_scrollbar(
     area: Rect,
     tree: &TreeView,
 ) -> (Rect, Option<Scrollbar>, usize) {
+    draw_tree_with_scrollbar_and_state(backend, area, tree, None)
+}
+
+/// [`draw_tree_with_scrollbar`], plus an optional pixel-precise
+/// `scroll_px` (lifted out of the leaf's raw descriptor dict by
+/// [`crate::scroll_px_from_value`]) painted via
+/// [`Backend::draw_tree_with_state`] instead of [`Backend::draw_tree`].
+/// `scroll_px: None` paints exactly as [`draw_tree_with_scrollbar`]
+/// already does; `Some(px)` also moves the scrollbar thumb to the same
+/// continuous position [`crate::primitives::TreeController`]'s own
+/// scrollbar does (`px / line_height`, not quantised to a whole row).
+pub fn draw_tree_with_scrollbar_and_state(
+    backend: &mut dyn Backend,
+    area: Rect,
+    tree: &TreeView,
+    scroll_px: Option<f32>,
+) -> (Rect, Option<Scrollbar>, usize) {
+    let state = quadraui::TreePaintState::default().with_scroll_px(scroll_px);
     if backend.tree_paints_own_scrollbar() {
-        backend.draw_tree(area, tree);
+        backend.draw_tree_with_state(area, tree, &state, false);
         let scrollbar = backend.tree_vscrollbar(area, tree);
         let viewport_rows = tree_viewport_rows(backend, area, tree);
         return (area, scrollbar, viewport_rows);
     }
     let track_width = backend.line_height();
     if area.width <= track_width {
-        backend.draw_tree(area, tree);
+        backend.draw_tree_with_state(area, tree, &state, false);
         let viewport_rows = tree_viewport_rows(backend, area, tree);
         return (area, None, viewport_rows);
     }
     let content_rect = Rect::new(area.x, area.y, area.width - track_width, area.height);
     let viewport_rows = tree_viewport_rows(backend, content_rect, tree);
     if tree.rows.len() <= viewport_rows {
-        backend.draw_tree(area, tree);
+        backend.draw_tree_with_state(area, tree, &state, false);
         return (area, None, viewport_rows);
     }
-    backend.draw_tree(content_rect, tree);
+    backend.draw_tree_with_state(content_rect, tree, &state, false);
     let track_rect = Rect::new(
         area.x + content_rect.width,
         area.y,
         track_width,
         area.height,
     );
+    let line_height = backend.line_height();
+    let thumb_offset = match scroll_px {
+        Some(px) if line_height > 0.0 => px / line_height,
+        _ => tree.scroll_offset as f32,
+    };
     let scrollbar = Scrollbar::vertical(
         format!("{}-scrollbar", tree.id),
         track_rect,
-        tree.scroll_offset as f32,
+        thumb_offset,
         tree.rows.len() as f32,
         viewport_rows as f32,
         track_width.max(1.0),
@@ -748,7 +795,8 @@ pub fn paint_leaf(
             hits.push(draw_text_display_hit(backend, id, area, text_display));
         }
         LeafDescriptor::List(list) => {
-            backend.draw_list(area, list);
+            let state = quadraui::ListPaintState::default().with_scroll_px(leaf.scroll_px);
+            backend.draw_list_with_state(area, list, &state, false);
             let layout = backend.list_layout(area, list);
             hits.push(PaintedHit::List {
                 id,
@@ -760,7 +808,7 @@ pub fn paint_leaf(
         }
         LeafDescriptor::Tree(tree) => {
             let (content_rect, scrollbar, viewport_rows) =
-                draw_tree_with_scrollbar(backend, area, tree);
+                draw_tree_with_scrollbar_and_state(backend, area, tree, leaf.scroll_px);
             let layout = backend.tree_layout(content_rect, tree);
             hits.push(PaintedHit::Tree {
                 id,
@@ -777,7 +825,8 @@ pub fn paint_leaf(
             });
         }
         LeafDescriptor::DataTable(data_table) => {
-            let layout = backend.draw_data_table(area, data_table, None);
+            let state = quadraui::DataTablePaintState::default().with_scroll_px(leaf.scroll_px);
+            let layout = backend.draw_data_table_with_state(area, data_table, &state);
             hits.push(PaintedHit::DataTable {
                 id,
                 area,

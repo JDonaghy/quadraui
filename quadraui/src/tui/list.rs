@@ -28,47 +28,7 @@ use crate::types::{Decoration, StyledText};
 /// 1-cell border inset — same as every other backend's list-layout
 /// helper; a bordered list's caller adds that inset itself.
 pub fn tui_list_layout(area: Rect, list: &ListView) -> ListViewLayout {
-    let area_f = crate::event::Rect::new(
-        area.x as f32,
-        area.y as f32,
-        area.width as f32,
-        area.height as f32,
-    );
-    let hscrollbar = list.hscrollbar(area_f, 1.0);
-    let needs_hscrollbar = hscrollbar.is_some();
-
-    // When an h-scrollbar reserves the bottom row, the v-scrollbar's
-    // track and visible-row count must be computed against the REDUCED height.
-    let v_area_f = if needs_hscrollbar {
-        crate::event::Rect::new(
-            area_f.x,
-            area_f.y,
-            area_f.width,
-            (area_f.height - 1.0).max(0.0),
-        )
-    } else {
-        area_f
-    };
-    let vscrollbar = list.vscrollbar(v_area_f, 1.0);
-    let needs_vscrollbar = vscrollbar.is_some();
-
-    let viewport_h = if needs_hscrollbar {
-        (area.height as f32 - 1.0).max(0.0)
-    } else {
-        area.height as f32
-    };
-
-    // Reserve one column on the right for the vertical scrollbar.
-    let viewport_w = if needs_vscrollbar {
-        (area.width as f32 - 1.0).max(0.0)
-    } else {
-        area.width as f32
-    };
-
-    let title_h = if list.title.is_some() { 1.0 } else { 0.0 };
-    list.layout(viewport_w, viewport_h, title_h, |_| {
-        ListItemMeasure::new(1.0)
-    })
+    tui_list_layout_with_scroll_px(area, list, None)
 }
 
 /// Like [`tui_list_layout`], but with an explicit pixel-precise scroll
@@ -680,7 +640,7 @@ mod tests {
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
-    /// `scroll_px` wins over `scroll_offset` (deprecate-first), but on
+    /// `scroll_px` wins over `scroll_offset`, but on
     /// TUI's cell grid (`row_height == 1.0`) it quantises to the same
     /// whole row a GUI backend's sub-row remainder would float between
     /// — the "TUI quantises scroll_px to whole rows" half of the

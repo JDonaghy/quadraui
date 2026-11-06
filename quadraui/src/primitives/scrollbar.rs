@@ -354,6 +354,27 @@ pub fn scroll_rows(scroll_offset: f32) -> usize {
     }
 }
 
+/// Floor a continuous pixel offset to the whole row a `scroll_px` paint
+/// path starts painting from.
+///
+/// This is the same `(px / row_height).floor()` [`resolve_scroll_px`]
+/// uses to pick its starting row, extracted so every caller that derives
+/// a row index from a pixel offset (a controller accumulating
+/// `scroll_px`, a paint path resolving it) agrees on the same rounding
+/// direction. Non-finite, non-positive `px`, or a non-finite/non-positive
+/// `row_height`, resolves to `0`.
+pub fn scroll_rows_floor(px: f32, row_height: f32) -> usize {
+    if !row_height.is_finite() || row_height <= 0.0 {
+        return 0;
+    }
+    let row = (px / row_height).floor();
+    if row.is_finite() && row > 0.0 {
+        row as usize
+    } else {
+        0
+    }
+}
+
 /// Clamp `current + delta` into `[0, max]`.
 ///
 /// The core arithmetic behind every `scroll_by` / `page_scroll` operation.
@@ -402,12 +423,17 @@ pub fn clamp_scroll_offset(scroll_offset: usize, content_len: usize) -> usize {
 /// conversion is exact for uniform-height content and approximate
 /// otherwise.
 ///
-/// The returned `sub_row_px` is always `0.0` when the resolved row is
-/// clamped to the content's last reachable offset (nothing left to
-/// partially scroll past) — a TUI rasteriser that only reads the row
-/// index and never this remainder gets the pre-existing whole-row
-/// behaviour "for free": `scroll_px` degrades to row-quantised there,
-/// rather than breaking.
+/// The returned `sub_row_px` is `0.0` whenever `px` pushes the floored
+/// row index itself past the content's last reachable offset (nothing
+/// left to partially scroll past) — e.g. `px` far beyond
+/// `content_len * row_height`. It is **not** always `0.0` just because
+/// the resolved row happens to equal `content_len - 1`;
+/// `resolve_scroll_px(0, Some(4.5), 5, 1.0)` still returns `(4, 0.5)`,
+/// since `4` is reachable on its own (no clamping occurred) and `0.5`
+/// pixels remain unaccounted for. A TUI rasteriser that only reads the
+/// row index and never this remainder gets the pre-existing whole-row
+/// behaviour "for free" either way: `scroll_px` degrades to
+/// row-quantised there, rather than breaking.
 pub fn resolve_scroll_px(
     scroll_offset: usize,
     scroll_px: Option<f32>,
@@ -418,12 +444,7 @@ pub fn resolve_scroll_px(
         Some(px) if px.is_finite() && px >= 0.0 && row_height.is_finite() && row_height > 0.0 => px,
         _ => return (clamp_scroll_offset(scroll_offset, content_len), 0.0),
     };
-    let row = (px / row_height).floor();
-    let row_idx = if row.is_finite() && row > 0.0 {
-        row as usize
-    } else {
-        0
-    };
+    let row_idx = scroll_rows_floor(px, row_height);
     let clamped = clamp_scroll_offset(row_idx, content_len);
     if clamped == row_idx {
         (clamped, (px - clamped as f32 * row_height).max(0.0))
@@ -986,6 +1007,17 @@ mod tests {
         let (row, sub) = resolve_scroll_px(0, Some(10_000.0), 5, 22.0);
         assert_eq!(row, 4);
         assert_eq!(sub, 0.0);
+    }
+
+    #[test]
+    fn resolve_scroll_px_landing_exactly_on_the_last_row_still_has_a_remainder() {
+        // `px` resolves to row 4 (the content's last row) on its own,
+        // with no clamping involved — unlike the test above, this is
+        // *not* "scrolled past the end", so the 0.5-row leftover must
+        // still be reported rather than zeroed out.
+        let (row, sub) = resolve_scroll_px(0, Some(4.5), 5, 1.0);
+        assert_eq!(row, 4);
+        assert!((sub - 0.5).abs() < 0.001);
     }
 
     #[test]

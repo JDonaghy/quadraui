@@ -46,8 +46,10 @@
 //! - `draw_data_table(.., hovered_idx: Option<usize>)`
 //! - `draw_chart(.., hovered_point: Option<(usize, usize)>)`
 //! - [`crate::Backend::draw_list_with_state`] /
-//!   [`crate::Backend::draw_tree_with_state`] (`hovered_idx: Option<usize>,
-//!   pressed_idx: Option<usize>`)
+//!   [`crate::Backend::draw_tree_with_state`] (`&ListPaintState` /
+//!   `&TreePaintState`, each carrying a positional `hovered_idx: Option<usize>`
+//!   / `pressed_idx: Option<usize>` plus an optional pixel-precise
+//!   `scroll_px`)
 //!
 //! These would need stable ids for their items before moving into
 //! `InteractionState`. `ListView`/`TreeView` rows join this group rather

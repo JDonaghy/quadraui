@@ -179,7 +179,8 @@ impl ListHoverTracker {
     }
 
     /// The currently hovered item index, ready to pass straight to
-    /// `Backend::draw_list_with_state(..., hovered_idx, ...)`.
+    /// `ListPaintState::with_hovered_idx` for
+    /// `Backend::draw_list_with_state`.
     pub fn hovered_idx(&self) -> Option<usize> {
         self.core.current().copied()
     }
@@ -225,7 +226,8 @@ impl TreeHoverTracker {
     }
 
     /// The currently hovered row index, ready to pass straight to
-    /// `Backend::draw_tree_with_state(..., hovered_idx, ...)`.
+    /// `TreePaintState::with_hovered_idx` for
+    /// `Backend::draw_tree_with_state`.
     pub fn hovered_idx(&self) -> Option<usize> {
         self.core.current().copied()
     }
