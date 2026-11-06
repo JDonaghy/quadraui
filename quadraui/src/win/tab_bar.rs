@@ -517,12 +517,17 @@ pub fn draw_tab_bar_icons(
         style,
         None,
         false,
+        None,
+        None,
     )
 }
 
 /// [`draw_tab_bar_icons`], but honouring an optional
 /// [`TabBarGlyphs`] override for the close/dirty mark — `glyphs: None`
-/// reproduces [`draw_tab_bar_icons`] exactly.
+/// reproduces [`draw_tab_bar_icons`] exactly. `hovered_tab`/`pressed_tab`
+/// name the whole tab (not its close glyph) the mouse is over/held down
+/// on — `None`/`None` paints every tab's resting background, same as
+/// [`draw_tab_bar_icons`].
 ///
 /// Caveat: the close-glyph hover rect and hit zone
 /// ([`crate::TabBarHits::close_bounds`]) are both sized from
@@ -543,6 +548,8 @@ pub fn draw_tab_bar_icons_with_glyphs(
     style: &Style,
     glyphs: Option<&TabBarGlyphs>,
     nerd_fonts_enabled: bool,
+    hovered_tab: Option<usize>,
+    pressed_tab: Option<usize>,
 ) -> TabBarHits {
     let PixelLayout {
         layout,
@@ -563,6 +570,8 @@ pub fn draw_tab_bar_icons_with_glyphs(
         style,
         glyphs,
         nerd_fonts_enabled,
+        hovered_tab,
+        pressed_tab,
     );
     hits_from_layout(rect, bar, &layout, corrected_scroll_offset, available_cols)
 }
@@ -585,6 +594,41 @@ pub fn draw_tab_bar_icons_layout(
     theme: &Theme,
     style: &Style,
 ) -> TabBarLayout {
+    draw_tab_bar_icons_layout_with_state(
+        target,
+        dwrite,
+        rect,
+        bar,
+        icons,
+        hovered_close_tab,
+        theme,
+        style,
+        None,
+        None,
+    )
+}
+
+/// [`draw_tab_bar_icons_layout`], plus `hovered_tab`/`pressed_tab`
+/// indices naming the whole tab (not its close glyph) the mouse is
+/// over/held down on — the `TabBarLayout`-returning twin of
+/// [`draw_tab_bar_icons_with_glyphs`]'s own `hovered_tab`/`pressed_tab`
+/// pair. Not re-exported from `super::mod` (unlike
+/// [`draw_tab_bar_icons_layout`]): [`crate::win::WinBackend`] is the only
+/// caller, reached through [`crate::Backend::draw_tab_bar_layout_with_state`].
+#[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_tab_bar_icons_layout_with_state(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    rect: Rect,
+    bar: &TabBar,
+    icons: &[Option<TabIcon>],
+    hovered_close_tab: Option<usize>,
+    theme: &Theme,
+    style: &Style,
+    hovered_tab: Option<usize>,
+    pressed_tab: Option<usize>,
+) -> TabBarLayout {
     let PixelLayout {
         layout,
         fitted_labels,
@@ -603,6 +647,8 @@ pub fn draw_tab_bar_icons_layout(
         style,
         None,
         false,
+        hovered_tab,
+        pressed_tab,
     );
     layout
 }
@@ -617,6 +663,14 @@ pub fn draw_tab_bar_icons_layout(
 /// as an argument rather than re-deriving it from `VisibleTab::bounds` is
 /// what keeps the painted label and the close-button hit box the layout
 /// positioned around it in exact agreement.
+///
+/// `hovered_tab`/`pressed_tab` name the whole tab (not its close glyph,
+/// which `hovered_close_tab` already covers) the mouse is over/held down
+/// on — tinted via `Theme::list_hover_bg`/`list_pressed_bg`, the same
+/// "blend the row's own resting background toward `foreground`"
+/// derivation `menu_item_hover_bg`/`menu_item_pressed_bg` already reuse
+/// for a popup-menu row. Pressed wins over hovered, matching every other
+/// `_with_state` painter in this crate's sibling backends.
 #[cfg(target_os = "windows")]
 #[allow(clippy::too_many_arguments)]
 fn paint_tab_bar_icons_from_layout(
@@ -632,6 +686,8 @@ fn paint_tab_bar_icons_from_layout(
     style: &Style,
     glyphs: Option<&TabBarGlyphs>,
     nerd_fonts_enabled: bool,
+    hovered_tab: Option<usize>,
+    pressed_tab: Option<usize>,
 ) {
     let _ = fill_rect(target, rect, theme.tab_bar_bg);
 
@@ -647,12 +703,24 @@ fn paint_tab_bar_icons_from_layout(
             vt.bounds.height,
         );
 
+        let is_tab_pressed = pressed_tab == Some(vt.tab_idx);
+        let is_tab_hovered = hovered_tab == Some(vt.tab_idx);
+        let tint = |base: crate::types::Color| -> crate::types::Color {
+            if is_tab_pressed {
+                theme.list_pressed_bg(base)
+            } else if is_tab_hovered {
+                theme.list_hover_bg(base)
+            } else {
+                base
+            }
+        };
+
         let bg = if tab.is_active {
             theme.tab_active_bg
         } else {
             theme.tab_bar_bg
         };
-        let _ = fill_rect(target, tab_rect, bg);
+        let _ = fill_rect(target, tab_rect, tint(bg));
 
         if tab.is_active {
             if let Some(accent) = bar.active_accent {
@@ -1245,6 +1313,8 @@ mod tests {
                     &style,
                     Some(&glyphs),
                     true,
+                    None,
+                    None,
                 );
             })
             .expect("paint with glyph override");
@@ -1279,6 +1349,8 @@ mod tests {
                     &style,
                     None,
                     true,
+                    None,
+                    None,
                 );
             })
             .expect("paint with no override");
