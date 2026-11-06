@@ -507,7 +507,7 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
     };
 
     // ── Pre-measure tabs → TabMeasure ───────────────────────────────
-    let tab_name_widths: Vec<f64> = bar
+    let mut tab_name_widths: Vec<f64> = bar
         .tabs
         .iter()
         .map(|tab| {
@@ -537,6 +537,12 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
     } else {
         0.0
     };
+    let bracket_close_w = if brackets {
+        pango_layout.set_text("]");
+        pango_layout.pixel_size().0 as f64
+    } else {
+        0.0
+    };
 
     // ── Compute layout — single source of truth ────────────────────
     // `PangoTabMeasure` measures in whatever font is currently set on
@@ -548,9 +554,9 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
     let measure = PangoTabMeasure {
         layout: pango_layout,
     };
-    let tab_name_widths_f32: Vec<f32> = tab_name_widths.iter().map(|&w| w as f32).collect();
     let tab_icon_extras_f32: Vec<f32> = tab_icon_extras.iter().map(|&w| w as f32).collect();
-    let (layout, corrected_scroll_offset, available_cols) =
+    let tab_name_widths_f32: Vec<f32> = tab_name_widths.iter().map(|&w| w as f32).collect();
+    let (mut layout, mut corrected_scroll_offset, mut available_cols) =
         crate::primitives::layout_metrics::pixel_tab_bar_layout(
             bar,
             width as f32,
@@ -563,6 +569,106 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
             chrome,
             &measure,
         );
+
+    // ── Ellipsis-fit the one tab the strip cuts off ─────────────────
+    //
+    // `pixel_tab_bar_layout` (and the `TabBar::layout` it calls) only
+    // ever shows a tab at its full, untruncated width or omits it from
+    // the strip entirely — scroll is its job, not per-tab shrinking.
+    // Mirror `tui::tab_bar`'s paint-time fit here instead of hard-
+    // dropping the boundary tab: find the tab right after the last one
+    // that fit, measure how much strip width is actually left over, and
+    // — through the shared `crate::primitives::tab_bar::fit_tab_label`
+    // — see whether an ellipsis-shortened label fits that remainder. If
+    // it does, shrink just that tab's measured name width and
+    // recompute the layout; the close glyph then lands right after the
+    // shortened label instead of the whole tab vanishing. Every other
+    // tab keeps byte-identical geometry — this only ever touches the one
+    // index the strip had no room for at full width.
+    let mut fitted_boundary_label: Option<(usize, String)> = None;
+    let next_idx = layout
+        .visible_tabs
+        .last()
+        .map_or(layout.resolved_scroll_offset, |vt| vt.tab_idx + 1);
+    if next_idx < bar.tabs.len() {
+        let reserved_px: f64 = layout
+            .visible_segments
+            .iter()
+            .map(|vs| vs.bounds.width as f64)
+            .sum();
+        let last_tab_end = layout
+            .visible_tabs
+            .last()
+            .map_or(0.0, |vt| vt.bounds.x as f64 + vt.bounds.width as f64);
+        let remaining = (width - reserved_px - last_tab_end).max(0.0);
+        if remaining > 0.0 {
+            let boundary_tab = &bar.tabs[next_idx];
+            let has_close = bar.show_tab_close && boundary_tab.is_closable;
+            let is_bracket_tab = brackets && boundary_tab.is_active;
+            let bracket_extra = if is_bracket_tab {
+                bracket_open_w + bracket_close_w
+            } else {
+                0.0
+            };
+            let close_extra = if has_close {
+                tab_inner_gap + close_glyph_w
+            } else {
+                0.0
+            };
+            // Mirrors `pixel_tab_bar_layout`'s own `TabMeasure::total`
+            // grouping: `tab_pad + bracket_extra + icon_extra` ahead of
+            // the label, `close_extra + tab_pad + tab_outer_gap` after
+            // it — so `fit_tab_label`'s budget can't drift from what
+            // the recomputed layout below actually reserves.
+            let leading_extra = tab_pad + bracket_extra + tab_icon_extras[next_idx];
+            let trailing_extra = close_extra + tab_pad + tab_outer_gap;
+            let fit_font = if boundary_tab.is_preview {
+                &italic_font
+            } else {
+                &normal_font
+            };
+            pango_layout.set_font_description(Some(fit_font));
+            let fitted = crate::primitives::tab_bar::fit_tab_label(
+                &boundary_tab.label,
+                remaining as f32,
+                leading_extra as f32,
+                trailing_extra as f32,
+                |s| {
+                    pango_layout.set_text(s);
+                    pango_layout.pixel_size().0 as f32
+                },
+            );
+            if !fitted.is_empty() {
+                pango_layout.set_text(&fitted);
+                let fitted_w = pango_layout.pixel_size().0 as f64;
+                pango_layout.set_font_description(Some(&normal_font));
+
+                tab_name_widths[next_idx] = fitted_w;
+                let widths2_f32: Vec<f32> = tab_name_widths.iter().map(|&w| w as f32).collect();
+                let (layout2, corrected2, cols2) =
+                    crate::primitives::layout_metrics::pixel_tab_bar_layout(
+                        bar,
+                        width as f32,
+                        row_height as f32,
+                        tab_pad as f32,
+                        tab_inner_gap as f32,
+                        tab_outer_gap as f32,
+                        &widths2_f32,
+                        &tab_icon_extras_f32,
+                        chrome,
+                        &measure,
+                    );
+                if layout2.visible_tabs.iter().any(|vt| vt.tab_idx == next_idx) {
+                    layout = layout2;
+                    corrected_scroll_offset = corrected2;
+                    available_cols = cols2;
+                    fitted_boundary_label = Some((next_idx, fitted));
+                }
+            } else {
+                pango_layout.set_font_description(Some(&normal_font));
+            }
+        }
+    }
 
     // ── Paint tabs from layout ──────────────────────────────────────
     for vt in &layout.visible_tabs {
@@ -654,14 +760,21 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
             super::painted_text::show_layout(cr, pango_layout);
         }
 
-        // Tab text.
+        // Tab text. Paints the ellipsis-fitted label computed above when
+        // this is the one tab the strip had to shrink to fit, so an
+        // overlong label never overflows into the close glyph (or the
+        // next tab); every other tab paints its full label unchanged.
+        let label_to_paint: &str = match &fitted_boundary_label {
+            Some((idx, fitted)) if *idx == vt.tab_idx => fitted.as_str(),
+            _ => &tab.label,
+        };
         set_source(cr, fg_col);
         pango_layout.set_font_description(Some(if tab.is_preview {
             &italic_font
         } else {
             &normal_font
         }));
-        pango_layout.set_text(&tab.label);
+        pango_layout.set_text(label_to_paint);
         cr.move_to(x_offset + tab_x + content_pad + icon_extra, text_y_offset);
         super::painted_text::show_layout(cr, pango_layout);
 
@@ -1676,5 +1789,132 @@ mod tests {
             show_tab_close: false,
             compact: false,
         }
+    }
+
+    /// A second tab whose label is too long for the strip width left
+    /// over after the first tab gets ellipsis-fitted via the shared
+    /// `crate::primitives::tab_bar::fit_tab_label`, instead of being
+    /// dropped from the strip outright — and its close glyph still
+    /// lands fully inside the tab bar, never past the right edge the
+    /// caller gave `draw_tab_bar`.
+    #[test]
+    fn overlong_label_in_a_narrow_tab_strip_ends_in_ellipsis_and_shows_its_close_glyph() {
+        let long_label = "a_very_long_filename_for_this_single_tab_that_never_fits.rs";
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![
+                TabItem {
+                    label: "a.rs".to_string(),
+                    is_active: false,
+                    ..Default::default()
+                },
+                TabItem {
+                    label: long_label.to_string(),
+                    is_active: false,
+                    ..Default::default()
+                },
+            ],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+        let theme = make_theme();
+
+        // First pass at a generous width — just to read off how much
+        // room the first tab's full (untruncated) slot actually needs.
+        let wide_surface =
+            ImageSurface::create(Format::ARgb32, 2000, ROW_H).expect("create ImageSurface");
+        let first_tab_w = {
+            let cr = Context::new(&wide_surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let (_, layout) = draw_tab_bar(
+                &cr,
+                &pango_layout,
+                0.0,
+                2000.0,
+                LINE_H,
+                0.0,
+                ROW_H as f64,
+                &bar,
+                &theme,
+                &Style::default(),
+                None,
+            );
+            assert_eq!(
+                layout.visible_tabs.len(),
+                2,
+                "both tabs must fit at a generous width"
+            );
+            layout.visible_tabs[0].bounds.width as f64
+        };
+
+        // A strip that fits the first tab plus only a little over
+        // 80px of the second — nowhere near `long_label`'s full
+        // (untruncated) width, so the second tab must shrink to fit
+        // rather than disappear.
+        let strip_width = first_tab_w + 80.0;
+        let surface = ImageSurface::create(Format::ARgb32, strip_width.ceil() as i32, ROW_H)
+            .expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+
+        let previous = crate::testing::install_text_run_sink();
+        let (_, layout) = draw_tab_bar(
+            &cr,
+            &pango_layout,
+            0.0,
+            strip_width,
+            LINE_H,
+            0.0,
+            ROW_H as f64,
+            &bar,
+            &theme,
+            &Style::default(),
+            None,
+        );
+        let runs = crate::testing::take_text_run_sink(previous);
+
+        assert_eq!(
+            layout.visible_tabs.len(),
+            2,
+            "the second tab must still appear, shrunk to fit, instead of being dropped"
+        );
+        let vt1 = &layout.visible_tabs[1];
+
+        let painted_label = runs
+            .iter()
+            .find(|r| r.text != "a.rs" && long_label.starts_with(r.text.trim_end_matches('…')))
+            .unwrap_or_else(|| {
+                panic!("the second tab's label must have painted a text run, got runs: {runs:?}")
+            });
+        assert!(
+            painted_label.text.ends_with('…'),
+            "an overlong label that doesn't fit its tab must end in an ellipsis, got {:?}",
+            painted_label.text,
+        );
+        assert_ne!(
+            painted_label.text, long_label,
+            "the painted label must actually be shortened, not the original text"
+        );
+
+        let close = vt1
+            .close_bounds
+            .expect("the shrunk tab must still report close_bounds");
+        assert!(
+            close.x + close.width <= strip_width as f32 + 0.01,
+            "the close glyph (x={}, width={}) must land fully inside the \
+             {strip_width}px strip, not spill past its right edge",
+            close.x,
+            close.width,
+        );
+        assert!(
+            close.x >= painted_label.bounds.x as f32,
+            "the close glyph must land at or after the (possibly ellipsis-fitted) \
+             label's start — got close.x={}, label x={}",
+            close.x,
+            painted_label.bounds.x,
+        );
     }
 }
