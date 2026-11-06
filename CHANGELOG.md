@@ -174,6 +174,17 @@ only a push to `main` runs this workflow.
   `hovered_idx`/`pressed_idx` already have there. TUI keeps its existing
   reverse-video/`▶`-prefix treatment, unchanged.
 
+### Changed
+- **Breaking (TUI rasteriser helpers):** `quadraui::tui::draw_button` and
+  `quadraui::tui::draw_button_interactive` take a trailing
+  `nerd_fonts_enabled: bool`, picking `Icon::glyph` vs. `Icon::fallback`
+  for `Button::icon`. `Backend::draw_button`/`draw_button_with_state` —
+  what a consumer actually calls — are unchanged; `TuiBackend` forwards
+  its own Nerd Fonts flag. No consumer hits: `grep -rn 'draw_button\b\|
+  draw_button_interactive\|tui_button_layout' ~/src/coord-tui/src
+  ~/src/vimcode/src` finds only `backend.draw_button(...)` (the trait
+  method) in `vimcode/src/render/welcome.rs`.
+
 ### Fixed
 - GTK `Backend::draw_focus_ring` (`gtk::backend`) no longer strokes over a
   tooltip or toast painted earlier the same frame: `gtk::run::render_frame`

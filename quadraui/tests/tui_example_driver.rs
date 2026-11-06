@@ -6429,28 +6429,37 @@ fn indicators_toggling_cancellable_paints_and_clears_cancel_symbol() {
 //
 // `tui_controls` is the first example to exercise the `draw_button`,
 // `draw_radio_group` and `draw_switch` `Backend` trait methods together.
-// This drives the real `ControlsApp` through Tab-focus, Space/Enter
-// activation, arrow-key radio selection and a mouse click, asserting on
-// the painted text each primitive's TUI rasteriser produces (`[ Label ]`
-// for the button, `(•) Label` for the selected radio option).
+// It stacks one button per `ButtonVariant` (Primary, Secondary, Danger,
+// Warning, Icon) above the radio group and the switch, so Tab walks all
+// five buttons before it reaches the group. These tests drive the real
+// `ControlsApp` through Tab-focus, Space/Enter activation, arrow-key
+// radio selection, the `i`/`n` icon toggles and a mouse click, asserting
+// on the painted text each primitive's TUI rasteriser produces
+// (`[ Label ]` for the button, `(•) Label` for the selected radio
+// option).
+
+/// Tabs needed to walk off the last button and onto the radio group —
+/// one per button row. Derived from the labels the example paints, so it
+/// tracks `BUTTON_COUNT` rather than restating it.
+const CONTROLS_BUTTON_LABELS: [&str; 5] = ["OK", "Cancel", "Delete", "Overwrite", "*"];
 
 #[test]
 fn controls_button_click_increments_and_repaints_label() {
     let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
     let before = driver.screen();
     assert!(
-        before.contains("[ Clicked 0x ]"),
-        "button should start unclicked:\n{before}"
+        before.contains("[ v OK ]"),
+        "the Primary button should start unclicked, with its fallback icon:\n{before}"
     );
 
     driver.press_named(NamedKey::Enter);
     let after = driver.screen();
     assert!(
-        after.contains("[ Clicked 1x ]"),
+        after.contains("[ v OK (1x) ]"),
         "Enter should activate the focused button and repaint its label:\n{after}"
     );
     assert!(
-        after.contains("Button clicked"),
+        after.contains("Button 0 clicked"),
         "status bar should report the click:\n{after}"
     );
 }
@@ -6458,15 +6467,38 @@ fn controls_button_click_increments_and_repaints_label() {
 #[test]
 fn controls_mouse_click_on_button_activates_it() {
     let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
-    let (x, y) = driver
-        .find("Clicked 0x")
-        .expect("button label should be on screen");
+    let (x, y) = driver.find("OK").expect("button label should be on screen");
 
     driver.click(x, y);
     let after = driver.screen();
     assert!(
-        after.contains("[ Clicked 1x ]"),
+        after.contains("[ v OK (1x) ]"),
         "clicking the button should activate it:\n{after}"
+    );
+}
+
+/// A click on the `Danger` row activates *that* button, not the focused
+/// `Primary` one — the per-row hit test has to pick the right index.
+#[test]
+fn controls_mouse_click_on_the_danger_button_activates_only_that_row() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+    let (x, y) = driver
+        .find("Delete")
+        .expect("the Danger button label should be on screen");
+
+    driver.click(x, y);
+    let after = driver.screen();
+    assert!(
+        after.contains("[ ! Delete (1x) ]"),
+        "clicking the Danger row should activate it:\n{after}"
+    );
+    assert!(
+        after.contains("[ v OK ]"),
+        "the Primary row must stay unclicked:\n{after}"
+    );
+    assert!(
+        after.contains("Button 2 clicked"),
+        "status bar should report which row was clicked:\n{after}"
     );
 }
 
@@ -6479,7 +6511,10 @@ fn controls_tab_cycles_focus_to_radio_group_and_arrow_keys_move_selection() {
         "Light should start selected:\n{before}"
     );
 
-    driver.press_named(NamedKey::Tab);
+    // Tab walks every button row first, then lands on the radio group.
+    for _ in 0..CONTROLS_BUTTON_LABELS.len() {
+        driver.press_named(NamedKey::Tab);
+    }
     driver.press_named(NamedKey::Down);
     let after = driver.screen();
     assert!(
@@ -6521,7 +6556,7 @@ fn controls_button_hover_paints_hover_background_at_the_cursor() {
 
     let before = driver.screen();
     let (x, y) = driver
-        .find("Clicked 0x")
+        .find("OK")
         .unwrap_or_else(|| panic!("button label should be on screen:\n{before}"));
     let resting_bg = driver
         .style_at(x as u16, y as u16)
@@ -6559,13 +6594,188 @@ fn controls_button_hover_paints_hover_background_at_the_cursor() {
 fn controls_tab_to_switch_and_space_toggles_it() {
     let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
 
-    driver.press_named(NamedKey::Tab);
-    driver.press_named(NamedKey::Tab);
+    // Every button row, then the radio group, then the switch.
+    for _ in 0..CONTROLS_BUTTON_LABELS.len() + 1 {
+        driver.press_named(NamedKey::Tab);
+    }
     driver.press(Key::Char(' '));
     let after = driver.screen();
     assert!(
         after.contains("Switch -> true"),
         "Space on the focused switch should toggle it and repaint the status bar:\n{after}"
+    );
+}
+
+/// The switch is the last row of the stack; on a 12-row terminal it has
+/// to land *above* the bottom status bar, not under it. Pins the knob's
+/// row relative to the status bar text rather than at a fixed `y`.
+#[test]
+fn controls_switch_row_stays_above_the_status_bar() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+
+    let knob = driver
+        .find_bounds("\u{25cf}")
+        .expect("the switch knob should be painted on screen");
+    let status = driver
+        .find_bounds("q=quit")
+        .expect("the status bar should be painted on screen");
+    assert!(
+        knob.y < status.y,
+        "the switch must not be painted underneath the status bar:\n{}",
+        driver.screen()
+    );
+
+    // Toggling it moves the knob along the track, still on its own row.
+    for _ in 0..CONTROLS_BUTTON_LABELS.len() + 1 {
+        driver.press_named(NamedKey::Tab);
+    }
+    driver.press(Key::Char(' '));
+    let toggled = driver
+        .find_bounds("\u{25cf}")
+        .expect("the knob should still be painted once the switch is on");
+    assert_eq!(
+        toggled.y,
+        knob.y,
+        "the knob should stay on the switch row:\n{}",
+        driver.screen()
+    );
+    assert!(
+        toggled.x > knob.x,
+        "toggling the switch on should slide the knob to the far end of the track:\n{}",
+        driver.screen()
+    );
+}
+
+/// Every `ButtonVariant` gets a row: the four labelled variants paint
+/// bracket chrome, `Icon` paints its bare glyph with none.
+#[test]
+fn controls_paints_one_row_per_button_variant() {
+    let driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+    let screen = driver.screen();
+
+    for label in [
+        "[ v OK ]",
+        "[ x Cancel ]",
+        "[ ! Delete ]",
+        "[ ! Overwrite ]",
+    ] {
+        assert!(
+            screen.contains(label),
+            "expected the {label:?} row:\n{screen}"
+        );
+    }
+    assert!(
+        !screen.contains("[ * ]"),
+        "the Icon variant paints no bracket chrome:\n{screen}"
+    );
+    let icon_row = driver
+        .find_bounds("*")
+        .expect("the Icon variant's bare glyph should be painted");
+    let warning_row = driver
+        .find_bounds("Overwrite")
+        .expect("the Warning row should be painted");
+    assert_eq!(
+        icon_row.y,
+        warning_row.y + 1.0,
+        "the Icon row follows the Warning row:\n{screen}"
+    );
+}
+
+/// `Danger`/`Warning` carry their intent in the foreground colour on
+/// TUI — both the label and its bracket chrome — so each must differ
+/// from the `Primary` row's foreground and from each other.
+#[test]
+fn controls_danger_and_warning_rows_paint_a_distinct_foreground() {
+    let driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+
+    let fg_of = |needle: &str| {
+        let at = driver
+            .find_bounds(needle)
+            .unwrap_or_else(|| panic!("{needle:?} should be painted:\n{}", driver.screen()));
+        driver
+            .style_at(at.x as u16, at.y as u16)
+            .expect("label cell should be inside the screen")
+            .fg
+    };
+
+    let primary = fg_of("Cancel");
+    let danger = fg_of("Delete");
+    let warning = fg_of("Overwrite");
+
+    assert_ne!(
+        danger,
+        primary,
+        "a Danger label must not paint in the ordinary foreground:\n{}",
+        driver.screen()
+    );
+    assert_ne!(
+        warning,
+        primary,
+        "a Warning label must not paint in the ordinary foreground:\n{}",
+        driver.screen()
+    );
+    assert_ne!(
+        danger,
+        warning,
+        "Danger and Warning must be distinguishable from each other:\n{}",
+        driver.screen()
+    );
+}
+
+/// `i` drops every button's icon; the labels stay, one cell narrower by
+/// the icon and its gap.
+#[test]
+fn controls_i_toggles_the_button_icons_off_and_back_on() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+    assert!(
+        driver.screen_contains("icons=on"),
+        "icons should start on:\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('i');
+    let off = driver.screen();
+    assert!(
+        off.contains("[ Delete ]"),
+        "'i' should drop the leading icon from the label:\n{off}"
+    );
+    assert!(
+        !off.contains("[ ! Delete ]"),
+        "the icon must be gone, not just moved:\n{off}"
+    );
+    assert!(
+        off.contains("icons=off"),
+        "the status bar should report the icons are off:\n{off}"
+    );
+
+    driver.type_char('i');
+    let on = driver.screen();
+    assert!(
+        on.contains("[ ! Delete ]"),
+        "'i' again should bring the icon back:\n{on}"
+    );
+}
+
+/// `n` switches the painted icon from `Icon::fallback` to `Icon::glyph`
+/// — the Nerd Font half of the same descriptor.
+#[test]
+fn controls_n_switches_the_icon_to_its_nerd_font_glyph() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+    let before = driver.screen();
+    assert!(
+        before.contains("[ ! Delete ]") && !before.contains('\u{f071}'),
+        "the plain-text fallback paints while Nerd Fonts are off:\n{before}"
+    );
+
+    driver.type_char('n');
+    let after = driver.screen();
+    assert!(
+        after.contains("[ \u{f071} Delete ]"),
+        "'n' should swap in the Nerd Font glyph:\n{after}"
+    );
+    assert!(
+        after.contains("nerd-fonts=on"),
+        "the status bar should report Nerd Fonts are on:\n{after}"
     );
 }
 
