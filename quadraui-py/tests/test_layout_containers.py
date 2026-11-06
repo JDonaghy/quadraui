@@ -425,6 +425,53 @@ def test_panel_rejects_a_gap_key_it_does_not_support():
         app.screen()
 
 
+def test_tabs_accepts_an_optional_focused_index():
+    # B2d: an optional "focused_index" key marks a tab keyboard-focused
+    # (painted as reverse video on TUI, see `tui::tab_bar`'s own test for
+    # the pixel-level treatment). Passing it must not raise and must not
+    # change which tab's content is shown -- that's still "selected"'s job.
+    app = QuiApp(10, 8)
+
+    def render():
+        return {
+            "tabs": {
+                "id": "tabbar:1",
+                "selected": 0,
+                "focused_index": 1,
+                "tabs": [
+                    {"id": "one", "title": "One", "content": _text("text:one", "O")},
+                    {"id": "two", "title": "Two", "content": _text("text:two", "T")},
+                ],
+            }
+        }
+
+    app.set_render(render)
+    lines = app.screen().splitlines()
+    assert "One" in lines[0]
+    assert "Two" in lines[0]
+    assert "O" in "".join(lines[1:])
+
+
+def test_tabs_rejects_an_out_of_range_focused_index():
+    # Same out-of-range convention "selected" already uses.
+    app = QuiApp(10, 8)
+
+    def render():
+        return {
+            "tabs": {
+                "id": "tabbar:1",
+                "focused_index": 5,
+                "tabs": [
+                    {"id": "one", "title": "One", "content": _text("text:one", "O")},
+                ],
+            }
+        }
+
+    app.set_render(render)
+    with pytest.raises(InvalidDescriptorError):
+        app.screen()
+
+
 def test_tabs_padding_and_margin_inset_the_whole_node_on_tui():
     # A "tabs" node's "padding"/"margin" keys inset the whole node -- tab
     # strip and content both -- before the strip band is reserved.

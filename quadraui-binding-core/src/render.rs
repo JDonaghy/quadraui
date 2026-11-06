@@ -11,7 +11,8 @@ use serde::{Deserialize, Deserializer};
 
 use quadraui::{
     Backend, Button, DataTable, InteractionState, ListView, Rect, Scrollbar, Split, SplitDirection,
-    SplitHit, SplitLayout, TabBar, TextDisplay, TextDisplayLayout, TextRegion, TreeView, WidgetId,
+    SplitHit, SplitLayout, TabBar, TabChrome, TextDisplay, TextDisplayLayout, TextRegion, TreeView,
+    WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -425,7 +426,13 @@ pub fn paint_layout(
             let area = tabs.spacing.inset(area, char_width, line_height);
             let strip_height = (3.0 * backend.line_height()).min(area.height);
             let strip_rect = Rect::new(area.x, area.y, area.width, strip_height);
-            let layout = backend.draw_tab_bar_layout(strip_rect, &tabs.tab_bar, None);
+            // `focused_index` (B2d) threads through `TabChrome` rather
+            // than `tabs.tab_bar` itself, so `None` (the common case)
+            // takes the trait-default `draw_tab_bar_with_chrome_layout`
+            // body, which is byte-identical to plain `draw_tab_bar_layout`.
+            let chrome = TabChrome::default().with_focused_index(tabs.focused_index);
+            let layout =
+                backend.draw_tab_bar_with_chrome_layout(strip_rect, &tabs.tab_bar, None, &chrome);
             hits.push(PaintedHit::TabBar {
                 id: tabs.tab_bar.id,
                 area: strip_rect,

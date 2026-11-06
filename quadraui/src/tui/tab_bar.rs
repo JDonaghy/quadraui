@@ -146,7 +146,9 @@ pub fn draw_tab_bar_icons(
 /// [`draw_tab_bar`] with an explicit [`TabChrome`] request.
 ///
 /// `&[]` icons + [`TabChrome::default`] reproduces [`draw_tab_bar`] cell
-/// for cell. See [`TabChrome::active_frame`] for what each frame paints.
+/// for cell. See [`TabChrome::active_frame`] for what each frame paints
+/// and [`TabChrome::focused_index`] for the keyboard-focus reverse-video
+/// treatment.
 #[allow(deprecated)] // returns the deprecated `TabBarHits`
 pub fn draw_tab_bar_with_chrome(
     buf: &mut Buffer,
@@ -289,6 +291,15 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
             (false, true) => (preview_inactive_fg, bar_bg),
             (false, false) => (inactive_fg, bar_bg),
         };
+
+        // Keyboard-focus treatment (B2d): swap fg/bg across this tab's
+        // icon/label/close/bracket cells — reverse video — when
+        // `chrome.focused_index` names it. The caller composes this with
+        // its own focus-visible state (see [`TabChrome::focused_index`]'s
+        // doc): a click-suppressed focus passes `None` here, so no swap
+        // happens and the tab paints exactly as it would unfocused.
+        let is_focused = chrome.focused_index == Some(vt.tab_idx);
+        let (fg, bg) = if is_focused { (bg, fg) } else { (fg, bg) };
 
         // When chrome requests bracket framing, the active tab's
         // full content — icon, label, close glyph — is enclosed in `[` /
@@ -958,6 +969,107 @@ mod tests {
             TabBarHit::Tab(0) => {}
             other => panic!("click on the ']' bracket expected Tab(0) (not close), got {other:?}"),
         }
+    }
+
+    /// [`TabChrome::focused_index`] (B2d) swaps fg/bg — reverse video —
+    /// on exactly the named tab's cells, and leaves every other tab (and
+    /// a bar with no chrome at all) byte-for-byte unchanged.
+    #[test]
+    fn focused_index_paints_reverse_video_on_only_that_tab() {
+        use crate::primitives::tab_bar::TabChrome;
+
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![
+                TabItem {
+                    label: "main.rs".into(),
+                    is_active: true,
+                    ..Default::default()
+                },
+                TabItem {
+                    label: "lib.rs".into(),
+                    is_active: false,
+                    ..Default::default()
+                },
+            ],
+            right_segments: vec![],
+            active_accent: None,
+            scroll_offset: 0,
+            show_tab_close: false,
+            compact: false,
+        };
+        let layout = bar.layout(
+            40.0,
+            1.0,
+            0.0,
+            |i| {
+                let label_w = crate::tui::display_width(&bar.tabs[i].label) as f32;
+                TabMeasure::new(label_w + TAB_SEPARATOR_COLS as f32, 0.0)
+            },
+            |_| SegmentMeasure::new(0.0),
+        );
+        let theme = Theme::default();
+
+        // No chrome at all: baseline paint.
+        let mut plain = Buffer::empty(Rect::new(0, 0, 40, 1));
+        draw_tab_bar(&mut plain, Rect::new(0, 0, 40, 1), &bar, &layout, &theme);
+
+        // Tab 1 (inactive) keyboard-focused.
+        let chrome = TabChrome::default().with_focused_index(Some(1));
+        let mut focused = Buffer::empty(Rect::new(0, 0, 40, 1));
+        draw_tab_bar_with_chrome(
+            &mut focused,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &chrome,
+            &layout,
+            &theme,
+        );
+
+        // Tab 0 ("main.rs", cols 0..8) is untouched by the focus swap.
+        for x in 0..8 {
+            assert_eq!(
+                plain[(x, 0)],
+                focused[(x, 0)],
+                "tab 0 (not focused) must paint identically with or without chrome, col {x}"
+            );
+        }
+        // Tab 1 ("lib.rs", cols 8..15) has its fg/bg swapped relative to
+        // the unfocused paint.
+        let inactive_fg = ratatui_color(theme.tab_inactive_fg);
+        let bar_bg = ratatui_color(theme.tab_bar_bg);
+        for x in 8..14 {
+            let cell = &focused[(x, 0)];
+            assert_eq!(
+                cell.fg, bar_bg,
+                "focused tab 1's fg should be the unfocused bg (col {x})"
+            );
+            assert_eq!(
+                cell.bg, inactive_fg,
+                "focused tab 1's bg should be the unfocused fg (col {x})"
+            );
+        }
+        assert_eq!(
+            cell_char(&focused, 8, 0),
+            'l',
+            "focused tab's label still paints its own glyphs, just reversed"
+        );
+
+        // `TabChrome::default()` (no focused_index) must reproduce the
+        // plain paint exactly.
+        let mut default_chrome = Buffer::empty(Rect::new(0, 0, 40, 1));
+        draw_tab_bar_with_chrome(
+            &mut default_chrome,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &TabChrome::default(),
+            &layout,
+            &theme,
+        );
+        assert_eq!(
+            plain, default_chrome,
+            "TabChrome::default() (focused_index: None) must not change any cell"
+        );
     }
 
     /// A compact bar with `show_tab_close: false` reserves one trailing

@@ -12,6 +12,9 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- A `"tabs"` layout-node dict accepts an optional `"focused_index"` key
+  naming the keyboard-focused tab (B2d). TUI paints it in reverse video;
+  omitting the key (or passing `None`) keeps today's unfocused paint.
 - `QuiAppActions.set_theme(overrides)` — the deferred counterpart of
   `QuiApp.set_theme`, so a handler reacting to `UiEvent::SystemThemeChanged`
   can repaint the live `run_tui`/`run_native` backend without hitting the
