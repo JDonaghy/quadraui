@@ -3492,11 +3492,96 @@ impl Backend for WinBackend {
                 &self.current_style,
                 glyphs,
                 self.nerd_fonts_enabled,
+                None,
+                None,
             );
         }
         #[cfg(not(target_os = "windows"))]
         let _ = glyphs;
         self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
+    }
+
+    /// [`Self::draw_tab_bar_icons`], plus `hovered_tab`/`pressed_tab`
+    /// indices naming the whole tab (not its close glyph) the mouse is
+    /// over/held down on. Paints a tinted background behind the hovered
+    /// or pressed tab — see
+    /// [`super::tab_bar::paint_tab_bar_icons_from_layout`]'s doc for the
+    /// `Theme::list_hover_bg`/`list_pressed_bg` derivation — rather than
+    /// only tinting the close glyph the way [`Self::draw_tab_bar`]
+    /// already does.
+    ///
+    /// Calls [`super::tab_bar::draw_tab_bar_icons_with_glyphs`] directly
+    /// (icon-less, glyph-less) instead of widening
+    /// [`Self::draw_tab_bar_icons`]'s own signature — the same choice
+    /// [`Self::draw_tab_bar_with_chrome_and_glyphs`] above already makes
+    /// to reach the same painter.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+    fn draw_tab_bar_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> TabBarHits {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            return super::tab_bar::draw_tab_bar_icons_with_glyphs(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                &[],
+                hovered_close_tab,
+                &self.current_theme,
+                &self.current_style,
+                None,
+                self.nerd_fonts_enabled,
+                hovered_tab,
+                pressed_tab,
+            );
+        }
+        // No surface/DWrite yet — `hovered_tab`/`pressed_tab` only
+        // affect painting, so they're unused on this layout-only path.
+        // See `Self::draw_tab_bar_icons`'s doc for the same fallback.
+        let _ = (hovered_tab, pressed_tab);
+        self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
+    }
+
+    /// `TabBarLayout`-returning counterpart to
+    /// [`Self::draw_tab_bar_with_state`] — the twin the
+    /// `quadraui-binding-core` paint path can actually reach, since it
+    /// calls `draw_tab_bar_layout`, never the deprecated `draw_tab_bar`.
+    /// Same hover/pressed tint as [`Self::draw_tab_bar_with_state`]; only
+    /// the returned type differs.
+    fn draw_tab_bar_layout_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> TabBarLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            return super::tab_bar::draw_tab_bar_icons_layout_with_state(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                &[],
+                hovered_close_tab,
+                &self.current_theme,
+                &self.current_style,
+                hovered_tab,
+                pressed_tab,
+            );
+        }
+        // See `Self::draw_tab_bar_icons`'s doc for the same fallback.
+        let _ = (hovered_tab, pressed_tab);
+        self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
     }
 
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
@@ -9010,6 +9095,158 @@ mod tests {
             (px.r, px.g, px.b),
             (custom_bg.r, custom_bg.g, custom_bg.b),
             "tab bar background must reflect the live theme, not `Theme::default()`",
+        );
+    }
+
+    /// Two-tab fixture for the `draw_tab_bar_with_state` hover/pressed
+    /// tests below — tab 0 is active (so its resting fill is
+    /// `tab_active_bg`), tab 1 is inactive (`tab_bar_bg`, the same colour
+    /// as the surrounding strip), which is what makes a hover/pressed
+    /// tint on tab 1 visible against it.
+    #[cfg(target_os = "windows")]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn two_tab_bar() -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![
+                crate::primitives::tab_bar::TabItem {
+                    label: "main.rs".into(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                },
+                crate::primitives::tab_bar::TabItem {
+                    label: "lib.rs".into(),
+                    is_active: false,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                },
+            ],
+            scroll_offset: 0,
+            right_segments: Vec::new(),
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        }
+    }
+
+    /// Paints [`two_tab_bar`] through `WinBackend::draw_tab_bar_with_state`
+    /// into a fresh [`HeadlessSurface`], returning the surface (for pixel
+    /// probing) alongside the painted [`TabBarHits`] (for slot geometry).
+    #[cfg(target_os = "windows")]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn paint_two_tab_bar_with_state(
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> (crate::win::testing::HeadlessSurface, TabBarHits) {
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 300;
+        const H: u32 = 30;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let hits =
+            backend.draw_tab_bar_with_state(rect, &two_tab_bar(), None, hovered_tab, pressed_tab);
+        backend.end_frame();
+        (surface, hits)
+    }
+
+    /// `MouseMoved` over an inactive tab (the issue's acceptance scenario)
+    /// tints its whole background, not only the close glyph —
+    /// `draw_tab_bar_with_state` with `hovered_tab: None` leaves it a flat
+    /// `tab_bar_bg`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn hovered_tab_tints_the_whole_background_not_just_the_close_glyph() {
+        use crate::theme::Theme;
+
+        let theme = Theme::default();
+        let (_, hits) = paint_two_tab_bar_with_state(None, None);
+        let (start, end) = hits.slot_positions[1];
+        assert!(end > start, "second tab slot must have non-zero width");
+        let probe_x = (start + 2.0) as u32;
+        let probe_y = 15;
+
+        let (resting, _) = paint_two_tab_bar_with_state(None, None);
+        let px = resting.pixel_at(probe_x, probe_y);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "with no hovered_tab, tab 1's background must stay tab_bar_bg",
+        );
+
+        let (hovered, _) = paint_two_tab_bar_with_state(Some(1), None);
+        let px = hovered.pixel_at(probe_x, probe_y);
+        let expected = theme.list_hover_bg(theme.tab_bar_bg);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (expected.r, expected.g, expected.b),
+            "hovered_tab == Some(1) must tint tab 1's background toward list_hover_bg",
+        );
+    }
+
+    /// `pressed_tab` tints deeper than `hovered_tab` — `Theme::list_pressed_bg`
+    /// is a higher-alpha blend than `list_hover_bg` — and wins when both
+    /// name the same tab, matching the precedence every sibling
+    /// `_with_state` painter in this crate applies.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn pressed_tab_tints_deeper_than_hovered_tab() {
+        use crate::theme::Theme;
+
+        let theme = Theme::default();
+        let (_, hits) = paint_two_tab_bar_with_state(None, None);
+        let (start, _) = hits.slot_positions[1];
+        let probe_x = (start + 2.0) as u32;
+        let probe_y = 15;
+
+        let (pressed, _) = paint_two_tab_bar_with_state(Some(1), Some(1));
+        let px = pressed.pixel_at(probe_x, probe_y);
+        let expected = theme.list_pressed_bg(theme.tab_bar_bg);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (expected.r, expected.g, expected.b),
+            "pressed_tab == Some(1) must tint tab 1's background toward list_pressed_bg, \
+             even though hovered_tab also names it",
+        );
+
+        let hover_expected = theme.list_hover_bg(theme.tab_bar_bg);
+        assert_ne!(
+            (expected.r, expected.g, expected.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "pressed and hover tints must read as visibly different colours",
+        );
+    }
+
+    /// Leaving the hovered tab clears the tint — `draw_tab_bar_with_state`
+    /// with both indices `None` paints exactly the untinted resting
+    /// colour, matching plain `draw_tab_bar`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn mouse_leaving_the_tab_clears_the_hover_tint() {
+        use crate::theme::Theme;
+
+        let theme = Theme::default();
+        let (_, hits) = paint_two_tab_bar_with_state(None, None);
+        let (start, _) = hits.slot_positions[1];
+        let probe_x = (start + 2.0) as u32;
+        let probe_y = 15;
+
+        let (after_leave, _) = paint_two_tab_bar_with_state(None, None);
+        let px = after_leave.pixel_at(probe_x, probe_y);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "hovered_tab: None must repaint tab 1 back to the untinted tab_bar_bg",
         );
     }
 

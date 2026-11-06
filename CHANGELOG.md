@@ -99,6 +99,10 @@ only a push to `main` runs this workflow.
   `gtk/tab_bar.rs`), tinting the hovered/pressed tab's whole background via
   `Theme::list_hover_bg`/`list_pressed_bg` — Win32 still falls through to
   the untinted default.
+  (GTK/macOS/Win32); **macOS and Win32 now implement both**
+  (`macos/tab_bar.rs`, `win/tab_bar.rs`), tinting the hovered/pressed
+  tab's whole background via `Theme::list_hover_bg`/`list_pressed_bg`
+  — GTK still falls through to the untinted default.
 - `ListPaintState`/`TreePaintState`/`DataTablePaintState`: per-frame,
   `#[non_exhaustive]` paint-time state (`hovered_idx`, `pressed_idx`,
   `scroll_px: Option<f32>`) for `ListView`/`TreeView`/`DataTable`,
