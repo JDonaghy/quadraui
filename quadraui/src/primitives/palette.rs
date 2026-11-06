@@ -607,6 +607,7 @@ impl Palette {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
+    use crate::interaction::InteractionState;
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
     use crate::text_util::safe_prefix;
@@ -748,6 +749,72 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         style: &Style,
+    ) {
+        paint_impl(
+            palette,
+            area,
+            palette_layout,
+            rows_h,
+            line_height,
+            nerd_fonts_enabled,
+            surface,
+            theme,
+            style,
+            None,
+        );
+    }
+
+    /// [`paint`], reading hover/pressed state from a single
+    /// [`InteractionState`] keyed by [`WidgetId`]. [`PaletteItem`]
+    /// carries no `WidgetId` of its own (an unbounded, app-filtered
+    /// list — see `interaction.rs`'s module doc for why `ListView`/
+    /// `TreeView` rows stay out of `InteractionState` for the same
+    /// reason), so the one row this actually tints is the pinned
+    /// create-action row, keyed by `palette.id` itself (the one stable
+    /// id already on this popup): `interaction.is_hovered(&palette.id)`
+    /// / `is_pressed(&palette.id)` swaps its resting
+    /// [`Theme::hover_bg`] fill for [`Theme::menu_item_hover_bg`] /
+    /// [`Theme::menu_item_pressed_bg`] — see
+    /// [`crate::Backend::draw_palette_with_state`]'s own doc.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_interactive(
+        palette: &Palette,
+        area: Rect,
+        palette_layout: &PaletteLayout,
+        rows_h: f32,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        interaction: &InteractionState,
+    ) {
+        paint_impl(
+            palette,
+            area,
+            palette_layout,
+            rows_h,
+            line_height,
+            nerd_fonts_enabled,
+            surface,
+            theme,
+            style,
+            Some(interaction),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_impl(
+        palette: &Palette,
+        area: Rect,
+        palette_layout: &PaletteLayout,
+        rows_h: f32,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        interaction: Option<&InteractionState>,
     ) {
         if area.width < 20.0 || area.height < line_height * 4.0 {
             return;
@@ -1004,6 +1071,15 @@ pub(crate) mod native_surface_paint {
         // ── Create action row (pinned below items) ─────────────────────
         if let Some(ref label) = palette.create_label {
             let create_y = rows_y + rows_h;
+            let is_pressed = interaction.is_some_and(|i| i.is_pressed(&palette.id));
+            let is_hovered = interaction.is_some_and(|i| i.is_hovered(&palette.id));
+            let create_bg = if is_pressed {
+                theme.menu_item_pressed_bg(theme.hover_bg)
+            } else if is_hovered {
+                theme.menu_item_hover_bg(theme.hover_bg)
+            } else {
+                theme.hover_bg
+            };
             surface.surface_fill_rect(
                 Rect::new(
                     area.x,
@@ -1011,7 +1087,7 @@ pub(crate) mod native_surface_paint {
                     palette_layout.item_list_width,
                     line_height,
                 ),
-                theme.hover_bg,
+                create_bg,
             );
             let prefix = "+ ";
             let (pw, ph) = surface.surface_measure_text(prefix);
@@ -1451,6 +1527,90 @@ pub(crate) mod native_surface_paint {
                     .iter()
                     .any(|(r, c)| *c == theme.border_fg && r.height == 1.0),
                 "Input mode must not paint a query/list separator"
+            );
+        }
+
+        /// `PaletteItem` carries no `WidgetId` (see `paint_interactive`'s
+        /// own doc), so the one row `InteractionState` can tint is the
+        /// pinned create-action row, keyed by `palette.id` itself.
+        fn with_create_row() -> Palette {
+            let mut p = sample();
+            p.create_label = Some("Create 'op'".into());
+            p
+        }
+
+        fn paint_sample_interactive(
+            palette: &Palette,
+            interaction: &InteractionState,
+        ) -> RecordingSurface {
+            let (palette_layout, rows_h) = layout(AREA.width, AREA.height, palette, LINE_HEIGHT);
+            let mut surface = RecordingSurface::default();
+            paint_interactive(
+                palette,
+                AREA,
+                &palette_layout,
+                rows_h,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                interaction,
+            );
+            surface
+        }
+
+        #[test]
+        fn hovered_create_row_paints_menu_item_hover_bg() {
+            let p = with_create_row();
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(p.id));
+            let surface = paint_sample_interactive(&p, &interaction);
+
+            let expected = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == expected),
+                "hovered create row must paint Theme::menu_item_hover_bg: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn leaving_the_create_row_clears_the_hover_fill() {
+            let p = with_create_row();
+            let theme = Theme::default();
+            let interaction = InteractionState::new(); // nothing hovered
+            let surface = paint_sample_interactive(&p, &interaction);
+
+            let hover_bg = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == hover_bg),
+                "create row isn't hovered, so it must keep its plain resting fill: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn pressed_create_row_paints_menu_item_pressed_bg_not_hover_bg() {
+            let p = with_create_row();
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(p.id));
+            interaction.set_pressed(Some(p.id));
+            let surface = paint_sample_interactive(&p, &interaction);
+
+            let pressed = theme.menu_item_pressed_bg(theme.hover_bg);
+            let hover = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == pressed),
+                "pressed create row must paint Theme::menu_item_pressed_bg: {:?}",
+                surface.fills
+            );
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == hover),
+                "a pressed create row must not also paint the plain hover tint: {:?}",
+                surface.fills
             );
         }
     }

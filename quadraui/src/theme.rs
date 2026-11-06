@@ -745,6 +745,23 @@ impl Theme {
         self.list_pressed_bg(base)
     }
 
+    /// Background tint for a hovered row in a popup menu surface —
+    /// [`crate::ContextMenu`] item, [`crate::MenuBar`] top-level item, or
+    /// [`crate::Palette`]'s pinned create-action row. Same derivation as
+    /// [`Self::list_hover_bg`] (blend toward [`Self::foreground`] at a low
+    /// alpha): all three are flat rows under a cursor, the same visual
+    /// language `ListView`/`TreeView` already use, rather than growing a
+    /// third near-identical tint.
+    pub fn menu_item_hover_bg(&self, base: Color) -> Color {
+        self.list_hover_bg(base)
+    }
+
+    /// Background tint for a pressed row in a popup menu surface. See
+    /// [`Self::menu_item_hover_bg`].
+    pub fn menu_item_pressed_bg(&self, base: Color) -> Color {
+        self.list_pressed_bg(base)
+    }
+
     // ── Terminal find-highlight lift ────────────────────────────
     //
     // `tui/terminal.rs`, `gtk/terminal.rs`, and `macos/terminal.rs`
@@ -1709,6 +1726,25 @@ mod tests {
         let base = theme.background;
         assert_eq!(theme.tree_hover_bg(base), theme.list_hover_bg(base));
         assert_eq!(theme.tree_pressed_bg(base), theme.list_pressed_bg(base));
+    }
+
+    #[test]
+    fn menu_item_hover_and_pressed_bg_match_list_s_derivation() {
+        // `ContextMenu`/`MenuBar`/`Palette` popup rows share the same
+        // hover/pressed visual language as `ListView` — see
+        // `Theme::menu_item_hover_bg`'s doc.
+        let theme = Theme::default();
+        let base = theme.background;
+        assert_eq!(theme.menu_item_hover_bg(base), theme.list_hover_bg(base));
+        assert_eq!(
+            theme.menu_item_pressed_bg(base),
+            theme.list_pressed_bg(base)
+        );
+        assert_ne!(
+            theme.menu_item_hover_bg(base),
+            theme.menu_item_pressed_bg(base),
+            "pressed must read differently from hover"
+        );
     }
 
     // ── Success / warning / danger / info roles ──────────────────────────

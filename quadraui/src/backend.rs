@@ -2454,6 +2454,31 @@ pub trait Backend: sealed::Sealed {
     fn draw_form(&mut self, rect: Rect, form: &Form);
     fn draw_palette(&mut self, rect: Rect, palette: &Palette);
 
+    /// [`Self::draw_palette`], reading hover/pressed state from a single
+    /// [`InteractionState`] keyed by [`WidgetId`]: a backend that
+    /// implements this tints [`Palette`]'s pinned create-action row
+    /// (the one row in a `Palette` with a stable id — `palette.id`
+    /// itself, since [`crate::PaletteItem`] carries none; see
+    /// `primitives::palette::native_surface_paint`'s module doc) when
+    /// `interaction.is_hovered(&palette.id)` / `is_pressed(&palette.id)` —
+    /// see [`crate::Theme::menu_item_hover_bg`] /
+    /// [`crate::Theme::menu_item_pressed_bg`] for the derived tint
+    /// colours.
+    ///
+    /// Additive over [`Self::draw_palette`], not a replacement — the
+    /// default forwards to it (ignoring `interaction`), so this method
+    /// is the one new backends/hosts adopt for hover feedback while
+    /// every existing call site and implementor keeps compiling
+    /// unchanged.
+    fn draw_palette_with_state(
+        &mut self,
+        rect: Rect,
+        palette: &Palette,
+        _interaction: &InteractionState,
+    ) {
+        self.draw_palette(rect, palette)
+    }
+
     /// Compute the palette layout without painting — the no-paint twin
     /// of [`Self::draw_palette`]. Every backend's `palette_layout` shares
     /// its row/column arithmetic with its own `draw_palette`
@@ -2613,6 +2638,32 @@ pub trait Backend: sealed::Sealed {
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits;
+
+    /// [`Self::draw_tab_bar`], plus a single [`InteractionState`] keyed
+    /// by [`WidgetId`] — the same seam [`Self::draw_button_with_state`] /
+    /// [`Self::draw_toolbar_interactive`] already use — alongside the
+    /// existing positional `hovered_close_tab` (which stays index-keyed;
+    /// see `interaction.rs`'s module doc for why the close-glyph hover
+    /// doesn't join `InteractionState`).
+    ///
+    /// Additive over [`Self::draw_tab_bar`], not a replacement — the
+    /// default forwards to it (ignoring `interaction`), so every
+    /// existing implementor keeps compiling unchanged. A backend's own
+    /// whole-tab hover/pressed treatment (painting a tab's own
+    /// background when `interaction.is_hovered(&tab.id)` /
+    /// `is_pressed(&tab.id)`) is implemented per backend, not here — see
+    /// the module doc's "Methods that remain positional" table.
+    #[allow(deprecated)]
+    fn draw_tab_bar_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        _interaction: &InteractionState,
+    ) -> TabBarHits {
+        self.draw_tab_bar(rect, bar, hovered_close_tab)
+    }
+
     /// Draw a tab bar, returning [`TabBarLayout`] instead of the
     /// deprecated [`TabBarHits`]. Added *alongside* [`Self::draw_tab_bar`]
     /// rather than in place of it, so no existing caller breaks.
@@ -3215,6 +3266,27 @@ pub trait Backend: sealed::Sealed {
         layout: &ContextMenuLayout,
     ) -> Vec<(Rect, WidgetId)>;
 
+    /// [`Self::draw_context_menu`], reading hover/pressed state from a
+    /// single [`InteractionState`] keyed by [`WidgetId`]: a backend
+    /// that implements this tints the background of the item whose
+    /// [`ContextMenuItem::id`](crate::primitives::context_menu::ContextMenuItem::id)
+    /// matches `interaction.hovered()` / `interaction.pressed()` — see
+    /// [`crate::Theme::menu_item_hover_bg`] /
+    /// [`crate::Theme::menu_item_pressed_bg`] for the derived tint
+    /// colours.
+    ///
+    /// Additive over [`Self::draw_context_menu`], not a replacement —
+    /// the default forwards to it (ignoring `interaction`), so every
+    /// existing implementor keeps compiling unchanged.
+    fn draw_context_menu_with_state(
+        &mut self,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+        _interaction: &InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        self.draw_context_menu(menu, layout)
+    }
+
     /// Draw a [`ContextMenu`] popup with an optional [`ContextMenuGlyphs`]
     /// override for the checked-item check mark and submenu pull-right
     /// arrow.
@@ -3598,6 +3670,27 @@ pub trait Backend: sealed::Sealed {
     /// `layout.hit_test(x, y)` without re-deriving metrics. Same
     /// coordinate frame as [`Self::menu_bar_layout`] (ABSOLUTE).
     fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout;
+
+    /// [`Self::draw_menu_bar`], reading hover/pressed state from a
+    /// single [`InteractionState`] keyed by [`WidgetId`]: a backend
+    /// that implements this tints the background of the top-level item
+    /// whose [`MenuBarItem::id`](crate::primitives::menu_bar::MenuBarItem::id)
+    /// matches `interaction.hovered()` / `interaction.pressed()` — see
+    /// [`crate::Theme::menu_item_hover_bg`] /
+    /// [`crate::Theme::menu_item_pressed_bg`] for the derived tint
+    /// colours.
+    ///
+    /// Additive over [`Self::draw_menu_bar`], not a replacement — the
+    /// default forwards to it (ignoring `interaction`), so every
+    /// existing implementor keeps compiling unchanged.
+    fn draw_menu_bar_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &MenuBar,
+        _interaction: &InteractionState,
+    ) -> MenuBarLayout {
+        self.draw_menu_bar(rect, bar)
+    }
 
     /// Compute the menu-bar layout the rasteriser would produce for
     /// `bar` in `rect`, using the backend's native metrics. Hosts

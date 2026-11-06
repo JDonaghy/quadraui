@@ -270,6 +270,7 @@ impl MenuBar {
 pub(crate) mod native_surface_paint {
     use super::{MenuBar, MenuBarLayout};
     use crate::event::Rect;
+    use crate::interaction::InteractionState;
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
@@ -318,7 +319,24 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn PaintSurface,
         theme: &Theme,
     ) {
-        paint_with_mnemonics(bar, layout, surface, theme, true);
+        paint_with_mnemonics(bar, layout, surface, theme, true, None);
+    }
+
+    /// [`paint`], reading hover/pressed state from a single
+    /// [`InteractionState`] keyed by [`WidgetId`]: the top-level item
+    /// whose [`MenuBarItem::id`](super::MenuBarItem::id) matches
+    /// `interaction.hovered()` / `interaction.pressed()` paints with
+    /// [`Theme::menu_item_hover_bg`] / [`Theme::menu_item_pressed_bg`]
+    /// instead of its plain resting fill — see
+    /// [`crate::Backend::draw_menu_bar_with_state`]'s own doc.
+    pub(crate) fn paint_interactive(
+        bar: &MenuBar,
+        layout: &MenuBarLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        interaction: &InteractionState,
+    ) {
+        paint_with_mnemonics(bar, layout, surface, theme, true, Some(interaction));
     }
 
     /// [`paint`]'s macOS twin: identical in every respect — background,
@@ -334,7 +352,19 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn PaintSurface,
         theme: &Theme,
     ) {
-        paint_with_mnemonics(bar, layout, surface, theme, false);
+        paint_with_mnemonics(bar, layout, surface, theme, false, None);
+    }
+
+    /// [`paint_without_mnemonics`] + [`paint_interactive`]'s hover/
+    /// pressed treatment combined — the macOS twin of [`paint_interactive`].
+    pub(crate) fn paint_without_mnemonics_interactive(
+        bar: &MenuBar,
+        layout: &MenuBarLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        interaction: &InteractionState,
+    ) {
+        paint_with_mnemonics(bar, layout, surface, theme, false, Some(interaction));
     }
 
     fn paint_with_mnemonics(
@@ -343,6 +373,7 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         show_mnemonics: bool,
+        interaction: Option<&InteractionState>,
     ) {
         surface.surface_fill_rect(layout.bounds, theme.tab_bar_bg);
 
@@ -350,6 +381,8 @@ pub(crate) mod native_surface_paint {
             let item = &bar.items[vi.item_idx];
             let is_active =
                 bar.open_item == Some(vi.item_idx) || bar.focused_item == Some(vi.item_idx);
+            let is_pressed = interaction.is_some_and(|i| i.is_pressed(&item.id));
+            let is_hovered = interaction.is_some_and(|i| i.is_hovered(&item.id));
 
             let (fg, bg) = if is_active {
                 (theme.tab_active_fg, theme.tab_active_bg)
@@ -358,9 +391,18 @@ pub(crate) mod native_surface_paint {
             } else {
                 (theme.tab_inactive_fg, theme.tab_bar_bg)
             };
+            let row_bg = if is_pressed {
+                Some(theme.menu_item_pressed_bg(theme.tab_bar_bg))
+            } else if is_hovered {
+                Some(theme.menu_item_hover_bg(theme.tab_bar_bg))
+            } else if is_active {
+                Some(bg)
+            } else {
+                None
+            };
 
-            if is_active {
-                surface.surface_fill_rect(vi.bounds, bg);
+            if let Some(row_bg) = row_bg {
+                surface.surface_fill_rect(vi.bounds, row_bg);
             }
 
             let text = display_text(&item.label);
@@ -674,6 +716,73 @@ pub(crate) mod native_surface_paint {
             assert_eq!(
                 thin_fills_under_help, 0,
                 "Help has no '&' and must get no underline fill"
+            );
+        }
+
+        fn idle_bar() -> MenuBar {
+            let mut bar = drift_bar();
+            bar.open_item = None;
+            bar.focused_item = None;
+            bar
+        }
+
+        #[test]
+        fn hovered_item_paints_menu_item_hover_bg() {
+            let bar = idle_bar();
+            let layout = drift_layout(&bar);
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(WidgetId::new("file")));
+            let mut surface = RecordingSurface::default();
+            paint_interactive(&bar, &layout, &mut surface, &theme, &interaction);
+
+            let expected = theme.menu_item_hover_bg(theme.tab_bar_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == expected),
+                "hovered menu-bar item must paint Theme::menu_item_hover_bg: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn leaving_the_item_clears_the_hover_fill() {
+            let bar = idle_bar();
+            let layout = drift_layout(&bar);
+            let theme = Theme::default();
+            let interaction = InteractionState::new(); // nothing hovered
+            let mut surface = RecordingSurface::default();
+            paint_interactive(&bar, &layout, &mut surface, &theme, &interaction);
+
+            let hover_bg = theme.menu_item_hover_bg(theme.tab_bar_bg);
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == hover_bg),
+                "no item is hovered, so no item should paint the hover tint: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn pressed_item_paints_menu_item_pressed_bg_not_hover_bg() {
+            let bar = idle_bar();
+            let layout = drift_layout(&bar);
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(WidgetId::new("file")));
+            interaction.set_pressed(Some(WidgetId::new("file")));
+            let mut surface = RecordingSurface::default();
+            paint_interactive(&bar, &layout, &mut surface, &theme, &interaction);
+
+            let pressed = theme.menu_item_pressed_bg(theme.tab_bar_bg);
+            let hover = theme.menu_item_hover_bg(theme.tab_bar_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == pressed),
+                "pressed menu-bar item must paint Theme::menu_item_pressed_bg: {:?}",
+                surface.fills
+            );
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == hover),
+                "a pressed item must not also paint the plain hover tint: {:?}",
+                surface.fills
             );
         }
     }
