@@ -58,6 +58,24 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Fixed
+- `Button::icon`/`icon_position`/`icon_gap` now actually paint on GTK,
+  macOS and Win — `primitives::button::native_surface_paint::paint` (the
+  helper all three backends' `draw_button`/`draw_button_with_state` call)
+  previously ignored those fields entirely, so a leading/trailing icon set
+  on any GUI backend silently painted nothing. The icon glyph (always
+  `Icon::glyph`; GUI backends carry the bundled codicon font
+  unconditionally, same rationale as `MacBackend`/`GtkBackend`/
+  `WinBackend`'s own `nerd_fonts_enabled` field doc) and the label now
+  paint as one centred unit, `icon_gap` apart, ordered per
+  `icon_position`, inset from the button's own edge by at least
+  `Style::padding` (`ButtonMetrics::padding_x`'s own source) rather than
+  flush against it with no inset at all. `ButtonVariant`/`ButtonMetrics`/
+  `Theme` are unchanged; this is a paint-body fix behind the existing
+  `native_surface_paint::paint` signature, so every one of its three
+  callers keeps compiling unchanged. TUI already painted the icon
+  correctly and is unaffected.
+
 ### Added
 - `ListPaintState`/`TreePaintState`/`DataTablePaintState`: per-frame,
   `#[non_exhaustive]` paint-time state (`hovered_idx`, `pressed_idx`,

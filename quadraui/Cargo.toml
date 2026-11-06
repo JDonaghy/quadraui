@@ -2025,6 +2025,15 @@ name = "win_controls"
 path = "examples/win_controls.rs"
 required-features = ["win"]
 
+# macOS leg of the Button/RadioGroup/Switch controls demo — same
+# `ControlsApp` `tui_controls`/`gtk_controls`/`win_controls` already run,
+# real CoreGraphics/CoreText chrome instead of the TUI/GTK/Direct2D
+# painters.
+[[example]]
+name = "macos_controls"
+path = "examples/macos_controls.rs"
+required-features = ["macos"]
+
 # Declarative `visible_when`/`enabled_when` field conditions demo. Both
 # entries are mandatory (see the note above): without an explicit
 # `[[example]]`, `gtk_form_visibility.rs` gets autodiscovered with no
