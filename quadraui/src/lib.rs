@@ -518,7 +518,8 @@ pub use primitives::context_menu::{
 };
 pub use primitives::data_table::{
     Column, ColumnAlign, ColumnMeasure, ColumnWidth, DataRow, DataTable, DataTableEvent,
-    DataTableGlyphs, DataTableHit, DataTableLayout, ResolvedColumn, SortDirection,
+    DataTableGlyphs, DataTableHit, DataTableLayout, DataTablePaintState, ResolvedColumn,
+    SortDirection,
 };
 pub use primitives::date_picker::{
     CalendarDate, DateFormat, DateLocale, DatePicker, DatePickerEvent, DatePickerHit,
@@ -556,8 +557,8 @@ pub use primitives::form::{
 };
 pub use primitives::image::{Image, ImageFit, ImageHit, ImageLayout, ImageSource};
 pub use primitives::list::{
-    ListItem, ListItemMeasure, ListView, ListViewEvent, ListViewHit, ListViewLayout,
-    VisibleListItem,
+    ListItem, ListItemMeasure, ListPaintState, ListView, ListViewEvent, ListViewHit,
+    ListViewLayout, VisibleListItem,
 };
 pub use primitives::menu_bar::{
     MenuBar, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout, VisibleMenuBarItem,
@@ -652,8 +653,8 @@ pub use primitives::tooltip::{
     TooltipMeasure, TooltipPlacement,
 };
 pub use primitives::tree::{
-    selected_paths_for_indices, TreeEvent, TreeRow, TreeRowEditState, TreeRowMeasure, TreeView,
-    TreeViewHit, TreeViewLayout, VisibleTreeRow,
+    selected_paths_for_indices, TreeEvent, TreePaintState, TreeRow, TreeRowEditState,
+    TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout, VisibleTreeRow,
 };
 pub use style::Style;
 pub use text_util::{

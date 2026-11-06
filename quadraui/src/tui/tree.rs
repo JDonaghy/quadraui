@@ -57,6 +57,31 @@ pub fn draw_tree(
     theme: &Theme,
     nerd_fonts_enabled: bool,
 ) {
+    draw_tree_with_scroll_px(buf, area, tree, theme, nerd_fonts_enabled, None)
+}
+
+/// Like [`draw_tree`], but with an explicit pixel-precise scroll
+/// position (`scroll_px`) from a
+/// [`crate::primitives::tree::TreePaintState`] instead of only
+/// [`TreeView::scroll_offset`]'s whole-row value.
+///
+/// TUI is a cell grid: `scroll_px` wins over `scroll_offset` (see
+/// [`crate::primitives::scrollbar::resolve_scroll_px`]) but is quantised
+/// to a whole row — the sub-row remainder is computed and then simply
+/// never read, so TUI never paints a partial row. `None` (what
+/// [`draw_tree`] passes) resolves to exactly the pre-existing whole-row
+/// behaviour.
+pub fn draw_tree_with_scroll_px(
+    buf: &mut Buffer,
+    area: Rect,
+    tree: &TreeView,
+    theme: &Theme,
+    nerd_fonts_enabled: bool,
+    scroll_px: Option<f32>,
+) {
+    // Floor to a whole cell up front — see
+    // `tui_tree_layout_with_scroll_px`'s doc for why.
+    let scroll_px = scroll_px.map(f32::floor);
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -72,7 +97,7 @@ pub fn draw_tree(
 
     let indent_cells = tree.style.indent as usize;
 
-    let layout = tui_tree_layout(tree, area);
+    let layout = tui_tree_layout_with_scroll_px(tree, area, scroll_px);
 
     if tree.style.bordered {
         draw_tree_border(buf, area, ratatui_color(theme.border_fg), row_bg);
@@ -381,6 +406,25 @@ fn paint_edit_input(
 /// [`crate::primitives::tree::TreeViewHit::Chevron`]; the rest of the
 /// row produces [`crate::primitives::tree::TreeViewHit::Row`].
 pub fn tui_tree_layout(tree: &TreeView, area: Rect) -> TreeViewLayout {
+    tui_tree_layout_with_scroll_px(tree, area, None)
+}
+
+/// Like [`tui_tree_layout`], but with an explicit pixel-precise scroll
+/// position (`scroll_px`) instead of only [`TreeView::scroll_offset`]'s
+/// whole-row value — see [`draw_tree_with_scroll_px`].
+pub fn tui_tree_layout_with_scroll_px(
+    tree: &TreeView,
+    area: Rect,
+    scroll_px: Option<f32>,
+) -> TreeViewLayout {
+    // Floor to a whole cell *before* resolving: TUI's row height is
+    // always 1.0, so a non-whole `scroll_px` would otherwise leave a
+    // non-zero `scroll_sub_px` remainder that nothing here clips away
+    // (unlike a GUI surface's `surface_push_clip`), painting a
+    // negative-offset row that collides with its neighbour. Flooring
+    // first guarantees `scroll_sub_px == 0.0` and TUI never paints a
+    // partial row.
+    let scroll_px = scroll_px.map(f32::floor);
     let indent_cells = tree.style.indent as f32;
     let chevron_w = if tree.style.show_chevrons {
         // chevron glyph width (chars) + 1 trailing space cell
@@ -388,7 +432,7 @@ pub fn tui_tree_layout(tree: &TreeView, area: Rect) -> TreeViewLayout {
     } else {
         0.0
     };
-    tree.layout(area.width as f32, area.height as f32, |i| {
+    tree.layout_with_scroll_px(area.width as f32, area.height as f32, scroll_px, |i| {
         let row = &tree.rows[i];
         let chevron_end_x = if row.is_expanded.is_some() && chevron_w > 0.0 {
             Some(row.indent as f32 * indent_cells + chevron_w)
@@ -823,6 +867,33 @@ mod tests {
             find_row_with(&buf, "item-00").is_none(),
             "item-00 should be scrolled out under scroll_offset=3 but appears in buffer"
         );
+    }
+
+    /// `scroll_px` wins over `scroll_offset` (deprecate-first), but on
+    /// TUI's cell grid (`row_height == 1.0`) it quantises to the same
+    /// whole row a GUI backend's sub-row remainder would float between
+    /// — the "TUI quantises scroll_px to whole rows" half of the
+    /// issue's acceptance criterion.
+    #[test]
+    fn scroll_px_quantises_to_a_whole_row_on_tui() {
+        let area = Rect::new(0, 0, 30, 4);
+        let tree = long_tree(50);
+
+        let mut buf = Buffer::empty(area);
+        draw_tree_with_scroll_px(&mut buf, area, &tree, &Theme::default(), false, Some(10.7));
+        let painted_y = find_row_with(&buf, "item-10")
+            .expect("scroll_px=10.7 should quantise to row 10 at the top");
+
+        // A whole-row scroll_offset of 10 paints byte-for-byte the same
+        // first row — scroll_px degrades to the pre-existing
+        // row-quantised behaviour, it does not add a new visual.
+        let mut via_offset = tree.clone();
+        via_offset.scroll_offset = 10;
+        let mut buf2 = Buffer::empty(area);
+        draw_tree(&mut buf2, area, &via_offset, &Theme::default(), false);
+        let painted_y_via_offset = find_row_with(&buf2, "item-10")
+            .expect("scroll_offset=10 should paint 'item-10' at the top");
+        assert_eq!(painted_y, painted_y_via_offset);
     }
 
     /// Header rows (Decoration::Header) and leaf rows are equally

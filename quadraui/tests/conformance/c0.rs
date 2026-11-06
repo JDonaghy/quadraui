@@ -419,7 +419,12 @@ pub const CASES: &[Case] = &[
                 max_content_width: None,
                 show_v_scrollbar: false,
             };
-            b.draw_list_with_state(area, &list, Some(0), None, false);
+            b.draw_list_with_state(
+                area,
+                &list,
+                &quadraui::ListPaintState::default().with_hovered_idx(Some(0)),
+                false,
+            );
         },
     },
     Case {
@@ -473,7 +478,12 @@ pub const CASES: &[Case] = &[
                 style: TreeStyle::default(),
                 has_focus: false,
             };
-            b.draw_tree_with_state(area, &tree, Some(0), None, false);
+            b.draw_tree_with_state(
+                area,
+                &tree,
+                &quadraui::TreePaintState::default().with_hovered_idx(Some(0)),
+                false,
+            );
         },
     },
     Case {
@@ -684,6 +694,43 @@ pub const CASES: &[Case] = &[
                 footer: None,
             };
             let _ = b.draw_data_table(area, &table, None);
+        },
+    },
+    // `draw_data_table_with_state` is an additive trait default that
+    // forwards to `draw_data_table`, ignoring the hovered index, until a
+    // backend overrides it to tint the hovered row. This row proves the
+    // default reaches a rasteriser and still paints observable content on
+    // every backend.
+    Case {
+        method: "draw_data_table_with_state",
+        needle: Some("c0dtblhv"),
+        paint: |b, area| {
+            let table = DataTable {
+                id: id("data-table-hover"),
+                columns: vec![Column {
+                    title: "c0dtblhv".to_string(),
+                    width: ColumnWidth::Flex(1.0),
+                    align: ColumnAlign::Left,
+                }],
+                rows: vec![DataRow {
+                    cells: vec![StyledText::plain("row")],
+                    decoration: Decoration::Normal,
+                }],
+                selected_idx: None,
+                scroll_offset: 0,
+                sort: None,
+                has_focus: false,
+                show_scrollbar: false,
+                min_total_width: None,
+                h_scroll: 0.0,
+                column_overrides: vec![],
+                footer: None,
+            };
+            let _ = b.draw_data_table_with_state(
+                area,
+                &table,
+                &quadraui::DataTablePaintState::default().with_hovered_idx(Some(0)),
+            );
         },
     },
     Case {

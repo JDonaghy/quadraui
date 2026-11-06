@@ -23,7 +23,9 @@
 //! sign convention: positive `delta.y` = scroll content up (decrease
 //! offset). Backends normalise their native direction before emitting.
 
-use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
+use crate::primitives::scrollbar::{
+    scroll_by_clamped, scroll_by_clamped_f32, scroll_rows, wheel_delta, PressZone, ThumbDrag,
+};
 use crate::text_util::{next_char_boundary, prev_char_boundary, snap_to_char_boundary};
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar,
@@ -87,6 +89,12 @@ pub struct TreeController {
     rows: Vec<TreeRow>,
     selected_path: Option<TreePath>,
     scroll_offset: usize,
+    /// Pixel-precise scroll position, accumulated from fractional wheel
+    /// deltas. `None` whenever the scroll position was last set by a
+    /// whole-row operation (keyboard nav, scrollbar drag, programmatic
+    /// [`TreeController::set_scroll_offset`]) — see
+    /// [`TreeController::scroll_px`].
+    scroll_px: Option<f32>,
     has_focus: bool,
     scroll_drag: Option<ThumbDrag>,
     vim_keys: bool,
@@ -113,6 +121,7 @@ impl TreeController {
             rows: Vec::new(),
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: true,
             scroll_drag: None,
             vim_keys: true,
@@ -139,6 +148,17 @@ impl TreeController {
         self.scroll_offset
     }
 
+    /// Pixel-precise scroll position accumulated from fractional wheel
+    /// deltas (see [`UiEvent::Scroll`] handling), or `None` when the
+    /// scroll position was last set by a whole-row operation. Feeds a
+    /// [`crate::primitives::tree::TreePaintState::scroll_px`] a host
+    /// builds for [`crate::Backend::draw_tree_with_state`] — a host that
+    /// ignores this and reads [`TreeController::scroll_offset`] alone
+    /// sees the pre-existing row-quantised behaviour unchanged.
+    pub fn scroll_px(&self) -> Option<f32> {
+        self.scroll_px
+    }
+
     pub fn has_focus(&self) -> bool {
         self.has_focus
     }
@@ -155,6 +175,7 @@ impl TreeController {
 
     pub fn set_scroll_offset(&mut self, offset: usize) {
         self.scroll_offset = offset;
+        self.scroll_px = None;
     }
 
     pub fn set_has_focus(&mut self, has_focus: bool) {
@@ -288,7 +309,18 @@ impl TreeController {
     pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
         let (tree_rect, sb) = self.split_rect(backend, rect);
         let tree = self.build_tree_view(tree_rect);
-        backend.draw_tree(tree_rect, &tree);
+        // `draw_tree_with_state`, not plain `draw_tree`: carries
+        // `self.scroll_px` into the paint-time state so a backend that
+        // reads it (TUI; GTK/macOS/Win via a sibling per-backend issue)
+        // paints the accumulated sub-row scroll position instead of
+        // snapping to `scroll_offset`'s whole row. No hover/pressed
+        // tracking here — this controller doesn't own that state — and
+        // `focus_ring_visible: false` matches plain `draw_tree`'s own
+        // behavior, so a backend that ignores `state` paints byte-for-
+        // byte what it always did.
+        let state =
+            crate::primitives::tree::TreePaintState::default().with_scroll_px(self.scroll_px);
+        backend.draw_tree_with_state(tree_rect, &tree, &state, false);
         // When `backend.tree_paints_own_scrollbar()`, `draw_tree` above
         // already painted the overlay scrollbar itself — `sb` exists only
         // for hit-testing (`click`/`click_scrollbar`), and painting it
@@ -349,8 +381,7 @@ impl TreeController {
 
             UiEvent::Scroll { delta, .. } => {
                 let vr = self.viewport_rows(backend, rect);
-                let rows = wheel_row_delta(delta.y, 1.0);
-                self.scroll_by(rows, vr);
+                self.scroll_by_wheel(backend.wheel_delta_rows(delta.y), backend.line_height(), vr);
                 TreeControllerEvent::Consumed
             }
 
@@ -437,14 +468,17 @@ impl TreeController {
         }
         if row < self.scroll_offset {
             self.scroll_offset = row;
+            self.scroll_px = None;
         } else if row >= self.scroll_offset + viewport_rows {
             self.scroll_offset = row.saturating_sub(viewport_rows.saturating_sub(1));
+            self.scroll_px = None;
         }
     }
 
     pub fn page_scroll(&mut self, delta: isize, viewport_rows: usize) {
         let max = self.rows.len().saturating_sub(viewport_rows);
         self.scroll_offset = scroll_by_clamped(self.scroll_offset, delta, max);
+        self.scroll_px = None;
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
@@ -856,12 +890,40 @@ impl TreeController {
             return TreeControllerEvent::Ignored;
         }
         self.scroll_offset = new;
+        self.scroll_px = None;
         TreeControllerEvent::Consumed
     }
 
     pub fn scroll_by(&mut self, delta: isize, viewport_rows: usize) {
         let max = self.rows.len().saturating_sub(viewport_rows);
         self.scroll_offset = scroll_by_clamped(self.scroll_offset, delta, max);
+        self.scroll_px = None;
+    }
+
+    /// Accumulate a fractional wheel/trackpad row delta into
+    /// [`Self::scroll_px`] instead of snapping straight to a whole row —
+    /// the fix for "scrolling jumps a row at a time" on a backend whose
+    /// native deltas carry sub-row precision.
+    ///
+    /// `row_delta` is already in row units (positive = scroll content up
+    /// per [`crate::ScrollDelta`]'s convention) — see
+    /// [`Backend::wheel_delta_rows`]. `row_height` converts it to the
+    /// pixel currency `scroll_px` is stored in.
+    fn scroll_by_wheel(&mut self, row_delta: f32, row_height: f32, viewport_rows: usize) {
+        let row_height = if row_height.is_finite() && row_height > 0.0 {
+            row_height
+        } else {
+            1.0
+        };
+        let max_offset = self.rows.len().saturating_sub(viewport_rows);
+        let max_px = max_offset as f32 * row_height;
+        let current_px = self
+            .scroll_px
+            .unwrap_or(self.scroll_offset as f32 * row_height);
+        let delta_px = wheel_delta(row_delta, row_height);
+        let new_px = scroll_by_clamped_f32(current_px, delta_px, max_px);
+        self.scroll_px = Some(new_px);
+        self.scroll_offset = scroll_rows(new_px / row_height).min(max_offset);
     }
 
     fn viewport_rows(&self, backend: &dyn Backend, rect: Rect) -> usize {
@@ -957,10 +1019,17 @@ impl TreeController {
         let track_w = self.scrollbar_track_width(backend);
         let min_thumb = track_w.max(1.0);
         let is_dragging = self.scroll_drag.is_some();
+        // A continuous `scroll_px` moves the thumb smoothly between whole
+        // rows; falls back to `scroll_offset` unchanged when `scroll_px`
+        // is `None`.
+        let scroll_rows = match self.scroll_px {
+            Some(px) if lh > 0.0 => px / lh,
+            _ => self.scroll_offset as f32,
+        };
         let mut sb = Scrollbar::vertical(
             format!("{}-scrollbar", self.id),
             sb_rect,
-            self.scroll_offset as f32,
+            scroll_rows,
             total,
             visible,
             min_thumb,
@@ -1174,18 +1243,41 @@ mod tests {
     }
 
     #[test]
-    fn wheel_scroll_still_moves_one_row_for_a_sub_row_gesture() {
+    fn wheel_scroll_accumulates_a_sub_row_gesture_instead_of_snapping() {
+        // The behaviour `scroll_px` enables: a trackpad nudge smaller
+        // than one row must not jump a whole row on its own — it
+        // accumulates into `scroll_px`, and `scroll_offset` only
+        // advances once enough of them add up to cross a row boundary.
         let mut tc = TreeController::new("t");
         tc.set_rows(fake_rows("row", 40));
         let rect = Rect::new(0.0, 0.0, 40.0, 5.0);
+        let mut backend = RecordingBackend::new();
 
         let ev = UiEvent::Scroll {
             widget: None,
             delta: crate::ScrollDelta::new(0.0, -0.2),
             position: crate::Point::new(5.0, 5.0),
         };
-        tc.handle(&ev, &mut RecordingBackend::new(), rect);
-        assert_eq!(tc.scroll_offset(), 1);
+        tc.handle(&ev, &mut backend, rect);
+        assert_eq!(
+            tc.scroll_offset(),
+            0,
+            "a single 0.2-row gesture must not snap to a whole row"
+        );
+        assert!(
+            tc.scroll_px().unwrap_or(0.0) > 0.0,
+            "the sub-row amount must still accumulate into scroll_px"
+        );
+
+        // Four more identical gestures (1.0 row total) cross into row 1.
+        for _ in 0..4 {
+            tc.handle(&ev, &mut backend, rect);
+        }
+        assert_eq!(
+            tc.scroll_offset(),
+            1,
+            "five 0.2-row gestures should add up to one whole row"
+        );
     }
 
     // ── GTK wheel-direction round-trip ───────────────────────────────

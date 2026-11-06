@@ -55,7 +55,9 @@ use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::command_line::{CommandLine, CommandLineLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuGlyphs, ContextMenuLayout};
-use crate::primitives::data_table::{DataTable, DataTableGlyphs, DataTableLayout};
+use crate::primitives::data_table::{
+    DataTable, DataTableGlyphs, DataTableLayout, DataTablePaintState,
+};
 use crate::primitives::date_picker::{DatePicker, DatePickerLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout, DialogSeverity};
 use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
@@ -65,7 +67,7 @@ use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::float::{Float, FloatLayout};
 use crate::primitives::form::FormLayout;
 use crate::primitives::image::{Image, ImageSource};
-use crate::primitives::list::ListViewLayout;
+use crate::primitives::list::{ListPaintState, ListViewLayout};
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::minimap::{Minimap, MinimapLayout, MinimapScale};
@@ -96,7 +98,7 @@ use crate::primitives::text_input::{TextInput, TextInputLayout};
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
 use crate::primitives::toolbar::{Toolbar, ToolbarLayout, ToolbarPaintOptions};
 use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
-use crate::primitives::tree::TreeViewLayout;
+use crate::primitives::tree::{TreePaintState, TreeViewLayout};
 use crate::types::{Color, WidgetId};
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, GlobalShortcutId, ListView, Palette,
@@ -1994,6 +1996,26 @@ pub trait Backend: sealed::Sealed {
     /// `let viewport_cols = ((rect.width - gutter) / backend.char_width()).floor();`
     fn char_width(&self) -> f32;
 
+    /// Convert a [`crate::ScrollDelta::y`] component into fractional row
+    /// units for a row-based scroll controller ([`crate::compose::TreeController`],
+    /// and any `ListView`/`DataTable`-driving equivalent) to accumulate
+    /// into a paint-time `scroll_px` ([`ListPaintState`], [`TreePaintState`],
+    /// [`DataTablePaintState`]) without snapping to a whole row on every
+    /// event.
+    ///
+    /// Every backend but macOS already reports wheel/trackpad deltas in
+    /// row-notch units: TUI is `±1.0` per crossterm notch, GTK's
+    /// `EventControllerScroll::dy` is pre-scaled by the OS's
+    /// lines-per-notch setting, and Win32's is `raw_delta / WHEEL_DELTA`.
+    /// The default implementation returns `delta_y` unchanged, matching
+    /// all three. macOS's `NSEvent.scrollingDeltaY` passes straight
+    /// through as real points instead — a sibling macOS issue overrides
+    /// this to divide by [`Self::line_height`] and land back in the same
+    /// row-unit currency every other backend already uses.
+    fn wheel_delta_rows(&self, delta_y: f32) -> f32 {
+        delta_y
+    }
+
     /// Line height of the chrome / UI font, in surface-native units.
     ///
     /// Chrome elements — tab strips, breadcrumb bars, status bars —
@@ -2285,14 +2307,23 @@ pub trait Backend: sealed::Sealed {
     /// indicator unrelated to real keyboard focus. Pass
     /// `ring.is_focused(&tree.id) && ring.is_focus_visible()` from a
     /// host's own [`crate::compose::FocusRing`] instead.
+    ///
+    /// `state.scroll_px`, when `Some`, is a pixel-precise scroll position
+    /// a host has accumulated from fractional wheel/trackpad deltas (see
+    /// [`crate::compose::TreeController::scroll_px`]) — it wins over
+    /// [`TreeView::scroll_offset`] and paints a partially clipped first
+    /// row instead of snapping to a whole one, via
+    /// [`TreeView::layout_with_scroll_px`]. `None` (the default a `state`
+    /// built with [`TreePaintState::default`] carries) paints exactly as
+    /// [`Self::draw_tree`] already does.
     fn draw_tree_with_state(
         &mut self,
         rect: Rect,
         tree: &TreeView,
-        _hovered_idx: Option<usize>,
-        _pressed_idx: Option<usize>,
+        state: &TreePaintState,
         _focus_ring_visible: bool,
     ) {
+        let _ = state;
         self.draw_tree(rect, tree)
     }
 
@@ -2317,14 +2348,22 @@ pub trait Backend: sealed::Sealed {
     /// indicator unrelated to real keyboard focus. Pass
     /// `ring.is_focused(&list.id) && ring.is_focus_visible()` from a
     /// host's own [`crate::compose::FocusRing`] instead.
+    ///
+    /// `state.scroll_px`, when `Some`, is a pixel-precise scroll position
+    /// a host has accumulated from fractional wheel/trackpad deltas — it
+    /// wins over [`ListView::scroll_offset`] and paints a partially
+    /// clipped first item instead of snapping to a whole one, via
+    /// [`ListView::layout_with_scroll_px`]. `None` (the default a
+    /// `state` built with [`ListPaintState::default`] carries) paints
+    /// exactly as [`Self::draw_list`] already does.
     fn draw_list_with_state(
         &mut self,
         rect: Rect,
         list: &ListView,
-        _hovered_idx: Option<usize>,
-        _pressed_idx: Option<usize>,
+        state: &ListPaintState,
         _focus_ring_visible: bool,
     ) {
+        let _ = state;
         self.draw_list(rect, list)
     }
     /// Draw `table` into `rect` and return its layout for hit-testing.
@@ -2336,6 +2375,27 @@ pub trait Backend: sealed::Sealed {
         table: &DataTable,
         hovered_idx: Option<usize>,
     ) -> DataTableLayout;
+    /// [`Self::draw_data_table`], plus a pixel-precise scroll position via
+    /// [`DataTablePaintState::scroll_px`] instead of only
+    /// [`DataTable::scroll_offset`]'s whole-row value.
+    ///
+    /// Additive over [`Self::draw_data_table`], not a replacement — the
+    /// default forwards to it with `state.hovered_idx` (ignoring
+    /// `scroll_px`), so every existing call site and implementor keeps
+    /// compiling unchanged. `state.scroll_px: None` (the default a
+    /// `state` built with [`DataTablePaintState::default`] carries)
+    /// paints exactly as [`Self::draw_data_table`] already does;
+    /// `Some(px)` wins over `scroll_offset` and resolves via
+    /// [`DataTable::effective_scroll_offset`] /
+    /// [`DataTable::scroll_sub_row_px`].
+    fn draw_data_table_with_state(
+        &mut self,
+        rect: Rect,
+        table: &DataTable,
+        state: &DataTablePaintState,
+    ) -> DataTableLayout {
+        self.draw_data_table(rect, table, state.hovered_idx)
+    }
     /// Draw `table` into `rect` with an optional [`DataTableGlyphs`]
     /// override for the sort-ascending/sort-descending arrows. Returns
     /// its layout for hit-testing, same contract as [`Self::draw_data_table`].

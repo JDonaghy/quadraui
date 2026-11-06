@@ -2590,10 +2590,13 @@ impl Backend for GtkBackend {
         &mut self,
         rect: QRect,
         tree: &TreeView,
-        hovered_idx: Option<usize>,
-        pressed_idx: Option<usize>,
+        state: &crate::primitives::tree::TreePaintState,
         focus_ring_visible: bool,
     ) {
+        // `state.scroll_px` is read by the TUI backend (see
+        // `tui::backend::TuiBackend::draw_tree_with_state`) but not yet
+        // by this GTK painter — pixel-smooth GTK scrolling is a sibling
+        // issue's job (the seam only guarantees the trait shape here).
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
@@ -2612,8 +2615,8 @@ impl Backend for GtkBackend {
             &self.current_style,
             self.resolved_row_height(self.current_line_height),
             self.nerd_fonts_enabled,
-            hovered_idx,
-            pressed_idx,
+            state.hovered_idx,
+            state.pressed_idx,
             focus_ring_visible,
         );
         layout.set_font_description(saved_font.as_ref());
@@ -2653,10 +2656,13 @@ impl Backend for GtkBackend {
         &mut self,
         rect: QRect,
         list: &ListView,
-        hovered_idx: Option<usize>,
-        pressed_idx: Option<usize>,
+        state: &crate::primitives::list::ListPaintState,
         focus_ring_visible: bool,
     ) {
+        // `state.scroll_px` is read by the TUI backend (see
+        // `tui::backend::TuiBackend::draw_list_with_state`) but not yet
+        // by this GTK painter — pixel-smooth GTK scrolling is a sibling
+        // issue's job (the seam only guarantees the trait shape here).
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
@@ -2675,8 +2681,8 @@ impl Backend for GtkBackend {
             &self.current_style,
             self.resolved_row_height(self.current_line_height),
             self.nerd_fonts_enabled,
-            hovered_idx,
-            pressed_idx,
+            state.hovered_idx,
+            state.pressed_idx,
             focus_ring_visible,
         );
         layout.set_font_description(saved_font.as_ref());

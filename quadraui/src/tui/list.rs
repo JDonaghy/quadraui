@@ -71,6 +71,62 @@ pub fn tui_list_layout(area: Rect, list: &ListView) -> ListViewLayout {
     })
 }
 
+/// Like [`tui_list_layout`], but with an explicit pixel-precise scroll
+/// position (`scroll_px`) instead of only [`ListView::scroll_offset`]'s
+/// whole-row value — see [`draw_list_with_scroll_px`].
+pub fn tui_list_layout_with_scroll_px(
+    area: Rect,
+    list: &ListView,
+    scroll_px: Option<f32>,
+) -> ListViewLayout {
+    // Floor to a whole cell *before* resolving: TUI's row height is
+    // always 1.0, so a non-whole `scroll_px` would otherwise leave a
+    // non-zero `scroll_sub_px` remainder that nothing here clips away
+    // (unlike a GUI surface's `surface_push_clip`), painting a
+    // negative-offset row that collides with its neighbour. Flooring
+    // first guarantees `scroll_sub_px == 0.0` and TUI never paints a
+    // partial row.
+    let scroll_px = scroll_px.map(f32::floor);
+    let area_f = crate::event::Rect::new(
+        area.x as f32,
+        area.y as f32,
+        area.width as f32,
+        area.height as f32,
+    );
+    let hscrollbar = list.hscrollbar(area_f, 1.0);
+    let needs_hscrollbar = hscrollbar.is_some();
+
+    let v_area_f = if needs_hscrollbar {
+        crate::event::Rect::new(
+            area_f.x,
+            area_f.y,
+            area_f.width,
+            (area_f.height - 1.0).max(0.0),
+        )
+    } else {
+        area_f
+    };
+    let vscrollbar = list.vscrollbar(v_area_f, 1.0);
+    let needs_vscrollbar = vscrollbar.is_some();
+
+    let viewport_h = if needs_hscrollbar {
+        (area.height as f32 - 1.0).max(0.0)
+    } else {
+        area.height as f32
+    };
+
+    let viewport_w = if needs_vscrollbar {
+        (area.width as f32 - 1.0).max(0.0)
+    } else {
+        area.width as f32
+    };
+
+    let title_h = if list.title.is_some() { 1.0 } else { 0.0 };
+    list.layout_with_scroll_px(viewport_w, viewport_h, title_h, scroll_px, |_| {
+        ListItemMeasure::new(1.0)
+    })
+}
+
 /// Draw a [`ListView`] into `area` on `buf`. Honours
 /// [`ListView::bordered`] (rounded box border + title overlay) and
 /// [`ListView::has_focus`] (the selected row only highlights when the
@@ -103,6 +159,32 @@ pub fn draw_list(
     theme: &Theme,
     nerd_fonts_enabled: bool,
 ) {
+    draw_list_with_scroll_px(buf, area, list, theme, nerd_fonts_enabled, None)
+}
+
+/// Like [`draw_list`], but with an explicit pixel-precise scroll
+/// position (`scroll_px`) from a
+/// [`crate::primitives::list::ListPaintState`] instead of only
+/// [`ListView::scroll_offset`]'s whole-row value.
+///
+/// TUI is a cell grid: `scroll_px` wins over `scroll_offset` (see
+/// [`crate::primitives::scrollbar::resolve_scroll_px`]) but is quantised
+/// to a whole row — the sub-row remainder is computed and then simply
+/// never read, so TUI never paints a partial row. `None` (what
+/// [`draw_list`] passes) resolves to exactly the pre-existing whole-row
+/// behaviour.
+pub fn draw_list_with_scroll_px(
+    buf: &mut Buffer,
+    area: Rect,
+    list: &ListView,
+    theme: &Theme,
+    nerd_fonts_enabled: bool,
+    scroll_px: Option<f32>,
+) {
+    // Floor to a whole cell up front — see `tui_list_layout_with_scroll_px`'s
+    // doc for why — so the scrollbar thumb below and the row layout
+    // agree on the same quantised position.
+    let scroll_px = scroll_px.map(f32::floor);
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -131,7 +213,7 @@ pub fn draw_list(
     // `Backend::list_vscrollbar`), so the painted thumb and the draggable
     // thumb can never drift apart. In bordered mode the scrollbars sit
     // inside the box; in flat mode they occupy the outermost row/column.
-    let layout = tui_list_layout(area, list);
+    let layout = tui_list_layout_with_scroll_px(area, list, scroll_px);
 
     // Re-derive the scrollbar geometry for painting (cheap — pure
     // functions of `list` + `area`). `tui_list_layout` only needs to know
@@ -153,7 +235,7 @@ pub fn draw_list(
     } else {
         area_f
     };
-    let vscrollbar = list.vscrollbar(v_area_f, 1.0);
+    let vscrollbar = list.vscrollbar_with_scroll_px(v_area_f, 1.0, 1.0, scroll_px);
 
     if list.bordered {
         let top_y = area.y;
@@ -596,6 +678,49 @@ mod tests {
             false,
         );
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    /// `scroll_px` wins over `scroll_offset` (deprecate-first), but on
+    /// TUI's cell grid (`row_height == 1.0`) it quantises to the same
+    /// whole row a GUI backend's sub-row remainder would float between
+    /// — the "TUI quantises scroll_px to whole rows" half of the
+    /// issue's acceptance criterion.
+    #[test]
+    fn scroll_px_quantises_to_a_whole_row_on_tui() {
+        let items: Vec<ListItem> = (0..50)
+            .map(|i| item(&format!("row-{i}"), Decoration::Normal))
+            .collect();
+        let list = ListView {
+            id: WidgetId::new("list"),
+            title: None,
+            items,
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        let area = Rect::new(0, 0, 20, 5);
+
+        let mut buf = Buffer::empty(area);
+        draw_list_with_scroll_px(&mut buf, area, &list, &Theme::default(), false, Some(10.7));
+        let first_row: String = (0..9).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(
+            first_row.contains("row-10"),
+            "scroll_px=10.7 should quantise to row 10 at the top, got: {first_row}"
+        );
+
+        // A whole-row scroll_offset of 10 paints byte-for-byte the same
+        // first row — scroll_px degrades to the pre-existing
+        // row-quantised behaviour, it does not add a new visual.
+        let mut via_offset = list.clone();
+        via_offset.scroll_offset = 10;
+        let mut buf2 = Buffer::empty(area);
+        draw_list(&mut buf2, area, &via_offset, &Theme::default(), false);
+        let first_row_via_offset: String = (0..9).map(|x| cell_char(&buf2, x, 0)).collect();
+        assert_eq!(first_row, first_row_via_offset);
     }
 
     // ── h_scroll tests ───────────────────────────────────────────────────────

@@ -384,6 +384,54 @@ pub fn clamp_scroll_offset(scroll_offset: usize, content_len: usize) -> usize {
     }
 }
 
+/// Resolve a widget's `(scroll_offset, scroll_px)` pair into a whole
+/// starting-row index plus the sub-row pixel remainder a GUI painter
+/// uses to clip the first visible row.
+///
+/// `scroll_px` wins over `scroll_offset` when it is `Some` and usable
+/// (finite, non-negative, and `row_height` itself finite and positive);
+/// otherwise this is exactly [`clamp_scroll_offset`] with a `0.0`
+/// remainder, so a caller that never has a `scroll_px` to pass (`None`)
+/// sees no behaviour change at all.
+///
+/// `row_height` is the caller's uniform row height in its native unit
+/// (`1.0` on TUI, `line_height` on pixel backends). Content with
+/// per-row-varying heights (`measure_item` returning different values)
+/// should pass a representative row height — the same approximation
+/// `vscrollbar`/`hscrollbar` already make for thumb sizing — so the
+/// conversion is exact for uniform-height content and approximate
+/// otherwise.
+///
+/// The returned `sub_row_px` is always `0.0` when the resolved row is
+/// clamped to the content's last reachable offset (nothing left to
+/// partially scroll past) — a TUI rasteriser that only reads the row
+/// index and never this remainder gets the pre-existing whole-row
+/// behaviour "for free": `scroll_px` degrades to row-quantised there,
+/// rather than breaking.
+pub fn resolve_scroll_px(
+    scroll_offset: usize,
+    scroll_px: Option<f32>,
+    content_len: usize,
+    row_height: f32,
+) -> (usize, f32) {
+    let px = match scroll_px {
+        Some(px) if px.is_finite() && px >= 0.0 && row_height.is_finite() && row_height > 0.0 => px,
+        _ => return (clamp_scroll_offset(scroll_offset, content_len), 0.0),
+    };
+    let row = (px / row_height).floor();
+    let row_idx = if row.is_finite() && row > 0.0 {
+        row as usize
+    } else {
+        0
+    };
+    let clamped = clamp_scroll_offset(row_idx, content_len);
+    if clamped == row_idx {
+        (clamped, (px - clamped as f32 * row_height).max(0.0))
+    } else {
+        (clamped, 0.0)
+    }
+}
+
 /// Continuous counterpart of [`scroll_by_clamped`]: clamp
 /// `current + delta` into `[0.0, max]` without quantising to whole rows.
 ///
@@ -906,6 +954,46 @@ mod tests {
     fn clamp_scroll_offset_single_item() {
         assert_eq!(clamp_scroll_offset(0, 1), 0);
         assert_eq!(clamp_scroll_offset(50, 1), 0);
+    }
+
+    #[test]
+    fn resolve_scroll_px_none_falls_back_to_scroll_offset() {
+        assert_eq!(resolve_scroll_px(3, None, 10, 22.0), (3, 0.0));
+    }
+
+    #[test]
+    fn resolve_scroll_px_sub_row_remainder_on_a_pixel_surface() {
+        // 1.5 rows deep into 22px rows: row 1, 11px leftover for a GUI
+        // painter to clip off the top of the first visible row.
+        let (row, sub) = resolve_scroll_px(0, Some(33.0), 50, 22.0);
+        assert_eq!(row, 1);
+        assert!((sub - 11.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolve_scroll_px_quantises_to_whole_rows_on_tui() {
+        // row_height == 1.0 cell: fractional pixels still resolve to a
+        // whole row index with the TUI rasteriser never reading `sub`.
+        let (row, sub) = resolve_scroll_px(0, Some(3.7), 50, 1.0);
+        assert_eq!(row, 3);
+        assert!((sub - 0.7).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolve_scroll_px_clamped_at_end_has_no_remainder() {
+        // Scrolled past the last reachable row: clamp like
+        // `clamp_scroll_offset`, with no partial row left to show.
+        let (row, sub) = resolve_scroll_px(0, Some(10_000.0), 5, 22.0);
+        assert_eq!(row, 4);
+        assert_eq!(sub, 0.0);
+    }
+
+    #[test]
+    fn resolve_scroll_px_non_finite_or_non_positive_row_height_falls_back() {
+        assert_eq!(resolve_scroll_px(2, Some(50.0), 10, 0.0), (2, 0.0));
+        assert_eq!(resolve_scroll_px(2, Some(50.0), 10, -1.0), (2, 0.0));
+        assert_eq!(resolve_scroll_px(2, Some(f32::NAN), 10, 22.0), (2, 0.0));
+        assert_eq!(resolve_scroll_px(2, Some(-5.0), 10, 22.0), (2, 0.0));
     }
 
     #[test]
