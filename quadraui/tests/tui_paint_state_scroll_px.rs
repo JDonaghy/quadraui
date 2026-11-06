@@ -14,7 +14,7 @@ use quadraui::tui::testing::TuiDriver;
 use quadraui::{
     scroll_by_clamped_f32, wheel_delta, AppLogic, Backend, Column, ColumnAlign, ColumnWidth,
     DataRow, DataTable, DataTablePaintState, Decoration, ListItem, ListPaintState, ListView,
-    Reaction, Rect, StyledText, TreeController, TreePath, TreeRow, UiEvent, WidgetId,
+    Reaction, Rect, StyledText, TreeController, TreeRow, UiEvent, WidgetId,
 };
 
 const VIEWPORT: Rect = Rect {
@@ -124,7 +124,7 @@ fn list_scroll_px_accumulates_sub_row_then_quantises_on_tui() {
 fn tree_rows(n: usize) -> Vec<TreeRow> {
     (0..n)
         .map(|i| TreeRow {
-            path: vec![i as u16] as TreePath,
+            path: vec![i as u16],
             indent: 0,
             icon: None,
             text: StyledText::plain(format!("Node {i:02}")),
@@ -183,6 +183,16 @@ fn tree_controller_scroll_px_accumulates_sub_row_then_quantises_on_tui() {
         driver.screen_contains("Node 00"),
         "sub-row scroll_px must not have scrolled the painted row yet:\n{}",
         driver.screen()
+    );
+    // `scroll_px` is 0.8 here — its fractional part is >= 0.5, exactly
+    // the case where a `.round()`-based `scroll_offset` would disagree
+    // with the `.floor()`-based painted row. `scroll_offset()` must
+    // still floor to the row actually painted above (`Node 00`, row 0),
+    // not round up to row 1.
+    assert_eq!(
+        driver.app().controller.scroll_offset(),
+        0,
+        "scroll_offset must floor-agree with the painted first row, not round up"
     );
 
     // A fifth gesture crosses the boundary; TUI paints the quantised

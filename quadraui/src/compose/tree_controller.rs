@@ -24,7 +24,7 @@
 //! offset). Backends normalise their native direction before emitting.
 
 use crate::primitives::scrollbar::{
-    scroll_by_clamped, scroll_by_clamped_f32, scroll_rows, wheel_delta, PressZone, ThumbDrag,
+    scroll_by_clamped, scroll_by_clamped_f32, scroll_rows_floor, wheel_delta, PressZone, ThumbDrag,
 };
 use crate::text_util::{next_char_boundary, prev_char_boundary, snap_to_char_boundary};
 use crate::{
@@ -923,7 +923,12 @@ impl TreeController {
         let delta_px = wheel_delta(row_delta, row_height);
         let new_px = scroll_by_clamped_f32(current_px, delta_px, max_px);
         self.scroll_px = Some(new_px);
-        self.scroll_offset = scroll_rows(new_px / row_height).min(max_offset);
+        // `scroll_rows_floor` here must agree with `resolve_scroll_px`'s
+        // own floor — rounding instead would desync `scroll_offset` (used
+        // for hit-testing and `ensure_visible`) from the row the paint
+        // path actually starts painting from whenever the fractional part
+        // of `new_px / row_height` is >= 0.5.
+        self.scroll_offset = scroll_rows_floor(new_px, row_height).min(max_offset);
     }
 
     fn viewport_rows(&self, backend: &dyn Backend, rect: Rect) -> usize {

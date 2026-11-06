@@ -221,10 +221,10 @@ fn draw_data_table_inner(
     }
 
     // ── Body rows ─────────────────────────────────────────────────────
-    // Deprecate-first: `scroll_px` wins over `scroll_offset` when set,
-    // quantised to a whole row here — TUI is cell-granular, so the
-    // sub-row remainder `effective_scroll_offset` leaves on the table
-    // floor's picture is simply never read.
+    // `scroll_px` wins over `scroll_offset` when set, quantised to a
+    // whole row here — TUI is cell-granular, so the sub-row remainder
+    // `scroll_sub_row_px` pairs with `effective_scroll_offset` for a
+    // pixel-precise painter is simply never read on this backend.
     let scroll_offset = table.effective_scroll_offset(layout.row_height, scroll_px);
     let body_y = area.y + 1;
     let visible = layout
@@ -958,7 +958,7 @@ mod tests {
         }
     }
 
-    /// `scroll_px` wins over `scroll_offset` (deprecate-first), but on
+    /// `scroll_px` wins over `scroll_offset`, but on
     /// TUI's cell grid (`row_height == 1.0`) it quantises to the same
     /// whole row a GUI backend's sub-row remainder would float between
     /// — the "TUI quantises scroll_px to whole rows" half of the

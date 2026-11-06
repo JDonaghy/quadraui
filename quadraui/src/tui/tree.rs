@@ -869,7 +869,7 @@ mod tests {
         );
     }
 
-    /// `scroll_px` wins over `scroll_offset` (deprecate-first), but on
+    /// `scroll_px` wins over `scroll_offset`, but on
     /// TUI's cell grid (`row_height == 1.0`) it quantises to the same
     /// whole row a GUI backend's sub-row remainder would float between
     /// — the "TUI quantises scroll_px to whole rows" half of the

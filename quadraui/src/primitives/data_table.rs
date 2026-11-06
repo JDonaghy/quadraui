@@ -756,13 +756,24 @@ impl DataTable {
     /// pre-existing whole-row behaviour of reading `self.scroll_offset`
     /// directly.
     pub fn effective_scroll_offset(&self, row_height: f32, scroll_px: Option<f32>) -> usize {
-        crate::primitives::scrollbar::resolve_scroll_px(
-            self.scroll_offset,
-            scroll_px,
-            self.rows.len(),
-            row_height,
-        )
-        .0
+        match scroll_px {
+            // `scroll_px: None` reads `self.scroll_offset` raw, unclamped
+            // — bit-for-bit the pre-existing behaviour a stale
+            // out-of-range offset relied on (an empty visible window
+            // rather than snapping to the last row). Only the `Some`
+            // path goes through `resolve_scroll_px`'s clamp, since
+            // that's the new behaviour this type introduces.
+            None => self.scroll_offset,
+            Some(_) => {
+                crate::primitives::scrollbar::resolve_scroll_px(
+                    self.scroll_offset,
+                    scroll_px,
+                    self.rows.len(),
+                    row_height,
+                )
+                .0
+            }
+        }
     }
 
     /// Sub-row pixel remainder paired with [`Self::effective_scroll_offset`]
@@ -770,13 +781,18 @@ impl DataTable {
     /// never reads this gets exactly the pre-existing whole-row
     /// behaviour.
     pub fn scroll_sub_row_px(&self, row_height: f32, scroll_px: Option<f32>) -> f32 {
-        crate::primitives::scrollbar::resolve_scroll_px(
-            self.scroll_offset,
-            scroll_px,
-            self.rows.len(),
-            row_height,
-        )
-        .1
+        match scroll_px {
+            None => 0.0,
+            Some(_) => {
+                crate::primitives::scrollbar::resolve_scroll_px(
+                    self.scroll_offset,
+                    scroll_px,
+                    self.rows.len(),
+                    row_height,
+                )
+                .1
+            }
+        }
     }
 }
 

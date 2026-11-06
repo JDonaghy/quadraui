@@ -316,6 +316,14 @@ pub struct LayoutSplitTree {
 pub struct LayoutLeaf {
     pub id: String,
     pub descriptor: LeafDescriptor,
+    /// Optional pixel-precise scroll position lifted out of this leaf's
+    /// raw `"list"`/`"tree"`/`"data_table"` descriptor dict by
+    /// [`crate::scroll_px_from_value`] — `None` unless the dict set a
+    /// numeric `"scroll_px"` key, and always `None` for a `descriptor`
+    /// that isn't one of those three kinds. [`crate::render::paint_leaf`]
+    /// passes it to the matching `Backend::draw_*_with_state`; a dict
+    /// that never sets the key paints exactly as before.
+    pub scroll_px: Option<f32>,
 }
 
 /// The decoded descriptor carried by a [`LayoutLeaf`] — one variant per

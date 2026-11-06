@@ -864,6 +864,11 @@ fn layout_leaf_from_value(what: &str, value: &Value) -> Result<LayoutLeaf, Decod
     };
 
     let mut found: Option<LeafDescriptor> = None;
+    // Set alongside `found` only for the three scrollable kinds —
+    // `scroll_px_from_value` reads the same leaf dict `decode_value` just
+    // decoded a typed descriptor from, so it stays `None` for every other
+    // kind (and whenever the dict never sets the key).
+    let mut scroll_px: Option<f32> = None;
     for key in LEAF_KIND_KEYS {
         let Some(v) = obj_get(value, key) else {
             continue;
@@ -877,9 +882,18 @@ fn layout_leaf_from_value(what: &str, value: &Value) -> Result<LayoutLeaf, Decod
         found = Some(match key {
             "button" => LeafDescriptor::Button(decode_value(what, value_dict)?),
             "text_display" => LeafDescriptor::TextDisplay(decode_value(what, value_dict)?),
-            "list" => LeafDescriptor::List(decode_value(what, value_dict)?),
-            "tree" => LeafDescriptor::Tree(decode_value(what, value_dict)?),
-            "data_table" => LeafDescriptor::DataTable(decode_value(what, value_dict)?),
+            "list" => {
+                scroll_px = crate::scroll_px_from_value(v);
+                LeafDescriptor::List(decode_value(what, value_dict)?)
+            }
+            "tree" => {
+                scroll_px = crate::scroll_px_from_value(v);
+                LeafDescriptor::Tree(decode_value(what, value_dict)?)
+            }
+            "data_table" => {
+                scroll_px = crate::scroll_px_from_value(v);
+                LeafDescriptor::DataTable(decode_value(what, value_dict)?)
+            }
             "tab_bar" => LeafDescriptor::TabBar(decode_value(what, value_dict)?),
             _ => unreachable!("LEAF_KIND_KEYS is exhaustive"),
         });
@@ -910,7 +924,11 @@ fn layout_leaf_from_value(what: &str, value: &Value) -> Result<LayoutLeaf, Decod
         ))
     })?;
 
-    Ok(LayoutLeaf { id, descriptor })
+    Ok(LayoutLeaf {
+        id,
+        descriptor,
+        scroll_px,
+    })
 }
 
 // ─── Render output (flat frame vs. layout tree) ────────────────────────────
@@ -1012,6 +1030,9 @@ pub(crate) fn render_frame_from_value(
             extra.insert(kind.to_string(), v);
         }
     }
+    let list_scroll_px = obj_get(value, "list").and_then(crate::scroll_px_from_value);
+    let tree_scroll_px = obj_get(value, "tree").and_then(crate::scroll_px_from_value);
+    let data_table_scroll_px = obj_get(value, "data_table").and_then(crate::scroll_px_from_value);
     Ok(RenderFrame {
         button: slot_entry(what, value, "button")?,
         text_display: slot_entry(what, value, "text_display")?,
@@ -1020,6 +1041,9 @@ pub(crate) fn render_frame_from_value(
         data_table: slot_entry(what, value, "data_table")?,
         tab_bar: slot_entry(what, value, "tab_bar")?,
         extra,
+        list_scroll_px,
+        tree_scroll_px,
+        data_table_scroll_px,
     })
 }
 

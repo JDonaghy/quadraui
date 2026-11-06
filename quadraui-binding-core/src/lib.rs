@@ -97,12 +97,14 @@ pub use wire::{
 ///
 /// `scroll_px` is **not** a field [`wire::decode_layout_node`] (or any
 /// `ListView`/`TreeView`/`DataTable` decoder) reads — those types have
-/// no such field, by design (see `quadraui`'s `CHANGELOG.md` "A3c-seam"
-/// entry). This function instead reads the key directly out of the raw
-/// `serde_json::Value` a binding already holds before/alongside
-/// decoding, so a descriptor dict that sets `"scroll_px"` doesn't need
-/// a Rust struct field to carry it, and a dict that never sets it is
-/// completely unaffected (`None`, same as if the key didn't exist).
+/// no such field, by design (see `quadraui`'s `CHANGELOG.md`
+/// `[Unreleased]` → `Added` entry for `ListPaintState`/`TreePaintState`/
+/// `DataTablePaintState`). This function instead reads the key directly
+/// out of the raw `serde_json::Value` a binding already holds
+/// before/alongside decoding, so a descriptor dict that sets
+/// `"scroll_px"` doesn't need a Rust struct field to carry it, and a
+/// dict that never sets it is completely unaffected (`None`, same as
+/// if the key didn't exist).
 ///
 /// Returns `None` when the key is absent, not a JSON number, or the
 /// value isn't a plain object — never an error: a malformed or missing
