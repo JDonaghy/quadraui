@@ -3261,10 +3261,11 @@ impl Backend for MacBackend {
         // disagree with the glyphs they sit between. Same hazard
         // `Self::list_char_width`'s doc documents for `draw_list`.
         let theme = self.current_theme;
+        let style = self.style();
         let line_height = self.chrome_line_height as f32;
         let char_width = self.chrome_char_width as f32;
         let layout = super::text_input::mac_text_input_layout(ti, rect, line_height, char_width);
-        crate::primitives::text_input::paint(ti, &layout, self, &theme);
+        crate::primitives::text_input::paint(ti, &layout, self, &theme, &style);
         layout
     }
     fn text_input_layout(
@@ -8045,6 +8046,77 @@ mod tests {
             (r, g, b),
             (theme.cursor.r, theme.cursor.g, theme.cursor.b),
             "expected the insert cursor to paint at cursor_bounds in theme.cursor",
+        );
+    }
+
+    /// Focus-visible ring: present after `TextInput::has_focus` is set
+    /// the way Tab-focus composes it (`ring.is_focused(id) &&
+    /// ring.is_focus_visible()`, see `TextInput::has_focus`'s own doc),
+    /// absent after a click — which, same convention as `Button::focused`,
+    /// the caller composes as `has_focus = false` before the click's
+    /// paint (VS Code's `:focus-visible` suppression; `TextInput` itself
+    /// carries no "how did focus arrive" state). Samples a pixel in the
+    /// outset gap `crate::primitives::button::native_surface_paint::
+    /// focus_ring_geometry` resolves — strictly outside the stroked
+    /// border, so it can only be non-background if the ring itself
+    /// painted there.
+    #[test]
+    fn mac_backend_draw_text_input_paints_focus_ring_after_tab_not_after_click() {
+        use super::super::headless::BitmapSurface;
+        use crate::primitives::button::native_surface_paint::focus_ring_geometry;
+        use crate::primitives::text_input::TextInput;
+
+        const W: u32 = 200;
+        const H: u32 = 60;
+
+        let rect = Rect::new(20.0, 20.0, 160.0, 20.0);
+        let theme = Theme::default();
+        let style = crate::Style::default();
+        let ring = focus_ring_geometry(rect, &style);
+        // Mid-point of the ring's top edge: strictly outside `rect`
+        // (the gap), so untouched by `TextInput`'s own fill/border.
+        let probe_x = (ring.rect.x + ring.rect.width / 2.0) as u32;
+        let probe_y = ring.rect.y as u32;
+
+        let paint_and_sample = |has_focus: bool| -> (u8, u8, u8, u8) {
+            let surface = BitmapSurface::new(W, H);
+            let mut backend = MacBackend::new();
+            backend.set_current_font(font());
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+            let mut ti = TextInput::new(WidgetId::new("focus-ring"));
+            ti.lines = vec!["hello".to_string()];
+            ti.has_focus = has_focus;
+
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                b.draw_text_input(rect, &ti);
+            });
+            backend.end_frame();
+            surface.pixel(probe_x, probe_y)
+        };
+
+        let (r, g, b, _a) = paint_and_sample(true);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "expected the focus-visible ring to paint in theme.focus_ring_color() in \
+             the outset gap after Tab focus (has_focus = true)",
+        );
+
+        let (r, g, b, _a) = paint_and_sample(false);
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "expected no focus-visible ring in the outset gap after a click \
+             (has_focus = false)",
         );
     }
 
