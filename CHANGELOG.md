@@ -148,6 +148,12 @@ only a push to `main` runs this workflow.
   inset) — tab widths and hit rects grow to match, mirroring
   `row_padding_x`'s treatment in the shared list/tree/menu/palette painter.
   `bar.compact` keeps its own fixed 2px inset, unaffected by this token.
+- Win-GUI `TabBar` painter (`win::tab_bar`) now insets a tab's label, icon
+  and close/dirty glyph from the tab edge by `Style::tab_padding_x` instead
+  of a fixed 14px literal (default style value: 10px, VS Code's own tab
+  inset), threaded through `WinBackend::current_style` the same way
+  `row_padding_x` already reaches `win::list`/`win::tree`. Tab slot widths
+  and hit rects grow to match, mirroring the macOS/GTK treatment above.
 - GTK `DataTable` header, body and footer cells too wide for their column
   now ellipsis-truncate via the shared `fit_text_prefix` (Pango-measured),
   matching every other backend's `native_surface_paint`, instead of
