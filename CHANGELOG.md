@@ -68,7 +68,12 @@ only a push to `main` runs this workflow.
   (`ListViewLayout::scroll_sub_px`/`TreeViewLayout::scroll_sub_px`) so a
   GUI painter shows a partially clipped first row; `DataTable::
   effective_scroll_offset`/`scroll_sub_row_px` expose the same resolution
-  for backends that slice rows at paint time instead. A TUI rasteriser
+  for backends that slice rows at paint time instead — the shared
+  `primitives::data_table::native_surface_paint::paint_with_glyphs`
+  (backing both `macos::data_table` and `win::data_table` directly) and
+  GTK's/TUI's own body-row loops all resolve through one of those two
+  paths, so every backend honours `scroll_px` rather than only the two
+  that paint it explicitly. A TUI rasteriser
   that never reads the sub-row remainder gets exactly the pre-existing
   whole-row behaviour — `scroll_px` degrades to row-quantised there, never
   breaks. `TreeController` accumulates fractional wheel/trackpad deltas

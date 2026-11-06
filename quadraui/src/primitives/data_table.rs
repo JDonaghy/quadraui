@@ -1180,13 +1180,19 @@ pub(crate) mod native_surface_paint {
         }
 
         // ── Body ─────────────────────────────────────────────────────────
+        // Deprecate-first: `scroll_px` wins over `scroll_offset` when
+        // set, quantised to a whole row here. This shared surface
+        // painter backs both `macos::data_table` and `win::data_table`,
+        // so resolving it once here gives both backends `scroll_px`
+        // support identical to GTK's and TUI's own paint paths.
+        let scroll_offset = table.effective_scroll_offset(line_height);
         let body_y = rect.y + header_height;
         let visible = layout
             .visible_rows
-            .min(table.rows.len().saturating_sub(table.scroll_offset));
+            .min(table.rows.len().saturating_sub(scroll_offset));
 
         for row_idx in 0..visible {
-            let abs_idx = table.scroll_offset + row_idx;
+            let abs_idx = scroll_offset + row_idx;
             let row = &table.rows[abs_idx];
             let row_y = body_y + row_idx as f32 * line_height;
             let is_selected = table.selected_idx == Some(abs_idx);
@@ -1315,7 +1321,7 @@ pub(crate) mod native_surface_paint {
             let sb = Scrollbar::vertical(
                 table.id,
                 track,
-                table.scroll_offset as f32,
+                scroll_offset as f32,
                 table.rows.len() as f32,
                 layout.visible_rows as f32,
                 line_height,
@@ -1543,6 +1549,40 @@ pub(crate) mod native_surface_paint {
             // Body cell text via plain (non-bold) runs.
             assert!(surface.text_runs.iter().any(|r| r.1 == "alpha"));
             assert!(surface.text_runs.iter().any(|r| r.1 == "beta"));
+        }
+
+        /// Deprecate-first: `scroll_px` wins over `scroll_offset` on the
+        /// shared [`PaintSurface`] painter that backs `macos::data_table`
+        /// and `win::data_table` directly — unlike GTK/TUI, which each
+        /// paint their own body-row loop, those two never resolve
+        /// `scroll_px` unless this shared function does. A 16px row
+        /// height puts `scroll_px: Some(20.0)` 1.25 rows deep, floored to
+        /// row 1 — the same row a whole-row `scroll_offset: 1` paints.
+        #[test]
+        fn scroll_px_resolves_the_same_body_row_as_scroll_offset() {
+            let mut table = two_col_table();
+            table.rows.push(DataRow {
+                cells: vec![StyledText::plain("gamma"), StyledText::plain("3")],
+                decoration: Decoration::Normal,
+            });
+            let theme = Theme::default();
+            let rect = Rect::new(0.0, 0.0, 200.0, 48.0);
+
+            table.scroll_px = Some(20.0);
+            let mut via_px = RecordingSurface::default();
+            paint(&table, &mut via_px, &theme, rect, 16.0, None);
+            assert!(via_px.text_runs.iter().any(|r| r.1 == "beta"));
+            assert!(!via_px.text_runs.iter().any(|r| r.1 == "alpha"));
+
+            table.scroll_px = None;
+            table.scroll_offset = 1;
+            let mut via_offset = RecordingSurface::default();
+            paint(&table, &mut via_offset, &theme, rect, 16.0, None);
+            assert_eq!(
+                via_px.text_runs, via_offset.text_runs,
+                "scroll_px=20.0 at a 16px row height must resolve to the same visible rows as \
+                 scroll_offset=1"
+            );
         }
 
         /// Cross-backend parity: the sorted column's title
