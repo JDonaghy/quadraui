@@ -362,7 +362,7 @@ pub enum ButtonEvent {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{Button, ButtonLayout, ButtonVariant};
+    use super::{Button, ButtonIconPosition, ButtonLayout, ButtonVariant};
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
@@ -498,13 +498,87 @@ pub(crate) mod native_surface_paint {
             );
         }
 
-        if !button.label.is_empty() {
+        if !button.label.is_empty() || button.icon.is_some() {
             let fg = if button.disabled {
                 theme.muted_fg
             } else {
                 theme.foreground
             };
-            surface.surface_draw_text_run(rect, &button.label, fg);
+
+            // The icon glyph, measured against the surface's current
+            // font, alongside its own paint width/height. GUI backends
+            // always carry the bundled codicon font (see
+            // `MacBackend`/`GtkBackend`/`WinBackend`'s own
+            // `nerd_fonts_enabled` field doc), so `Icon::glyph` always
+            // renders here — unlike TUI's `Icon::fallback` escape hatch
+            // for a terminal with no such font installed.
+            let icon_metrics = button.icon.as_ref().map(|icon| {
+                let (w, h) = surface.surface_measure_text(&icon.glyph);
+                (icon, w, h)
+            });
+            let (label_w, label_h) = if button.label.is_empty() {
+                (0.0, 0.0)
+            } else {
+                surface.surface_measure_text(&button.label)
+            };
+            let icon_w = icon_metrics.as_ref().map_or(0.0, |(_, w, _)| *w);
+            let icon_h = icon_metrics.as_ref().map_or(0.0, |(_, _, h)| *h);
+            let gap = if icon_metrics.is_some() && !button.label.is_empty() {
+                button.icon_gap
+            } else {
+                0.0
+            };
+            let content_w = icon_w + gap + label_w;
+            let content_h = icon_h.max(label_h);
+
+            // Centre the icon+label block horizontally, but never closer
+            // to `rect`'s own edge than `style.padding` —
+            // `ButtonMetrics::padding_x`'s own source, the same
+            // inner-spacing token `Toast`/`Tooltip`/`ContextMenu`/
+            // `Palette`/`Dialog` already read off `Style::padding`.
+            let centered_x = rect.x + ((rect.width - content_w) / 2.0).max(style.padding);
+            let text_y = rect.y + ((rect.height - content_h) / 2.0).max(0.0);
+            let mut x = centered_x;
+
+            match (icon_metrics, button.icon_position) {
+                (Some((icon, w, _)), ButtonIconPosition::Leading) => {
+                    surface.surface_draw_text_run(
+                        Rect::new(x, text_y, w, content_h),
+                        &icon.glyph,
+                        icon.color.unwrap_or(fg),
+                    );
+                    x += w + gap;
+                    if !button.label.is_empty() {
+                        surface.surface_draw_text_run(
+                            Rect::new(x, text_y, label_w, content_h),
+                            &button.label,
+                            fg,
+                        );
+                    }
+                }
+                (Some((icon, w, _)), ButtonIconPosition::Trailing) => {
+                    if !button.label.is_empty() {
+                        surface.surface_draw_text_run(
+                            Rect::new(x, text_y, label_w, content_h),
+                            &button.label,
+                            fg,
+                        );
+                        x += label_w + gap;
+                    }
+                    surface.surface_draw_text_run(
+                        Rect::new(x, text_y, w, content_h),
+                        &icon.glyph,
+                        icon.color.unwrap_or(fg),
+                    );
+                }
+                (None, _) => {
+                    surface.surface_draw_text_run(
+                        Rect::new(x, text_y, label_w, content_h),
+                        &button.label,
+                        fg,
+                    );
+                }
+            }
         }
 
         layout
