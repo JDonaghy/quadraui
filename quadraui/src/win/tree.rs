@@ -761,13 +761,29 @@ mod tests {
         let px = surface.pixel_at(probe_x, probe_y);
         // Not hovered/dragging: track_alpha = 0.20 (see the shared `paint`).
         let expected_color = expected_alpha_blend(theme.tab_bar_bg, theme.scrollbar_track, 0.20);
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (expected_color.r, expected_color.g, expected_color.b),
+        // Direct2D's blend quantises to 8-bit channels with its own
+        // rounding, so a channel may land one level off the f32 reference
+        // (e.g. 26.4 → 27). One level is far inside the 4–5 level gap
+        // between the blended track and plain `tab_bar_bg`, so the probe
+        // still distinguishes "track" from "background" unambiguously.
+        const BLEND_TOLERANCE: i32 = 1;
+        let within = |got: u8, want: u8| (got as i32 - want as i32).abs() <= BLEND_TOLERANCE;
+        assert!(
+            within(px.r, expected_color.r)
+                && within(px.g, expected_color.g)
+                && within(px.b, expected_color.b),
             "expected the 24px-wide v-scrollbar track's leading edge at \
              ({probe_x}, {probe_y}) to be painted the track colour blended \
-             over tab_bar_bg — a fixed 10px-wide track would have left this \
-             region as plain background instead"
+             over tab_bar_bg (~{:?}), got {:?} — a fixed 10px-wide track \
+             would have left this region as plain background instead",
+            (expected_color.r, expected_color.g, expected_color.b),
+            (px.r, px.g, px.b),
+        );
+        assert_ne!(
+            (px.r, px.g, px.b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "the probe at ({probe_x}, {probe_y}) is plain tab_bar_bg — no \
+             v-scrollbar track was painted there"
         );
     }
 
