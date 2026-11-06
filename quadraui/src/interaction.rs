@@ -53,11 +53,11 @@
 //!
 //! - `draw_activity_bar(.., hovered_idx: Option<usize>)`
 //! - `draw_tab_bar(.., hovered_close_tab: Option<usize>)`, and its
-//!   `hovered_tab: Option<usize>`-carrying twins
-//!   [`crate::Backend::draw_tab_bar_with_state`] /
+//!   `hovered_tab: Option<usize>`/`pressed_tab: Option<usize>`-carrying
+//!   twins [`crate::Backend::draw_tab_bar_with_state`] /
 //!   [`crate::Backend::draw_tab_bar_layout_with_state`] — `TabItem`
 //!   carries no [`WidgetId`] of its own, only `TabBar::id` (one per
-//!   *bar*), which can't name which tab is hovered
+//!   *bar*), which can't name which tab is hovered or pressed
 //! - `draw_data_table(.., hovered_idx: Option<usize>)`
 //! - `draw_chart(.., hovered_point: Option<(usize, usize)>)`
 //! - [`crate::Backend::draw_list_with_state`] /

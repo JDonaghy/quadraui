@@ -155,12 +155,13 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        // `hovered_tab`-carrying counterpart to `draw_tab_bar`. Names
-        // tab 0 (the only tab) as hovered so a backend that honours the
-        // seam takes its hover branch rather than only the untinted
-        // path; the label must still reach the frame either way.
-        // Index-keyed like `hovered_close_tab`, not `InteractionState`
-        // — see `draw_tab_bar_with_state`'s own doc for why.
+        // `hovered_tab`/`pressed_tab`-carrying counterpart to
+        // `draw_tab_bar`. Names tab 0 (the only tab) as hovered so a
+        // backend that honours the seam takes its hover branch rather
+        // than only the untinted path; the label must still reach the
+        // frame either way. Index-keyed like `hovered_close_tab`, not
+        // `InteractionState` — see `draw_tab_bar_with_state`'s own doc
+        // for why.
         method: "draw_tab_bar_with_state",
         needle: Some("c0tabsstate"),
         paint: |b, area| {
@@ -180,8 +181,13 @@ pub const CASES: &[Case] = &[
                 show_tab_close: false,
                 compact: false,
             };
-            let _ =
-                b.draw_tab_bar_with_state(Rect::new(0.0, 0.0, area.width, lh), &bar, None, Some(0));
+            let _ = b.draw_tab_bar_with_state(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &bar,
+                None,
+                Some(0),
+                None,
+            );
         },
     },
     Case {
@@ -302,6 +308,7 @@ pub const CASES: &[Case] = &[
                 &bar,
                 None,
                 Some(0),
+                None,
             );
         },
     },

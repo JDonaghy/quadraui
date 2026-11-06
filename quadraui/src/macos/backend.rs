@@ -2941,6 +2941,8 @@ impl Backend for MacBackend {
                 &[],
                 glyphs,
                 self.nerd_fonts_enabled,
+                None,
+                None,
             );
             CGContextRestoreGState(ctx);
             crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
@@ -3017,6 +3019,121 @@ impl Backend for MacBackend {
             rect.height as f64,
             bar,
             icons,
+            &self.current_style,
+        )
+    }
+    /// [`Self::draw_tab_bar_icons`], plus `hovered_tab`/`pressed_tab`
+    /// indices naming the whole tab (not its close glyph) the mouse is
+    /// over/held down on. Paints a tinted background behind the hovered
+    /// or pressed tab — `Theme::list_hover_bg`/`list_pressed_bg`, the
+    /// same derivation [`super::tab_bar::draw_tab_bar_icons_with_glyphs`]'s
+    /// own doc explains — rather than only tinting the close glyph the
+    /// way [`Self::draw_tab_bar`] already does.
+    ///
+    /// Calls [`super::tab_bar::draw_tab_bar_icons_with_glyphs`] directly
+    /// (icon-less, glyph-less) instead of widening [`Self::draw_tab_bar_icons`]'s
+    /// own signature — the same choice [`Self::draw_tab_bar_with_chrome_and_glyphs`]
+    /// already makes to reach the same painter.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits`
+    fn draw_tab_bar_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> TabBarHits {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_tab_bar_with_state called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.chrome_line_height;
+        // SAFETY: `ctx` is non-null inside the frame scope. See
+        // `Self::draw_tab_bar_icons`'s doc for the CTM-translate /
+        // hit-shift dance this mirrors.
+        unsafe {
+            CGContextSaveGState(ctx);
+            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
+            let mut hits = super::tab_bar::draw_tab_bar_icons_with_glyphs(
+                ctx,
+                font,
+                rect.width as f64,
+                line_height,
+                rect.y as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+                &self.current_style,
+                hovered_close_tab,
+                &[],
+                None,
+                self.nerd_fonts_enabled,
+                hovered_tab,
+                pressed_tab,
+            );
+            CGContextRestoreGState(ctx);
+            crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
+            hits
+        }
+    }
+    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar_with_state`]
+    /// — the twin the `quadraui-binding-core` paint path can actually
+    /// reach, since it calls `draw_tab_bar_layout`, never the deprecated
+    /// `draw_tab_bar`. Same hover/pressed tint as
+    /// [`Self::draw_tab_bar_with_state`]; only the returned type differs.
+    fn draw_tab_bar_layout_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> TabBarLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_tab_bar_layout_with_state called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.chrome_line_height;
+        // SAFETY: `ctx` is non-null inside the frame scope. Same X-only
+        // CTM translate as `Self::draw_tab_bar_icons` above — this call
+        // discards the painted `TabBarHits` anyway, so there is no
+        // return value left to shift; only the ink needs to land at
+        // `rect.x`.
+        #[allow(deprecated)] // discarded `TabBarHits`
+        unsafe {
+            CGContextSaveGState(ctx);
+            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
+            let _ = super::tab_bar::draw_tab_bar_icons_with_glyphs(
+                ctx,
+                font,
+                rect.width as f64,
+                line_height,
+                rect.y as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+                &self.current_style,
+                hovered_close_tab,
+                &[],
+                None,
+                self.nerd_fonts_enabled,
+                hovered_tab,
+                pressed_tab,
+            );
+            CGContextRestoreGState(ctx);
+        }
+        super::tab_bar::mac_tab_bar_native_layout_icons(
+            font,
+            rect.width as f64,
+            rect.height as f64,
+            bar,
+            &[],
             &self.current_style,
         )
     }

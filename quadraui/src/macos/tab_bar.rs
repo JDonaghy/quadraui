@@ -599,12 +599,17 @@ pub unsafe fn draw_tab_bar_icons(
         icons,
         None,
         false,
+        None,
+        None,
     )
 }
 
 /// [`draw_tab_bar_icons`], but honouring an optional [`TabBarGlyphs`]
 /// override for the close/dirty mark — `glyphs: None` reproduces
-/// [`draw_tab_bar_icons`] exactly.
+/// [`draw_tab_bar_icons`] exactly. `hovered_tab`/`pressed_tab` name the
+/// whole tab (not its close glyph) the mouse is over/held down on —
+/// `None`/`None` paints every tab's resting background, same as
+/// [`draw_tab_bar_icons`].
 ///
 /// # Safety
 ///
@@ -627,6 +632,8 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
     icons: &[Option<TabIcon>],
     glyphs: Option<&TabBarGlyphs>,
     nerd_fonts_enabled: bool,
+    hovered_tab: Option<usize>,
+    pressed_tab: Option<usize>,
 ) -> TabBarHits {
     let text_y_offset = y_offset + (row_height - line_height) / 2.0;
     let tab_pad = if bar.compact {
@@ -693,6 +700,28 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
         let (slot_x, slot_end) = hits.slot_positions[tab_idx];
         let tab_content_w = slot_end - slot_x - tab_outer_gap;
 
+        // Whole-tab hover/pressed tint, independent of `is_close_hovered`
+        // below (which only tints the close glyph itself). Reuses
+        // `Theme::list_hover_bg`/`list_pressed_bg` — the same "blend the
+        // row's own resting background toward `foreground`" derivation
+        // `menu_item_hover_bg`/`menu_item_pressed_bg` already reuse for a
+        // popup-menu row — rather than growing a dedicated
+        // `tab_hover_bg`/`tab_pressed_bg` accessor, since a tab strip is
+        // the same flat "row under the cursor" shape. Pressed wins over
+        // hovered, matching every other `_with_state` painter in this
+        // module's sibling seams (toolbar, status bar, menu/context-menu).
+        let is_tab_pressed = pressed_tab == Some(tab_idx);
+        let is_tab_hovered = hovered_tab == Some(tab_idx);
+        let tint = |base: crate::types::Color| -> crate::types::Color {
+            if is_tab_pressed {
+                theme.list_pressed_bg(base)
+            } else if is_tab_hovered {
+                theme.list_hover_bg(base)
+            } else {
+                base
+            }
+        };
+
         // Tab background. The active tab paints the inset, rounded chip
         // computed above (VS Code's pill, matching `gtk::tab_bar`'s
         // `TAB_CHIP_INSET_Y` / `TAB_CHIP_RADIUS` — the same active-tab
@@ -713,7 +742,7 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
                         chip_h as f32,
                     ),
                     TAB_CHIP_RADIUS as f32,
-                    theme.tab_active_bg,
+                    tint(theme.tab_active_bg),
                 );
             }
         } else {
@@ -723,7 +752,7 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
                 y_offset,
                 tab_content_w,
                 row_height,
-                theme.tab_bar_bg,
+                tint(theme.tab_bar_bg),
             );
         }
 
@@ -1258,6 +1287,124 @@ mod tests {
         );
         assert!(hits.slot_positions.is_empty());
         assert!(hits.close_bounds.is_empty());
+    }
+
+    /// Like [`paint_via_backend`], but through
+    /// `MacBackend::draw_tab_bar_with_state` so a test can probe the
+    /// whole-tab hover/pressed treatment.
+    #[allow(deprecated)]
+    fn paint_via_backend_with_state(
+        bar: &TabBar,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> (BitmapSurface, TabBarHits) {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+
+        let mut backend = backend_with_test_fonts();
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let hits = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let h = b.draw_tab_bar_with_state(
+                QRect::new(0.0, 0.0, W as f32, H as f32),
+                bar,
+                None,
+                hovered_tab,
+                pressed_tab,
+            );
+            *hits.borrow_mut() = Some(h);
+        });
+        backend.end_frame();
+        (surface, hits.into_inner().unwrap())
+    }
+
+    /// `MouseMoved` over an inactive tab (the issue's acceptance scenario)
+    /// tints its whole background, not only the close glyph —
+    /// `draw_tab_bar` (no `hovered_tab`) leaves it a flat `tab_bar_bg`.
+    #[test]
+    #[allow(deprecated)]
+    fn hovered_tab_tints_the_whole_background_not_just_the_close_glyph() {
+        let bar = sample_bar();
+        let theme = Theme::default();
+        // Tab 1 ("lib.rs") is inactive, so its resting fill is
+        // `tab_bar_bg` — the same colour as the surrounding strip, which
+        // is what makes a hover tint visible against it.
+        let (_, hits) = paint_via_backend(&bar, None);
+        let (start, end) = hits.slot_positions[1];
+        assert!(end > start, "second tab slot must have non-zero width");
+        let probe_x = (start + 2.0) as u32;
+        let probe_y = H / 2;
+
+        let (resting, _) = paint_via_backend_with_state(&bar, None, None);
+        let (r, g, b, _) = resting.pixel(probe_x, probe_y);
+        assert_eq!(
+            (r, g, b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "with no hovered_tab, tab 1's background must stay tab_bar_bg",
+        );
+
+        let (hovered, _) = paint_via_backend_with_state(&bar, Some(1), None);
+        let (r, g, b, _) = hovered.pixel(probe_x, probe_y);
+        let expected = theme.list_hover_bg(theme.tab_bar_bg);
+        assert_eq!(
+            (r, g, b),
+            (expected.r, expected.g, expected.b),
+            "hovered_tab == Some(1) must tint tab 1's background toward list_hover_bg",
+        );
+    }
+
+    /// `pressed_tab` tints deeper than `hovered_tab` — `Theme::list_pressed_bg`
+    /// is a higher-alpha blend than `list_hover_bg` — and wins when both
+    /// name the same tab (mirrors the precedence every sibling `_with_state`
+    /// painter in this crate already applies).
+    #[test]
+    #[allow(deprecated)]
+    fn pressed_tab_tints_deeper_than_hovered_tab() {
+        let bar = sample_bar();
+        let theme = Theme::default();
+        let (_, hits) = paint_via_backend(&bar, None);
+        let (start, _) = hits.slot_positions[1];
+        let probe_x = (start + 2.0) as u32;
+        let probe_y = H / 2;
+
+        let (pressed, _) = paint_via_backend_with_state(&bar, Some(1), Some(1));
+        let (r, g, b, _) = pressed.pixel(probe_x, probe_y);
+        let expected = theme.list_pressed_bg(theme.tab_bar_bg);
+        assert_eq!(
+            (r, g, b),
+            (expected.r, expected.g, expected.b),
+            "pressed_tab == Some(1) must tint tab 1's background toward list_pressed_bg, \
+             even though hovered_tab also names it",
+        );
+
+        let hover_expected = theme.list_hover_bg(theme.tab_bar_bg);
+        assert_ne!(
+            (expected.r, expected.g, expected.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "pressed and hover tints must read as visibly different colours",
+        );
+    }
+
+    /// Leaving the hovered tab clears the tint — a plain `draw_tab_bar`
+    /// (or `draw_tab_bar_with_state` with both indices `None`) paints
+    /// exactly the untinted resting colour.
+    #[test]
+    #[allow(deprecated)]
+    fn mouse_leaving_the_tab_clears_the_hover_tint() {
+        let bar = sample_bar();
+        let theme = Theme::default();
+        let (_, hits) = paint_via_backend(&bar, None);
+        let (start, _) = hits.slot_positions[1];
+        let probe_x = (start + 2.0) as u32;
+        let probe_y = H / 2;
+
+        let (after_leave, _) = paint_via_backend_with_state(&bar, None, None);
+        let (r, g, b, _) = after_leave.pixel(probe_x, probe_y);
+        assert_eq!(
+            (r, g, b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "hovered_tab: None must repaint tab 1 back to the untinted tab_bar_bg",
+        );
     }
 
     /// `Backend::tab_bar_layout` must return exactly what

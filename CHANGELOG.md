@@ -84,17 +84,21 @@ only a push to `main` runs this workflow.
   the same for the create row via its existing generic chrome-hit
   bookkeeping.
 - `Backend::draw_tab_bar_with_state`/`draw_tab_bar_layout_with_state`:
-  the hover/pressed seam for `TabBar`, taking a `hovered_tab:
-  Option<usize>` index alongside the existing `hovered_close_tab`
+  the hover/pressed seam for `TabBar`, taking `hovered_tab`/`pressed_tab:
+  Option<usize>` indices alongside the existing `hovered_close_tab`
   rather than an `InteractionState` — `TabItem` carries no `WidgetId`
   of its own, only `TabBar::id` (one per bar), which can't name which
-  tab within it is hovered (see `interaction.rs`'s module doc). Both
-  default to their existing method (ignoring `hovered_tab`), so no
-  backend breaks; `draw_tab_bar_layout_with_state` is reachable from
+  tab within it is hovered or pressed (see `interaction.rs`'s module
+  doc). Both default to their existing method (ignoring
+  `hovered_tab`/`pressed_tab`), so no backend breaks;
+  `draw_tab_bar_layout_with_state` is reachable from
   `quadraui-binding-core`'s paint path, which calls
   `draw_tab_bar_layout`, never the deprecated `draw_tab_bar`. Painting
   a tab's own hover/pressed background is a per-backend follow-up
-  (GTK/macOS/Win32) — no backend overrides either method yet.
+  (GTK/macOS/Win32); **macOS now implements both** (`macos/tab_bar.rs`),
+  tinting the hovered/pressed tab's whole background via
+  `Theme::list_hover_bg`/`list_pressed_bg` — GTK/Win32 still fall
+  through to the untinted default.
 - `ListPaintState`/`TreePaintState`/`DataTablePaintState`: per-frame,
   `#[non_exhaustive]` paint-time state (`hovered_idx`, `pressed_idx`,
   `scroll_px: Option<f32>`) for `ListView`/`TreeView`/`DataTable`,
