@@ -168,6 +168,74 @@ test("setRender rejects a gap key on a tabs node", () => {
   assert.throws(() => app.screen(), /InvalidDescriptorError/);
 });
 
+test("setRender accepts an optional focused_index on a tabs node", () => {
+  // B2d: "focused_index" marks a tab keyboard-focused (reverse video on
+  // TUI; see `tui::tab_bar`'s own test for the pixel-level treatment).
+  // Passing it must not raise and must not change which tab's content is
+  // shown -- that's still "selected"'s job.
+  const app = new QuiApp(10, 8);
+  app.setRender(() => ({
+    tabs: {
+      id: "tabbar:1",
+      selected: 0,
+      focused_index: 1,
+      tabs: [
+        {
+          id: "one",
+          title: "One",
+          content: {
+            id: "text:one",
+            text_display: {
+              id: "text:one",
+              lines: [{ spans: [{ text: "O", fg: null, bg: null }] }],
+            },
+          },
+        },
+        {
+          id: "two",
+          title: "Two",
+          content: {
+            id: "text:two",
+            text_display: {
+              id: "text:two",
+              lines: [{ spans: [{ text: "T", fg: null, bg: null }] }],
+            },
+          },
+        },
+      ],
+    },
+  }));
+  const screen = app.screen();
+  assert.match(screen, /One/);
+  assert.match(screen, /Two/);
+  assert.match(screen, /O/);
+});
+
+test("setRender rejects an out-of-range focused_index on a tabs node", () => {
+  // Same out-of-range convention "selected" already uses.
+  const app = new QuiApp(10, 8);
+  app.setRender(() => ({
+    tabs: {
+      id: "tabbar:1",
+      focused_index: 5,
+      tabs: [
+        {
+          id: "one",
+          title: "One",
+          content: {
+            id: "text:one",
+            text_display: {
+              id: "text:one",
+              lines: [{ spans: [{ text: "O", fg: null, bg: null }] }],
+            },
+          },
+        },
+      ],
+    },
+  }));
+  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+});
+
 test("setRender honours a split's padding/margin/gap spacing keys", () => {
   // A `"split"` node's `"padding"`/`"margin"`/`"gap"` keys are siblings of
   // the `"split"` key -- `"gap"` is the one spacing key with a real

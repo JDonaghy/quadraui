@@ -257,6 +257,11 @@ pub struct LayoutTabs {
     pub entries: Vec<LayoutTabEntry>,
     pub selected: usize,
     pub spacing: Spacing,
+    /// Index of the keyboard-focused tab, decoded from the `"tabs"`
+    /// dict's optional `"focused_index"` key (B2d). Threaded into a
+    /// [`quadraui::TabChrome`] rather than onto `tab_bar` directly — see
+    /// that field's doc for why `TabBar` itself stays a plain field.
+    pub focused_index: Option<usize>,
 }
 
 /// One tab inside a [`LayoutTabs`]: the id that addresses it, and the full

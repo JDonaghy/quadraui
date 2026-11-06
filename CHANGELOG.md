@@ -86,6 +86,15 @@ only a push to `main` runs this workflow.
   strokes it square (matching `TextInput`'s own square border) via
   `primitives::button::native_surface_paint::focus_ring_geometry`, the
   same geometry `Button`'s ring already uses.
+- `TabChrome::focused_index`: an optional keyboard-focused-tab index,
+  additive on the existing chrome sidecar (not a new `TabBar` field — see
+  that field's doc for why) so it breaks no exhaustive `TabBar` literal.
+  `TabBar::handle_focus_key` turns `Left`/`Right`/`Enter`/`Space` into
+  `TabBarEvent::FocusMoved`/`TabActivated`. TUI (`tui::tab_bar`) paints the
+  focused tab in reverse video when `focused_index` is set; GTK/macOS/Win
+  ring painting is tracked in follow-up per-backend issues. The `"tabs"`
+  layout-node dict (quadraui-py/quadraui-node) grew a matching optional
+  `"focused_index"` key.
 
 ### Fixed
 - macOS `TabBar` painter (`macos::tab_bar`) now ellipsis-fits a tab's label
