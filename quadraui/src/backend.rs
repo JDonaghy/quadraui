@@ -2640,22 +2640,32 @@ pub trait Backend: sealed::Sealed {
     ) -> TabBarHits;
 
     /// [`Self::draw_tab_bar`], plus a `hovered_tab` index naming the
-    /// whole tab (not its close glyph) the mouse is over.
+    /// whole tab (not its close glyph) the mouse is over, and a
+    /// `pressed_tab` index naming the tab a mouse-down is currently held
+    /// on.
     ///
-    /// Index-keyed, like the existing `hovered_close_tab`, rather than
-    /// [`InteractionState`]-keyed by [`WidgetId`]: [`TabItem`] carries
-    /// no id of its own — only [`TabBar::id`], one per *bar*, which
-    /// can't name *which* tab within it is hovered — so this joins
-    /// `draw_tab_bar`'s own `hovered_close_tab` in `interaction.rs`'s
-    /// "Methods that remain positional" table rather than taking an
-    /// `InteractionState`.
+    /// Both are index-keyed, like the existing `hovered_close_tab`,
+    /// rather than [`InteractionState`]-keyed by [`WidgetId`]: [`TabItem`]
+    /// carries no id of its own — only [`TabBar::id`], one per *bar*,
+    /// which can't name *which* tab within it is hovered or pressed — so
+    /// this joins `draw_tab_bar`'s own `hovered_close_tab` in
+    /// `interaction.rs`'s "Methods that remain positional" table rather
+    /// than taking an `InteractionState`. Mirrors the shape
+    /// [`ListPaintState`]/[`TreePaintState`] already use for the same
+    /// "no stable per-item id" reason: a plain `hovered_idx` /
+    /// `pressed_idx` pair rather than a struct, since a tab bar's only
+    /// other positional slot (`hovered_close_tab`) is already a bare
+    /// argument, not a state struct.
     ///
     /// Additive over [`Self::draw_tab_bar`], not a replacement — the
-    /// default forwards to it (ignoring `hovered_tab`), so every
-    /// existing implementor keeps compiling unchanged. A backend's own
-    /// whole-tab hover/pressed treatment (painting a tab's own
-    /// background when `Some(i) == hovered_tab`) is implemented per
-    /// backend, not here.
+    /// default forwards to it (ignoring `hovered_tab`/`pressed_tab`), so
+    /// every existing implementor keeps compiling unchanged. A backend's
+    /// own whole-tab hover/pressed treatment (painting a tab's own
+    /// background when `Some(i) == hovered_tab` / `Some(i) ==
+    /// pressed_tab`) is implemented per backend, not here.
+    ///
+    /// [`ListPaintState`]: crate::primitives::list::ListPaintState
+    /// [`TreePaintState`]: crate::primitives::tree::TreePaintState
     #[allow(deprecated)]
     fn draw_tab_bar_with_state(
         &mut self,
@@ -2663,6 +2673,7 @@ pub trait Backend: sealed::Sealed {
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
         _hovered_tab: Option<usize>,
+        _pressed_tab: Option<usize>,
     ) -> TabBarHits {
         self.draw_tab_bar(rect, bar, hovered_close_tab)
     }
@@ -2692,21 +2703,23 @@ pub trait Backend: sealed::Sealed {
         hovered_close_tab: Option<usize>,
     ) -> TabBarLayout;
 
-    /// [`Self::draw_tab_bar_layout`], plus a `hovered_tab` index naming
-    /// the whole tab the mouse is over — the [`TabBarLayout`]-returning
-    /// twin of [`Self::draw_tab_bar_with_state`], reachable from the
-    /// `py`/`node` paint path (`quadraui-binding-core`'s renderer calls
+    /// [`Self::draw_tab_bar_layout`], plus a `hovered_tab`/`pressed_tab`
+    /// index pair naming the whole tab the mouse is over/held down on —
+    /// the [`TabBarLayout`]-returning twin of
+    /// [`Self::draw_tab_bar_with_state`], reachable from the `py`/`node`
+    /// paint path (`quadraui-binding-core`'s renderer calls
     /// `draw_tab_bar_layout`, never the deprecated `draw_tab_bar`).
     ///
     /// Additive over [`Self::draw_tab_bar_layout`], not a replacement —
-    /// the default forwards to it (ignoring `hovered_tab`), so every
-    /// existing implementor keeps compiling unchanged.
+    /// the default forwards to it (ignoring `hovered_tab`/`pressed_tab`),
+    /// so every existing implementor keeps compiling unchanged.
     fn draw_tab_bar_layout_with_state(
         &mut self,
         rect: Rect,
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
         _hovered_tab: Option<usize>,
+        _pressed_tab: Option<usize>,
     ) -> TabBarLayout {
         self.draw_tab_bar_layout(rect, bar, hovered_close_tab)
     }
