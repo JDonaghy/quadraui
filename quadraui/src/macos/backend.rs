@@ -8049,19 +8049,23 @@ mod tests {
         );
     }
 
-    /// Focus-visible ring: present after `TextInput::has_focus` is set
-    /// the way Tab-focus composes it (`ring.is_focused(id) &&
-    /// ring.is_focus_visible()`, see `TextInput::has_focus`'s own doc),
-    /// absent after a click — which, same convention as `Button::focused`,
-    /// the caller composes as `has_focus = false` before the click's
-    /// paint (VS Code's `:focus-visible` suppression; `TextInput` itself
-    /// carries no "how did focus arrive" state). Samples a pixel in the
-    /// outset gap `crate::primitives::button::native_surface_paint::
+    /// Focus-visible ring: present when `TextInput::has_focus` is set
+    /// (the composed `ring.is_focused(id) && ring.is_focus_visible()`
+    /// Tab-focus produces, see `TextInput::has_focus`'s own doc), absent
+    /// when it's clear (same convention as `Button::focused` — a click's
+    /// paint composes `has_focus = false`, VS Code's `:focus-visible`
+    /// suppression; `TextInput` itself carries no "how did focus arrive"
+    /// state). Samples a pixel in the outset gap
+    /// `crate::primitives::button::native_surface_paint::
     /// focus_ring_geometry` resolves — strictly outside the stroked
     /// border, so it can only be non-background if the ring itself
-    /// painted there.
+    /// painted there. Pins `focus_ring_width` explicitly (rather than
+    /// relying on `Style::default()`'s value) so the stroke's centred
+    /// edges land on whole pixel rows/columns the exact-equality pixel
+    /// probe below needs — an odd width would antialias the probe pixel
+    /// for a reason unrelated to the ring's presence.
     #[test]
-    fn mac_backend_draw_text_input_paints_focus_ring_after_tab_not_after_click() {
+    fn mac_backend_draw_text_input_paints_focus_ring_when_focused() {
         use super::super::headless::BitmapSurface;
         use crate::primitives::button::native_surface_paint::focus_ring_geometry;
         use crate::primitives::text_input::TextInput;
@@ -8071,7 +8075,7 @@ mod tests {
 
         let rect = Rect::new(20.0, 20.0, 160.0, 20.0);
         let theme = Theme::default();
-        let style = crate::Style::default();
+        let style = crate::Style::default().with_focus_ring_width(2.0);
         let ring = focus_ring_geometry(rect, &style);
         // Mid-point of the ring's top edge: strictly outside `rect`
         // (the gap), so untouched by `TextInput`'s own fill/border.
@@ -8082,6 +8086,7 @@ mod tests {
             let surface = BitmapSurface::new(W, H);
             let mut backend = MacBackend::new();
             backend.set_current_font(font());
+            backend.set_current_style(style);
             backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
 
             let mut ti = TextInput::new(WidgetId::new("focus-ring"));
