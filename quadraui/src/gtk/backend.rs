@@ -3507,8 +3507,13 @@ impl Backend for GtkBackend {
             layout: &pango_layout,
             char_w,
         };
-        let (layout, corrected_scroll_offset, available_cols) =
-            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+        // Calls the same `pixel_tab_bar_layout_fitting_boundary` the paint
+        // path (`gtk::tab_bar::draw_tab_bar_icons_with_chrome_and_glyphs`)
+        // calls, so this no-paint twin agrees with what a narrow strip
+        // actually painted instead of reporting the ellipsis-fitted
+        // boundary tab as scrolled out of view.
+        let (layout, corrected_scroll_offset, available_cols, _fitted) =
+            crate::gtk::tab_bar::pixel_tab_bar_layout_fitting_boundary(
                 bar,
                 rect.width,
                 rect.height,
@@ -3519,6 +3524,10 @@ impl Backend for GtkBackend {
                 &icon_extras,
                 &TabChrome::default(),
                 &measure,
+                pango_layout.as_ref(),
+                char_w,
+                &ui_font_desc,
+                &ui_font_desc,
             );
 
         let mut hits = tab_bar_hits_from_layout(&layout, bar);
@@ -3597,8 +3606,11 @@ impl Backend for GtkBackend {
             layout: &pango_layout,
             char_w,
         };
-        let (layout, _corrected_scroll_offset, _available_cols) =
-            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+        // See `tab_bar_layout_icons` for why this goes through
+        // `pixel_tab_bar_layout_fitting_boundary` rather than
+        // `pixel_tab_bar_layout` directly.
+        let (layout, _corrected_scroll_offset, _available_cols, _fitted) =
+            crate::gtk::tab_bar::pixel_tab_bar_layout_fitting_boundary(
                 bar,
                 rect.width,
                 rect.height,
@@ -3609,6 +3621,10 @@ impl Backend for GtkBackend {
                 &icon_extras,
                 &TabChrome::default(),
                 &measure,
+                pango_layout.as_ref(),
+                char_w,
+                &ui_font_desc,
+                &ui_font_desc,
             );
 
         if let Some(pl) = &pango_layout {
@@ -3666,8 +3682,11 @@ impl Backend for GtkBackend {
             layout: &pango_layout,
             char_w,
         };
-        let (layout, corrected_scroll_offset, available_cols) =
-            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+        // See `tab_bar_layout_icons` for why this goes through
+        // `pixel_tab_bar_layout_fitting_boundary` rather than
+        // `pixel_tab_bar_layout` directly.
+        let (layout, corrected_scroll_offset, available_cols, _fitted) =
+            crate::gtk::tab_bar::pixel_tab_bar_layout_fitting_boundary(
                 bar,
                 rect.width,
                 rect.height,
@@ -3678,6 +3697,10 @@ impl Backend for GtkBackend {
                 &icon_extras,
                 chrome,
                 &measure,
+                pango_layout.as_ref(),
+                char_w,
+                &ui_font_desc,
+                &ui_font_desc,
             );
 
         let mut hits = tab_bar_hits_from_layout(&layout, bar);
@@ -3734,8 +3757,11 @@ impl Backend for GtkBackend {
             layout: &pango_layout,
             char_w,
         };
-        let (layout, _corrected_scroll_offset, _available_cols) =
-            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+        // See `tab_bar_layout_icons` for why this goes through
+        // `pixel_tab_bar_layout_fitting_boundary` rather than
+        // `pixel_tab_bar_layout` directly.
+        let (layout, _corrected_scroll_offset, _available_cols, _fitted) =
+            crate::gtk::tab_bar::pixel_tab_bar_layout_fitting_boundary(
                 bar,
                 rect.width,
                 rect.height,
@@ -3746,6 +3772,10 @@ impl Backend for GtkBackend {
                 &icon_extras,
                 chrome,
                 &measure,
+                pango_layout.as_ref(),
+                char_w,
+                &ui_font_desc,
+                &ui_font_desc,
             );
 
         if let Some(pl) = &pango_layout {
