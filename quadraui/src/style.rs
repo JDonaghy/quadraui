@@ -417,6 +417,23 @@ pub struct Style {
     /// Default `10.0` — VS Code's own tab label horizontal inset.
     #[serde(default = "default_tab_padding_x")]
     pub tab_padding_x: f32,
+
+    /// How long the pointer has to stay over a widget's hover zone,
+    /// in milliseconds, before a hover-driven tooltip shows — the delay
+    /// a [`crate::compose::HoverTooltipTracker`] waits out via its own
+    /// `tick` before transitioning from pending to visible. Independent
+    /// of every other token in this struct: it gates *when* a tooltip
+    /// appears, not how it's painted once shown.
+    ///
+    /// **TUI story: no-op.** A terminal has no continuous pointer-motion
+    /// stream to time a hover delay against — `crate::tui`'s tooltip
+    /// treatment stays keyboard-focus-driven (shown immediately once a
+    /// widget has focus, same as before this field existed), so no TUI
+    /// rasteriser reads this token.
+    ///
+    /// Default `500` — VS Code's own hover-card delay.
+    #[serde(default = "default_tooltip_delay_ms")]
+    pub tooltip_delay_ms: u64,
 }
 
 /// `#[serde(default)]` value for [`Style::tab_height`] — a struct
@@ -475,6 +492,13 @@ fn default_tab_padding_x() -> f32 {
     10.0
 }
 
+/// `#[serde(default)]` value for [`Style::tooltip_delay_ms`] — a struct
+/// serialized before this field existed deserializes at the VS Code
+/// hover delay, matching [`Style::default`].
+fn default_tooltip_delay_ms() -> u64 {
+    500
+}
+
 impl Default for Style {
     fn default() -> Self {
         Self {
@@ -493,6 +517,7 @@ impl Default for Style {
             scrollbar_width: 10.0,
             row_padding_x: 8.0,
             tab_padding_x: 10.0,
+            tooltip_delay_ms: 500,
         }
     }
 }
@@ -611,6 +636,13 @@ impl Style {
     #[must_use]
     pub fn with_tab_padding_x(mut self, tab_padding_x: f32) -> Self {
         self.tab_padding_x = tab_padding_x;
+        self
+    }
+
+    /// Set [`Self::tooltip_delay_ms`].
+    #[must_use]
+    pub fn with_tooltip_delay_ms(mut self, tooltip_delay_ms: u64) -> Self {
+        self.tooltip_delay_ms = tooltip_delay_ms;
         self
     }
 }
@@ -851,5 +883,39 @@ mod tests {
         let style: Style = serde_json::from_str(json).expect("deserialize without row/tab padding");
         assert_eq!(style.row_padding_x, 8.0);
         assert_eq!(style.tab_padding_x, 10.0);
+    }
+
+    /// Pins the VS-Code-matching hover delay default, so a future edit
+    /// is a deliberate, reviewed change.
+    #[test]
+    fn default_tooltip_delay_is_five_hundred_ms() {
+        assert_eq!(Style::default().tooltip_delay_ms, 500);
+    }
+
+    /// Same proof as `with_focus_ring_width_builder_overrides_only_that_field`,
+    /// for [`Style::tooltip_delay_ms`].
+    #[test]
+    fn with_tooltip_delay_ms_builder_overrides_only_that_field() {
+        let style = Style::default().with_tooltip_delay_ms(750);
+        assert_eq!(style.tooltip_delay_ms, 750);
+        assert_eq!(style.padding, Style::default().padding);
+    }
+
+    /// A JSON payload serialized before [`Style::tooltip_delay_ms`]
+    /// existed has no such key; `#[serde(default = "…")]` must
+    /// deserialize it at the VS Code default rather than erroring.
+    #[test]
+    fn deserializing_without_tooltip_delay_defaults_to_five_hundred_ms() {
+        let json = r#"{
+            "focus_ring_width": 2.0,
+            "padding": 8.0,
+            "corner_radius": 6.0,
+            "border_width": 1.0,
+            "shadow_elevation": 1,
+            "control_height": 26.0
+        }"#;
+        let style: Style =
+            serde_json::from_str(json).expect("deserialize without tooltip_delay_ms");
+        assert_eq!(style.tooltip_delay_ms, 500);
     }
 }

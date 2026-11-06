@@ -59,6 +59,23 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `compose::HoverTooltipTracker<T>`: the delay + auto-dismiss state
+  machine a hover-driven tooltip needs on top of
+  `ToolbarHoverTracker`/`ListHoverTracker`/`TreeHoverTracker`'s plain
+  "what's hovered" answer — shows after a configurable delay, hides on
+  pointer leave, an explicit dismiss (click/Escape), or a timeout.
+  Headless-clock-friendly: every method takes a caller-supplied `u64`
+  millisecond timestamp rather than reading the wall clock, so it is
+  deterministically testable from Rust and, once a binding wires it up,
+  from Python/node too.
+- `Style::tooltip_delay_ms`: how long the pointer has to hover before a
+  tooltip shows (default `500`, VS Code's own hover-card delay) — the
+  delay `HoverTooltipTracker::tick` waits out. No-op on TUI.
+- `Button::tooltip`: optional hover tooltip text, `None` by default —
+  the same "host decides when to show it" contract
+  `ActivityItem::tooltip`/`Panel::tooltip`/`Toolbar`'s per-button
+  tooltip already carry, now also on the standalone `Button` primitive.
+  No-op on TUI (no hover UI there).
 - `primitives::button::native_surface_paint::focus_ring_geometry`: the
   shared pixel geometry (outset rect, corner radius, `Style::focus_ring_width`
   stroke width) for a primitive's focus-visible ring, factored out of

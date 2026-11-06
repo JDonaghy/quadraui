@@ -230,6 +230,23 @@ test("setStyle overrides the row and tab padding tokens and round trips", () => 
   assert.deepEqual(after.padding, before.padding);
 });
 
+// `Style::tooltip_delay_ms` reaches `QuiApp` through the same
+// `#[serde(default)]`-decoded `setStyle` object every other `Style` field
+// already does -- no binding-side change needed to carry a new descriptor
+// field.
+test("setStyle overrides the tooltip delay token and round trips", () => {
+  const app = new QuiApp(20, 5);
+  const before: any = app.style();
+  assert.equal(before.tooltip_delay_ms, 500);
+
+  app.setStyle({ tooltip_delay_ms: 750 });
+
+  const after: any = app.style();
+  assert.equal(after.tooltip_delay_ms, 750);
+  // Unrelated token is untouched.
+  assert.deepEqual(after.padding, before.padding);
+});
+
 test("setStyle rejects an undefined value instead of raising on the app", () => {
   // Same `Object.keys`-reports-an-`undefined`-value gap as `setTheme`, on
   // `setStyle`'s own merge path.
