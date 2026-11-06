@@ -292,14 +292,29 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
             (false, false) => (inactive_fg, bar_bg),
         };
 
-        // Keyboard-focus treatment (B2d): swap fg/bg across this tab's
-        // icon/label/close/bracket cells — reverse video — when
+        // Keyboard-focus treatment: swap fg/bg — reverse video — across
+        // this tab's whole slot (icon, label, close/dirty glyph, bracket
+        // framing, and the trailing separator/blank cell) when
         // `chrome.focused_index` names it. The caller composes this with
         // its own focus-visible state (see [`TabChrome::focused_index`]'s
         // doc): a click-suppressed focus passes `None` here, so no swap
         // happens and the tab paints exactly as it would unfocused.
+        // `base_bg` keeps the tab's own pre-swap background available so
+        // a glyph painted in a colour other than `fg` (the close/dirty
+        // mark, the icon) can swap against it the same way the label
+        // does, rather than keeping its own hue unswapped on an
+        // already-inverted background.
         let is_focused = chrome.focused_index == Some(vt.tab_idx);
+        let base_bg = bg;
         let (fg, bg) = if is_focused { (bg, fg) } else { (fg, bg) };
+        let swap_against = |glyph_fg: ratatui::style::Color, base: ratatui::style::Color| {
+            if is_focused {
+                (base, glyph_fg)
+            } else {
+                (glyph_fg, base)
+            }
+        };
+        let swap_against_base = |glyph_fg: ratatui::style::Color| swap_against(glyph_fg, base_bg);
 
         // When chrome requests bracket framing, the active tab's
         // full content — icon, label, close glyph — is enclosed in `[` /
@@ -322,7 +337,7 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         // reservation.
         let icon_cols = crate::primitives::tab_bar::tab_icon_cols(icons, vt.tab_idx);
         if let Some(icon) = crate::primitives::tab_bar::tab_icon_at(icons, vt.tab_idx) {
-            let icon_fg = ratatui_color(icon.color);
+            let (icon_fg, icon_bg) = swap_against_base(ratatui_color(icon.color));
             let icon_end = tab_x + lead + icon_cols;
             let mut cx = tab_x + lead;
             for ch in icon.glyph.chars() {
@@ -331,10 +346,10 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
                 }
                 let w = char_cell_width(ch);
                 if w == 2 {
-                    set_cell_wide(buf, cx, area.y, ch, icon_fg, bg);
+                    set_cell_wide(buf, cx, area.y, ch, icon_fg, icon_bg);
                     cx += 2;
                 } else {
-                    set_cell(buf, cx, area.y, ch, icon_fg, bg);
+                    set_cell(buf, cx, area.y, ch, icon_fg, icon_bg);
                     cx += 1;
                 }
             }
@@ -450,7 +465,8 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
                 let fg = if tab.is_active { active_fg } else { separator };
                 (ch, fg)
             };
-            set_cell(buf, x, area.y, close_ch, close_fg, bg);
+            let (close_fg, close_bg) = swap_against_base(close_fg);
+            set_cell(buf, x, area.y, close_ch, close_fg, close_bg);
             x += 1;
         }
         // The closing bracket lands right after the close glyph
@@ -469,10 +485,15 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
                 // instead, so paint a visible rule rather than blank
                 // space; otherwise adjacent labels read as one run of
                 // text with only bold-vs-not telling them apart.
-                set_cell(buf, x, area.y, TAB_SEPARATOR_CHAR, separator, bar_bg);
+                let (sep_fg, sep_bg) = swap_against(separator, bar_bg);
+                set_cell(buf, x, area.y, TAB_SEPARATOR_CHAR, sep_fg, sep_bg);
             } else {
-                // Trailing separator space (within tab bounds, uses bar bg).
-                set_cell(buf, x, area.y, ' ', bar_bg, bar_bg);
+                // Trailing separator space (within tab bounds, normally
+                // bar bg; tracks the already-swapped `bg` instead when
+                // focused, so a focused tab's reverse-video band reaches
+                // its right edge rather than stopping one column short).
+                let trailing_bg = if is_focused { bg } else { bar_bg };
+                set_cell(buf, x, area.y, ' ', trailing_bg, trailing_bg);
             }
         }
     }
@@ -971,13 +992,12 @@ mod tests {
         }
     }
 
-    /// [`TabChrome::focused_index`] (B2d) swaps fg/bg — reverse video —
-    /// on exactly the named tab's cells, and leaves every other tab (and
-    /// a bar with no chrome at all) byte-for-byte unchanged.
+    /// [`TabChrome::focused_index`] swaps fg/bg — reverse video — across
+    /// exactly the named tab's whole slot (label through its trailing
+    /// separator cell), and leaves every other tab (and a bar with no
+    /// chrome at all) byte-for-byte unchanged.
     #[test]
-    fn focused_index_paints_reverse_video_on_only_that_tab() {
-        use crate::primitives::tab_bar::TabChrome;
-
+    fn tui_focused_index_paints_reverse_video_on_only_that_tab() {
         let bar = TabBar {
             id: WidgetId::new("tabs"),
             tabs: vec![
@@ -1034,8 +1054,10 @@ mod tests {
                 "tab 0 (not focused) must paint identically with or without chrome, col {x}"
             );
         }
-        // Tab 1 ("lib.rs", cols 8..15) has its fg/bg swapped relative to
-        // the unfocused paint.
+        // Tab 1 ("lib.rs", cols 8..15 — 6 label cells plus its trailing
+        // `TAB_SEPARATOR_CHAR` at col 14) has its fg/bg swapped relative
+        // to the unfocused paint across the whole slot, not just the
+        // label.
         let inactive_fg = ratatui_color(theme.tab_inactive_fg);
         let bar_bg = ratatui_color(theme.tab_bar_bg);
         for x in 8..14 {
@@ -1053,6 +1075,25 @@ mod tests {
             cell_char(&focused, 8, 0),
             'l',
             "focused tab's label still paints its own glyphs, just reversed"
+        );
+        // Col 14 is the trailing `TAB_SEPARATOR_CHAR` cell, painted in
+        // `theme.separator` rather than `tab_inactive_fg`, so its swap
+        // target differs from the label's — but it swaps too, extending
+        // the reverse-video band to the whole slot's right edge.
+        let separator = ratatui_color(theme.separator);
+        let trailing = &focused[(14, 0)];
+        assert_eq!(
+            trailing.fg, bar_bg,
+            "the trailing separator cell's fg should be the unfocused bg"
+        );
+        assert_eq!(
+            trailing.bg, separator,
+            "the trailing separator cell's bg should be the unfocused fg"
+        );
+        assert_eq!(
+            cell_char(&focused, 14, 0),
+            TAB_SEPARATOR_CHAR,
+            "the trailing separator cell still paints its own glyph too"
         );
 
         // `TabChrome::default()` (no focused_index) must reproduce the

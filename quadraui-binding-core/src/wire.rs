@@ -798,7 +798,7 @@ fn layout_tabs_from_value(
     let scroll_offset = opt_usize(value, "scroll_offset", &context)?.unwrap_or(0);
     let focused_index = opt_usize(value, "focused_index", &context)?;
     if let Some(idx) = focused_index {
-        if idx >= items.len() {
+        if !items.is_empty() && idx >= items.len() {
             return Err(DecodeError(format!(
                 "{context} \"focused_index\" {idx} is out of range for {len} tab(s)",
                 len = items.len()
@@ -1525,7 +1525,7 @@ mod tests {
         assert_eq!(tabs.entries.len(), 2);
     }
 
-    /// A `"tabs"` node's optional `"focused_index"` key (B2d) decodes to
+    /// A `"tabs"` node's optional `"focused_index"` key decodes to
     /// `LayoutTabs::focused_index`, independent of `"selected"` — a py/
     /// node app can keyboard-focus a different tab than the one whose
     /// content is currently shown.
@@ -1585,6 +1585,27 @@ mod tests {
         });
         let error = err(decode(&value));
         assert!(error.0.contains("focused_index"), "{}", error.0);
+    }
+
+    /// `"focused_index": 0` on an empty `"tabs"` array decodes without
+    /// error — the same `!items.is_empty() && idx >= items.len()` escape
+    /// hatch `"selected"` already uses two blocks up, so a `0` default
+    /// payload for an as-yet-empty tab group doesn't trip the range check
+    /// before there's anything to be out of range of.
+    #[test]
+    fn tabs_node_allows_a_zero_focused_index_on_an_empty_tab_list() {
+        let value = json!({
+            "tabs": {
+                "id": "t1",
+                "focused_index": 0,
+                "tabs": [],
+            }
+        });
+        let node = decode(&value).expect("valid tabs");
+        let LayoutNode::Tabs(tabs) = node else {
+            panic!("expected a tabs node");
+        };
+        assert_eq!(tabs.focused_index, Some(0));
     }
 
     /// A `"panel"` node decodes its chrome generically and recurses into

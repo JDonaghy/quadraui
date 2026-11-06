@@ -93,6 +93,17 @@ pub enum PaintedHit {
         id: WidgetId,
         area: Rect,
         layout: TabBarLayout,
+        /// The bar's own tab count and keyboard-focused tab, as painted —
+        /// read by [`crate::semantic::focus_scoped_key_event`] so an arrow
+        /// key or Enter on a focused `TabBar` resolves through
+        /// [`quadraui::TabBar::handle_focus_key`] the same way
+        /// [`Self::List`]'s `selected_idx`/`total_items` feed
+        /// [`crate::semantic::list_key_event`]. `focused_index` is `None`
+        /// for a bare `TabBar` leaf (no [`quadraui::TabChrome`] involved)
+        /// and for a `"tabs"` layout node whose `focused_index` wasn't set;
+        /// `tab_count` is `TabBar::tabs.len()` regardless.
+        focused_index: Option<usize>,
+        tab_count: usize,
     },
     /// `area` is the absolute rect this display was painted into;
     /// `layout` is in a frame relative to `area`'s origin **shifted down by
@@ -369,7 +380,9 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                     DataTableHit::Empty => {}
                 }
             }
-            PaintedHit::TabBar { id, area, layout } => {
+            PaintedHit::TabBar {
+                id, area, layout, ..
+            } => {
                 if !area.contains(point) {
                     continue;
                 }

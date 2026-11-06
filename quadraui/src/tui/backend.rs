@@ -7207,6 +7207,65 @@ mod tests {
         );
     }
 
+    /// `Backend::draw_tab_bar_with_chrome_layout`'s own doc says a `None`
+    /// [`TabChrome::focused_index`] with no [`TabFrame`] framing request
+    /// reproduces plain [`Backend::draw_tab_bar_layout`] — the property
+    /// `quadraui-binding-core`'s `render::paint_layout` leans on for its
+    /// `LayoutNode::Tabs` arm's `focused_index: None` common case. Unlike
+    /// `empty_icon_sidecar_paints_identically_to_draw_tab_bar` (which
+    /// compares the free paint functions directly), this drives the same
+    /// comparison through the actual `Backend` trait methods a caller like
+    /// `paint_layout` holds a `&mut dyn Backend` and calls.
+    #[test]
+    fn draw_tab_bar_with_chrome_layout_default_chrome_matches_draw_tab_bar_layout() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut backend = TuiBackend::new();
+        backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
+        let bar = audit_bar();
+        let rect = QRect::new(0.0, 0.0, 40.0, 1.0);
+
+        let mut plain_terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        let mut plain_layout = None;
+        plain_terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    plain_layout = Some(b.draw_tab_bar_layout(rect, &bar, None));
+                });
+            })
+            .expect("draw");
+        let plain_layout = plain_layout.expect("draw closure ran");
+        let plain_screen = screen_text(plain_terminal.backend().buffer());
+
+        let mut chrome_terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        let mut chrome_layout = None;
+        chrome_terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    chrome_layout = Some(b.draw_tab_bar_with_chrome_layout(
+                        rect,
+                        &bar,
+                        None,
+                        &TabChrome::default(),
+                    ));
+                });
+            })
+            .expect("draw");
+        let chrome_layout = chrome_layout.expect("draw closure ran");
+        let chrome_screen = screen_text(chrome_terminal.backend().buffer());
+
+        assert_eq!(
+            plain_layout, chrome_layout,
+            "draw_tab_bar_with_chrome_layout(TabChrome::default()) must \
+             report the same TabBarLayout as draw_tab_bar_layout"
+        );
+        assert_eq!(
+            plain_screen, chrome_screen,
+            "and must paint the identical screen too"
+        );
+    }
+
     /// `Backend::snap_height` must agree with `q_rect_to_ratatui`'s height
     /// rounding for every height a rect can carry, since it exists to let
     /// consumers predict that rounding without reimplementing it.

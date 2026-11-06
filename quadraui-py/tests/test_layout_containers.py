@@ -426,7 +426,7 @@ def test_panel_rejects_a_gap_key_it_does_not_support():
 
 
 def test_tabs_accepts_an_optional_focused_index():
-    # B2d: an optional "focused_index" key marks a tab keyboard-focused
+    # An optional "focused_index" key marks a tab keyboard-focused
     # (painted as reverse video on TUI, see `tui::tab_bar`'s own test for
     # the pixel-level treatment). Passing it must not raise and must not
     # change which tab's content is shown -- that's still "selected"'s job.
