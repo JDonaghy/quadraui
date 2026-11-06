@@ -118,6 +118,13 @@ only a push to `main` runs this workflow.
   `primitives::button::native_surface_paint::focus_ring_geometry` helper
   and Direct2D's `stroke_rect` — stroked square, matching `TextInput`'s
   own square border, same as the macOS treatment above.
+- GTK `TextInput` painter (`gtk::text_input::draw_text_input`) now paints
+  the same focus-visible ring when `TextInput::has_focus` is set, via the
+  shared `primitives::button::native_surface_paint::focus_ring_geometry`
+  helper and a plain Cairo `rectangle`/`stroke` — stroked square, matching
+  `TextInput`'s own square border, same as the macOS/Win-GUI treatments
+  above. `gtk::draw_text_input` gained a new `style: &Style` parameter to
+  read `Style::focus_ring_width` from.
 - `TabChrome::focused_index`: an optional keyboard-focused-tab index,
   additive on the existing chrome sidecar (not a new `TabBar` field — see
   that field's doc for why) so it breaks no exhaustive `TabBar` literal.

@@ -4028,6 +4028,7 @@ impl Backend for GtkBackend {
         ti: &crate::primitives::text_input::TextInput,
     ) -> crate::primitives::text_input::TextInputLayout {
         let theme = self.current_theme;
+        let style = self.style();
         let lh = self.current_line_height;
         let cw = self.current_char_width;
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
@@ -4042,7 +4043,8 @@ impl Backend for GtkBackend {
         // `PaintSurface`.
         let saved_font = pango_layout.font_description();
         pango_layout.set_font_description(Some(&ui_font_desc));
-        let result = crate::gtk::draw_text_input(cr, pango_layout, rect, ti, &theme, lh, cw);
+        let result =
+            crate::gtk::draw_text_input(cr, pango_layout, rect, ti, &theme, &style, lh, cw);
         pango_layout.set_font_description(saved_font.as_ref());
         result
     }
