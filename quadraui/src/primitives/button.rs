@@ -362,7 +362,7 @@ pub enum ButtonEvent {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{Button, ButtonIconPosition, ButtonLayout, ButtonVariant};
+    use super::{Button, ButtonIconPosition, ButtonLayout, ButtonMetrics, ButtonVariant};
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
@@ -418,6 +418,27 @@ pub(crate) mod native_surface_paint {
         }
     }
 
+    /// Clamp [`Button::icon_gap`] (a surface-native pixel count) into a
+    /// sane paint-time range, the GUI-pixel twin of `tui::button`'s own
+    /// `icon_gap_cells` clamp. A non-finite gap (a stray `f32::NAN`/
+    /// `f32::MAX`) would otherwise propagate into `content_w`/`x`
+    /// unclamped: `f32::max` resolves `(rect.width - content_w) / 2.0`
+    /// against a NaN `content_w` back to a finite value (`f32::max`
+    /// returns whichever operand isn't NaN), but the second content run's
+    /// `x += w + gap` has no such rescue and goes NaN outright, which a
+    /// backend's own text-draw call (e.g. Cairo's `move_to`) then quietly
+    /// no-ops for the rest of that frame. Clamped at `max_width` (the
+    /// button's own paint width) for the same reason `icon_gap_cells`
+    /// clamps at `max_cells`: an unvalidated huge gap can use at most as
+    /// much room as the button actually has.
+    fn sanitize_icon_gap(icon_gap: f32, max_width: f32) -> f32 {
+        let max_width = max_width.max(0.0);
+        if !icon_gap.is_finite() {
+            return max_width;
+        }
+        icon_gap.clamp(0.0, max_width)
+    }
+
     /// Paint a [`Button`] into `rect` on `surface`, returning
     /// [`ButtonLayout`] for host click dispatch. `style` supplies the
     /// corner radius the fill/border paint with.
@@ -446,6 +467,8 @@ pub(crate) mod native_surface_paint {
             return layout;
         }
 
+        let metrics = ButtonMetrics::resolve(style);
+
         let bg = if button.disabled {
             theme.surface_bg
         } else {
@@ -465,7 +488,7 @@ pub(crate) mod native_surface_paint {
         } else {
             bg
         };
-        surface.surface_fill_rounded_rect(rect, style.corner_radius, bg);
+        surface.surface_fill_rounded_rect(rect, metrics.corner_radius, bg);
 
         if !matches!(button.variant, ButtonVariant::Icon) {
             let border = if button.disabled {
@@ -475,7 +498,7 @@ pub(crate) mod native_surface_paint {
             } else {
                 theme.border_fg
             };
-            surface.surface_stroke_rounded_rect(rect, style.corner_radius, border, 1.0);
+            surface.surface_stroke_rounded_rect(rect, metrics.corner_radius, border, 1.0);
         }
 
         // Focus-visible ring: a second, outset stroke in the theme's
@@ -524,7 +547,7 @@ pub(crate) mod native_surface_paint {
             let icon_w = icon_metrics.as_ref().map_or(0.0, |(_, w, _)| *w);
             let icon_h = icon_metrics.as_ref().map_or(0.0, |(_, _, h)| *h);
             let gap = if icon_metrics.is_some() && !button.label.is_empty() {
-                button.icon_gap
+                sanitize_icon_gap(button.icon_gap, rect.width)
             } else {
                 0.0
             };
@@ -532,20 +555,33 @@ pub(crate) mod native_surface_paint {
             let content_h = icon_h.max(label_h);
 
             // Centre the icon+label block horizontally, but never closer
-            // to `rect`'s own edge than `style.padding` —
-            // `ButtonMetrics::padding_x`'s own source, the same
+            // to `rect`'s own edge than `metrics.padding_x` —
+            // `Style::padding`'s own resolved value, the same
             // inner-spacing token `Toast`/`Tooltip`/`ContextMenu`/
             // `Palette`/`Dialog` already read off `Style::padding`.
-            let centered_x = rect.x + ((rect.width - content_w) / 2.0).max(style.padding);
+            let centered_x = rect.x + ((rect.width - content_w) / 2.0).max(metrics.padding_x);
             let text_y = rect.y + ((rect.height - content_h) / 2.0).max(0.0);
             let mut x = centered_x;
+
+            // A disabled button dims its label to `theme.muted_fg` above;
+            // an icon with its own explicit `Icon::color` must dim the
+            // same way rather than keep painting at full saturation, or a
+            // disabled control reads as enabled through its icon alone.
+            let icon_color = if button.disabled {
+                fg
+            } else {
+                icon_metrics
+                    .as_ref()
+                    .and_then(|(icon, _, _)| icon.color)
+                    .unwrap_or(fg)
+            };
 
             match (icon_metrics, button.icon_position) {
                 (Some((icon, w, _)), ButtonIconPosition::Leading) => {
                     surface.surface_draw_text_run(
                         Rect::new(x, text_y, w, content_h),
                         &icon.glyph,
-                        icon.color.unwrap_or(fg),
+                        icon_color,
                     );
                     x += w + gap;
                     if !button.label.is_empty() {
@@ -568,7 +604,7 @@ pub(crate) mod native_surface_paint {
                     surface.surface_draw_text_run(
                         Rect::new(x, text_y, w, content_h),
                         &icon.glyph,
-                        icon.color.unwrap_or(fg),
+                        icon_color,
                     );
                 }
                 (None, _) => {
@@ -589,7 +625,7 @@ pub(crate) mod native_surface_paint {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::{Point, Viewport};
-        use crate::types::{Color, WidgetId};
+        use crate::types::{Color, Icon, WidgetId};
         use crate::Image;
 
         /// Records every fill/stroke call — enough to assert the resting
@@ -599,6 +635,9 @@ pub(crate) mod native_surface_paint {
         struct RecordingSurface {
             fills: Vec<(Rect, f32, Color)>,
             strokes: Vec<(Rect, f32, Color, f32)>,
+            /// Every `surface_draw_text_run` call, in paint order —
+            /// `(rect, text, color)`.
+            text_runs: Vec<(Rect, String, Color)>,
         }
 
         impl PaintSurface for RecordingSurface {
@@ -632,7 +671,9 @@ pub(crate) mod native_surface_paint {
             ) {
                 self.strokes.push((rect, radius, color, stroke_width));
             }
-            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
             fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _sw: f32) {}
             fn surface_push_clip(&mut self, _rect: Rect) {}
             fn surface_pop_clip(&mut self) {}
@@ -772,6 +813,118 @@ pub(crate) mod native_surface_paint {
 
             let (_, _, fill) = surface.fills.first().expect("button must paint a fill");
             assert_eq!(*fill, theme.button_warning_bg());
+        }
+
+        /// An enabled button paints an `Icon::color`-carrying icon at
+        /// that colour, not the plain foreground.
+        #[test]
+        fn enabled_button_paints_icon_at_its_own_color() {
+            let mut button = Button::new(WidgetId::new("b"), "Save");
+            let icon_color = Color::rgb(255, 0, 0);
+            button.icon = Some(Icon::new("S", "S").with_color(icon_color));
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let (_, _, color) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "S")
+                .expect("icon glyph must paint a text run");
+            assert_eq!(*color, icon_color);
+        }
+
+        /// A disabled button dims its label to `theme.muted_fg` — an
+        /// icon carrying its own explicit `Icon::color` must dim the
+        /// same way rather than keep painting at full saturation, or a
+        /// disabled control reads as enabled through its icon alone.
+        #[test]
+        fn disabled_button_dims_a_coloured_icon_to_muted_fg() {
+            let mut button = Button::new(WidgetId::new("b"), "Save");
+            let icon_color = Color::rgb(255, 0, 0);
+            button.icon = Some(Icon::new("S", "S").with_color(icon_color));
+            button.disabled = true;
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let (_, _, color) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "S")
+                .expect("icon glyph must paint a text run");
+            assert_eq!(
+                *color, theme.muted_fg,
+                "a disabled icon must dim to theme.muted_fg like the label, not keep its own color"
+            );
+            assert_ne!(
+                *color, icon_color,
+                "a disabled icon must not keep painting at its own explicit color"
+            );
+        }
+
+        /// A non-finite `icon_gap` (e.g. `f32::NAN`) must not propagate
+        /// into the label's paint `x` — `sanitize_icon_gap` clamps it to
+        /// a finite value before it reaches the centring arithmetic.
+        #[test]
+        fn non_finite_icon_gap_does_not_produce_a_nan_label_x() {
+            let mut button = Button::new(WidgetId::new("b"), "Save");
+            button.icon = Some(Icon::new("S", "S"));
+            button.icon_gap = f32::NAN;
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let (_, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "S")
+                .expect("icon glyph must paint a text run");
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "Save")
+                .expect("label must paint a text run");
+            assert!(
+                label_rect.x.is_finite(),
+                "a non-finite icon_gap must not make the label's paint x NaN, got {}",
+                label_rect.x,
+            );
+        }
+
+        /// A huge, finite `icon_gap` (e.g. `f32::MAX`) must stay finite
+        /// through the centring arithmetic — `sanitize_icon_gap` clamps
+        /// it at `rect.width` rather than letting it pass through
+        /// unbounded, the same "clamp the unvalidated literal" guard
+        /// `tui::button::icon_gap_cells` already has for its own
+        /// cell-space twin.
+        #[test]
+        fn huge_icon_gap_is_clamped_instead_of_producing_a_nonfinite_label_x() {
+            let mut button = Button::new(WidgetId::new("b"), "Save");
+            button.icon = Some(Icon::new("S", "S"));
+            button.icon_gap = f32::MAX;
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "Save")
+                .expect("label must paint a text run");
+            assert!(
+                label_rect.x.is_finite(),
+                "a huge icon_gap must not make the label's paint x non-finite, got {}",
+                label_rect.x,
+            );
         }
     }
 }

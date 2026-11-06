@@ -38,6 +38,15 @@ mod tests {
     const W: u32 = 120;
     const H: u32 = 20;
 
+    /// Pixel offset from the left edge, at mid-height, that always
+    /// lands on the fill rather than the centred label/icon text:
+    /// `Style::default().padding == 8.0` is the inset
+    /// `native_surface_paint::paint` never draws label/icon content
+    /// inside of, and `6 < 8` sits inside that padding band — see
+    /// `crate::macos::button`'s matching probe for the same reasoning
+    /// on the other GUI backend that shares this paint helper.
+    const FILL_PROBE_X: u32 = 6;
+
     fn mk_button(label: &str) -> Button {
         Button::new(WidgetId::new("dialog:ok"), label)
     }
@@ -84,7 +93,7 @@ mod tests {
 
         paint(&surface, &dwrite, rect, &button, &theme);
 
-        let px = surface.pixel_at(W / 2, H / 2);
+        let px = surface.pixel_at(FILL_PROBE_X, H / 2);
         assert_eq!(
             (px.r, px.g, px.b),
             (theme.accent_bg.r, theme.accent_bg.g, theme.accent_bg.b)
@@ -102,7 +111,7 @@ mod tests {
 
         paint(&surface, &dwrite, rect, &button, &theme);
 
-        let px = surface.pixel_at(W / 2, H / 2);
+        let px = surface.pixel_at(FILL_PROBE_X, H / 2);
         assert_eq!(
             (px.r, px.g, px.b),
             (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b)
@@ -120,7 +129,7 @@ mod tests {
 
         paint(&surface, &dwrite, rect, &button, &theme);
 
-        let px = surface.pixel_at(W / 2, H / 2);
+        let px = surface.pixel_at(FILL_PROBE_X, H / 2);
         assert_eq!(
             (px.r, px.g, px.b),
             (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b)

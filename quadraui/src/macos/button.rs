@@ -59,11 +59,12 @@ mod tests {
     }
 
     /// Pixel offset from the left edge, at mid-height, that always lands
-    /// on the fill rather than the centred label/icon text — below
-    /// `Style::default().corner_radius`'s curved span (so still inside
-    /// a rounded button's fill) and well clear of where
-    /// `native_surface_paint::paint` starts drawing text (`style.padding`
-    /// in from the edge, then the label itself).
+    /// on the fill rather than the centred label/icon text:
+    /// `Style::default().padding == 8.0` is the inset
+    /// `native_surface_paint::paint` never draws label/icon content
+    /// inside of, and `6 < 8` sits inside that padding band — see
+    /// `crate::win::button`'s matching probe for the same reasoning on
+    /// the other GUI backend that shares this paint helper.
     const FILL_PROBE_X: u32 = 6;
 
     #[test]
@@ -241,21 +242,63 @@ mod tests {
         );
     }
 
+    /// `Backend::draw_button_with_state` tints the fill via
+    /// `Theme::button_pressed_bg` while `InteractionState` reports the
+    /// button pressed, and pressed wins over hover when both are
+    /// reported for the same id — the same priority
+    /// `native_surface_paint::paint`'s own doc states.
+    #[test]
+    fn pressed_state_wins_over_hover_and_changes_the_fill_colour() {
+        let button = mk_button("OK");
+        let resting = paint_with_state(&button, &InteractionState::new());
+        let hovered = paint_with_state(
+            &button,
+            &InteractionState::from_parts(Some(button.id), None),
+        );
+        let pressed = paint_with_state(
+            &button,
+            &InteractionState::from_parts(Some(button.id), Some(button.id)),
+        );
+
+        assert_ne!(
+            resting.pixel(FILL_PROBE_X, H / 2),
+            pressed.pixel(FILL_PROBE_X, H / 2),
+            "pressing a button must repaint its fill",
+        );
+        assert_ne!(
+            hovered.pixel(FILL_PROBE_X, H / 2),
+            pressed.pixel(FILL_PROBE_X, H / 2),
+            "a pressed button must paint Theme::button_pressed_bg, not stay at the hover tint",
+        );
+    }
+
     /// Paint via the real `Backend::draw_button` path with text-run
     /// recording on, so the icon/label glyph runs' own paint `x`
-    /// positions are observable without reading raw pixels.
-    fn paint_recording_runs(button: &Button) -> Vec<crate::testing::TextRun> {
-        let surface = BitmapSurface::new(W, H);
+    /// positions are observable without reading raw pixels, into a
+    /// `rect_width`-wide button (`H` tall) rather than the fixed `W`
+    /// every other test here uses — lets a narrow-button test exercise
+    /// the `.max(style.padding)` clamp in
+    /// `native_surface_paint::paint`'s centring arithmetic, which a
+    /// `rect_width` as wide as `W` never binds.
+    fn paint_recording_runs_at(button: &Button, rect_width: f32) -> Vec<crate::testing::TextRun> {
+        let surface = BitmapSurface::new(rect_width.ceil() as u32, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
         backend.set_painted_text_recording(true);
-        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.begin_frame(Viewport::new(rect_width, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_button(QRect::new(0.0, 0.0, W as f32, H as f32), button);
+            b.draw_button(QRect::new(0.0, 0.0, rect_width, H as f32), button);
         });
         backend.end_frame();
         backend.text_runs().to_vec()
+    }
+
+    /// Paint via the real `Backend::draw_button` path with text-run
+    /// recording on, into the fixed `W`-wide button every other test
+    /// here uses.
+    fn paint_recording_runs(button: &Button) -> Vec<crate::testing::TextRun> {
+        paint_recording_runs_at(button, W as f32)
     }
 
     /// A `Leading` icon paints before the label, `icon_gap` clear of it —
@@ -263,14 +306,16 @@ mod tests {
     #[test]
     fn leading_icon_paints_before_the_label_icon_gap_apart() {
         let mut button = mk_button("Save");
-        button.icon = Some(Icon::new("\u{f0c7}", "S"));
+        let icon = Icon::codicon("save", "S").expect("\"save\" is a real codicon name");
+        let icon_glyph = icon.glyph.clone();
+        button.icon = Some(icon);
         button.icon_position = ButtonIconPosition::Leading;
         button.icon_gap = 10.0;
 
         let runs = paint_recording_runs(&button);
         let icon_run = runs
             .iter()
-            .find(|r| r.text == "\u{f0c7}")
+            .find(|r| r.text == icon_glyph)
             .expect("icon glyph must paint a text run");
         let label_run = runs
             .iter()
@@ -296,13 +341,15 @@ mod tests {
     #[test]
     fn trailing_icon_paints_after_the_label() {
         let mut button = mk_button("Save");
-        button.icon = Some(Icon::new("\u{f0c7}", "S"));
+        let icon = Icon::codicon("save", "S").expect("\"save\" is a real codicon name");
+        let icon_glyph = icon.glyph.clone();
+        button.icon = Some(icon);
         button.icon_position = ButtonIconPosition::Trailing;
 
         let runs = paint_recording_runs(&button);
         let icon_run = runs
             .iter()
-            .find(|r| r.text == "\u{f0c7}")
+            .find(|r| r.text == icon_glyph)
             .expect("icon glyph must paint a text run");
         let label_run = runs
             .iter()
@@ -333,6 +380,41 @@ mod tests {
         assert!(
             label_run.bounds.x >= style.padding - 0.5,
             "expected the label inset by at least style.padding ({}), got x={}",
+            style.padding,
+            label_run.bounds.x,
+        );
+    }
+
+    /// At `W` (120px), plain centring alone already clears
+    /// `style.padding` for a two-character label, so the test above
+    /// never actually exercises the `.max(style.padding)` clamp in
+    /// `native_surface_paint::paint`'s centring arithmetic. This test
+    /// narrows the button to just `label_w + style.padding` wide, where
+    /// plain centring would put the label at half of `style.padding` —
+    /// below the floor — so the assertion only holds if the clamp binds.
+    #[test]
+    fn label_clamps_to_style_padding_when_plain_centering_would_not() {
+        let button = mk_button("OK");
+        let style = crate::style::Style::default();
+
+        let wide_runs = paint_recording_runs(&button);
+        let label_w = wide_runs
+            .iter()
+            .find(|r| r.text == "OK")
+            .expect("label must paint a text run")
+            .bounds
+            .width;
+
+        let rect_width = label_w + style.padding;
+        let narrow_runs = paint_recording_runs_at(&button, rect_width);
+        let label_run = narrow_runs
+            .iter()
+            .find(|r| r.text == "OK")
+            .expect("label must paint a text run");
+
+        assert!(
+            label_run.bounds.x >= style.padding - 0.5,
+            "expected the clamp to hold the label at style.padding ({}), got x={}",
             style.padding,
             label_run.bounds.x,
         );
