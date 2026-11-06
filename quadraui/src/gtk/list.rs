@@ -116,13 +116,15 @@ pub fn draw_list(
         nerd_fonts_enabled,
         None,
         None,
+        false,
     )
 }
 
 /// [`draw_list`], tinting the hovered/pressed row's background —
 /// `hovered_idx` / `pressed_idx` are indices into `list.items`, same as
 /// [`crate::Backend::draw_list_with_state`]. `None` for both paints
-/// byte-for-byte what [`draw_list`] paints.
+/// byte-for-byte what [`draw_list`] paints. `focus_ring_visible` — see
+/// [`crate::Backend::draw_list_with_state`]'s matching doc.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_list_with_state(
     cr: &Context,
@@ -138,6 +140,7 @@ pub fn draw_list_with_state(
     nerd_fonts_enabled: bool,
     hovered_idx: Option<usize>,
     pressed_idx: Option<usize>,
+    focus_ring_visible: bool,
 ) {
     draw_list_impl(
         cr,
@@ -153,6 +156,7 @@ pub fn draw_list_with_state(
         nerd_fonts_enabled,
         hovered_idx,
         pressed_idx,
+        focus_ring_visible,
     )
 }
 
@@ -171,6 +175,7 @@ fn draw_list_impl(
     nerd_fonts_enabled: bool,
     hovered_idx: Option<usize>,
     pressed_idx: Option<usize>,
+    focus_ring_visible: bool,
 ) {
     if w <= 0.0 || h <= 0.0 {
         return;
@@ -214,6 +219,7 @@ fn draw_list_impl(
         style,
         hovered_idx,
         pressed_idx,
+        focus_ring_visible,
     );
 
     if list.bordered {
@@ -620,6 +626,7 @@ mod hover_driver_tests {
                 &self.list,
                 self.hover.hovered_idx(),
                 None,
+                false,
             );
         }
 

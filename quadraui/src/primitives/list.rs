@@ -66,6 +66,21 @@ pub struct ListView {
     pub selected_idx: usize,
     #[serde(default)]
     pub scroll_offset: usize,
+    /// Whether this list currently holds keyboard focus. Gates the
+    /// selected row's highlight (TUI reverse-video/`▶` prefix, GUI
+    /// `Theme::selected_bg` fill).
+    ///
+    /// Deliberately **not** the same "host pre-composes
+    /// `ring.is_focused(id) && ring.is_focus_visible()`" convention
+    /// [`crate::Button::focused`]/[`crate::TextInput::has_focus`]
+    /// follow: several existing hosts (e.g. a sidebar's "currently
+    /// showing" nav row) set this unconditionally `true` as a
+    /// persistent indicator unrelated to real keyboard focus, so a
+    /// focus-visible ring can't ride on this field without painting a
+    /// ring on every one of them. The GUI focus-visible ring instead
+    /// reads [`crate::Backend::draw_list_with_state`]'s own
+    /// `focus_ring_visible` parameter — pass
+    /// `ring.is_focused(&list.id) && ring.is_focus_visible()` there.
     #[serde(default)]
     pub has_focus: bool,
     /// When true, backends draw a `╭─╮ │ │ ╰─╯` frame around the list
@@ -793,6 +808,15 @@ pub(crate) mod native_surface_paint {
     ///   already has (selected, header, or base fill) — pressed takes
     ///   priority over hover, matching every other
     ///   `InteractionState`-adjacent rasteriser in this crate.
+    /// - `focus_ring_visible` — when `true`, strokes a
+    ///   `Theme::focus_ring_color` ring at `Style::focus_ring_width`,
+    ///   flush with [`ListView::selected_idx`]'s row bounds, on top of
+    ///   whatever background that row already has. Separate from
+    ///   [`ListView::has_focus`] (see that field's doc for why) — the
+    ///   caller passes `ring.is_focused(&list.id) &&
+    ///   ring.is_focus_visible()` here, not `list.has_focus`. `false`
+    ///   paints byte-for-byte what this function painted before the
+    ///   ring existed.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         list: &ListView,
@@ -807,6 +831,7 @@ pub(crate) mod native_surface_paint {
         style: &Style,
         hovered_idx: Option<usize>,
         pressed_idx: Option<usize>,
+        focus_ring_visible: bool,
     ) {
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
@@ -911,6 +936,23 @@ pub(crate) mod native_surface_paint {
 
             let row_rect = Rect::new(row_x, row_y, row_w, row_h);
             surface.surface_fill_rect(row_rect, row_bg);
+
+            // Focus-visible ring: a square stroke flush with the
+            // selected row's own bounds, in `Theme::focus_ring_color`
+            // at `Style::focus_ring_width`. Unlike `Button`'s/
+            // `TextInput`'s ring, this one is not outset — adjacent
+            // rows have no gap between them, so an outset stroke would
+            // bleed into the row above/below. Gated on
+            // `focus_ring_visible`, not `list.has_focus` — see this
+            // fn's own doc and `ListView::has_focus`'s doc for why the
+            // two are kept separate.
+            if is_selected && focus_ring_visible {
+                surface.surface_stroke_rect(
+                    row_rect,
+                    theme.focus_ring_color(),
+                    style.focus_ring_width,
+                );
+            }
 
             // Per-row clip: with h_scroll the cursor starts to the left
             // of `row_x`, so scrolled-off glyphs would paint outside the
@@ -1057,13 +1099,14 @@ pub(crate) mod native_surface_paint {
         use crate::types::{Color, Icon, StyledText, WidgetId};
         use crate::Image;
 
-        /// Records every fill + text-run call — mirrors
+        /// Records every fill + stroke + text-run call — mirrors
         /// `primitives::scrollbar`'s `RecordingSurface` test double,
         /// scoped to the verbs this primitive uses, so this test runs on
         /// any host without Cairo/Core Graphics/Direct2D.
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color, f32)>,
             texts: Vec<(Rect, String, Color)>,
         }
 
@@ -1088,14 +1131,17 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
                 self.fills.push((rect, color));
             }
-            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
             fn surface_stroke_rounded_rect(
                 &mut self,
-                _rect: Rect,
+                rect: Rect,
                 _radius: f32,
-                _color: Color,
-                _stroke_width: f32,
+                color: Color,
+                stroke_width: f32,
             ) {
+                self.strokes.push((rect, color, stroke_width));
             }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.texts.push((rect, text.to_string(), color));
@@ -1161,6 +1207,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
 
             let expected = list
@@ -1204,6 +1251,7 @@ pub(crate) mod native_surface_paint {
                 &style,
                 None,
                 None,
+                false,
             );
 
             let track_fill = surface
@@ -1243,6 +1291,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
             assert!(
                 list.vscrollbar(AREA, LINE_HEIGHT).is_none(),
@@ -1280,6 +1329,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
             assert!(list.vscrollbar(AREA, LINE_HEIGHT).is_none());
             // Every recorded fill must stay within the list's own bounds
@@ -1324,6 +1374,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
             assert!(
                 !supported.fills.is_empty(),
@@ -1345,6 +1396,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
             // Every fill must stay within the row content area — none of
             // them may be the bottom-row-height h-scrollbar track, which
@@ -1383,6 +1435,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
 
             let row1 = layout
@@ -1404,6 +1457,147 @@ pub(crate) mod native_surface_paint {
                         && (r.y - row1_rect.y).abs() < 0.01
                         && *c == theme.selected_bg),
                 "selected row must paint theme.selected_bg at its own bounds"
+            );
+        }
+
+        /// The focused row's ring strokes exactly at the selected row's
+        /// own bounds, in `Theme::focus_ring_color` at
+        /// `Style::focus_ring_width` — and only there, not at any other
+        /// visible row. Discriminated from `selected_row_paints_selected_bg`
+        /// above by checking `surface.strokes` (a distinct call) rather
+        /// than `surface.fills`, so this test can't pass on the
+        /// pre-existing fill alone.
+        #[test]
+        fn focused_row_paints_a_ring_at_its_own_bounds() {
+            let mut list = vlist(3);
+            list.selected_idx = 1;
+            list.has_focus = true;
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let style = Style::default().with_focus_ring_width(3.0);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &theme,
+                &style,
+                None,
+                None,
+                /* focus_ring_visible */ true,
+            );
+
+            let row1 = layout
+                .visible_items
+                .iter()
+                .find(|v| v.item_idx == 1)
+                .expect("row 1 visible");
+            let row1_rect = Rect::new(
+                row1.bounds.x,
+                row1.bounds.y,
+                row1.bounds.width,
+                row1.bounds.height,
+            );
+            assert!(
+                surface
+                    .strokes
+                    .iter()
+                    .any(|(r, c, w)| (r.x - row1_rect.x).abs() < 0.01
+                        && (r.y - row1_rect.y).abs() < 0.01
+                        && (r.width - row1_rect.width).abs() < 0.01
+                        && (r.height - row1_rect.height).abs() < 0.01
+                        && *c == theme.focus_ring_color()
+                        && (*w - 3.0).abs() < 0.01),
+                "focused row must stroke a ring at its own bounds with \
+                 Style::focus_ring_width, got strokes: {:?}",
+                surface.strokes
+            );
+            assert_eq!(
+                surface.strokes.len(),
+                1,
+                "only the focused row gets a ring, got strokes: {:?}",
+                surface.strokes
+            );
+        }
+
+        /// `focus_ring_visible: false` paints no ring even though the
+        /// row is genuinely selected-and-focused — the default a call
+        /// site gets unless it explicitly composes
+        /// `ring.is_focused(id) && ring.is_focus_visible()`. Paired with
+        /// `no_ring_without_a_selected_row_even_when_focus_ring_visible`
+        /// below: either gate alone must suppress the ring.
+        #[test]
+        fn no_ring_when_focus_ring_visible_is_false() {
+            let mut list = vlist(3);
+            list.selected_idx = 1;
+            list.has_focus = true;
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let mut surface = RecordingSurface::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                None,
+                /* focus_ring_visible */ false,
+            );
+            assert!(
+                surface.strokes.is_empty(),
+                "focus_ring_visible: false must paint no ring even on a \
+                 selected, has_focus: true row, got strokes: {:?}",
+                surface.strokes
+            );
+        }
+
+        /// `focus_ring_visible: true` alone doesn't paint a ring on a
+        /// list with nothing selected-and-focused (`has_focus: false`
+        /// here) — the ring is still scoped to
+        /// [`ListView::selected_idx`]'s row via `is_selected`.
+        #[test]
+        fn no_ring_without_a_selected_row_even_when_focus_ring_visible() {
+            let mut list = vlist(3);
+            list.selected_idx = 1;
+            list.has_focus = false;
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let mut surface = RecordingSurface::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                None,
+                /* focus_ring_visible */ true,
+            );
+            assert!(
+                surface.strokes.is_empty(),
+                "an unfocused list must paint no ring even when \
+                 focus_ring_visible: true, got strokes: {:?}",
+                surface.strokes
             );
         }
 
@@ -1432,6 +1626,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
 
             assert!(
@@ -1464,6 +1659,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
             assert!(nerd_surface.texts.iter().any(|(_, t, _)| t == "nf-glyph"));
 
@@ -1481,6 +1677,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
             assert!(ascii_surface.texts.iter().any(|(_, t, _)| t == "F"));
         }
@@ -1510,6 +1707,7 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
                 None,
                 None,
+                false,
             );
 
             let row_text = surface
@@ -1561,6 +1759,7 @@ pub(crate) mod native_surface_paint {
                 &style,
                 None,
                 None,
+                false,
             );
 
             let (text_rect, _, _) = surface

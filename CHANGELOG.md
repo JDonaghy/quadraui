@@ -122,6 +122,25 @@ only a push to `main` runs this workflow.
   ring painting is tracked in follow-up per-backend issues. The `"tabs"`
   layout-node dict (quadraui-py/quadraui-node) grew a matching optional
   `"focused_index"` key.
+- `ListView`/`TreeView`'s shared GUI painters
+  (`primitives::list::native_surface_paint::paint`,
+  `primitives::tree::native_surface_paint::paint`) gained a
+  `focus_ring_visible` parameter that strokes a `Theme::focus_ring_color`
+  ring at `Style::focus_ring_width`, flush with the selected row's own
+  bounds, when `true`. Threaded through as a new, additive third
+  parameter on `Backend::draw_list_with_state`/`draw_tree_with_state`
+  (default `false`, every existing call site keeps compiling unchanged) —
+  a host composes `ring.is_focused(&list.id) && ring.is_focus_visible()`
+  from its own `compose::FocusRing` and passes that, the same convention
+  `Button::focused`/`TextInput::has_focus` follow. Deliberately **not**
+  tied to `ListView::has_focus`/`TreeView::has_focus` itself: several
+  existing hosts set that field unconditionally `true` as a persistent
+  "currently showing" indicator unrelated to real keyboard focus, and a
+  ring on every one of them would be a regression. Wired on GTK today
+  (`GtkBackend::draw_list_with_state`/`draw_tree_with_state`); macOS/Win
+  pass `false` until they grow their own `_with_state` override, same gap
+  `hovered_idx`/`pressed_idx` already have there. TUI keeps its existing
+  reverse-video/`▶`-prefix treatment, unchanged.
 
 ### Fixed
 - macOS `Backend::draw_focus_ring` (`macos::backend`) no longer strokes over
