@@ -325,6 +325,17 @@ pub struct GtkBackend {
     /// [`super::testing::GtkDriver::inventory`] to populate
     /// [`crate::testing::FrameInventory::zones`].
     pub(crate) zones: Vec<ZoneRec>,
+    /// Bounds of every tooltip/toast painted so far this frame, via
+    /// [`Backend::draw_tooltip_with_chrome`]/[`Backend::draw_toast_overlay`].
+    /// Cleared at the start of each frame by [`Self::begin_frame`], same
+    /// per-frame lifecycle as `zones`. Mirrors
+    /// `MacBackend::overlay_bounds_this_frame`/`WinBackend`'s equivalent.
+    ///
+    /// [`Backend::draw_focus_ring`] reads this to skip the portion of the
+    /// generic focus-ring convention that would otherwise stroke on top of
+    /// an overlay drawn earlier in the same frame — tooltip/toast must stay
+    /// topmost (see that method's own doc for the regression this guards).
+    overlay_bounds_this_frame: Vec<QRect>,
     /// The `(text, bounds)` map painted this frame — recorded by trait
     /// methods that compute a label's on-surface rect so
     /// [`super::testing::GtkDriver::find`] can locate a control without
@@ -640,6 +651,7 @@ impl GtkBackend {
             editor_font_family: "Monospace".to_string(),
             editor_font_size_pt: 11.0,
             zones: Vec::new(),
+            overlay_bounds_this_frame: Vec::new(),
             painted_text: Vec::new(),
             painted_text_recording: false,
             focused_activity_bar: None,
@@ -1843,6 +1855,58 @@ fn theme_prefers_dark(theme: crate::Theme) -> bool {
     luma < 128
 }
 
+/// Whether rects `a` and `b` share any area — used by
+/// [`GtkBackend::draw_focus_ring`] to avoid stroking on top of a
+/// tooltip/toast painted earlier this frame; see
+/// `overlay_bounds_this_frame`'s own doc. A shared edge with zero overlap
+/// width/height doesn't count as overlapping. Mirrors
+/// `macos::backend::rects_overlap`/`win::backend::rects_overlap`.
+fn rects_overlap(a: QRect, b: QRect) -> bool {
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+}
+
+/// Whether `overlay` would land on the pixels [`GtkBackend::draw_focus_ring`]
+/// actually paints for `rect` at `stroke_width`.
+///
+/// `surface_stroke_rect` centers a `stroke_width`-thick line on each of
+/// `rect`'s four edges, so the ring only occupies the thin band straddling
+/// those edges by `stroke_width / 2` in each direction — never `rect`'s full
+/// interior. An overlay that lands strictly inside `rect` without reaching
+/// any edge (e.g. a toast inset from the viewport it's raised over, landing
+/// inside a focused widget that spans that same viewport) never shares a
+/// pixel with the ring, so it must not suppress the stroke. Mirrors
+/// `macos::backend::focus_ring_band_overlaps`/`win::backend::focus_ring_band_overlaps`.
+fn focus_ring_band_overlaps(rect: QRect, stroke_width: f32, overlay: QRect) -> bool {
+    let half = stroke_width / 2.0;
+    let top = QRect::new(
+        rect.x - half,
+        rect.y - half,
+        rect.width + stroke_width,
+        stroke_width,
+    );
+    let bottom = QRect::new(
+        rect.x - half,
+        rect.y + rect.height - half,
+        rect.width + stroke_width,
+        stroke_width,
+    );
+    let left = QRect::new(
+        rect.x - half,
+        rect.y - half,
+        stroke_width,
+        rect.height + stroke_width,
+    );
+    let right = QRect::new(
+        rect.x + rect.width - half,
+        rect.y - half,
+        stroke_width,
+        rect.height + stroke_width,
+    );
+    [top, bottom, left, right]
+        .into_iter()
+        .any(|band| rects_overlap(band, overlay))
+}
+
 /// Rewrite any `system-ui` generic family token in `desc` (a bare family
 /// name, or a Pango-style `"family[,family...] [size]"` description —
 /// [`Backend::set_editor_font`]/[`Backend::set_ui_font`]'s shapes) to
@@ -1901,6 +1965,10 @@ impl Backend for GtkBackend {
         // Clear per-frame widget zones for the same reason. Same
         // lifecycle as text_regions.
         self.zones.clear();
+        // Clear last frame's tooltip/toast bounds — see
+        // `overlay_bounds_this_frame`'s own doc. Same per-frame lifecycle
+        // as `zones`.
+        self.overlay_bounds_this_frame.clear();
         // Clear last frame's painted-text map — see `painted_text`'s docs.
         self.painted_text.clear();
         // Clear the focused activity bar — re-set by draw_activity_bar
@@ -2175,9 +2243,36 @@ impl Backend for GtkBackend {
         self.focus.set_focus(id)
     }
 
+    /// Strokes the generic tab-stop focus-ring convention around `rect`.
+    ///
+    /// Called by [`super::run::render_frame`] *after* `AppLogic::render`
+    /// returns, deliberately — so the ring paints on top of whatever the
+    /// focused widget's own content drew. That same lateness means it
+    /// would also paint on top of a tooltip or toast `render` drew over
+    /// this same rect, inverting the overlay-order contract (tooltip/toast
+    /// stay topmost of all — see `quadraui-binding-core::host::render_overlays`'s
+    /// doc). Skipping the stroke wherever it would land on a tooltip/toast
+    /// bound recorded this frame — see `overlay_bounds_this_frame` — keeps
+    /// the ring out of the way of an overlay without needing to defer
+    /// either paint call.
+    ///
+    /// The ring is a perimeter stroke, not a filled rect
+    /// ([`focus_ring_band_overlaps`]), so an overlay that lands strictly
+    /// inside `rect` without touching the stroke band — e.g. a toast inset
+    /// within a focused widget that spans the whole viewport — never
+    /// conflicts with the ring and leaves it (and its `register_zone`
+    /// chrome entry) intact. Mirrors `macos::backend::MacBackend::draw_focus_ring`/
+    /// `win::backend::WinBackend::draw_focus_ring`'s identical fix.
     fn draw_focus_ring(&mut self, rect: QRect) {
-        let theme = self.current_theme;
         let stroke_width = self.current_style.focus_ring_width;
+        if self
+            .overlay_bounds_this_frame
+            .iter()
+            .any(|overlay| focus_ring_band_overlaps(rect, stroke_width, *overlay))
+        {
+            return;
+        }
+        let theme = self.current_theme;
         self.surface_stroke_rect(rect, theme.accent_fg, stroke_width);
         // A chrome-only paint (no text of its own) is only "observable"
         // via a registered zone.
@@ -4059,6 +4154,10 @@ impl Backend for GtkBackend {
         // full 4-sided box here before TUI did; this just makes
         // that box observable to a structural-parity assertion.
         self.register_zone(tooltip.id, layout_arg.bounds);
+        // See `overlay_bounds_this_frame`'s own doc: a later
+        // `draw_focus_ring` call this same frame must not stroke over
+        // this tooltip.
+        self.overlay_bounds_this_frame.push(layout_arg.bounds);
     }
 
     fn draw_context_menu(
@@ -4748,7 +4847,7 @@ impl Backend for GtkBackend {
         let theme = self.current_theme;
         let style = self.style();
         let line_height = self.current_line_height as f32;
-        crate::primitives::toast::native_surface_paint::paint(
+        let layout = crate::primitives::toast::native_surface_paint::paint(
             stack,
             self,
             &theme,
@@ -4758,7 +4857,13 @@ impl Backend for GtkBackend {
             rect.width,
             rect.height,
             line_height,
-        )
+        );
+        // See `overlay_bounds_this_frame`'s own doc: a later
+        // `draw_focus_ring` call this same frame must not stroke over
+        // any of these.
+        self.overlay_bounds_this_frame
+            .extend(layout.visible_toasts.iter().map(|t| t.bounds));
+        layout
     }
 
     /// Paint via the shared [`crate::primitives::pipeline_view::native_surface_paint::paint`].
@@ -11044,6 +11149,222 @@ mod tests {
             paint_with_width(14.0),
             accent,
             "a style-overridden wider focus ring must reach 5px inside the edge"
+        );
+    }
+
+    // ── overlay order: tooltip/toast stay topmost of the focus ring ──────
+
+    fn sample_toast_overlay() -> crate::primitives::toast::ToastOverlay {
+        use crate::primitives::toast::{Toast, ToastCorner, ToastSeverity};
+        crate::primitives::toast::ToastOverlay {
+            id: WidgetId::new("toasts:bottom_right"),
+            corner: ToastCorner::BottomRight,
+            toasts: vec![Toast {
+                id: WidgetId::new("toast:1"),
+                title: "Saved".to_string(),
+                body: String::new(),
+                severity: ToastSeverity::Success,
+                actions: vec![],
+                accent: None,
+            }],
+            focus: None,
+        }
+    }
+
+    /// `super::run::render_frame` calls `GtkBackend::draw_focus_ring` *after*
+    /// `AppLogic::render` returns, so an app that paints a toast overlapping
+    /// the currently-focused widget's rect — e.g. a toast that lands over a
+    /// focused, bordered editor — must not have the generic focus-ring
+    /// convention stroke on top of it on the very same frame. Regression for
+    /// the overlay-order seam (tooltip/toast topmost of all,
+    /// `quadraui-binding-core::host::render_overlays`'s doc). Mirrors
+    /// `macos::backend::tests::draw_focus_ring_does_not_paint_over_a_toast_from_the_same_frame`.
+    #[test]
+    fn gtk_backend_draw_focus_ring_does_not_paint_over_a_toast_from_the_same_frame() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        const W: i32 = 400;
+        const H: i32 = 200;
+
+        let overlay = sample_toast_overlay();
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        backend.set_current_line_height(16.0);
+        backend.set_current_char_width(8.0);
+
+        let layout = {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.begin_frame(crate::Viewport::new(W as f32, H as f32, 1.0));
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                let layout =
+                    b.draw_toast_overlay(QRect::new(0.0, 0.0, W as f32, H as f32), &overlay);
+                let vt = layout.visible_toasts[0].bounds;
+                // A tab-stop focus ring whose rect is the toast's own
+                // bounds — the worst case, a toast that lands exactly
+                // over the focused widget it was raised from.
+                b.draw_focus_ring(vt);
+                layout
+            })
+        };
+        backend.end_frame();
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let vt = layout.visible_toasts[0].bounds;
+        let theme = crate::Theme::default();
+        let success_bg = theme.success_bg();
+
+        // Probe right at the toast's edge, where the ring would have
+        // stroked had it not been skipped.
+        let probe_x = (vt.x + vt.width / 2.0) as i32;
+        let probe_y = vt.y as i32;
+        assert_ne!(
+            probe_pixel_417(&data, stride, probe_x, probe_y),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must not stroke over a toast painted earlier this frame",
+        );
+        // The toast's own fill is still intact at its centre.
+        let cx = (vt.x + vt.width / 2.0) as i32;
+        let cy = (vt.y + vt.height / 2.0) as i32;
+        assert_eq!(
+            probe_pixel_417(&data, stride, cx, cy),
+            (success_bg.r, success_bg.g, success_bg.b),
+            "the toast's own fill must still paint",
+        );
+    }
+
+    /// The ring is a perimeter stroke, not a filled rect
+    /// (`focus_ring_band_overlaps`), so a toast that lands strictly
+    /// *inside* a large focused widget — e.g. `draw_toast_overlay` insetting
+    /// the stack from a focused editor/list that spans the whole viewport —
+    /// must leave the ring (and its `chrome:focus-ring` zone) intact: there
+    /// is no pixel conflict to suppress. Mirrors
+    /// `win::backend::tests::draw_focus_ring_survives_a_toast_interior_to_the_focused_widget`.
+    #[test]
+    fn gtk_backend_draw_focus_ring_survives_a_toast_interior_to_the_focused_widget() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        const W: i32 = 400;
+        const H: i32 = 200;
+
+        let overlay = sample_toast_overlay();
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        backend.set_current_line_height(16.0);
+        backend.set_current_char_width(8.0);
+
+        // The focused widget spans the whole viewport (a focused
+        // editor/list behind the toast stack); the toast itself is inset
+        // from that same rect by the toast margin, so it never reaches the
+        // focused rect's edges — the stroke band the ring actually paints.
+        let focused_rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.begin_frame(crate::Viewport::new(W as f32, H as f32, 1.0));
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                let _layout = b.draw_toast_overlay(focused_rect, &overlay);
+                b.draw_focus_ring(focused_rect);
+            });
+        }
+        backend.end_frame();
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let theme = crate::Theme::default();
+
+        // Probe at the focused rect's own top edge, inside the stroke
+        // band, well away from the inset toast box.
+        let probe_x = (focused_rect.x + 2.0) as i32;
+        let probe_y = focused_rect.y as i32;
+        assert_eq!(
+            probe_pixel_417(&data, stride, probe_x, probe_y),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must still paint when the toast is interior to the \
+             focused widget and never touches the ring's stroke band",
+        );
+        assert!(
+            backend
+                .zones
+                .iter()
+                .any(|z| z.id == WidgetId::new("chrome:focus-ring")),
+            "the ring's chrome zone must still be registered",
+        );
+    }
+
+    /// Same contract as the toast regression above, for a tooltip anchored
+    /// directly over the currently-focused widget — the exact "hover
+    /// tooltip over a focused, bordered widget" scenario this issue's
+    /// acceptance criteria name. Mirrors
+    /// `macos::backend::tests::draw_focus_ring_does_not_paint_over_a_tooltip_from_the_same_frame`.
+    #[test]
+    fn gtk_backend_draw_focus_ring_does_not_paint_over_a_tooltip_from_the_same_frame() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        use crate::primitives::tooltip::{ResolvedPlacement, Tooltip, TooltipLayout};
+
+        const W: i32 = 200;
+        const H: i32 = 100;
+        let rect = QRect::new(20.0, 20.0, 100.0, 30.0);
+
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        backend.set_current_line_height(16.0);
+        backend.set_current_char_width(8.0);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.begin_frame(crate::Viewport::new(W as f32, H as f32, 1.0));
+            let tooltip = Tooltip::new(WidgetId::new("tip"), "Hover text");
+            let tooltip_layout = TooltipLayout {
+                bounds: rect,
+                resolved_placement: ResolvedPlacement::Bottom,
+            };
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_tooltip(&tooltip, &tooltip_layout);
+                // The focused widget this tooltip is anchored to shares
+                // the tooltip's own bounds exactly — the ring must yield.
+                b.draw_focus_ring(rect);
+            });
+        }
+        backend.end_frame();
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let theme = crate::Theme::default();
+
+        let probe_x = (rect.x + rect.width / 2.0) as i32;
+        let probe_y = rect.y as i32;
+        assert_ne!(
+            probe_pixel_417(&data, stride, probe_x, probe_y),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must not stroke over a tooltip painted earlier this frame",
         );
     }
 
