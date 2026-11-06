@@ -130,11 +130,11 @@ def test_clicking_a_panel_title_bar_sets_the_click_s_widget_to_the_panel_id():
     assert mouse_downs[0]["widget"] == "panel:outer", received
 
 
-def test_clicking_a_sidebar_panel_toolbar_button_sets_the_click_s_widget_to_its_id():
+def test_clicking_a_sidebar_panel_toolbar_button_emits_toolbar_button_clicked():
     # The lone toolbar button starts at the toolbar's own x=0, row 0.
     # `quadraui-binding-core`'s `InteractionEngine` records the sidebar
-    # panel's own chrome layout as a hit, so the raw `MouseDown` carries
-    # the button's own id as `widget`.
+    # panel's own chrome layout (and its embedded toolbar) as a hit, so the
+    # click is delivered as a typed `Toolbar` event naming the bar and button.
     app = QuiApp(40, 20)
 
     def render():
@@ -159,9 +159,11 @@ def test_clicking_a_sidebar_panel_toolbar_button_sets_the_click_s_widget_to_its_
     )
     app.run(1)
 
-    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
-    assert mouse_downs, received
-    assert mouse_downs[0]["widget"] == "refine", received
+    toolbar_events = [event["Toolbar"] for event in received if "Toolbar" in event]
+    assert toolbar_events, received
+    bar, payload = toolbar_events[0]
+    assert bar == "sidebar:outer:toolbar", received
+    assert payload == {"ButtonClicked": {"id": "refine", "is_active": True}}, received
 
 
 def test_sidebar_panel_renders_nested_content():
