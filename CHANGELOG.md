@@ -81,6 +81,11 @@ only a push to `main` runs this workflow.
   `native_surface_paint::paint_with_opacity`. A scrollbar that has never
   seen a scroll event paints at opacity `0.0` (hidden) until the first one
   arrives.
+- macOS `TextInput` now paints the focus-visible ring when
+  `TextInput::has_focus` is set: `primitives::text_input::native_surface_paint::paint`
+  strokes it square (matching `TextInput`'s own square border) via
+  `primitives::button::native_surface_paint::focus_ring_geometry`, the
+  same geometry `Button`'s ring already uses.
 
 ### Fixed
 - macOS `TabBar` painter (`macos::tab_bar`) now ellipsis-fits a tab's label
