@@ -50,7 +50,6 @@ use super::text::{draw_text, measure_text};
 // `TabBarLayout` into one per paint/no-paint call, so the import needs
 // the same allow every use site below does.
 use crate::event::Rect;
-use crate::primitives::button::native_surface_paint::focus_ring_geometry;
 use crate::primitives::tab_bar::{
     tab_icon_at, TabBarGlyphs, TabBarHit, TabBarLayout, TabIcon, VisibleSegment, VisibleTab,
 };
@@ -871,36 +870,46 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
                 color_to_cg(close_fg),
             );
         }
+    }
 
-        // Keyboard-focus ring: an outset stroke around this tab's whole
-        // slot (not just the active tab's inset chip — keyboard focus can
-        // land on an inactive tab while arrow-key browsing, which paints
-        // no chip at all) in the theme's ring colour, via the same
-        // `focus_ring_geometry` helper `TextInput`'s own ring reuses (see
-        // that module's `native_surface_paint::paint` doc) — so widening
-        // `Style::focus_ring_width` widens this ring identically. Strokes
-        // square (`ns_stroke_rect`, not the chip's `TAB_CHIP_RADIUS`)
-        // since the ring enclosing an *inactive* focused tab has no chip
-        // shape to match, and a square ring around the active tab's
-        // rounded chip still reads as "this tab" unambiguously.
-        // `focused_index` already carries the caller's own
-        // focus-visible suppression (composed the same way
-        // `TabChrome::focused_index`'s doc documents — `None` whenever
-        // the bar has keyboard focus but focus isn't currently visible,
-        // e.g. the most recent interaction was a click), so no separate
-        // suppression check is needed here.
-        if focused_index == Some(tab_idx) {
-            let slot_rect = Rect::new(
-                slot_x as f32,
-                y_offset as f32,
-                tab_content_w as f32,
-                row_height as f32,
+    // ── Keyboard-focus ring pass ─────────────────────────────────────
+    // Painted after every tab's own background/label/close glyph, not
+    // inside the loop above: slots are contiguous (only `TAB_OUTER_GAP`
+    // of bar background between them), so a ring stroked immediately
+    // after its own tab would have its trailing edge painted over by
+    // the next tab's opaque background fill. `focused_index` already
+    // carries the caller's own focus-visible suppression (see
+    // `TabChrome::focused_index`'s doc), so `None` here paints nothing.
+    //
+    // The stroked rect is inset by half of `style.focus_ring_width`
+    // from the slot's own bounds — not the outset gap `Button`'s/
+    // `TextInput`'s ring uses (`focus_ring_geometry`) — the same "flush
+    // with the item's own bounds" convention `primitives::list`'s
+    // selected-row ring and `primitives::toolbar`'s item ring use for a
+    // ring on an item inside a tightly-packed strip with no clip of its
+    // own: `ns_stroke_rect` centres its stroke on the rect edge, so an
+    // un-inset rect would ink half the line outside the row entirely on
+    // top/bottom and into the inter-tab gap on left/right. Strokes
+    // square (not the active tab's `TAB_CHIP_RADIUS`), since keyboard
+    // focus can land on an inactive tab with no chip to match.
+    if let Some(focus_idx) = focused_index {
+        let visible_lo = bar.scroll_offset;
+        let visible_hi = visible_lo + hits.slot_positions.len().saturating_sub(visible_lo);
+        if focus_idx >= visible_lo && focus_idx < visible_hi {
+            let (slot_x, slot_end) = hits.slot_positions[focus_idx];
+            let tab_content_w = slot_end - slot_x - tab_outer_gap;
+            let ring_width = style.focus_ring_width.max(1.0) as f64;
+            let inset = ring_width / 2.0;
+            let ring_rect = Rect::new(
+                (slot_x + inset) as f32,
+                (y_offset + inset) as f32,
+                (tab_content_w - ring_width).max(0.0) as f32,
+                (row_height - ring_width).max(0.0) as f32,
             );
-            let ring = focus_ring_geometry(slot_rect, style);
             // SAFETY: `ctx` is a valid `CGContextRef` for the duration of
             // this paint call — see this fn's own `# Safety` doc.
             unsafe {
-                ns_stroke_rect(ctx, ring.rect, theme.focus_ring_color(), ring.width as f64);
+                ns_stroke_rect(ctx, ring_rect, theme.focus_ring_color(), ring_width);
             }
         }
     }
@@ -2372,31 +2381,32 @@ mod tests {
     /// caller's own focus-visible suppression convention documented on
     /// [`crate::primitives::tab_bar::TabChrome::focused_index`]).
     ///
-    /// Probes the ring's *left* edge rather than its top/bottom: the
-    /// slot rect this ring strokes around spans the full row height
-    /// (`y: 0, height: H`), so `focus_ring_geometry`'s outset gap pushes
-    /// the top/bottom edges off-canvas (`y: -FOCUS_RING_GAP` and
-    /// `H + FOCUS_RING_GAP`) — only the left/right vertical edges stay
-    /// on-canvas across the row's full height. Tab 1 (the second tab,
-    /// not the active one) is the target, so this also covers the case
-    /// the paint-loop comment calls out: a focused tab with no
-    /// active-tab chip underneath it.
+    /// Targets tab 0 — the active tab and the default focus target —
+    /// with a non-default `focus_ring_width`, and probes the midpoint
+    /// of all four edges of the inset rect the paint-loop's comment
+    /// describes, so a regression that drops an edge (off-canvas
+    /// top/bottom, or clobbered by the next tab's background) fails
+    /// here rather than only in a geometry picked to dodge it. The
+    /// click-suppressed half asserts the *bar background* colour, not
+    /// just "not the ring colour", so a stray mark of any other colour
+    /// also fails.
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits`
     fn focused_index_paints_a_ring_after_keyboard_nav_and_none_after_a_click() {
-        use crate::primitives::button::native_surface_paint::focus_ring_geometry;
         use crate::primitives::tab_bar::TabChrome;
 
         let bar = sample_bar();
         let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let style = Style::default();
+        let style = Style::default().with_focus_ring_width(4.0);
         let theme = Theme::default();
         let ring_color = theme.focus_ring_color();
+        let bar_bg = theme.tab_bar_bg;
 
         let paint = |focused_index: Option<usize>| -> (BitmapSurface, TabBarHits) {
             let surface = BitmapSurface::new(W, H);
             surface.fill(0.0, 0.0, 0.0, 0.0);
             let mut backend = backend_with_test_fonts();
+            backend.set_style(style.clone());
             backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
             let hits = std::cell::RefCell::new(None);
             backend.enter_frame_scope(surface.context_ptr(), |b| {
@@ -2408,31 +2418,122 @@ mod tests {
             (surface, hits.into_inner().unwrap())
         };
 
-        // Keyboard focus on tab 1 ("lib.rs"): the ring's left edge must
-        // carry `theme.focus_ring_color()`.
-        let (focused_surface, focused_hits) = paint(Some(1));
-        let (slot_x, slot_end) = focused_hits.slot_positions[1];
-        let slot_rect = QRect::new(slot_x as f32, 0.0, (slot_end - slot_x) as f32, H as f32);
-        let ring = focus_ring_geometry(slot_rect, &style);
-        let probe_x = ring.rect.x.round().max(0.0) as u32;
+        // Keyboard focus on tab 0 ("main.rs", the active tab): all four
+        // edges of the inset ring rect must carry
+        // `theme.focus_ring_color()`. Mirrors the paint loop's own
+        // geometry exactly (slot bounds inset by half the ring width),
+        // not the outset `focus_ring_geometry` `Button`'s ring uses.
+        let (focused_surface, focused_hits) = paint(Some(0));
+        let (slot_x, slot_end) = focused_hits.slot_positions[0];
+        let tab_content_w = slot_end - slot_x - TAB_OUTER_GAP;
+        let ring_width = style.focus_ring_width as f64;
+        let inset = ring_width / 2.0;
+        let left = (slot_x + inset).round() as u32;
+        let right = (slot_x + tab_content_w - inset).round() as u32;
+        let top = inset.round() as u32;
+        let bottom = (H as f64 - inset).round() as u32;
+        let mid_x = (slot_x + tab_content_w / 2.0).round() as u32;
+        let mid_y = H / 2;
+
+        // Without a ring, tab 0's *active-tab chip* (not the flat bar
+        // background) covers the left/right probes — they sit within
+        // the chip's straight vertical edge, well clear of its rounded
+        // corners — while the top/bottom probes sit above/below the
+        // chip's own `TAB_CHIP_INSET_Y` margin, where the flat bar
+        // background still shows through. Each probe's unfocused
+        // expectation reflects whichever of those two is actually
+        // painted there.
+        let active_bg = theme.tab_active_bg;
+        let probes = [
+            ("left", left, mid_y, active_bg),
+            ("right", right, mid_y, active_bg),
+            ("top", mid_x, top, bar_bg),
+            ("bottom", mid_x, bottom, bar_bg),
+        ];
+        for (name, px, py, _) in probes {
+            let (r, g, b, _) = focused_surface.pixel(px, py);
+            assert_eq!(
+                (r, g, b),
+                (ring_color.r, ring_color.g, ring_color.b),
+                "expected the focus ring colour at the {name} edge ({px}, {py}) \
+                 when TabChrome::focused_index names tab 0",
+            );
+        }
+
+        // Click suppresses focus-visible: `focused_index: None` must
+        // paint whatever sits under that edge absent a ring — the
+        // chip or the bar background, per `probes` above — not just
+        // "something other than the ring colour".
+        let (clicked_surface, _clicked_hits) = paint(None);
+        for (name, px, py, expected) in probes {
+            let (r0, g0, b0, _) = clicked_surface.pixel(px, py);
+            assert_eq!(
+                (r0, g0, b0),
+                (expected.r, expected.g, expected.b),
+                "expected no focus ring at the {name} edge ({px}, {py}) when \
+                 TabChrome::focused_index is None (click-suppressed)",
+            );
+        }
+    }
+
+    /// `Backend::draw_tab_bar_with_chrome`/`draw_tab_bar_with_chrome_layout`
+    /// are the entry points the gallery and `quadraui-binding-core`'s
+    /// render path actually call — never the deprecated `_and_glyphs`
+    /// spelling [`focused_index_paints_a_ring_after_keyboard_nav_and_none_after_a_click`]
+    /// exercises directly. Both must paint `chrome.focused_index`'s ring
+    /// too, not just the `_and_glyphs` call.
+    #[test]
+    fn draw_tab_bar_with_chrome_and_its_layout_twin_both_paint_the_focus_ring() {
+        use crate::primitives::tab_bar::TabChrome;
+
+        let bar = sample_bar();
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let theme = Theme::default();
+        let ring_color = theme.focus_ring_color();
+        let chrome = TabChrome::default().with_focused_index(Some(0));
+        // Left ring edge for tab 0 (`slot_x == 0`) at the default
+        // `Style::focus_ring_width` (2.0, inset by half): matches the
+        // paint loop's own `(slot_x + inset).round()` exactly.
+        let probe_x = 1;
         let probe_y = H / 2;
-        let (r, g, b, _) = focused_surface.pixel(probe_x, probe_y);
+
+        let paint_via = |f: fn(&mut MacBackend, QRect, &TabBar, Option<usize>, &TabChrome)| {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = backend_with_test_fonts();
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                f(b, rect, &bar, None, &chrome);
+            });
+            backend.end_frame();
+            surface
+        };
+
+        #[allow(deprecated)] // `draw_tab_bar_with_chrome` returns the deprecated `TabBarHits`
+        let via_chrome = paint_via(|b, rect, bar, hovered, chrome| {
+            let _ = b.draw_tab_bar_with_chrome(rect, bar, hovered, chrome);
+        });
+        let (r, g, b) = {
+            let (r, g, b, _) = via_chrome.pixel(probe_x, probe_y);
+            (r, g, b)
+        };
         assert_eq!(
             (r, g, b),
             (ring_color.r, ring_color.g, ring_color.b),
-            "expected the focus ring colour at the ring's left edge ({probe_x}, {probe_y}) \
-             when TabChrome::focused_index names tab 1",
+            "draw_tab_bar_with_chrome must paint chrome.focused_index's ring",
         );
 
-        // Click suppresses focus-visible: `focused_index: None` must not
-        // paint that same pixel at all.
-        let (clicked_surface, _clicked_hits) = paint(None);
-        let (r0, g0, b0, _) = clicked_surface.pixel(probe_x, probe_y);
-        assert_ne!(
-            (r0, g0, b0),
+        let via_chrome_layout = paint_via(|b, rect, bar, hovered, chrome| {
+            let _ = b.draw_tab_bar_with_chrome_layout(rect, bar, hovered, chrome);
+        });
+        let (r2, g2, b2) = {
+            let (r, g, b, _) = via_chrome_layout.pixel(probe_x, probe_y);
+            (r, g, b)
+        };
+        assert_eq!(
+            (r2, g2, b2),
             (ring_color.r, ring_color.g, ring_color.b),
-            "focus ring must not paint at ({probe_x}, {probe_y}) when \
-             TabChrome::focused_index is None (click-suppressed)",
+            "draw_tab_bar_with_chrome_layout must paint chrome.focused_index's ring",
         );
     }
 

@@ -252,16 +252,29 @@ only a push to `main` runs this workflow.
   pass `false` until they grow their own `_with_state` override, same gap
   `hovered_idx`/`pressed_idx` already have there. TUI keeps its existing
   reverse-video/`▶`-prefix treatment, unchanged.
-- macOS: `Backend::draw_tab_bar_with_chrome_and_glyphs` now honours
+- macOS: `Backend::draw_tab_bar_with_chrome`/`draw_tab_bar_with_chrome_layout`/
+  `draw_tab_bar_with_chrome_and_glyphs` now all honour
   `TabChrome::focused_index`, painting a `Theme::focus_ring_color` ring at
-  `Style::focus_ring_width` around the named tab's whole slot —
-  `macos/tab_bar.rs`'s `draw_tab_bar_icons_with_glyphs` reuses the same
-  `focus_ring_geometry` helper `TextInput`/`Button` already share, so the
-  ring matches their outset gap and stroke width. Previously this chrome
-  knob was read but discarded on macOS (`active_frame` bracket framing
-  still is — unsupported on this backend). `focused_index: None` (a click)
-  paints no ring, matching `TabChrome::focused_index`'s own
-  focus-visible-suppression convention.
+  `Style::focus_ring_width` around the named tab's whole slot — reaching
+  the gallery (`quadraui-gallery/src/demos/tab_bar.rs`) and
+  `quadraui-binding-core::render`'s existing `TabChrome::focused_index`
+  wiring, not only the `_and_glyphs` call a direct caller rarely uses.
+  `macos/tab_bar.rs`'s `draw_tab_bar_icons_with_glyphs` strokes the ring
+  flush with (inset by half the stroke width from) the tab's own slot
+  bounds — not the outset gap `focus_ring_geometry` (`TextInput`/`Button`)
+  uses, which would ink outside the row's top/bottom and into the next
+  tab's background — in a pass *after* every tab's own paint, so a later
+  tab's opaque background fill can never clobber an earlier tab's ring.
+  `active_frame` bracket framing is still unsupported on this backend.
+  `focused_index: None` (a click) paints no ring, matching
+  `TabChrome::focused_index`'s own focus-visible-suppression convention.
+  `quadraui::macos::tab_bar::draw_tab_bar_icons_with_glyphs`'s added
+  `focused_index: Option<usize>` parameter is a source break for any
+  external caller of that `pub` free function; no consumer hits
+  (`grep -rn 'draw_tab_bar_icons_with_glyphs' ~/src/coord-tui/src
+  ~/src/vimcode/src` is empty — both consumers only reach tab-bar
+  painting through the `Backend` trait methods above, which keep their
+  existing signatures).
 
 ### Changed
 - **Breaking (TUI rasteriser helpers):** `quadraui::tui::draw_button` and
