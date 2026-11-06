@@ -155,17 +155,18 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        // `InteractionState`-carrying counterpart to `draw_tab_bar`. The
-        // state names the bar's own id as hovered so a backend that
-        // honours the seam takes its hover branch rather than only the
-        // untinted path; the label must still reach the frame either way.
+        // `hovered_tab`-carrying counterpart to `draw_tab_bar`. Names
+        // tab 0 (the only tab) as hovered so a backend that honours the
+        // seam takes its hover branch rather than only the untinted
+        // path; the label must still reach the frame either way.
+        // Index-keyed like `hovered_close_tab`, not `InteractionState`
+        // — see `draw_tab_bar_with_state`'s own doc for why.
         method: "draw_tab_bar_with_state",
         needle: Some("c0tabsstate"),
         paint: |b, area| {
             let lh = b.line_height();
-            let bar_id = id("tab-bar-state");
             let bar = TabBar {
-                id: bar_id,
+                id: id("tab-bar-state"),
                 tabs: vec![TabItem {
                     label: " c0tabsstate ".to_string(),
                     is_active: true,
@@ -179,13 +180,8 @@ pub const CASES: &[Case] = &[
                 show_tab_close: false,
                 compact: false,
             };
-            let interaction = InteractionState::from_parts(Some(bar_id), None);
-            let _ = b.draw_tab_bar_with_state(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &bar,
-                None,
-                &interaction,
-            );
+            let _ =
+                b.draw_tab_bar_with_state(Rect::new(0.0, 0.0, area.width, lh), &bar, None, Some(0));
         },
     },
     Case {
@@ -275,6 +271,38 @@ pub const CASES: &[Case] = &[
                 compact: false,
             };
             let _ = b.draw_tab_bar_layout(Rect::new(0.0, 0.0, area.width, lh), &bar, None);
+        },
+    },
+    Case {
+        // `TabBarLayout`-returning counterpart to `draw_tab_bar_with_state`
+        // — the twin `quadraui-binding-core`'s paint path can actually
+        // reach, since it calls `draw_tab_bar_layout`, never the
+        // deprecated `draw_tab_bar`.
+        method: "draw_tab_bar_layout_with_state",
+        needle: Some("c0tabslayoutstate"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = TabBar {
+                id: id("tab-bar-layout-state"),
+                tabs: vec![TabItem {
+                    label: " c0tabslayoutstate ".to_string(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: false,
+                }],
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: false,
+                compact: false,
+            };
+            let _ = b.draw_tab_bar_layout_with_state(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &bar,
+                None,
+                Some(0),
+            );
         },
     },
     Case {
@@ -845,6 +873,7 @@ pub const CASES: &[Case] = &[
                 }],
                 show_query: true,
                 mode: PaletteMode::List,
+                create_label: Some("Create".to_string()),
                 ..Default::default()
             };
             let interaction = InteractionState::from_parts(Some(palette_id), None);

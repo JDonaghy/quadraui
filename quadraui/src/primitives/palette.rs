@@ -776,6 +776,16 @@ pub(crate) mod native_surface_paint {
     /// [`Theme::hover_bg`] fill for [`Theme::menu_item_hover_bg`] /
     /// [`Theme::menu_item_pressed_bg`] — see
     /// [`crate::Backend::draw_palette_with_state`]'s own doc.
+    ///
+    /// Keying on `palette.id` conflates "the palette is hovered" with
+    /// "the create row is hovered" for a caller that resolves its hit
+    /// test coarsely: `quadraui-binding-core` avoids this because its
+    /// hover resolver only ever maps to `palette.id` when the hit is
+    /// inside `PaletteLayout::create_bounds` specifically — but a direct
+    /// `AppLogic` that keeps one frame-wide `InteractionState` and
+    /// resolves any point inside the palette body to `palette.id` will
+    /// tint the create row while the cursor is over an item row instead.
+    /// Resolve `palette.id` only for hits inside `create_bounds`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint_interactive(
         palette: &Palette,

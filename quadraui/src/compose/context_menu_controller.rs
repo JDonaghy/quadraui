@@ -197,10 +197,15 @@ impl ContextMenuController {
         // Feed hover/pressed before the event-shape match below: a
         // `MouseMoved`/`MouseDown`/`MouseUp` that also changes
         // navigation/selection state still needs its hover/pressed
-        // side effect recorded, and `handle_mouse`'s own event-shape
-        // filter (see `interaction.rs`'s doc) means this is a no-op for
-        // every other event shape (`KeyPressed`, etc).
-        {
+        // side effect recorded. Gated on the same three event shapes
+        // `handle_mouse` itself matches (see `interaction.rs`'s doc) so
+        // every other shape (`KeyPressed`, etc) skips `layout_for`'s
+        // `menu.layout(..)` call rather than paying for it and then
+        // hitting `handle_mouse`'s own no-op match arm.
+        if matches!(
+            event,
+            UiEvent::MouseMoved { .. } | UiEvent::MouseDown { .. } | UiEvent::MouseUp { .. }
+        ) {
             let layout = self.layout_for(&open.menu, open.anchor, backend);
             self.interaction
                 .handle_mouse(event, |x, y| match layout.hit_test(x, y) {

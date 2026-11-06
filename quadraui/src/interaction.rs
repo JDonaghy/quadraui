@@ -36,13 +36,28 @@
 //! rebuild an `InteractionState` via [`InteractionState::from_parts`]
 //! and forward.
 //!
+//! A second group of `Backend` methods never had a positional
+//! predecessor to deprecate — they add hover/pressed to a primitive
+//! that previously took none, so the `_with_state` name is purely
+//! additive (default forwards to the plain method, ignoring
+//! `interaction`), not a replacement:
+//!
+//! - [`crate::Backend::draw_context_menu_with_state`]
+//! - [`crate::Backend::draw_palette_with_state`]
+//! - [`crate::Backend::draw_menu_bar_with_state`]
+//!
 //! ## Methods that remain positional
 //!
-//! Four `Backend` methods still take a positional hover argument, keyed
+//! Several `Backend` methods take a positional hover argument, keyed
 //! by position within a collection rather than [`WidgetId`]:
 //!
 //! - `draw_activity_bar(.., hovered_idx: Option<usize>)`
-//! - `draw_tab_bar(.., hovered_close_tab: Option<usize>)`
+//! - `draw_tab_bar(.., hovered_close_tab: Option<usize>)`, and its
+//!   `hovered_tab: Option<usize>`-carrying twins
+//!   [`crate::Backend::draw_tab_bar_with_state`] /
+//!   [`crate::Backend::draw_tab_bar_layout_with_state`] — `TabItem`
+//!   carries no [`WidgetId`] of its own, only `TabBar::id` (one per
+//!   *bar*), which can't name which tab is hovered
 //! - `draw_data_table(.., hovered_idx: Option<usize>)`
 //! - `draw_chart(.., hovered_point: Option<(usize, usize)>)`
 //! - [`crate::Backend::draw_list_with_state`] /
