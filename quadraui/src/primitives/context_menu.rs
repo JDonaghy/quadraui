@@ -626,6 +626,7 @@ impl ContextMenu {
 pub(crate) mod native_surface_paint {
     use super::{ContextMenu, ContextMenuGlyphs, ContextMenuItem, ContextMenuLayout};
     use crate::accelerator::{render_accelerator, Platform};
+    use crate::interaction::InteractionState;
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
     use crate::theme::Theme;
@@ -675,6 +676,35 @@ pub(crate) mod native_surface_paint {
         )
     }
 
+    /// [`paint`], reading hover/pressed state from a single
+    /// [`InteractionState`] keyed by [`WidgetId`]: the item whose
+    /// [`ContextMenuItem::id`] matches `interaction.hovered()` /
+    /// `interaction.pressed()` paints with
+    /// [`Theme::menu_item_hover_bg`] / [`Theme::menu_item_pressed_bg`]
+    /// instead of its plain selection/resting fill — see
+    /// [`crate::Backend::draw_context_menu_with_state`]'s own doc.
+    pub(crate) fn paint_interactive(
+        menu: &ContextMenu,
+        menu_layout: &ContextMenuLayout,
+        platform: Platform,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        interaction: &InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        paint_with_glyphs_interactive(
+            menu,
+            menu_layout,
+            platform,
+            surface,
+            theme,
+            style,
+            None,
+            false,
+            interaction,
+        )
+    }
+
     /// Identical to [`paint`], plus an optional [`ContextMenuGlyphs`]
     /// override for the check-mark / submenu-arrow glyphs and the
     /// `nerd_fonts_enabled` flag (see [`crate::Backend::nerd_fonts_enabled`])
@@ -691,6 +721,59 @@ pub(crate) mod native_surface_paint {
         style: &Style,
         glyphs: Option<&ContextMenuGlyphs>,
         nerd_fonts_enabled: bool,
+    ) -> Vec<(Rect, WidgetId)> {
+        paint_with_glyphs_impl(
+            menu,
+            menu_layout,
+            platform,
+            surface,
+            theme,
+            style,
+            glyphs,
+            nerd_fonts_enabled,
+            None,
+        )
+    }
+
+    /// [`paint_with_glyphs`] + [`paint_interactive`]'s hover/pressed
+    /// treatment combined — the method a backend that wants both glyph
+    /// overrides and hover feedback calls.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_glyphs_interactive(
+        menu: &ContextMenu,
+        menu_layout: &ContextMenuLayout,
+        platform: Platform,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        glyphs: Option<&ContextMenuGlyphs>,
+        nerd_fonts_enabled: bool,
+        interaction: &InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        paint_with_glyphs_impl(
+            menu,
+            menu_layout,
+            platform,
+            surface,
+            theme,
+            style,
+            glyphs,
+            nerd_fonts_enabled,
+            Some(interaction),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_with_glyphs_impl(
+        menu: &ContextMenu,
+        menu_layout: &ContextMenuLayout,
+        platform: Platform,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        glyphs: Option<&ContextMenuGlyphs>,
+        nerd_fonts_enabled: bool,
+        interaction: Option<&InteractionState>,
     ) -> Vec<(Rect, WidgetId)> {
         let bounds = menu_layout.bounds;
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -745,10 +828,24 @@ pub(crate) mod native_surface_paint {
             }
 
             let is_selected = vis.item_idx == menu.selected_idx && vis.clickable;
-            if is_selected {
+            let item_id = menu.items[vis.item_idx].id;
+            let is_pressed = vis.clickable
+                && item_id.is_some_and(|id| interaction.is_some_and(|i| i.is_pressed(&id)));
+            let is_hovered = vis.clickable
+                && item_id.is_some_and(|id| interaction.is_some_and(|i| i.is_hovered(&id)));
+            let row_bg = if is_pressed {
+                Some(theme.menu_item_pressed_bg(bg))
+            } else if is_hovered {
+                Some(theme.menu_item_hover_bg(bg))
+            } else if is_selected {
+                Some(theme.selected_bg)
+            } else {
+                None
+            };
+            if let Some(row_bg) = row_bg {
                 let sel_rect =
                     Rect::new(row.x + 1.0, row.y, (row.width - 2.0).max(0.0), row.height);
-                surface.surface_fill_rect(sel_rect, theme.selected_bg);
+                surface.surface_fill_rect(sel_rect, row_bg);
             }
 
             if vis.clickable {
@@ -1713,6 +1810,165 @@ mod tests {
                 (shortcut_right - expected_right).abs() < 0.01,
                 "shortcut's right edge ({shortcut_right}) must sit row_padding_x in from \
                  the row's right edge ({expected_right})"
+            );
+        }
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    mod interactive_hover {
+        use super::*;
+        use crate::accelerator::Platform;
+        use crate::interaction::InteractionState;
+        use crate::paint_surface::PaintSurface;
+        use crate::style::Style;
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::{Point, Rect, Viewport};
+
+        /// Records every filled rect's colour — what the hover/pressed
+        /// assertions below need, unlike the other `RecordingSurface`
+        /// test doubles in this module which only record text runs.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(0.0, 0.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_line(
+                &mut self,
+                _from: Point,
+                _to: Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(
+                &mut self,
+                _rect: Rect,
+                _image: &crate::Image,
+            ) -> crate::backend::ImagePaintResult {
+                crate::backend::ImagePaintResult::Unsupported
+            }
+        }
+
+        fn popup(id: &str) -> (ContextMenu, ContextMenuLayout) {
+            let m = menu(vec![cm_action(id, "Copy"), cm_action("other", "Paste")]);
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let layout = m.layout(10.0, 10.0, viewport, 100.0, |_| {
+                ContextMenuItemMeasure::new(20.0)
+            });
+            (m, layout)
+        }
+
+        #[test]
+        fn hovered_item_paints_menu_item_hover_bg() {
+            let (m, layout) = popup("copy");
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(WidgetId::new("copy")));
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_interactive(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                &interaction,
+            );
+            let expected = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == expected),
+                "hovered item must paint Theme::menu_item_hover_bg: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn leaving_the_item_clears_the_hover_fill() {
+            let (m, layout) = popup("copy");
+            let theme = Theme::default();
+            let interaction = InteractionState::new(); // nothing hovered
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_interactive(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                &interaction,
+            );
+            let hover_bg = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == hover_bg),
+                "no item is hovered, so no row should paint the hover tint: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn pressed_item_paints_menu_item_pressed_bg_not_hover_bg() {
+            let (m, layout) = popup("copy");
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(WidgetId::new("copy")));
+            interaction.set_pressed(Some(WidgetId::new("copy")));
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_interactive(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                &interaction,
+            );
+            let pressed = theme.menu_item_pressed_bg(theme.hover_bg);
+            let hover = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == pressed),
+                "pressed item must paint Theme::menu_item_pressed_bg: {:?}",
+                surface.fills
+            );
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == hover),
+                "a pressed item must not also paint the plain hover tint: {:?}",
+                surface.fills
             );
         }
     }

@@ -17,6 +17,7 @@
 
 use crate::backend::{Backend, ResolvedMenuStyle};
 use crate::event::{Rect, UiEvent};
+use crate::interaction::InteractionState;
 use crate::primitives::context_menu::{
     ContextMenu, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure, ContextMenuLayout,
     ContextMenuPlacement,
@@ -217,12 +218,34 @@ impl MenuSystem {
     /// Draw the menu bar and any open dropdown (including nested submenus).
     pub fn render(&self, backend: &mut dyn Backend, bar_rect: Rect) {
         let bar = self.build_menu_bar();
-        let _ = backend.draw_menu_bar(bar_rect, &bar);
+        let _ = backend.draw_menu_bar_with_state(bar_rect, &bar, &self.bar_interaction());
 
         let stack = self.dropdown_stack(backend, bar_rect);
         for (ctx_menu, layout) in &stack {
             let _ = backend.draw_context_menu(ctx_menu, layout);
         }
+    }
+
+    /// The top-level bar's own hover state, derived from
+    /// [`Self::focused_item`] rather than tracked separately — no
+    /// caller feeds this by hand, so a py/node app gets the hover tint
+    /// for free the moment it registers a `MenuBar` wire extra.
+    ///
+    /// Empty (nothing hovered) while a dropdown is open: `focused_item`
+    /// only updates in [`Self::handle_mouse_moved`]'s closed-bar branch,
+    /// and the open item already gets [`crate::Theme::tab_active_bg`]'s
+    /// stronger treatment in `primitives::menu_bar::native_surface_paint`
+    /// — layering the plain hover tint on top of it there would read as
+    /// a *lighter* highlight than "active", the wrong direction.
+    fn bar_interaction(&self) -> InteractionState {
+        if self.open_item.is_some() {
+            return InteractionState::new();
+        }
+        let hovered = self
+            .focused_item
+            .and_then(|i| self.menus.get(i))
+            .map(|m| m.id);
+        InteractionState::from_parts(hovered, None)
     }
 
     /// Process an event. Call from `handle()` before other UI routing.
@@ -1742,6 +1765,31 @@ mod tests {
         assert!(!ms.is_open());
         assert_eq!(ms.open_item, None);
         assert_eq!(ms.focused_item, None);
+    }
+
+    #[test]
+    fn bar_interaction_is_empty_with_nothing_focused() {
+        let ms = MenuSystem::new(sample_menus());
+        assert_eq!(ms.bar_interaction().hovered(), None);
+    }
+
+    #[test]
+    fn bar_interaction_hovers_the_focused_item_s_id() {
+        let mut ms = MenuSystem::new(sample_menus());
+        ms.focused_item = Some(0);
+        assert_eq!(ms.bar_interaction().hovered(), Some(&ms.menus[0].id));
+    }
+
+    #[test]
+    fn bar_interaction_clears_once_a_dropdown_is_open() {
+        // `focused_item` is stale ("whatever it was before the dropdown
+        // opened"), but `bar_interaction` must not paint a hover tint
+        // over the stronger "active" treatment the open item already
+        // gets — see `bar_interaction`'s own doc.
+        let mut ms = MenuSystem::new(sample_menus());
+        ms.focused_item = Some(0);
+        ms.open_item = Some(0);
+        assert_eq!(ms.bar_interaction().hovered(), None);
     }
 
     #[test]

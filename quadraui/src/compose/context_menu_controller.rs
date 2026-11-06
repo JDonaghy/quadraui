@@ -83,6 +83,7 @@
 
 use crate::backend::{Backend, ResolvedMenuStyle};
 use crate::event::{Point, UiEvent};
+use crate::interaction::InteractionState;
 use crate::primitives::context_menu::{ContextMenu, ContextMenuHit, ContextMenuLayout};
 use crate::{Key, NamedKey};
 
@@ -110,6 +111,11 @@ pub enum ContextMenuOutcome {
 #[derive(Debug, Default)]
 pub struct ContextMenuController {
     open: Option<OpenMenu>,
+    /// Hover/pressed state for the `Custom`-painted popup's own items,
+    /// fed from mouse events in [`Self::handle`] and painted by
+    /// [`Self::render`] via [`Backend::draw_context_menu_with_state`],
+    /// so no caller writes any hover-tracking code of its own.
+    interaction: InteractionState,
 }
 
 #[derive(Debug, Clone)]
@@ -131,7 +137,10 @@ fn item_measure(lh: f32) -> (f32, f32, f32) {
 
 impl ContextMenuController {
     pub fn new() -> Self {
-        Self { open: None }
+        Self {
+            open: None,
+            interaction: InteractionState::new(),
+        }
     }
 
     /// Is a `Custom`-style menu currently open and painted? `false` for
@@ -173,6 +182,7 @@ impl ContextMenuController {
         if let Some(open) = self.open.take() {
             backend.modal_stack_handle().borrow_mut().pop(&open.menu.id);
         }
+        self.interaction.clear();
     }
 
     /// Process one event against the currently open painted menu.
@@ -183,6 +193,21 @@ impl ContextMenuController {
         let Some(open) = self.open.clone() else {
             return ContextMenuOutcome::Ignored;
         };
+
+        // Feed hover/pressed before the event-shape match below: a
+        // `MouseMoved`/`MouseDown`/`MouseUp` that also changes
+        // navigation/selection state still needs its hover/pressed
+        // side effect recorded, and `handle_mouse`'s own event-shape
+        // filter (see `interaction.rs`'s doc) means this is a no-op for
+        // every other event shape (`KeyPressed`, etc).
+        {
+            let layout = self.layout_for(&open.menu, open.anchor, backend);
+            self.interaction
+                .handle_mouse(event, |x, y| match layout.hit_test(x, y) {
+                    ContextMenuHit::Item(id) => Some(id),
+                    ContextMenuHit::Inert | ContextMenuHit::Empty => None,
+                });
+        }
 
         match event {
             UiEvent::KeyPressed {
@@ -248,7 +273,7 @@ impl ContextMenuController {
             return;
         };
         let layout = self.layout_for(&open.menu, open.anchor, backend);
-        let _ = backend.draw_context_menu(&open.menu, &layout);
+        let _ = backend.draw_context_menu_with_state(&open.menu, &layout, &self.interaction);
     }
 
     fn set_selected(&mut self, idx: usize) {
@@ -362,6 +387,50 @@ mod tests {
             ContextMenuOutcome::Event(UiEvent::ContextMenuItemActivated(WidgetId::new("copy")))
         );
         assert!(!ctl.is_open());
+    }
+
+    #[test]
+    fn mouse_moved_over_an_item_sets_hovered() {
+        let mut backend = TuiBackend::new();
+        let mut ctl = ContextMenuController::new();
+        ctl.open(menu(), Point::new(0.0, 0.0), &mut backend);
+        assert_eq!(ctl.interaction.hovered(), None);
+
+        // Same anchored-at-origin geometry `click_on_item_activates_and_closes`
+        // documents: the first item ("copy") lands at (1.0, 1.0).
+        ctl.handle(
+            &UiEvent::MouseMoved {
+                position: Point::new(1.0, 1.0),
+                buttons: Default::default(),
+            },
+            &mut backend,
+        );
+        assert_eq!(ctl.interaction.hovered(), Some(&WidgetId::new("copy")));
+    }
+
+    #[test]
+    fn moving_off_every_item_clears_hovered() {
+        let mut backend = TuiBackend::new();
+        let mut ctl = ContextMenuController::new();
+        ctl.open(menu(), Point::new(0.0, 0.0), &mut backend);
+        ctl.handle(
+            &UiEvent::MouseMoved {
+                position: Point::new(1.0, 1.0),
+                buttons: Default::default(),
+            },
+            &mut backend,
+        );
+        assert_eq!(ctl.interaction.hovered(), Some(&WidgetId::new("copy")));
+
+        // Moving to a point outside the menu's bounds entirely.
+        ctl.handle(
+            &UiEvent::MouseMoved {
+                position: Point::new(500.0, 500.0),
+                buttons: Default::default(),
+            },
+            &mut backend,
+        );
+        assert_eq!(ctl.interaction.hovered(), None);
     }
 
     #[test]

@@ -59,6 +59,31 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `Backend::draw_context_menu_with_state`/`draw_palette_with_state`/
+  `draw_menu_bar_with_state`/`draw_tab_bar_with_state`: the hover/pressed
+  seam for `ContextMenu`/`Palette`/`MenuBar`/`TabBar`, reading a single
+  `InteractionState` the same way `draw_button_with_state`/
+  `draw_toolbar_interactive` already do. Each defaults to its existing
+  positional method (ignoring `interaction`), so no backend breaks.
+  `Theme::menu_item_hover_bg`/`menu_item_pressed_bg` (new accessor
+  methods, derived from `list_hover_bg`/`list_pressed_bg` — no new
+  `Theme` field) supply the tint. The shared
+  `primitives::{context_menu,palette,menu_bar}::native_surface_paint`
+  painters implement the actual hover/pressed treatment (new
+  `paint_interactive`/`paint_with_glyphs_interactive` entry points,
+  additive alongside the existing `paint`/`paint_with_glyphs`) — a
+  `ContextMenuItem`/`MenuBarItem` keyed by its own `id`, and `Palette`'s
+  pinned create-action row keyed by `palette.id` itself (`PaletteItem`
+  carries no id of its own — an unbounded, app-filtered list, the same
+  reason `ListView`/`TreeView` rows stay out of `InteractionState`).
+  `ContextMenuController` and `MenuSystem` (`compose/`) feed their own
+  mouse events into this seam and call the new methods from `render`,
+  so neither a direct Rust `AppLogic` nor a `quadraui-binding-core`
+  host (`quadraui-py`/`quadraui-node`) writes any hover-tracking code of
+  its own. `quadraui-binding-core`'s `Palette` `ExtraPaint` impl does
+  the same for the create row via its existing generic chrome-hit
+  bookkeeping. `TabBar`'s own whole-tab hover is a per-backend follow-up
+  (GTK/macOS/Win32) — the TUI backend is unchanged.
 - `ListPaintState`/`TreePaintState`/`DataTablePaintState`: per-frame,
   `#[non_exhaustive]` paint-time state (`hovered_idx`, `pressed_idx`,
   `scroll_px: Option<f32>`) for `ListView`/`TreeView`/`DataTable`,
