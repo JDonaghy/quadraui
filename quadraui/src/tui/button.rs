@@ -15,6 +15,13 @@
 //! [`crate::Icon::glyph`] when the backend's Nerd Fonts flag is on and
 //! [`crate::Icon::fallback`] otherwise, same convention as
 //! [`crate::tui::activity_bar::draw_activity_bar`].
+//!
+//! A focused button's bracket chrome always paints [`Theme::accent_fg`],
+//! the same cue [`crate::tui::switch`]/[`crate::tui::radio_group`] paint
+//! for their own focus state — this wins over the intent colour on the
+//! brackets so a focused `Danger`/`Warning` button stays visibly
+//! distinct from an unfocused one. The label text keeps its intent
+//! colour either way.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -26,9 +33,16 @@ use crate::theme::Theme;
 
 /// Quantise [`Button::icon_gap`] (a surface-native pixel count) to whole
 /// TUI cells, floored at one cell — see that field's own "TUI story" doc
-/// for why a zero-cell gap isn't honoured.
-fn icon_gap_cells(icon_gap: f32) -> usize {
-    ((icon_gap / NOMINAL_CELL_PX_WIDTH).ceil() as usize).max(1)
+/// for why a zero-cell gap isn't honoured. Clamped at `max_cells` (the
+/// button's own paint width) so an unvalidated, arbitrarily large
+/// `icon_gap` (a stray `f32::MAX`/`1e9`) can neither overflow the
+/// `as usize` cast nor make `" ".repeat(..)` allocate past what the
+/// paint loop could ever use.
+fn icon_gap_cells(icon_gap: f32, max_cells: usize) -> usize {
+    if !icon_gap.is_finite() {
+        return max_cells.max(1);
+    }
+    ((icon_gap / NOMINAL_CELL_PX_WIDTH).ceil() as usize).clamp(1, max_cells.max(1))
 }
 
 /// Compute the TUI cell-unit layout for a [`Button`] without painting.
@@ -122,29 +136,34 @@ pub fn draw_button_interactive(
     } else {
         ratatui_color(theme.foreground)
     };
+    // `focused` wins on the bracket chrome ahead of `intent_fg` so a
+    // focused `Danger`/`Warning` button stays visually distinct from an
+    // unfocused one — same `accent_fg` focus cue `Primary`/`Secondary`
+    // already paint here, and `tui/switch.rs`/`tui/radio_group.rs` paint
+    // elsewhere. The label (`fg`, above) keeps the intent colour either
+    // way, so a focused Danger button still reads as `[ Delete ]` in
+    // `error_fg` text inside an `accent_fg` bracket, not a plain button.
     let brk_fg = if button.disabled {
         ratatui_color(theme.muted_fg)
-    } else if let Some(intent) = intent_fg {
-        ratatui_color(intent)
     } else if button.focused {
         ratatui_color(theme.accent_fg)
+    } else if let Some(intent) = intent_fg {
+        ratatui_color(intent)
     } else {
         ratatui_color(theme.border_fg)
     };
 
     let is_icon = matches!(button.variant, ButtonVariant::Icon);
     let icon_ch: Option<char> = button.icon.as_ref().map(|icon| {
-        let resolved = if nerd_fonts_enabled {
-            icon.glyph.as_str()
-        } else {
-            icon.fallback.as_str()
-        };
-        resolved.chars().next().unwrap_or(' ')
+        icon.resolve(nerd_fonts_enabled)
+            .chars()
+            .next()
+            .unwrap_or(' ')
     });
     let inner = match icon_ch {
         None => button.label.clone(),
         Some(ch) => {
-            let gap = " ".repeat(icon_gap_cells(button.icon_gap));
+            let gap = " ".repeat(icon_gap_cells(button.icon_gap, w as usize));
             match button.icon_position {
                 ButtonIconPosition::Leading => format!("{ch}{gap}{}", button.label),
                 ButtonIconPosition::Trailing => format!("{}{gap}{ch}", button.label),
@@ -377,6 +396,50 @@ mod tests {
         assert_eq!(cell_fg(&buf, 2, 0), ratatui_color(theme.warning_fg));
     }
 
+    /// A focused `Danger` button must stay visually distinct from an
+    /// unfocused one: the bracket chrome switches to `accent_fg` (the
+    /// same focus cue `Primary`/`Secondary` already paint) while the
+    /// label keeps `error_fg` either way.
+    #[test]
+    fn focused_danger_button_bracket_differs_from_unfocused_but_label_keeps_intent_colour() {
+        let area = Rect::new(0, 0, 10, 1);
+        let theme = Theme::default();
+        let mut button = mk_button("Delete");
+        button.variant = ButtonVariant::Danger;
+
+        let mut unfocused_buf = Buffer::empty(area);
+        draw_button(&mut unfocused_buf, area, &button, &theme, false);
+        let unfocused_bracket_fg = cell_fg(&unfocused_buf, 0, 0);
+        let unfocused_label_fg = cell_fg(&unfocused_buf, 2, 0);
+
+        button.focused = true;
+        let mut focused_buf = Buffer::empty(area);
+        draw_button(&mut focused_buf, area, &button, &theme, false);
+        let focused_bracket_fg = cell_fg(&focused_buf, 0, 0);
+        let focused_label_fg = cell_fg(&focused_buf, 2, 0);
+
+        assert_ne!(
+            focused_bracket_fg, unfocused_bracket_fg,
+            "a focused Danger button's bracket chrome must look different \
+             from an unfocused one"
+        );
+        assert_eq!(
+            focused_bracket_fg,
+            ratatui_color(theme.accent_fg),
+            "focus wins on the bracket chrome ahead of the intent colour"
+        );
+        assert_eq!(
+            unfocused_label_fg,
+            ratatui_color(theme.error_fg),
+            "the label keeps the intent colour while unfocused"
+        );
+        assert_eq!(
+            focused_label_fg,
+            ratatui_color(theme.error_fg),
+            "the label keeps the intent colour while focused too"
+        );
+    }
+
     #[test]
     fn disabled_danger_button_paints_muted_fg_not_the_intent_colour() {
         let area = Rect::new(0, 0, 10, 1);
@@ -392,8 +455,7 @@ mod tests {
     }
 
     /// `[ ⚠ Delete ]`: a Danger button with a leading icon, painted with
-    /// Nerd Fonts on (glyph) and off (fallback) — this issue's own
-    /// headline acceptance scenario.
+    /// Nerd Fonts on (glyph) and off (fallback).
     #[test]
     fn danger_button_with_icon_paints_glyph_or_fallback_per_nerd_fonts_flag() {
         let area = Rect::new(0, 0, 14, 1);
@@ -423,6 +485,26 @@ mod tests {
             "nerd_fonts_enabled: false should paint the fallback half of the icon, got {without_nerd_fonts:?}"
         );
         assert!(!without_nerd_fonts.contains('\u{f071}'));
+    }
+
+    /// `icon_gap_cells` must clamp against the button's own paint width
+    /// rather than growing the gap string without bound — an
+    /// unvalidated `f32::MAX`/non-finite `icon_gap` must neither panic
+    /// nor allocate anywhere near that size.
+    #[test]
+    fn huge_icon_gap_is_clamped_instead_of_overflowing_or_panicking() {
+        let area = Rect::new(0, 0, 14, 1);
+        let theme = Theme::default();
+        let mut button = mk_button("Save");
+        button.icon = Some(crate::types::Icon::new("S", "S"));
+        button.icon_gap = f32::MAX;
+
+        let mut buf = Buffer::empty(area);
+        draw_button(&mut buf, area, &button, &theme, true);
+
+        assert_eq!(icon_gap_cells(f32::MAX, 10), 10);
+        assert_eq!(icon_gap_cells(f32::INFINITY, 10), 10);
+        assert_eq!(icon_gap_cells(f32::NAN, 10), 10);
     }
 
     #[test]

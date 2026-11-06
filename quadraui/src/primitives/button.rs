@@ -38,15 +38,12 @@ use serde::{Deserialize, Serialize};
 /// no backend painting, so a rasteriser reads this field to choose its
 /// own chrome (filled vs. outlined vs. icon-only).
 ///
-/// `#[non_exhaustive]`, from this issue's own change: [`Self::Danger`]/
-/// [`Self::Warning`] are themselves additive variants a downstream
-/// consumer's exhaustive `match` would have broken on had one existed
-/// (`grep -rn 'ButtonVariant' ~/src/coord-tui/src ~/src/vimcode/src`
-/// finds none today). Marking the enum `#[non_exhaustive]` now, while
-/// that blast radius is still zero, forecloses the same break for the
-/// *next* variant — the same rule-8 preference order
-/// `docs/PRIMITIVE_RULES.md` states: a non-breaking shape over a
-/// breaking one whenever one is available for free.
+/// `#[non_exhaustive]`: an additive variant here (as [`Self::Danger`]/
+/// [`Self::Warning`] themselves are) would otherwise break a downstream
+/// consumer's exhaustive `match`. Marking the enum `#[non_exhaustive]`
+/// forecloses that break for the *next* variant — the same rule-8
+/// preference order `docs/PRIMITIVE_RULES.md` states: a non-breaking
+/// shape over a breaking one whenever one is available for free.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ButtonVariant {
@@ -75,6 +72,7 @@ pub enum ButtonVariant {
 /// Icon placement relative to [`Button::label`] when [`Button::icon`] is
 /// set. No effect when `icon` is `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ButtonIconPosition {
     /// Icon paints before the label (e.g. `[ ⚠ Delete ]`).
     #[default]
@@ -83,9 +81,9 @@ pub enum ButtonIconPosition {
     Trailing,
 }
 
-/// `#[serde(default)]` value for [`Button::icon_gap`] — a payload
-/// serialized before this field existed deserializes at the same gap
-/// [`Button::new`] already sets, matching `Button::default()`.
+/// `#[serde(default)]` value for [`Button::icon_gap`] — matches the gap
+/// [`Button::new`] already sets, so a payload missing this field
+/// deserializes to the same gap as `Button::default()`.
 fn default_icon_gap() -> f32 {
     4.0
 }
@@ -95,11 +93,11 @@ fn default_icon_gap() -> f32 {
 /// hardcoding its own literal (or quietly drifting from the others).
 ///
 /// **TUI story: cell-quantised / no-op**, same as the [`Style`] tokens it
-/// is built from — see that struct's module doc. `crate::tui::button`
-/// does not read this today: a terminal row is always exactly one cell
-/// tall and has no sub-cell corner/padding to refine, so there is no
-/// live TUI call site yet.
+/// is built from — see that struct's module doc. A terminal row is
+/// always exactly one cell tall and has no sub-cell corner/padding to
+/// refine, so `crate::tui::button` has no use for this struct.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct ButtonMetrics {
     /// Resolved button height, in surface-native pixels — read straight
     /// from [`Style::control_height`], the same "standard single-line

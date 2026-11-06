@@ -699,6 +699,16 @@ impl Theme {
         self.warning_fg
     }
 
+    /// Resting fill for a "success"-intent [`crate::Button`] — like
+    /// [`Self::button_danger_bg`], but tracking [`Self::success_fg`]
+    /// (itself derived from [`Self::git_added`]) instead of
+    /// [`Self::error_fg`]. See [`Self::button_danger_bg`]'s doc for why
+    /// this is a solid fill rather than [`Self::success_bg`]'s subtle
+    /// tint.
+    pub fn button_success_bg(&self) -> Color {
+        self.success_fg()
+    }
+
     /// Background tint for a hovered [`crate::ListView`] row, blended
     /// from `base` (the row's own resting background — `selected_bg`,
     /// `header_bg`, or the list's base fill) toward [`Self::foreground`]
@@ -1643,6 +1653,27 @@ mod tests {
         };
         assert_eq!(theme.button_danger_bg(), Color::rgb(200, 10, 10));
         assert_eq!(theme.button_warning_bg(), Color::rgb(200, 150, 10));
+    }
+
+    #[test]
+    fn button_success_bg_tracks_success_fg_as_a_solid_fill_not_a_tint() {
+        let theme = Theme::default();
+        assert_eq!(theme.button_success_bg(), theme.success_fg());
+        assert_ne!(
+            theme.button_success_bg(),
+            theme.success_bg(),
+            "a button's resting fill is a solid colour, not the subtle \
+             background tint `success_bg` blends for a banner/toast"
+        );
+    }
+
+    #[test]
+    fn button_success_bg_follows_a_custom_git_added_override() {
+        let theme = Theme {
+            git_added: Color::rgb(10, 200, 10),
+            ..Theme::default()
+        };
+        assert_eq!(theme.button_success_bg(), Color::rgb(10, 200, 10));
     }
 
     #[test]

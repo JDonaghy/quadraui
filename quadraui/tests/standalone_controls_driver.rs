@@ -333,9 +333,8 @@ fn mouse_click_toggles_the_switch_without_requiring_focus() {
 
 /// A single [`Button`] painted via `Backend::draw_button`, so a test can
 /// assert the actual TUI rasteriser's output for a [`ButtonVariant::Danger`]
-/// button carrying a leading [`Icon`] — this issue's own headline
-/// acceptance scenario (`[ ⚠ Delete ]`), through the real `render` path
-/// rather than calling `crate::tui::draw_button` directly.
+/// button carrying a leading [`Icon`] (`[ ⚠ Delete ]`), through the real
+/// `render` path rather than calling `crate::tui::draw_button` directly.
 struct DangerIconButtonApp {
     button: Button,
 }

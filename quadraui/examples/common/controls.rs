@@ -7,9 +7,10 @@
 //! reachable from the keyboard. Every non-`Icon` button can show (or
 //! hide) a leading [`Icon`] via the `i` key, so every variant is visible
 //! both with and without an icon; `n` toggles whether that icon paints
-//! its Nerd Font glyph or its plain-text fallback. The focused button
-//! also tints on hover/press via [`InteractionState`] and
-//! [`Backend::draw_button_with_state`].
+//! its Nerd Font glyph or its plain-text fallback. Whichever button the
+//! pointer is currently over also tints on hover/press via
+//! [`InteractionState`] and [`Backend::draw_button_with_state`] —
+//! independent of keyboard focus.
 //!
 //! Controls:
 //! - Tab         move focus to the next control
@@ -17,7 +18,7 @@
 //! - Up/Down     move the radio group cursor (while it has focus)
 //! - i           toggle every button's icon on/off
 //! - n           toggle Nerd Font glyphs vs. plain-text fallbacks
-//! - Hover       tints the focused button's background
+//! - Hover       tints whichever button the pointer is over
 //! - q / Esc     quit
 
 use quadraui::{
@@ -51,9 +52,9 @@ pub struct ControlsApp {
     /// button currently carries an icon.
     nerd_fonts: bool,
     last_message: String,
-    /// Hover/pressed state for the focused button, keyed by its
-    /// `WidgetId` — fed from `MouseMoved`/`MouseDown`/`MouseUp` in
-    /// `handle` below.
+    /// Hover/pressed state for whichever button the pointer is
+    /// currently over, keyed by its `WidgetId` — fed from
+    /// `MouseMoved`/`MouseDown`/`MouseUp` in `handle` below.
     interaction: InteractionState,
 }
 

@@ -84,7 +84,15 @@ only a push to `main` runs this workflow.
   background fill of its own, unlike `Primary`'s solid `accent_bg`.
   `ButtonVariant` is now `#[non_exhaustive]` (no consumer hits an
   exhaustive match on it today — see grep in the introducing PR), so the
-  next variant added here won't need this same breaking-change dance.
+  next variant added here won't need this same breaking-change dance. A
+  focused `Danger`/`Warning` button on TUI now also gains the same bold
+  bracket-chrome cue `Primary`/`Secondary` already paint when focused,
+  layered on top of the intent foreground colour rather than replacing
+  it.
+- `Theme::button_success_bg`: a "success"-intent resting fill alongside
+  `button_danger_bg`/`button_warning_bg`, tracking `Theme::success_fg`
+  (itself derived from `git_added`) rather than a new field — same solid-
+  fill-not-tint shape as its two siblings.
 - `Button::icon`/`icon_position`/`icon_gap`: an optional leading or
   trailing `Icon` painted alongside the label, `None` by default so
   every existing construction site keeps compiling unchanged. TUI
