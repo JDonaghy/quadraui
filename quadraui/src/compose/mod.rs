@@ -64,7 +64,7 @@ pub mod focus_ring;
 pub mod folder_picker;
 pub mod form_controller;
 pub mod help_layer;
-pub mod hover_tooltip;
+pub mod hover_tooltip_tracker;
 pub mod markdown;
 pub mod menu_system;
 pub mod message_dialog;
@@ -97,7 +97,7 @@ pub use help_layer::{
     filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote,
     HelpOverlayController, HelpOverlayEvent, HelpRegistry, ViewHelp,
 };
-pub use hover_tooltip::HoverTooltipTracker;
+pub use hover_tooltip_tracker::HoverTooltipTracker;
 pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown};
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
 pub use message_dialog::{MessageDialogController, MessageDialogEvent};

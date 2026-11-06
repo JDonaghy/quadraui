@@ -250,6 +250,7 @@ machines, so an app matches on semantic events (`MenuEvent::Activated`,
 | `FocusRing` / `FocusGroup` | Tab / Shift+Tab focus cycling. |
 | `HelpOverlayController` | A context-sensitive key-binding help overlay. |
 | `StatusBarInteraction` / `ToolbarHoverTracker` | Hover and press state for status-bar segments and toolbar buttons. |
+| `HoverTooltipTracker` | When a hover tooltip shows: hover delay, dismiss and auto-dismiss. |
 
 Also in `compose`: a Markdown-to-`StyledText` adapter, and
 `notify_or_toast`, which sends a system notification where the platform
