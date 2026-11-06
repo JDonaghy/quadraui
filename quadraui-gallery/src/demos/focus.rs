@@ -165,15 +165,13 @@ impl Demo for FocusDemo {
         backend.draw_list_with_state(
             Rect::new(area.x, area.y, half_w, body_h),
             &left,
-            None,
-            None,
+            &quadraui::ListPaintState::default(),
             left_focused,
         );
         backend.draw_list_with_state(
             Rect::new(area.x + half_w, area.y, area.width - half_w, body_h),
             &right,
-            None,
-            None,
+            &quadraui::ListPaintState::default(),
             right_focused,
         );
         let _ = backend.draw_status_bar_interactive(

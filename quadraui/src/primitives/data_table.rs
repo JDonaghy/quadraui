@@ -741,6 +741,76 @@ impl DataTable {
             h_scroll: self.h_scroll,
         }
     }
+
+    /// Resolve `scroll_offset` against an optional pixel-precise
+    /// [`DataTablePaintState::scroll_px`] into the whole starting row
+    /// index a caller slices `self.rows[..]` from and passes to
+    /// [`DataTableLayout::hit_test`] — `scroll_px` wins when `Some` and
+    /// usable. `row_height` is [`DataTableLayout::row_height`] from the
+    /// same `layout()` call.
+    ///
+    /// See [`crate::primitives::scrollbar::resolve_scroll_px`] for the
+    /// underlying arithmetic and [`Self::scroll_sub_row_px`] for the
+    /// paired sub-row remainder a GUI painter uses to clip the first
+    /// visible row. `scroll_px: None` resolves to exactly the
+    /// pre-existing whole-row behaviour of reading `self.scroll_offset`
+    /// directly.
+    pub fn effective_scroll_offset(&self, row_height: f32, scroll_px: Option<f32>) -> usize {
+        crate::primitives::scrollbar::resolve_scroll_px(
+            self.scroll_offset,
+            scroll_px,
+            self.rows.len(),
+            row_height,
+        )
+        .0
+    }
+
+    /// Sub-row pixel remainder paired with [`Self::effective_scroll_offset`]
+    /// — `0.0` whenever `scroll_px` is `None`, so a TUI rasteriser that
+    /// never reads this gets exactly the pre-existing whole-row
+    /// behaviour.
+    pub fn scroll_sub_row_px(&self, row_height: f32, scroll_px: Option<f32>) -> f32 {
+        crate::primitives::scrollbar::resolve_scroll_px(
+            self.scroll_offset,
+            scroll_px,
+            self.rows.len(),
+            row_height,
+        )
+        .1
+    }
+}
+
+/// Per-frame paint-time state for a `DataTable` — hovered row tracking
+/// plus a pixel-precise scroll position, neither of which lives on the
+/// declarative [`DataTable`] descriptor itself (see
+/// [`crate::primitives::list::ListPaintState`]'s doc for why — the same
+/// rule applies here).
+///
+/// `#[non_exhaustive]`: construct via [`Default::default`] plus the
+/// `with_*` builders, so a future field here is additive.
+///
+/// `scroll_px: None` paints exactly as reading
+/// [`DataTable::scroll_offset`] directly already does; `Some(px)` wins
+/// and is resolved via [`DataTable::effective_scroll_offset`] /
+/// [`DataTable::scroll_sub_row_px`] into a row index plus a sub-row
+/// remainder.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DataTablePaintState {
+    pub hovered_idx: Option<usize>,
+    pub scroll_px: Option<f32>,
+}
+
+impl DataTablePaintState {
+    pub fn with_hovered_idx(mut self, idx: Option<usize>) -> Self {
+        self.hovered_idx = idx;
+        self
+    }
+
+    pub fn with_scroll_px(mut self, px: Option<f32>) -> Self {
+        self.scroll_px = px;
+        self
+    }
 }
 
 /// Resolve column widths from definitions + viewport width.
@@ -1795,6 +1865,31 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
         }
+    }
+
+    #[test]
+    fn effective_scroll_offset_falls_back_to_scroll_offset_when_scroll_px_is_none() {
+        let mut table = make_table(2, 50);
+        table.scroll_offset = 7;
+        assert_eq!(table.effective_scroll_offset(22.0, None), 7);
+        assert_eq!(table.scroll_sub_row_px(22.0, None), 0.0);
+    }
+
+    #[test]
+    fn effective_scroll_offset_prefers_scroll_px_and_exposes_the_sub_row_remainder() {
+        let mut table = make_table(2, 50);
+        table.scroll_offset = 7; // stale, overridden by scroll_px
+        let scroll_px = Some(33.0); // 1.5 rows deep at a 22px row height
+        assert_eq!(table.effective_scroll_offset(22.0, scroll_px), 1);
+        assert!((table.scroll_sub_row_px(22.0, scroll_px) - 11.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn effective_scroll_offset_quantises_to_whole_rows_on_a_cell_grid() {
+        // TUI's row_height is 1.0 cell: a fractional scroll_px still
+        // resolves to a whole row, with no sub-row remainder read.
+        let table = make_table(2, 50);
+        assert_eq!(table.effective_scroll_offset(1.0, Some(3.7)), 3);
     }
 
     #[test]

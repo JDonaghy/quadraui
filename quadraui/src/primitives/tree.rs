@@ -227,6 +227,16 @@ pub struct TreeViewLayout {
     /// Scroll offset actually used. Clamped to `[0, rows.len())` so the
     /// backend never iterates past the end of the row slice.
     pub resolved_scroll_offset: usize,
+    /// Sub-row pixel remainder when a non-`None` `scroll_px` (see
+    /// [`TreeView::layout_with_scroll_px`]) is in effect — see
+    /// [`crate::primitives::scrollbar::resolve_scroll_px`]. `0.0` from
+    /// plain [`TreeView::layout`], so a TUI rasteriser that never reads
+    /// this field keeps the pre-existing whole-row behaviour. A GUI
+    /// painter shifts the first visible row's top up by this many units
+    /// (relying on the surface's own clip to show only the portion still
+    /// inside the viewport), producing the "partial first row clipped"
+    /// look of pixel-smooth scrolling.
+    pub scroll_sub_px: f32,
 }
 
 /// The chevron glyph a pixel backend's shared paint path
@@ -314,6 +324,30 @@ impl TreeView {
     where
         F: Fn(usize) -> TreeRowMeasure,
     {
+        self.layout_with_scroll_px(viewport_width, viewport_height, None, measure_row)
+    }
+
+    /// Like [`Self::layout`], but with an explicit pixel-precise scroll
+    /// position (`scroll_px`) a GUI painter has accumulated in a
+    /// [`TreePaintState`], instead of only [`TreeView::scroll_offset`]'s
+    /// whole-row value.
+    ///
+    /// `scroll_px` wins over `scroll_offset` when it is `Some` and usable
+    /// — see [`crate::primitives::scrollbar::resolve_scroll_px`] — and
+    /// the sub-row remainder is reported back as
+    /// [`TreeViewLayout::scroll_sub_px`] for the painter to clip the
+    /// first visible row against. `None` (what [`Self::layout`] passes)
+    /// resolves to exactly the pre-existing whole-row behaviour.
+    pub fn layout_with_scroll_px<F>(
+        &self,
+        viewport_width: f32,
+        viewport_height: f32,
+        scroll_px: Option<f32>,
+        measure_row: F,
+    ) -> TreeViewLayout
+    where
+        F: Fn(usize) -> TreeRowMeasure,
+    {
         let mut visible_rows: Vec<VisibleTreeRow> = Vec::new();
         let mut hit_regions: Vec<(Rect, TreeViewHit)> = Vec::new();
 
@@ -329,13 +363,27 @@ impl TreeView {
             (0.0, 0.0, viewport_width, viewport_height)
         };
 
-        // Clamp scroll_offset to a valid starting index; we still report
-        // the clamped value so the app can write it back and self-correct.
-        let resolved_scroll_offset =
-            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.rows.len());
+        // Resolve `scroll_offset` vs. `scroll_px` (the latter wins when
+        // set); we still report the clamped row index so the app can
+        // write it back and self-correct. The first row's height is the
+        // uniform row-height basis for the pixel conversion — the same
+        // approximation `vscrollbar` already makes for thumb sizing on
+        // trees with per-row-varying heights (leaf vs. branch).
+        let row_height_basis = if self.rows.is_empty() {
+            1.0
+        } else {
+            measure_row(0).height
+        };
+        let (resolved_scroll_offset, scroll_sub_px) =
+            crate::primitives::scrollbar::resolve_scroll_px(
+                self.scroll_offset,
+                scroll_px,
+                self.rows.len(),
+                row_height_basis,
+            );
 
         let rows_y_end = inset_y + rows_h_max;
-        let mut y = inset_y;
+        let mut y = inset_y - scroll_sub_px;
         for i in resolved_scroll_offset..self.rows.len() {
             if y >= rows_y_end {
                 break;
@@ -379,6 +427,7 @@ impl TreeView {
             visible_rows,
             hit_regions,
             resolved_scroll_offset,
+            scroll_sub_px,
         }
     }
 
@@ -434,6 +483,23 @@ impl TreeView {
         row_height: f32,
         track_width: f32,
     ) -> Option<Scrollbar> {
+        self.vscrollbar_with_scroll_px(area, row_height, track_width, None)
+    }
+
+    /// Like [`Self::vscrollbar_with_track_width`], but with an explicit
+    /// pixel-precise scroll position (`scroll_px`) from a
+    /// [`TreePaintState`] so the thumb tracks the continuous pixel
+    /// position (whole row + sub-row fraction) instead of snapping to a
+    /// whole row — the scrollbar-geometry counterpart of
+    /// [`Self::layout_with_scroll_px`]. `None` resolves to exactly the
+    /// pre-existing whole-row behaviour.
+    pub fn vscrollbar_with_scroll_px(
+        &self,
+        area: Rect,
+        row_height: f32,
+        track_width: f32,
+        scroll_px: Option<f32>,
+    ) -> Option<Scrollbar> {
         if row_height <= 0.0 || track_width <= 0.0 {
             return None;
         }
@@ -451,14 +517,65 @@ impl TreeView {
             track_width,
             area.height,
         );
+        // `scroll_px` wins over `scroll_offset` when set, so the thumb
+        // moves smoothly alongside the sub-row paint shift
+        // `layout_with_scroll_px` applies.
+        let (resolved_scroll_offset, scroll_sub_px) =
+            crate::primitives::scrollbar::resolve_scroll_px(
+                self.scroll_offset,
+                scroll_px,
+                self.rows.len(),
+                row_height,
+            );
+        let scroll_rows = resolved_scroll_offset as f32 + scroll_sub_px / row_height;
         Some(Scrollbar::vertical(
             self.id,
             track,
-            self.scroll_offset as f32,
+            scroll_rows,
             total,
             visible,
             row_height,
         ))
+    }
+}
+
+/// Per-frame paint-time state for a `TreeView` — hover/press row
+/// tracking plus a pixel-precise scroll position, none of which live on
+/// the declarative [`TreeView`] descriptor itself (see
+/// [`crate::primitives::list::ListPaintState`]'s doc for why — the same
+/// rule applies here).
+///
+/// `#[non_exhaustive]`: construct via [`Default::default`] plus the
+/// `with_*` builders, so a future field here is additive.
+///
+/// `scroll_px: None` paints exactly as [`TreeView::layout`] /
+/// [`TreeView::vscrollbar`] already do (whole-row from
+/// `scroll_offset`); `Some(px)` wins and is resolved via
+/// [`crate::primitives::scrollbar::resolve_scroll_px`] into a
+/// `scroll_offset` plus a sub-row remainder — see
+/// [`TreeView::layout_with_scroll_px`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TreePaintState {
+    pub hovered_idx: Option<usize>,
+    pub pressed_idx: Option<usize>,
+    pub scroll_px: Option<f32>,
+}
+
+impl TreePaintState {
+    pub fn with_hovered_idx(mut self, idx: Option<usize>) -> Self {
+        self.hovered_idx = idx;
+        self
+    }
+
+    pub fn with_pressed_idx(mut self, idx: Option<usize>) -> Self {
+        self.pressed_idx = idx;
+        self
+    }
+
+    pub fn with_scroll_px(mut self, px: Option<f32>) -> Self {
+        self.scroll_px = px;
+        self
     }
 }
 
@@ -979,6 +1096,61 @@ pub(crate) mod native_surface_paint {
                 "expected a fill at the v-scrollbar track {:?}, got fills: {:?}",
                 expected.track,
                 surface.fills
+            );
+        }
+
+        /// A `scroll_px` amount smaller than the row height
+        /// (`layout_with_scroll_px`'s uniform row pitch here) shifts
+        /// every painted row's `y` up by that exact remainder — the
+        /// "partial first row clipped" GUI look of pixel-smooth
+        /// scrolling. `RecordingSurface` doesn't actually clip (that's
+        /// `surface_push_clip(area)`, called right before painting rows,
+        /// which a live GUI surface honours), so the shifted row is
+        /// recorded with `y` above `area.y` directly.
+        #[test]
+        fn scroll_px_shifts_rows_by_the_sub_row_remainder() {
+            let mut tree = make_tree((0..50).map(|i| leaf(i, &format!("row{i}"))).collect());
+            tree.selected_path = Some(vec![0]);
+            // `paint` below recomputes its own uniform row height via
+            // `tree_row_pitch` (independent of whatever `layout`'s own
+            // measurer reports) to decide whether a row was clipped to a
+            // partial height and should be skipped — match it here so
+            // the test's row 0 isn't spuriously treated as clipped.
+            let item_height =
+                crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT as f64) as f32;
+            let sub_row_px = 8.0; // < item_height row pitch, so row stays 0
+            let layout =
+                tree.layout_with_scroll_px(AREA.width, AREA.height, Some(sub_row_px), |_| {
+                    super::super::TreeRowMeasure::new(item_height)
+                });
+            assert_eq!(layout.resolved_scroll_offset, 0);
+            assert!((layout.scroll_sub_px - sub_row_px).abs() < 0.01);
+
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
+            );
+
+            let selected_fill = surface
+                .fills
+                .iter()
+                .find(|(_, c)| *c == theme.selected_bg)
+                .expect("row 0's selected background should still be painted, just shifted up");
+            assert!(
+                selected_fill.0.y < AREA.y,
+                "a sub-row scroll_px should shift row 0 above the viewport top, got y={}",
+                selected_fill.0.y
             );
         }
 
@@ -2038,6 +2210,41 @@ mod tests {
                 .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
                 .expect("overflow should yield a scrollbar");
             assert_eq!(sb.track.width, 1.0);
+        }
+
+        #[test]
+        fn scroll_px_moves_the_thumb_smoothly_between_whole_rows() {
+            let row0 = vtree(30, 0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0), 22.0, 1.0)
+                .unwrap();
+            let row1 = vtree(30, 1)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0), 22.0, 1.0)
+                .unwrap();
+            let half_sb = vtree(30, 0)
+                .vscrollbar_with_scroll_px(
+                    Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0),
+                    22.0,
+                    1.0,
+                    Some(11.0),
+                )
+                .unwrap();
+            assert!(
+                half_sb.thumb_start > row0.thumb_start && half_sb.thumb_start < row1.thumb_start,
+                "half-row scroll_px should land the thumb strictly between rows 0 and 1"
+            );
+        }
+
+        #[test]
+        fn scroll_px_wins_over_scroll_offset_for_the_thumb() {
+            let mut t = vtree(30, 0);
+            t.scroll_offset = 5; // stale, overridden by scroll_px
+            let sb = t
+                .vscrollbar_with_scroll_px(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0, Some(0.0))
+                .unwrap();
+            let at_zero = vtree(30, 0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .unwrap();
+            assert_eq!(sb.thumb_start, at_zero.thumb_start);
         }
     }
 }

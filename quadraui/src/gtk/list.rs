@@ -624,8 +624,8 @@ mod hover_driver_tests {
             backend.draw_list_with_state(
                 Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H),
                 &self.list,
-                self.hover.hovered_idx(),
-                None,
+                &crate::primitives::list::ListPaintState::default()
+                    .with_hovered_idx(self.hover.hovered_idx()),
                 false,
             );
         }

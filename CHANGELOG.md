@@ -59,6 +59,37 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `ListPaintState`/`TreePaintState`/`DataTablePaintState`: per-frame,
+  `#[non_exhaustive]` paint-time state (`hovered_idx`, `pressed_idx`,
+  `scroll_px: Option<f32>`) for `ListView`/`TreeView`/`DataTable`,
+  built via `Default` + `with_hovered_idx`/`with_pressed_idx`/
+  `with_scroll_px`. `scroll_px` is a pixel-smooth scroll position a
+  host accumulates from fractional wheel/trackpad deltas instead of
+  snapping every gesture to a whole row — `None` paints exactly as
+  today (whole-row from `scroll_offset`); `Some(px)` wins and resolves
+  via the new `primitives::scrollbar::resolve_scroll_px` into a
+  `scroll_offset` plus a sub-row remainder
+  (`ListViewLayout`/`TreeViewLayout::scroll_sub_px`,
+  `DataTable::scroll_sub_row_px`). Deliberately **not** a field on
+  `ListView`/`TreeView`/`DataTable` themselves — those descriptors are
+  built by consumers via full struct literals, so a required field
+  there is breaking (see `PRIMITIVE_RULES.md` rule 8); this state lives
+  only at the paint call site.
+  `Backend::draw_tree_with_state`/`draw_list_with_state` (unreleased,
+  added by #2034) are reshaped to take `&TreePaintState`/
+  `&ListPaintState` instead of two `Option<usize>` arguments; the new
+  `Backend::draw_data_table_with_state` is additive, defaulting to
+  `draw_data_table(rect, table, state.hovered_idx)`. TUI honours
+  `scroll_px` by quantising it to a whole row (via
+  `tui::{draw_list_with_scroll_px, draw_tree_with_scroll_px,
+  draw_data_table_with_state}`) — it never paints a partial row.
+  `ListView::layout_with_scroll_px`/`vscrollbar_with_scroll_px` and
+  `TreeView`'s matching pair are additive alongside the existing
+  `layout`/`vscrollbar_with_track_width`, which keep forwarding
+  `scroll_px: None`. `TreeController` accumulates fractional wheel
+  deltas into its own `scroll_px` (new `Backend::wheel_delta_rows`
+  normalises a backend's native wheel-delta unit into row-notches
+  first) and feeds it to `draw_tree_with_state` from `render()`.
 - `compose::HoverTooltipTracker<T>`: the delay + auto-dismiss state
   machine a hover-driven tooltip needs on top of
   `ToolbarHoverTracker`/`ListHoverTracker`/`TreeHoverTracker`'s plain

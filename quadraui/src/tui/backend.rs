@@ -2416,6 +2416,38 @@ impl Backend for TuiBackend {
         crate::tui::draw_tree(frame.buffer_mut(), area, tree, &theme, nerd_fonts);
     }
 
+    /// Honours `state.scroll_px` via [`crate::tui::draw_tree_with_scroll_px`]
+    /// — TUI quantises it to a whole row (never a partial one); see that
+    /// function's doc. Hover/press tinting (`state.hovered_idx`/
+    /// `pressed_idx`) isn't painted on TUI today, the same gap
+    /// [`Self::draw_tree`] already has.
+    fn draw_tree_with_state(
+        &mut self,
+        rect: QRect,
+        tree: &TreeView,
+        state: &crate::primitives::tree::TreePaintState,
+        _focus_ring_visible: bool,
+    ) {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_tree_with_state called outside enter_frame_scope"
+            );
+            return;
+        };
+        crate::tui::draw_tree_with_scroll_px(
+            frame.buffer_mut(),
+            area,
+            tree,
+            &theme,
+            nerd_fonts,
+            state.scroll_px,
+        );
+    }
+
     fn draw_list(&mut self, rect: QRect, list: &ListView) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
@@ -2428,6 +2460,38 @@ impl Backend for TuiBackend {
             return;
         };
         crate::tui::draw_list(frame.buffer_mut(), area, list, &theme, nerd_fonts);
+    }
+
+    /// Honours `state.scroll_px` via [`crate::tui::draw_list_with_scroll_px`]
+    /// — TUI quantises it to a whole row (never a partial one); see that
+    /// function's doc. Hover/press tinting (`state.hovered_idx`/
+    /// `pressed_idx`) isn't painted on TUI today, the same gap
+    /// [`Self::draw_list`] already has.
+    fn draw_list_with_state(
+        &mut self,
+        rect: QRect,
+        list: &ListView,
+        state: &crate::primitives::list::ListPaintState,
+        _focus_ring_visible: bool,
+    ) {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_list_with_state called outside enter_frame_scope"
+            );
+            return;
+        };
+        crate::tui::draw_list_with_scroll_px(
+            frame.buffer_mut(),
+            area,
+            list,
+            &theme,
+            nerd_fonts,
+            state.scroll_px,
+        );
     }
 
     fn draw_data_table(
@@ -2474,6 +2538,29 @@ impl Backend for TuiBackend {
             glyphs,
             nerd_fonts,
         )
+    }
+
+    /// Honours `state.scroll_px` via
+    /// [`crate::tui::draw_data_table_with_state`] — TUI quantises it to
+    /// a whole row (never a partial one); see
+    /// [`DataTable::effective_scroll_offset`](crate::DataTable::effective_scroll_offset)'s
+    /// doc.
+    fn draw_data_table_with_state(
+        &mut self,
+        rect: QRect,
+        table: &crate::DataTable,
+        state: &crate::primitives::data_table::DataTablePaintState,
+    ) -> crate::DataTableLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_data_table_with_state called outside enter_frame_scope"
+            );
+            return self.data_table_layout(rect, table);
+        };
+        crate::tui::draw_data_table_with_state(frame.buffer_mut(), area, table, &theme, state)
     }
 
     fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
