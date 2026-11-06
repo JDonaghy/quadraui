@@ -4179,6 +4179,7 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::button::ButtonLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
                 false,
@@ -4193,6 +4194,7 @@ impl Backend for TuiBackend {
             &theme,
             interaction.is_hovered(&button.id),
             interaction.is_pressed(&button.id),
+            nerd_fonts,
         )
     }
 

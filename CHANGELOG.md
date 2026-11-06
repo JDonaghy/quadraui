@@ -76,6 +76,26 @@ only a push to `main` runs this workflow.
   `ActivityItem::tooltip`/`Panel::tooltip`/`Toolbar`'s per-button
   tooltip already carry, now also on the standalone `Button` primitive.
   No-op on TUI (no hover UI there).
+- `ButtonVariant::{Danger, Warning}`: two new `Button` intent variants,
+  coloured through the new `Theme::button_danger_bg`/`button_warning_bg`
+  accessors (tracking `error_fg`/`warning_fg`, never a new `Theme`
+  field). On TUI, intent paints as the foreground colour on both the
+  bracket chrome and the label — e.g. `[ ⚠ Delete ]` — with no
+  background fill of its own, unlike `Primary`'s solid `accent_bg`.
+  `ButtonVariant` is now `#[non_exhaustive]` (no consumer hits an
+  exhaustive match on it today — see grep in the introducing PR), so the
+  next variant added here won't need this same breaking-change dance.
+- `Button::icon`/`icon_position`/`icon_gap`: an optional leading or
+  trailing `Icon` painted alongside the label, `None` by default so
+  every existing construction site keeps compiling unchanged. TUI
+  paints `Icon::glyph` when the backend's Nerd Fonts flag is on and
+  `Icon::fallback` otherwise, same convention as `ActivityBar`'s own
+  TUI rasteriser.
+- `ButtonMetrics::resolve`: a `Button`'s height/horizontal-padding/
+  corner-radius resolved from `Style::control_height`/`Style::padding`/
+  `Style::corner_radius` in one shared place, so every backend's
+  rasteriser reads the same three numbers instead of each hardcoding
+  its own literal.
 - `UiEvent::Toolbar(WidgetId, ToolbarEvent)`: a `Toolbar` `Action` button
   click (mouse, via the new `Toolbar::click`) or Enter/Space on the
   keyboard-focused button (`Toolbar::activate_focused`) now carries the

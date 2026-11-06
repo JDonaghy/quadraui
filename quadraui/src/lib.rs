@@ -496,7 +496,9 @@ pub use primitives::board::{
     board_layout, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardLayout,
     BoardMeasure, BoardModel, CardBadge, CardId, CardLayout, ColumnLayout, MoveDir,
 };
-pub use primitives::button::{Button, ButtonEvent, ButtonHit, ButtonLayout, ButtonVariant};
+pub use primitives::button::{
+    Button, ButtonEvent, ButtonHit, ButtonIconPosition, ButtonLayout, ButtonMetrics, ButtonVariant,
+};
 pub use primitives::canvas::{Canvas, CanvasHit, CanvasLayout, DrawOp};
 pub use primitives::chart::{
     Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,

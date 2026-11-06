@@ -30,13 +30,25 @@
 
 use crate::backend::PointerShape;
 use crate::event::{Key, NamedKey, Point, Rect};
-use crate::types::{Modifiers, WidgetId};
+use crate::style::Style;
+use crate::types::{Icon, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Visual emphasis variant. Purely descriptive — `Button` carries
 /// no backend painting, so a rasteriser reads this field to choose its
 /// own chrome (filled vs. outlined vs. icon-only).
+///
+/// `#[non_exhaustive]`, from this issue's own change: [`Self::Danger`]/
+/// [`Self::Warning`] are themselves additive variants a downstream
+/// consumer's exhaustive `match` would have broken on had one existed
+/// (`grep -rn 'ButtonVariant' ~/src/coord-tui/src ~/src/vimcode/src`
+/// finds none today). Marking the enum `#[non_exhaustive]` now, while
+/// that blast radius is still zero, forecloses the same break for the
+/// *next* variant — the same rule-8 preference order
+/// `docs/PRIMITIVE_RULES.md` states: a non-breaking shape over a
+/// breaking one whenever one is available for free.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ButtonVariant {
     /// The call-to-action for its surface (e.g. a dialog's "OK").
     #[default]
@@ -45,6 +57,78 @@ pub enum ButtonVariant {
     Secondary,
     /// Icon-only, no label chrome (e.g. a toolbar glyph button).
     Icon,
+    /// A destructive action (e.g. "Delete"). Coloured through
+    /// [`crate::Theme::button_danger_bg`] on a backend that fills a
+    /// solid background, and through [`crate::Theme::error_fg`] as a
+    /// plain foreground tint on TUI (see `crate::tui::button`'s own
+    /// doc) — there is no dedicated `danger_fg` field, same "derive, don't
+    /// add" rule [`crate::Theme::button_danger_bg`] itself follows.
+    Danger,
+    /// A cautionary action (e.g. "Overwrite"), one step down from
+    /// [`Self::Danger`]. Coloured through
+    /// [`crate::Theme::button_warning_bg`] /
+    /// [`crate::Theme::warning_fg`] — see [`Self::Danger`]'s doc for the
+    /// same shape.
+    Warning,
+}
+
+/// Icon placement relative to [`Button::label`] when [`Button::icon`] is
+/// set. No effect when `icon` is `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ButtonIconPosition {
+    /// Icon paints before the label (e.g. `[ ⚠ Delete ]`).
+    #[default]
+    Leading,
+    /// Icon paints after the label (e.g. `[ Delete ⚠ ]`).
+    Trailing,
+}
+
+/// `#[serde(default)]` value for [`Button::icon_gap`] — a payload
+/// serialized before this field existed deserializes at the same gap
+/// [`Button::new`] already sets, matching `Button::default()`.
+fn default_icon_gap() -> f32 {
+    4.0
+}
+
+/// Fully-resolved, backend-neutral [`Button`] geometry: every backend's
+/// rasteriser reads the same three numbers from here rather than each
+/// hardcoding its own literal (or quietly drifting from the others).
+///
+/// **TUI story: cell-quantised / no-op**, same as the [`Style`] tokens it
+/// is built from — see that struct's module doc. `crate::tui::button`
+/// does not read this today: a terminal row is always exactly one cell
+/// tall and has no sub-cell corner/padding to refine, so there is no
+/// live TUI call site yet.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ButtonMetrics {
+    /// Resolved button height, in surface-native pixels — read straight
+    /// from [`Style::control_height`], the same "standard single-line
+    /// control" metric every other overlay sizes its own single-line
+    /// chrome against.
+    pub height: f32,
+    /// Resolved horizontal inset, in surface-native pixels, between the
+    /// button's own edge and its label/icon content — read straight
+    /// from [`Style::padding`], the same inner-spacing token
+    /// `Toast`/`Tooltip`/`ContextMenu`/`Palette`/`Dialog` already share.
+    pub padding_x: f32,
+    /// Resolved corner radius, in surface-native pixels — read straight
+    /// from [`Style::corner_radius`], the same radius every other
+    /// rounded-rect overlay rasterises its box with.
+    pub corner_radius: f32,
+}
+
+impl ButtonMetrics {
+    /// Resolve a [`Button`]'s geometry from `style`. Every number here
+    /// is a direct read of an existing [`Style`] field — there is no
+    /// button-specific token, so a host that retunes `Style` once gets
+    /// a matching button for free on every backend.
+    pub fn resolve(style: &Style) -> Self {
+        Self {
+            height: style.control_height,
+            padding_x: style.padding,
+            corner_radius: style.corner_radius,
+        }
+    }
 }
 
 /// Declarative description of a standalone button.
@@ -117,6 +201,36 @@ pub struct Button {
     /// same as `ActivityItem::tooltip`'s own TUI story.
     #[serde(default)]
     pub tooltip: Option<String>,
+    /// Optional icon painted alongside [`Button::label`], at
+    /// [`Button::icon_position`]. `None` (the default) paints no icon —
+    /// every existing construction site keeps compiling and painting
+    /// exactly as before.
+    ///
+    /// **TUI story: glyph when Nerd Fonts are on, fallback otherwise.**
+    /// `crate::tui::button` resolves [`Icon::glyph`] when the backend's
+    /// `set_nerd_fonts(true)` is active and [`Icon::fallback`] otherwise
+    /// — the same convention [`crate::ActivityBar`]'s own TUI rasteriser
+    /// already follows.
+    #[serde(default)]
+    pub icon: Option<Icon>,
+    /// Where [`Button::icon`] paints relative to [`Button::label`]. No
+    /// effect while `icon` is `None`.
+    #[serde(default)]
+    pub icon_position: ButtonIconPosition,
+    /// Gap, in surface-native pixels, between [`Button::icon`] and
+    /// [`Button::label`]. No effect while `icon` is `None`.
+    ///
+    /// **TUI story: cell-quantised, floored to one cell.** A sub-cell
+    /// gap has no grid column to paint into, and a gap of zero visible
+    /// cells would read as a typo rather than an intentional tight
+    /// pairing — `crate::tui::button` rounds this up to whole cells
+    /// (`ceil(icon_gap / nominal_cell_px)`, the same nominal-cell-width
+    /// fallback [`Style::padding`]'s own doc describes) and floors the
+    /// result at one cell whenever an icon is actually painted.
+    ///
+    /// Default `4.0` — a tight but visually separated icon/label pairing.
+    #[serde(default = "default_icon_gap")]
+    pub icon_gap: f32,
 }
 
 impl Button {
@@ -133,6 +247,9 @@ impl Button {
             disabled: false,
             focused: false,
             tooltip: None,
+            icon: None,
+            icon_position: ButtonIconPosition::Leading,
+            icon_gap: default_icon_gap(),
         }
     }
 
@@ -337,6 +454,8 @@ pub(crate) mod native_surface_paint {
             match button.variant {
                 ButtonVariant::Primary => theme.accent_bg,
                 ButtonVariant::Secondary | ButtonVariant::Icon => theme.surface_bg,
+                ButtonVariant::Danger => theme.button_danger_bg(),
+                ButtonVariant::Warning => theme.button_warning_bg(),
             }
         };
         let bg = if button.disabled {
@@ -401,11 +520,12 @@ pub(crate) mod native_surface_paint {
         use crate::types::{Color, WidgetId};
         use crate::Image;
 
-        /// Records every stroke call — enough to assert the focus ring
-        /// is (or isn't) painted, without a Cairo/Core Graphics/Direct2D
-        /// host.
+        /// Records every fill/stroke call — enough to assert the resting
+        /// fill colour and the focus ring are (or aren't) painted,
+        /// without a Cairo/Core Graphics/Direct2D host.
         #[derive(Default)]
         struct RecordingSurface {
+            fills: Vec<(Rect, f32, Color)>,
             strokes: Vec<(Rect, f32, Color, f32)>,
         }
 
@@ -425,7 +545,9 @@ pub(crate) mod native_surface_paint {
                 (text.chars().count() as f32 * 8.0, 14.0)
             }
             fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
-            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+                self.fills.push((rect, radius, color));
+            }
             fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
                 self.strokes.push((rect, 0.0, color, stroke_width));
             }
@@ -546,6 +668,38 @@ pub(crate) mod native_surface_paint {
                     .all(|(_, _, color, _)| *color != theme.focus_ring_color()),
                 "a disabled button must not paint a focus ring even while `focused`"
             );
+        }
+
+        #[test]
+        fn danger_variant_fills_with_the_theme_danger_colour() {
+            let mut button = Button::new(WidgetId::new("b"), "Delete");
+            button.variant = ButtonVariant::Danger;
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let (_, _, fill) = surface.fills.first().expect("button must paint a fill");
+            assert_eq!(*fill, theme.button_danger_bg());
+            assert_ne!(
+                *fill, theme.accent_bg,
+                "a Danger button must not fall back to the Primary fill"
+            );
+        }
+
+        #[test]
+        fn warning_variant_fills_with_the_theme_warning_colour() {
+            let mut button = Button::new(WidgetId::new("b"), "Overwrite");
+            button.variant = ButtonVariant::Warning;
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let (_, _, fill) = surface.fills.first().expect("button must paint a fill");
+            assert_eq!(*fill, theme.button_warning_bg());
         }
     }
 }
@@ -703,5 +857,72 @@ mod tests {
         assert_eq!(b.variant, ButtonVariant::Primary);
         assert!(!b.disabled);
         assert!(!b.focused);
+    }
+
+    #[test]
+    fn new_has_no_icon_and_default_leading_gap_of_four() {
+        let b = button();
+        assert_eq!(b.icon, None);
+        assert_eq!(b.icon_position, ButtonIconPosition::Leading);
+        assert_eq!(b.icon_gap, 4.0);
+    }
+
+    /// A JSON payload serialized before `icon`/`icon_position`/`icon_gap`
+    /// existed has none of those keys; `#[serde(default)]` must deserialize
+    /// every one of them at the same defaults `Button::new` sets, so a
+    /// consumer's persisted descriptor from an earlier `quadraui` version
+    /// keeps loading.
+    #[test]
+    fn deserializing_without_icon_fields_defaults_to_new() {
+        let json = r#"{"id": "dialog:ok", "label": "OK"}"#;
+        let b: Button = serde_json::from_str(json).expect("deserialize without icon fields");
+        assert_eq!(b.icon, None);
+        assert_eq!(b.icon_position, ButtonIconPosition::Leading);
+        assert_eq!(b.icon_gap, 4.0);
+    }
+
+    #[test]
+    fn icon_round_trips_through_serde() {
+        let mut b = button();
+        b.icon = Some(crate::types::Icon::new("\u{f071}", "!"));
+        b.icon_position = ButtonIconPosition::Trailing;
+        b.icon_gap = 6.0;
+        let json = serde_json::to_string(&b).unwrap();
+        let back: Button = serde_json::from_str(&json).unwrap();
+        assert_eq!(b, back);
+    }
+
+    #[test]
+    fn danger_and_warning_variants_round_trip_through_serde() {
+        for variant in [ButtonVariant::Danger, ButtonVariant::Warning] {
+            let mut b = button();
+            b.variant = variant;
+            let json = serde_json::to_string(&b).unwrap();
+            let back: Button = serde_json::from_str(&json).unwrap();
+            assert_eq!(b, back);
+        }
+    }
+
+    #[test]
+    fn resolved_metrics_reads_height_padding_and_radius_straight_from_style() {
+        let style = Style::default()
+            .with_control_height(32.0)
+            .with_padding(10.0)
+            .with_corner_radius(9.0);
+
+        let metrics = ButtonMetrics::resolve(&style);
+
+        assert_eq!(metrics.height, 32.0);
+        assert_eq!(metrics.padding_x, 10.0);
+        assert_eq!(metrics.corner_radius, 9.0);
+    }
+
+    #[test]
+    fn resolved_metrics_matches_style_default() {
+        let style = Style::default();
+        let metrics = ButtonMetrics::resolve(&style);
+        assert_eq!(metrics.height, style.control_height);
+        assert_eq!(metrics.padding_x, style.padding);
+        assert_eq!(metrics.corner_radius, style.corner_radius);
     }
 }

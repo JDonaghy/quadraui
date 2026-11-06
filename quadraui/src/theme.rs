@@ -669,6 +669,36 @@ impl Theme {
         base.blend(self.accent_fg, 0.26)
     }
 
+    /// Resting fill for a [`crate::ButtonVariant::Danger`] button — the
+    /// full-strength colour a backend that paints a solid fill uses in
+    /// place of [`Self::accent_bg`], tracking [`Self::error_fg`] so a
+    /// palette that already themes its error colour gets a matching
+    /// danger button for free.
+    ///
+    /// **Not** [`Self::danger_bg`]: that accessor is a *subtle tint* of
+    /// [`Self::background`] for a banner/toast/validation strip, the
+    /// same low-alpha "surface, not solid colour" treatment
+    /// [`Self::success_bg`]'s own doc describes. A button's resting
+    /// fill reads as a solid block of colour the same way
+    /// [`crate::ButtonVariant::Primary`]'s `accent_bg` already does, so
+    /// this accessor returns `error_fg` itself rather than a background
+    /// blend.
+    ///
+    /// **A method, not a field** — the same reasoning as
+    /// [`Self::button_hover_bg`]: purely additive, so it costs nothing
+    /// in a downstream exhaustive palette literal.
+    pub fn button_danger_bg(&self) -> Color {
+        self.error_fg
+    }
+
+    /// Resting fill for a [`crate::ButtonVariant::Warning`] button —
+    /// like [`Self::button_danger_bg`], but tracking [`Self::warning_fg`]
+    /// instead of [`Self::error_fg`]. See that method's doc for why this
+    /// is a solid fill rather than [`Self::warning_bg`]'s subtle tint.
+    pub fn button_warning_bg(&self) -> Color {
+        self.warning_fg
+    }
+
     /// Background tint for a hovered [`crate::ListView`] row, blended
     /// from `base` (the row's own resting background — `selected_bg`,
     /// `header_bg`, or the list's base fill) toward [`Self::foreground`]
@@ -1578,6 +1608,41 @@ mod tests {
             "pressed ({pressed:?}) should sit further from the resting colour \
              ({base:?}) than hover ({hovered:?})"
         );
+    }
+
+    #[test]
+    fn button_danger_bg_tracks_error_fg_as_a_solid_fill_not_a_tint() {
+        let theme = Theme::default();
+        assert_eq!(theme.button_danger_bg(), theme.error_fg);
+        assert_ne!(
+            theme.button_danger_bg(),
+            theme.danger_bg(),
+            "a button's resting fill is a solid colour, not the subtle \
+             background tint `danger_bg` blends for a banner/toast"
+        );
+    }
+
+    #[test]
+    fn button_warning_bg_tracks_warning_fg_as_a_solid_fill_not_a_tint() {
+        let theme = Theme::default();
+        assert_eq!(theme.button_warning_bg(), theme.warning_fg);
+        assert_ne!(
+            theme.button_warning_bg(),
+            theme.warning_bg(),
+            "a button's resting fill is a solid colour, not the subtle \
+             background tint `warning_bg` blends for a banner/toast"
+        );
+    }
+
+    #[test]
+    fn button_danger_and_warning_bg_follow_a_custom_theme_override() {
+        let theme = Theme {
+            error_fg: Color::rgb(200, 10, 10),
+            warning_fg: Color::rgb(200, 150, 10),
+            ..Theme::default()
+        };
+        assert_eq!(theme.button_danger_bg(), Color::rgb(200, 10, 10));
+        assert_eq!(theme.button_warning_bg(), Color::rgb(200, 150, 10));
     }
 
     #[test]
