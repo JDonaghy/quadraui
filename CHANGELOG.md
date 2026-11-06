@@ -148,6 +148,21 @@ only a push to `main` runs this workflow.
   reverse-video/`▶`-prefix treatment, unchanged.
 
 ### Fixed
+- GTK `Backend::draw_focus_ring` (`gtk::backend`) no longer strokes over a
+  tooltip or toast painted earlier the same frame: `gtk::run::render_frame`
+  paints the generic tab-stop focus ring *after* `AppLogic::render` returns,
+  which previously also put it on top of any tooltip/toast `render` had
+  drawn over that same rect, inverting the overlay-order contract
+  (`quadraui-binding-core::host::render_overlays`'s doc: "tooltip, toast
+  topmost of all"). `GtkBackend` now records every tooltip/toast bound
+  painted this frame and skips the part of the ring's perimeter stroke band
+  that overlaps one, so a toast inset entirely inside a large focused
+  widget still leaves the ring intact. Adds pixel regressions for both
+  directions, a toast-over-bordered-focused-editor regression
+  (`gtk::toast`), and an end-to-end test driving
+  `compose::HoverTooltipTracker` through real `GtkDriver` `MouseMoved`
+  dispatch + the new `GtkDriver::tick` seam to show/hide a tooltip from
+  pointer input.
 - GTK `Backend::draw_scrollbar` (`gtk::backend`) now follows the overlay
   scrollbar idle-fade seam (`primitives::scrollbar::idle_fade_opacity`)
   instead of painting at permanent full opacity: `gtk::run`'s scroll

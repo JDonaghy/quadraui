@@ -170,6 +170,37 @@ impl<A: AppLogic> GtkDriver<A> {
         render_frame(backend, app, &cr, self.width, self.height);
     }
 
+    /// Fire `AppLogic::tick` directly, the same call the live
+    /// `gtk::run::run_with` runner's `drain_and_tick` closure makes after
+    /// every event-queue drain — including the idle ticks where no event
+    /// arrived, driven by either a `Backend::request_frame_in`-scheduled
+    /// one-shot `glib::source::timeout_add_local_once` or the periodic
+    /// `IDLE_POLL_CEILING` fallback. There is no live GLib main loop in
+    /// this headless driver for either timer to fire against (no
+    /// `gtk::init`, no `Application` — see the module doc's "Limitations"
+    /// section), so this is the seam a test uses to assert on `tick`'s
+    /// *effect* directly: dispatch input via [`Self::dispatch`], call this
+    /// with **no** further input, and check the result (e.g. a
+    /// delay-driven hover tooltip becoming visible). Repaints on
+    /// `Reaction::Redraw` and latches `exited` on `Reaction::Exit`,
+    /// mirroring [`Self::dispatch`].
+    pub fn tick(&mut self) -> Reaction {
+        if self.core.exited() {
+            return Reaction::Exit;
+        }
+        let reaction = {
+            let (backend, app) = self.core.parts_mut();
+            app.tick(backend)
+        };
+        let surface = &self.surface;
+        let width = self.width;
+        let height = self.height;
+        self.core.apply_outcome(reaction.into(), |backend, app| {
+            let cr = Context::new(surface).expect("Context::new on headless ImageSurface");
+            render_frame(backend, app, &cr, width, height);
+        })
+    }
+
     /// Feed one synthetic event through the shared production
     /// [`dispatch_event`] path. Repaints on redraw and latches `exited`.
     pub fn dispatch(&mut self, event: UiEvent) -> Reaction {
