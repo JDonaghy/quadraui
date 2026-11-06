@@ -1,17 +1,35 @@
 //! TUI rasteriser for [`crate::Button`].
 //!
 //! Paints `[ Label ]` bracket chrome for [`ButtonVariant::Primary`] /
-//! [`ButtonVariant::Secondary`], and the bare label for
+//! [`ButtonVariant::Secondary`] / [`ButtonVariant::Danger`] /
+//! [`ButtonVariant::Warning`], and the bare label for
 //! [`ButtonVariant::Icon`] (no bracket chrome — an icon button typically
 //! carries a single glyph). The whole cell range is one hit target, same
 //! as [`crate::Button::layout`].
+//!
+//! [`ButtonVariant::Danger`]/[`ButtonVariant::Warning`] paint **no**
+//! background fill on TUI — unlike [`ButtonVariant::Primary`]'s solid
+//! `accent_bg`, intent here is carried entirely by the foreground colour
+//! ([`Theme::error_fg`]/[`Theme::warning_fg`]) on both the bracket chrome
+//! and the label text, e.g. `[ ⚠ Delete ]`. [`Button::icon`] paints
+//! [`crate::Icon::glyph`] when the backend's Nerd Fonts flag is on and
+//! [`crate::Icon::fallback`] otherwise, same convention as
+//! [`crate::tui::activity_bar::draw_activity_bar`].
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::{ratatui_color, set_cell};
-use crate::primitives::button::{Button, ButtonLayout, ButtonVariant};
+use crate::primitives::button::{Button, ButtonIconPosition, ButtonLayout, ButtonVariant};
+use crate::primitives::layout_metrics::pixel::NOMINAL_CELL_PX_WIDTH;
 use crate::theme::Theme;
+
+/// Quantise [`Button::icon_gap`] (a surface-native pixel count) to whole
+/// TUI cells, floored at one cell — see that field's own "TUI story" doc
+/// for why a zero-cell gap isn't honoured.
+fn icon_gap_cells(icon_gap: f32) -> usize {
+    ((icon_gap / NOMINAL_CELL_PX_WIDTH).ceil() as usize).max(1)
+}
 
 /// Compute the TUI cell-unit layout for a [`Button`] without painting.
 /// The control has no internal sub-regions, so `area` maps straight
@@ -29,16 +47,24 @@ pub fn tui_button_layout(button: &Button, area: Rect) -> ButtonLayout {
 /// click dispatch.
 ///
 /// Identical to [`draw_button_interactive`] with `is_hovered` /
-/// `is_pressed` both `false` — plain, no-hover-state paint.
-pub fn draw_button(buf: &mut Buffer, area: Rect, button: &Button, theme: &Theme) -> ButtonLayout {
-    draw_button_interactive(buf, area, button, theme, false, false)
+/// `is_pressed` both `false` — plain, no-hover-state paint. `nerd_fonts_enabled`
+/// picks which half of [`Button::icon`] paints — see that field's own doc.
+pub fn draw_button(
+    buf: &mut Buffer,
+    area: Rect,
+    button: &Button,
+    theme: &Theme,
+    nerd_fonts_enabled: bool,
+) -> ButtonLayout {
+    draw_button_interactive(buf, area, button, theme, false, false, nerd_fonts_enabled)
 }
 
 /// [`draw_button`], tinting the background via [`Theme::button_pressed_bg`]
 /// / [`Theme::button_hover_bg`] when `is_pressed` / `is_hovered` is set —
 /// the TUI side of [`crate::Backend::draw_button_with_state`]. Pressed
 /// takes priority over hover, same as the GTK/macOS/Win `native_surface_paint`
-/// path.
+/// path. See [`draw_button`] for `nerd_fonts_enabled`.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_button_interactive(
     buf: &mut Buffer,
     area: Rect,
@@ -46,6 +72,7 @@ pub fn draw_button_interactive(
     theme: &Theme,
     is_hovered: bool,
     is_pressed: bool,
+    nerd_fonts_enabled: bool,
 ) -> ButtonLayout {
     let layout = tui_button_layout(button, area);
 
@@ -58,12 +85,23 @@ pub fn draw_button_interactive(
     let w = layout.bounds.width.round() as u16;
     let end = x0.saturating_add(w);
 
+    // `Danger`/`Warning` intent is carried entirely by foreground colour
+    // on TUI — no background fill of their own, unlike `Primary`'s solid
+    // `accent_bg` — see the module doc.
+    let intent_fg = match button.variant {
+        ButtonVariant::Danger => Some(theme.error_fg),
+        ButtonVariant::Warning => Some(theme.warning_fg),
+        ButtonVariant::Primary | ButtonVariant::Secondary | ButtonVariant::Icon => None,
+    };
+
     let bg = if button.disabled {
         theme.surface_bg
     } else {
         match button.variant {
             ButtonVariant::Primary => theme.accent_bg,
-            ButtonVariant::Secondary => theme.surface_bg,
+            ButtonVariant::Secondary | ButtonVariant::Danger | ButtonVariant::Warning => {
+                theme.surface_bg
+            }
             ButtonVariant::Icon => theme.background,
         }
     };
@@ -79,11 +117,15 @@ pub fn draw_button_interactive(
     let bg = ratatui_color(bg);
     let fg = if button.disabled {
         ratatui_color(theme.muted_fg)
+    } else if let Some(intent) = intent_fg {
+        ratatui_color(intent)
     } else {
         ratatui_color(theme.foreground)
     };
     let brk_fg = if button.disabled {
         ratatui_color(theme.muted_fg)
+    } else if let Some(intent) = intent_fg {
+        ratatui_color(intent)
     } else if button.focused {
         ratatui_color(theme.accent_fg)
     } else {
@@ -91,10 +133,28 @@ pub fn draw_button_interactive(
     };
 
     let is_icon = matches!(button.variant, ButtonVariant::Icon);
+    let icon_ch: Option<char> = button.icon.as_ref().map(|icon| {
+        let resolved = if nerd_fonts_enabled {
+            icon.glyph.as_str()
+        } else {
+            icon.fallback.as_str()
+        };
+        resolved.chars().next().unwrap_or(' ')
+    });
+    let inner = match icon_ch {
+        None => button.label.clone(),
+        Some(ch) => {
+            let gap = " ".repeat(icon_gap_cells(button.icon_gap));
+            match button.icon_position {
+                ButtonIconPosition::Leading => format!("{ch}{gap}{}", button.label),
+                ButtonIconPosition::Trailing => format!("{}{gap}{ch}", button.label),
+            }
+        }
+    };
     let text: String = if is_icon {
-        button.label.clone()
+        inner
     } else {
-        format!("[ {} ]", button.label)
+        format!("[ {inner} ]")
     };
     let last_idx = text.chars().count().saturating_sub(1);
 
@@ -141,7 +201,7 @@ mod tests {
         let area = Rect::new(origin_x, origin_y, 8, 1);
         let mut buf = Buffer::empty(area);
         let button = mk_button("OK");
-        let layout = draw_button(&mut buf, area, &button, &Theme::default());
+        let layout = draw_button(&mut buf, area, &button, &Theme::default(), false);
 
         assert_eq!(cell_char(&buf, origin_x, origin_y), '[');
         assert_eq!(cell_char(&buf, origin_x + 2, origin_y), 'O');
@@ -170,7 +230,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let mut button = mk_button("X");
         button.variant = ButtonVariant::Icon;
-        draw_button(&mut buf, area, &button, &Theme::default());
+        draw_button(&mut buf, area, &button, &Theme::default(), false);
         assert_eq!(cell_char(&buf, 0, 0), 'X');
         assert_eq!(cell_char(&buf, 1, 0), ' ');
     }
@@ -182,7 +242,7 @@ mod tests {
         let mut button = mk_button("OK");
         button.disabled = true;
         let theme = Theme::default();
-        draw_button(&mut buf, area, &button, &theme);
+        draw_button(&mut buf, area, &button, &theme, false);
         assert_eq!(cell_char(&buf, 2, 0), 'O');
     }
 
@@ -191,7 +251,13 @@ mod tests {
         let buf_area = Rect::new(0, 0, 10, 1);
         let mut buf = Buffer::empty(buf_area);
         let button = mk_button("OK");
-        let _layout = draw_button(&mut buf, Rect::new(0, 0, 0, 0), &button, &Theme::default());
+        let _layout = draw_button(
+            &mut buf,
+            Rect::new(0, 0, 0, 0),
+            &button,
+            &Theme::default(),
+            false,
+        );
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
@@ -209,11 +275,11 @@ mod tests {
         let button = mk_button("OK");
 
         let mut resting_buf = Buffer::empty(area);
-        draw_button_interactive(&mut resting_buf, area, &button, &theme, false, false);
+        draw_button_interactive(&mut resting_buf, area, &button, &theme, false, false, false);
         let resting_bg = cell_bg(&resting_buf, 3, 0);
 
         let mut hovered_buf = Buffer::empty(area);
-        draw_button_interactive(&mut hovered_buf, area, &button, &theme, true, false);
+        draw_button_interactive(&mut hovered_buf, area, &button, &theme, true, false, false);
         let hovered_bg = cell_bg(&hovered_buf, 3, 0);
 
         assert_ne!(
@@ -229,15 +295,15 @@ mod tests {
         let button = mk_button("OK");
 
         let mut resting_buf = Buffer::empty(area);
-        draw_button_interactive(&mut resting_buf, area, &button, &theme, false, false);
+        draw_button_interactive(&mut resting_buf, area, &button, &theme, false, false, false);
         let resting_bg = cell_bg(&resting_buf, 3, 0);
 
         let mut hovered_buf = Buffer::empty(area);
-        draw_button_interactive(&mut hovered_buf, area, &button, &theme, true, false);
+        draw_button_interactive(&mut hovered_buf, area, &button, &theme, true, false, false);
         let hovered_bg = cell_bg(&hovered_buf, 3, 0);
 
         let mut pressed_buf = Buffer::empty(area);
-        draw_button_interactive(&mut pressed_buf, area, &button, &theme, true, true);
+        draw_button_interactive(&mut pressed_buf, area, &button, &theme, true, true, false);
         let pressed_bg = cell_bg(&pressed_buf, 3, 0);
 
         assert_ne!(pressed_bg, resting_bg);
@@ -252,16 +318,145 @@ mod tests {
         button.disabled = true;
 
         let mut resting_buf = Buffer::empty(area);
-        draw_button_interactive(&mut resting_buf, area, &button, &theme, false, false);
+        draw_button_interactive(&mut resting_buf, area, &button, &theme, false, false, false);
         let resting_bg = cell_bg(&resting_buf, 3, 0);
 
         let mut hovered_buf = Buffer::empty(area);
-        draw_button_interactive(&mut hovered_buf, area, &button, &theme, true, true);
+        draw_button_interactive(&mut hovered_buf, area, &button, &theme, true, true, false);
         let hovered_bg = cell_bg(&hovered_buf, 3, 0);
 
         assert_eq!(
             resting_bg, hovered_bg,
             "a disabled button must not paint hover/pressed tints"
         );
+    }
+
+    fn cell_fg(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
+        buf[(x, y)]
+            .style()
+            .fg
+            .unwrap_or(ratatui::style::Color::Reset)
+    }
+
+    /// `Danger`/`Warning` paint intent entirely through the foreground
+    /// colour on TUI — both the bracket chrome and the label text — and
+    /// leave the background untouched (same `surface_bg` as `Secondary`),
+    /// unlike `Primary`'s solid `accent_bg` fill.
+    #[test]
+    fn danger_variant_paints_error_fg_on_brackets_and_label_with_no_bg_fill() {
+        let area = Rect::new(0, 0, 10, 1);
+        let theme = Theme::default();
+        let mut button = mk_button("Delete");
+        button.variant = ButtonVariant::Danger;
+
+        let mut buf = Buffer::empty(area);
+        draw_button(&mut buf, area, &button, &theme, false);
+
+        let bracket_fg = cell_fg(&buf, 0, 0);
+        let label_fg = cell_fg(&buf, 2, 0);
+        assert_eq!(bracket_fg, ratatui_color(theme.error_fg));
+        assert_eq!(label_fg, ratatui_color(theme.error_fg));
+        assert_eq!(
+            cell_bg(&buf, 0, 0),
+            ratatui_color(theme.surface_bg),
+            "Danger must not fill a solid background on TUI"
+        );
+    }
+
+    #[test]
+    fn warning_variant_paints_warning_fg_on_brackets_and_label() {
+        let area = Rect::new(0, 0, 10, 1);
+        let theme = Theme::default();
+        let mut button = mk_button("Overwrite");
+        button.variant = ButtonVariant::Warning;
+
+        let mut buf = Buffer::empty(area);
+        draw_button(&mut buf, area, &button, &theme, false);
+
+        assert_eq!(cell_fg(&buf, 0, 0), ratatui_color(theme.warning_fg));
+        assert_eq!(cell_fg(&buf, 2, 0), ratatui_color(theme.warning_fg));
+    }
+
+    #[test]
+    fn disabled_danger_button_paints_muted_fg_not_the_intent_colour() {
+        let area = Rect::new(0, 0, 10, 1);
+        let theme = Theme::default();
+        let mut button = mk_button("Delete");
+        button.variant = ButtonVariant::Danger;
+        button.disabled = true;
+
+        let mut buf = Buffer::empty(area);
+        draw_button(&mut buf, area, &button, &theme, false);
+
+        assert_eq!(cell_fg(&buf, 2, 0), ratatui_color(theme.muted_fg));
+    }
+
+    /// `[ ⚠ Delete ]`: a Danger button with a leading icon, painted with
+    /// Nerd Fonts on (glyph) and off (fallback) — this issue's own
+    /// headline acceptance scenario.
+    #[test]
+    fn danger_button_with_icon_paints_glyph_or_fallback_per_nerd_fonts_flag() {
+        let area = Rect::new(0, 0, 14, 1);
+        let theme = Theme::default();
+        let mut button = mk_button("Delete");
+        button.variant = ButtonVariant::Danger;
+        button.icon = Some(crate::types::Icon::new("\u{f071}", "!"));
+
+        let row_text = |nerd_fonts_enabled: bool| -> String {
+            let mut buf = Buffer::empty(area);
+            draw_button(&mut buf, area, &button, &theme, nerd_fonts_enabled);
+            (area.x..area.x + area.width)
+                .map(|x| cell_char(&buf, x, area.y))
+                .collect()
+        };
+
+        let with_nerd_fonts = row_text(true);
+        assert!(
+            with_nerd_fonts.contains('\u{f071}'),
+            "nerd_fonts_enabled: true should paint the glyph half of the icon, got {with_nerd_fonts:?}"
+        );
+        assert!(with_nerd_fonts.contains("Delete"));
+
+        let without_nerd_fonts = row_text(false);
+        assert!(
+            without_nerd_fonts.contains('!'),
+            "nerd_fonts_enabled: false should paint the fallback half of the icon, got {without_nerd_fonts:?}"
+        );
+        assert!(!without_nerd_fonts.contains('\u{f071}'));
+    }
+
+    #[test]
+    fn trailing_icon_paints_after_the_label() {
+        let area = Rect::new(0, 0, 14, 1);
+        let theme = Theme::default();
+        let mut button = mk_button("Save");
+        button.icon = Some(crate::types::Icon::new("S", "S"));
+        button.icon_position = ButtonIconPosition::Trailing;
+
+        let mut buf = Buffer::empty(area);
+        draw_button(&mut buf, area, &button, &theme, true);
+        let row: String = (area.x..area.x + area.width)
+            .map(|x| cell_char(&buf, x, area.y))
+            .collect();
+
+        let save_idx = row.find("Save").expect("label must paint");
+        let icon_idx = row.rfind('S').expect("icon glyph must paint");
+        assert!(
+            icon_idx > save_idx,
+            "a Trailing icon must paint after the label, got {row:?}"
+        );
+    }
+
+    #[test]
+    fn no_icon_paints_the_label_alone() {
+        let area = Rect::new(0, 0, 8, 1);
+        let theme = Theme::default();
+        let button = mk_button("OK");
+        assert_eq!(button.icon, None);
+
+        let mut buf = Buffer::empty(area);
+        draw_button(&mut buf, area, &button, &theme, true);
+        assert_eq!(cell_char(&buf, 0, 0), '[');
+        assert_eq!(cell_char(&buf, 2, 0), 'O');
     }
 }
