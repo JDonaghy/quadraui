@@ -59,6 +59,27 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `ListView::scroll_px`, `TreeView::scroll_px`, `DataTable::scroll_px`:
+  `Option<f32>` pixel-precise scroll position alongside the existing
+  `scroll_offset: usize`, deprecate-first (`scroll_offset` keeps working;
+  `scroll_px` wins when `Some`). `ListView::layout`/`TreeView::layout`
+  resolve the pair via the new `primitives::scrollbar::resolve_scroll_px`
+  and shift the first visible row up by the sub-row remainder
+  (`ListViewLayout::scroll_sub_px`/`TreeViewLayout::scroll_sub_px`) so a
+  GUI painter shows a partially clipped first row; `DataTable::
+  effective_scroll_offset`/`scroll_sub_row_px` expose the same resolution
+  for backends that slice rows at paint time instead. A TUI rasteriser
+  that never reads the sub-row remainder gets exactly the pre-existing
+  whole-row behaviour — `scroll_px` degrades to row-quantised there, never
+  breaks. `TreeController` accumulates fractional wheel/trackpad deltas
+  into `scroll_px` (`Backend::wheel_delta_rows` normalises each backend's
+  native delta unit into row-notches first) instead of snapping every
+  gesture to a whole row.
+- `Backend::wheel_delta_rows`: convert a `ScrollDelta::y` into fractional
+  row units for a row-based scroll controller to accumulate. Defaults to
+  identity (TUI/GTK/Win32 already report row-notch units); `MacBackend`
+  overrides it to divide by `line_height()` since `NSEvent.scrollingDeltaY`
+  passes through as real points.
 - `primitives::button::native_surface_paint::focus_ring_geometry`: the
   shared pixel geometry (outset rect, corner radius, `Style::focus_ring_width`
   stroke width) for a primitive's focus-visible ring, factored out of

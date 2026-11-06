@@ -168,13 +168,18 @@ pub fn draw_data_table_with_glyphs(
     }
 
     // ── Body rows ─────────────────────────────────────────────────────
+    // Deprecate-first: `scroll_px` wins over `scroll_offset` when set,
+    // quantised to a whole row here — TUI is cell-granular, so the
+    // sub-row remainder `effective_scroll_offset` leaves on the table
+    // floor's picture is simply never read.
+    let scroll_offset = table.effective_scroll_offset(layout.row_height);
     let body_y = area.y + 1;
     let visible = layout
         .visible_rows
-        .min(table.rows.len().saturating_sub(table.scroll_offset));
+        .min(table.rows.len().saturating_sub(scroll_offset));
 
     for row_idx in 0..visible {
-        let abs_idx = table.scroll_offset + row_idx;
+        let abs_idx = scroll_offset + row_idx;
         let row = &table.rows[abs_idx];
         let y = body_y + row_idx as u16;
         let is_selected = table.selected_idx == Some(abs_idx);
@@ -297,7 +302,7 @@ pub fn draw_data_table_with_glyphs(
         let sb = crate::primitives::scrollbar::Scrollbar::vertical(
             table.id,
             sb_track,
-            table.scroll_offset as f32,
+            scroll_offset as f32,
             table.rows.len() as f32,
             layout.visible_rows as f32,
             1.0,
@@ -465,6 +470,7 @@ mod tests {
             ],
             selected_idx: Some(0),
             scroll_offset: 0,
+            scroll_px: None,
             sort: Some((0, SortDirection::Ascending)),
             has_focus: true,
             show_scrollbar: false,
@@ -702,6 +708,7 @@ mod tests {
             }],
             selected_idx: None,
             scroll_offset: 0,
+            scroll_px: None,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -900,6 +907,40 @@ mod tests {
         }
     }
 
+    /// `scroll_px` wins over `scroll_offset` (deprecate-first), but on
+    /// TUI's cell grid (`row_height == 1.0`) it quantises to the same
+    /// whole row a GUI backend's sub-row remainder would float between —
+    /// the "TUI quantises scroll_px to whole rows" half of the issue's
+    /// acceptance criterion.
+    #[test]
+    fn scroll_px_quantises_to_a_whole_row_on_tui() {
+        let mut table = make_scrolling_table(50);
+        table.scroll_px = Some(10.7); // 10.7 cells deep → row 10, floored
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+        let first_body_row: String = (0..40)
+            .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            first_body_row.contains("pod-10"),
+            "scroll_px=10.7 should quantise to row 10 at the top of the body, got: {first_body_row}"
+        );
+
+        // A whole-row scroll_offset of 10 paints byte-for-byte the same
+        // first body row — scroll_px degrades to the pre-existing
+        // row-quantised behaviour, it does not add a new visual.
+        let mut via_offset = make_scrolling_table(50);
+        via_offset.scroll_offset = 10;
+        let mut buf2 = Buffer::empty(area);
+        draw_data_table(&mut buf2, area, &via_offset, &Theme::default(), None);
+        let first_body_row_via_offset: String = (0..40)
+            .map(|x| buf2[(x, 1)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert_eq!(first_body_row, first_body_row_via_offset);
+    }
+
     #[test]
     fn footer_cell_aligns_under_its_column() {
         // Right-aligned "Age" column → its footer total should sit at
@@ -1006,6 +1047,7 @@ mod tests {
             }],
             selected_idx: None,
             scroll_offset: 0,
+            scroll_px: None,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -1135,6 +1177,7 @@ mod tests {
             }],
             selected_idx: None,
             scroll_offset: 0,
+            scroll_px: None,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -1372,6 +1415,7 @@ mod multi_select_driver_tests {
             rows: (0..5).map(|i| row(&format!("row {i}"))).collect(),
             selected_idx: None,
             scroll_offset: 0,
+            scroll_px: None,
             sort: None,
             has_focus: true,
             show_scrollbar: false,

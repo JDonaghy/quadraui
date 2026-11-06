@@ -185,6 +185,7 @@ impl MarkdownDemo {
             items,
             selected_idx: self.wrap.selected_idx.min(n.saturating_sub(1)),
             scroll_offset: self.wrap.scroll_offset,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,

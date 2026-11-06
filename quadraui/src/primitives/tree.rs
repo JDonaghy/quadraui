@@ -60,6 +60,7 @@ use serde::{Deserialize, Serialize};
 ///     selection_mode: SelectionMode::Single,
 ///     selected_path: Some(vec![0]),
 ///     scroll_offset: 0,
+///     scroll_px: None,
 ///     style: TreeStyle::default(),
 ///     has_focus: true,
 /// };
@@ -67,7 +68,7 @@ use serde::{Deserialize, Serialize};
 /// let layout = tree.layout(40.0, 10.0, |_| TreeRowMeasure::new(1.0));
 /// assert_eq!(layout.hit_test(0.0, 0.0), TreeViewHit::Row(0));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TreeView {
     pub id: WidgetId,
     /// Pre-flattened, pre-expanded rows in visual order.
@@ -79,6 +80,19 @@ pub struct TreeView {
     /// `docs/UI_CRATE_DESIGN.md` §3.1).
     #[serde(default)]
     pub scroll_offset: usize,
+    /// Pixel-precise scroll position, in the backend's native row-height
+    /// unit (`None` = not set). Deprecate-first: `scroll_offset` keeps
+    /// working on its own; when `scroll_px` is `Some` it wins, letting a
+    /// GUI backend accumulate fractional wheel/trackpad deltas instead of
+    /// rounding every event to a whole row. [`TreeView::layout`] resolves
+    /// the pair via [`crate::primitives::scrollbar::resolve_scroll_px`] —
+    /// see [`TreeViewLayout::scroll_sub_px`] for the sub-row remainder a
+    /// GUI painter clips the first visible row against. A TUI rasteriser
+    /// that never reads that remainder gets exactly the pre-existing
+    /// whole-row behaviour: `scroll_px` degrades to row-quantised there,
+    /// never breaks.
+    #[serde(default)]
+    pub scroll_px: Option<f32>,
     pub style: TreeStyle,
     #[serde(default)]
     pub has_focus: bool,
@@ -214,6 +228,15 @@ pub struct TreeViewLayout {
     /// Scroll offset actually used. Clamped to `[0, rows.len())` so the
     /// backend never iterates past the end of the row slice.
     pub resolved_scroll_offset: usize,
+    /// Sub-row pixel remainder when `TreeView::scroll_px` is `Some` and
+    /// usable — see [`crate::primitives::scrollbar::resolve_scroll_px`].
+    /// `0.0` whenever `scroll_px` is `None`, so a TUI rasteriser that
+    /// never reads this field keeps the pre-existing whole-row behaviour.
+    /// A GUI painter shifts the first visible row's top up by this many
+    /// units (and relies on the surface's own clip to show only the
+    /// portion still inside the viewport), producing the "partial first
+    /// row clipped" look of pixel-smooth scrolling.
+    pub scroll_sub_px: f32,
 }
 
 /// The chevron glyph a pixel backend's shared paint path
@@ -316,13 +339,28 @@ impl TreeView {
             (0.0, 0.0, viewport_width, viewport_height)
         };
 
-        // Clamp scroll_offset to a valid starting index; we still report
-        // the clamped value so the app can write it back and self-correct.
-        let resolved_scroll_offset =
-            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.rows.len());
+        // Resolve `scroll_offset` vs. `scroll_px` (deprecate-first:
+        // `scroll_px` wins when set). We still report the clamped row
+        // index so the app can write it back and self-correct. The
+        // first row's height is the uniform row-height basis for the
+        // pixel conversion — the same approximation `vscrollbar` already
+        // makes for thumb sizing on trees with per-row-varying heights
+        // (leaf vs. branch).
+        let row_height_basis = if self.rows.is_empty() {
+            1.0
+        } else {
+            measure_row(0).height
+        };
+        let (resolved_scroll_offset, scroll_sub_px) =
+            crate::primitives::scrollbar::resolve_scroll_px(
+                self.scroll_offset,
+                self.scroll_px,
+                self.rows.len(),
+                row_height_basis,
+            );
 
         let rows_y_end = inset_y + rows_h_max;
-        let mut y = inset_y;
+        let mut y = inset_y - scroll_sub_px;
         for i in resolved_scroll_offset..self.rows.len() {
             if y >= rows_y_end {
                 break;
@@ -366,6 +404,7 @@ impl TreeView {
             visible_rows,
             hit_regions,
             resolved_scroll_offset,
+            scroll_sub_px,
         }
     }
 
@@ -438,10 +477,23 @@ impl TreeView {
             track_width,
             area.height,
         );
+        // Deprecate-first: when `scroll_px` is set, the thumb tracks the
+        // continuous pixel position (whole row + sub-row fraction)
+        // instead of snapping to `resolved_scroll_offset`'s whole row, so
+        // a GUI scrollbar moves smoothly alongside the sub-row paint
+        // shift `layout` applies.
+        let (resolved_scroll_offset, scroll_sub_px) =
+            crate::primitives::scrollbar::resolve_scroll_px(
+                self.scroll_offset,
+                self.scroll_px,
+                self.rows.len(),
+                row_height,
+            );
+        let scroll_rows = resolved_scroll_offset as f32 + scroll_sub_px / row_height;
         Some(Scrollbar::vertical(
             self.id,
             track,
-            self.scroll_offset as f32,
+            scroll_rows,
             total,
             visible,
             row_height,
@@ -858,6 +910,7 @@ pub(crate) mod native_surface_paint {
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
                 scroll_offset: 0,
+                scroll_px: None,
                 style: TreeStyle::default(),
                 has_focus: true,
             }
@@ -914,6 +967,54 @@ pub(crate) mod native_surface_paint {
                 "expected a fill at the v-scrollbar track {:?}, got fills: {:?}",
                 expected.track,
                 surface.fills
+            );
+        }
+
+        /// A `scroll_px` amount smaller than the tree's row pitch
+        /// (`tree_row_pitch(LINE_HEIGHT)` — 22px, not `LINE_HEIGHT`
+        /// itself) shifts every painted row's `y` up by that exact
+        /// remainder — the "partial first row clipped" GUI look of
+        /// pixel-smooth scrolling. `RecordingSurface` doesn't actually
+        /// clip (that's `surface_push_clip(area)`, called right before
+        /// painting rows, which a live GUI surface honours), so the
+        /// shifted row is recorded with `y` above `area.y` directly.
+        #[test]
+        fn scroll_px_shifts_rows_by_the_sub_row_remainder() {
+            let mut tree = make_tree((0..50).map(|i| leaf(i, &format!("row{i}"))).collect());
+            tree.selected_path = Some(vec![0]);
+            let sub_row_px = 8.0; // < 22px row pitch, so row stays 0
+            tree.scroll_px = Some(sub_row_px);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
+            assert_eq!(layout.resolved_scroll_offset, 0);
+            assert!((layout.scroll_sub_px - sub_row_px).abs() < 0.01);
+
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            let selected_fill = surface
+                .fills
+                .iter()
+                .find(|(_, c)| *c == theme.selected_bg)
+                .expect("row 0's selected background should still be painted, just shifted up");
+            assert!(
+                selected_fill.0.y < AREA.y,
+                "a sub-row scroll_px should shift row 0 above the viewport top, got y={}",
+                selected_fill.0.y
             );
         }
 
@@ -1489,6 +1590,7 @@ mod tests {
             selection_mode: SelectionMode::Single,
             selected_path: Some(vec![0]),
             scroll_offset: 0,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         };
@@ -1558,6 +1660,7 @@ mod tests {
             selection_mode: SelectionMode::Single,
             selected_path: None,
             scroll_offset: scroll,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         }
@@ -1774,6 +1877,39 @@ mod tests {
                 sb.thumb_start > 0.0,
                 "thumb should have travelled from the top once scrolled"
             );
+        }
+
+        #[test]
+        fn scroll_px_moves_the_thumb_smoothly_between_whole_rows() {
+            let row0 = vtree(30, 0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0), 22.0, 1.0)
+                .unwrap();
+            let row1 = vtree(30, 1)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0), 22.0, 1.0)
+                .unwrap();
+            let mut half = vtree(30, 0);
+            half.scroll_px = Some(11.0);
+            let half_sb = half
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0), 22.0, 1.0)
+                .unwrap();
+            assert!(
+                half_sb.thumb_start > row0.thumb_start && half_sb.thumb_start < row1.thumb_start,
+                "half-row scroll_px should land the thumb strictly between rows 0 and 1"
+            );
+        }
+
+        #[test]
+        fn scroll_px_wins_over_scroll_offset_for_the_thumb() {
+            let mut t = vtree(30, 0);
+            t.scroll_offset = 5; // stale, overridden by scroll_px
+            t.scroll_px = Some(0.0);
+            let sb = t
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .unwrap();
+            let at_zero = vtree(30, 0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .unwrap();
+            assert_eq!(sb.thumb_start, at_zero.thumb_start);
         }
 
         #[test]

@@ -156,6 +156,7 @@ impl DataTableDemo {
                 rows,
                 selected_idx: self.selected,
                 scroll_offset: 0,
+                scroll_px: None,
                 sort: self.sort_col.map(|c| {
                     (
                         c,
@@ -195,6 +196,7 @@ impl DataTableDemo {
                 rows: Self::keybinding_rows(),
                 selected_idx: None,
                 scroll_offset: 0,
+                scroll_px: None,
                 sort: None,
                 has_focus: false,
                 show_scrollbar: false,

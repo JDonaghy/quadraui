@@ -228,6 +228,7 @@ mod tests {
             selection_mode: SelectionMode::Single,
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         }
@@ -1058,6 +1059,7 @@ mod multi_select_driver_tests {
             selection_mode: SelectionMode::Multi,
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             style: Default::default(),
             has_focus: true,
         }

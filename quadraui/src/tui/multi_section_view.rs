@@ -824,6 +824,7 @@ mod tests {
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
                 scroll_offset: 0,
+                scroll_px: None,
                 style: Default::default(),
                 has_focus: true,
             }),
@@ -1421,6 +1422,7 @@ mod tests {
                         selection_mode: crate::types::SelectionMode::Single,
                         selected_path: s.selected_path.clone(),
                         scroll_offset: s.scroll_offset,
+                        scroll_px: None,
                         style: Default::default(),
                         has_focus: self.active_section == Some(idx),
                     }),
@@ -1906,6 +1908,7 @@ mod tests {
                             selection_mode: crate::types::SelectionMode::Single,
                             selected_path: s.selected_path.clone(),
                             scroll_offset: s.scroll_offset,
+                            scroll_px: None,
                             style: Default::default(),
                             has_focus: !self.commit_input_active
                                 && self.active_section == Some(idx),

@@ -2306,6 +2306,19 @@ impl Backend for MacBackend {
         self.current_char_width as f32
     }
 
+    /// `NSEvent.scrollingDeltaY` passes through as real points, not
+    /// row-notch units (`macos::events`'s module doc) — divide by
+    /// [`Self::line_height`] to land in the same row-unit currency every
+    /// other backend already reports.
+    fn wheel_delta_rows(&self, delta_y: f32) -> f32 {
+        let lh = self.current_line_height as f32;
+        if lh > 0.0 {
+            delta_y / lh
+        } else {
+            delta_y
+        }
+    }
+
     /// Forwards to [`Self::set_current_line_height`] — the
     /// `Backend`-trait-object-reachable twin of that inherent method, the
     /// macOS counterpart of `GtkBackend`'s / `WinBackend`'s overrides of
@@ -6655,6 +6668,7 @@ mod tests {
             }],
             selected_idx: 0,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: true,
             bordered,
             h_scroll,
@@ -9530,6 +9544,7 @@ mod tests {
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
                 scroll_offset: 0,
+                scroll_px: None,
                 style: TreeStyle::default(),
                 has_focus: false,
             };
@@ -9590,6 +9605,7 @@ mod tests {
             selection_mode: crate::types::SelectionMode::Single,
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             style: crate::types::TreeStyle::default(),
             has_focus: false,
         }
@@ -9669,6 +9685,7 @@ mod tests {
                 .collect(),
             selected_idx: 0,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,

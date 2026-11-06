@@ -434,6 +434,7 @@ mod tests {
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: Some(vec![0, 0]),
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: true,
             style: TreeStyle::default(),
         }
@@ -509,6 +510,7 @@ mod tests {
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: false,
             style: TreeStyle::default(),
         };
@@ -703,6 +705,7 @@ mod tests {
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: false,
             style: TreeStyle::default(),
         }
@@ -853,6 +856,7 @@ mod tests {
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: false,
             style: TreeStyle::default(),
         };
@@ -899,6 +903,7 @@ mod tests {
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: false,
             style: TreeStyle::default(),
         };
@@ -929,6 +934,7 @@ mod tests {
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: false,
             style: TreeStyle::default(),
         };
@@ -952,6 +958,7 @@ mod tests {
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: false,
             style: TreeStyle::default(),
         };
@@ -987,6 +994,7 @@ mod tests {
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: false,
             style: TreeStyle::default(),
         };
@@ -1137,6 +1145,7 @@ mod tests {
             selection_mode: crate::types::SelectionMode::default(),
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: false,
             style: TreeStyle::default(),
         };
@@ -1203,6 +1212,7 @@ mod multi_select_driver_tests {
             selection_mode: SelectionMode::Multi,
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         }

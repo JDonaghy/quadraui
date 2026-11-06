@@ -392,6 +392,7 @@ impl Demo for SidebarDemo {
                     selection_mode: quadraui::SelectionMode::Single,
                     selected_path: None,
                     scroll_offset: self.body_scroll,
+                    scroll_px: None,
                     style: TreeStyle::default(),
                     has_focus: true,
                 };

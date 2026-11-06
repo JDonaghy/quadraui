@@ -216,6 +216,7 @@ impl DataTableApp {
             rows,
             selected_idx: self.selected,
             scroll_offset: self.scroll_offset,
+            scroll_px: None,
             sort: self.sort_col.map(|c| {
                 (
                     c,

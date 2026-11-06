@@ -1994,6 +1994,28 @@ pub trait Backend: sealed::Sealed {
     /// `let viewport_cols = ((rect.width - gutter) / backend.char_width()).floor();`
     fn char_width(&self) -> f32;
 
+    /// Convert a [`crate::ScrollDelta::y`] component into fractional row
+    /// units for a row-based scroll controller ([`crate::TreeController`],
+    /// and any `ListView`/`DataTable`-driving equivalent) to accumulate
+    /// into [`crate::ListView::scroll_px`]/[`crate::TreeView::scroll_px`]/
+    /// [`crate::DataTable::scroll_px`] without snapping to a whole row on
+    /// every event.
+    ///
+    /// Every backend but macOS already reports wheel/trackpad deltas in
+    /// row-notch units: TUI is `±1.0` per crossterm notch, GTK's
+    /// `EventControllerScroll::dy` is pre-scaled by the OS's
+    /// lines-per-notch setting (see `gtk::events`'s module doc), and
+    /// Win32's is `raw_delta / WHEEL_DELTA`. The default implementation
+    /// returns `delta_y` unchanged, matching all three. macOS is the one
+    /// backend whose `NSEvent.scrollingDeltaY` passes straight through as
+    /// real points (`macos::events`'s module doc, "Precise (trackpad) vs.
+    /// discrete (wheel) deltas") — `MacBackend` overrides this to divide
+    /// by [`Self::line_height`] and land back in the same row-unit
+    /// currency every other backend already uses.
+    fn wheel_delta_rows(&self, delta_y: f32) -> f32 {
+        delta_y
+    }
+
     /// Line height of the chrome / UI font, in surface-native units.
     ///
     /// Chrome elements — tab strips, breadcrumb bars, status bars —

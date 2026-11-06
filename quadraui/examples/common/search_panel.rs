@@ -181,6 +181,7 @@ impl SearchPanelApp {
             selection_mode: quadraui::SelectionMode::Single,
             selected_path: self.selected_path.clone(),
             scroll_offset: self.scroll_offset,
+            scroll_px: None,
             style: quadraui::TreeStyle::default(),
             has_focus: !self.input_active,
         };

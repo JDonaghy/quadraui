@@ -232,13 +232,21 @@ pub fn draw_data_table_with_glyphs(
     }
 
     // ── Body rows ─────────────────────────────────────────────────────
+    // Deprecate-first: `scroll_px` wins over `scroll_offset` when set,
+    // quantised to a whole row here. Painting the sub-row remainder
+    // (`table.scroll_sub_row_px`) as a partially clipped first row is a
+    // follow-up — unlike `ListView`/`TreeView`, `DataTable` resolves
+    // scroll at paint time per backend rather than inside `layout()`, so
+    // that needs its own hit-test-parity pass across GTK/macOS/Win,
+    // not a one-line change here.
+    let scroll_offset = table.effective_scroll_offset(line_height as f32);
     let body_y = y + header_height;
     let visible = layout
         .visible_rows
-        .min(table.rows.len().saturating_sub(table.scroll_offset));
+        .min(table.rows.len().saturating_sub(scroll_offset));
 
     for row_idx in 0..visible {
-        let abs_idx = table.scroll_offset + row_idx;
+        let abs_idx = scroll_offset + row_idx;
         let row = &table.rows[abs_idx];
         let row_y = body_y + row_idx as f64 * line_height;
         let is_selected = table.selected_idx == Some(abs_idx);
@@ -385,7 +393,7 @@ pub fn draw_data_table_with_glyphs(
         let sb = crate::primitives::scrollbar::Scrollbar::vertical(
             table.id,
             sb_track,
-            table.scroll_offset as f32,
+            scroll_offset as f32,
             table.rows.len() as f32,
             layout.visible_rows as f32,
             line_height as f32,
@@ -628,6 +636,7 @@ mod tests {
             }],
             selected_idx: None,
             scroll_offset: 0,
+            scroll_px: None,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -922,6 +931,7 @@ mod multi_select_driver_tests {
             rows: (0..5).map(|i| row(&format!("row {i}"))).collect(),
             selected_idx: None,
             scroll_offset: 0,
+            scroll_px: None,
             sort: None,
             has_focus: true,
             show_scrollbar: false,

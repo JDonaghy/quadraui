@@ -983,6 +983,7 @@ impl SidebarSystem {
                         selection_mode: SelectionMode::Single,
                         selected_path: tc.selected_path().cloned(),
                         scroll_offset: tc.scroll_offset(),
+                        scroll_px: tc.scroll_px(),
                         style: Default::default(),
                         has_focus: is_active && self.has_focus,
                     })
@@ -2784,6 +2785,7 @@ mod tests {
             selection_mode: SelectionMode::Single,
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             style: Default::default(),
             has_focus: true,
         };

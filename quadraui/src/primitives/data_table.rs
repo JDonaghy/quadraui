@@ -260,6 +260,7 @@ impl DataTableGlyphs {
 ///     }],
 ///     selected_idx: None,
 ///     scroll_offset: 0,
+///     scroll_px: None,
 ///     sort: None,
 ///     has_focus: true,
 ///     show_scrollbar: false,
@@ -281,6 +282,22 @@ pub struct DataTable {
     pub selected_idx: Option<usize>,
     #[serde(default)]
     pub scroll_offset: usize,
+    /// Pixel-precise scroll position, in the backend's native row-height
+    /// unit (`None` = not set). Deprecate-first: `scroll_offset` keeps
+    /// working on its own; when `scroll_px` is `Some` it wins, letting a
+    /// GUI backend accumulate fractional wheel/trackpad deltas instead of
+    /// rounding every event to a whole row. Unlike `ListView`/`TreeView`,
+    /// `DataTable::layout` does not resolve scroll itself — it has no
+    /// `scroll_offset` parameter at all, since the body slice and the
+    /// hit-test both take it explicitly (see this module's doc). Call
+    /// [`DataTable::effective_scroll_offset`] /
+    /// [`DataTable::scroll_sub_row_px`] (with [`DataTableLayout::row_height`])
+    /// wherever a caller currently reads `scroll_offset` directly. A
+    /// caller that never reads the sub-row remainder (TUI) gets exactly
+    /// the pre-existing whole-row behaviour: `scroll_px` degrades to
+    /// row-quantised there, never breaks.
+    #[serde(default)]
+    pub scroll_px: Option<f32>,
     /// Which column is sorted, and in which direction. `None` = no
     /// sort indicator shown.
     #[serde(default)]
@@ -740,6 +757,40 @@ impl DataTable {
             footer_height,
             h_scroll: self.h_scroll,
         }
+    }
+
+    /// Resolve `scroll_offset` vs. `scroll_px` into the whole starting
+    /// row index a caller slices `self.rows[..]` from and passes to
+    /// [`DataTableLayout::hit_test`] — deprecate-first: `scroll_px` wins
+    /// when `Some` and usable. `row_height` is
+    /// [`DataTableLayout::row_height`] from the same `layout()` call.
+    ///
+    /// See [`crate::primitives::scrollbar::resolve_scroll_px`] for the
+    /// underlying arithmetic and [`Self::scroll_sub_row_px`] for the
+    /// paired sub-row remainder a GUI painter uses to clip the first
+    /// visible row.
+    pub fn effective_scroll_offset(&self, row_height: f32) -> usize {
+        crate::primitives::scrollbar::resolve_scroll_px(
+            self.scroll_offset,
+            self.scroll_px,
+            self.rows.len(),
+            row_height,
+        )
+        .0
+    }
+
+    /// Sub-row pixel remainder paired with
+    /// [`Self::effective_scroll_offset`] — `0.0` whenever `scroll_px` is
+    /// `None`, so a TUI rasteriser that never reads this gets exactly the
+    /// pre-existing whole-row behaviour.
+    pub fn scroll_sub_row_px(&self, row_height: f32) -> f32 {
+        crate::primitives::scrollbar::resolve_scroll_px(
+            self.scroll_offset,
+            self.scroll_px,
+            self.rows.len(),
+            row_height,
+        )
+        .1
     }
 }
 
@@ -1466,6 +1517,7 @@ pub(crate) mod native_surface_paint {
                 ],
                 selected_idx: None,
                 scroll_offset: 0,
+                scroll_px: None,
                 sort: None,
                 has_focus: false,
                 show_scrollbar: false,
@@ -1787,6 +1839,7 @@ mod tests {
             rows,
             selected_idx: None,
             scroll_offset: 0,
+            scroll_px: None,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -1795,6 +1848,32 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
         }
+    }
+
+    #[test]
+    fn effective_scroll_offset_falls_back_to_scroll_offset_when_scroll_px_is_none() {
+        let mut table = make_table(2, 50);
+        table.scroll_offset = 7;
+        assert_eq!(table.effective_scroll_offset(22.0), 7);
+        assert_eq!(table.scroll_sub_row_px(22.0), 0.0);
+    }
+
+    #[test]
+    fn effective_scroll_offset_prefers_scroll_px_and_exposes_the_sub_row_remainder() {
+        let mut table = make_table(2, 50);
+        table.scroll_offset = 7; // stale, overridden by scroll_px
+        table.scroll_px = Some(33.0); // 1.5 rows deep at a 22px row height
+        assert_eq!(table.effective_scroll_offset(22.0), 1);
+        assert!((table.scroll_sub_row_px(22.0) - 11.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn effective_scroll_offset_quantises_to_whole_rows_on_a_cell_grid() {
+        // TUI's row_height is 1.0 cell: a fractional scroll_px still
+        // resolves to a whole row, with no sub-row remainder read.
+        let mut table = make_table(2, 50);
+        table.scroll_px = Some(3.7);
+        assert_eq!(table.effective_scroll_offset(1.0), 3);
     }
 
     #[test]

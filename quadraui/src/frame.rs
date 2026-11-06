@@ -1704,6 +1704,7 @@ mod tests {
             selection_mode: SelectionMode::Single,
             selected_path: Some(vec![0]),
             scroll_offset,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: false,
         }

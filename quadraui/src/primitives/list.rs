@@ -46,6 +46,7 @@ use serde::{Deserialize, Serialize};
 ///     }],
 ///     selected_idx: 0,
 ///     scroll_offset: 0,
+///     scroll_px: None,
 ///     has_focus: true,
 ///     bordered: false,
 ///     h_scroll: 0,
@@ -56,7 +57,7 @@ use serde::{Deserialize, Serialize};
 /// let layout = list.layout(80.0, 10.0, 0.0, |_| ListItemMeasure::new(1.0));
 /// assert_eq!(layout.hit_test(0.0, 0.0), ListViewHit::Item(0));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ListView {
     pub id: WidgetId,
     /// Optional header row shown above the items. `None` = no header.
@@ -66,6 +67,19 @@ pub struct ListView {
     pub selected_idx: usize,
     #[serde(default)]
     pub scroll_offset: usize,
+    /// Pixel-precise scroll position, in the backend's native row-height
+    /// unit (`None` = not set). Deprecate-first: `scroll_offset` keeps
+    /// working on its own; when `scroll_px` is `Some` it wins, letting a
+    /// GUI backend accumulate fractional wheel/trackpad deltas instead of
+    /// rounding every event to a whole row. [`ListView::layout`] resolves
+    /// the pair via [`crate::primitives::scrollbar::resolve_scroll_px`] —
+    /// see [`ListViewLayout::scroll_sub_px`] for the sub-row remainder a
+    /// GUI painter clips the first visible item against. A TUI rasteriser
+    /// that never reads that remainder gets exactly the pre-existing
+    /// whole-row behaviour: `scroll_px` degrades to row-quantised there,
+    /// never breaks.
+    #[serde(default)]
+    pub scroll_px: Option<f32>,
     #[serde(default)]
     pub has_focus: bool,
     /// When true, backends draw a `╭─╮ │ │ ╰─╯` frame around the list
@@ -208,6 +222,15 @@ pub struct ListViewLayout {
     pub hit_regions: Vec<(Rect, ListViewHit)>,
     /// Scroll offset actually used. Clamped to `[0, items.len())`.
     pub resolved_scroll_offset: usize,
+    /// Sub-row pixel remainder when `ListView::scroll_px` is `Some` and
+    /// usable — see [`crate::primitives::scrollbar::resolve_scroll_px`].
+    /// `0.0` whenever `scroll_px` is `None`, so a TUI rasteriser that
+    /// never reads this field keeps the pre-existing whole-row behaviour.
+    /// A GUI painter shifts the first visible item's top up by this many
+    /// units (and relies on the surface's own clip to show only the
+    /// portion still inside the viewport), producing the "partial first
+    /// row clipped" look of pixel-smooth scrolling.
+    pub scroll_sub_px: f32,
 }
 
 impl ListViewLayout {
@@ -301,9 +324,23 @@ impl ListView {
             title_bounds.map(|b| b.y + b.height).unwrap_or(0.0)
         };
 
-        // Clamp scroll_offset.
-        let resolved_scroll_offset =
-            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.items.len());
+        // Resolve `scroll_offset` vs. `scroll_px` (deprecate-first:
+        // `scroll_px` wins when set). The first item's height is the
+        // uniform row-height basis for the pixel conversion — the same
+        // approximation `vscrollbar`/`hscrollbar` already make for thumb
+        // sizing on lists with per-row-varying heights.
+        let row_height_basis = if self.items.is_empty() {
+            1.0
+        } else {
+            measure_item(0).height
+        };
+        let (resolved_scroll_offset, scroll_sub_px) =
+            crate::primitives::scrollbar::resolve_scroll_px(
+                self.scroll_offset,
+                self.scroll_px,
+                self.items.len(),
+                row_height_basis,
+            );
 
         let items_y_end = if self.bordered {
             inset_y + items_h_max
@@ -311,7 +348,7 @@ impl ListView {
             viewport_height
         };
 
-        let mut y = items_y_start;
+        let mut y = items_y_start - scroll_sub_px;
         for i in resolved_scroll_offset..self.items.len() {
             if y >= items_y_end {
                 break;
@@ -338,6 +375,7 @@ impl ListView {
             visible_items,
             hit_regions,
             resolved_scroll_offset,
+            scroll_sub_px,
         }
     }
 
@@ -476,10 +514,23 @@ impl ListView {
             return None;
         }
         let track = Rect::new(track_x, track_y, track_width, track_h);
+        // Deprecate-first: when `scroll_px` is set, the thumb tracks the
+        // continuous pixel position (whole row + sub-row fraction)
+        // instead of snapping to `resolved_scroll_offset`'s whole row,
+        // so a GUI scrollbar moves smoothly alongside the sub-row paint
+        // shift `layout` applies.
+        let (resolved_scroll_offset, scroll_sub_px) =
+            crate::primitives::scrollbar::resolve_scroll_px(
+                self.scroll_offset,
+                self.scroll_px,
+                self.items.len(),
+                row_height,
+            );
+        let scroll_rows = resolved_scroll_offset as f32 + scroll_sub_px / row_height;
         Some(Scrollbar::vertical(
             self.id,
             track,
-            self.scroll_offset as f32,
+            scroll_rows,
             total,
             visible,
             row_height,
@@ -506,6 +557,7 @@ mod hscrollbar_tests {
             }],
             selected_idx: 0,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll,
@@ -638,6 +690,7 @@ mod vscrollbar_tests {
                 .collect(),
             selected_idx: 0,
             scroll_offset,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -721,6 +774,40 @@ mod vscrollbar_tests {
             scrolled.thumb_start > at_zero.thumb_start,
             "scrolling down should move the thumb down"
         );
+    }
+
+    #[test]
+    fn scroll_px_moves_the_thumb_smoothly_between_whole_rows() {
+        // Row height 22px (a GUI-ish value): half a row of `scroll_px`
+        // moves the thumb strictly between the whole-row-0 and
+        // whole-row-1 positions — not snapped to either.
+        let row0 = vlist(30, 0)
+            .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0), 22.0)
+            .unwrap();
+        let row1 = vlist(30, 1)
+            .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0), 22.0)
+            .unwrap();
+        let mut half = vlist(30, 0);
+        half.scroll_px = Some(11.0);
+        let half_sb = half
+            .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0), 22.0)
+            .unwrap();
+        assert!(
+            half_sb.thumb_start > row0.thumb_start && half_sb.thumb_start < row1.thumb_start,
+            "half-row scroll_px should land the thumb strictly between rows 0 and 1"
+        );
+    }
+
+    #[test]
+    fn scroll_px_wins_over_scroll_offset_for_the_thumb() {
+        let mut l = vlist(30, 0);
+        l.scroll_offset = 5; // stale, overridden by scroll_px
+        l.scroll_px = Some(0.0);
+        let sb = l.vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0).unwrap();
+        let at_zero = vlist(30, 0)
+            .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+            .unwrap();
+        assert_eq!(sb.thumb_start, at_zero.thumb_start);
     }
 }
 
@@ -1109,6 +1196,7 @@ pub(crate) mod native_surface_paint {
                 items: (0..n_items).map(|i| item(&format!("row {i}"))).collect(),
                 selected_idx: 0,
                 scroll_offset: 0,
+                scroll_px: None,
                 has_focus: true,
                 bordered: false,
                 h_scroll: 0,
@@ -1159,6 +1247,86 @@ pub(crate) mod native_surface_paint {
                 expected.track,
                 surface.fills
             );
+        }
+
+        /// `scroll_px` set to half a row shifts every painted row's `y`
+        /// up by exactly that half-row — the "partial first row
+        /// clipped" GUI look of pixel-smooth scrolling. The row is
+        /// recorded with a `y` above `area.y` here (`RecordingSurface`
+        /// doesn't actually clip); the real `surface_push_clip(area)`
+        /// call right before painting rows is what makes a live GUI
+        /// surface show only the portion still inside the viewport.
+        #[test]
+        fn scroll_px_shifts_rows_by_the_sub_row_remainder() {
+            let mut list = vlist(50);
+            list.scroll_px = Some(LINE_HEIGHT / 2.0);
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            assert_eq!(layout.resolved_scroll_offset, 0);
+            assert!((layout.scroll_sub_px - LINE_HEIGHT / 2.0).abs() < 0.01);
+
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            // Item 0 is `selected_idx` with `has_focus: true`, so its
+            // row-background fill is uniquely `theme.selected_bg` —
+            // distinguishing it from the area background and every
+            // other (unselected) row's fill.
+            let selected_fill = surface
+                .fills
+                .iter()
+                .find(|(_, c)| *c == theme.selected_bg)
+                .expect("row 0's selected background should still be painted, just shifted up");
+            assert!(
+                selected_fill.0.y < AREA.y,
+                "half a row of scroll_px should shift row 0 above the viewport top, got y={}",
+                selected_fill.0.y
+            );
+        }
+
+        /// `scroll_px` of `None` leaves every painted row exactly where
+        /// `scroll_offset` alone would — the deprecate-first contract.
+        #[test]
+        fn scroll_px_none_leaves_rows_unshifted() {
+            let list = vlist(50);
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            assert_eq!(layout.scroll_sub_px, 0.0);
+
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+            let selected_fill = surface
+                .fills
+                .iter()
+                .find(|(_, c)| *c == theme.selected_bg)
+                .expect("row 0's selected background should be painted");
+            assert_eq!(selected_fill.0.y, AREA.y);
         }
 
         /// The painted track's width follows `Style::scrollbar_width`,
@@ -1626,6 +1794,7 @@ mod tests {
             ],
             selected_idx: 1,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -1660,6 +1829,7 @@ mod tests {
             items,
             selected_idx: selected,
             scroll_offset: scroll,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,

@@ -76,6 +76,7 @@ pub fn build_list(state: &AppState) -> ListView {
         items,
         selected_idx: state.selected,
         scroll_offset: 0,
+        scroll_px: None,
         has_focus: state.focus == Focus::Resources,
         bordered: false,
         h_scroll: 0,

@@ -3,12 +3,17 @@
 //! paint boundary.
 //!
 //! Scroll offsets are continuous in native units, but a terminal can only
-//! start painting at a whole row. The continuous `f32` is the app/controller's
-//! own state — it is NOT a field on the declarative descriptor (descriptors
-//! carry no renderer-derived state). The controller accumulates the fraction
-//! and emits a rounded `usize` to `ListView::scroll_offset` via
-//! [`scroll_rows`] at the paint boundary. These tests drive the real
-//! `event -> handle -> render` path and assert both halves of that contract:
+//! start painting at a whole row. This suite exercises the controller-owned
+//! half of that contract: an app that keeps its own continuous `f32`
+//! accumulator (rather than setting `ListView::scroll_px`) rounds it to a
+//! `usize` via [`scroll_rows`] before writing `ListView::scroll_offset`, at
+//! the paint boundary. `ListView::scroll_px` is the alternative, additive
+//! path — set it directly and `ListView::layout` does this same
+//! `scroll_rows` resolution (plus, on a pixel backend, exposes the sub-row
+//! remainder for a partially clipped first row); a TUI rasteriser never
+//! reads that remainder, so the two paths paint identically on TUI. These
+//! tests drive the real `event -> handle -> render` path and assert both
+//! halves of the controller-owned contract:
 //!
 //! * a sub-row offset is *rounded* when it reaches the rasteriser — the
 //!   painted top row is `scroll_rows(offset)`, never a truncated or
@@ -60,6 +65,7 @@ impl ListApp {
                 .collect(),
             selected_idx: 0,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: true,
             title: None,
             bordered: false,
@@ -229,5 +235,36 @@ fn the_f32_accumulator_not_the_painted_row_is_the_source_of_truth() {
         driver.screen_contains("Row 04"),
         "crossing the half-row mark advances the painted row:\n{}",
         driver.screen()
+    );
+}
+
+/// `ListView::scroll_px` set directly (the additive path, no app-owned
+/// accumulator) paints the same whole row as a controller-rounded
+/// `scroll_offset`, even though `ListView::layout` resolves the row
+/// index by *flooring* `scroll_px` (row 2, not row 3, for 2.6) rather
+/// than rounding it. The floored row still disappears from the TUI
+/// screen: `draw_list` paints every visible item's unrounded,
+/// sub-cell-shifted `y` by rounding it to the nearest terminal row with
+/// no clip, so row 2's `y = -0.6` rounds to the same terminal row 0 as
+/// row 3's `y = 0.4` and row 3 — painted second — wins the overwrite.
+/// TUI's lack of sub-row clipping, not an agreement between
+/// `resolve_scroll_px`'s floor and `scroll_rows`'s round, is what keeps
+/// the two paths visually identical here.
+#[test]
+fn scroll_px_set_directly_quantises_to_the_same_whole_row_as_scroll_offset() {
+    let mut via_px = ListApp::new(1.0);
+    via_px.list.scroll_px = Some(2.6); // floors to row 2, but row 2 is painted over
+    let mut driver = TuiDriver::new(via_px, 20, 5);
+    driver.render();
+    assert!(driver.screen_contains("Row 03"));
+    assert!(!driver.screen_contains("Row 02"));
+
+    let screen_via_offset = screen_at(3.0);
+    assert_eq!(
+        driver.screen(),
+        screen_via_offset,
+        "scroll_px=2.6 must paint byte-for-byte the same frame as \
+         scroll_offset=3 — scroll_px degrades to the pre-existing \
+         whole-row behaviour on TUI, it does not add a new visual"
     );
 }

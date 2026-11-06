@@ -1377,6 +1377,7 @@ mod tests {
                 .collect(),
             selected_idx: 0,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -1463,6 +1464,7 @@ mod tests {
             selection_mode: crate::types::SelectionMode::Single,
             selected_path: None,
             scroll_offset: 0,
+            scroll_px: None,
             style: crate::types::TreeStyle::default(),
             has_focus: false,
         }

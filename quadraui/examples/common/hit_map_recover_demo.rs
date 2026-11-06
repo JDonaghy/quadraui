@@ -97,6 +97,7 @@ impl HitMapRecoverDemo {
                 .collect(),
             selected_idx: self.selected,
             scroll_offset: 0,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,

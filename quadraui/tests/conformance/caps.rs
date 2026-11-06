@@ -977,6 +977,31 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "TUI ignores set_editor_v_scrollbar_width, so the always-None default is the truthful \
          answer",
     ),
+    // `wheel_delta_rows`: TUI, GTK and Win32 all already report
+    // ScrollDelta::y in row-notch units (TUI's crossterm notch is ±1.0;
+    // GTK's EventControllerScroll dy is pre-scaled by the OS's
+    // lines-per-notch setting; Win32's is raw_delta / WHEEL_DELTA) — the
+    // trait default (identity) is the correct answer for all three.
+    // macOS is the one backend that overrides this, because
+    // NSEvent.scrollingDeltaY passes through as real points, not rows.
+    (
+        "tui",
+        "wheel_delta_rows",
+        "crossterm's scroll notch is already ±1.0 row; the identity default is the correct \
+         answer, not a missing override",
+    ),
+    (
+        "gtk",
+        "wheel_delta_rows",
+        "EventControllerScroll's dy is already pre-scaled to row-notch units by the OS's \
+         lines-per-notch setting; the identity default is correct",
+    ),
+    (
+        "win",
+        "wheel_delta_rows",
+        "raw_delta / WHEEL_DELTA is already expressed in row-notch units; the identity default \
+         is correct",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.
