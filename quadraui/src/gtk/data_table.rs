@@ -57,6 +57,10 @@ pub fn draw_data_table(
 /// [`crate::primitives::Icon`]'s `glyph` vs. `fallback` form. `glyphs: None`
 /// (what [`draw_data_table`] passes) renders byte-for-byte the same as
 /// today's codicon defaults.
+///
+/// Paints its vertical/horizontal scrollbars at full opacity — see
+/// [`draw_data_table_with_opacity`] for the overlay-fade-aware twin
+/// [`crate::gtk::GtkBackend::draw_data_table_with_glyphs`] actually calls.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_data_table_with_glyphs(
     cr: &Context,
@@ -71,6 +75,49 @@ pub fn draw_data_table_with_glyphs(
     hovered_idx: Option<usize>,
     glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
     nerd_fonts_enabled: bool,
+) -> DataTableLayout {
+    draw_data_table_with_opacity(
+        cr,
+        pango_layout,
+        x,
+        y,
+        width,
+        height,
+        table,
+        theme,
+        line_height,
+        hovered_idx,
+        glyphs,
+        nerd_fonts_enabled,
+        1.0,
+    )
+}
+
+/// Like [`draw_data_table_with_glyphs`], but scales the vertical and
+/// horizontal scrollbars' alpha by `scrollbar_opacity` (`0.0..=1.0`) —
+/// the render-side half of the shared overlay idle-fade seam (see
+/// [`crate::primitives::scrollbar::idle_fade_opacity`]).
+/// `scrollbar_opacity = 1.0` paints byte-for-byte what
+/// [`draw_data_table_with_glyphs`] always painted. Crate-internal: the
+/// one live caller is [`crate::gtk::GtkBackend::draw_data_table_with_glyphs`],
+/// which threads its own idle-fade opacity through; this stays
+/// `pub(crate)` rather than a new public export since no other backend
+/// or consumer needs to choose an opacity directly.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_data_table_with_opacity(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    table: &DataTable,
+    theme: &Theme,
+    line_height: f64,
+    hovered_idx: Option<usize>,
+    glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
+    nerd_fonts_enabled: bool,
+    scrollbar_opacity: f32,
 ) -> DataTableLayout {
     pango_layout.set_attributes(None);
     let measure = super::toolbar::PangoMeasure {
@@ -395,7 +442,12 @@ pub fn draw_data_table_with_glyphs(
             layout: None,
             translucent_fill: true,
         };
-        crate::primitives::scrollbar::native_surface_paint::paint(&sb, &mut raw, theme);
+        crate::primitives::scrollbar::native_surface_paint::paint_with_opacity(
+            &sb,
+            &mut raw,
+            theme,
+            scrollbar_opacity,
+        );
     }
 
     // ── Horizontal scrollbar ─────────────────────────────────────────
@@ -422,7 +474,12 @@ pub fn draw_data_table_with_glyphs(
             layout: None,
             translucent_fill: true,
         };
-        crate::primitives::scrollbar::native_surface_paint::paint(&hsb, &mut raw, theme);
+        crate::primitives::scrollbar::native_surface_paint::paint_with_opacity(
+            &hsb,
+            &mut raw,
+            theme,
+            scrollbar_opacity,
+        );
     }
 
     // ── Footer (pinned summary row) ─────────────────────────────────
@@ -667,6 +724,119 @@ mod tests {
         let stride = surface.stride();
         let data = surface.data().expect("surface data").to_vec();
         (data, stride, table_layout)
+    }
+
+    fn overflowing_table() -> DataTable {
+        DataTable {
+            id: WidgetId::new("overflow-test"),
+            columns: vec![Column {
+                title: "Name".into(),
+                width: ColumnWidth::Flex(1.0),
+                align: ColumnAlign::Left,
+            }],
+            rows: (0..30)
+                .map(|i| DataRow {
+                    cells: vec![StyledText::plain(format!("row {i}"))],
+                    decoration: Decoration::Normal,
+                })
+                .collect(),
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: true,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+        }
+    }
+
+    /// Paint `table` via [`draw_data_table_with_opacity`] (not the
+    /// public, always-full-opacity [`draw_data_table`]) and return the
+    /// raw pixel buffer alongside the resolved layout.
+    fn paint_with_opacity(
+        table: &DataTable,
+        theme: &Theme,
+        opacity: f32,
+    ) -> (Vec<u8>, i32, DataTableLayout) {
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let table_layout;
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(theme.background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            table_layout = draw_data_table_with_opacity(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                table,
+                theme,
+                LINE_H,
+                None,
+                None,
+                false,
+                opacity,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride();
+        let data = surface.data().expect("surface data").to_vec();
+        (data, stride, table_layout)
+    }
+
+    /// [`draw_data_table_with_opacity`] at `opacity = 1.0` paints the
+    /// scrollbar byte-for-byte the same as the public, always-full-opacity
+    /// [`draw_data_table_with_glyphs`] (which [`draw_data_table_with_opacity`]
+    /// now backs).
+    #[test]
+    fn opacity_one_matches_draw_data_table_with_glyphs() {
+        let table = overflowing_table();
+        let theme = Theme::default();
+        let (via_public, _stride, _layout) = paint(&table, &theme);
+        let (via_opacity, _stride2, _layout2) = paint_with_opacity(&table, &theme, 1.0);
+        assert_eq!(via_public, via_opacity);
+    }
+
+    /// `opacity = 0.0` must paint no scrollbar at all — the render-side
+    /// half of the shared overlay idle-fade seam
+    /// (`primitives::scrollbar::idle_fade_opacity`) that
+    /// `GtkBackend::draw_data_table_with_glyphs` drives with its own
+    /// scroll-fade state.
+    #[test]
+    fn zero_opacity_paints_no_scrollbar() {
+        let table = overflowing_table();
+        let theme = Theme::default();
+
+        let (faded_data, faded_stride, layout) = paint_with_opacity(&table, &theme, 0.0);
+        let (visible_data, visible_stride, _) = paint_with_opacity(&table, &theme, 1.0);
+        assert!(
+            layout.visible_rows < table.rows.len(),
+            "fixture must actually overflow to exercise the v-scrollbar"
+        );
+
+        let sb_x = (W as f64 - layout.scrollbar_width as f64 + 2.0) as i32;
+        let sb_y = layout.header_height as i32 + 2;
+
+        let faded_px = pixel(&faded_data, faded_stride as usize, sb_x, sb_y);
+        let visible_px = pixel(&visible_data, visible_stride as usize, sb_x, sb_y);
+        assert_eq!(
+            faded_px,
+            rgb(theme.background),
+            "zero opacity must leave the scrollbar column as plain background"
+        );
+        assert_ne!(
+            visible_px,
+            rgb(theme.background),
+            "full opacity must actually paint the scrollbar column — otherwise \
+             this test's probe location is wrong, not confirming anything"
+        );
     }
 
     /// An over-long *middle* column's text must stay inside its own

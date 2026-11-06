@@ -148,6 +148,36 @@ only a push to `main` runs this workflow.
   reverse-video/`▶`-prefix treatment, unchanged.
 
 ### Fixed
+- GTK `Backend::draw_scrollbar` (`gtk::backend`) now follows the overlay
+  scrollbar idle-fade seam (`primitives::scrollbar::idle_fade_opacity`)
+  instead of painting at permanent full opacity: `gtk::run`'s scroll
+  controller resets the fade clock on every wheel/trackpad delta via the new
+  `GtkBackend::note_scroll_activity`, and `draw_scrollbar` paints through
+  `native_surface_paint::paint_with_opacity` at the resulting opacity —
+  mirroring the macOS/Win legs. New test seams
+  `GtkBackend::set_scroll_last_interaction`/`set_fade_clock_override` let a
+  headless pixel test assert the fade curve deterministically.
+- GTK's Cairo `DataTable` rasteriser (`gtk::data_table`) now scales its
+  vertical and horizontal scrollbars by the same idle-fade opacity through a
+  new crate-internal `draw_data_table_with_opacity`, instead of always
+  painting them at full opacity.
+- GTK `Backend::tree_vscrollbar` (`gtk::backend`) now resolves its track
+  width from the live `Style::scrollbar_width` instead of the fixed
+  `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH` literal — a host-set
+  override now reaches the hit-tested geometry, matching what `draw_tree`'s
+  shared painter already paints and the same convention
+  `Backend::list_vscrollbar` already follows.
+- Added a GTK-specific regression test
+  (`gtk::tree::tests::tree_controller_render_does_not_double_paint_scrollbar`)
+  confirming `TreeController::render` paints the explorer tree's overlay
+  scrollbar exactly once on GTK, pixel-for-pixel matching a bare `draw_tree`
+  call — the GTK leg of the double-paint/extra-wide fix already shared via
+  `Backend::tree_paints_own_scrollbar`.
+- `Palette`'s GTK scrollbar (`gtk::palette`) now exposes a thumb/track click
+  target as wide as `Style::scrollbar_width`'s default, instead of the
+  narrower 6px visual bar `native_surface_paint`'s own `SB_W` convention
+  paints — the painted bar is unchanged, only the hit region widens, so a
+  click near (not just exactly on) the thumb/track now registers.
 - Win `Backend::tree_vscrollbar` (`win::backend`) now resolves its track
   width from the live `Style::scrollbar_width` instead of the fixed
   `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH` literal — a host-set

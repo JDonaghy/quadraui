@@ -249,6 +249,28 @@ pub struct GtkBackend {
     /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
     /// `current_char_width` wide.
     editor_v_scrollbar_w: Option<f32>,
+    /// Timestamp of the most recent scroll-wheel delta, fed in by
+    /// `super::run`'s scroll controller via
+    /// [`Self::note_scroll_activity`]. [`Self::new`] seeds this with its
+    /// own construction instant rather than `None`, so a scrollbar
+    /// painted immediately after startup — a live app's first frame, a
+    /// headless pixel test, a gallery capture — still shows at full
+    /// opacity like VS Code's overlay scrollbars briefly do on load,
+    /// instead of starting invisible. With no further scroll activity it
+    /// fades out exactly like any other idle period. `None` is a
+    /// reachable test seam ([`Self::set_scroll_last_interaction`]) for
+    /// "never interacted, already fully faded". Mirrors
+    /// `MacBackend::scroll_fade_last_interaction` /
+    /// `WinBackend::scroll_fade_last_interaction`.
+    scroll_fade_last_interaction: Option<std::time::Instant>,
+    /// Test seam overriding "now" for [`idle_fade_opacity`] instead of
+    /// [`std::time::Instant::now`], so pixel tests can assert the fade
+    /// curve deterministically without a real sleep. `None` (the
+    /// default) uses real wall-clock time, as a live app does. Mirrors
+    /// `MacBackend::scroll_fade_clock_override`.
+    ///
+    /// [`idle_fade_opacity`]: crate::primitives::scrollbar::idle_fade_opacity
+    scroll_fade_clock_override: Option<std::time::Instant>,
     /// Per-frame Pango advance for `ui_font` (the chrome twin of
     /// `current_char_width`), in DIPs — backs [`Backend::list_char_width`].
     /// `draw_list` paints row text in `ui_font`, not the editor font
@@ -600,6 +622,11 @@ impl GtkBackend {
             current_line_height: 16.0,
             current_char_width: 8.0,
             editor_v_scrollbar_w: None,
+            // See the field's own doc: seeding "now" rather than `None`
+            // means a scrollbar painted right after construction starts
+            // visible, fading out only after a real idle period.
+            scroll_fade_last_interaction: Some(std::time::Instant::now()),
+            scroll_fade_clock_override: None,
             // Arbitrary but plausible seed (mirrors `current_char_width`
             // above) — a real value is only established once
             // `refresh_chrome_char_width` runs inside a live frame; a
@@ -686,6 +713,62 @@ impl GtkBackend {
     /// contract.
     pub(crate) fn set_dpi_scale(&mut self, scale: f32) {
         self.dpi_scale = scale;
+    }
+
+    /// Record that a scroll event just arrived, resetting the overlay
+    /// scrollbar's idle-fade clock to "now". `super::run`'s scroll
+    /// controller calls this for every delta it receives before
+    /// dispatching the translated [`UiEvent::Scroll`]. Mirrors
+    /// `MacBackend::note_scroll_activity` / `WinBackend::note_scroll_activity`.
+    ///
+    /// [`UiEvent::Scroll`]: crate::UiEvent::Scroll
+    pub fn note_scroll_activity(&mut self) {
+        self.scroll_fade_last_interaction = Some(self.fade_now());
+    }
+
+    /// Test seam: pin the overlay scrollbar's last-interaction instant
+    /// directly instead of going through a synthetic
+    /// [`Self::note_scroll_activity`] call. `None` resets to "never
+    /// scrolled" (fully faded). Mirrors `MacBackend::set_scroll_last_interaction`.
+    pub fn set_scroll_last_interaction(&mut self, at: Option<std::time::Instant>) {
+        self.scroll_fade_last_interaction = at;
+    }
+
+    /// The overlay scrollbar's current last-interaction instant —
+    /// [`Self::new`]'s own construction time until a real scroll (or a
+    /// test) resets it. `None` once explicitly cleared via
+    /// [`Self::set_scroll_last_interaction`].
+    pub fn scroll_last_interaction(&self) -> Option<std::time::Instant> {
+        self.scroll_fade_last_interaction
+    }
+
+    /// Test seam: override what [`Self::fade_now`] returns, so a pixel
+    /// test can assert the fade curve at an exact offset from the last
+    /// interaction without a real sleep. `None` (the default) falls
+    /// back to [`std::time::Instant::now`]. Mirrors
+    /// `MacBackend::set_fade_clock_override`.
+    pub fn set_fade_clock_override(&mut self, now: Option<std::time::Instant>) {
+        self.scroll_fade_clock_override = now;
+    }
+
+    /// "Now", for overlay-scrollbar fade purposes — real wall-clock time
+    /// unless a test pinned [`Self::set_fade_clock_override`].
+    fn fade_now(&self) -> std::time::Instant {
+        self.scroll_fade_clock_override
+            .unwrap_or_else(std::time::Instant::now)
+    }
+
+    /// Opacity multiplier [`Backend::draw_scrollbar`] (and the
+    /// `DataTable` rasteriser's own scrollbars) paint the track and
+    /// thumb at: `0.0` if [`Self::scroll_last_interaction`] has been
+    /// explicitly cleared to `None`, otherwise
+    /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
+    /// sampled at [`Self::fade_now`]. Mirrors `MacBackend::scrollbar_fade_opacity`.
+    fn scrollbar_fade_opacity(&self) -> f32 {
+        match self.scroll_fade_last_interaction {
+            Some(last) => crate::primitives::scrollbar::idle_fade_opacity(last, self.fade_now()),
+            None => 0.0,
+        }
     }
 
     /// Clone of the platform services' dialog-pump-depth counter — `> 0`
@@ -2540,7 +2623,12 @@ impl Backend for GtkBackend {
         // per-frame font happened to be (the editor font by default).
         let saved_font = layout.font_description();
         layout.set_font_description(Some(&ui_font_desc));
-        let table_layout = crate::gtk::draw_data_table_with_glyphs(
+        // `draw_data_table_with_opacity` (not the public
+        // `draw_data_table_with_glyphs`, which always paints at full
+        // opacity) so the table's vertical/horizontal scrollbars follow
+        // the same overlay idle-fade as `Self::draw_scrollbar`.
+        let opacity = self.scrollbar_fade_opacity();
+        let table_layout = crate::gtk::data_table::draw_data_table_with_opacity(
             cr,
             layout,
             rect.x as f64,
@@ -2553,6 +2641,7 @@ impl Backend for GtkBackend {
             hovered_idx,
             glyphs,
             nerd_fonts_enabled,
+            opacity,
         );
         layout.set_font_description(saved_font.as_ref());
 
@@ -4183,23 +4272,25 @@ impl Backend for GtkBackend {
     }
 
     fn tree_vscrollbar(&self, rect: QRect, tree: &TreeView) -> Option<crate::Scrollbar> {
-        // GTK tree vertical-scrollbar rasteriser not yet implemented.
-        // Delegate to the primitive's geometry method, but using the same
+        // Delegate to the primitive's geometry method, using the same
         // per-row pitch `Self::tree_layout` (via `layout_metrics::tree_layout`)
         // actually paints — not the raw `line_height`. Unlike `ListView`
         // (whose items really are `line_height` tall, see
         // `GtkBackend::list_vscrollbar`), `TreeView` rows pitch at
         // `line_height * 1.4` (or `TreeStyle::row_height`); see
         // `layout_metrics::tree_row_pitch`'s doc.
+        //
+        // Track width is the live `self.current_style.scrollbar_width`
+        // token, not the fixed `TREE_VSCROLLBAR_WIDTH` literal — same
+        // live field `Self::list_vscrollbar` already passes, so a
+        // host-set override can't make this hit-test geometry disagree
+        // with what `crate::primitives::tree::native_surface_paint::paint`
+        // (reached through `Self::draw_tree`) actually painted.
         let row_h = crate::primitives::layout_metrics::tree_row_pitch(
             tree,
             self.resolved_row_height(self.current_line_height),
         );
-        tree.vscrollbar_with_track_width(
-            rect,
-            row_h as f32,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-        )
+        tree.vscrollbar_with_track_width(rect, row_h as f32, self.current_style.scrollbar_width)
     }
 
     fn tree_paints_own_scrollbar(&self) -> bool {
@@ -4421,7 +4512,10 @@ impl Backend for GtkBackend {
         scrollbar: &crate::primitives::scrollbar::Scrollbar,
     ) {
         let theme = self.current_theme;
-        crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, self, &theme);
+        let opacity = self.scrollbar_fade_opacity();
+        crate::primitives::scrollbar::native_surface_paint::paint_with_opacity(
+            scrollbar, self, &theme, opacity,
+        );
         // A scrollbar strokes/fills only — no text — so on this
         // pixel backend it would otherwise be indistinguishable from the
         // no-op default. Register the primitive's own id at its own
@@ -8708,7 +8802,8 @@ mod tests {
     /// at 16px default, 15 rows painted at the real 22.4px→22px pitch fit
     /// 13 into a 300px-tall viewport (300/22 = 13), so an overflow
     /// scrollbar must appear. The row pitch governs the minimum thumb
-    /// length, not the track's (fixed 10px) width.
+    /// length, not the track's width (the live `Style::scrollbar_width`
+    /// token, `10.0` at the default style used here).
     #[test]
     fn gtk_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
         let backend = GtkBackend::new();
@@ -8721,8 +8816,8 @@ mod tests {
         let expected_row_h = ((backend.current_line_height * 1.4).round()) as f32;
         assert_eq!(
             sb.track.width,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-            "track width must stay the fixed VS Code list/tree scrollbar width"
+            backend.current_style().scrollbar_width,
+            "track width must follow the live Style::scrollbar_width token"
         );
         assert!(
             sb.thumb_len >= expected_row_h,
@@ -8734,7 +8829,8 @@ mod tests {
     /// A host-set `TreeStyle::row_height` must be honored
     /// by `tree_vscrollbar`, exactly as `tree_layout`/`draw_tree` honor
     /// it — not silently ignored in favor of `line_height`. It governs the
-    /// minimum thumb length, not the track's (fixed 10px) width.
+    /// minimum thumb length, not the track's width (the live
+    /// `Style::scrollbar_width` token).
     #[test]
     fn gtk_backend_tree_vscrollbar_honors_tree_style_row_height_override() {
         let backend = GtkBackend::new();
@@ -8744,11 +8840,38 @@ mod tests {
 
         let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
             .expect("15 rows at a 50px override overflow a 300px viewport (6 visible)");
-        assert_eq!(
-            sb.track.width,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH
-        );
+        assert_eq!(sb.track.width, backend.current_style().scrollbar_width);
         assert!(sb.thumb_len >= 50.0);
+    }
+
+    /// `tree_vscrollbar`'s track width must follow a host-set
+    /// `Style::scrollbar_width`, the same live field
+    /// `crate::primitives::tree::native_surface_paint::paint` reads (via
+    /// `Self::draw_tree`) — so the painted track and the hit-tested
+    /// track can never drift apart at a non-default width. Mirrors
+    /// `gtk_backend_list_vscrollbar_track_width_follows_style_token`.
+    #[test]
+    fn gtk_backend_tree_vscrollbar_track_width_follows_style_token() {
+        let mut backend = GtkBackend::new();
+        let tree = flat_tree(15);
+        let rect = QRect::new(0.0, 0.0, 200.0, 300.0);
+
+        let default_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
+            .expect("15 rows must overflow a 300px viewport");
+        assert_eq!(
+            default_sb.track.width,
+            backend.current_style().scrollbar_width
+        );
+
+        backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
+        let overridden_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
+            .expect("15 rows must still overflow with a wider track reserved");
+        assert_eq!(overridden_sb.track.width, 24.0);
+        assert_eq!(
+            overridden_sb.track.x,
+            rect.x + rect.width - 24.0,
+            "widened track must still hug the tree's right edge"
+        );
     }
 
     /// `list_vscrollbar`'s track width must follow a host-set

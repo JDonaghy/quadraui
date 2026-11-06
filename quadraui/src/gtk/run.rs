@@ -1404,6 +1404,18 @@ fn setup_scroll_controller<A: AppLogic + 'static>(
                 return glib::Propagation::Proceed;
             }
             let (x, y) = cursor_pos.get();
+            // Reset the overlay scrollbar idle-fade clock on every delta
+            // this controller receives, same "every message, not just
+            // whole notches" posture as the GDK→UiEvent translation
+            // below — mirrors `macos::run`'s `scrollWheel:` handler /
+            // `win::run`'s `WM_MOUSEWHEEL` handler. `try_borrow_mut`:
+            // if `backend` is already mutably borrowed further up this
+            // stack (shouldn't happen — nothing else borrows it between
+            // controller callbacks — but `try_dispatch` below degrades
+            // the same way), skip the fade reset rather than panic.
+            if let Ok(mut b) = backend.try_borrow_mut() {
+                b.note_scroll_activity();
+            }
             // If `app` already mutably borrowed further up this stack,
             // fall back to the trait's own default (`false`) rather than risk it;
             // `try_dispatch` below degrades the same way for the dispatch itself.
