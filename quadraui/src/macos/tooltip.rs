@@ -502,6 +502,15 @@ mod tests {
                 !driver.screen_contains("Hover hint"),
                 "the tooltip must not show the instant the pointer lands"
             );
+            // `HoverApp::handle` asked the real `MacBackend::request_frame_in`
+            // to schedule the redraw this delay needs — not just this test's
+            // hand-driven `clock`/`tick()` below. Without this, nothing here
+            // would fail if `request_frame_in` stopped being called at all.
+            assert_eq!(
+                driver.backend().frame_requests(),
+                vec![std::time::Duration::from_millis(DELAY_MS)],
+                "hovering the anchor must request a tick after the hover delay"
+            );
 
             // The delay elapses with no further pointer movement — the
             // `tick()` the real runner's `request_frame_in` timer would
