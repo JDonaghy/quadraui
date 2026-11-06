@@ -697,12 +697,14 @@ pub struct WinBackend {
     /// [`Backend::draw_tooltip_with_chrome`]/[`Backend::draw_toast_overlay`].
     /// Cleared at the start of each frame by [`Self::begin_frame`], same
     /// per-frame lifecycle as `zones`. Mirrors
-    /// `MacBackend::overlay_bounds_this_frame`/`GtkBackend`'s equivalent.
+    /// `MacBackend::overlay_bounds_this_frame`; GTK has no equivalent yet
+    /// (`gtk::backend::draw_focus_ring` strokes unconditionally).
     ///
-    /// [`Backend::draw_focus_ring`] reads this to skip the portion of the
-    /// generic focus-ring convention that would otherwise stroke on top of
-    /// an overlay drawn earlier in the same frame — tooltip/toast must stay
-    /// topmost (see that method's own doc for the regression this guards).
+    /// [`Backend::draw_focus_ring`] reads this to decide whether to skip
+    /// painting the generic focus-ring convention entirely for a given
+    /// call, so it never strokes on top of an overlay drawn earlier in the
+    /// same frame — tooltip/toast must stay topmost (see that method's own
+    /// doc for the regression this guards).
     overlay_bounds_this_frame: Vec<Rect>,
     /// Test-facing [`Backend::request_frame_in`] call-count/deadline
     /// bookkeeping, mirroring
@@ -12025,9 +12027,7 @@ mod tests {
 
     // ── overlay order: tooltip/toast stay topmost of the focus ring ──────
 
-    const OVERLAY_W: u32 = 400;
-    const OVERLAY_H: u32 = 200;
-
+    #[cfg(target_os = "windows")]
     fn sample_toast_overlay() -> ToastOverlay {
         use crate::primitives::toast::{Toast, ToastCorner, ToastSeverity};
         ToastOverlay {
@@ -12059,18 +12059,18 @@ mod tests {
         use crate::theme::Theme;
         use crate::win::testing::HeadlessSurface;
 
+        const W: u32 = 400;
+        const H: u32 = 200;
+
         let overlay = sample_toast_overlay();
-        let surface = HeadlessSurface::new(OVERLAY_W, OVERLAY_H).expect("create headless surface");
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
         let mut backend = WinBackend::new();
         backend
-            .attach_headless(surface.target().clone(), OVERLAY_W, OVERLAY_H)
+            .attach_headless(surface.target().clone(), W, H)
             .expect("attach headless surface");
 
-        backend.begin_frame(Viewport::new(OVERLAY_W as f32, OVERLAY_H as f32, 1.0));
-        let layout = backend.draw_toast_overlay(
-            Rect::new(0.0, 0.0, OVERLAY_W as f32, OVERLAY_H as f32),
-            &overlay,
-        );
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = backend.draw_toast_overlay(Rect::new(0.0, 0.0, W as f32, H as f32), &overlay);
         let vt = layout.visible_toasts[0].bounds;
         // A tab-stop focus ring whose rect is the toast's own bounds — the
         // worst case, a toast that lands exactly over the focused widget it
@@ -12118,19 +12118,22 @@ mod tests {
         use crate::theme::Theme;
         use crate::win::testing::HeadlessSurface;
 
+        const W: u32 = 400;
+        const H: u32 = 200;
+
         let overlay = sample_toast_overlay();
-        let surface = HeadlessSurface::new(OVERLAY_W, OVERLAY_H).expect("create headless surface");
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
         let mut backend = WinBackend::new();
         backend
-            .attach_headless(surface.target().clone(), OVERLAY_W, OVERLAY_H)
+            .attach_headless(surface.target().clone(), W, H)
             .expect("attach headless surface");
 
         // The focused widget spans the whole viewport (a focused
         // editor/list behind the toast stack); the toast itself is inset
         // from that same rect by the toast margin, so it never reaches the
         // focused rect's edges — the stroke band the ring actually paints.
-        let focused_rect = Rect::new(0.0, 0.0, OVERLAY_W as f32, OVERLAY_H as f32);
-        backend.begin_frame(Viewport::new(OVERLAY_W as f32, OVERLAY_H as f32, 1.0));
+        let focused_rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let _layout = backend.draw_toast_overlay(focused_rect, &overlay);
         backend.draw_focus_ring(focused_rect);
         backend.end_frame();
@@ -12172,14 +12175,17 @@ mod tests {
         use crate::theme::Theme;
         use crate::win::testing::HeadlessSurface;
 
+        const W: u32 = 400;
+        const H: u32 = 200;
+
         let rect = Rect::new(20.0, 20.0, 100.0, 30.0);
-        let surface = HeadlessSurface::new(OVERLAY_W, OVERLAY_H).expect("create headless surface");
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
         let mut backend = WinBackend::new();
         backend
-            .attach_headless(surface.target().clone(), OVERLAY_W, OVERLAY_H)
+            .attach_headless(surface.target().clone(), W, H)
             .expect("attach headless surface");
 
-        backend.begin_frame(Viewport::new(OVERLAY_W as f32, OVERLAY_H as f32, 1.0));
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let tooltip = Tooltip::new(WidgetId::new("tip"), "Hover text");
         let layout = TooltipLayout {
             bounds: rect,
@@ -12204,6 +12210,17 @@ mod tests {
             ),
             "the focus ring must not stroke over a tooltip painted earlier this frame",
         );
+        // The tooltip's own fill is present at its centre — a positive
+        // assertion that `draw_tooltip` actually painted something there,
+        // not just that the ring's colour is absent.
+        let cx = (rect.x + rect.width / 2.0) as u32;
+        let cy = (rect.y + rect.height / 2.0) as u32;
+        let px = surface.pixel_at(cx, cy);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (theme.hover_bg.r, theme.hover_bg.g, theme.hover_bg.b),
+            "the tooltip's own fill must paint at its centre",
+        );
     }
 
     /// The overlay-order contract documented on
@@ -12225,19 +12242,22 @@ mod tests {
         use crate::theme::Theme;
         use crate::win::testing::HeadlessSurface;
 
+        const W: u32 = 400;
+        const H: u32 = 200;
+
         let overlay = sample_toast_overlay();
-        let surface = HeadlessSurface::new(OVERLAY_W, OVERLAY_H).expect("create headless surface");
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
         let mut backend = WinBackend::new();
         backend
-            .attach_headless(surface.target().clone(), OVERLAY_W, OVERLAY_H)
+            .attach_headless(surface.target().clone(), W, H)
             .expect("attach headless surface");
 
         let mut editor = TextInput::new(WidgetId::new("editor"));
         editor.lines = vec!["fn main() {}".to_string()];
         editor.has_focus = true;
-        let editor_rect = Rect::new(0.0, 0.0, OVERLAY_W as f32, OVERLAY_H as f32);
+        let editor_rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
-        backend.begin_frame(Viewport::new(OVERLAY_W as f32, OVERLAY_H as f32, 1.0));
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.draw_text_input(editor_rect, &editor);
         let layout = backend.draw_toast_overlay(editor_rect, &overlay);
         // The chrome-level focus ring the runner strokes around
@@ -12277,12 +12297,14 @@ mod tests {
 
     /// Drives [`crate::compose::HoverTooltipTracker`] through real
     /// [`UiEvent::MouseMoved`] dispatch + [`super::testing::WinDriver::tick`]
-    /// — the same `dispatch`/`AppLogic::tick` path the live `win::run`
-    /// runner uses for its `request_frame_in`-scheduled repaint. Not a
-    /// test of `HoverTooltipTracker` itself (that lives in its own
-    /// module) — this proves the Win-GUI dispatch + tick + `draw_tooltip`
-    /// wiring actually shows and hides a tooltip in response to real
-    /// pointer input. Mirrors
+    /// — the same `AppLogic::tick` path the live `win::run` runner uses
+    /// for its `request_frame_in`-scheduled repaint, feeding the event
+    /// straight into dispatch rather than through the live `wndproc`'s
+    /// `route_mouse_move`/`route_pointer` step first. Not a test of
+    /// `HoverTooltipTracker` itself (that lives in its own module) — this
+    /// proves the Win-GUI dispatch + tick + `draw_tooltip` wiring actually
+    /// shows and hides a tooltip in response to real pointer input.
+    /// Mirrors
     /// `macos::tooltip::tests::hover_driven::tooltip_appears_after_the_delay_and_hides_on_pointer_leave`.
     #[cfg(target_os = "windows")]
     mod hover_driven {
