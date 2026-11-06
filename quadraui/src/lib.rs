@@ -642,8 +642,8 @@ pub use primitives::toast::{
     ToastOverlay, ToastSeverity, ToastStackLayout, VisibleToast,
 };
 pub use primitives::toolbar::{
-    Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarItemKind, ToolbarItemMeasure,
-    ToolbarLayout, ToolbarPaintOptions, ToolbarVAlign, VisibleToolbarItem,
+    Toolbar, ToolbarButton, ToolbarEvent, ToolbarHit, ToolbarIcons, ToolbarItemKind,
+    ToolbarItemMeasure, ToolbarLayout, ToolbarPaintOptions, ToolbarVAlign, VisibleToolbarItem,
 };
 pub use primitives::tooltip::{
     ResolvedPlacement, Tooltip, TooltipBorder, TooltipChrome, TooltipHit, TooltipLayout,

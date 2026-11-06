@@ -1713,8 +1713,8 @@ mod tests {
 
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
-        AppLogic, Backend, Button, DataTable, Modifiers, MouseButton, Point, Reaction, Rect,
-        UiEvent, WidgetId,
+        AppLogic, Backend, Button, DataTable, Key, Modifiers, MouseButton, NamedKey, Point,
+        Reaction, Rect, ToolbarEvent, UiEvent, WidgetId,
     };
 
     use super::{EventSink, InteractionEngine};
@@ -3134,14 +3134,16 @@ mod tests {
         }
     }
 
-    /// Clicking a `SidebarPanel`'s toolbar button must set the raw
-    /// `MouseDown`'s `widget` to the button's own id — exercising
-    /// `crate::render::paint_layout`'s `LayoutNode::SidebarPanel` arm,
-    /// which records the panel's chrome layout as a
-    /// [`crate::hit::PaintedHit::SidebarPanel`] so this hit resolves
-    /// instead of being dropped.
+    /// Clicking a `SidebarPanel`'s toolbar button must deliver a typed
+    /// `UiEvent::Toolbar(bar_id, ToolbarEvent::ButtonClicked { id, is_active })`
+    /// — exercising `crate::render::paint_layout`'s `LayoutNode::SidebarPanel`
+    /// arm, which records the panel's chrome layout (and its embedded
+    /// `Toolbar` descriptor) as a [`crate::hit::PaintedHit::SidebarPanel`] so
+    /// this hit resolves through `semantic_event_for_hit`'s
+    /// `HitDetail::SidebarPanelToolbarButton` arm instead of staying a raw
+    /// `MouseDown`.
     #[test]
-    fn clicking_a_sidebar_panel_toolbar_button_sets_the_click_widget_to_its_id() {
+    fn clicking_a_sidebar_panel_toolbar_button_dispatches_a_toolbar_button_clicked_event() {
         use quadraui::{SidebarPanel, Toolbar, ToolbarButton};
 
         let sidebar_panel = SidebarPanel {
@@ -3179,9 +3181,193 @@ mod tests {
         assert!(
             dispatched.iter().any(|(event, _)| matches!(
                 event,
-                UiEvent::MouseDown { widget: Some(id), .. } if *id == WidgetId::new("refine")
+                UiEvent::Toolbar(
+                    bar,
+                    ToolbarEvent::ButtonClicked { id, is_active: true },
+                ) if *bar == WidgetId::new("sb:toolbar") && *id == WidgetId::new("refine")
             )),
-            "expected a MouseDown with widget=refine: {:?}",
+            "expected a Toolbar(sb:toolbar, ButtonClicked{{id: refine, is_active: true}}): {:?}",
+            dispatched
+        );
+    }
+
+    /// Mirrors [`FormLogic`], but paints one standalone `"toolbar"` extra —
+    /// the leaf/standalone shape ([`crate::hit::HitDetail::ExtraChrome`]),
+    /// distinct from the `SidebarPanel`-embedded shape the test above
+    /// covers — so a test can drive its click and Enter/Space keyboard
+    /// activation with no host-language FFI type in scope.
+    struct ToolbarLogic {
+        toolbar: quadraui::Toolbar,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for ToolbarLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let mut extra: HashMap<String, std::rc::Rc<dyn crate::extra_paint::ExtraPaint>> =
+                HashMap::new();
+            extra.insert(
+                "toolbar".to_string(),
+                std::rc::Rc::new(self.toolbar.clone())
+                    as std::rc::Rc<dyn crate::extra_paint::ExtraPaint>,
+            );
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: None,
+                    text_display: None,
+                    list: None,
+                    tree: None,
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    fn two_action_toolbar() -> quadraui::Toolbar {
+        use quadraui::{Toolbar, ToolbarButton};
+
+        Toolbar::new(WidgetId::new("toolbar:main")).with_buttons(vec![
+            ToolbarButton::Action {
+                id: WidgetId::new("filter"),
+                label: "Filter".to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            },
+            ToolbarButton::Action {
+                id: WidgetId::new("reset"),
+                label: "Reset".to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            },
+        ])
+    }
+
+    /// A click on a standalone toolbar's `Action` button must dispatch a
+    /// typed `UiEvent::Toolbar(bar_id, ToolbarEvent::ButtonClicked)` —
+    /// `is_active` toggling `true` proves the "new state" half of the
+    /// contract, not just the id.
+    #[test]
+    fn clicking_a_standalone_toolbar_button_dispatches_button_clicked_with_the_flipped_state() {
+        let logic = ToolbarLogic {
+            toolbar: two_action_toolbar(),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 5);
+        driver.render();
+
+        // "Filter" is the first button, starting at the toolbar's own x=0.
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(1.0, 0.0),
+            modifiers: Modifiers::default(),
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        // No leading `FocusChanged`, unlike a tab-stoppable fixed-slot
+        // primitive's own click (e.g. `click_on_a_button_focuses_it_then_
+        // dispatches_the_click` above): the *clicked button's* id (not the
+        // bar's) is what resolves against the hit map, and only the bar's
+        // id is a tab stop, so click-to-focus never fires here.
+        assert_eq!(
+            dispatched.len(),
+            1,
+            "expected exactly the Toolbar click, no FocusChanged: {:?}",
+            dispatched
+        );
+        assert!(
+            matches!(
+                &dispatched[0].0,
+                UiEvent::Toolbar(
+                    bar,
+                    ToolbarEvent::ButtonClicked { id, is_active: true },
+                ) if *bar == WidgetId::new("toolbar:main") && *id == WidgetId::new("filter")
+            ),
+            "expected Toolbar(toolbar:main, ButtonClicked{{id: filter, is_active: true}}): {:?}",
+            dispatched
+        );
+    }
+
+    /// Tab must land focus on a standalone toolbar (it now opts into
+    /// [`crate::extra_paint::ExtraPaint::tab_stop`] whenever it has at least
+    /// one enabled `Action`), and Enter on the focused toolbar must activate
+    /// whichever button [`quadraui::Toolbar::focused_index`] names — the
+    /// same `UiEvent::Toolbar(ButtonClicked)` shape a mouse click produces.
+    #[test]
+    fn tab_focuses_a_toolbar_and_enter_activates_its_focused_button() {
+        // `focused_index: Some(1)` simulates the host having already
+        // responded to the prior `FocusChanged` by marking "Reset" (the
+        // second button) as the keyboard-focused one — the same
+        // host-driven convention `Switch::focused` documents.
+        let mut toolbar = two_action_toolbar();
+        toolbar.focused_index = Some(1);
+
+        let logic = ToolbarLogic {
+            toolbar,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 5);
+        driver.render();
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Tab),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert!(
+                dispatched.iter().any(|(event, _)| matches!(
+                    event,
+                    UiEvent::FocusChanged(Some(id)) if *id == WidgetId::new("toolbar:main")
+                )),
+                "Tab must focus the toolbar (its only tab stop): {:?}",
+                dispatched
+            );
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::Toolbar(
+                    bar,
+                    ToolbarEvent::ButtonClicked { id, is_active: true },
+                ) if *bar == WidgetId::new("toolbar:main") && *id == WidgetId::new("reset")
+            )),
+            "Enter on the focused toolbar must activate button 1 (reset): {:?}",
             dispatched
         );
     }
