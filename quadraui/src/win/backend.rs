@@ -4241,16 +4241,20 @@ impl Backend for WinBackend {
     /// at `line_height * 1.4` (or `TreeStyle::row_height`), unlike
     /// `ListView` items which really are `line_height` tall; see
     /// `layout_metrics::tree_row_pitch`'s doc.
+    ///
+    /// `scrollbar_width` sets the track's column width to the live
+    /// `self.current_style.scrollbar_width` — the same field
+    /// `draw_tree`'s shared painter
+    /// ([`crate::primitives::tree::native_surface_paint::paint`]) reads —
+    /// mirroring [`Self::list_vscrollbar`]'s own convention, so this
+    /// hit-test agrees exactly with what gets painted at the default
+    /// width or a host override alike.
     fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<crate::Scrollbar> {
         let row_h = crate::primitives::layout_metrics::tree_row_pitch(
             tree,
             self.resolved_row_height(self.current_line_height) as f64,
         );
-        tree.vscrollbar_with_track_width(
-            rect,
-            row_h as f32,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-        )
+        tree.vscrollbar_with_track_width(rect, row_h as f32, self.current_style.scrollbar_width)
     }
 
     fn tree_paints_own_scrollbar(&self) -> bool {
@@ -6724,8 +6728,10 @@ mod tests {
     /// into a 300px-tall viewport (300/22 = 13), so an overflow scrollbar must
     /// appear — the raw-`line_height` math (300/16 = 18) would have wrongly
     /// reported "everything fits". The row pitch governs the minimum thumb
-    /// length, not the track's (fixed 10px) width. Cross-platform: no
-    /// `target_os = "windows"` gate needed — see `tree_vscrollbar`'s doc.
+    /// length, not the track's width (see
+    /// `win_backend_tree_vscrollbar_track_width_follows_style_token` for that).
+    /// Cross-platform: no `target_os = "windows"` gate needed — see
+    /// `tree_vscrollbar`'s doc.
     #[test]
     fn win_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
         let backend = WinBackend::new();
@@ -6738,14 +6744,40 @@ mod tests {
         let expected_row_h = ((backend.current_line_height as f64 * 1.4).round()) as f32;
         assert_eq!(
             sb.track.width,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-            "track width must stay the fixed VS Code list/tree scrollbar width"
+            backend.current_style().scrollbar_width,
+            "track width must follow the live Style::scrollbar_width token"
         );
         assert!(
             sb.thumb_len >= expected_row_h,
             "minimum thumb length (and row pitch) must match tree_layout's \
              non-header item_height, not the raw line_height"
         );
+    }
+
+    /// `tree_vscrollbar`'s track width must follow a host-set
+    /// `Style::scrollbar_width`, the same live field
+    /// `native_surface_paint::paint` reads for `TreeView` — so the painted
+    /// track and the hit-tested track can never drift apart, at the
+    /// default width or a host override. Mirrors
+    /// `win_backend_list_vscrollbar_track_width_follows_style_token`.
+    /// Pure geometry, no `target_os = "windows"` gate needed.
+    #[test]
+    fn win_backend_tree_vscrollbar_track_width_follows_style_token() {
+        let mut backend = WinBackend::new();
+        let tree = flat_tree(15);
+        let rect = Rect::new(0.0, 0.0, 20.0, 300.0);
+
+        let default_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
+            .expect("15 rows at the real 22px row pitch overflow a 300px viewport");
+        assert_eq!(
+            default_sb.track.width,
+            backend.current_style().scrollbar_width
+        );
+
+        backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
+        let overridden_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
+            .expect("15 rows at the real 22px row pitch overflow a 300px viewport");
+        assert_eq!(overridden_sb.track.width, 24.0);
     }
 
     /// Pre-attach fallback: before a surface/DirectWrite
@@ -6941,7 +6973,7 @@ mod tests {
     /// A host-set `TreeStyle::row_height` must be honored
     /// by `tree_vscrollbar`, exactly as `tree_layout`/`draw_tree` honor
     /// it — not silently ignored in favor of `line_height`. It governs the
-    /// minimum thumb length, not the track's (fixed 10px) width.
+    /// minimum thumb length, not the track's width.
     #[test]
     fn win_backend_tree_vscrollbar_honors_tree_style_row_height_override() {
         let backend = WinBackend::new();
@@ -6951,10 +6983,7 @@ mod tests {
 
         let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
             .expect("15 rows at a 50px override overflow a 300px viewport (6 visible)");
-        assert_eq!(
-            sb.track.width,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH
-        );
+        assert_eq!(sb.track.width, backend.current_style().scrollbar_width);
         assert!(sb.thumb_len >= 50.0);
     }
 
