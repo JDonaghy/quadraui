@@ -199,9 +199,13 @@ impl ControlsApp {
         )
     }
 
+    /// Sits on the first line below the radio group, so the whole stack
+    /// — buttons, radio group, switch — still clears the bottom status
+    /// bar on a short surface (a 12-row terminal).
     fn switch_rect(&self, backend: &dyn Backend) -> Rect {
         let lh = backend.line_height();
-        Rect::new(1.0, lh * (6.0 + BUTTON_COUNT as f32), 24.0, lh)
+        let radio = self.radio_rect(backend);
+        Rect::new(1.0, radio.y + radio.height, 24.0, lh)
     }
 
     fn status_rect(&self, backend: &dyn Backend) -> Rect {
