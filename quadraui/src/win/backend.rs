@@ -9177,6 +9177,7 @@ mod tests {
     /// `tab_bar_bg`.
     #[cfg(target_os = "windows")]
     #[test]
+    #[allow(deprecated)] // reads the deprecated `TabBarHits::slot_positions` — issue #823
     fn hovered_tab_tints_the_whole_background_not_just_the_close_glyph() {
         use crate::theme::Theme;
 
@@ -9211,6 +9212,7 @@ mod tests {
     /// `_with_state` painter in this crate applies.
     #[cfg(target_os = "windows")]
     #[test]
+    #[allow(deprecated)] // reads the deprecated `TabBarHits::slot_positions` — issue #823
     fn pressed_tab_tints_deeper_than_hovered_tab() {
         use crate::theme::Theme;
 
@@ -9243,6 +9245,7 @@ mod tests {
     /// colour, matching plain `draw_tab_bar`.
     #[cfg(target_os = "windows")]
     #[test]
+    #[allow(deprecated)] // reads the deprecated `TabBarHits::slot_positions` — issue #823
     fn mouse_leaving_the_tab_clears_the_hover_tint() {
         use crate::theme::Theme;
 
