@@ -174,6 +174,26 @@ only a push to `main` runs this workflow.
   deltas into its own `scroll_px` (new `Backend::wheel_delta_rows`
   normalises a backend's native wheel-delta unit into row-notches
   first) and feeds it to `draw_tree_with_state` from `render()`.
+- macOS now paints `scroll_px` for real (not just the trait shape):
+  `MacBackend::draw_list_with_state`/`draw_tree_with_state`/
+  `draw_data_table_with_state` shift the first visible row/item up by
+  the sub-row remainder and clip it against the viewport, and position
+  the vertical scrollbar thumb from the same pixel-precise value —
+  `scroll_px: None` paints pixel-identically to the existing
+  `draw_list`/`draw_tree`/`draw_data_table`. New
+  `mac_list_layout_with_scroll_px`/`mac_tree_layout_with_scroll_px`
+  thread it through to `ListView`/`TreeView::layout_with_scroll_px`;
+  `DataTable`'s layout needs no such counterpart (`DataTableLayout`
+  carries a row count, not per-row bounds). The shared
+  `primitives::{list,tree}::native_surface_paint` painters gain an
+  additive `paint_with_scroll_px` (the existing `paint` now forwards to
+  it with `None`), and `primitives::data_table::native_surface_paint`
+  gains `paint_with_state`, both clipping the scrolled body to the
+  region below any fixed title/header so a sub-row shift can't paint
+  over still-pinned chrome. macOS's trackpad `scrollWheel:` deltas are
+  already pixel-precise (`NSEvent::scrollingDeltaY`), so no new event
+  plumbing was needed to feed them in — only the painters were
+  missing. GTK/Win32 still ignore `scroll_px` (sibling issues).
 - `compose::HoverTooltipTracker<T>`: the delay + auto-dismiss state
   machine a hover-driven tooltip needs on top of
   `ToolbarHoverTracker`/`ListHoverTracker`/`TreeHoverTracker`'s plain

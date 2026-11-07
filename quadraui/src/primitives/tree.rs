@@ -655,6 +655,48 @@ pub(crate) mod native_surface_paint {
         pressed_idx: Option<usize>,
         focus_ring_visible: bool,
     ) {
+        paint_with_scroll_px(
+            tree,
+            area,
+            tree_layout,
+            line_height,
+            nerd_fonts_enabled,
+            surface,
+            theme,
+            style,
+            hovered_idx,
+            pressed_idx,
+            focus_ring_visible,
+            None,
+        )
+    }
+
+    /// Like [`paint`], plus an explicit pixel-precise scroll position
+    /// (`scroll_px`) that wins over [`TreeView::scroll_offset`] for the
+    /// vertical scrollbar thumb painted here (via
+    /// [`TreeView::vscrollbar_with_scroll_px`]) — row positions come from
+    /// `tree_layout.visible_rows`, already resolved against `scroll_px`
+    /// by whichever of [`TreeView::layout_with_scroll_px`]/
+    /// `mac_tree_layout_with_scroll_px`/`gtk_tree_layout_with_scroll_px`
+    /// built `tree_layout`.
+    ///
+    /// `scroll_px: None` (what [`paint`] passes) resolves the thumb
+    /// identically to `paint`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_scroll_px(
+        tree: &TreeView,
+        area: Rect,
+        tree_layout: &TreeViewLayout,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        hovered_idx: Option<usize>,
+        pressed_idx: Option<usize>,
+        focus_ring_visible: bool,
+        scroll_px: Option<f32>,
+    ) {
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
         }
@@ -880,9 +922,11 @@ pub(crate) mod native_surface_paint {
 
         // Paint the vertical scrollbar when present. The track width is
         // `Style::scrollbar_width`, independent of row pitch — see that
-        // field's own doc.
+        // field's own doc. `scroll_px` wins over `scroll_offset` when
+        // set, so the thumb tracks the same sub-row position the rows
+        // above were painted at.
         if let Some(vsb) =
-            tree.vscrollbar_with_track_width(area, item_height, style.scrollbar_width)
+            tree.vscrollbar_with_scroll_px(area, item_height, style.scrollbar_width, scroll_px)
         {
             crate::primitives::scrollbar::native_surface_paint::paint(&vsb, surface, theme);
         }

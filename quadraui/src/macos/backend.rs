@@ -2490,6 +2490,46 @@ impl Backend for MacBackend {
             );
         }
     }
+    /// [`Self::draw_tree`], plus hover/press tinting, a focus-visible
+    /// ring, and — when `state.scroll_px` is `Some` — a pixel-precise
+    /// scroll position instead of only [`TreeView::scroll_offset`]'s
+    /// whole-row value, via [`super::tree::draw_tree_with_state`].
+    /// `state.scroll_px: None` paints pixel-identically to
+    /// [`Self::draw_tree`].
+    fn draw_tree_with_state(
+        &mut self,
+        rect: Rect,
+        tree: &TreeView,
+        state: &crate::primitives::tree::TreePaintState,
+        focus_ring_visible: bool,
+    ) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_tree_with_state called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.resolved_row_height(self.chrome_line_height);
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::tree::draw_tree_with_state(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                tree,
+                &theme,
+                &self.current_style,
+                line_height,
+                self.nerd_fonts_enabled,
+                state,
+                focus_ring_visible,
+            );
+        }
+    }
     fn draw_list(&mut self, rect: Rect, list: &ListView) {
         let ctx = self.current_cg();
         debug_assert!(
@@ -2516,6 +2556,46 @@ impl Backend for MacBackend {
                 &self.current_style,
                 line_height,
                 self.nerd_fonts_enabled,
+            );
+        }
+    }
+    /// [`Self::draw_list`], plus hover/press tinting, a focus-visible
+    /// ring, and — when `state.scroll_px` is `Some` — a pixel-precise
+    /// scroll position instead of only [`ListView::scroll_offset`]'s
+    /// whole-row value, via [`super::list::draw_list_with_state`].
+    /// `state.scroll_px: None` paints pixel-identically to
+    /// [`Self::draw_list`].
+    fn draw_list_with_state(
+        &mut self,
+        rect: Rect,
+        list: &ListView,
+        state: &crate::primitives::list::ListPaintState,
+        focus_ring_visible: bool,
+    ) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_list_with_state called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.resolved_row_height(self.chrome_line_height);
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::list::draw_list_with_state(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                list,
+                &theme,
+                &self.current_style,
+                line_height,
+                self.nerd_fonts_enabled,
+                state,
+                focus_ring_visible,
             );
         }
     }
@@ -2585,6 +2665,42 @@ impl Backend for MacBackend {
                 hovered_idx,
                 glyphs,
                 self.nerd_fonts_enabled,
+            )
+        }
+    }
+    /// [`Self::draw_data_table`], plus — when `state.scroll_px` is
+    /// `Some` — a pixel-precise scroll position instead of only
+    /// [`DataTable::scroll_offset`]'s whole-row value, via
+    /// [`super::data_table::draw_data_table_with_state`].
+    /// `state.scroll_px: None` paints pixel-identically to
+    /// [`Self::draw_data_table`].
+    fn draw_data_table_with_state(
+        &mut self,
+        rect: Rect,
+        table: &DataTable,
+        state: &crate::primitives::data_table::DataTablePaintState,
+    ) -> DataTableLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_data_table_with_state called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.resolved_row_height(self.current_line_height);
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::data_table::draw_data_table_with_state(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                table,
+                &theme,
+                line_height,
+                state,
             )
         }
     }

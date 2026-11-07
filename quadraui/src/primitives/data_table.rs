@@ -1040,7 +1040,10 @@ where
 #[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{ColumnAlign, DataTable, DataTableGlyphs, DataTableLayout, SortDirection};
+    use super::{
+        ColumnAlign, DataTable, DataTableGlyphs, DataTableLayout, DataTablePaintState,
+        SortDirection,
+    };
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::primitives::layout_metrics::{pixel_data_table_layout, TextMeasure};
@@ -1117,6 +1120,65 @@ pub(crate) mod native_surface_paint {
         hovered_idx: Option<usize>,
         glyphs: Option<&DataTableGlyphs>,
         nerd_fonts_enabled: bool,
+    ) -> DataTableLayout {
+        paint_inner(
+            table,
+            surface,
+            theme,
+            rect,
+            line_height,
+            hovered_idx,
+            glyphs,
+            nerd_fonts_enabled,
+            None,
+        )
+    }
+
+    /// [`paint_with_glyphs`], plus an explicit pixel-precise scroll
+    /// position (`scroll_px`) resolved via
+    /// [`DataTable::effective_scroll_offset`] /
+    /// [`DataTable::scroll_sub_row_px`] instead of only
+    /// [`DataTable::scroll_offset`]'s whole-row value — both the body
+    /// rows (shifted up by the sub-row remainder, clipped to the body
+    /// band below the fixed header) and the vertical scrollbar thumb
+    /// track it. `state.scroll_px: None` (the default a `state` built
+    /// with [`DataTablePaintState::default`] carries) paints
+    /// pixel-identically to [`paint_with_glyphs`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_state(
+        table: &DataTable,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        line_height: f32,
+        state: &DataTablePaintState,
+        glyphs: Option<&DataTableGlyphs>,
+        nerd_fonts_enabled: bool,
+    ) -> DataTableLayout {
+        paint_inner(
+            table,
+            surface,
+            theme,
+            rect,
+            line_height,
+            state.hovered_idx,
+            glyphs,
+            nerd_fonts_enabled,
+            state.scroll_px,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_inner(
+        table: &DataTable,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        line_height: f32,
+        hovered_idx: Option<usize>,
+        glyphs: Option<&DataTableGlyphs>,
+        nerd_fonts_enabled: bool,
+        scroll_px: Option<f32>,
     ) -> DataTableLayout {
         let layout = {
             let measure = SurfaceTextMeasure(&*surface);
@@ -1215,13 +1277,34 @@ pub(crate) mod native_surface_paint {
         }
 
         // ── Body ─────────────────────────────────────────────────────────
-        let body_y = rect.y + header_height;
-        let visible = layout
-            .visible_rows
-            .min(table.rows.len().saturating_sub(table.scroll_offset));
+        // `scroll_px` wins over `scroll_offset` when set (see
+        // `DataTable::effective_scroll_offset`); `scroll_sub_row_px`
+        // pairs with it to shift the body up by the sub-row remainder,
+        // revealing one more partially clipped row at the bottom —
+        // `scroll_px: None` always resolves `sub_px` to `0.0`, so
+        // `body_y`/`visible` collapse back to the pre-existing values.
+        let scroll_offset = table.effective_scroll_offset(line_height, scroll_px);
+        let sub_px = table.scroll_sub_row_px(line_height, scroll_px);
+        let body_y = rect.y + header_height - sub_px;
+        let body_h = (rect.height - header_height - footer_h - layout.h_scrollbar_height).max(0.0);
+        let extra_row = usize::from(sub_px > 0.0);
+        let visible =
+            (layout.visible_rows + extra_row).min(table.rows.len().saturating_sub(scroll_offset));
+
+        // Clip body rows to the band below the fixed header — `sub_px`
+        // can shift the first row's top above `header_height`, and
+        // without this clip its background would paint over the
+        // header's bottom edge instead of appearing to scroll in from
+        // underneath it.
+        surface.surface_push_clip(Rect::new(
+            rect.x,
+            rect.y + header_height,
+            rect.width,
+            body_h,
+        ));
 
         for row_idx in 0..visible {
-            let abs_idx = table.scroll_offset + row_idx;
+            let abs_idx = scroll_offset + row_idx;
             let row = &table.rows[abs_idx];
             let row_y = body_y + row_idx as f32 * line_height;
             let is_selected = table.selected_idx == Some(abs_idx);
@@ -1335,6 +1418,8 @@ pub(crate) mod native_surface_paint {
             }
         }
 
+        surface.surface_pop_clip();
+
         // ── Scrollbars ───────────────────────────────────────────────────
         if table.show_scrollbar
             && table.rows.len() > layout.visible_rows
@@ -1347,10 +1432,16 @@ pub(crate) mod native_surface_paint {
                 layout.scrollbar_width,
                 (rect.height - header_height - footer_h).max(0.0),
             );
+            // `scroll_offset` + the sub-row fraction (`sub_px` as a
+            // fraction of `line_height`) — the thumb tracks the same
+            // pixel-precise position the body rows above were painted
+            // at, matching `TreeView`/`ListView`'s
+            // `vscrollbar_with_scroll_px` convention.
+            let scroll_rows = scroll_offset as f32 + sub_px / line_height;
             let sb = Scrollbar::vertical(
                 table.id,
                 track,
-                table.scroll_offset as f32,
+                scroll_rows,
                 table.rows.len() as f32,
                 layout.visible_rows as f32,
                 line_height,

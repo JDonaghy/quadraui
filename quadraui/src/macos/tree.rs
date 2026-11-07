@@ -18,9 +18,13 @@ use core_text::font::CTFont;
 
 use super::cg::{rect, CGContextClipToRect, CGContextRestoreGState, CGContextSaveGState};
 use crate::event::Rect as QRect;
-use crate::primitives::tree::{TreeView, TreeViewLayout};
+use crate::primitives::layout_metrics::{tree_row_pitch, TextMeasure};
+use crate::primitives::tree::{
+    tree_chevron_glyph, TreePaintState, TreeRowMeasure, TreeView, TreeViewLayout,
+};
 use crate::style::Style;
 use crate::theme::Theme;
+use crate::types::Decoration;
 
 /// Compute the layout the macOS rasteriser would produce for `tree`
 /// in `area` at `line_height`. Header rows use `(line_height * 1.2).round()`,
@@ -55,6 +59,49 @@ pub fn mac_tree_layout(
         font,
         row_padding_x,
     )
+}
+
+/// Like [`mac_tree_layout`], but threads an explicit pixel-precise
+/// scroll position (`scroll_px`) through to
+/// [`TreeView::layout_with_scroll_px`] instead of only
+/// [`TreeView::scroll_offset`]'s whole-row value. The row-measurement
+/// closure mirrors [`crate::primitives::layout_metrics::tree_layout_measured`]'s
+/// (chevron glyph width measured via `font`, same as `mac_tree_layout`)
+/// — that shared fn calls `TreeView::layout`, which can't reach the
+/// scroll_px-aware method, so this duplicates its small measurement
+/// closure rather than widening that fn's signature.
+/// `scroll_px: None` produces byte-identical output to `mac_tree_layout`.
+pub fn mac_tree_layout_with_scroll_px(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    font: &CTFont,
+    row_padding_x: f32,
+    scroll_px: Option<f32>,
+) -> TreeViewLayout {
+    let header_height = (line_height * 1.2).round();
+    let item_height = tree_row_pitch(tree, line_height);
+    let indent_px = (line_height * 0.9).round();
+    let show_chevrons = tree.style.show_chevrons;
+    tree.layout_with_scroll_px(area.width, area.height, scroll_px, |i| {
+        let row = &tree.rows[i];
+        let is_header = matches!(row.decoration, Decoration::Header);
+        let row_h = if is_header {
+            header_height as f32
+        } else {
+            item_height as f32
+        };
+        let chevron_end_x = if let Some(expanded) = row.is_expanded.filter(|_| show_chevrons) {
+            let glyph_w = font.width_of(&tree_chevron_glyph(&tree.style, expanded)) as f64;
+            Some((row_padding_x as f64 + row.indent as f64 * indent_px + glyph_w + 4.0) as f32)
+        } else {
+            None
+        };
+        TreeRowMeasure {
+            height: row_h,
+            chevron_end_x,
+        }
+    })
 }
 
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `ctx`. Returns the
@@ -117,6 +164,82 @@ pub unsafe fn draw_tree(
         // no `Backend::draw_tree_with_state` override to compose
         // `focus_ring_visible` from, so it never shows here yet.
         false,
+    );
+
+    CGContextRestoreGState(ctx);
+    layout
+}
+
+/// [`draw_tree`], plus hover/press row tinting, a focus-visible ring,
+/// and — when `state.scroll_px` is `Some` — a pixel-precise scroll
+/// position instead of only [`TreeView::scroll_offset`]'s whole-row
+/// value: the first visible row is shifted up by the sub-row
+/// remainder (via [`mac_tree_layout_with_scroll_px`]) and the vertical
+/// scrollbar thumb tracks the same position (via
+/// [`crate::primitives::tree::native_surface_paint::paint_with_scroll_px`]).
+/// `state.scroll_px: None` paints pixel-identically to [`draw_tree`].
+///
+/// # Safety
+///
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
+/// the call.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_tree_with_state(
+    ctx: CGContextRef,
+    font: &CTFont,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    tree: &TreeView,
+    theme: &Theme,
+    style: &Style,
+    line_height: f64,
+    nerd_fonts_enabled: bool,
+    state: &TreePaintState,
+    focus_ring_visible: bool,
+) -> TreeViewLayout {
+    let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
+    if w <= 0.0 || h <= 0.0 {
+        return mac_tree_layout_with_scroll_px(
+            tree,
+            area,
+            line_height,
+            font,
+            style.row_padding_x,
+            state.scroll_px,
+        );
+    }
+
+    let layout = mac_tree_layout_with_scroll_px(
+        tree,
+        area,
+        line_height,
+        font,
+        style.row_padding_x,
+        state.scroll_px,
+    );
+
+    CGContextSaveGState(ctx);
+    CGContextClipToRect(ctx, rect(x, y, w, h));
+
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    crate::primitives::tree::native_surface_paint::paint_with_scroll_px(
+        tree,
+        area,
+        &layout,
+        line_height as f32,
+        nerd_fonts_enabled,
+        &mut surface,
+        theme,
+        style,
+        state.hovered_idx,
+        state.pressed_idx,
+        focus_ring_visible,
+        state.scroll_px,
     );
 
     CGContextRestoreGState(ctx);
@@ -815,6 +938,110 @@ mod tests {
         assert!(
             found_paint,
             "editing row interior should contain painted pixels (caret + text)"
+        );
+    }
+
+    /// `TreePaintState::scroll_px: None` must paint pixel-identically to
+    /// [`draw_tree`] — `draw_tree_with_state` is additive, not a
+    /// behaviour change for the default path.
+    #[test]
+    fn scroll_px_none_paints_identically_to_draw_tree() {
+        let tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        let plain_bytes = {
+            let (surface, _layout) = paint_via_backend(&tree);
+            surface.bytes().to_vec()
+        };
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_theme(Theme {
+            tab_bar_bg: Color::rgb(255, 255, 255),
+            background: Color::rgb(255, 255, 255),
+            ..Theme::default()
+        });
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let state = TreePaintState::default();
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_tree_with_state(rect, &tree, &state, false);
+        });
+        backend.end_frame();
+
+        assert_eq!(
+            plain_bytes,
+            surface.bytes().to_vec(),
+            "scroll_px: None must paint the same pixels as draw_tree"
+        );
+    }
+
+    /// A sub-row `scroll_px` shifts row 0 above the viewport top and
+    /// reveals row 1 one sub-row-remainder early. Asserted two ways:
+    /// the resolved layout (`scroll_sub_px`, row 0's negative `bounds.y`,
+    /// via the no-paint [`mac_tree_layout_with_scroll_px`]) and the
+    /// actual painted pixel at the boundary where row 0 ends and row 1
+    /// begins.
+    #[test]
+    fn scroll_px_shifts_the_first_row_above_the_viewport_top() {
+        let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        tree.selected_path = Some(vec![0]);
+        let theme = Theme {
+            tab_bar_bg: Color::rgb(255, 255, 255),
+            background: Color::rgb(255, 255, 255),
+            ..Theme::default()
+        };
+
+        let mut backend = MacBackend::new();
+        backend.set_current_theme(theme);
+        backend.set_current_font(font());
+        let line_height = backend.chrome_line_height() as f64;
+        let row_h = tree_row_pitch(&tree, line_height) as f32;
+        let half = row_h / 2.0;
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let layout =
+            mac_tree_layout_with_scroll_px(&tree, area, line_height, &font(), 8.0, Some(half));
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let state = TreePaintState::default().with_scroll_px(Some(half));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_tree_with_state(area, &tree, &state, false);
+        });
+        backend.end_frame();
+
+        assert!(
+            (layout.scroll_sub_px - half).abs() < 0.01,
+            "scroll_sub_px should resolve to the sub-row remainder, got {}",
+            layout.scroll_sub_px
+        );
+        assert_eq!(layout.visible_rows[0].row_idx, 0);
+        assert!(
+            layout.visible_rows[0].bounds.y < 0.0,
+            "row 0 should be shifted above the viewport top by the sub-row \
+             remainder, got y={}",
+            layout.visible_rows[0].bounds.y
+        );
+
+        // Row 0 is selected, so probing just past its bottom edge must
+        // land on row 1's (unselected) background once the sub-row
+        // shift is applied — at that same absolute pixel, the
+        // `scroll_px: None` paint is still inside row 0's selected band.
+        let probe_y = (half + 1.0) as u32;
+        let probe_x = (W / 2).min(W - 1);
+        let (r, g, b, _) = surface.pixel(probe_x, probe_y.min(H - 1));
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "pixel just below row 0's shifted bottom edge should show row 1's \
+             background, not the still-selected row 0 a whole-row paint would \
+             show there"
         );
     }
 }

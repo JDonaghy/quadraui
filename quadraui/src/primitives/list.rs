@@ -1005,6 +1005,54 @@ pub(crate) mod native_surface_paint {
         pressed_idx: Option<usize>,
         focus_ring_visible: bool,
     ) {
+        paint_with_scroll_px(
+            list,
+            area,
+            list_layout,
+            line_height,
+            nerd_fonts_enabled,
+            supports_border,
+            supports_hscrollbar,
+            surface,
+            theme,
+            style,
+            hovered_idx,
+            pressed_idx,
+            focus_ring_visible,
+            None,
+        )
+    }
+
+    /// Like [`paint`], plus an explicit pixel-precise scroll position
+    /// (`scroll_px`) that wins over [`ListView::scroll_offset`] for both
+    /// the rows (via `list_layout.visible_items`, already resolved
+    /// against `scroll_px` by whichever of
+    /// [`ListView::layout_with_scroll_px`]/`mac_list_layout_with_scroll_px`/
+    /// `gtk_list_layout_with_scroll_px` built `list_layout`) and the
+    /// vertical scrollbar thumb (resolved here, via
+    /// [`ListView::vscrollbar_with_scroll_px`]).
+    ///
+    /// `scroll_px: None` (what [`paint`] passes) is pixel-identical to
+    /// `paint` — the items-region clip added below bounds exactly the
+    /// region items already painted into, so it changes nothing when
+    /// `scroll_px` never shifts a row above the title.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_scroll_px(
+        list: &ListView,
+        area: Rect,
+        list_layout: &ListViewLayout,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+        supports_border: bool,
+        supports_hscrollbar: bool,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        hovered_idx: Option<usize>,
+        pressed_idx: Option<usize>,
+        focus_ring_visible: bool,
+        scroll_px: Option<f32>,
+    ) {
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
         }
@@ -1075,6 +1123,28 @@ pub(crate) mod native_surface_paint {
 
         let item_x_offset = area.x + border_inset;
         let item_y_offset = area.y + border_inset;
+
+        // Clip row painting to the region below the pinned title —
+        // `scroll_px`'s sub-row remainder shifts the first visible
+        // item's `bounds.y` up by less than one row (see
+        // `ListView::layout_with_scroll_px`), which can land inside the
+        // title's own band. Without this clip that item's background
+        // would paint over the bottom edge of a still-pinned title.
+        // `scroll_px: None` never shifts an item above
+        // `title_bounds`'s bottom, so this clip is a no-op then — same
+        // region the items already painted into.
+        let title_h = list_layout
+            .title_bounds
+            .map(|b| b.y + b.height)
+            .unwrap_or(0.0);
+        let items_region_y = item_y_offset + title_h;
+        let items_region_h = (area.height - border_inset * 2.0 - title_h).max(0.0);
+        surface.surface_push_clip(Rect::new(
+            item_x_offset,
+            items_region_y,
+            (area.width - border_inset * 2.0).max(0.0),
+            items_region_h,
+        ));
 
         for vis_item in &list_layout.visible_items {
             let item = &list.items[vis_item.item_idx];
@@ -1221,6 +1291,8 @@ pub(crate) mod native_surface_paint {
             }
         }
 
+        surface.surface_pop_clip();
+
         // ── Horizontal scrollbar ──────────────────────────────────────
         // Painted after items so it overlays the bottom row's background.
         if needs_hscrollbar {
@@ -1252,9 +1324,11 @@ pub(crate) mod native_surface_paint {
 
         // ── Vertical scrollbar ─────────────────────────────────────
         // Track width is `Style::scrollbar_width`, independent of row
-        // pitch — see that field's own doc.
+        // pitch — see that field's own doc. `scroll_px` wins over
+        // `scroll_offset` when set, so the thumb tracks the same
+        // sub-row position the items above were painted at.
         if let Some(vsb) =
-            list.vscrollbar_with_track_width(area, line_height, style.scrollbar_width)
+            list.vscrollbar_with_scroll_px(area, line_height, style.scrollbar_width, scroll_px)
         {
             crate::primitives::scrollbar::native_surface_paint::paint(&vsb, surface, theme);
         }
