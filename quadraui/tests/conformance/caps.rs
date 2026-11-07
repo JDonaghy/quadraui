@@ -1005,21 +1005,20 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // ── tree_scroll_row_height: this is the row-pitch basis
     // `TreeController::scroll_by_wheel` already used (as a hardcoded
     // `backend.line_height()` call, pre-dating this method) before
-    // today's macOS-only pixel-smooth-scrolling issue introduced the
-    // override point, so the `Self::line_height` default is unchanged
-    // behaviour for TUI/GTK/Win32, not a newly-introduced gap. None of
-    // the three currently paint a sub-row `scroll_px` for `TreeView`
-    // (sibling issues, `CHANGELOG.md`'s "GTK/Win32 still ignore
-    // scroll_px"), so line_height()'s exact relationship to their own
-    // `tree_layout` row pitch (which, like macOS's, runs through
-    // `layout_metrics::tree_row_pitch`) is each of their own sibling
-    // issue's problem to verify when it wires pixel-smooth tree
-    // scrolling for that backend — not something this macOS-scoped
-    // issue should change for them. macOS paints rows at a font metric
-    // (`chrome_line_height`) genuinely distinct from `line_height`
-    // (the editor font), so `MacBackend` overrides the method rather
-    // than appearing here (see Backend::tree_scroll_row_height's own
-    // doc).
+    // the macOS pixel-smooth-scrolling issue introduced the override
+    // point, so the `Self::line_height` default is unchanged behaviour
+    // for TUI/GTK, not a newly-introduced gap. Neither currently paints
+    // a sub-row `scroll_px` for `TreeView` (sibling issue,
+    // `CHANGELOG.md`'s "GTK still ignores scroll_px"), so
+    // line_height()'s exact relationship to its own `tree_layout` row
+    // pitch (which, like macOS's and Win32's, runs through
+    // `layout_metrics::tree_row_pitch`) is that sibling issue's problem
+    // to verify when it wires pixel-smooth tree scrolling for GTK — not
+    // something a different backend's issue should change for it.
+    // macOS and Win32 paint rows at a font metric genuinely distinct
+    // from `line_height` (the editor font), so `MacBackend` and
+    // `WinBackend` each override the method rather than appearing here
+    // (see `Backend::tree_scroll_row_height`'s own doc).
     (
         "tui",
         "tree_scroll_row_height",
@@ -1033,13 +1032,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "unchanged pre-existing behaviour (TreeController::scroll_by_wheel already used \
          line_height() for this basis); verifying it against GTK's own tree row pitch is a \
          GTK pixel-smooth-tree-scroll sibling issue's job, not this macOS-scoped one's",
-    ),
-    (
-        "win",
-        "tree_scroll_row_height",
-        "unchanged pre-existing behaviour (TreeController::scroll_by_wheel already used \
-         line_height() for this basis); verifying it against Win32's own tree row pitch is a \
-         Win32 pixel-smooth-tree-scroll sibling issue's job, not this macOS-scoped one's",
     ),
 ];
 
