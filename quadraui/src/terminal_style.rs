@@ -219,13 +219,15 @@ pub fn cursor_accent_rect(
 /// to render SGR 2 (faint/dim) text. Blending toward the background
 /// (rather than toward black) keeps faint text legibly faded on light
 /// themes too, where darkening would instead *increase* contrast.
+///
+/// Goes through [`Color::blend`] (round-to-nearest) so it shares the same
+/// rounding rule as [`Color::lighten`]/[`Color::darken`], then restores
+/// `fg`'s own alpha — `blend` always discards it (`a: 255`).
 fn dim_fg(fg: Color, bg: Color) -> Color {
-    Color::rgba(
-        ((fg.r as u16 + bg.r as u16) / 2) as u8,
-        ((fg.g as u16 + bg.g as u16) / 2) as u8,
-        ((fg.b as u16 + bg.b as u16) / 2) as u8,
-        fg.a,
-    )
+    Color {
+        a: fg.a,
+        ..fg.blend(bg, 0.5)
+    }
 }
 
 /// Pixel box width and grid-column stride for one cell in a pixel-based
@@ -468,6 +470,26 @@ mod tests {
         c.is_cursor = true;
         let theme = Theme::default();
         assert_eq!(resolve_cell_style(&c, &theme), (fg, bg));
+    }
+
+    /// `dim_fg` rounds like [`Color::blend`] (half away from zero), not
+    /// the old integer-floor average — an odd channel sum (255 + 0 = 255,
+    /// /2 = 127.5) now lands on 128, matching `fg.blend(bg, 0.5)` exactly,
+    /// and preserves `fg`'s own alpha (`blend` always discards it).
+    #[test]
+    fn dim_fg_rounds_like_blend_and_keeps_fg_alpha() {
+        let fg = Color::rgba(255, 255, 255, 77);
+        let bg = Color::rgb(0, 0, 0);
+        let dimmed = dim_fg(fg, bg);
+        assert_eq!(dimmed, Color::rgba(128, 128, 128, 77));
+        assert_eq!(
+            (dimmed.r, dimmed.g, dimmed.b),
+            (
+                fg.blend(bg, 0.5).r,
+                fg.blend(bg, 0.5).g,
+                fg.blend(bg, 0.5).b
+            )
+        );
     }
 
     // ── Cursor shape ────────────────────────────────────────────────────
