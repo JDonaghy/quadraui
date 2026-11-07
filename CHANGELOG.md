@@ -287,6 +287,11 @@ only a push to `main` runs this workflow.
   delta is already divided by `WHEEL_DELTA` into fractional row-notch
   units before it becomes a `UiEvent::Scroll`, the same currency every
   non-macOS backend already reports.
+  either way. Win32 still ignores `scroll_px` (sibling issue) and
+  defaults `tree_scroll_row_height` to `Backend::line_height`, unchanged
+  from its pre-existing behaviour; GTK now overrides both (see the
+  `draw_list_with_state`/`draw_tree_with_state`/`draw_data_table_with_state`
+  entry above).
 - `compose::HoverTooltipTracker<T>`: the delay + auto-dismiss state
   machine a hover-driven tooltip needs on top of
   `ToolbarHoverTracker`/`ListHoverTracker`/`TreeHoverTracker`'s plain

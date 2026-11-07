@@ -765,11 +765,12 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_data_table(area, &table, None);
         },
     },
-    // `draw_data_table_with_state` is an additive trait default that
-    // forwards to `draw_data_table`, ignoring the hovered index, until a
-    // backend overrides it to tint the hovered row. This row proves the
-    // default reaches a rasteriser and still paints observable content on
-    // every backend.
+    // `draw_data_table_with_state`'s trait default forwards to
+    // `draw_data_table`, ignoring the hovered index, on any backend that
+    // doesn't override it (currently Win-GUI); gtk/macos/tui each
+    // override it to tint the hovered row. This row proves the method
+    // reaches a rasteriser and still paints observable content on every
+    // backend, default or overridden.
     Case {
         method: "draw_data_table_with_state",
         needle: Some("c0dtblhv"),
