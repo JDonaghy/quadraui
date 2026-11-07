@@ -275,6 +275,19 @@ only a push to `main` runs this workflow.
   ~/src/vimcode/src` is empty — both consumers only reach tab-bar
   painting through the `Backend` trait methods above, which keep their
   existing signatures).
+- GTK: `gtk::tab_bar::draw_tab_bar_icons_with_chrome_and_glyphs` now
+  honours `TabChrome::focused_index` too, painting a
+  `Theme::focus_ring_color` ring at `Style::focus_ring_width` around the
+  named tab's whole slot — no new parameter needed, since `TabChrome`
+  (already threaded through every `draw_tab_bar_with_chrome*` entry
+  point on `GtkBackend`) carries `focused_index` itself. Strokes flush
+  with (inset by half the stroke width from) the tab's own slot bounds,
+  square even on the active tab's rounded chip, in a pass after every
+  tab's own paint so a later tab's opaque background fill can never
+  clobber an earlier tab's ring — the same geometry convention this
+  bar's macOS twin above uses. `focused_index: None` (a click) paints no
+  ring, matching `TabChrome::focused_index`'s own
+  focus-visible-suppression convention.
 
 ### Changed
 - **Breaking (TUI rasteriser helpers):** `quadraui::tui::draw_button` and
