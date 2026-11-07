@@ -67,12 +67,12 @@ only a push to `main` runs this workflow.
   `.app`/`.pkg`/`.workflow`-style bundle, and rejects everything else (a bare
   filesystem path, `javascript:`, `data:`, …) with
   `BackendError::Unsupported`. `tui::services::TuiPlatformServices::open_url_result`,
-  `gtk::services::GtkPlatformServices::open_url_result`, and
-  `win::services::WinPlatformServices::open_url_result` now run every `url`
+  `gtk::services::GtkPlatformServices::open_url_result`,
+  `win::services::WinPlatformServices::open_url_result`, and
+  `macos::services::PlatformServices::open_url_result` now run every `url`
   through it before trying the platform opener, so a bare executable path
   (`"/Applications/Calculator.app"`, `"C:\\Windows\\System32\\calc.exe"`) is
-  rejected instead of launched. macOS adopts the same seam in its own
-  follow-up issue.
+  rejected instead of launched.
 ### Changed
 - `tui::services::TuiPlatformServices::open_url`/`open_url_result` now rejects
   any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
@@ -83,8 +83,7 @@ only a push to `main` runs this workflow.
   an input `validate_open_url` rejects, since the new check happens first.
   **Downstream impact:** a consumer that calls `open_url`/`open_url_result`
   with a bare path or an unlisted scheme on the TUI backend, expecting at
-  least a clickable OSC 8 link, now gets `Unsupported` and no link. macOS is
-  unaffected until its own follow-up issue adopts the same seam.
+  least a clickable OSC 8 link, now gets `Unsupported` and no link.
 - `gtk::services::GtkPlatformServices::open_url`/`open_url_result` now rejects
   any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
   `BackendError::Unsupported` via the same `validate_open_url` seam, where it
@@ -103,6 +102,16 @@ only a push to `main` runs this workflow.
   `open_url`/`open_url_result` with a bare path or an unlisted scheme on the
   Win-GUI backend now gets `Unsupported` instead of `ShellExecuteW` launching
   it.
+- `macos::services::PlatformServices::open_url`/`open_url_result` now rejects
+  any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
+  `BackendError::Unsupported` via the same `validate_open_url` seam, where it
+  previously forwarded every input (including a bare path or an unlisted
+  scheme like `/Applications/Calculator.app` or `ftp:`/`vscode:`/`tel:`)
+  straight to `crate::desktop::open_with_default`'s `open(1)` spawn.
+  **Downstream impact:** a consumer that calls `open_url`/`open_url_result`
+  with a bare path or an unlisted scheme on the macOS backend now gets
+  `Unsupported` instead of `open(1)` launching whatever that path or scheme
+  resolved to.
 ### Fixed
 - `NamedKey::F(n)` for `n` above 12 (F13-F24) now stringifies to `"F13"`-`"F24"`
   everywhere instead of silently dropping out on some call sites: a single
