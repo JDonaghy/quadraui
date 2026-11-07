@@ -3269,10 +3269,105 @@ impl Backend for GtkBackend {
             hovered_close_tab,
             glyphs,
             nerd_fonts_enabled,
+            None,
+            None,
         );
         pango_layout.set_font_description(saved_font.as_ref());
         self.tab_bar_layouts.insert(bar.id, (rect, resolved_layout));
         hits
+    }
+
+    /// [`Self::draw_tab_bar_with_chrome_and_glyphs`], plus `hovered_tab`/
+    /// `pressed_tab` indices naming the whole tab (not its close glyph)
+    /// the mouse is over/held down on. Paints a tinted background behind
+    /// the hovered or pressed tab — `Theme::list_hover_bg`/`list_pressed_bg`,
+    /// the same derivation [`crate::gtk::draw_tab_bar_icons_with_chrome_and_glyphs`]'s
+    /// own doc explains — rather than only tinting the close glyph the
+    /// way [`Self::draw_tab_bar`] already does.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+    fn draw_tab_bar_with_state(
+        &mut self,
+        rect: QRect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> crate::TabBarHits {
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_tab_bar_with_state called outside enter_frame_scope");
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let (hits, resolved_layout) = crate::gtk::draw_tab_bar_icons_with_chrome_and_glyphs(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.width as f64,
+            self.current_line_height,
+            rect.y as f64,
+            rect.height as f64,
+            bar,
+            &[],
+            &TabChrome::default(),
+            &self.current_theme,
+            &self.current_style,
+            hovered_close_tab,
+            None,
+            nerd_fonts_enabled,
+            hovered_tab,
+            pressed_tab,
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        self.tab_bar_layouts.insert(bar.id, (rect, resolved_layout));
+        hits
+    }
+
+    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar_with_state`]
+    /// — the twin the `quadraui-binding-core` paint path can actually
+    /// reach, since it calls `draw_tab_bar_layout`, never the deprecated
+    /// `draw_tab_bar`. Same hover/pressed tint as
+    /// [`Self::draw_tab_bar_with_state`]; only the returned type differs.
+    fn draw_tab_bar_layout_with_state(
+        &mut self,
+        rect: QRect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> TabBarLayout {
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_tab_bar_layout_with_state called outside enter_frame_scope");
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        #[allow(deprecated)] // discarded `TabBarHits` half of the pair — issue #823
+        let (_hits, resolved_layout) = crate::gtk::draw_tab_bar_icons_with_chrome_and_glyphs(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.width as f64,
+            self.current_line_height,
+            rect.y as f64,
+            rect.height as f64,
+            bar,
+            &[],
+            &TabChrome::default(),
+            &self.current_theme,
+            &self.current_style,
+            hovered_close_tab,
+            None,
+            nerd_fonts_enabled,
+            hovered_tab,
+            pressed_tab,
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        self.tab_bar_layouts
+            .insert(bar.id, (rect, resolved_layout.clone()));
+        resolved_layout
     }
 
     /// Counterpart to [`Self::draw_tab_bar_with_chrome`] that returns [`TabBarLayout`] instead.
@@ -10538,6 +10633,129 @@ mod tests {
             "an undecorated tab must keep byte-identical width: {:?} vs {:?}",
             from_layout.slot_positions[1],
             plain_layout.slot_positions[1]
+        );
+    }
+
+    /// `draw_tab_bar_with_state` must tint the *whole* background of a
+    /// hovered tab — not just its close glyph, which `draw_tab_bar`'s own
+    /// `hovered_close_tab` already covers. Tab 1 ("lib.rs") is inactive, so
+    /// its resting fill is `tab_bar_bg` — the same colour as the
+    /// surrounding strip, which is what makes a hover tint visible
+    /// against it.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn gtk_backend_hovered_tab_tints_the_whole_background_not_just_the_close_glyph() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let bar = audit_bar();
+        let theme = crate::Theme::default();
+        let rect = QRect::new(0.0, 0.0, 400.0, 30.0);
+
+        let surface = ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+        let mut backend = GtkBackend::new();
+        let hits =
+            backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_tab_bar(rect, &bar, None));
+        let (start, end) = hits.slot_positions[1];
+        assert!(end > start, "second tab slot must have non-zero width");
+        let probe_x = (start + 2.0) as i32;
+        let probe_y = 15;
+
+        let resting_surface =
+            ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
+        {
+            let cr = Context::new(&resting_surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_tab_bar_with_state(rect, &bar, None, None, None)
+            });
+        }
+        let mut resting_surface = resting_surface;
+        resting_surface.flush();
+        let resting = pixel_argb(&mut resting_surface, probe_x, probe_y);
+        assert_eq!(
+            resting,
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "with no hovered_tab, tab 1's background must stay tab_bar_bg"
+        );
+
+        let hovered_surface =
+            ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
+        {
+            let cr = Context::new(&hovered_surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_tab_bar_with_state(rect, &bar, None, Some(1), None)
+            });
+        }
+        let mut hovered_surface = hovered_surface;
+        hovered_surface.flush();
+        let hovered = pixel_argb(&mut hovered_surface, probe_x, probe_y);
+        let expected = theme.list_hover_bg(theme.tab_bar_bg);
+        assert_eq!(
+            hovered,
+            (expected.r, expected.g, expected.b),
+            "hovered_tab == Some(1) must tint tab 1's background toward list_hover_bg"
+        );
+    }
+
+    /// `pressed_tab` tints deeper than `hovered_tab` and wins when both name
+    /// the same tab — the same precedence
+    /// [`GtkBackend::draw_tab_bar_with_state`]'s doc links back to on every
+    /// sibling `_with_state` painter in this crate.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn gtk_backend_pressed_tab_tints_deeper_than_hovered_tab() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let bar = audit_bar();
+        let theme = crate::Theme::default();
+        let rect = QRect::new(0.0, 0.0, 400.0, 30.0);
+
+        let surface = ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+        let mut backend = GtkBackend::new();
+        let hits =
+            backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_tab_bar(rect, &bar, None));
+        let (start, _) = hits.slot_positions[1];
+        let probe_x = (start + 2.0) as i32;
+        let probe_y = 15;
+
+        let pressed_surface =
+            ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
+        {
+            let cr = Context::new(&pressed_surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_tab_bar_with_state(rect, &bar, None, Some(1), Some(1))
+            });
+        }
+        let mut pressed_surface = pressed_surface;
+        pressed_surface.flush();
+        let pressed = pixel_argb(&mut pressed_surface, probe_x, probe_y);
+        let expected = theme.list_pressed_bg(theme.tab_bar_bg);
+        assert_eq!(
+            pressed,
+            (expected.r, expected.g, expected.b),
+            "pressed_tab == Some(1) must tint tab 1's background toward \
+             list_pressed_bg, even though hovered_tab also names it"
+        );
+
+        let hover_expected = theme.list_hover_bg(theme.tab_bar_bg);
+        assert_ne!(
+            (expected.r, expected.g, expected.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "pressed and hover tints must read as visibly different colours"
         );
     }
 
