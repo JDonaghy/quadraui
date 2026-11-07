@@ -3475,10 +3475,14 @@ impl Backend for WinBackend {
     /// [`Self::draw_tab_bar_icons`], but honouring an optional
     /// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
     /// close/dirty mark — `glyphs: None` reproduces
-    /// [`Self::draw_tab_bar_icons`] exactly. `chrome` is unused: the
-    /// Windows rasteriser has no bracket-chrome support (see
-    /// `super::tab_bar`'s module doc), matching the trait default's
-    /// own posture of ignoring `chrome` on backends without it.
+    /// [`Self::draw_tab_bar_icons`] exactly. `chrome.active_frame` is
+    /// unused: the Windows rasteriser has no bracket-chrome support (see
+    /// `super::tab_bar`'s module doc), matching the trait default's own
+    /// posture of ignoring that knob on backends without it.
+    /// `chrome.focused_index` *is* honoured: it paints a focus-visible
+    /// ring on the named tab — see
+    /// [`super::tab_bar::draw_tab_bar_icons_with_glyphs`]'s "Focus-visible
+    /// ring" doc for the geometry.
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_with_chrome_and_glyphs(
         &mut self,
@@ -3488,7 +3492,6 @@ impl Backend for WinBackend {
         chrome: &TabChrome,
         glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
     ) -> TabBarHits {
-        let _ = chrome;
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
@@ -3505,11 +3508,66 @@ impl Backend for WinBackend {
                 self.nerd_fonts_enabled,
                 None,
                 None,
+                chrome.focused_index,
             );
         }
         #[cfg(not(target_os = "windows"))]
-        let _ = glyphs;
+        let _ = (chrome, glyphs);
         self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
+    }
+
+    /// Trait-level entry point the gallery and `quadraui-binding-core`'s
+    /// render path actually call (`draw_tab_bar_with_chrome_layout`'s
+    /// `TabBarHits`-returning sibling) — delegates to
+    /// [`Self::draw_tab_bar_with_chrome_and_glyphs`] with `glyphs: None`
+    /// so `chrome.focused_index`'s ring paints from this entry point
+    /// too, not only from the `_and_glyphs` spelling.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+    fn draw_tab_bar_with_chrome(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        chrome: &TabChrome,
+    ) -> TabBarHits {
+        self.draw_tab_bar_with_chrome_and_glyphs(rect, bar, hovered_close_tab, chrome, None)
+    }
+
+    /// `TabBarLayout`-returning counterpart to
+    /// [`Self::draw_tab_bar_with_chrome`] — the twin
+    /// `quadraui-binding-core`'s `render.rs` actually calls
+    /// (`TabChrome::default().with_focused_index(tabs.focused_index)`).
+    /// Paints through [`super::tab_bar::draw_tab_bar_icons_layout_with_state`]
+    /// directly, honouring `chrome.focused_index`, even though the ring
+    /// it paints plays no part in the returned [`TabBarLayout`].
+    fn draw_tab_bar_with_chrome_layout(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        chrome: &TabChrome,
+    ) -> TabBarLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            return super::tab_bar::draw_tab_bar_icons_layout_with_state(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                &[],
+                hovered_close_tab,
+                &self.current_theme,
+                &self.current_style,
+                None,
+                None,
+                chrome.focused_index,
+            );
+        }
+        // See `Self::draw_tab_bar_icons`'s doc for the same fallback.
+        #[cfg(not(target_os = "windows"))]
+        let _ = chrome;
+        self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
     }
 
     /// [`Self::draw_tab_bar_icons`], plus `hovered_tab`/`pressed_tab`
@@ -3551,6 +3609,7 @@ impl Backend for WinBackend {
                 self.nerd_fonts_enabled,
                 hovered_tab,
                 pressed_tab,
+                None,
             );
         }
         // No surface/DWrite yet — `hovered_tab`/`pressed_tab` only
@@ -3588,6 +3647,7 @@ impl Backend for WinBackend {
                 &self.current_style,
                 hovered_tab,
                 pressed_tab,
+                None,
             );
         }
         // See `Self::draw_tab_bar_icons`'s doc for the same fallback.

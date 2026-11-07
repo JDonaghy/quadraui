@@ -33,12 +33,27 @@
 //! `&self.current_style`, the same field `Backend::set_current_style`
 //! writes.
 //!
-//! Scope: no [`crate::TabChrome`] / bracket-frame support (the `Backend`
-//! trait gives `draw_tab_bar_with_chrome` / `tab_bar_layout_with_chrome`
-//! default bodies that fall back to the plain methods below, so this is
+//! Scope: no [`crate::TabChrome`] bracket-frame support (the `Backend`
+//! trait's `draw_tab_bar_with_chrome` / `tab_bar_layout_with_chrome`
+//! default bodies fall back to the plain methods below for
+//! [`crate::TabChrome::active_frame`], so an unhonoured frame request is
 //! not a compile-error gap — see those methods' docs) and no italic
 //! preview-tab styling (would need a second `IDWriteTextFormat`; deferred
-//! to a follow-up rather than widening this issue).
+//! to a follow-up rather than widening this issue). [`crate::TabChrome::focused_index`]
+//! *is* honoured — see "Focus-visible ring" below.
+//!
+//! # Focus-visible ring
+//!
+//! When [`crate::TabChrome::focused_index`] names a currently-visible
+//! tab, [`draw_tab_bar_icons_with_glyphs`] strokes a square ring in
+//! [`Theme::focus_ring_color`] at [`Style::focus_ring_width`] flush with
+//! that tab's own slot bounds, via [`super::text::stroke_rect`] (which
+//! insets the stroke by half its width itself, so the geometry handed to
+//! it is the slot's raw content rect) — the same convention
+//! `macos::tab_bar`'s and `gtk::tab_bar`'s twin painters use. The caller
+//! composes focus-visible suppression into `focused_index` itself
+//! (`None` after a click); this module paints unconditionally on
+//! whatever index it is given.
 //!
 //! Still a per-backend paint loop. Unlike `win::menu_bar` /
 //! `win::toolbar` / `win::activity_bar`, which were collapsed into
@@ -56,9 +71,9 @@
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 #[cfg(target_os = "windows")]
-use super::text::fill_rect;
-#[cfg(target_os = "windows")]
 use super::text::DWrite;
+#[cfg(target_os = "windows")]
+use super::text::{fill_rect, stroke_rect};
 use crate::backend::{shift_tab_bar_hits, tab_bar_hits_from_layout};
 use crate::event::Rect;
 use crate::primitives::layout_metrics::TextMeasure;
@@ -519,6 +534,7 @@ pub fn draw_tab_bar_icons(
         false,
         None,
         None,
+        None,
     )
 }
 
@@ -527,7 +543,10 @@ pub fn draw_tab_bar_icons(
 /// reproduces [`draw_tab_bar_icons`] exactly. `hovered_tab`/`pressed_tab`
 /// name the whole tab (not its close glyph) the mouse is over/held down
 /// on — `None`/`None` paints every tab's resting background, same as
-/// [`draw_tab_bar_icons`].
+/// [`draw_tab_bar_icons`]. `focused_index` names the tab the
+/// keyboard-focus ring paints on — see this module's "Focus-visible
+/// ring" doc for the geometry — with `None` painting no ring at all,
+/// same as [`draw_tab_bar_icons`].
 ///
 /// Caveat: the close-glyph hover rect and hit zone
 /// ([`crate::TabBarHits::close_bounds`]) are both sized from
@@ -550,6 +569,7 @@ pub fn draw_tab_bar_icons_with_glyphs(
     nerd_fonts_enabled: bool,
     hovered_tab: Option<usize>,
     pressed_tab: Option<usize>,
+    focused_index: Option<usize>,
 ) -> TabBarHits {
     let PixelLayout {
         layout,
@@ -572,6 +592,7 @@ pub fn draw_tab_bar_icons_with_glyphs(
         nerd_fonts_enabled,
         hovered_tab,
         pressed_tab,
+        focused_index,
     );
     hits_from_layout(rect, bar, &layout, corrected_scroll_offset, available_cols)
 }
@@ -605,16 +626,21 @@ pub fn draw_tab_bar_icons_layout(
         style,
         None,
         None,
+        None,
     )
 }
 
 /// [`draw_tab_bar_icons_layout`], plus `hovered_tab`/`pressed_tab`
 /// indices naming the whole tab (not its close glyph) the mouse is
-/// over/held down on — the `TabBarLayout`-returning twin of
-/// [`draw_tab_bar_icons_with_glyphs`]'s own `hovered_tab`/`pressed_tab`
-/// pair. Not re-exported from `super::mod` (unlike
+/// over/held down on, and `focused_index` naming the tab the
+/// keyboard-focus ring paints on — the `TabBarLayout`-returning twin of
+/// [`draw_tab_bar_icons_with_glyphs`]'s own `hovered_tab`/`pressed_tab`/
+/// `focused_index` triple. Not re-exported from `super::mod` (unlike
 /// [`draw_tab_bar_icons_layout`]): [`crate::win::WinBackend`] is the only
-/// caller, reached through [`crate::Backend::draw_tab_bar_layout_with_state`].
+/// caller, reached through
+/// [`crate::Backend::draw_tab_bar_layout_with_state`] (`focused_index:
+/// None`) and [`crate::Backend::draw_tab_bar_with_chrome_layout`]
+/// (`focused_index: chrome.focused_index`).
 #[cfg(target_os = "windows")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_tab_bar_icons_layout_with_state(
@@ -628,6 +654,7 @@ pub(crate) fn draw_tab_bar_icons_layout_with_state(
     style: &Style,
     hovered_tab: Option<usize>,
     pressed_tab: Option<usize>,
+    focused_index: Option<usize>,
 ) -> TabBarLayout {
     let PixelLayout {
         layout,
@@ -649,6 +676,7 @@ pub(crate) fn draw_tab_bar_icons_layout_with_state(
         false,
         hovered_tab,
         pressed_tab,
+        focused_index,
     );
     layout
 }
@@ -671,6 +699,10 @@ pub(crate) fn draw_tab_bar_icons_layout_with_state(
 /// derivation `menu_item_hover_bg`/`menu_item_pressed_bg` already reuse
 /// for a popup-menu row. Pressed wins over hovered, matching every other
 /// `_with_state` painter in this crate's sibling backends.
+///
+/// `focused_index` names the tab the keyboard-focus ring paints on — see
+/// this module's "Focus-visible ring" doc — painted in a pass after
+/// every tab's own background/label/close glyph.
 #[cfg(target_os = "windows")]
 #[allow(clippy::too_many_arguments)]
 fn paint_tab_bar_icons_from_layout(
@@ -688,6 +720,7 @@ fn paint_tab_bar_icons_from_layout(
     nerd_fonts_enabled: bool,
     hovered_tab: Option<usize>,
     pressed_tab: Option<usize>,
+    focused_index: Option<usize>,
 ) {
     let _ = fill_rect(target, rect, theme.tab_bar_bg);
 
@@ -815,6 +848,46 @@ fn paint_tab_bar_icons_from_layout(
                 );
                 let _ = dwrite.draw_text(target, &close_glyph, close_rect, close_fg);
             }
+        }
+    }
+
+    // ── Keyboard-focus ring pass ─────────────────────────────────────
+    // Painted after every tab's own background/label/close glyph, not
+    // inside the loop above: slots are contiguous (only
+    // `TAB_OUTER_GAP_DIP` of bar background between them), so a ring
+    // stroked immediately after its own tab would have its trailing
+    // edge painted over by the next tab's opaque background fill.
+    // `focused_index` already carries the caller's own focus-visible
+    // suppression (see `crate::TabChrome::focused_index`'s doc), so
+    // `None` here paints nothing.
+    //
+    // `stroke_rect` insets its own geometry by half of `stroke_width`
+    // (see that fn's doc), so the rect handed to it here is the tab's
+    // raw visual slot — not pre-inset the way `macos::tab_bar`/
+    // `gtk::tab_bar`'s twin painters need, since Cairo/CoreGraphics
+    // centre a stroke on the path verbatim. Strokes square (not the
+    // active tab's rounded chip — this rasteriser paints tabs with
+    // square corners throughout), since keyboard focus can land on an
+    // inactive tab too.
+    if let Some(focus_idx) = focused_index {
+        if let Some(vt) = layout
+            .visible_tabs
+            .iter()
+            .find(|vt| vt.tab_idx == focus_idx)
+        {
+            let visual_w = (vt.bounds.width - TAB_OUTER_GAP_DIP).max(0.0);
+            let ring_rect = Rect::new(
+                rect.x + vt.bounds.x,
+                rect.y + vt.bounds.y,
+                visual_w,
+                vt.bounds.height,
+            );
+            let _ = stroke_rect(
+                target,
+                ring_rect,
+                theme.focus_ring_color(),
+                style.focus_ring_width,
+            );
         }
     }
 
@@ -1315,6 +1388,7 @@ mod tests {
                     true,
                     None,
                     None,
+                    None,
                 );
             })
             .expect("paint with glyph override");
@@ -1349,6 +1423,7 @@ mod tests {
                     &style,
                     None,
                     true,
+                    None,
                     None,
                     None,
                 );
@@ -1580,6 +1655,165 @@ mod tests {
         assert!(
             close_run.bounds.x >= 0.0 && close_run.bounds.x + close_run.bounds.width <= NARROW_W,
             "close glyph run {close_run:?} must be fully visible inside the {NARROW_W}-wide strip"
+        );
+    }
+
+    /// `TabChrome::focused_index` must paint a focus-visible ring on the
+    /// named tab — present after keyboard navigation (`Some(i)`), absent
+    /// after a click (`None`, the caller's own focus-visible suppression
+    /// convention documented on
+    /// [`crate::primitives::tab_bar::TabChrome::focused_index`]). Mirrors
+    /// `macos::tab_bar`'s/`gtk::tab_bar`'s twin tests: probes all four
+    /// edges of the ring rect (the focused tab's own slot bounds —
+    /// [`super::stroke_rect`] insets by half `style.focus_ring_width`
+    /// itself, see this module's "Focus-visible ring" doc), so a
+    /// regression that drops an edge fails here. Unlike the mac/gtk
+    /// fixtures, win paints a tab's background across the full row
+    /// height with no chip margin (see `paint_tab_bar_icons_from_layout`'s
+    /// `tab_rect`), so the click-suppressed probes all fall on tab 0's
+    /// own `tab_active_bg`, not a separate bar background. Drives the
+    /// real `Backend::draw_tab_bar_with_chrome_and_glyphs` entry point on
+    /// `WinBackend`.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` half of the paint fn's return
+    fn focused_index_paints_a_ring_after_keyboard_nav_and_none_after_a_click() {
+        use crate::backend::Backend;
+        use crate::win::backend::WinBackend;
+
+        let bar_fixture = bar();
+        let theme = Theme::default();
+        let style = Style::default().with_focus_ring_width(4.0);
+        let ring_color = theme.focus_ring_color();
+        let active_bg = theme.tab_active_bg;
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let paint = |focused_index: Option<usize>| -> (HeadlessSurface, TabBarHits) {
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            let mut backend = WinBackend::new();
+            backend
+                .attach_headless(surface.target().clone(), W as u32, H as u32)
+                .expect("attach headless surface");
+            backend.set_current_style(style);
+            backend.begin_frame(crate::event::Viewport::new(W, H, 1.0));
+            let chrome = TabChrome::default().with_focused_index(focused_index);
+            let hits = backend.draw_tab_bar_with_chrome_and_glyphs(
+                rect,
+                &bar_fixture,
+                None,
+                &chrome,
+                None,
+            );
+            backend.end_frame();
+            (surface, hits)
+        };
+
+        // Keyboard focus on tab 0 ("main.rs", the active and only visible
+        // tab at this index): all four edges of the inset ring rect must
+        // carry `theme.focus_ring_color()`.
+        let (focused_surface, focused_hits) = paint(Some(0));
+        let (slot_x, slot_end) = focused_hits.slot_positions[0];
+        let tab_content_w = slot_end - slot_x - TAB_OUTER_GAP_DIP as f64;
+        let ring_width = style.focus_ring_width as f64;
+        let inset = (ring_width / 2.0)
+            .min(tab_content_w / 2.0)
+            .min(H as f64 / 2.0)
+            .max(0.0);
+        let left = (slot_x + inset).round() as u32;
+        let right = (slot_x + tab_content_w - inset).round() as u32;
+        let top = inset.round() as u32;
+        let bottom = (H as f64 - inset).round() as u32;
+        let mid_y = (H / 2.0) as u32;
+        // A column inside the tab's trailing padding — right of the
+        // "main.rs" label's own ink — rather than the tab's horizontal
+        // centre, which the painted label occupies.
+        let label_clear_x = (slot_x + tab_content_w - 5.0).round() as u32;
+
+        let probes = [
+            ("left", left, mid_y),
+            ("right", right, mid_y),
+            ("top", label_clear_x, top),
+            ("bottom", label_clear_x, bottom),
+        ];
+
+        for (name, px, py) in probes {
+            let got = focused_surface.pixel_at(px, py);
+            assert_eq!(
+                (got.r, got.g, got.b),
+                (ring_color.r, ring_color.g, ring_color.b),
+                "expected the focus ring colour at the {name} edge ({px}, {py}) \
+                 when TabChrome::focused_index names tab 0",
+            );
+        }
+
+        // Click suppresses focus-visible: `focused_index: None` must
+        // paint whatever sits under each edge absent a ring — tab 0's own
+        // `tab_active_bg`, which fills the whole row height here.
+        let (clicked_surface, _clicked_hits) = paint(None);
+        for (name, px, py) in probes {
+            let got = clicked_surface.pixel_at(px, py);
+            assert_eq!(
+                (got.r, got.g, got.b),
+                (active_bg.r, active_bg.g, active_bg.b),
+                "expected no focus ring at the {name} edge ({px}, {py}) when \
+                 TabChrome::focused_index is None (click-suppressed)",
+            );
+        }
+    }
+
+    /// [`crate::Backend::draw_tab_bar_with_chrome`] and
+    /// [`crate::Backend::draw_tab_bar_with_chrome_layout`] are the entry
+    /// points the gallery and `quadraui-binding-core`'s render path
+    /// actually call — not just the `_and_glyphs` spelling the test
+    /// above exercises. Both must paint `chrome.focused_index`'s ring
+    /// too.
+    #[test]
+    #[allow(deprecated)] // `draw_tab_bar_with_chrome` returns the deprecated `TabBarHits`
+    fn draw_tab_bar_with_chrome_and_its_layout_twin_both_paint_the_focus_ring() {
+        use crate::backend::Backend;
+        use crate::win::backend::WinBackend;
+
+        let bar_fixture = bar();
+        let theme = Theme::default();
+        let style = Style::default();
+        let ring_color = theme.focus_ring_color();
+        let chrome = TabChrome::default().with_focused_index(Some(0));
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        // `Style::focus_ring_width` default (2.0, inset by half): sample
+        // at the ring's vertical centreline on the left edge of tab 0's
+        // slot.
+        let ring_width = style.focus_ring_width as f64;
+        let probe_x = (ring_width / 2.0).round() as u32;
+        let probe_y = (H / 2.0) as u32;
+
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W as u32, H as u32)
+            .expect("attach headless surface");
+        backend.begin_frame(crate::event::Viewport::new(W, H, 1.0));
+        let _ = backend.draw_tab_bar_with_chrome(rect, &bar_fixture, None, &chrome);
+        backend.end_frame();
+        let got = surface.pixel_at(probe_x, probe_y);
+        assert_eq!(
+            (got.r, got.g, got.b),
+            (ring_color.r, ring_color.g, ring_color.b),
+            "draw_tab_bar_with_chrome must paint chrome.focused_index's ring"
+        );
+
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W as u32, H as u32)
+            .expect("attach headless surface");
+        backend.begin_frame(crate::event::Viewport::new(W, H, 1.0));
+        let _ = backend.draw_tab_bar_with_chrome_layout(rect, &bar_fixture, None, &chrome);
+        backend.end_frame();
+        let got = surface.pixel_at(probe_x, probe_y);
+        assert_eq!(
+            (got.r, got.g, got.b),
+            (ring_color.r, ring_color.g, ring_color.b),
+            "draw_tab_bar_with_chrome_layout must paint chrome.focused_index's ring"
         );
     }
 }

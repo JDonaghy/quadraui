@@ -288,6 +288,31 @@ only a push to `main` runs this workflow.
   bar's macOS twin above uses. `focused_index: None` (a click) paints no
   ring, matching `TabChrome::focused_index`'s own
   focus-visible-suppression convention.
+- Win: `win::tab_bar::draw_tab_bar_icons_with_glyphs` now honours
+  `TabChrome::focused_index` too, via a new `focused_index: Option<usize>`
+  trailing parameter, painting a `Theme::focus_ring_color` ring at
+  `Style::focus_ring_width` around the named tab's whole slot through
+  `win::text::stroke_rect` (which insets the stroke by half its own
+  width, unlike the Cairo/CoreGraphics callers its macOS/GTK siblings
+  pre-inset for) in a pass after every tab's own paint, so a later tab's
+  opaque background fill can never clobber an earlier tab's ring.
+  `WinBackend::draw_tab_bar_with_chrome_and_glyphs` now forwards
+  `chrome.focused_index` into it instead of ignoring `chrome` outright;
+  `WinBackend` also now overrides `draw_tab_bar_with_chrome` and
+  `draw_tab_bar_with_chrome_layout` (previously only
+  `draw_tab_bar_with_chrome_and_glyphs` honoured `chrome`), so the
+  gallery and `quadraui-binding-core`'s render path — the entry points
+  they actually call — paint the ring too. `active_frame` bracket
+  framing is still unsupported on this backend. `focused_index: None` (a
+  click) paints no ring, matching `TabChrome::focused_index`'s own
+  focus-visible-suppression convention. `win::tab_bar::draw_tab_bar_icons_with_glyphs`'s
+  and the crate-internal `draw_tab_bar_icons_layout_with_state`'s added
+  `focused_index` parameters are a source break for any external caller
+  of those `pub`/`pub(crate)` free functions; no consumer hits
+  (`grep -rn 'draw_tab_bar_icons_with_glyphs\|draw_tab_bar_icons_layout_with_state'
+  ~/src/coord-tui/src ~/src/vimcode/src` is empty — both consumers only
+  reach tab-bar painting through the `Backend` trait methods above,
+  which keep their existing signatures).
 
 ### Changed
 - **Breaking (TUI rasteriser helpers):** `quadraui::tui::draw_button` and
