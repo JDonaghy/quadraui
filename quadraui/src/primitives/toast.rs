@@ -268,16 +268,12 @@ pub(crate) fn wrap_text_lines(
             if line.is_empty() {
                 // A single word wider than max_width on its own:
                 // hard-truncate it with an ellipsis rather than looping
-                // forever trying (and failing) to fit it whole.
-                let mut piece = String::new();
-                for ch in word.chars() {
-                    let next = format!("{piece}{ch}…");
-                    if width_of(&next) > max_width && !piece.is_empty() {
-                        break;
-                    }
-                    piece.push(ch);
-                }
-                piece.push('…');
+                // forever trying (and failing) to fit it whole. Delegates
+                // to the shared ellipsis-fitting search so a budget too
+                // narrow even for "x…" correctly yields a bare "…" (or
+                // nothing) instead of overflowing by one character.
+                let (piece, _) =
+                    crate::text_util::truncate_with_ellipsis(word, max_width, width_of);
                 line = piece;
                 idx += 1;
             }
@@ -381,6 +377,15 @@ mod wrap_tests {
             lines[0]
         );
         assert!(lines[0].ends_with('…'));
+    }
+
+    #[test]
+    fn single_word_truncated_at_width_one_never_overflows_budget() {
+        // At max_width=1 even "x…" (2 cells) doesn't fit — the shared
+        // ellipsis-fitting search must fall back to a bare "…", never an
+        // over-budget "x…".
+        let lines = wrap_text_lines("abc", 1.0, 1, &chars);
+        assert_eq!(lines, vec!["…".to_string()]);
     }
 
     #[test]

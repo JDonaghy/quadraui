@@ -96,7 +96,7 @@ pub fn draw_menu_bar(buf: &mut Buffer, area: Rect, bar: &MenuBar, theme: &Theme)
             } else {
                 set_cell(buf, cx, y, ch, fg, bg);
             }
-            cx += 1;
+            cx += crate::text_util::char_cell_width(ch);
             char_idx += 1;
         }
     }
@@ -104,9 +104,12 @@ pub fn draw_menu_bar(buf: &mut Buffer, area: Rect, bar: &MenuBar, theme: &Theme)
     layout
 }
 
-/// Display width of a label in cells (chars minus the `&` marker).
+/// Display width of a label in cells (the `&` marker itself doesn't paint,
+/// and wide glyphs — CJK, emoji — claim two cells each, per
+/// [`crate::text_util::display_width`]).
 fn display_width(label: &str) -> usize {
-    label.chars().filter(|&c| c != '&').count()
+    let stripped: String = label.chars().filter(|&c| c != '&').collect();
+    crate::text_util::display_width(&stripped)
 }
 
 /// Index (in display chars, skipping `&`) of the Alt-activation char.
@@ -312,6 +315,13 @@ mod tests {
         }
         // Sanity: the label itself still paints, just without underline.
         assert_eq!(cell_char(&buf, start_x + 1, area.y), 'F');
+    }
+
+    #[test]
+    fn display_width_measures_cjk_as_double_width_not_char_count() {
+        // "&文件" strips to "文件" — two CJK chars, 2 cells each = 4, not
+        // the char count (2).
+        assert_eq!(display_width("&文件"), 4);
     }
 
     #[test]

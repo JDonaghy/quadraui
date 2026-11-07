@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
-use super::{ratatui_color, set_cell};
+use super::{ratatui_color, set_cell, set_cell_wide};
 use crate::primitives::data_table::{
     ColumnAlign, ColumnMeasure, DataTable, DataTableGlyphs, DataTableLayout, DataTablePaintState,
     SortDirection,
@@ -297,19 +297,40 @@ fn draw_data_table_inner(
                 col_w
             };
 
-            let text_len = full_text.chars().count() as u16;
-            let (visible_len, needs_ellipsis) = if text_len <= usable_w {
-                (text_len, false)
+            // Measure and clip by terminal display width, not char count:
+            // a char-count budget lets a CJK/emoji run overflow its column
+            // (each wide glyph claims two cells, not one) and never adds an
+            // ellipsis within budget. `visible_chars` is how many of
+            // `full_text`'s *characters* to paint; `displayed_len` is their
+            // actual cell width (plus the ellipsis's one cell, if needed) —
+            // the two diverge whenever a wide glyph is in play, which is why
+            // `displayed_len` (not `visible_chars`) feeds `align_offset`.
+            let text_width = crate::text_util::display_width(&full_text) as u16;
+            let (visible_chars, needs_ellipsis, displayed_len): (u16, bool, u16) = if text_width
+                <= usable_w
+            {
+                (full_text.chars().count() as u16, false, text_width)
             } else if usable_w == 0 {
-                (0, false)
+                (0, false, 0)
             } else {
-                (usable_w - 1, true)
+                let (fitted, fitted_w) =
+                    crate::text_util::truncate_with_ellipsis(&full_text, usable_w as f32, |s| {
+                        crate::text_util::display_width(s) as f32
+                    });
+                if fitted.is_empty() {
+                    (0, false, 0)
+                } else {
+                    // `fitted` is always `<content>…` here — strip the
+                    // trailing ellipsis char to get the content count.
+                    let content_chars = fitted.chars().count() as u16 - 1;
+                    (content_chars, true, fitted_w.round() as u16)
+                }
             };
-            let displayed_len = visible_len + u16::from(needs_ellipsis);
             let start = align_offset(align, displayed_len, usable_w) as i32;
 
             let is_muted = row.decoration == crate::types::Decoration::Muted;
-            let mut char_idx = 0u16;
+            let mut chars_emitted = 0u16;
+            let mut width_used = 0u16;
             'cell: for span in &styled.spans {
                 let span_fg = if is_muted {
                     muted_fg
@@ -317,23 +338,29 @@ fn draw_data_table_inner(
                     span.fg.map(ratatui_color).unwrap_or(row_fg)
                 };
                 for ch in span.text.chars() {
-                    if char_idx == visible_len {
+                    if chars_emitted == visible_chars {
                         if needs_ellipsis {
-                            let cx = col_x_raw + start + char_idx as i32;
+                            let cx = col_x_raw + start + width_used as i32;
                             if cx >= area.x as i32 && cx < (area.x + area.width) as i32 {
                                 set_cell(buf, cx as u16, y, '…', span_fg, row_bg);
                             }
                         }
                         break 'cell;
                     }
-                    let cx = col_x_raw + start + char_idx as i32;
+                    let cx = col_x_raw + start + width_used as i32;
                     if cx >= (area.x + area.width) as i32 {
                         break 'cell;
                     }
+                    let w = crate::text_util::char_cell_width(ch);
                     if cx >= area.x as i32 {
-                        set_cell(buf, cx as u16, y, ch, span_fg, row_bg);
+                        if w == 2 && cx + 1 < (area.x + area.width) as i32 {
+                            set_cell_wide(buf, cx as u16, y, ch, span_fg, row_bg);
+                        } else {
+                            set_cell(buf, cx as u16, y, ch, span_fg, row_bg);
+                        }
                     }
-                    char_idx += 1;
+                    width_used += w;
+                    chars_emitted += 1;
                 }
             }
         }
@@ -799,6 +826,69 @@ mod tests {
             b_range.clone().any(|x| row[x] == '…'),
             "over-long body cell should end in an ellipsis, not a hard cut: {row_str:?}"
         );
+    }
+
+    #[test]
+    fn body_cell_with_wide_glyphs_truncates_by_display_width_not_char_count() {
+        // A 6-column-wide cell holding 6 CJK chars (12 display columns)
+        // must truncate to fit the column's *display* width, not its char
+        // count — a char-count budget would paint all 6 chars (12 cells)
+        // across the neighbour column with no ellipsis at all.
+        let table = DataTable {
+            id: WidgetId::new("wide-glyph-test"),
+            columns: vec![
+                Column {
+                    title: "A".into(),
+                    width: ColumnWidth::FixedCells(6.0),
+                    align: ColumnAlign::Left,
+                },
+                Column {
+                    title: "B".into(),
+                    width: ColumnWidth::FixedCells(4.0),
+                    align: ColumnAlign::Left,
+                },
+            ],
+            rows: vec![DataRow {
+                cells: vec![StyledText::plain("日本語日本語"), StyledText::plain("tail")],
+                decoration: Decoration::Normal,
+            }],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+        };
+        let area = Rect::new(0, 0, 10, 10);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+        let row: Vec<char> = (0..10)
+            .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        let row_str: String = row.iter().collect();
+
+        let b_col = &layout.columns[1];
+        let b_start = b_col.x.round() as usize;
+
+        // Column A's cell (reserving one cell for the separator) never
+        // overflows into column B's start — only an ellipsis (or blank
+        // padding) appears in the cell right before B, never a CJK glyph
+        // that would occupy two columns and collide with its neighbour.
+        assert_ne!(
+            row[b_start - 1],
+            '語',
+            "a wide glyph must not be painted into the separator cell: {row_str:?}"
+        );
+        assert!(
+            (0..b_start).any(|x| row[x] == '…'),
+            "over-wide CJK cell should end in an ellipsis: {row_str:?}"
+        );
+        // Column B's own content paints intact, undisturbed by A's overflow.
+        assert_eq!(row[b_start], 't', "row: {row_str:?}");
     }
 
     #[test]
