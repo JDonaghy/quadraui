@@ -35,6 +35,8 @@
 //! to the shared paint to match.
 
 use crate::event::Rect;
+#[cfg(target_os = "windows")]
+use crate::primitives::list::{ListItemMeasure, ListPaintState};
 use crate::primitives::list::{ListView, ListViewLayout};
 
 /// Border thickness (DIPs) for a `bordered` list — matches the 1-unit
@@ -83,6 +85,45 @@ pub fn win_list_layout(
         char_width as f64,
         border_inset,
     )
+}
+
+/// Like [`win_list_layout`], but threads an explicit pixel-precise scroll
+/// position (`scroll_px`) through to [`ListView::layout_with_scroll_px`]
+/// instead of only [`ListView::scroll_offset`]'s whole-row value — mirrors
+/// [`crate::primitives::layout_metrics::list_layout`]'s `border_inset` /
+/// h-scrollbar-reservation math exactly, just calling the scroll_px-aware
+/// layout method that shared fn can't reach. `scroll_px: None` produces
+/// byte-identical output to [`win_list_layout`].
+///
+/// Unlike [`win_list_layout`], this *is* `target_os = "windows"`-gated:
+/// its only caller is [`draw_list_with_state`], which needs a live
+/// Direct2D/DirectWrite handle anyway, so there is no cross-platform
+/// no-paint caller (unlike [`win_list_layout`]'s `Backend::list_layout`
+/// fallback) to keep this one reachable on a non-Windows `cargo check`.
+#[cfg(target_os = "windows")]
+pub fn win_list_layout_with_scroll_px(
+    list: &ListView,
+    rect: Rect,
+    line_height: f32,
+    char_width: f32,
+    scroll_px: Option<f32>,
+) -> ListViewLayout {
+    let border_inset = if list.bordered { BORDER_DIP } else { 0.0 };
+    let visible_px = (rect.width - border_inset * 2.0).max(0.0);
+    let needs_hscrollbar = list
+        .max_content_width
+        .is_some_and(|n| n as f32 * char_width > visible_px);
+    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
+    let title_h = if list.title.is_some() {
+        line_height
+    } else {
+        0.0
+    };
+    let layout_w = rect.width - border_inset * 2.0;
+    let layout_h = (rect.height - border_inset * 2.0 - hscrollbar_h).max(0.0);
+    list.layout_with_scroll_px(layout_w, layout_h, title_h, scroll_px, |_| {
+        ListItemMeasure::new(line_height)
+    })
 }
 
 /// Draw a [`ListView`] into `rect` (DIPs) on `target`. Returns the resolved
@@ -150,16 +191,13 @@ pub fn draw_list(
         &mut surface,
         &theme,
         style,
-        // `hovered_idx` / `pressed_idx`: row tinting is not wired on this
-        // backend — `WinBackend` uses the `Backend::draw_list_with_state`
-        // default, which forwards to `draw_list` and drops both indices.
-        // `None` keeps this paint pixel-identical to the visual contract
-        // documented above.
+        // `hovered_idx` / `pressed_idx`: this base painter never tints
+        // rows — that's `draw_list_with_state`'s job, which composes both
+        // indices (and the focus-visible ring below) from `ListPaintState`.
+        // `None`/`false` here keep `draw_list` pixel-identical to the
+        // visual contract documented above.
         None,
         None,
-        // Same reasoning for the focus-visible ring: this backend has
-        // no `Backend::draw_list_with_state` override to compose
-        // `focus_ring_visible` from, so it never shows here yet.
         false,
     );
 
@@ -168,6 +206,101 @@ pub fn draw_list(
     // background fill (`surface_fill_rect(area, base_bg)`, `primitives/list.rs`).
     // This order mirrors `gtk::list::draw_list`, which strokes its border after
     // the content paint for the same reason.
+    if list.bordered {
+        let br = theme.border_fg;
+        let _ = fill_rect(
+            target,
+            Rect::new(rect.x, rect.y, rect.width, BORDER_DIP),
+            br,
+        );
+        let _ = fill_rect(
+            target,
+            Rect::new(
+                rect.x,
+                rect.y + rect.height - BORDER_DIP,
+                rect.width,
+                BORDER_DIP,
+            ),
+            br,
+        );
+        let _ = fill_rect(
+            target,
+            Rect::new(rect.x, rect.y, BORDER_DIP, rect.height),
+            br,
+        );
+        let _ = fill_rect(
+            target,
+            Rect::new(
+                rect.x + rect.width - BORDER_DIP,
+                rect.y,
+                BORDER_DIP,
+                rect.height,
+            ),
+            br,
+        );
+    }
+
+    layout
+}
+
+/// [`draw_list`], plus hover/press row tinting, a focus-visible ring,
+/// and — when `state.scroll_px` is `Some` — a pixel-precise scroll
+/// position instead of only [`ListView::scroll_offset`]'s whole-row
+/// value: the first visible item is shifted up by the sub-row
+/// remainder and clipped against the list's own viewport (see
+/// [`crate::primitives::list::native_surface_paint::paint_with_scroll_px`]),
+/// producing the "partial first row clipped" look of pixel-smooth
+/// scrolling. `state.scroll_px: None` paints pixel-identically to
+/// [`draw_list`].
+#[cfg(target_os = "windows")]
+pub fn draw_list_with_state(
+    target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
+    dwrite: &super::text::DWrite,
+    rect: Rect,
+    list: &ListView,
+    line_height: f32,
+    style: &crate::style::Style,
+    state: &ListPaintState,
+    focus_ring_visible: bool,
+) -> ListViewLayout {
+    use super::text::fill_rect;
+    use crate::theme::Theme;
+
+    let theme = Theme::default();
+    let char_width = dwrite
+        .measure_text("M")
+        .map(|(w, _)| w)
+        .unwrap_or(0.0)
+        .max(1.0);
+    let layout =
+        win_list_layout_with_scroll_px(list, rect, line_height, char_width, state.scroll_px);
+
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    crate::primitives::list::native_surface_paint::paint_with_scroll_px(
+        list,
+        rect,
+        &layout,
+        line_height,
+        // See `draw_list`'s doc for why Nerd-Font glyph selection isn't
+        // wired on this rasteriser yet.
+        false,
+        true,
+        true,
+        &mut surface,
+        &theme,
+        style,
+        state.hovered_idx,
+        state.pressed_idx,
+        focus_ring_visible,
+        state.scroll_px,
+    );
+
+    // See `draw_list`'s matching comment: the `bordered` frame paints
+    // after the shared content paint so it isn't erased by that paint's
+    // own initial full-`rect` background fill.
     if list.bordered {
         let br = theme.border_fg;
         let _ = fill_rect(
@@ -334,6 +467,47 @@ mod tests {
         use crate::primitives::list::ListViewHit;
         use crate::win::testing::HeadlessSurface;
         use crate::win::text::DWrite;
+
+        /// `scroll_px: None` must produce byte-identical output to
+        /// [`win_list_layout`] — the "paints exactly as before" contract
+        /// [`draw_list_with_state`] documents.
+        #[test]
+        fn win_list_layout_with_scroll_px_none_matches_win_list_layout() {
+            let list = make_list((0..6).map(|i| item(&format!("row-{i}"))).collect());
+            let rect = Rect::new(0.0, 0.0, W, H);
+
+            let via_plain = win_list_layout(&list, rect, LINE_HEIGHT, CHAR_WIDTH);
+            let via_scroll_px =
+                win_list_layout_with_scroll_px(&list, rect, LINE_HEIGHT, CHAR_WIDTH, None);
+            assert_eq!(via_plain, via_scroll_px);
+        }
+
+        /// A fractional `scroll_px` shifts the first visible item's bounds up
+        /// by the sub-row remainder and reports it back as `scroll_sub_px`,
+        /// matching `mac_list_layout_with_scroll_px`'s contract.
+        #[test]
+        fn win_list_layout_with_scroll_px_shifts_first_item_by_sub_row_remainder() {
+            let list = make_list((0..6).map(|i| item(&format!("row-{i}"))).collect());
+            let rect = Rect::new(0.0, 0.0, W, H);
+
+            // Half a row down: resolved_scroll_offset stays 0, sub-row
+            // remainder is half of LINE_HEIGHT.
+            let half_row = LINE_HEIGHT / 2.0;
+            let layout = win_list_layout_with_scroll_px(
+                &list,
+                rect,
+                LINE_HEIGHT,
+                CHAR_WIDTH,
+                Some(half_row),
+            );
+
+            assert_eq!(layout.resolved_scroll_offset, 0);
+            assert_eq!(layout.scroll_sub_px, half_row);
+            assert_eq!(
+                layout.visible_items[0].bounds.y, -half_row,
+                "the first visible item must shift up by the sub-row remainder"
+            );
+        }
 
         /// Paint↔click round trip: the selected row's background must be
         /// painted at its own bounds, and clicking each visible row's
@@ -545,6 +719,87 @@ mod tests {
                      full-rect background fill)"
                 );
             }
+        }
+
+        /// `draw_list_with_state` with `scroll_px: Some` must paint a
+        /// visibly different first row than `scroll_px: None` at the same
+        /// `scroll_offset` — the clipped partial-row look of pixel-smooth
+        /// scrolling — while `scroll_px: None` stays pixel-identical to
+        /// plain [`draw_list`].
+        #[test]
+        fn draw_list_with_state_scroll_px_shifts_first_row_pixels() {
+            let list = make_list((0..6).map(|i| item(&format!("row-{i}"))).collect());
+            let rect = Rect::new(0.0, 0.0, W, H);
+            let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+
+            let paint_at = |scroll_px: Option<f32>| -> HeadlessSurface {
+                let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+                let state =
+                    crate::primitives::list::ListPaintState::default().with_scroll_px(scroll_px);
+                surface
+                    .paint(|target| {
+                        draw_list_with_state(
+                            target,
+                            &dwrite,
+                            rect,
+                            &list,
+                            LINE_HEIGHT,
+                            &crate::style::Style::default(),
+                            &state,
+                            false,
+                        );
+                    })
+                    .expect("paint list");
+                surface
+            };
+
+            let unscrolled = paint_at(None);
+            let half_row_scrolled = paint_at(Some(LINE_HEIGHT / 2.0));
+
+            // `scroll_px: None` must paint byte-identically to plain
+            // `draw_list`.
+            let reference = {
+                let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+                surface
+                    .paint(|target| {
+                        draw_list(
+                            target,
+                            &dwrite,
+                            rect,
+                            &list,
+                            LINE_HEIGHT,
+                            &crate::style::Style::default(),
+                        );
+                    })
+                    .expect("paint list");
+                surface
+            };
+            for y in 0..(H as u32) {
+                for x in 0..(W as u32) {
+                    assert_eq!(
+                        unscrolled.pixel_at(x, y),
+                        reference.pixel_at(x, y),
+                        "scroll_px: None must paint pixel-identically to draw_list at ({x}, {y})"
+                    );
+                }
+            }
+
+            // A half-row `scroll_px` must change the painted first row:
+            // at least one pixel inside the first row's band must differ
+            // from the unscrolled paint.
+            let mut any_diff = false;
+            for y in 0..(LINE_HEIGHT as u32) {
+                for x in 0..(W as u32) {
+                    if unscrolled.pixel_at(x, y) != half_row_scrolled.pixel_at(x, y) {
+                        any_diff = true;
+                    }
+                }
+            }
+            assert!(
+                any_diff,
+                "a half-row scroll_px must paint a visibly different first row \
+                 than scroll_px: None"
+            );
         }
     }
 }
