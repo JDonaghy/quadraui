@@ -981,10 +981,9 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // deltas in row-notch units (crossterm's `±1.0` per notch, GTK's
     // OS-scaled `EventControllerScroll::dy`, Win32's
     // `raw_delta / WHEEL_DELTA`), so the identity default is the correct
-    // answer for all three, not unfinished work. macOS's
-    // `NSEvent.scrollingDeltaY` is the odd one out — real points, not
-    // notches — and converting that is a sibling macOS issue's job (see
-    // Backend::wheel_delta_rows's own doc).
+    // answer for all three, not unfinished work. macOS reports real
+    // points, so `MacBackend` overrides the method rather than appearing
+    // here (see Backend::wheel_delta_rows's own doc).
     (
         "tui",
         "wheel_delta_rows",
@@ -996,13 +995,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "wheel_delta_rows",
         "EventControllerScroll::dy is already OS-scaled to row-notch units, so the identity \
          default is correct — see Backend::wheel_delta_rows's own doc",
-    ),
-    (
-        "macos",
-        "wheel_delta_rows",
-        "NSEvent.scrollingDeltaY passes through as real points, not row-notch units — \
-         converting it to match every other backend is a sibling macOS issue's job, per \
-         Backend::wheel_delta_rows's own doc",
     ),
     (
         "win",
