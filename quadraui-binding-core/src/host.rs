@@ -891,6 +891,98 @@ pub fn pointer_shape(value: &str, edge: Option<&str>) -> Result<quadraui::Pointe
     }
 }
 
+/// Decodes a friendly lowercase word into a [`quadraui::AppPathKind`] — the
+/// vocabulary a binding's own `app_path`/`resolve_app_path`-style surface
+/// accepts, the same friendly-lowercase-word shape [`dialog_severity`]
+/// decodes `severity` with.
+pub fn app_path_kind(value: &str) -> Result<quadraui::AppPathKind, String> {
+    match value {
+        "user_data" => Ok(quadraui::AppPathKind::UserData),
+        "app_config" => Ok(quadraui::AppPathKind::AppConfig),
+        "app_cache" => Ok(quadraui::AppPathKind::AppCache),
+        "logs" => Ok(quadraui::AppPathKind::Logs),
+        "temp" => Ok(quadraui::AppPathKind::Temp),
+        "downloads" => Ok(quadraui::AppPathKind::Downloads),
+        "documents" => Ok(quadraui::AppPathKind::Documents),
+        "home" => Ok(quadraui::AppPathKind::Home),
+        other => Err(format!(
+            "unknown path kind {other:?}; expected one of \"user_data\", \"app_config\", \
+             \"app_cache\", \"logs\", \"temp\", \"downloads\", \"documents\", \"home\""
+        )),
+    }
+}
+
+/// Decodes a friendly lowercase word into a [`quadraui::PowerSaveKind`] —
+/// the vocabulary a binding's own `begin_power_save_block`-style surface
+/// accepts.
+pub fn power_save_kind(value: &str) -> Result<quadraui::PowerSaveKind, String> {
+    match value {
+        "prevent_display_sleep" => Ok(quadraui::PowerSaveKind::PreventDisplaySleep),
+        "prevent_app_suspension" => Ok(quadraui::PowerSaveKind::PreventAppSuspension),
+        other => Err(format!(
+            "unknown power save kind {other:?}; expected one of \
+             \"prevent_display_sleep\", \"prevent_app_suspension\""
+        )),
+    }
+}
+
+/// Applies `f` to `backend`'s [`quadraui::WindowControl`] surface, folding
+/// [`Backend::window`] returning `None` (no window at all, or not
+/// constructed yet) into the same [`quadraui::BackendError::Unsupported`] a
+/// missing method on a real window already reports — the same fold
+/// `quadraui/examples/common/window_control_demo.rs`'s `describe` helper
+/// uses, so a caller sees one uniform error shape for either case. Shared
+/// by every binding's `set_title`/`set_document_edited`/
+/// `set_represented_filename` surface rather than copied per leaf.
+pub fn with_window<T>(
+    backend: &mut dyn Backend,
+    f: impl FnOnce(&mut dyn quadraui::WindowControl) -> quadraui::ServiceResult<T>,
+) -> quadraui::ServiceResult<T> {
+    match backend.window() {
+        Some(window) => f(window),
+        None => Err(quadraui::BackendError::Unsupported),
+    }
+}
+
+/// [`with_window`]'s [`quadraui::backend::TrayService`] counterpart — folds
+/// [`Backend::tray`] returning `None` into
+/// [`quadraui::BackendError::Unsupported`]. Shared by every binding's
+/// `set_tray_icon`/`set_tray_tooltip`/`set_tray_menu` surface.
+pub fn with_tray<T>(
+    backend: &mut dyn Backend,
+    f: impl FnOnce(&mut dyn quadraui::backend::TrayService) -> quadraui::ServiceResult<T>,
+) -> quadraui::ServiceResult<T> {
+    match backend.tray() {
+        Some(tray) => f(tray),
+        None => Err(quadraui::BackendError::Unsupported),
+    }
+}
+
+/// Builds a [`quadraui::ContextMenu`] from a flat `items` list for
+/// attaching to a non-primitive menu surface — a tray icon's menu or a
+/// Dock icon's menu — neither of which has its own on-screen anchor
+/// point/selection state the way a right-click [`quadraui::ContextMenu`]
+/// does. `id` names the surface (`"qui-tray-menu"`, `"qui-dock-menu"`) so
+/// a [`quadraui::UiEvent::ContextMenuItemActivated`] fired from it is
+/// still traceable back to its source; `selected_idx` is seeded at the
+/// first selectable item the same way a freshly opened right-click menu
+/// starts, even though neither surface actually renders a selection
+/// highlight today.
+pub fn menu_for_surface(
+    id: WidgetId,
+    items: Vec<quadraui::ContextMenuItem>,
+) -> quadraui::ContextMenu {
+    let mut menu = quadraui::ContextMenu {
+        id,
+        items,
+        selected_idx: 0,
+        bg: None,
+        placement: quadraui::ContextMenuPlacement::AnchorPoint,
+    };
+    menu.selected_idx = menu.first_selectable();
+    menu
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};

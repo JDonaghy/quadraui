@@ -59,6 +59,20 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `quadraui-binding-core::services` — a language-neutral wrapper over every
+  `PlatformServices` seam named in the bindings-parity epic's "missing in
+  both" table (auto-update, the power-save blocker, app standard paths,
+  launch-at-login, protocol registration, the crash reporter, drag-out, and
+  recent docs/dock menu/jump list): one `ServiceError` (`Unsupported` /
+  `Failure` / `InvalidArgument`) both `quadraui-py` and a future
+  `quadraui-node` map onto their own exception type, instead of each leaf
+  re-deriving `BackendError` handling and enum-name parsing on its own.
+  `quadraui_binding_core::host` also gains `app_path_kind`/`power_save_kind`
+  decoders (alongside the existing `pointer_shape`/`dialog_severity`/...
+  table) and `with_window`/`with_tray`/`menu_for_surface`, lifted out of
+  `quadraui-py`'s `set_title`/`set_document_edited`/
+  `set_represented_filename`/tray-menu code so a `quadraui-node` leaf calls
+  the same logic instead of copying it.
 - GTK `List`/`Tree`/`DataTable` painters (`Backend::draw_list_with_state`,
   `draw_tree_with_state`, and the new `Backend::draw_data_table_with_state`
   override) now honour a `Some` `scroll_px` on their paint state: the
