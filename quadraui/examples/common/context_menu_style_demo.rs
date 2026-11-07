@@ -20,7 +20,7 @@
 
 use quadraui::{
     AppLogic, Backend, Color, ContextMenu, ContextMenuController, ContextMenuItem,
-    ContextMenuOutcome, ContextMenuPlacement, InteractionState, Key, MenuStyle, MouseButton,
+    ContextMenuOutcome, ContextMenuPlacement, Icon, InteractionState, Key, MenuStyle, MouseButton,
     NamedKey, Reaction, Rect, ResolvedMenuStyle, StatusBar, StatusBarSegment, StyledText, UiEvent,
     WidgetId,
 };
@@ -51,7 +51,15 @@ impl ContextMenuStyleDemo {
             id: WidgetId::new("menu-style-demo"),
             items: vec![
                 action_item("ctx.cut", "Cut"),
-                action_item("ctx.copy", "Copy"),
+                // `C3`: a leading icon on "Copy" — paints the bundled
+                // `files` codicon on GUI and its `C` fallback on TUI (or
+                // on GUI with `set_nerd_fonts(false)`); only the fallback
+                // string's first `char` renders in the TUI gutter's
+                // single cell.
+                ContextMenuItem {
+                    icon: Icon::codicon("files", "C"),
+                    ..action_item("ctx.copy", "Copy")
+                },
                 action_item("ctx.paste", "Paste"),
                 ContextMenuItem::default(), // separator
                 action_item("ctx.about", "About this demo"),

@@ -88,3 +88,61 @@ pub use wire::{
     decode_layout_node, decode_render_output, decode_shell_config, RenderOutput, StaticTabContent,
     LAYOUT_NODE_KEYS,
 };
+
+/// Lift an optional `"scroll_px"` number out of a `list`/`tree`/
+/// `data_table` leaf's own descriptor dict (the nested value under its
+/// `LEAF_KIND_KEYS` key — e.g. the `{...}` in `{"id": ..., "list":
+/// {...}}`) into the paint-time `scroll_px` a binding passes to a
+/// `ListPaintState`/`TreePaintState`/`DataTablePaintState` builder.
+///
+/// `scroll_px` is **not** a field [`wire::decode_layout_node`] (or any
+/// `ListView`/`TreeView`/`DataTable` decoder) reads — those types have
+/// no such field, by design (see `quadraui`'s `CHANGELOG.md`
+/// `[Unreleased]` → `Added` entry for `ListPaintState`/`TreePaintState`/
+/// `DataTablePaintState`). This function instead reads the key directly
+/// out of the raw `serde_json::Value` a binding already holds
+/// before/alongside decoding, so a descriptor dict that sets
+/// `"scroll_px"` doesn't need a Rust struct field to carry it, and a
+/// dict that never sets it is completely unaffected (`None`, same as
+/// if the key didn't exist).
+///
+/// Returns `None` when the key is absent, not a JSON number, or the
+/// value isn't a plain object — never an error: a malformed or missing
+/// `scroll_px` degrades to the pre-existing whole-row behaviour rather
+/// than failing the whole leaf's decode.
+pub fn scroll_px_from_value(value: &serde_json::Value) -> Option<f32> {
+    value
+        .as_object()?
+        .get("scroll_px")?
+        .as_f64()
+        .map(|v| v as f32)
+}
+
+#[cfg(test)]
+mod scroll_px_tests {
+    use super::scroll_px_from_value;
+    use serde_json::json;
+
+    #[test]
+    fn present_numeric_scroll_px_is_lifted_out() {
+        let dict = json!({"scroll_offset": 0, "scroll_px": 12.5});
+        assert_eq!(scroll_px_from_value(&dict), Some(12.5));
+    }
+
+    #[test]
+    fn absent_scroll_px_is_none_and_leaves_the_dict_unaffected() {
+        let dict = json!({"scroll_offset": 3});
+        assert_eq!(scroll_px_from_value(&dict), None);
+    }
+
+    #[test]
+    fn non_numeric_scroll_px_is_none_not_an_error() {
+        let dict = json!({"scroll_px": "not a number"});
+        assert_eq!(scroll_px_from_value(&dict), None);
+    }
+
+    #[test]
+    fn non_object_value_is_none() {
+        assert_eq!(scroll_px_from_value(&json!([1, 2, 3])), None);
+    }
+}

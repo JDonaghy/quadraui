@@ -1015,6 +1015,7 @@ fn draw_field_button_row(
         field_fg,
         dim_fg,
         accent_fg,
+        theme,
         ..
     } = *ctx;
 
@@ -1022,13 +1023,31 @@ fn draw_field_button_row(
         let button = buttons.iter().find(|b| &b.id == item_id);
         if let Some(button) = button {
             let col = area.x as f32 + item_rect.x;
+            // An explicit `spec` override's `variant` tints both the
+            // label and the bracket chrome in the intent colour, same
+            // convention `crate::tui::button` uses for a standalone
+            // `Danger`/`Warning` `Button` — a `spec: None` item keeps
+            // painting `field_fg`/`accent_fg`. Only `variant` is
+            // honoured here today — `icon`/`icon_position`/`icon_gap`/
+            // `tooltip` on the spec have no TUI form-row effect yet, and
+            // `spec.disabled` does not override the item's own
+            // `disabled` field below.
+            let intent_fg = button.spec.as_ref().and_then(|s| match s.variant {
+                crate::primitives::button::ButtonVariant::Danger => Some(theme.error_fg),
+                crate::primitives::button::ButtonVariant::Warning => Some(theme.warning_fg),
+                _ => None,
+            });
             let btn_fg = if button.disabled || field.disabled {
                 dim_fg
+            } else if let Some(intent) = intent_fg {
+                ratatui_color(intent)
             } else {
                 field_fg
             };
             let brk_fg = if button.disabled || field.disabled {
                 dim_fg
+            } else if let Some(intent) = intent_fg {
+                ratatui_color(intent)
             } else {
                 accent_fg
             };
@@ -2011,18 +2030,21 @@ mod tests {
                 kind: FieldKind::ButtonRow {
                     buttons: vec![
                         ButtonRowItem {
+                            spec: None,
                             id: WidgetId::new("next"),
                             label: "Next".into(),
                             disabled: false,
                             icon: None,
                         },
                         ButtonRowItem {
+                            spec: None,
                             id: WidgetId::new("replace"),
                             label: "Repl".into(),
                             disabled: false,
                             icon: None,
                         },
                         ButtonRowItem {
+                            spec: None,
                             id: WidgetId::new("all"),
                             label: "All".into(),
                             disabled: true,
@@ -2061,6 +2083,39 @@ mod tests {
         assert!(row.contains("[Next]"), "expected '[Next]' in row: {row:?}");
         assert!(row.contains("[Repl]"), "expected '[Repl]' in row: {row:?}");
         assert!(row.contains("[All]"), "expected '[All]' in row: {row:?}");
+    }
+
+    fn cell_fg(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
+        buf[(x, y)]
+            .style()
+            .fg
+            .unwrap_or(ratatui::style::Color::Reset)
+    }
+
+    /// A `ButtonRowItem` with an explicit `Danger` spec tints both its
+    /// label and bracket chrome in `theme.error_fg` — a `spec: None` item
+    /// (every pre-existing construction site) keeps its plain
+    /// `field_fg`/`accent_fg` look, unaffected.
+    #[test]
+    fn button_row_item_with_danger_spec_tints_error_fg() {
+        let mut f = make_button_row_form();
+        let mut spec = crate::primitives::button::ButtonSpec::new("Delete all");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        if let FieldKind::ButtonRow { buttons } = &mut f.fields[0].kind {
+            buttons[0].spec = Some(spec);
+        }
+        let theme = Theme::default();
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &theme);
+
+        let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        let bracket_col = row.find('[').expect("'[Next]' must be painted") as u16;
+        assert_eq!(cell_fg(&buf, bracket_col, 0), ratatui_color(theme.error_fg));
+        assert_eq!(
+            cell_fg(&buf, bracket_col + 1, 0),
+            ratatui_color(theme.error_fg)
+        );
     }
 
     /// Shared body for the ButtonRow paint↔click round trip — see
@@ -2564,6 +2619,7 @@ mod tests {
                     id: WidgetId::new("tb"),
                     buttons: vec![
                         ToolbarButton::Action {
+                            spec: None,
                             id: WidgetId::new("reset"),
                             label: "Reset".into(),
                             icon: None,
@@ -2574,6 +2630,7 @@ mod tests {
                         },
                         ToolbarButton::Separator,
                         ToolbarButton::Action {
+                            spec: None,
                             id: WidgetId::new("export"),
                             label: "Export".into(),
                             icon: None,
@@ -2698,6 +2755,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("reset"),
                     label: "Reset".into(),
                     icon: None,

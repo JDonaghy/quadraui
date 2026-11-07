@@ -170,6 +170,37 @@ impl<A: AppLogic> GtkDriver<A> {
         render_frame(backend, app, &cr, self.width, self.height);
     }
 
+    /// Fire `AppLogic::tick` directly, the same call the live
+    /// `gtk::run::run_with` runner's `drain_and_tick` closure makes after
+    /// every event-queue drain — including the idle ticks where no event
+    /// arrived, driven by either a `Backend::request_frame_in`-scheduled
+    /// one-shot `glib::source::timeout_add_local_once` or the periodic
+    /// `IDLE_POLL_CEILING` fallback. There is no live GLib main loop in
+    /// this headless driver for either timer to fire against (no
+    /// `gtk::init`, no `Application` — see the module doc's "Limitations"
+    /// section), so this is the seam a test uses to assert on `tick`'s
+    /// *effect* directly: dispatch input via [`Self::dispatch`], call this
+    /// with **no** further input, and check the result (e.g. a
+    /// delay-driven hover tooltip becoming visible). Repaints on
+    /// `Reaction::Redraw` and latches `exited` on `Reaction::Exit`,
+    /// mirroring [`Self::dispatch`].
+    pub fn tick(&mut self) -> Reaction {
+        if self.core.exited() {
+            return Reaction::Exit;
+        }
+        let reaction = {
+            let (backend, app) = self.core.parts_mut();
+            app.tick(backend)
+        };
+        let surface = &self.surface;
+        let width = self.width;
+        let height = self.height;
+        self.core.apply_outcome(reaction.into(), |backend, app| {
+            let cr = Context::new(surface).expect("Context::new on headless ImageSurface");
+            render_frame(backend, app, &cr, width, height);
+        })
+    }
+
     /// Feed one synthetic event through the shared production
     /// [`dispatch_event`] path. Repaints on redraw and latches `exited`.
     pub fn dispatch(&mut self, event: UiEvent) -> Reaction {
@@ -1161,6 +1192,137 @@ mod tests {
             assert_eq!(
                 hits.close_bounds[vt.tab_idx], painted_close,
                 "tab {} close button: click-time region must equal the painted one",
+                vt.tab_idx
+            );
+        }
+    }
+
+    /// Narrow-strip counterpart to
+    /// [`tab_bar_layout_twin_matches_painted_geometry_headless`]: a tab
+    /// whose full label doesn't fit the remaining strip width gets
+    /// ellipsis-fitted at *paint* time (`gtk::tab_bar`'s rasteriser) —
+    /// the no-paint [`Backend::tab_bar_layout`] twin must report that
+    /// same fitted tab as visible, with the same slot and close-button
+    /// bounds, not fall back to the pre-fit geometry that would have
+    /// dropped it off the strip entirely.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn tab_bar_layout_twin_matches_painted_geometry_headless_narrow_strip() {
+        let long_label = "a_very_long_filename_for_this_single_tab_that_never_fits.rs";
+        let make_bar = || TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![
+                TabItem {
+                    label: "a".to_string(),
+                    is_active: false,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                },
+                TabItem {
+                    label: long_label.to_string(),
+                    is_active: false,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                },
+            ],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+
+        struct NarrowBoundaryTabBarApp {
+            width: i32,
+            bar: TabBar,
+        }
+
+        impl AppLogic for NarrowBoundaryTabBarApp {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                backend.draw_tab_bar(
+                    Rect::new(0.0, 0.0, self.width as f32, TAB_BAR_H as f32),
+                    &self.bar,
+                    None,
+                );
+            }
+
+            fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                Reaction::Continue
+            }
+        }
+
+        // Generous first pass, just to read off tab 0's own (untruncated)
+        // painted width — avoids hardcoding a pixel budget that would
+        // drift with the host's "Sans 11" metrics.
+        const GENEROUS_W: i32 = 2000;
+        let probe = GtkDriver::new(
+            NarrowBoundaryTabBarApp {
+                width: GENEROUS_W,
+                bar: make_bar(),
+            },
+            GENEROUS_W,
+            TAB_BAR_H,
+        );
+        let bar_id = WidgetId::new("tabs");
+        let (_, probe_layout) = probe
+            .core
+            .backend()
+            .cached_tab_bar_layout(&bar_id)
+            .expect("the first frame painted the tab bar");
+        assert_eq!(
+            probe_layout.visible_tabs.len(),
+            2,
+            "both tabs must fit at a generous width"
+        );
+        let tab0_w = probe_layout.visible_tabs[0].bounds.width;
+
+        // A strip that fits tab 0 plus only a little over 80px of tab
+        // 1 — nowhere near the long label's full width, so tab 1 must
+        // shrink to fit rather than disappear.
+        let narrow_w = (tab0_w + 80.0).ceil() as i32;
+        let app = NarrowBoundaryTabBarApp {
+            width: narrow_w,
+            bar: make_bar(),
+        };
+        let mut driver = GtkDriver::new(app, narrow_w, TAB_BAR_H);
+        let bar = make_bar();
+
+        let (rect, painted) = driver
+            .core
+            .backend()
+            .cached_tab_bar_layout(&bar_id)
+            .map(|(r, l)| (r, l.clone()))
+            .expect("the first frame painted the tab bar");
+        assert_eq!(
+            painted.visible_tabs.len(),
+            2,
+            "tab 1 must still appear, ellipsis-fitted, instead of being dropped"
+        );
+
+        let hits = crate::Backend::tab_bar_layout(driver.core.backend_mut(), rect, &bar);
+
+        for vt in &painted.visible_tabs {
+            let painted_slot = (
+                (rect.x + vt.bounds.x) as f64,
+                (rect.x + vt.bounds.x + vt.bounds.width) as f64,
+            );
+            assert_eq!(
+                hits.slot_positions[vt.tab_idx], painted_slot,
+                "tab {} body: the no-paint twin must report the same slot the \
+                 narrow strip actually painted, not fall back to pre-fit geometry",
+                vt.tab_idx
+            );
+            let painted_close = vt
+                .close_bounds
+                .map(|cb| ((rect.x + cb.x) as f64, (rect.x + cb.x + cb.width) as f64));
+            assert_eq!(
+                hits.close_bounds[vt.tab_idx], painted_close,
+                "tab {} close button: the no-paint twin must report the close box \
+                 the narrow strip actually painted, not `None`",
                 vt.tab_idx
             );
         }

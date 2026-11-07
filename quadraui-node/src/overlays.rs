@@ -17,9 +17,10 @@
 //!
 //! Every method also calls [`QuiApp::check_not_live`] first: it reaches
 //! into `self.driver`'s own [`InteractionEngine`] directly, which is the
-//! orphaned pre-live one once `startTui` has moved this app's
-//! [`NodeAppLogic`] into the live runner, so without the guard a call here
-//! would silently open the overlay on state no live terminal ever renders.
+//! orphaned pre-live one once `startTui`/`startNative` has moved this
+//! app's [`NodeAppLogic`] into the live runner, so without the guard a
+//! call here would silently open the overlay on state no live
+//! terminal/window ever renders.
 
 use super::*;
 

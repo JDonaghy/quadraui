@@ -40,6 +40,7 @@
 //! round-trips intact; see [`strip_json_comments`]'s tests.
 
 use crate::types::StyledSpan;
+use std::borrow::Cow;
 
 /// Snap `byte_idx` to the nearest UTF-8 char boundary in `s` at or
 /// before `byte_idx`, clamping `byte_idx` to `s.len()` first.
@@ -264,6 +265,105 @@ pub fn display_width(s: &str) -> usize {
 /// [`crate::terminal_style::wide_cell_advance`].
 pub fn is_wide_char(c: char) -> bool {
     char_cell_width(c) == 2
+}
+
+/// Find the longest prefix of `text` (snapped to a `char` boundary) that,
+/// with a trailing `…` appended, measures at or under `max_width` via
+/// `measure`. The one shared ellipsis-truncation algorithm behind every
+/// backend's overflow handling — List, Board, DataTable, TabBar and
+/// StatusBar all call this instead of each growing its own clip-and-hope
+/// logic.
+///
+/// Returns `(fitted_text, fitted_width)`:
+///
+/// - If `text` already fits (`measure(text) <= max_width`), returns it
+///   unchanged — callers don't need to check this themselves first.
+/// - If even a bare `…` doesn't fit, returns `(String::new(), 0.0)`.
+/// - Otherwise returns the longest prefix plus `…`, and that string's
+///   measured width.
+///
+/// `measure` returns the width of an arbitrary `&str` in the caller's
+/// native unit: pixels for a [`crate::paint_surface::PaintSurface`]-backed
+/// measurer (GTK/macOS/Win — see [`crate::paint_surface::fit_text_prefix`],
+/// a thin wrapper over this), character cells for TUI (typically
+/// [`display_width`], so a truncated CJK/emoji run still measures
+/// correctly).
+///
+/// Binary-searches over `char` count rather than bytes, assuming — as
+/// every text-shaping backend this crate targets does — that appending
+/// characters never *decreases* measured width.
+pub fn truncate_with_ellipsis<F>(text: &str, max_width: f32, measure: F) -> (String, f32)
+where
+    F: Fn(&str) -> f32,
+{
+    const ELLIPSIS: char = '…';
+    let whole_w = measure(text);
+    if whole_w <= max_width {
+        return (text.to_string(), whole_w);
+    }
+
+    let mut ellipsis_buf = [0u8; 4];
+    let ellipsis_str: &str = ELLIPSIS.encode_utf8(&mut ellipsis_buf);
+    let ellipsis_w = measure(ellipsis_str);
+    if ellipsis_w > max_width {
+        return (String::new(), 0.0);
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut lo = 0usize;
+    let mut hi = chars.len();
+    // Invariant: `lo` chars plus the ellipsis is known to fit; `hi` is
+    // known not to (or is the full length, still unproven).
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        let prefix: String = chars[..mid].iter().collect();
+        let candidate = format!("{prefix}{ELLIPSIS}");
+        let w = measure(&candidate);
+        if w <= max_width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    if lo == 0 {
+        return (ELLIPSIS.to_string(), ellipsis_w);
+    }
+    let prefix: String = chars[..lo].iter().collect();
+    let candidate = format!("{prefix}{ELLIPSIS}");
+    let w = measure(&candidate);
+    (candidate, w)
+}
+
+/// [`truncate_with_ellipsis`] for a run whose text carries its own
+/// **trailing padding**: trailing whitespace is treated as padding, not
+/// content, so a run that overflows `max_width` only by its own trailing
+/// spaces is clipped rather than spending a real character on the `…`.
+///
+/// Status-bar segments are the motivating case — a consumer writes
+/// `format!(" {label} ")` to give the segment breathing room, and losing
+/// the last letter of `label` to buy back an invisible space is strictly
+/// worse than dropping the space.
+///
+/// Borrows `text` unchanged when it already fits, borrows its
+/// [`str::trim_end`] when only the padding overflows, and otherwise
+/// defers to [`truncate_with_ellipsis`].
+pub fn truncate_padded_with_ellipsis<'a, F>(
+    text: &'a str,
+    max_width: f32,
+    measure: F,
+) -> Cow<'a, str>
+where
+    F: Fn(&str) -> f32,
+{
+    if measure(text) <= max_width {
+        return Cow::Borrowed(text);
+    }
+    let trimmed = text.trim_end();
+    if trimmed.len() < text.len() && measure(trimmed) <= max_width {
+        return Cow::Borrowed(trimmed);
+    }
+    Cow::Owned(truncate_with_ellipsis(text, max_width, measure).0)
 }
 
 /// Case-sensitive subsequence fuzzy match with a relevance score and
@@ -868,6 +968,95 @@ mod tests {
         assert!(!is_wide_char('a'));
         assert!(!is_wide_char(' '));
         assert!(!is_wide_char('\u{0301}'));
+    }
+
+    // ── truncate_with_ellipsis ──────────────────────────────────────────
+
+    /// A deterministic 1-unit-per-char measurer so expected widths are
+    /// trivial to compute by hand in these tests.
+    fn chars_measure(s: &str) -> f32 {
+        s.chars().count() as f32
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_returns_whole_text_unchanged_when_it_fits() {
+        let (fitted, w) = truncate_with_ellipsis("ab", 100.0, chars_measure);
+        assert_eq!(fitted, "ab");
+        assert_eq!(w, 2.0);
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_finds_longest_fitting_prefix() {
+        // "hello world" is 11 chars; budget 5 fits "hell" + "…" (5 chars).
+        let (fitted, w) = truncate_with_ellipsis("hello world", 5.0, chars_measure);
+        assert_eq!(fitted, "hell…");
+        assert_eq!(w, 5.0);
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_budget_too_small_for_even_the_ellipsis_returns_empty() {
+        let (fitted, w) = truncate_with_ellipsis("hello world", 0.0, chars_measure);
+        assert_eq!(fitted, "");
+        assert_eq!(w, 0.0);
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_budget_for_only_the_ellipsis_returns_bare_ellipsis() {
+        let (fitted, w) = truncate_with_ellipsis("hello world", 1.0, chars_measure);
+        assert_eq!(fitted, "…");
+        assert_eq!(w, 1.0);
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_is_measurer_agnostic_pixel_or_cell() {
+        // An 8px-per-char measurer stands in for a pixel backend.
+        let px_measure = |s: &str| s.chars().count() as f32 * 8.0;
+        let (fitted, w) = truncate_with_ellipsis("overflowing", 40.0, px_measure);
+        // Budget 40px / 8px per char = 5 chars worth, so 4 real chars + ellipsis.
+        assert_eq!(fitted, "over…");
+        assert_eq!(w, 40.0);
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_snaps_to_char_boundary_for_multibyte_text() {
+        // Every char in "日本語テスト" is display-width 2; budget 7 cells
+        // leaves room for 3 chars (6 cells) + a 1-cell ellipsis.
+        let (fitted, w) =
+            truncate_with_ellipsis("日本語テスト", 7.0, |s| display_width(s) as f32);
+        assert_eq!(fitted, "日本語…");
+        assert_eq!(w, 7.0);
+    }
+
+    // ── truncate_padded_with_ellipsis ───────────────────────────────────
+
+    #[test]
+    fn truncate_padded_with_ellipsis_borrows_text_that_already_fits() {
+        let fitted = truncate_padded_with_ellipsis(" fits ", 100.0, chars_measure);
+        assert_eq!(fitted, " fits ");
+        assert!(matches!(fitted, Cow::Borrowed(_)), "no allocation needed");
+    }
+
+    #[test]
+    fn truncate_padded_with_ellipsis_clips_padding_instead_of_eating_a_character() {
+        // `" {label} "` is 8 cells in a 7-cell budget: dropping the
+        // invisible trailing space keeps the whole label, where an
+        // ellipsis would have cost the final "l".
+        let fitted = truncate_padded_with_ellipsis(" label ", 6.0, chars_measure);
+        assert_eq!(fitted, " label");
+    }
+
+    #[test]
+    fn truncate_padded_with_ellipsis_still_ellipsizes_real_overflow() {
+        // Trimming the padding is not enough here, so the content itself
+        // must be truncated — and the result ends in the ellipsis.
+        let fitted = truncate_padded_with_ellipsis(" a long label ", 6.0, chars_measure);
+        assert_eq!(fitted, " a lo…");
+    }
+
+    #[test]
+    fn truncate_padded_with_ellipsis_ellipsizes_unpadded_overflow() {
+        let fitted = truncate_padded_with_ellipsis("overflowing", 5.0, chars_measure);
+        assert_eq!(fitted, "over…");
     }
 
     // ── fuzzy_score ─────────────────────────────────────────────────────

@@ -506,8 +506,14 @@ impl FolderPickerController {
         };
         let title = format!("Open Folder {root_display}");
 
-        let folder_icon = Icon::new("\u{1F4C1}", "\u{1F4C1}"); // 📁
-        let file_icon = Icon::new("\u{2699}", "\u{2699}"); // ⚙
+        // Codicon glyph on a GUI backend (`nerd_fonts_enabled` defaults
+        // `true` there), falling back to the pre-existing emoji on TUI
+        // (`nerd_fonts_enabled` defaults `false`), so TUI output is
+        // unchanged while GUI gets the vector folder/gear icon.
+        let folder_icon = Icon::codicon("folder", "\u{1F4C1}")
+            .unwrap_or_else(|| Icon::new("\u{1F4C1}", "\u{1F4C1}")); // 📁
+        let file_icon =
+            Icon::codicon("gear", "\u{2699}").unwrap_or_else(|| Icon::new("\u{2699}", "\u{2699}")); // ⚙
 
         let items: Vec<PaletteItem> = self
             .filtered

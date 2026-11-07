@@ -122,7 +122,7 @@ use crate::power::PowerEventKind;
 use crate::types::{Modifiers, WidgetId};
 use crate::{
     ActivityBarEvent, ChartEvent, DataTableEvent, FormEvent, ListViewEvent, PaletteEvent,
-    StatusBarEvent, TabBarEvent, TerminalEvent, TextDisplayEvent, TreeEvent,
+    StatusBarEvent, TabBarEvent, TerminalEvent, TextDisplayEvent, ToolbarEvent, TreeEvent,
 };
 
 // ─── Supporting types ───────────────────────────────────────────────────────
@@ -1144,6 +1144,28 @@ pub enum UiEvent {
     TextDisplay(WidgetId, TextDisplayEvent),
     Chart(WidgetId, ChartEvent),
     DataTable(WidgetId, DataTableEvent),
+    /// A [`crate::Toolbar`] button was clicked (mouse) or activated via
+    /// Enter/Space while keyboard-focused — the id is the toolbar's own,
+    /// matching every other chrome-bar variant above (`StatusBar`,
+    /// `ActivityBar`); the clicked/activated button's own id and new
+    /// `is_active` state are carried in the [`ToolbarEvent`] payload. Built
+    /// by [`crate::Toolbar::click`]/[`crate::Toolbar::activate_focused`].
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is not `#[non_exhaustive]`, so this is a new variant any
+    /// exhaustive consumer match would need a wildcard arm to survive.
+    /// Blast-radius grep:
+    ///
+    /// ```text
+    /// $ grep -rn 'UiEvent::Toolbar\b' ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both)
+    /// ```
+    /// Both consumers' top-level `UiEvent` dispatch is a large match ending
+    /// in a wildcard `_ =>` arm (same precedent `NotificationActivated`'s
+    /// own doc above records), so this compiles clean with no consumer
+    /// changes required.
+    Toolbar(WidgetId, ToolbarEvent),
 
     // ── Escape hatch ───────────────────────────────────────────────────
     /// Backend-specific event the crate couldn't normalise. Apps ignore

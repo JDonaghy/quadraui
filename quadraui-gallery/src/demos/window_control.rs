@@ -43,6 +43,7 @@ impl WindowControlDemo {
 
     fn toolbar(&self, variant: usize) -> Toolbar {
         let btn = |id: &str, label: &str| ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new(id),
             label: label.into(),
             icon: None,

@@ -28,6 +28,25 @@ use crate::types::{Decoration, StyledText};
 /// 1-cell border inset — same as every other backend's list-layout
 /// helper; a bordered list's caller adds that inset itself.
 pub fn tui_list_layout(area: Rect, list: &ListView) -> ListViewLayout {
+    tui_list_layout_with_scroll_px(area, list, None)
+}
+
+/// Like [`tui_list_layout`], but with an explicit pixel-precise scroll
+/// position (`scroll_px`) instead of only [`ListView::scroll_offset`]'s
+/// whole-row value — see [`draw_list_with_scroll_px`].
+pub fn tui_list_layout_with_scroll_px(
+    area: Rect,
+    list: &ListView,
+    scroll_px: Option<f32>,
+) -> ListViewLayout {
+    // Floor to a whole cell *before* resolving: TUI's row height is
+    // always 1.0, so a non-whole `scroll_px` would otherwise leave a
+    // non-zero `scroll_sub_px` remainder that nothing here clips away
+    // (unlike a GUI surface's `surface_push_clip`), painting a
+    // negative-offset row that collides with its neighbour. Flooring
+    // first guarantees `scroll_sub_px == 0.0` and TUI never paints a
+    // partial row.
+    let scroll_px = scroll_px.map(f32::floor);
     let area_f = crate::event::Rect::new(
         area.x as f32,
         area.y as f32,
@@ -37,8 +56,6 @@ pub fn tui_list_layout(area: Rect, list: &ListView) -> ListViewLayout {
     let hscrollbar = list.hscrollbar(area_f, 1.0);
     let needs_hscrollbar = hscrollbar.is_some();
 
-    // When an h-scrollbar reserves the bottom row, the v-scrollbar's
-    // track and visible-row count must be computed against the REDUCED height.
     let v_area_f = if needs_hscrollbar {
         crate::event::Rect::new(
             area_f.x,
@@ -58,7 +75,6 @@ pub fn tui_list_layout(area: Rect, list: &ListView) -> ListViewLayout {
         area.height as f32
     };
 
-    // Reserve one column on the right for the vertical scrollbar.
     let viewport_w = if needs_vscrollbar {
         (area.width as f32 - 1.0).max(0.0)
     } else {
@@ -66,7 +82,7 @@ pub fn tui_list_layout(area: Rect, list: &ListView) -> ListViewLayout {
     };
 
     let title_h = if list.title.is_some() { 1.0 } else { 0.0 };
-    list.layout(viewport_w, viewport_h, title_h, |_| {
+    list.layout_with_scroll_px(viewport_w, viewport_h, title_h, scroll_px, |_| {
         ListItemMeasure::new(1.0)
     })
 }
@@ -103,6 +119,32 @@ pub fn draw_list(
     theme: &Theme,
     nerd_fonts_enabled: bool,
 ) {
+    draw_list_with_scroll_px(buf, area, list, theme, nerd_fonts_enabled, None)
+}
+
+/// Like [`draw_list`], but with an explicit pixel-precise scroll
+/// position (`scroll_px`) from a
+/// [`crate::primitives::list::ListPaintState`] instead of only
+/// [`ListView::scroll_offset`]'s whole-row value.
+///
+/// TUI is a cell grid: `scroll_px` wins over `scroll_offset` (see
+/// [`crate::primitives::scrollbar::resolve_scroll_px`]) but is quantised
+/// to a whole row — the sub-row remainder is computed and then simply
+/// never read, so TUI never paints a partial row. `None` (what
+/// [`draw_list`] passes) resolves to exactly the pre-existing whole-row
+/// behaviour.
+pub fn draw_list_with_scroll_px(
+    buf: &mut Buffer,
+    area: Rect,
+    list: &ListView,
+    theme: &Theme,
+    nerd_fonts_enabled: bool,
+    scroll_px: Option<f32>,
+) {
+    // Floor to a whole cell up front — see `tui_list_layout_with_scroll_px`'s
+    // doc for why — so the scrollbar thumb below and the row layout
+    // agree on the same quantised position.
+    let scroll_px = scroll_px.map(f32::floor);
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -131,7 +173,7 @@ pub fn draw_list(
     // `Backend::list_vscrollbar`), so the painted thumb and the draggable
     // thumb can never drift apart. In bordered mode the scrollbars sit
     // inside the box; in flat mode they occupy the outermost row/column.
-    let layout = tui_list_layout(area, list);
+    let layout = tui_list_layout_with_scroll_px(area, list, scroll_px);
 
     // Re-derive the scrollbar geometry for painting (cheap — pure
     // functions of `list` + `area`). `tui_list_layout` only needs to know
@@ -153,7 +195,7 @@ pub fn draw_list(
     } else {
         area_f
     };
-    let vscrollbar = list.vscrollbar(v_area_f, 1.0);
+    let vscrollbar = list.vscrollbar_with_scroll_px(v_area_f, 1.0, 1.0, scroll_px);
 
     if list.bordered {
         let top_y = area.y;
@@ -300,6 +342,7 @@ pub fn draw_list(
         }
 
         // Main item text — rendered with h_scroll awareness.
+        let text_start_vcol = vcol;
         let vcol_after_text = render_spans_scrolled(
             buf,
             vcol,
@@ -313,6 +356,23 @@ pub fn draw_list(
             item.decoration,
             dim_fg,
         );
+
+        // The item's own right edge (not `h_scroll`'s left edge) cut the
+        // text off mid-glyph — overwrite the last visible column with
+        // `…`, reusing whatever fg/bg that cell already has so per-span
+        // colouring survives the clamp untouched (same technique as
+        // `Tree`'s TUI rasteriser).
+        if item_w > 0
+            && vcol_after_text > h_scroll + item_w as usize
+            && text_start_vcol < h_scroll + item_w as usize
+        {
+            let ellipsis_x = item_x + item_w - 1;
+            let (ellipsis_fg, ellipsis_bg) = buf
+                .cell((ellipsis_x, y))
+                .map(|existing| (existing.fg, existing.bg))
+                .unwrap_or((decoration_fg, bg));
+            set_cell(buf, ellipsis_x, y, '…', ellipsis_fg, ellipsis_bg);
+        }
 
         // Buffer column past the last text character (clamped to item_w).
         // Used to ensure detail text doesn't overwrite main text.
@@ -578,6 +638,49 @@ mod tests {
             false,
         );
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    /// `scroll_px` wins over `scroll_offset`, but on
+    /// TUI's cell grid (`row_height == 1.0`) it quantises to the same
+    /// whole row a GUI backend's sub-row remainder would float between
+    /// — the "TUI quantises scroll_px to whole rows" half of the
+    /// issue's acceptance criterion.
+    #[test]
+    fn scroll_px_quantises_to_a_whole_row_on_tui() {
+        let items: Vec<ListItem> = (0..50)
+            .map(|i| item(&format!("row-{i}"), Decoration::Normal))
+            .collect();
+        let list = ListView {
+            id: WidgetId::new("list"),
+            title: None,
+            items,
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        let area = Rect::new(0, 0, 20, 5);
+
+        let mut buf = Buffer::empty(area);
+        draw_list_with_scroll_px(&mut buf, area, &list, &Theme::default(), false, Some(10.7));
+        let first_row: String = (0..9).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(
+            first_row.contains("row-10"),
+            "scroll_px=10.7 should quantise to row 10 at the top, got: {first_row}"
+        );
+
+        // A whole-row scroll_offset of 10 paints byte-for-byte the same
+        // first row — scroll_px degrades to the pre-existing
+        // row-quantised behaviour, it does not add a new visual.
+        let mut via_offset = list.clone();
+        via_offset.scroll_offset = 10;
+        let mut buf2 = Buffer::empty(area);
+        draw_list(&mut buf2, area, &via_offset, &Theme::default(), false);
+        let first_row_via_offset: String = (0..9).map(|x| cell_char(&buf2, x, 0)).collect();
+        assert_eq!(first_row, first_row_via_offset);
     }
 
     // ── h_scroll tests ───────────────────────────────────────────────────────
@@ -959,6 +1062,29 @@ mod tests {
             "v-scrollbar thumb must move DOWN as scroll_offset grows \
              (got top={thumb_top}, bottom={thumb_bot}) — guards the \
              'thumb hardcoded at gutter top' failure class (Rule 6)",
+        );
+    }
+
+    #[test]
+    fn overlong_row_text_ellipsizes_instead_of_clipping_mid_glyph() {
+        // A 20-column area leaves well under 20 columns for the item's
+        // own text after the selection prefix; a 50-char label must end
+        // in `…`, not stop abruptly on a hard character boundary.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        let mut list = make_list(0);
+        list.items = vec![item(&"x".repeat(50), Decoration::Normal)];
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        let row: String = (0..20).map(|x| cell_char(&buf, x, 0)).collect();
+        assert!(
+            row.trim_end().ends_with('…'),
+            "overlong row text must end in an ellipsis, got {row:?}"
         );
     }
 }

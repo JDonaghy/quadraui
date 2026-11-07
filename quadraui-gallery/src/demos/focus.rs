@@ -2,10 +2,12 @@
 //!
 //! Tab / Shift+Tab cycle keyboard focus through two lists and a status
 //! row via `compose::FocusRing` — no raw modulo arithmetic, no
-//! `FocusRing` reimplementation per app. The focused widget gets
-//! `has_focus: true` (border + cursor-visibility, rasteriser-defined);
-//! the other two don't. Two variants swap the ring's declared order,
-//! showing that Tab visits whatever order the app registered.
+//! `FocusRing` reimplementation per app. The focused list gets
+//! `has_focus: true` (its selected row's highlight) **and**
+//! `draw_list_with_state`'s `focus_ring_visible: true` (a
+//! `Theme::focus_ring_color` ring around that same row); the other list
+//! gets neither. Two variants swap the ring's declared order, showing
+//! that Tab visits whatever order the app registered.
 
 use std::cell::{Cell, RefCell};
 
@@ -154,10 +156,23 @@ impl Demo for FocusDemo {
         let left = self.list(LEFT_ID, &["alpha", "bravo", "charlie"], left_focused);
         let right = self.list(RIGHT_ID, &["one", "two", "three"], right_focused);
 
-        backend.draw_list(Rect::new(area.x, area.y, half_w, body_h), &left);
-        backend.draw_list(
+        // `draw_list_with_state`, not plain `draw_list`: its third
+        // parameter is the focus-visible ring (`left_focused`/
+        // `right_focused` already compose
+        // `ring.is_focused(id) && ring.is_focus_visible()` above) — see
+        // `Backend::draw_list_with_state`'s doc for why that's a
+        // separate signal from `ListView::has_focus` itself.
+        backend.draw_list_with_state(
+            Rect::new(area.x, area.y, half_w, body_h),
+            &left,
+            &quadraui::ListPaintState::default(),
+            left_focused,
+        );
+        backend.draw_list_with_state(
             Rect::new(area.x + half_w, area.y, area.width - half_w, body_h),
             &right,
+            &quadraui::ListPaintState::default(),
+            right_focused,
         );
         let _ = backend.draw_status_bar_interactive(
             Rect::new(area.x, area.y + body_h, area.width, status_h),

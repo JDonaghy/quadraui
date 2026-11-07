@@ -593,6 +593,13 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     # `target_os = "macos"` in `lib.rs`, so only the `macOS` workflow's
     # `macos-latest` runner ever compiles the import.
     "NSCursor",
+    # `QuadraView`'s `updateTrackingAreas` installs one `NSTrackingArea`
+    # with the `CursorUpdate` option so AppKit keeps calling
+    # `cursorUpdate:` — the hook that re-applies the shape
+    # `Backend::set_cursor` asked for instead of reverting to the arrow
+    # on the next mouse move. Gates `NSTrackingArea`,
+    # `NSTrackingAreaOptions` and `NSView::addTrackingArea:`.
+    "NSTrackingArea",
     "NSCell",
     "NSMenu",
     "NSMenuItem",
@@ -2018,6 +2025,15 @@ name = "win_controls"
 path = "examples/win_controls.rs"
 required-features = ["win"]
 
+# macOS leg of the Button/RadioGroup/Switch controls demo — same
+# `ControlsApp` `tui_controls`/`gtk_controls`/`win_controls` already run,
+# real CoreGraphics/CoreText chrome instead of the TUI/GTK/Direct2D
+# painters.
+[[example]]
+name = "macos_controls"
+path = "examples/macos_controls.rs"
+required-features = ["macos"]
+
 # Declarative `visible_when`/`enabled_when` field conditions demo. Both
 # entries are mandatory (see the note above): without an explicit
 # `[[example]]`, `gtk_form_visibility.rs` gets autodiscovered with no
@@ -2033,11 +2049,42 @@ name = "gtk_form_visibility"
 path = "examples/gtk_form_visibility.rs"
 required-features = ["gtk"]
 
-# Label placement/alignment/width demo. TUI-only for now (see the module
-# doc in examples/common/form_label_placement.rs for the GTK/macOS/Win
-# follow-up); the explicit `required-features` keeps this file out of
-# non-`tui` example builds the way the note above describes.
+# Label placement/alignment/width demo, one leg per backend. Each entry's
+# explicit `required-features` keeps it out of other backends' example
+# builds the way the note above describes.
 [[example]]
 name = "tui_form_label_placement"
 path = "examples/tui_form_label_placement.rs"
 required-features = ["tui"]
+
+[[example]]
+name = "gtk_form_label_placement"
+path = "examples/gtk_form_label_placement.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "macos_form_label_placement"
+path = "examples/macos_form_label_placement.rs"
+required-features = ["macos"]
+
+[[example]]
+name = "win_form_label_placement"
+path = "examples/win_form_label_placement.rs"
+required-features = ["win"]
+
+# `Icon::codicon(name)` demo — a `TreeView` whose rows carry codicon
+# icons. Both entries are mandatory, same reasoning as the
+# `tui_sidebar_panel_body`/`gtk_sidebar_panel_body` pair above: without
+# an explicit `[[example]]`, autodiscovery picks each file up with no
+# `required-features`, and `gtk_codicon_tree.rs` then gets compiled by
+# `cargo test --features tui` and fails on `quadraui::gtk` being
+# configured out.
+[[example]]
+name = "tui_codicon_tree"
+path = "examples/tui_codicon_tree.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_codicon_tree"
+path = "examples/gtk_codicon_tree.rs"
+required-features = ["gtk"]

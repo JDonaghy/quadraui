@@ -1236,11 +1236,12 @@ fn board_card_click_selects_it() {
     let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
     select_data_demo(&mut driver, "Board");
 
-    // The card box clips its title ("Fix memory leak in " without
-    // "parser") at this terminal width — search for the clipped prefix
+    // The card box ellipsis-truncates its title at this terminal width
+    // ("bug Fix memory leak i…", the label prefix plus as much of the
+    // title as the card's inner width allows) — search for the prefix
     // that's guaranteed to paint, not the full title.
     let (x, y) = driver
-        .find("Fix memory leak in")
+        .find("Fix memory leak i")
         .unwrap_or_else(|| panic!("backlog card should paint:\n{}", driver.screen()));
     driver.click(x, y);
 

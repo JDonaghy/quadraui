@@ -148,6 +148,20 @@ pub struct InteractionEngine {
     /// on every `MouseUp`, same as [`Self::active_drag`]/[`Self::scrollbar_drag`]/
     /// [`Self::column_drag`].
     chrome_pressed: RefCell<HashMap<WidgetId, WidgetId>>,
+    /// The whole-widget-level hover target — any painted primitive, not
+    /// just a chrome-bar child (see [`Self::chrome_hover`] for that
+    /// narrower case) — the most recent `MouseMoved` landed on, paired
+    /// with its [`HitDetail`]. [`InteractionEngine::handle`] compares this
+    /// against each new `MouseMoved`'s own `hit_test_painted` result and,
+    /// when it changes (by id or by detail alone — e.g. moving from one
+    /// tree row to another within the same `Tree`), dispatches a
+    /// `UiEvent::MouseLeft` for the old target and a `UiEvent::MouseEntered`
+    /// for the new one through `sink`, each carrying its own `HitDetail`
+    /// the same way a click would — the hit-tested hover signal a
+    /// binding's own toolbar/tree/details-pane hover tooltip needs,
+    /// without re-deriving hit-testing from the raw position itself.
+    /// `None` once the pointer has left every hoverable primitive.
+    hover: RefCell<Option<(WidgetId, HitDetail)>>,
     /// One [`FormController`] per `"form"` extra painted this (or a prior)
     /// frame, keyed by the extra's own id — rebuilt from [`Self::sync_forms`]
     /// every render so a submit/button click, toggle, or keystroke inside
@@ -406,6 +420,17 @@ impl InteractionEngine {
 
     // ── Tooltip ──────────────────────────────────────────────────────
 
+    /// The current hit-tested hover target — the same `(id, detail)` pair
+    /// [`Self::handle`] dispatches as `MouseEntered`/`MouseLeft`, read
+    /// back by a caller that wants to know what's hovered right now
+    /// without re-deriving it from the raw hit map (e.g. a hover-tooltip
+    /// driver deciding whether a tooltip should be pending for this
+    /// frame). `None` once the pointer has left every hoverable
+    /// primitive — see [`Self::hover`]'s own doc.
+    pub fn hovered(&self) -> Option<(WidgetId, HitDetail)> {
+        self.hover.borrow().clone()
+    }
+
     /// Shows `tooltip` anchored against `anchor` (the rect of whatever
     /// widget it describes, in the backend's ABSOLUTE frame). Replaces
     /// any tooltip already showing.
@@ -419,6 +444,16 @@ impl InteractionEngine {
     /// explicit "hide now" (e.g. the hovered widget itself changed).
     pub fn hide_tooltip(&mut self) -> bool {
         self.tooltip.take().is_some()
+    }
+
+    /// Whether a tooltip is currently open — the `bool` half of
+    /// [`Self::show_tooltip`]/[`Self::hide_tooltip`]'s own state, read
+    /// back by a caller that needs to resync its own idea of "is a
+    /// tooltip showing" (e.g. a hover-tooltip driver whose tracker
+    /// thinks one is visible) against whatever [`Self::handle`]'s own
+    /// click/key auto-dismiss just did to it.
+    pub fn tooltip_open(&self) -> bool {
+        self.tooltip.is_some()
     }
 
     fn tooltip_layout(
@@ -1293,6 +1328,57 @@ impl InteractionEngine {
             }
         }
 
+        // Whole-widget hover bookkeeping — see `Self::hover`'s own doc.
+        // Synthesizes `UiEvent::MouseEntered`/`UiEvent::MouseLeft` through
+        // `sink` so a binding's own handler gets a real hit-tested hover
+        // signal instead of re-deriving hit-testing itself from the raw
+        // `MouseMoved` position, mirroring the chrome-bar hover bookkeeping
+        // just above but at `hit_test_painted`'s full granularity (toolbar
+        // button, tree row, list item, details-pane body, ...) rather than
+        // `chrome_hover_hit`'s narrower chrome-bar-child scope. Each
+        // synthesized event carries its own `HitDetail` the same way a
+        // click would, so a row-to-row move within the same `Tree` (same
+        // `WidgetId`, different detail) still reaches the binding as a
+        // hover change. Skipped while a divider/scrollbar/column drag is
+        // armed — the `MouseMoved` below is about to become that drag's
+        // own semantic substitute (`SplitDividerDragged`/
+        // `ScrollOffsetChanged`/`ColumnResized`), not a real pointer move
+        // over whatever the drag happens to pass over, so synthesizing a
+        // hover change here would be event-handler noise rather than
+        // signal.
+        let mut hover_reaction = Reaction::Continue;
+        let drag_armed = self.active_drag.borrow().is_some()
+            || self.scrollbar_drag.borrow().is_some()
+            || self.column_drag.borrow().is_some();
+        if let UiEvent::MouseMoved { position, .. } = &event {
+            if !drag_armed {
+                let hit_now = hit_test_painted(&self.hit_map.borrow(), *position);
+                let changed = *self.hover.borrow() != hit_now;
+                if changed {
+                    if let Some((old_id, old_detail)) = self.hover.borrow_mut().take() {
+                        hover_reaction =
+                            hover_reaction.merge(sink.dispatch(
+                                &UiEvent::MouseLeft { widget: old_id },
+                                Some(&old_detail),
+                            ));
+                    }
+                    if matches!(hover_reaction, Reaction::Exit) {
+                        return hover_reaction;
+                    }
+                    if let Some((new_id, new_detail)) = &hit_now {
+                        hover_reaction = hover_reaction.merge(sink.dispatch(
+                            &UiEvent::MouseEntered { widget: *new_id },
+                            Some(new_detail),
+                        ));
+                    }
+                    *self.hover.borrow_mut() = hit_now;
+                    if matches!(hover_reaction, Reaction::Exit) {
+                        return hover_reaction;
+                    }
+                }
+            }
+        }
+
         // A move while a divider drag is armed becomes the drag itself —
         // checked before the hit-test below, since `MouseMoved` has no
         // `widget` field for `event_position`/`set_event_widget` to touch.
@@ -1657,6 +1743,7 @@ impl InteractionEngine {
         };
         tooltip_reaction
             .merge(menu_reaction)
+            .merge(hover_reaction)
             .merge(focus_reaction)
             .merge(event_reaction)
     }
@@ -1668,8 +1755,12 @@ impl InteractionEngine {
 /// non-empty (a dialog with no buttons can never be resolved by Enter or
 /// Escape) and no button setting `tint` (accepted for shape compatibility
 /// with the in-canvas `Dialog` primitive's own `buttons` field, but not yet
-/// honored by [`MessageDialogController`]). `Err` carries the message a
-/// binding's own "invalid input" error wraps.
+/// honored by [`MessageDialogController`]). `spec`, unlike `tint`, carries
+/// straight through to the built [`MessageDialogButton`] — honored by
+/// [`MessageDialogController`] on TUI, silently ignored by the native
+/// GTK/macOS/Win32 alert facilities, the same fence
+/// [`quadraui::ButtonSpec`]'s own doc draws elsewhere. `Err` carries the
+/// message a binding's own "invalid input" error wraps.
 pub fn message_dialog_options_from_buttons(
     title: String,
     body: String,
@@ -1700,6 +1791,7 @@ pub fn message_dialog_options_from_buttons(
                 label: b.label,
                 is_default: b.is_default,
                 is_cancel: b.is_cancel,
+                spec: b.spec,
             })
             .collect(),
         severity,
@@ -1713,8 +1805,8 @@ mod tests {
 
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
-        AppLogic, Backend, Button, DataTable, Modifiers, MouseButton, Point, Reaction, Rect,
-        UiEvent, WidgetId,
+        AppLogic, Backend, Button, DataTable, Key, Modifiers, MouseButton, NamedKey, Point,
+        Reaction, Rect, ToolbarEvent, UiEvent, WidgetId,
     };
 
     use super::{EventSink, InteractionEngine};
@@ -1765,6 +1857,9 @@ mod tests {
                     data_table: None,
                     tab_bar: None,
                     extra: &extra,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
                 },
                 &mut hits,
                 &|id| self.engine.chrome_interaction(id),
@@ -1815,6 +1910,9 @@ mod tests {
                     data_table: None,
                     tab_bar: None,
                     extra: &extra,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
                 },
                 &mut hits,
                 &|id| self.engine.chrome_interaction(id),
@@ -1952,6 +2050,109 @@ mod tests {
         );
     }
 
+    /// A `MouseMoved` landing on a painted button, then one moving off it,
+    /// round-trips through [`InteractionEngine::handle`] as a hit-tested
+    /// `UiEvent::MouseEntered` followed later by a `UiEvent::MouseLeft`,
+    /// each carrying the button's own `HitDetail::ButtonBody` — the real
+    /// hover signal a binding's own toolbar/tree/details-pane hover
+    /// tooltip needs, synthesized the same way for every binding since it
+    /// lives in this shared engine rather than each binding re-deriving
+    /// hit-testing from the raw position itself.
+    #[test]
+    fn mouse_moved_onto_then_off_a_button_synthesizes_entered_then_left() {
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 5);
+
+        let button_bounds = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    crate::hit::PaintedHit::Button { layout, .. } => Some(layout.bounds),
+                    _ => None,
+                })
+                .expect("button should have painted a hit")
+        };
+        let inside = Point::new(
+            button_bounds.x + button_bounds.width / 2.0,
+            button_bounds.y + button_bounds.height / 2.0,
+        );
+        let outside = Point::new(button_bounds.x + button_bounds.width + 5.0, 0.0);
+
+        // A move that lands nowhere painted synthesizes no hover event:
+        // nothing was hovered before, nothing is hovered now — only the
+        // raw `MouseMoved` itself reaches `sink`, same as every other
+        // event this engine passes through unconditionally.
+        driver.dispatch(UiEvent::MouseMoved {
+            position: outside,
+            buttons: quadraui::ButtonMask::default(),
+        });
+        assert_eq!(
+            driver.app().sink.borrow().dispatched.len(),
+            1,
+            "a move with nothing under the cursor, before or after, synthesizes no hover event"
+        );
+        driver.app().sink.borrow_mut().dispatched.clear();
+
+        driver.dispatch(UiEvent::MouseMoved {
+            position: inside,
+            buttons: quadraui::ButtonMask::default(),
+        });
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert_eq!(
+                dispatched.len(),
+                2,
+                "expected the synthesized MouseEntered followed by the raw MouseMoved: {dispatched:?}"
+            );
+            assert_eq!(
+                dispatched[0],
+                (
+                    UiEvent::MouseEntered {
+                        widget: WidgetId::new("go")
+                    },
+                    Some(HitDetail::ButtonBody)
+                ),
+                "entering the button must dispatch MouseEntered with its hit attached"
+            );
+            assert!(
+                matches!(dispatched[1].0, UiEvent::MouseMoved { .. }),
+                "the raw move must still follow: {:?}",
+                dispatched[1]
+            );
+        }
+        driver.app().sink.borrow_mut().dispatched.clear();
+
+        driver.dispatch(UiEvent::MouseMoved {
+            position: outside,
+            buttons: quadraui::ButtonMask::default(),
+        });
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert_eq!(
+            dispatched.len(),
+            2,
+            "expected the synthesized MouseLeft followed by the raw MouseMoved: {dispatched:?}"
+        );
+        assert_eq!(
+            dispatched[0],
+            (
+                UiEvent::MouseLeft {
+                    widget: WidgetId::new("go")
+                },
+                Some(HitDetail::ButtonBody)
+            ),
+            "leaving the button must dispatch MouseLeft with its old hit attached"
+        );
+        assert!(
+            matches!(dispatched[1].0, UiEvent::MouseMoved { .. }),
+            "the raw move must still follow: {:?}",
+            dispatched[1]
+        );
+    }
+
     /// A message dialog opened via [`InteractionEngine::open_message_dialog`]
     /// intercepts an Enter keypress before any of the rest of
     /// [`InteractionEngine::handle`]'s own routing runs (the painted
@@ -1985,12 +2186,14 @@ mod tests {
                     label: "Save".to_string(),
                     is_default: true,
                     is_cancel: false,
+                    spec: None,
                 },
                 MessageDialogButton {
                     id: WidgetId::new("cancel"),
                     label: "Cancel".to_string(),
                     is_default: false,
                     is_cancel: true,
+                    spec: None,
                 },
             ],
             severity: None,
@@ -2088,6 +2291,7 @@ mod tests {
                 label: "OK".to_string(),
                 is_default: true,
                 is_cancel: false,
+                spec: None,
             }],
             severity: None,
         };
@@ -2149,6 +2353,9 @@ mod tests {
                     data_table: Some(&self.data_table),
                     tab_bar: None,
                     extra: &extra,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
                 },
                 &mut hits,
                 &|id| self.engine.chrome_interaction(id),
@@ -2179,12 +2386,12 @@ mod tests {
             columns: vec![
                 Column {
                     title: "Name".to_string(),
-                    width: ColumnWidth::Fixed(8.0),
+                    width: ColumnWidth::FixedCells(8.0),
                     align: Default::default(),
                 },
                 Column {
                     title: "Age".to_string(),
-                    width: ColumnWidth::Fixed(8.0),
+                    width: ColumnWidth::FixedCells(8.0),
                     align: Default::default(),
                 },
             ],
@@ -2496,6 +2703,155 @@ mod tests {
         );
     }
 
+    /// A minimal [`AppLogic`] painting a single `ListView`, for the
+    /// Enter-activates-the-selection coverage below — mirrors
+    /// [`DataTableLogic`], swapping the data-table band for a list one.
+    struct ListLogic {
+        list: quadraui::ListView,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for ListLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: None,
+                    text_display: None,
+                    list: Some(&self.list),
+                    tree: None,
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Builds a three-row `ListView` (empty `items` when `item_count` is
+    /// `0`, for the no-selection no-op case) and drives it through a
+    /// [`TuiDriver`] — mirrors [`data_table_driver`].
+    fn list_driver(item_count: usize, selected_idx: usize) -> TuiDriver<ListLogic> {
+        use quadraui::{ListItem, StyledText};
+
+        let list = quadraui::ListView {
+            id: WidgetId::new("list"),
+            title: None,
+            items: (0..item_count)
+                .map(|i| ListItem {
+                    text: StyledText::plain(format!("item {i}")),
+                    icon: None,
+                    detail: None,
+                    decoration: Default::default(),
+                })
+                .collect(),
+            selected_idx,
+            scroll_offset: 0,
+            has_focus: false,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        let logic = ListLogic {
+            list,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 24, 8)
+    }
+
+    /// Enter on a focused `List` with at least one row must activate the
+    /// current selection (`ListViewEvent::ItemActivated`) — the keyboard
+    /// equivalent of a pointer double-click, so an app wired to
+    /// `ItemActivated` for "open" also works from the keyboard, not just a
+    /// mouse.
+    #[test]
+    fn enter_on_a_focused_list_activates_the_selected_row() {
+        use quadraui::{Key, ListViewEvent, NamedKey};
+
+        let mut driver = list_driver(3, 1);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("list"))),
+                "the list is a tab stop and must accept focus"
+            );
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::List(id, ListViewEvent::ItemActivated { idx: 1 })
+                    if *id == WidgetId::new("list")
+            )),
+            "expected ItemActivated {{ idx: 1 }}: {:?}",
+            dispatched
+        );
+    }
+
+    /// Enter on a focused `List` with no items must be a no-op — there is
+    /// no row to activate, so it must not fall through to a raw
+    /// `UiEvent::KeyPressed` the handler has no list to route it back to.
+    #[test]
+    fn enter_on_a_focused_list_with_no_items_is_a_no_op() {
+        use quadraui::{Key, ListViewEvent, NamedKey};
+
+        let mut driver = list_driver(0, 0);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("list"))),
+                "the list is a tab stop and must accept focus"
+            );
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            !dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::List(_, ListViewEvent::ItemActivated { .. })
+            )),
+            "no items means no row to activate: {:?}",
+            dispatched
+        );
+    }
+
     /// A minimal [`AppLogic`] painting a single `TextDisplay`, for the
     /// titled-display hit-test/wheel-scroll coverage below — mirrors
     /// [`DataTableLogic`], swapping the data-table band for a text-display
@@ -2522,6 +2878,9 @@ mod tests {
                     data_table: None,
                     tab_bar: None,
                     extra: &extra,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
                 },
                 &mut hits,
                 &|id| self.engine.chrome_interaction(id),
@@ -2693,6 +3052,7 @@ mod tests {
                             WidgetId::new("left-btn"),
                             "L",
                         )),
+                        scroll_px: None,
                     }),
                     LayoutNode::Leaf(LayoutLeaf {
                         id: "right".to_string(),
@@ -2700,6 +3060,7 @@ mod tests {
                             WidgetId::new("right-btn"),
                             "R",
                         )),
+                        scroll_px: None,
                     }),
                 ],
             });
@@ -2833,7 +3194,9 @@ mod tests {
                         WidgetId::new("body-btn"),
                         "Body",
                     )),
+                    scroll_px: None,
                 })),
+                spacing: crate::layout::Spacing::default(),
             });
             paint_layout(backend, area, &node, &mut hits, &|id| {
                 self.engine.chrome_interaction(id)
@@ -2969,6 +3332,7 @@ mod tests {
                         WidgetId::new("body-btn"),
                         "Body",
                     )),
+                    scroll_px: None,
                 })),
             });
             paint_layout(backend, area, &node, &mut hits, &|id| {
@@ -2987,20 +3351,23 @@ mod tests {
         }
     }
 
-    /// Clicking a `SidebarPanel`'s toolbar button must set the raw
-    /// `MouseDown`'s `widget` to the button's own id — exercising
-    /// `crate::render::paint_layout`'s `LayoutNode::SidebarPanel` arm,
-    /// which records the panel's chrome layout as a
-    /// [`crate::hit::PaintedHit::SidebarPanel`] so this hit resolves
-    /// instead of being dropped.
+    /// Clicking a `SidebarPanel`'s toolbar button must deliver a typed
+    /// `UiEvent::Toolbar(bar_id, ToolbarEvent::ButtonClicked { id, is_active })`
+    /// — exercising `crate::render::paint_layout`'s `LayoutNode::SidebarPanel`
+    /// arm, which records the panel's chrome layout (and its embedded
+    /// `Toolbar` descriptor) as a [`crate::hit::PaintedHit::SidebarPanel`] so
+    /// this hit resolves through `semantic_event_for_hit`'s
+    /// `HitDetail::SidebarPanelToolbarButton` arm instead of staying a raw
+    /// `MouseDown`.
     #[test]
-    fn clicking_a_sidebar_panel_toolbar_button_sets_the_click_widget_to_its_id() {
+    fn clicking_a_sidebar_panel_toolbar_button_dispatches_a_toolbar_button_clicked_event() {
         use quadraui::{SidebarPanel, Toolbar, ToolbarButton};
 
         let sidebar_panel = SidebarPanel {
             id: WidgetId::new("sb"),
             toolbar: Some(Toolbar::new(WidgetId::new("sb:toolbar")).with_buttons(vec![
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("refine"),
                     label: "Refine".to_string(),
                     icon: None,
@@ -3032,10 +3399,250 @@ mod tests {
         assert!(
             dispatched.iter().any(|(event, _)| matches!(
                 event,
-                UiEvent::MouseDown { widget: Some(id), .. } if *id == WidgetId::new("refine")
+                UiEvent::Toolbar(
+                    bar,
+                    ToolbarEvent::ButtonClicked { id, is_active: true },
+                ) if *bar == WidgetId::new("sb:toolbar") && *id == WidgetId::new("refine")
             )),
-            "expected a MouseDown with widget=refine: {:?}",
+            "expected a Toolbar(sb:toolbar, ButtonClicked{{id: refine, is_active: true}}): {:?}",
             dispatched
         );
+    }
+
+    /// Mirrors [`FormLogic`], but paints one standalone `"toolbar"` extra —
+    /// the leaf/standalone shape ([`crate::hit::HitDetail::ExtraChrome`]),
+    /// distinct from the `SidebarPanel`-embedded shape the test above
+    /// covers — so a test can drive its click and Enter/Space keyboard
+    /// activation with no host-language FFI type in scope.
+    struct ToolbarLogic {
+        toolbar: quadraui::Toolbar,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for ToolbarLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let mut extra: HashMap<String, std::rc::Rc<dyn crate::extra_paint::ExtraPaint>> =
+                HashMap::new();
+            extra.insert(
+                "toolbar".to_string(),
+                std::rc::Rc::new(self.toolbar.clone())
+                    as std::rc::Rc<dyn crate::extra_paint::ExtraPaint>,
+            );
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: None,
+                    text_display: None,
+                    list: None,
+                    tree: None,
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    fn two_action_toolbar() -> quadraui::Toolbar {
+        use quadraui::{Toolbar, ToolbarButton};
+
+        Toolbar::new(WidgetId::new("toolbar:main")).with_buttons(vec![
+            ToolbarButton::Action {
+                spec: None,
+                id: WidgetId::new("filter"),
+                label: "Filter".to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            },
+            ToolbarButton::Action {
+                spec: None,
+                id: WidgetId::new("reset"),
+                label: "Reset".to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            },
+        ])
+    }
+
+    /// A click on a standalone toolbar's `Action` button must dispatch a
+    /// typed `UiEvent::Toolbar(bar_id, ToolbarEvent::ButtonClicked)` —
+    /// `is_active` toggling `true` proves the "new state" half of the
+    /// contract, not just the id.
+    #[test]
+    fn clicking_a_standalone_toolbar_button_dispatches_button_clicked_with_the_flipped_state() {
+        let logic = ToolbarLogic {
+            toolbar: two_action_toolbar(),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 5);
+        driver.render();
+
+        // "Filter" is the first button, starting at the toolbar's own x=0.
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(1.0, 0.0),
+            modifiers: Modifiers::default(),
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        // No leading `FocusChanged`, unlike a tab-stoppable fixed-slot
+        // primitive's own click (e.g. `click_on_a_button_focuses_it_then_
+        // dispatches_the_click` above): the *clicked button's* id (not the
+        // bar's) is what resolves against the hit map, and only the bar's
+        // id is a tab stop, so click-to-focus never fires here.
+        assert_eq!(
+            dispatched.len(),
+            1,
+            "expected exactly the Toolbar click, no FocusChanged: {:?}",
+            dispatched
+        );
+        assert!(
+            matches!(
+                &dispatched[0].0,
+                UiEvent::Toolbar(
+                    bar,
+                    ToolbarEvent::ButtonClicked { id, is_active: true },
+                ) if *bar == WidgetId::new("toolbar:main") && *id == WidgetId::new("filter")
+            ),
+            "expected Toolbar(toolbar:main, ButtonClicked{{id: filter, is_active: true}}): {:?}",
+            dispatched
+        );
+    }
+
+    /// Tab must land focus on a standalone toolbar (it now opts into
+    /// [`crate::extra_paint::ExtraPaint::tab_stop`] whenever it has at least
+    /// one enabled `Action`), and Enter on the focused toolbar must activate
+    /// whichever button [`quadraui::Toolbar::focused_index`] names — the
+    /// same `UiEvent::Toolbar(ButtonClicked)` shape a mouse click produces.
+    #[test]
+    fn tab_focuses_a_toolbar_and_enter_activates_its_focused_button() {
+        // `focused_index: Some(1)` simulates the host having already
+        // responded to the prior `FocusChanged` by marking "Reset" (the
+        // second button) as the keyboard-focused one — the same
+        // host-driven convention `Switch::focused` documents.
+        let mut toolbar = two_action_toolbar();
+        toolbar.focused_index = Some(1);
+
+        let logic = ToolbarLogic {
+            toolbar,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 5);
+        driver.render();
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Tab),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert!(
+                dispatched.iter().any(|(event, _)| matches!(
+                    event,
+                    UiEvent::FocusChanged(Some(id)) if *id == WidgetId::new("toolbar:main")
+                )),
+                "Tab must focus the toolbar (its only tab stop): {:?}",
+                dispatched
+            );
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::Toolbar(
+                    bar,
+                    ToolbarEvent::ButtonClicked { id, is_active: true },
+                ) if *bar == WidgetId::new("toolbar:main") && *id == WidgetId::new("reset")
+            )),
+            "Enter on the focused toolbar must activate button 1 (reset): {:?}",
+            dispatched
+        );
+    }
+
+    /// `message_dialog_options_from_buttons` carries each button's
+    /// `DialogButton::spec` through to the built `MessageDialogButton`
+    /// unchanged — it must not silently drop it the way it used to.
+    #[test]
+    fn message_dialog_options_from_buttons_carries_spec_through() {
+        use quadraui::{ButtonSpec, ButtonVariant, DialogButton};
+
+        let mut spec = ButtonSpec::new("Delete");
+        spec.variant = ButtonVariant::Danger;
+        let buttons = vec![DialogButton {
+            id: WidgetId::new("delete"),
+            label: "Delete".to_string(),
+            is_default: true,
+            is_cancel: false,
+            tint: None,
+            spec: Some(spec.clone()),
+        }];
+        let opts = super::message_dialog_options_from_buttons(
+            "T".to_string(),
+            "B".to_string(),
+            buttons,
+            None,
+        )
+        .expect("no tint set — must be accepted");
+        assert_eq!(opts.buttons[0].spec, Some(spec));
+    }
+
+    /// A button with no `spec` override still builds cleanly, with
+    /// `MessageDialogButton::spec` left `None`.
+    #[test]
+    fn message_dialog_options_from_buttons_leaves_spec_none_by_default() {
+        use quadraui::DialogButton;
+
+        let buttons = vec![DialogButton {
+            id: WidgetId::new("ok"),
+            label: "OK".to_string(),
+            is_default: true,
+            is_cancel: false,
+            tint: None,
+            spec: None,
+        }];
+        let opts = super::message_dialog_options_from_buttons(
+            "T".to_string(),
+            "B".to_string(),
+            buttons,
+            None,
+        )
+        .expect("no tint set — must be accepted");
+        assert_eq!(opts.buttons[0].spec, None);
     }
 }

@@ -413,8 +413,14 @@ impl FilePickerController {
         };
         let title = format!("{verb} {root_display}");
 
-        let folder_icon = Icon::new("\u{1F4C1}", "\u{1F4C1}"); // 📁
-        let file_icon = Icon::new("\u{1F4C4}", "\u{1F4C4}"); // 📄
+        // Codicon glyph on a GUI backend (`nerd_fonts_enabled` defaults
+        // `true` there), falling back to the pre-existing emoji on TUI
+        // (`nerd_fonts_enabled` defaults `false`), so TUI output is
+        // unchanged while GUI gets the vector folder/file icon.
+        let folder_icon = Icon::codicon("folder", "\u{1F4C1}")
+            .unwrap_or_else(|| Icon::new("\u{1F4C1}", "\u{1F4C1}")); // 📁
+        let file_icon = Icon::codicon("file", "\u{1F4C4}")
+            .unwrap_or_else(|| Icon::new("\u{1F4C4}", "\u{1F4C4}")); // 📄
 
         let items: Vec<PaletteItem> = self
             .filtered
@@ -647,6 +653,43 @@ mod tests {
         assert!(picker.all_entries.contains(&PathBuf::from("a.rs")));
         assert!(picker.all_entries.contains(&PathBuf::from("b.txt")));
         assert!(picker.all_entries.contains(&PathBuf::from("sub")));
+    }
+
+    /// A directory row's icon is `Icon::codicon("folder", "📁")` and a
+    /// file row's is `Icon::codicon("file", "📄")` — the GUI glyph
+    /// resolves to the real codicon, and the fallback is the pre-existing
+    /// emoji, so a TUI host (`nerd_fonts_enabled` defaults `false`) still
+    /// paints exactly what it painted before this glyph was added.
+    #[test]
+    fn row_icons_resolve_to_codicon_on_gui_and_emoji_fallback_on_tui() {
+        let tmp = scratch_dir_with(&["a.rs"], &["sub"]);
+        let picker = FilePickerController::new(FilePickerMode::Open, tmp.path(), vec![]);
+        let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let palette = picker.build_palette(rect);
+
+        let file_item = palette
+            .items
+            .iter()
+            .find(|i| i.text.spans.first().is_some_and(|s| s.text == "a.rs"))
+            .expect("a.rs row present");
+        let dir_item = palette
+            .items
+            .iter()
+            .find(|i| i.text.spans.first().is_some_and(|s| s.text == "sub"))
+            .expect("sub row present");
+
+        let file_icon = file_item.icon.as_ref().expect("file row has an icon");
+        let dir_icon = dir_item.icon.as_ref().expect("dir row has an icon");
+
+        assert_eq!(file_icon.fallback, "\u{1F4C4}");
+        assert_eq!(file_icon.resolve(false), "\u{1F4C4}");
+        assert_eq!(file_icon.resolve(true), file_icon.glyph);
+        assert_ne!(file_icon.glyph, "\u{1F4C4}");
+
+        assert_eq!(dir_icon.fallback, "\u{1F4C1}");
+        assert_eq!(dir_icon.resolve(false), "\u{1F4C1}");
+        assert_eq!(dir_icon.resolve(true), dir_icon.glyph);
+        assert_ne!(dir_icon.glyph, "\u{1F4C1}");
     }
 
     #[test]

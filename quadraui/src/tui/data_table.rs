@@ -11,7 +11,8 @@ use ratatui::style::Modifier;
 
 use super::{ratatui_color, set_cell};
 use crate::primitives::data_table::{
-    ColumnAlign, ColumnMeasure, DataTable, DataTableGlyphs, DataTableLayout, SortDirection,
+    ColumnAlign, ColumnMeasure, DataTable, DataTableGlyphs, DataTableLayout, DataTablePaintState,
+    SortDirection,
 };
 use crate::theme::Theme;
 
@@ -77,6 +78,58 @@ pub fn draw_data_table_with_glyphs(
     hovered_idx: Option<usize>,
     glyphs: Option<&DataTableGlyphs>,
     nerd_fonts_enabled: bool,
+) -> DataTableLayout {
+    draw_data_table_inner(
+        buf,
+        area,
+        table,
+        theme,
+        hovered_idx,
+        glyphs,
+        nerd_fonts_enabled,
+        None,
+    )
+}
+
+/// [`draw_data_table`], plus a pixel-precise scroll position via
+/// [`DataTablePaintState::scroll_px`] instead of only
+/// [`DataTable::scroll_offset`]'s whole-row value.
+///
+/// TUI is a cell grid: `scroll_px` wins over `scroll_offset` (see
+/// [`DataTable::effective_scroll_offset`]) but is quantised to a whole
+/// row — the sub-row remainder is computed and then simply never read,
+/// so TUI never paints a partial row. `state.scroll_px: None` (the
+/// default a `state` built with [`DataTablePaintState::default`]
+/// carries) resolves to exactly the pre-existing whole-row behaviour.
+pub fn draw_data_table_with_state(
+    buf: &mut Buffer,
+    area: Rect,
+    table: &DataTable,
+    theme: &Theme,
+    state: &DataTablePaintState,
+) -> DataTableLayout {
+    draw_data_table_inner(
+        buf,
+        area,
+        table,
+        theme,
+        state.hovered_idx,
+        None,
+        false,
+        state.scroll_px,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_data_table_inner(
+    buf: &mut Buffer,
+    area: Rect,
+    table: &DataTable,
+    theme: &Theme,
+    hovered_idx: Option<usize>,
+    glyphs: Option<&DataTableGlyphs>,
+    nerd_fonts_enabled: bool,
+    scroll_px: Option<f32>,
 ) -> DataTableLayout {
     let layout = data_table_layout(area, table);
 
@@ -168,13 +221,18 @@ pub fn draw_data_table_with_glyphs(
     }
 
     // ── Body rows ─────────────────────────────────────────────────────
+    // `scroll_px` wins over `scroll_offset` when set, quantised to a
+    // whole row here — TUI is cell-granular, so the sub-row remainder
+    // `scroll_sub_row_px` pairs with `effective_scroll_offset` for a
+    // pixel-precise painter is simply never read on this backend.
+    let scroll_offset = table.effective_scroll_offset(layout.row_height, scroll_px);
     let body_y = area.y + 1;
     let visible = layout
         .visible_rows
-        .min(table.rows.len().saturating_sub(table.scroll_offset));
+        .min(table.rows.len().saturating_sub(scroll_offset));
 
     for row_idx in 0..visible {
-        let abs_idx = table.scroll_offset + row_idx;
+        let abs_idx = scroll_offset + row_idx;
         let row = &table.rows[abs_idx];
         let y = body_y + row_idx as u16;
         let is_selected = table.selected_idx == Some(abs_idx);
@@ -297,7 +355,7 @@ pub fn draw_data_table_with_glyphs(
         let sb = crate::primitives::scrollbar::Scrollbar::vertical(
             table.id,
             sb_track,
-            table.scroll_offset as f32,
+            scroll_offset as f32,
             table.rows.len() as f32,
             layout.visible_rows as f32,
             1.0,
@@ -441,7 +499,7 @@ mod tests {
                 },
                 Column {
                     title: "Age".into(),
-                    width: ColumnWidth::Fixed(5.0),
+                    width: ColumnWidth::FixedCells(5.0),
                     align: ColumnAlign::Right,
                 },
             ],
@@ -900,6 +958,40 @@ mod tests {
         }
     }
 
+    /// `scroll_px` wins over `scroll_offset`, but on
+    /// TUI's cell grid (`row_height == 1.0`) it quantises to the same
+    /// whole row a GUI backend's sub-row remainder would float between
+    /// — the "TUI quantises scroll_px to whole rows" half of the
+    /// issue's acceptance criterion.
+    #[test]
+    fn scroll_px_quantises_to_a_whole_row_on_tui() {
+        let table = make_scrolling_table(50);
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let state = DataTablePaintState::default().with_scroll_px(Some(10.7)); // 10.7 cells deep → row 10, floored
+        draw_data_table_with_state(&mut buf, area, &table, &Theme::default(), &state);
+
+        let first_body_row: String = (0..40)
+            .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            first_body_row.contains("pod-10"),
+            "scroll_px=10.7 should quantise to row 10 at the top of the body, got: {first_body_row}"
+        );
+
+        // A whole-row scroll_offset of 10 paints byte-for-byte the same
+        // first body row — scroll_px degrades to the pre-existing
+        // row-quantised behaviour, it does not add a new visual.
+        let mut via_offset = make_scrolling_table(50);
+        via_offset.scroll_offset = 10;
+        let mut buf2 = Buffer::empty(area);
+        draw_data_table(&mut buf2, area, &via_offset, &Theme::default(), None);
+        let first_body_row_via_offset: String = (0..40)
+            .map(|x| buf2[(x, 1)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert_eq!(first_body_row, first_body_row_via_offset);
+    }
+
     #[test]
     fn footer_cell_aligns_under_its_column() {
         // Right-aligned "Age" column → its footer total should sit at
@@ -991,7 +1083,7 @@ mod tests {
                 .iter()
                 .map(|t| Column {
                     title: (*t).into(),
-                    width: ColumnWidth::Fixed(12.0),
+                    width: ColumnWidth::FixedCells(12.0),
                     align: ColumnAlign::Left,
                 })
                 .collect(),
@@ -1120,7 +1212,7 @@ mod tests {
                 .iter()
                 .map(|t| Column {
                     title: (*t).into(),
-                    width: ColumnWidth::Fixed(30.0),
+                    width: ColumnWidth::FixedCells(30.0),
                     align: ColumnAlign::Left,
                 })
                 .collect(),

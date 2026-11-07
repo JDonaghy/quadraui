@@ -51,6 +51,12 @@
 //!   `scroll_view::{paint_clipped, draw_scrollbar_for}`. Used by
 //!   `gtk_scroll_view` / `win_scroll_view` — no TUI rasteriser for this
 //!   primitive exists yet.
+//! - [`CodiconTreeDemo`] (in [`codicon_tree_demo`]) — a small
+//!   file-explorer-shaped `TreeView` whose rows use
+//!   `quadraui::Icon::codicon` (`"folder"`, `"file-code"`, …). `n`
+//!   toggles nerd fonts to flip between the bundled codicon glyph and
+//!   each icon's plain-text fallback. Used by `tui_codicon_tree` /
+//!   `gtk_codicon_tree`.
 
 // Each example uses a subset of the shared items, so dead-code +
 // unused-import warnings are expected and not actionable here.
@@ -73,6 +79,7 @@ pub mod caret_shape_demo;
 pub mod chart_app;
 pub mod chat_demo;
 pub mod clipboard_demo;
+pub mod codicon_tree_demo;
 pub mod command_line_selection_demo;
 pub mod context_menu_style_demo;
 pub mod controls;
@@ -157,6 +164,7 @@ pub use caret_shape_demo::CaretShapeDemo;
 pub use chart_app::ChartApp;
 pub use chat_demo::ChatDemo;
 pub use clipboard_demo::ClipboardDemo;
+pub use codicon_tree_demo::CodiconTreeDemo;
 pub use command_line_selection_demo::CommandLineSelectionDemo;
 pub use context_menu_style_demo::ContextMenuStyleDemo;
 pub use controls::ControlsApp;

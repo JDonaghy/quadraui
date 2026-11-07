@@ -171,4 +171,64 @@ mod tests {
     fn paint_and_click_round_trip_at_nonzero_origin() {
         paint_and_click_round_trip_at(7.0, 13.0);
     }
+
+    /// The overlay-order contract `quadraui-binding-core::host::render_overlays`'s
+    /// doc states — toast topmost of all — must hold on GTK even when the
+    /// base layer underneath is a bordered, focused
+    /// [`crate::primitives::text_input::TextInput`] (the `clipboard_demo`
+    /// example's editor shape), not empty space: a toast opened over it
+    /// must still show its own fill, not get painted over by the editor's
+    /// own border/background. Mirrors
+    /// `macos::toast::tests::toast_paints_over_a_bordered_focused_text_input`/
+    /// `win::backend::tests::draw_toast_overlay_paints_over_a_bordered_focused_text_input`,
+    /// directly against `GtkBackend` instead of through a binding host.
+    #[test]
+    fn toast_paints_over_a_bordered_focused_text_input() {
+        use crate::gtk::backend::GtkBackend;
+        use crate::primitives::text_input::TextInput;
+        use crate::Backend;
+
+        let canvas_w = VIEW_W.ceil() as i32;
+        let canvas_h = VIEW_H.ceil() as i32;
+        let stack = stack_br(vec![colored_toast("t1", "Saved")]);
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, canvas_w, canvas_h).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        backend.set_current_line_height(LINE_HEIGHT);
+        backend.set_current_char_width(8.0);
+        backend.begin_frame(crate::Viewport::new(canvas_w as f32, canvas_h as f32, 1.0));
+
+        let mut editor = TextInput::new(WidgetId::new("editor"));
+        editor.lines = vec!["fn main() {}".to_string()];
+        editor.has_focus = true;
+
+        let layout = {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let bounds = crate::event::Rect::new(0.0, 0.0, VIEW_W as f32, VIEW_H as f32);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_text_input(bounds, &editor);
+                b.draw_toast_overlay(bounds, &stack)
+            })
+        };
+        backend.end_frame();
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        assert_eq!(layout.visible_toasts.len(), 1);
+        let vt = &layout.visible_toasts[0];
+        let probe_x = (vt.bounds.x + 2.0) as i32;
+        let probe_y = (vt.bounds.y + vt.bounds.height / 2.0) as i32;
+        assert_eq!(
+            pixel(&data, stride, probe_x, probe_y),
+            (BOX_COLOR.r, BOX_COLOR.g, BOX_COLOR.b),
+            "the toast must paint over the bordered, focused editor underneath it, \
+             not get overwritten by its border/background (bounds={:?})",
+            vt.bounds,
+        );
+    }
 }

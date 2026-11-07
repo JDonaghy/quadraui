@@ -17,6 +17,18 @@
 //! section for the drift table between the three copies, the macOS
 //! `close_bounds`-convention prerequisite that blocks the move, and why
 //! the migration is ongoing.
+//!
+//! # Focus-visible ring
+//!
+//! When [`TabChrome::focused_index`] names a currently-visible tab,
+//! [`draw_tab_bar_icons_with_chrome_and_glyphs`] strokes a square ring in
+//! [`Theme::focus_ring_color`] flush with that tab's own slot bounds,
+//! inset by half of [`Style::focus_ring_width`] so the stroke never
+//! bleeds into the inter-tab gap or the row's own top/bottom edge —
+//! the same geometry convention [`crate::macos::tab_bar`]'s twin
+//! painter uses. The caller composes focus-visible suppression into
+//! `focused_index` itself (`None` after a click); this module paints
+//! unconditionally on whatever index it is given.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -29,10 +41,15 @@ use crate::primitives::layout_metrics::TextMeasure;
 // struct's doc for the replacement plan.
 #[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarLayout, TabChrome, TabFrame};
+use crate::style::Style;
 use crate::theme::Theme;
 
-/// Per-tab padding (left + right) inside the tab background fill.
-const TAB_PAD: f64 = 14.0;
+/// Per-tab padding (left + right) inside the tab background fill, in
+/// `bar.compact` mode. A compact strip (used where vertical space is at
+/// a premium) keeps this fixed literal rather than scaling with
+/// [`Style::tab_padding_x`] — the non-compact case reads that style token
+/// instead, so a host-set value only ever widens the normal strip.
+const TAB_PAD_COMPACT: f64 = 2.0;
 /// Gap between the tab label and the close glyph.
 const TAB_INNER_GAP: f64 = 10.0;
 /// Gap between adjacent tabs.
@@ -136,6 +153,189 @@ pub(crate) fn tab_icon_extras(
         .collect()
 }
 
+/// Shared single source of truth for `pixel_tab_bar_layout`
+/// plus the ellipsis-fit of the one boundary tab a narrow strip can show
+/// only partially. Called by both the paint path
+/// ([`draw_tab_bar_icons_with_chrome_and_glyphs`]) and
+/// `GtkBackend`'s four no-paint `tab_bar_layout*`/`resolve_tab_bar_layout*`
+/// twins (`gtk/backend.rs`) — a caller that invokes
+/// `crate::primitives::layout_metrics::pixel_tab_bar_layout` directly
+/// instead disagrees with what gets painted for a strip that cuts a tab
+/// off partway through its label.
+///
+/// `pango_layout` is `Some` on every real paint (never headless) but may
+/// be `None` for a no-paint twin with no realised Pango context and no
+/// matching painted cache yet — in that case labels are measured with the
+/// `char_w`-based estimate, matching [`crate::primitives::layout_metrics`]'s
+/// own fallback convention. `tab_name_widths` are each tab's full,
+/// un-shrunk measured label width; this fn never mutates the caller's
+/// copy. `normal_font`/`italic_font` select which font measures (and, for
+/// the paint path, later paints) the boundary tab's fitted label —
+/// `italic_font` only when that tab is a preview tab.
+///
+/// Returns `(layout, corrected_scroll_offset, available_cols, fitted)`.
+/// `fitted` is `Some((idx, label))` iff tab `idx` is the boundary tab and
+/// its full label didn't fit, but an ellipsis-shortened `label` did —
+/// `layout` is then the recomputed geometry with `idx` visible at that
+/// shrunk width. `None` means `layout` is the plain, unmodified
+/// `pixel_tab_bar_layout` result: every tab fit at full width, there was
+/// no boundary tab left to shrink, or shrinking it didn't actually help
+/// (see the scroll/geometry-stability guard below).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pixel_tab_bar_layout_fitting_boundary(
+    bar: &TabBar,
+    width: f32,
+    height: f32,
+    tab_pad: f32,
+    tab_inner_gap: f32,
+    tab_outer_gap: f32,
+    tab_name_widths: &[f32],
+    tab_icon_extras: &[f32],
+    chrome: &TabChrome,
+    measure: &dyn TextMeasure,
+    pango_layout: Option<&pango::Layout>,
+    char_w: f32,
+    normal_font: &pango::FontDescription,
+    italic_font: &pango::FontDescription,
+) -> (TabBarLayout, usize, usize, Option<(usize, String)>) {
+    let (layout, corrected_scroll_offset, available_cols) =
+        crate::primitives::layout_metrics::pixel_tab_bar_layout(
+            bar,
+            width,
+            height,
+            tab_pad,
+            tab_inner_gap,
+            tab_outer_gap,
+            tab_name_widths,
+            tab_icon_extras,
+            chrome,
+            measure,
+        );
+
+    // The tab right after the last one that fit — `None` (via
+    // `resolved_scroll_offset` when nothing is visible at all) iff every
+    // tab from the scroll offset onward already fit.
+    let next_idx = layout
+        .visible_tabs
+        .last()
+        .map_or(layout.resolved_scroll_offset, |vt| vt.tab_idx + 1);
+    if next_idx >= bar.tabs.len() {
+        return (layout, corrected_scroll_offset, available_cols, None);
+    }
+
+    let reserved_px: f32 = layout
+        .visible_segments
+        .iter()
+        .map(|vs| vs.bounds.width)
+        .sum();
+    let last_tab_end = layout
+        .visible_tabs
+        .last()
+        .map_or(0.0, |vt| vt.bounds.x + vt.bounds.width);
+    let remaining = (width - reserved_px - last_tab_end).max(0.0);
+    if remaining <= 0.0 {
+        return (layout, corrected_scroll_offset, available_cols, None);
+    }
+
+    // Measures through the *same* underlying layout `measure` wraps, so
+    // this can never drift from what `pixel_tab_bar_layout`'s own
+    // internal close-glyph/bracket-glyph reservations compute — both read
+    // the identical Pango object (or the identical char-width fallback).
+    let measure_px = move |text: &str| -> f32 {
+        match pango_layout {
+            Some(pl) => {
+                pl.set_text(text);
+                pl.pixel_size().0 as f32
+            }
+            None => (text.chars().count() as f32 * char_w).ceil() + 2.0,
+        }
+    };
+
+    let boundary_tab = &bar.tabs[next_idx];
+    let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
+    let is_bracket_tab = brackets && boundary_tab.is_active;
+
+    if let Some(pl) = pango_layout {
+        pl.set_font_description(Some(normal_font));
+    }
+    let close_extra = if bar.show_tab_close && boundary_tab.is_closable {
+        tab_inner_gap + measure_px("×")
+    } else {
+        0.0
+    };
+    let bracket_extra = if is_bracket_tab {
+        measure_px("[") + measure_px("]")
+    } else {
+        0.0
+    };
+    // Mirrors `pixel_tab_bar_layout`'s own `TabMeasure::total` grouping:
+    // `tab_pad + bracket_extra + icon_extra` ahead of the label,
+    // `close_extra + tab_pad + tab_outer_gap` after it.
+    let leading_extra = tab_pad + bracket_extra + tab_icon_extras[next_idx];
+    let trailing_extra = close_extra + tab_pad + tab_outer_gap;
+
+    if let Some(pl) = pango_layout {
+        pl.set_font_description(Some(if boundary_tab.is_preview {
+            italic_font
+        } else {
+            normal_font
+        }));
+    }
+    let fitted = crate::primitives::tab_bar::fit_tab_label(
+        &boundary_tab.label,
+        remaining,
+        leading_extra,
+        trailing_extra,
+        measure_px,
+    );
+    if fitted.is_empty() {
+        if let Some(pl) = pango_layout {
+            pl.set_font_description(Some(normal_font));
+        }
+        return (layout, corrected_scroll_offset, available_cols, None);
+    }
+    let fitted_w = measure_px(&fitted);
+    if let Some(pl) = pango_layout {
+        pl.set_font_description(Some(normal_font));
+    }
+
+    let mut widths2 = tab_name_widths.to_vec();
+    widths2[next_idx] = fitted_w;
+    let (layout2, corrected2, cols2) = crate::primitives::layout_metrics::pixel_tab_bar_layout(
+        bar,
+        width,
+        height,
+        tab_pad,
+        tab_inner_gap,
+        tab_outer_gap,
+        &widths2,
+        tab_icon_extras,
+        chrome,
+        measure,
+    );
+
+    // Adopt the recomputed layout only when it strictly gained the
+    // boundary tab and moved nothing else: shrinking the boundary label
+    // lowers `total_tab_width`, which `TabBar::layout` sums over *every*
+    // tab (not just the visible window), so on a strip only slightly over
+    // budget this can flip `resolved_scroll_offset` back to 0 and jump
+    // the whole strip to tab 0 instead of only growing it by the one
+    // boundary tab. Guard against that by requiring the scroll offset and
+    // every previously-visible tab's bounds to come out byte-identical.
+    let same_scroll = layout2.resolved_scroll_offset == layout.resolved_scroll_offset;
+    let rest_unchanged = layout
+        .visible_tabs
+        .iter()
+        .all(|vt| layout2.visible_tabs.contains(vt));
+    let gained_boundary_tab = layout2.visible_tabs.iter().any(|vt| vt.tab_idx == next_idx);
+
+    if same_scroll && rest_unchanged && gained_boundary_tab {
+        (layout2, corrected2, cols2, Some((next_idx, fitted)))
+    } else {
+        (layout, corrected_scroll_offset, available_cols, None)
+    }
+}
+
 /// Trace a rounded-rectangle path on `cr` at `(x, y, w, h)` with corner
 /// radius `radius` on all four corners. Callers set the source and consume
 /// the path themselves (`cr.fill()` or otherwise) — this only builds it.
@@ -231,6 +431,7 @@ pub fn draw_tab_bar(
     row_height: f64,
     bar: &TabBar,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
     draw_tab_bar_icons(
@@ -244,6 +445,7 @@ pub fn draw_tab_bar(
         bar,
         &[],
         theme,
+        style,
         hovered_close_tab,
     )
 }
@@ -278,6 +480,7 @@ pub fn draw_tab_bar_icons(
     bar: &TabBar,
     icons: &[Option<crate::primitives::tab_bar::TabIcon>],
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
     draw_tab_bar_icons_with_chrome(
@@ -292,6 +495,7 @@ pub fn draw_tab_bar_icons(
         icons,
         &TabChrome::default(),
         theme,
+        style,
         hovered_close_tab,
     )
 }
@@ -313,6 +517,7 @@ pub fn draw_tab_bar_with_chrome(
     bar: &TabBar,
     chrome: &TabChrome,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
     draw_tab_bar_with_chrome_and_glyphs(
@@ -326,6 +531,7 @@ pub fn draw_tab_bar_with_chrome(
         bar,
         chrome,
         theme,
+        style,
         hovered_close_tab,
         None,
         false,
@@ -349,6 +555,7 @@ pub fn draw_tab_bar_with_chrome_and_glyphs(
     bar: &TabBar,
     chrome: &TabChrome,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
     glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
     nerd_fonts_enabled: bool,
@@ -365,9 +572,12 @@ pub fn draw_tab_bar_with_chrome_and_glyphs(
         &[],
         chrome,
         theme,
+        style,
         hovered_close_tab,
         glyphs,
         nerd_fonts_enabled,
+        None,
+        None,
     )
 }
 
@@ -392,6 +602,7 @@ pub fn draw_tab_bar_icons_with_chrome(
     icons: &[Option<crate::primitives::tab_bar::TabIcon>],
     chrome: &TabChrome,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
     draw_tab_bar_icons_with_chrome_and_glyphs(
@@ -406,9 +617,12 @@ pub fn draw_tab_bar_icons_with_chrome(
         icons,
         chrome,
         theme,
+        style,
         hovered_close_tab,
         None,
         false,
+        None,
+        None,
     )
 }
 
@@ -419,6 +633,13 @@ pub fn draw_tab_bar_icons_with_chrome(
 /// [`crate::types::Icon`]'s `glyph` vs. `fallback` form. `glyphs: None`
 /// (what [`draw_tab_bar_icons_with_chrome`] passes) renders byte-for-byte
 /// the same as today's codicon defaults.
+///
+/// `hovered_tab`/`pressed_tab` name the whole tab (not its close glyph,
+/// which `hovered_close_tab` already covers) the mouse is over/held down
+/// on. `None`/`None` paints every tab's resting background, matching
+/// [`draw_tab_bar_icons_with_chrome`] exactly. Pressed wins over hovered
+/// when both name the same tab, mirroring every other `_with_state`
+/// painter in this crate (status bar, menu, context menu).
 #[allow(clippy::too_many_arguments)]
 #[allow(deprecated)]
 pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
@@ -433,14 +654,21 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
     icons: &[Option<crate::primitives::tab_bar::TabIcon>],
     chrome: &TabChrome,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
     glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
     nerd_fonts_enabled: bool,
+    hovered_tab: Option<usize>,
+    pressed_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
     let tab_row_height = row_height;
     let text_y_offset = y_offset + (tab_row_height - line_height) / 2.0;
 
-    let tab_pad = if bar.compact { 2.0 } else { TAB_PAD };
+    let tab_pad = if bar.compact {
+        TAB_PAD_COMPACT
+    } else {
+        style.tab_padding_x as f64
+    };
     let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
     let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
 
@@ -506,9 +734,10 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
 
     // Bracket glyph width, needed below only for the paint loop's
     // `content_pad` (where the label starts once a leading `[` is
-    // painted). The shared layout fn below remeasures both bracket
-    // glyphs itself via the same `measure` adapter, so paint and layout
-    // can never disagree about their width.
+    // painted) — the closing `]`'s own width is only ever needed inside
+    // the rare boundary-tab fit, so `pixel_tab_bar_layout_fitting_boundary`
+    // measures it itself instead of this function paying for an extra
+    // Pango pass on every frame.
     let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
     pango_layout.set_font_description(Some(&normal_font));
     let bracket_open_w = if brackets {
@@ -528,10 +757,15 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
     let measure = PangoTabMeasure {
         layout: pango_layout,
     };
-    let tab_name_widths_f32: Vec<f32> = tab_name_widths.iter().map(|&w| w as f32).collect();
     let tab_icon_extras_f32: Vec<f32> = tab_icon_extras.iter().map(|&w| w as f32).collect();
-    let (layout, corrected_scroll_offset, available_cols) =
-        crate::primitives::layout_metrics::pixel_tab_bar_layout(
+    let tab_name_widths_f32: Vec<f32> = tab_name_widths.iter().map(|&w| w as f32).collect();
+    // `pixel_tab_bar_layout_fitting_boundary` ellipsis-fits the one
+    // boundary tab the strip can show only partially — the same shared
+    // helper `GtkBackend`'s no-paint `tab_bar_layout*`/
+    // `resolve_tab_bar_layout*` twins call, so the geometry a real click
+    // hit-tests against never disagrees with what this function paints.
+    let (layout, corrected_scroll_offset, available_cols, fitted_boundary_label) =
+        pixel_tab_bar_layout_fitting_boundary(
             bar,
             width as f32,
             row_height as f32,
@@ -542,6 +776,10 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
             &tab_icon_extras_f32,
             chrome,
             &measure,
+            Some(pango_layout),
+            0.0,
+            &normal_font,
+            &italic_font,
         );
 
     // ── Paint tabs from layout ──────────────────────────────────────
@@ -549,6 +787,27 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         let tab = &bar.tabs[vt.tab_idx];
         let tab_x = vt.bounds.x as f64;
         let tab_visual_w = vt.bounds.width as f64 - tab_outer_gap;
+
+        // Whole-tab hover/pressed tint, independent of `is_close_hovered`
+        // below (which only tints the close glyph itself). Reuses
+        // `Theme::list_hover_bg`/`list_pressed_bg` — the same "blend the
+        // row's own resting background toward `foreground`" derivation
+        // `macos::tab_bar`'s twin painter already reuses — rather than
+        // growing a dedicated `tab_hover_bg`/`tab_pressed_bg` accessor,
+        // since a tab strip is the same flat "row under the cursor" shape.
+        // Pressed wins over hovered, matching every other `_with_state`
+        // painter in this crate.
+        let is_tab_pressed = pressed_tab == Some(vt.tab_idx);
+        let is_tab_hovered = hovered_tab == Some(vt.tab_idx);
+        let tint = |base: crate::types::Color| -> crate::types::Color {
+            if is_tab_pressed {
+                theme.list_pressed_bg(base)
+            } else if is_tab_hovered {
+                theme.list_hover_bg(base)
+            } else {
+                base
+            }
+        };
 
         // Tab background. The active tab paints an inset, rounded chip
         // (VS Code's pill, ~24px inside a 35px strip) rather than a square
@@ -559,7 +818,7 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         let chip_y = y_offset + TAB_CHIP_INSET_Y;
         let chip_h = (tab_row_height - 2.0 * TAB_CHIP_INSET_Y).max(0.0);
         if tab.is_active {
-            set_source(cr, theme.tab_active_bg);
+            set_source(cr, tint(theme.tab_active_bg));
             rounded_rect_path(
                 cr,
                 x_offset + tab_x,
@@ -570,7 +829,7 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
             );
             cr.fill().ok();
         } else {
-            set_source(cr, theme.tab_bar_bg);
+            set_source(cr, tint(theme.tab_bar_bg));
             cr.rectangle(x_offset + tab_x, y_offset, tab_visual_w, tab_row_height);
             cr.fill().ok();
         }
@@ -634,14 +893,21 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
             super::painted_text::show_layout(cr, pango_layout);
         }
 
-        // Tab text.
+        // Tab text. Paints the ellipsis-fitted label computed above when
+        // this is the one tab the strip had to shrink to fit, so an
+        // overlong label never overflows into the close glyph (or the
+        // next tab); every other tab paints its full label unchanged.
+        let label_to_paint: &str = match &fitted_boundary_label {
+            Some((idx, fitted)) if *idx == vt.tab_idx => fitted.as_str(),
+            _ => &tab.label,
+        };
         set_source(cr, fg_col);
         pango_layout.set_font_description(Some(if tab.is_preview {
             &italic_font
         } else {
             &normal_font
         }));
-        pango_layout.set_text(&tab.label);
+        pango_layout.set_text(label_to_paint);
         cr.move_to(x_offset + tab_x + content_pad + icon_extra, text_y_offset);
         super::painted_text::show_layout(cr, pango_layout);
 
@@ -718,6 +984,48 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
                     super::painted_text::show_layout(cr, pango_layout);
                 }
             }
+        }
+    }
+
+    // ── Keyboard-focus ring pass ─────────────────────────────────────
+    // Painted after every tab's own background/label/close glyph, not
+    // inside the loop above: slots are contiguous (only `tab_outer_gap`
+    // of bar background between them), so a ring stroked immediately
+    // after its own tab would have its trailing edge painted over by
+    // the next tab's opaque background fill. `chrome.focused_index`
+    // already carries the caller's own focus-visible suppression (see
+    // that field's doc), so `None` here paints nothing.
+    //
+    // The stroked rect is inset by half of `style.focus_ring_width`
+    // from the slot's own bounds — not the outset gap `Button`'s/
+    // `TextInput`'s ring uses (`focus_ring_geometry`) — the same
+    // "flush with the item's own bounds" convention
+    // `primitives::list`'s selected-row ring and this bar's macOS
+    // twin (`macos::tab_bar::draw_tab_bar_icons_with_glyphs`) use for
+    // a ring on an item inside a tightly-packed strip: Cairo centres
+    // a stroke on the rect's own path, so an un-inset rect would ink
+    // half the line outside the row entirely on top/bottom and into
+    // the inter-tab gap on left/right. Strokes square (not the
+    // active tab's `TAB_CHIP_RADIUS`), since keyboard focus can land
+    // on an inactive tab with no chip to match.
+    if let Some(focus_idx) = chrome.focused_index {
+        if let Some(vt) = layout
+            .visible_tabs
+            .iter()
+            .find(|vt| vt.tab_idx == focus_idx)
+        {
+            let tab_visual_w = vt.bounds.width as f64 - tab_outer_gap;
+            let ring_width = style.focus_ring_width.max(1.0) as f64;
+            let inset = ring_width / 2.0;
+            set_source(cr, theme.focus_ring_color());
+            cr.set_line_width(ring_width);
+            cr.rectangle(
+                x_offset + vt.bounds.x as f64 + inset,
+                y_offset + inset,
+                (tab_visual_w - ring_width).max(0.0),
+                (row_height - ring_width).max(0.0),
+            );
+            cr.stroke().ok();
         }
     }
 
@@ -846,6 +1154,7 @@ mod tests {
                 ROW_H as f64,
                 &bar,
                 &theme,
+                &Style::default(),
                 None,
             );
         }
@@ -931,6 +1240,7 @@ mod tests {
             ROW_H as f64,
             &bar,
             &theme,
+            &Style::default(),
             None,
         );
 
@@ -949,6 +1259,7 @@ mod tests {
             &bar,
             &icons,
             &theme,
+            &Style::default(),
             None,
         );
 
@@ -1004,6 +1315,7 @@ mod tests {
                 ROW_H as f64,
                 &bar,
                 &theme,
+                &Style::default(),
                 None,
             );
         }
@@ -1062,6 +1374,7 @@ mod tests {
                 ROW_H as f64,
                 &bar,
                 &theme,
+                &Style::default(),
                 None,
             );
         }
@@ -1125,6 +1438,7 @@ mod tests {
             ROW_H as f64,
             &bar,
             &theme,
+            &Style::default(),
             None,
         );
 
@@ -1140,6 +1454,7 @@ mod tests {
             &bar,
             &chrome,
             &theme,
+            &Style::default(),
             None,
         );
 
@@ -1228,6 +1543,7 @@ mod tests {
                     row_h,
                     &bar,
                     &theme,
+                    &Style::default(),
                     None,
                 );
             }
@@ -1282,6 +1598,7 @@ mod tests {
                 ROW_H_F,
                 &bar,
                 &theme,
+                &Style::default(),
                 None,
             );
         }
@@ -1343,6 +1660,7 @@ mod tests {
                 ROW_H as f64,
                 &bar,
                 &theme,
+                &Style::default(),
                 None,
             );
             layout = l;
@@ -1406,6 +1724,7 @@ mod tests {
             ROW_H as f64,
             &bar,
             &theme,
+            &Style::default(),
             None,
         );
 
@@ -1469,6 +1788,7 @@ mod tests {
                 ROW_H as f64,
                 &bar,
                 &theme,
+                &Style::default(),
                 None,
             );
             layout = l;
@@ -1479,9 +1799,10 @@ mod tests {
         let data = surface.data().expect("surface data");
 
         let bounds = layout.visible_tabs[0].bounds;
-        // Sample inside the tab's left padding (`TAB_PAD`), well clear of
-        // the label glyphs — a column through the text would show the
-        // label's foreground colour instead of the background fill.
+        // Sample inside the tab's left padding (`Style::tab_padding_x`),
+        // well clear of the label glyphs — a column through the text
+        // would show the label's foreground colour instead of the
+        // background fill.
         let x = bounds.x as i32 + 3;
         let active_bg = theme.tab_active_bg;
         let bar_bg = theme.tab_bar_bg;
@@ -1528,6 +1849,7 @@ mod tests {
             ROW_H as f64,
             &bar,
             &theme,
+            &Style::default(),
             None,
         );
 
@@ -1556,6 +1878,366 @@ mod tests {
             other => {
                 panic!("click at the close region's centre expected TabClose(0), got {other:?}")
             }
+        }
+    }
+
+    /// `Style::tab_padding_x` sets the label's leading inset: with no
+    /// icon decorating the tab, the label's painted text run sits exactly
+    /// `slot_x + tab_padding_x` in from the tab's own slot origin — not a
+    /// fixed literal. Checked at both the default style value and a
+    /// distinctly wider one, via the thread-local text-run sink
+    /// `gtk::painted_text::show_layout` feeds — a direct assertion on the
+    /// ink column, not an inference from pixel colour.
+    #[test]
+    fn tab_padding_x_sets_the_labels_leading_inset() {
+        let bar = make_bar_without_right_segments();
+        let theme = make_theme();
+
+        let label_x_for_style = |style: Style| -> (f64, f64) {
+            let surface =
+                ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+
+            let previous = crate::testing::install_text_run_sink();
+            let (_, layout) = draw_tab_bar(
+                &cr,
+                &pango_layout,
+                0.0,
+                W as f64,
+                LINE_H,
+                0.0,
+                ROW_H as f64,
+                &bar,
+                &theme,
+                &style,
+                None,
+            );
+            let runs = crate::testing::take_text_run_sink(previous);
+
+            let slot_x = layout.visible_tabs[0].bounds.x as f64;
+            let run = runs
+                .iter()
+                .find(|r| r.text == "main.rs")
+                .expect("label must have painted a text run");
+            (run.bounds.x as f64, slot_x)
+        };
+
+        let default_style = Style::default();
+        let (default_label_x, default_slot_x) = label_x_for_style(default_style.clone());
+        assert!(
+            (default_label_x - (default_slot_x + default_style.tab_padding_x as f64)).abs()
+                < 0.01,
+            "label x {default_label_x} should sit tab_padding_x={} in from slot edge {default_slot_x}",
+            default_style.tab_padding_x,
+        );
+
+        let wide_style = Style::default().with_tab_padding_x(26.0);
+        let (wide_label_x, wide_slot_x) = label_x_for_style(wide_style.clone());
+        assert!(
+            (wide_label_x - (wide_slot_x + wide_style.tab_padding_x as f64)).abs() < 0.01,
+            "label x {wide_label_x} should sit tab_padding_x={} in from slot edge {wide_slot_x}",
+            wide_style.tab_padding_x,
+        );
+
+        assert!(
+            (wide_label_x - default_label_x - 16.0).abs() < 0.01,
+            "widening tab_padding_x by 16.0 (10.0 -> 26.0) should shift the label \
+             by exactly that amount: default={default_label_x}, wide={wide_label_x}"
+        );
+    }
+
+    /// Single-tab bar with no right segments — a minimal fixture for the
+    /// label-inset test above, where any extra painted text (a right
+    /// segment) would be noise for the `find`-by-text-equality lookup.
+    fn make_bar_without_right_segments() -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: "main.rs".to_string(),
+                is_active: false,
+                ..Default::default()
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: false,
+            compact: false,
+        }
+    }
+
+    /// A second tab whose label is too long for the strip width left
+    /// over after the first tab gets ellipsis-fitted via the shared
+    /// `crate::primitives::tab_bar::fit_tab_label`, instead of being
+    /// dropped from the strip outright — and its close glyph still
+    /// lands fully inside the tab bar, never past the right edge the
+    /// caller gave `draw_tab_bar`.
+    #[test]
+    fn overlong_label_in_a_narrow_tab_strip_ends_in_ellipsis_and_shows_its_close_glyph() {
+        let long_label = "a_very_long_filename_for_this_single_tab_that_never_fits.rs";
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![
+                TabItem {
+                    label: "a.rs".to_string(),
+                    is_active: false,
+                    ..Default::default()
+                },
+                TabItem {
+                    label: long_label.to_string(),
+                    is_active: false,
+                    ..Default::default()
+                },
+            ],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+        let theme = make_theme();
+
+        // First pass at a generous width — just to read off how much
+        // room the first tab's full (untruncated) slot actually needs.
+        let wide_surface =
+            ImageSurface::create(Format::ARgb32, 2000, ROW_H).expect("create ImageSurface");
+        let first_tab_w = {
+            let cr = Context::new(&wide_surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let (_, layout) = draw_tab_bar(
+                &cr,
+                &pango_layout,
+                0.0,
+                2000.0,
+                LINE_H,
+                0.0,
+                ROW_H as f64,
+                &bar,
+                &theme,
+                &Style::default(),
+                None,
+            );
+            assert_eq!(
+                layout.visible_tabs.len(),
+                2,
+                "both tabs must fit at a generous width"
+            );
+            layout.visible_tabs[0].bounds.width as f64
+        };
+
+        // A strip that fits the first tab plus only a little over
+        // 80px of the second — nowhere near `long_label`'s full
+        // (untruncated) width, so the second tab must shrink to fit
+        // rather than disappear.
+        let strip_width = first_tab_w + 80.0;
+        let surface = ImageSurface::create(Format::ARgb32, strip_width.ceil() as i32, ROW_H)
+            .expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+
+        let previous = crate::testing::install_text_run_sink();
+        let (_, layout) = draw_tab_bar(
+            &cr,
+            &pango_layout,
+            0.0,
+            strip_width,
+            LINE_H,
+            0.0,
+            ROW_H as f64,
+            &bar,
+            &theme,
+            &Style::default(),
+            None,
+        );
+        let runs = crate::testing::take_text_run_sink(previous);
+
+        assert_eq!(
+            layout.visible_tabs.len(),
+            2,
+            "the second tab must still appear, shrunk to fit, instead of being dropped"
+        );
+        let vt1 = &layout.visible_tabs[1];
+
+        let painted_label = runs
+            .iter()
+            .find(|r| r.text != "a.rs" && long_label.starts_with(r.text.trim_end_matches('…')))
+            .unwrap_or_else(|| {
+                panic!("the second tab's label must have painted a text run, got runs: {runs:?}")
+            });
+        assert!(
+            painted_label.text.ends_with('…'),
+            "an overlong label that doesn't fit its tab must end in an ellipsis, got {:?}",
+            painted_label.text,
+        );
+        assert_ne!(
+            painted_label.text, long_label,
+            "the painted label must actually be shortened, not the original text"
+        );
+
+        let close = vt1
+            .close_bounds
+            .expect("the shrunk tab must still report close_bounds");
+        assert!(
+            close.x + close.width <= strip_width as f32 + 0.01,
+            "the close glyph (x={}, width={}) must land fully inside the \
+             {strip_width}px strip, not spill past its right edge",
+            close.x,
+            close.width,
+        );
+
+        // The close *glyph itself* (not just its hit box) must be fully
+        // visible inside the strip and painted strictly after the
+        // (possibly ellipsis-fitted) label's own painted run — a label
+        // overshooting its fitted budget would paint overlapping or past
+        // the close glyph instead of stopping short of it.
+        // Both tabs are closable, so `runs` carries two close-glyph runs —
+        // pick the one inside tab 1's own slot, not tab 0's.
+        let close_run = runs
+            .iter()
+            .find(|r| r.text == crate::codicon::CLOSE.to_string() && r.bounds.x >= vt1.bounds.x)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the second tab's close glyph must have painted a text run \
+                     inside its slot (x >= {}), got runs: {runs:?}",
+                    vt1.bounds.x
+                )
+            });
+        assert!(
+            close_run.bounds.x >= 0.0
+                && close_run.bounds.x + close_run.bounds.width <= strip_width as f32 + 0.01,
+            "the close glyph run (x={}, width={}) must be fully visible inside the \
+             {strip_width}px strip",
+            close_run.bounds.x,
+            close_run.bounds.width,
+        );
+        assert!(
+            close_run.bounds.x >= painted_label.bounds.x + painted_label.bounds.width,
+            "the close glyph must land strictly after the (possibly ellipsis-fitted) \
+             label's own painted run, with no overlap — got close.x={}, \
+             label end={}",
+            close_run.bounds.x,
+            painted_label.bounds.x + painted_label.bounds.width,
+        );
+    }
+
+    /// `chrome.focused_index` must paint a focus-visible ring on the named
+    /// tab — present after keyboard navigation (`Some(i)`), absent after a
+    /// click (`None`, the caller's own focus-visible suppression
+    /// convention documented on
+    /// [`crate::primitives::tab_bar::TabChrome::focused_index`]). Mirrors
+    /// `macos::tab_bar::focused_index_paints_a_ring_after_keyboard_nav_and_none_after_a_click`:
+    /// probes the midpoint of all four edges of the ring rect (slot
+    /// bounds inset by half `style.focus_ring_width`, the geometry this
+    /// module's paint-loop comment describes), so a regression that drops
+    /// an edge (off-canvas top/bottom, or clobbered by Cairo's centred
+    /// stroke) fails here. The click-suppressed half asserts the actual
+    /// colour underneath — the active chip on the left/right edges, the
+    /// flat bar background on top/bottom — not just "not the ring colour".
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` half of the paint fn's return
+    fn focused_index_paints_a_ring_after_keyboard_nav_and_none_after_a_click() {
+        use crate::primitives::tab_bar::TabChrome;
+
+        let bar = make_bar();
+        let theme = make_theme();
+        let style = Style::default().with_focus_ring_width(4.0);
+        let ring_color = theme.focus_ring_color();
+        let bar_bg = theme.tab_bar_bg;
+        let active_bg = theme.tab_active_bg;
+
+        let paint = |focused_index: Option<usize>| -> (ImageSurface, TabBarLayout) {
+            let surface =
+                ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
+            let resolved_layout;
+            {
+                let cr = Context::new(&surface).expect("Context::new");
+                let pango_layout = pangocairo::functions::create_layout(&cr);
+                let chrome = TabChrome::default().with_focused_index(focused_index);
+                let (_hits, layout) = draw_tab_bar_with_chrome_and_glyphs(
+                    &cr,
+                    &pango_layout,
+                    0.0,
+                    W as f64,
+                    LINE_H,
+                    0.0,
+                    ROW_H as f64,
+                    &bar,
+                    &chrome,
+                    &theme,
+                    &style,
+                    None,
+                    None,
+                    false,
+                );
+                resolved_layout = layout;
+            }
+            (surface, resolved_layout)
+        };
+
+        // Keyboard focus on tab 0 ("main.rs", the active and only tab):
+        // all four edges of the inset ring rect must carry
+        // `theme.focus_ring_color()`.
+        let (focused_surface, focused_layout) = paint(Some(0));
+        let vt0 = focused_layout.visible_tabs[0];
+        let slot_x = vt0.bounds.x as f64;
+        let tab_content_w = vt0.bounds.width as f64 - TAB_OUTER_GAP;
+        let ring_width = style.focus_ring_width as f64;
+        let inset = ring_width / 2.0;
+        let left = (slot_x + inset).round() as i32;
+        let right = (slot_x + tab_content_w - inset).round() as i32;
+        let top = inset.round() as i32;
+        let bottom = (ROW_H as f64 - inset).round() as i32;
+        let mid_y = ROW_H / 2;
+        // A column inside the tab's trailing padding — right of the
+        // "main.rs" label's own ink, clear of any glyph antialiasing —
+        // rather than the tab's horizontal centre, which Pango's painted
+        // label occupies for a short, close-button-less tab like this
+        // fixture's.
+        let label_clear_x = (slot_x + tab_content_w - 5.0).round() as i32;
+
+        // Without a ring, the left/right probes sit on the active tab's
+        // chip (straight vertical edge, well clear of its rounded
+        // corners), while the top/bottom probes sit above/below the
+        // chip's own `TAB_CHIP_INSET_Y` margin, where the flat bar
+        // background still shows through.
+        let probes = [
+            ("left", left, mid_y, active_bg),
+            ("right", right, mid_y, active_bg),
+            ("top", label_clear_x, top, bar_bg),
+            ("bottom", label_clear_x, bottom, bar_bg),
+        ];
+
+        let mut focused_surface = focused_surface;
+        focused_surface.flush();
+        let f_stride = focused_surface.stride() as usize;
+        let f_data = focused_surface.data().expect("surface data");
+        for (name, px, py, _) in probes {
+            let got = pixel(&f_data, f_stride, px, py);
+            assert_eq!(
+                got,
+                (ring_color.r, ring_color.g, ring_color.b),
+                "expected the focus ring colour at the {name} edge ({px}, {py}) \
+                 when TabChrome::focused_index names tab 0",
+            );
+        }
+        drop(f_data);
+
+        // Click suppresses focus-visible: `focused_index: None` must
+        // paint whatever sits under each edge absent a ring, not just
+        // "something other than the ring colour".
+        let (clicked_surface, _clicked_layout) = paint(None);
+        let mut clicked_surface = clicked_surface;
+        clicked_surface.flush();
+        let c_stride = clicked_surface.stride() as usize;
+        let c_data = clicked_surface.data().expect("surface data");
+        for (name, px, py, expected) in probes {
+            let got = pixel(&c_data, c_stride, px, py);
+            assert_eq!(
+                got,
+                (expected.r, expected.g, expected.b),
+                "expected no focus ring at the {name} edge ({px}, {py}) when \
+                 TabChrome::focused_index is None (click-suppressed)",
+            );
         }
     }
 }

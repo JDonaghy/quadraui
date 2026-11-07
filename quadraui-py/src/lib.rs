@@ -485,6 +485,24 @@ impl PyAppLogic {
     fn clear_extra_slot(&mut self, kind: &str) -> bool {
         self.host.clear_extra_slot(kind)
     }
+
+    /// Drives [`Self::host`]'s hover-tooltip tracker for this dispatch —
+    /// [`BindingHost::drive_hover_tooltip`] fed [`BindingHost::now_ms`]'s
+    /// own real wall clock (there is no fake one to inject from Python; a
+    /// test instead uses a short real [`Self::host`]-level
+    /// `tooltip_delay_ms` override, same as this crate's existing
+    /// `QuiAppWaker::post_after`/`wake_after` timer tests) and
+    /// [`Self::host`]'s own `style.tooltip_delay_ms` (or the
+    /// behaviour-preserving default when no style has been set). Called
+    /// from both [`AppLogic::handle`] (so a hover change is noticed the
+    /// same frame) and [`AppLogic::tick`] (so the delay still elapses
+    /// with the pointer held still and no further event arriving).
+    fn drive_hover_tooltip(&mut self) -> Reaction {
+        let now_ms = self.host.now_ms();
+        let delay_ms = self.host.style.unwrap_or_default().tooltip_delay_ms;
+        self.host
+            .drive_hover_tooltip(&mut self.engine, now_ms, delay_ms)
+    }
 }
 
 impl WindowCloseHandling for PyAppLogic {
@@ -704,6 +722,7 @@ impl AppLogic for PyAppLogic {
                 self.engine.handle(event, backend, &mut sink)
             }
         };
+        let reaction = reaction.merge(self.drive_hover_tooltip());
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw
@@ -730,6 +749,7 @@ impl AppLogic for PyAppLogic {
                 })
             }
         };
+        let reaction = reaction.merge(self.drive_hover_tooltip());
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw
@@ -3195,7 +3215,8 @@ impl QuiApp {
     /// Opens a right-click-style popup menu at `position` (view-local
     /// coordinates) built from `items` — a list of dicts, each matching
     /// `ContextMenuItem`'s shape (`id`, `label`, `detail`, `disabled`,
-    /// `checked`, `submenu`; see `quadraui::ContextMenuItem`'s own doc). The
+    /// `checked`, `icon`, `key_equivalent`, `submenu`; see
+    /// `quadraui::ContextMenuItem`'s own doc). The
     /// popup is routed through the same `compose::ContextMenuController`
     /// every in-window backend shares, so a click on an item, an Up/Down +
     /// Enter, or Escape/click-outside all resolve the same way regardless
@@ -6016,6 +6037,150 @@ def handle(event):
         });
     }
 
+    /// A `MouseMoved` landing on a painted button's bounds dispatches a
+    /// hit-tested `MouseEntered` ahead of the raw move itself, each key
+    /// the handler sees carrying the button's own id and `button_body`
+    /// `hit` -- the real hover signal a Python-side toolbar/tree/details
+    /// hover tooltip needs instead of re-deriving hit-testing from the raw
+    /// position. A later move off the button dispatches the matching
+    /// `MouseLeft` the same way.
+    #[test]
+    fn mouse_moved_over_a_painted_button_dispatches_mouse_entered_then_mouse_left() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'button': {'id': 'btn:ok', 'label': 'OK'}}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("OK").expect("render must not raise"),
+                "the button's label must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("OK")
+                .expect("button label must be on screen");
+            let inside = Point::new(bounds.x + 0.5, bounds.y + 0.5);
+            let outside = Point::new(1_000.0, 1_000.0);
+
+            let dispatch_move = |app: &mut QuiApp, position: Point| {
+                let mv = UiEvent::MouseMoved {
+                    position,
+                    buttons: quadraui::ButtonMask::default(),
+                };
+                let mv_any = pythonize::pythonize(py, &mv).expect("UiEvent must pythonize");
+                let mv_dict = mv_any
+                    .cast::<PyDict>()
+                    .expect("MouseMoved must pythonize to a dict");
+                app.push_event(mv_dict).expect("valid event shape");
+                app.step().expect("no handler/render error");
+            };
+
+            dispatch_move(&mut app, inside);
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received.len(),
+                2,
+                "entering the button must dispatch MouseEntered ahead of the raw MouseMoved"
+            );
+            let entered_dict = received
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let entered_widget: String = entered_dict
+                .get_item("MouseEntered")
+                .expect("dict lookup")
+                .expect("payload must carry a MouseEntered key")
+                .cast_into::<PyDict>()
+                .expect("MouseEntered payload must be a dict")
+                .get_item("widget")
+                .expect("dict lookup")
+                .expect("widget key must be present")
+                .extract()
+                .expect("widget must be a string");
+            assert_eq!(entered_widget, "btn:ok");
+            let entered_hit_kind: String = entered_dict
+                .get_item("hit")
+                .expect("dict lookup")
+                .expect("hit key must be attached alongside the MouseEntered key")
+                .cast_into::<PyDict>()
+                .expect("hit must be a dict")
+                .get_item("kind")
+                .expect("dict lookup")
+                .expect("kind key must be present")
+                .extract()
+                .expect("kind must be a string");
+            assert_eq!(entered_hit_kind, "button_body");
+            assert!(
+                received
+                    .get_item(1)
+                    .expect("second item")
+                    .cast_into::<PyDict>()
+                    .expect("event payload must be a dict")
+                    .contains("MouseMoved")
+                    .expect("dict lookup"),
+                "the raw move must still follow the synthesized MouseEntered"
+            );
+
+            let before_leave = received.len();
+
+            dispatch_move(&mut app, outside);
+
+            assert_eq!(
+                received.len(),
+                before_leave + 2,
+                "leaving the button must dispatch MouseLeft ahead of the raw MouseMoved"
+            );
+            let left_dict = received
+                .get_item(before_leave)
+                .expect("first new item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let left_widget: String = left_dict
+                .get_item("MouseLeft")
+                .expect("dict lookup")
+                .expect("payload must carry a MouseLeft key")
+                .cast_into::<PyDict>()
+                .expect("MouseLeft payload must be a dict")
+                .get_item("widget")
+                .expect("dict lookup")
+                .expect("widget key must be present")
+                .extract()
+                .expect("widget must be a string");
+            assert_eq!(left_widget, "btn:ok");
+        });
+    }
+
     /// A primitive nested inside a `Split` pane -- not the `Split` itself --
     /// must claim a click landing on it: `PaintedHit::Split` covers its
     /// whole pane with no "miss" case, so it is pushed into the hit map
@@ -6480,6 +6645,139 @@ def handle(event):
             assert_eq!(
                 index, 1,
                 "the clicked tab's own index (the second tab) must be reported, not tab 0's"
+            );
+        });
+    }
+
+    /// A standalone `toolbar` leaf: a click on its (enabled) `Action`
+    /// button must be replaced by the semantic `UiEvent::Toolbar` it
+    /// stands for — the clicked button's own id, and `is_active` flipped
+    /// from its starting `False` to `True` — rather than staying a raw
+    /// `MouseDown`.
+    #[test]
+    fn mouse_down_over_a_toolbar_button_emits_a_semantic_toolbar_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'id': 'toolbar:main', 'toolbar': {
+        'id': 'toolbar:main',
+        'buttons': [
+            {'Action': {
+                'id': 'filter', 'label': 'Filter', 'icon': None,
+                'key_hint': None, 'enabled': True, 'is_active': False,
+                'tooltip': '',
+            }},
+        ],
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app = QuiApp::new(40, 5, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Filter")
+                    .expect("render must not raise"),
+                "the toolbar's button label must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Filter")
+                .expect("the button's label must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "a toolbar button click carries no leading FocusChanged -- only the bar's own \
+                 id (not the clicked button's) is a tab stop"
+            );
+            let event_dict = received_list
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let toolbar_payload = event_dict
+                .get_item("Toolbar")
+                .expect("dict lookup")
+                .expect("a toolbar click must dispatch a Toolbar key, not a raw MouseDown")
+                .cast_into::<PyTuple>()
+                .expect("Toolbar must pythonize to a (id, event) tuple");
+            assert_eq!(toolbar_payload.len(), 2, "Toolbar must carry (id, event)");
+            let bar_id: String = toolbar_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the toolbar's own id must be a string");
+            assert_eq!(
+                bar_id, "toolbar:main",
+                "the widget id must be the toolbar's own"
+            );
+            let inner = toolbar_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner ToolbarEvent must pythonize to a dict");
+            let clicked = inner
+                .get_item("ButtonClicked")
+                .expect("dict lookup")
+                .expect("a button click must carry a ButtonClicked key")
+                .cast_into::<PyDict>()
+                .expect("ButtonClicked payload must be a dict");
+            let button_id: String = clicked
+                .get_item("id")
+                .expect("dict lookup")
+                .expect("id key must be present")
+                .extract()
+                .expect("id must be a string");
+            assert_eq!(
+                button_id, "filter",
+                "the clicked button's own id must be reported"
+            );
+            let is_active: bool = clicked
+                .get_item("is_active")
+                .expect("dict lookup")
+                .expect("is_active key must be present")
+                .extract()
+                .expect("is_active must be a bool");
+            assert!(
+                is_active,
+                "the pre-click is_active (False) must be reported flipped (True)"
             );
         });
     }
@@ -7462,6 +7760,127 @@ def handle(event):
         });
     }
 
+    /// Enter on a focused list item must emit the semantic
+    /// `ListViewEvent::ItemActivated` -- the keyboard equivalent of
+    /// [`double_click_over_a_list_item_emits_a_semantic_item_double_clicked_event`]'s
+    /// mouse gesture, so a Python app wired to `ItemActivated` for "open"
+    /// also works from the keyboard, not just a mouse or a screen reader's
+    /// default action.
+    #[test]
+    fn enter_on_a_focused_list_item_emits_a_semantic_item_activated_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'list': {
+        'id': 'list:main',
+        'items': [
+            {'text': {'spans': [{'text': 'Alpha', 'fg': None, 'bg': None}]}},
+            {'text': {'spans': [{'text': 'Beta', 'fg': None, 'bg': None}]}},
+        ],
+        'selected_idx': 0,
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Alpha").expect("render must not raise"),
+                "the first item must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Alpha")
+                .expect("first item's label must be on screen");
+
+            // `render()` is a static Python function that always reports
+            // `selected_idx: 0` — a click on "Alpha" (already row 0) only
+            // needs to focus the list (click-to-focus), the same
+            // click-then-key sequence
+            // `test_down_arrow_on_a_focused_table_selects_the_next_row`
+            // relies on for `DataTable`.
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            let event_dict = received_list
+                .get_item(received_list.len() - 1)
+                .expect("last item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let list_payload = event_dict
+                .get_item("List")
+                .expect("dict lookup")
+                .expect("Enter on a focused list must dispatch a List key, not a raw KeyPressed")
+                .cast_into::<PyTuple>()
+                .expect("List must pythonize to a (id, event) tuple");
+            let widget: String = list_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the list's own id must be a string");
+            assert_eq!(widget, "list:main", "the widget id must be the list's own");
+            let inner = list_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner ListViewEvent must pythonize to a dict");
+            let activated = inner
+                .get_item("ItemActivated")
+                .expect("dict lookup")
+                .expect("Enter on a focused list with a selection must carry an ItemActivated key")
+                .cast_into::<PyDict>()
+                .expect("ItemActivated payload must be a dict");
+            let idx: usize = activated
+                .get_item("idx")
+                .expect("dict lookup")
+                .expect("idx key must be present")
+                .extract()
+                .expect("idx must be an int");
+            assert_eq!(idx, 0, "the activated item's own index must be reported");
+        });
+    }
+
     /// A Ctrl-click on a list item is a multi-select gesture
     /// `ListViewEvent::SelectionChanged` can't represent (it carries no
     /// modifiers), so `semantic_event_for_hit` leaves it unmapped: the raw
@@ -8377,6 +8796,61 @@ def handle(event):
             assert!(
                 !app.screen_contains("Save").expect("render must not raise"),
                 "resolving the dialog must dismiss it"
+            );
+        });
+    }
+
+    /// A button dict's `spec` (the `ButtonSpec` override —
+    /// variant/icon/tooltip) decodes through to the painted dialog: a
+    /// `Danger`-variant "Delete" button reads tinted in `theme.error_fg`,
+    /// proving `spec` survives `show_message_dialog`'s whole
+    /// decode → `message_dialog_options_from_buttons` → `MessageDialogButton`
+    /// → `MessageDialogController` round trip rather than being silently
+    /// dropped along the way.
+    #[test]
+    fn show_message_dialog_button_spec_variant_paints_the_danger_tint() {
+        Python::attach(|py| {
+            let (mut app, _locals) = app_recording_events(py);
+
+            let buttons_any = py
+                .eval(
+                    c"[
+                        {'id': 'delete', 'label': 'Delete', 'is_default': True, \
+                         'spec': {'label': 'Delete', 'variant': 'Danger'}},
+                        {'id': 'cancel', 'label': 'Cancel', 'is_cancel': True},
+                    ]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+
+            // Title/body deliberately avoid the word "Delete" so
+            // `find_bounds("Delete")` below can only match the button's
+            // own label, not an earlier occurrence painted above it.
+            app.show_message_dialog(
+                "Confirm".to_string(),
+                "This cannot be undone.".to_string(),
+                buttons,
+                None,
+            )
+            .expect("show_message_dialog must open the dialog");
+
+            let button_bounds = app
+                .driver
+                .find_bounds("Delete")
+                .expect("the 'Delete' button must be on screen");
+            let style = app
+                .driver
+                .style_at(button_bounds.x as u16, button_bounds.y as u16)
+                .expect("Delete button label cell must be styled");
+            let theme = app.driver.backend().theme();
+            assert_eq!(
+                style.fg,
+                quadraui::tui::ratatui_color(theme.error_fg),
+                "a 'Danger' spec on the 'Delete' button must tint its label in theme.error_fg"
             );
         });
     }

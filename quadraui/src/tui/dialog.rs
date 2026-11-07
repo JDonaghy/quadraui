@@ -8,7 +8,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect as RRect;
 
-use super::{ratatui_color, set_cell};
+use super::{draw_button, ratatui_color, set_cell};
 use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout, DialogTable};
 use crate::primitives::toolbar::ToolbarItemMeasure;
 use crate::theme::Theme;
@@ -54,6 +54,18 @@ pub fn tui_dialog_layout(dialog: &Dialog, viewport: crate::event::Rect) -> Dialo
     let default_w = (viewport.width * 0.5).clamp(30.0, 60.0);
     let dialog_w = default_w.max(table_preferred_w).min(viewport.width - 4.0);
 
+    // Floored at today's 8-cell estimate so a row of short legacy
+    // labels ("OK" / "No") doesn't shrink below what every existing
+    // caller already renders; widened per-button via
+    // `resolved_button_spec()` so an explicit `spec`'s icon + longer
+    // label (e.g. a `Danger` "Move to Trash") never clips its closing
+    // bracket — see `ButtonSpec::min_cell_width`'s own doc.
+    let button_width = dialog
+        .buttons
+        .iter()
+        .map(|b| b.resolved_button_spec().min_cell_width())
+        .fold(8.0_f32, f32::max);
+
     let measure = DialogMeasure {
         width: dialog_w,
         title_height: if dialog.title.spans.iter().any(|s| !s.text.is_empty()) {
@@ -65,7 +77,7 @@ pub fn tui_dialog_layout(dialog: &Dialog, viewport: crate::event::Rect) -> Dialo
         table_height: table_h,
         input_height: input_h,
         button_row_height: 1.0,
-        button_width: 8.0,
+        button_width,
         button_gap: 2.0,
         padding: 1.0,
     };
@@ -202,7 +214,26 @@ fn draw_table(
 }
 
 /// Draw a [`Dialog`] at its resolved layout.
+///
+/// Equivalent to [`draw_dialog_with_nerd_fonts`] with `nerd_fonts_enabled:
+/// false` — a separate function (rather than a grown argument list on
+/// this one) so a caller of this re-exported `pub fn` with the original
+/// 4-argument signature keeps compiling untouched. See `CLAUDE.md`'s
+/// *Downstream consumers* rule 2.
 pub fn draw_dialog(buf: &mut Buffer, dialog: &Dialog, layout: &DialogLayout, theme: &Theme) {
+    draw_dialog_with_nerd_fonts(buf, dialog, layout, theme, false);
+}
+
+/// [`draw_dialog`], plus `nerd_fonts_enabled`: resolves the Nerd-Font half
+/// of a [`crate::ButtonSpec::icon`] on a [`crate::DialogButton`] that
+/// carries one — see [`draw_dialog`] for a caller that doesn't need this.
+pub fn draw_dialog_with_nerd_fonts(
+    buf: &mut Buffer,
+    dialog: &Dialog,
+    layout: &DialogLayout,
+    theme: &Theme,
+    nerd_fonts_enabled: bool,
+) {
     let bg = ratatui_color(theme.surface_bg);
     let fg = ratatui_color(theme.surface_fg);
     let sel_bg = ratatui_color(theme.selected_bg);
@@ -323,6 +354,23 @@ pub fn draw_dialog(buf: &mut Buffer, dialog: &Dialog, layout: &DialogLayout, the
         let bx = vis.bounds.x.round() as u16;
         let by = vis.bounds.y.round() as u16;
         let bw = vis.bounds.width.round() as u16;
+
+        // An explicit `spec` override paints through the shared `Button`
+        // bracket-chrome/icon/intent-colour path instead of this bare
+        // highlighted-row look, so e.g. a `Danger` spec reads as
+        // `[ ⚠ Move to Trash ]` in `theme.error_fg`. A `spec: None`
+        // button paints through the plain legacy path below instead.
+        // `btn.is_default` maps to `focused` on the materialised
+        // `Button` so the "this is the default" cue (`accent_fg`
+        // bracket chrome) survives on a spec-backed button the same
+        // way the legacy path's `selected_bg` highlight does below.
+        if let Some(spec) = &btn.spec {
+            let area = RRect::new(bx, by, bw, 1);
+            let button = spec.to_button(btn.id, btn.is_default);
+            draw_button(buf, area, &button, theme, nerd_fonts_enabled);
+            continue;
+        }
+
         let btn_bg = if btn.is_default { sel_bg } else { bg };
         for col in bx..bx + bw {
             set_cell(buf, col, by, ' ', fg, btn_bg);
@@ -363,6 +411,7 @@ mod tests {
             }],
             buttons: vec![
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("save"),
                     label: "Save".into(),
                     is_default: true,
@@ -370,6 +419,7 @@ mod tests {
                     tint: None,
                 },
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("cancel"),
                     label: "Cancel".into(),
                     is_default: false,
@@ -439,6 +489,86 @@ mod tests {
         let by = vis.bounds.y.round() as u16;
         let bg = buf[(bx, by)].bg;
         assert_eq!(bg, ratatui::style::Color::Rgb(99, 0, 0));
+    }
+
+    fn cell_fg(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
+        buf[(x, y)]
+            .style()
+            .fg
+            .unwrap_or(ratatui::style::Color::Reset)
+    }
+
+    /// A `DialogButton` with an explicit `Danger` spec reads as
+    /// `[ ⚠ Move to Trash ]` in `theme.error_fg`, through the same
+    /// bracket-chrome path `crate::tui::button` paints a standalone
+    /// `Button` with — not the dialog's own bare highlighted-row look.
+    ///
+    /// Goes through the real `tui_dialog_layout` (not a hand-built
+    /// `DialogMeasure`), so the button box it hands `draw_dialog` is
+    /// exactly what every production TUI caller would compute — this
+    /// is the regression guard for `tui_dialog_layout` sizing its
+    /// button row from `resolved_button_spec()` rather than a fixed
+    /// legacy width.
+    #[test]
+    fn danger_spec_button_renders_with_the_intent_colour_and_bracket_chrome() {
+        let mut d = make_dialog();
+        let mut spec = crate::primitives::button::ButtonSpec::new("Move to Trash");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        spec.icon = Some(crate::types::Icon::new("\u{f071}", "!"));
+        d.buttons[0].spec = Some(spec);
+
+        let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
+        let layout = tui_dialog_layout(&d, viewport);
+        let theme = Theme::default();
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
+        draw_dialog(&mut buf, &d, &layout, &theme);
+
+        let vis = &layout.visible_buttons[0];
+        let bx = vis.bounds.x.round() as u16;
+        let by = vis.bounds.y.round() as u16;
+        let bw = vis.bounds.width.round() as u16;
+        let row: String = (bx..bx + bw).map(|x| cell_char(&buf, x, by)).collect();
+
+        assert!(
+            row.starts_with('['),
+            "a spec-backed button paints bracket chrome, got {row:?}"
+        );
+        assert!(
+            row.trim_end().ends_with(']'),
+            "a spec-backed button's closing bracket must not be clipped, got {row:?}"
+        );
+        assert!(row.contains("Move to Trash"));
+        // The fallback half, since this test never turns Nerd Fonts on.
+        assert!(row.contains('!'));
+        assert_eq!(cell_fg(&buf, bx + 2, by), ratatui_color(theme.error_fg));
+    }
+
+    /// The flip side of the test above: a `DialogButton` with no `spec`
+    /// paints through the plain legacy bare-highlighted-row path — no
+    /// bracket chrome, just the label text.
+    #[test]
+    fn legacy_only_button_renders_exactly_as_before() {
+        let d = make_dialog();
+        assert!(d.buttons[0].spec.is_none());
+        let layout = make_layout(&d);
+        let theme = Theme::default();
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
+        draw_dialog(&mut buf, &d, &layout, &theme);
+
+        let vis = &layout.visible_buttons[0];
+        let bx = vis.bounds.x.round() as u16;
+        let by = vis.bounds.y.round() as u16;
+        let bw = vis.bounds.width.round() as u16;
+        let row: String = (bx..bx + bw).map(|x| cell_char(&buf, x, by)).collect();
+
+        assert!(
+            !row.contains('['),
+            "a legacy-only button must not gain bracket chrome, got {row:?}"
+        );
+        assert!(row.contains("Save"));
+        assert_eq!(cell_fg(&buf, bx + 1, by), ratatui_color(theme.surface_fg));
     }
 
     #[test]
@@ -514,6 +644,7 @@ mod tests {
                 spans: vec![StyledSpan::plain("Choose an action:")],
             }],
             buttons: vec![DialogButton {
+                spec: None,
                 id: WidgetId::new("ok"),
                 label: "OK".into(),
                 is_default: true,
@@ -527,6 +658,7 @@ mod tests {
                 id: WidgetId::new("body-toolbar"),
                 buttons: vec![
                     ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("preview"),
                         label: "Preview".into(),
                         icon: None,
@@ -537,6 +669,7 @@ mod tests {
                     },
                     ToolbarButton::Separator,
                     ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("apply"),
                         label: "Apply".into(),
                         icon: None,
@@ -686,6 +819,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("preview"),
                     label: "Preview".into(),
                     icon: None,

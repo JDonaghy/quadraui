@@ -68,6 +68,7 @@ impl DialogDemo {
                 table: None,
                 buttons: vec![
                     DialogButton {
+                        spec: None,
                         id: WidgetId::new("gallery:dialog:ok"),
                         label: "OK".into(),
                         is_default: true,
@@ -75,6 +76,7 @@ impl DialogDemo {
                         tint: None,
                     },
                     DialogButton {
+                        spec: None,
                         id: WidgetId::new("gallery:dialog:cancel"),
                         label: "Cancel".into(),
                         is_default: false,
@@ -96,6 +98,7 @@ impl DialogDemo {
                 table: None,
                 buttons: vec![
                     DialogButton {
+                        spec: None,
                         id: WidgetId::new("gallery:dialog:keep"),
                         label: "Keep".into(),
                         is_default: true,
@@ -103,6 +106,7 @@ impl DialogDemo {
                         tint: None,
                     },
                     DialogButton {
+                        spec: None,
                         id: WidgetId::new("gallery:dialog:delete"),
                         label: "Delete".into(),
                         is_default: false,
@@ -123,6 +127,7 @@ impl DialogDemo {
                 table: None,
                 buttons: vec![
                     DialogButton {
+                        spec: None,
                         id: WidgetId::new("gallery:dialog:save"),
                         label: "Save".into(),
                         is_default: true,
@@ -130,6 +135,7 @@ impl DialogDemo {
                         tint: None,
                     },
                     DialogButton {
+                        spec: None,
                         id: WidgetId::new("gallery:dialog:discard"),
                         label: "Discard".into(),
                         is_default: false,
@@ -137,6 +143,7 @@ impl DialogDemo {
                         tint: Some(Color::rgb(200, 60, 60)),
                     },
                     DialogButton {
+                        spec: None,
                         id: WidgetId::new("gallery:dialog:cancel-vertical"),
                         label: "Cancel".into(),
                         is_default: false,

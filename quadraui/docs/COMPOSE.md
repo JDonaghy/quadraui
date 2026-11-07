@@ -365,6 +365,66 @@ overlay.render(backend, area);
 
 ---
 
+## `HoverTooltipTracker` — `src/compose/hover_tooltip_tracker.rs`
+
+**Owns:** *when* a hover-driven tooltip is on screen, on top of the
+plain "what is under the pointer right now" answer
+`ToolbarHoverTracker` / `ListHoverTracker` / `TreeHoverTracker` give.
+A pointer crossing a widget on its way elsewhere must not flash its
+tooltip, so the tracker waits `Style::tooltip_delay_ms` of continuous
+hover before the tooltip becomes visible, and then hides it again on
+any of the three ways a tooltip ends: the pointer leaving, an explicit
+dismiss (a click, `Escape`), or an auto-dismiss timeout while the
+pointer never moved. Generic over the item type that identifies what is
+hovered — a `WidgetId` for a toolbar button, a row index for a list, or
+the tooltip text itself.
+
+Every method takes the current time as a caller-supplied `u64`
+millisecond value and never reads a wall clock, so a test drives the
+whole state machine with hand-picked timestamps and no sleeping, and a
+binding can feed it a plain Python/JS integer.
+
+Painting is not this controller's job: it answers *which* item's
+tooltip to show, and the host paints that text with the `Tooltip`
+primitive. Keep the tooltip topmost — in a binding host,
+`quadraui_binding_core::host::render_overlays` already paints tooltips
+after the lower overlay layers.
+
+**Events:** none — a state holder whose mutating methods return `true`
+when the caller should redraw; read the current answer via
+`visible_item()` (and `is_pending()`).
+
+**Smallest wiring:**
+
+```ignore
+let mut tooltip: HoverTooltipTracker<WidgetId> = HoverTooltipTracker::new();
+
+// On a mouse move: `update` returns true when the hovered button changed.
+if self.hover.update(&toolbar_layout, x, y) {
+    tooltip.on_hover(self.hover.hovered_id().copied(), now_ms);
+}
+
+// Every frame: notice the delay (and the auto-dismiss timeout) elapsing.
+tooltip.tick(style.tooltip_delay_ms, now_ms);
+tooltip.tick_auto_dismiss(5_000, now_ms);
+
+// Render time: paint the tooltip for whatever is visible, last of all.
+if let Some(id) = tooltip.visible_item() {
+    let tip = Tooltip::new(*id, tooltip_text_for(id));
+    let layout = tip.layout(anchor_of(id), clamp, measure, line_height);
+    backend.draw_tooltip(&tip, &layout);
+}
+```
+
+**Example:** no standalone demo yet — `examples/tui_tooltip.rs` /
+`examples/gtk_tooltip.rs` (`examples/common/tooltip_demo.rs`) show the
+`Tooltip` primitive this controller decides the visibility of, driven
+from keys rather than a hover clock. The `#[cfg(test)]` module in
+`hover_tooltip_tracker.rs` is the direct-use reference for the state
+machine itself.
+
+---
+
 ## Markdown → `StyledText` adapter — `src/compose/markdown.rs`
 
 Not a stateful controller — a pure conversion function,

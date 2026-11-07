@@ -691,11 +691,14 @@ fn set_size_without_orphaning_wide_cells<CB: vt100::Callbacks>(
 /// property test before any real caller ever hit it.
 const MIN_VT100_ROWS: u16 = 2;
 
-/// Floor for `cols`, for the same reason as [`MIN_VT100_ROWS`] but a
-/// different upstream panic site (`attempt to subtract with overflow`,
-/// `screen.rs:730`, reachable with `cols == 1` and certain multi-byte
-/// input regardless of `rows`) — found by the same property test.
-const MIN_VT100_COLS: u16 = 2;
+/// Floor for `cols`, for a related but distinct upstream panic site
+/// (`attempt to subtract with overflow`, `screen.rs:730`). vt100 computes
+/// `size.cols - width` and assumes a character's `unicode-width` can only
+/// be 0, 1, or 2 columns wide; `unicode-width` 0.2.x reports U+17D8 KHMER
+/// SIGN BEYYAL as 3 columns wide, so any grid narrower than 3 columns can
+/// still underflow when that character (or another width-3 one) arrives —
+/// found by the same property test.
+const MIN_VT100_COLS: u16 = 3;
 
 /// Floor a caller-supplied `(cols, rows)` pair to the smallest grid vt100
 /// can construct or resize to without panicking.
@@ -2466,6 +2469,26 @@ mod tests {
             (MIN_VT100_ROWS, MIN_VT100_COLS),
             "the floored grid must survive construction, resize and wide-char input"
         );
+    }
+
+    /// Regression for a third upstream panic site, same message
+    /// (`attempt to subtract with overflow`, `screen.rs:730`), triggered not
+    /// by a too-narrow grid but by a too-wide character: `unicode-width`
+    /// 0.2.x reports U+17D8 KHMER SIGN BEYYAL as 3 columns wide, which
+    /// underflows vt100's `size.cols - width` on anything narrower than 3
+    /// columns — including the old `MIN_VT100_COLS == 2` floor. Asserts the
+    /// floor itself raised to 3, not just that the parser survives, so a
+    /// regression back to 2 fails here even if some other change happened
+    /// to paper over the panic.
+    #[test]
+    fn vt100_survives_a_width_three_character_at_the_clamped_floor() {
+        assert_eq!(
+            clamp_vt100_size(2, 2).0,
+            3,
+            "MIN_VT100_COLS must be at least 3 — a width-3 char underflows a 2-column grid"
+        );
+        let mut p = vt100::Parser::new(MIN_VT100_ROWS, MIN_VT100_COLS, 0);
+        p.process("\u{17d8}".as_bytes());
     }
 
     #[test]

@@ -124,6 +124,156 @@ test("setRender honours a row's padding/gap spacing keys", () => {
   assert.equal(lines[1].trim(), "L");
 });
 
+test("setRender honours a panel's padding/margin spacing keys", () => {
+  // A `"panel"` node's `"padding"`/`"margin"` keys are siblings of the
+  // `"panel"` key, honoured by the same shared layout pass a `"row"`'s own
+  // spacing keys use -- the whole panel (chrome and content both) is
+  // inset before the chrome paints. `padding: 12` insets a panel with no
+  // title bar by `ceil(12 / 8) == 2` columns and `ceil(12 / 16) == 1` row.
+  const app = new QuiApp(10, 5);
+  app.setRender(() => ({
+    panel: {
+      id: "panel:1",
+      content: { id: "text:body", text_display: { id: "text:body", lines: [{ spans: [{ text: "X", fg: null, bg: null }] }] } },
+    },
+    padding: 12,
+  }));
+  const lines = app.screen().split("\n");
+  assert.equal(lines[0].trim(), "", "no padding row stays blank");
+  assert.equal(lines[1].slice(0, 2), "  ", "padding columns stay blank");
+  assert.equal(lines[1].trim(), "X");
+});
+
+test("setRender rejects a gap key on a panel node", () => {
+  // `"gap"` has no meaning on a `"panel"` node -- there's no second
+  // sibling to space it from -- so it's a decode error.
+  const app = new QuiApp(10, 5);
+  app.setRender(() => ({
+    panel: {
+      id: "panel:1",
+      content: { id: "text:body", text_display: { id: "text:body", lines: [] } },
+    },
+    gap: 8,
+  }));
+  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+});
+
+test("setRender rejects a gap key on a tabs node", () => {
+  // `"gap"` has no meaning on a `"tabs"` node either.
+  const app = new QuiApp(10, 8);
+  app.setRender(() => ({
+    tabs: { id: "tabbar:1", tabs: [] },
+    gap: 8,
+  }));
+  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+});
+
+test("setRender accepts an optional focused_index on a tabs node", () => {
+  // "focused_index" marks a tab keyboard-focused (reverse video on
+  // TUI; see `tui::tab_bar`'s own test for the pixel-level treatment).
+  // Passing it must not raise and must not change which tab's content is
+  // shown -- that's still "selected"'s job.
+  const app = new QuiApp(10, 8);
+  app.setRender(() => ({
+    tabs: {
+      id: "tabbar:1",
+      selected: 0,
+      focused_index: 1,
+      tabs: [
+        {
+          id: "one",
+          title: "One",
+          content: {
+            id: "text:one",
+            text_display: {
+              id: "text:one",
+              lines: [{ spans: [{ text: "O", fg: null, bg: null }] }],
+            },
+          },
+        },
+        {
+          id: "two",
+          title: "Two",
+          content: {
+            id: "text:two",
+            text_display: {
+              id: "text:two",
+              lines: [{ spans: [{ text: "T", fg: null, bg: null }] }],
+            },
+          },
+        },
+      ],
+    },
+  }));
+  const lines = app.screen().split("\n");
+  assert.match(lines[0], /One/);
+  assert.match(lines[0], /Two/);
+  // Excludes the strip row (`lines[0]`) — `"One"`'s own `O` would
+  // trivially satisfy a screen-wide `/O/`, without proving the content
+  // pane (tab 0's selected text, not tab 1's keyboard-focused one) ever
+  // rendered. The Python twin
+  // (`test_tabs_accepts_an_optional_focused_index`) asserts the same way.
+  assert.match(lines.slice(1).join("\n"), /O/);
+});
+
+test("setRender rejects an out-of-range focused_index on a tabs node", () => {
+  // Same out-of-range convention "selected" already uses.
+  const app = new QuiApp(10, 8);
+  app.setRender(() => ({
+    tabs: {
+      id: "tabbar:1",
+      focused_index: 5,
+      tabs: [
+        {
+          id: "one",
+          title: "One",
+          content: {
+            id: "text:one",
+            text_display: {
+              id: "text:one",
+              lines: [{ spans: [{ text: "O", fg: null, bg: null }] }],
+            },
+          },
+        },
+      ],
+    },
+  }));
+  assert.throws(() => app.screen(), /InvalidDescriptorError/);
+});
+
+test("setRender honours a split's padding/margin/gap spacing keys", () => {
+  // A `"split"` node's `"padding"`/`"margin"`/`"gap"` keys are siblings of
+  // the `"split"` key -- `"gap"` is the one spacing key with a real
+  // meaning here: extra blank space carved out between the divider and
+  // the second pane, subtracted from the available width before
+  // `first_min`/`second_min` are evaluated. `padding: 8` insets by one
+  // column/row each (`ceil(8/8) == 1`, `ceil(8/16) == 1`); `gap: 16` then
+  // inserts `ceil(16/8) == 2` blank columns after the 1-column divider.
+  const app = new QuiApp(20, 4);
+  app.setRender(() => ({
+    split: {
+      id: "split:1",
+      orientation: "horizontal",
+      ratio: 0.5,
+      first: { id: "text:left", text_display: { id: "text:left", lines: [{ spans: [{ text: "L", fg: null, bg: null }] }] } },
+      second: { id: "text:right", text_display: { id: "text:right", lines: [{ spans: [{ text: "R", fg: null, bg: null }] }] } },
+    },
+    padding: 8,
+    gap: 16,
+  }));
+  const lines = app.screen().split("\n");
+  assert.equal(lines[0].trim(), "", "no padding row stays blank");
+  const contentLine = lines[1];
+  assert.equal(contentLine[1], "L", "first pane starts right after the padding column");
+  const dividerCol = contentLine.indexOf("│");
+  const rightCol = contentLine.indexOf("R");
+  assert.equal(
+    rightCol - dividerCol,
+    1 + 2,
+    "second pane starts 1 divider column plus the 2-column gap past the divider",
+  );
+});
+
 test("a handler calling back into QuiApp (e.g. insertButton) mid-dispatch raises instead of corrupting state", () => {
   const app = new QuiApp(20, 5);
   let reentrantCallThrew = false;

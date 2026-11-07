@@ -15,7 +15,7 @@ use quadraui::{
     InteractionState, MenuBar, MessageList, Minimap, MultiSectionView, NumberInput, NumberInputHit,
     Palette, PipelineView, Point, ProgressBar, RadioGroup, Rect, ScrollAxis, ScrollView, Scrollbar,
     Spinner, StatusBar, StatusBarHit, Switch, SwitchHit, Terminal, TextInput, TextRegion, Toolbar,
-    WidgetId,
+    ToolbarButton, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -549,6 +549,19 @@ impl ExtraPaint for Toolbar {
             .filter_map(|item| item.action_id.map(|id| (item.bounds, id)))
             .collect()
     }
+
+    /// A tab stop whenever at least one button could ever be
+    /// [`Self::activate_focused`]'s target — matching `Switch`'s own
+    /// "interactive, so focusable" rule. A toolbar with no enabled
+    /// `Action` (all separators/labels, or every action disabled) is
+    /// skipped, the same way an empty `List`/`Tree` still counts (unlike
+    /// those, nothing here could ever be activated, so there is no reason
+    /// to spend a tab stop on it).
+    fn tab_stop(&self) -> bool {
+        self.buttons
+            .iter()
+            .any(|button| matches!(button, ToolbarButton::Action { enabled: true, .. }))
+    }
 }
 
 impl ExtraPaint for MenuBar {
@@ -617,11 +630,39 @@ impl ExtraPaint for CommandCenter {
 
 impl ExtraPaint for Palette {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_palette(area, self);
+        self.paint_chrome(backend, area, &InteractionState::default());
     }
 
     fn id(&self) -> WidgetId {
         self.id
+    }
+
+    /// [`quadraui::Backend::draw_palette_with_state`] only tints the
+    /// pinned create-action row — the one row in a `Palette` with a
+    /// stable id, `palette.id` itself (see that method's own doc for
+    /// why [`quadraui::PaletteItem`] rows stay out of `InteractionState`) —
+    /// so the one chrome hit recorded here is that row, when present.
+    /// Its bounds come from a no-paint [`quadraui::Backend::palette_layout`]
+    /// call — the same layout `draw_palette_with_state` paints from —
+    /// shifted into the ABSOLUTE frame [`ExtraPaint::hit_test`] uses,
+    /// mirroring [`ActivityBar::paint_chrome`]'s own translation.
+    fn paint_chrome(
+        &self,
+        backend: &mut dyn Backend,
+        area: Rect,
+        interaction: &InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        backend.draw_palette_with_state(area, self, interaction);
+        backend
+            .palette_layout(area, self)
+            .create_bounds
+            .map(|b| {
+                vec![(
+                    Rect::new(area.x + b.x, area.y + b.y, b.width, b.height),
+                    self.id,
+                )]
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -867,4 +908,105 @@ extra_primitives! {
     "canvas" => Canvas,
     "scroll_view" => ScrollView,
     "find_replace" => FindReplacePanel,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hit::PaintedHit;
+    use crate::layout::{LayoutLeaf, LeafDescriptor};
+    use crate::render::paint_leaf;
+    use quadraui::tui::testing::TuiDriver;
+    use quadraui::{AppLogic, PaletteItem, Reaction, UiEvent};
+    use std::cell::RefCell;
+
+    fn palette(create_label: Option<&str>) -> Palette {
+        Palette {
+            id: WidgetId::new("pal"),
+            title: "Commands".into(),
+            query: String::new(),
+            query_cursor: 0,
+            items: vec![PaletteItem {
+                text: quadraui::StyledText::plain("open file"),
+                detail: None,
+                icon: None,
+                match_positions: vec![],
+                depth: 0,
+                expandable: false,
+                expanded: false,
+            }],
+            selected_idx: 0,
+            scroll_offset: 0,
+            total_count: 0,
+            has_focus: true,
+            show_query: true,
+            create_label: create_label.map(|s| s.to_string()),
+            preview: None,
+            mode: Default::default(),
+        }
+    }
+
+    struct PaletteChromeApp {
+        palette: Palette,
+        hits: RefCell<Vec<PaintedHit>>,
+    }
+
+    impl AppLogic for PaletteChromeApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let leaf = LayoutLeaf {
+                id: "pal-leaf".into(),
+                descriptor: LeafDescriptor::Extra(Rc::new(self.palette.clone())),
+                scroll_px: None,
+            };
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let mut hits = Vec::new();
+            let chrome = |_id| InteractionState::default();
+            paint_leaf(backend, area, &leaf, &mut hits, &chrome);
+            *self.hits.borrow_mut() = hits;
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    fn chrome_hits_for(create_label: Option<&str>) -> Vec<(Rect, WidgetId)> {
+        let app = PaletteChromeApp {
+            palette: palette(create_label),
+            hits: RefCell::new(Vec::new()),
+        };
+        let mut driver = TuiDriver::new(app, 40, 20);
+        driver.render();
+        let found = driver.app().hits.borrow().iter().find_map(|hit| match hit {
+            PaintedHit::Extra { chrome_hits, .. } => Some(chrome_hits.clone()),
+            _ => None,
+        });
+        found.expect("a Palette extra was painted")
+    }
+
+    /// With no pinned create row, there is nothing to register as a
+    /// chrome hit — `chrome_hover`/`chrome_pressed` (and so
+    /// `draw_palette_with_state`'s hover tint) never fire for a plain
+    /// palette.
+    #[test]
+    fn no_create_label_means_no_chrome_hits() {
+        assert_eq!(chrome_hits_for(None), Vec::new());
+    }
+
+    /// A pinned create row is recorded as one chrome hit keyed by
+    /// `palette.id` — the same id [`Backend::draw_palette_with_state`]
+    /// checks `interaction.is_hovered`/`is_pressed` against, so a
+    /// py/node app that sets `create_label` gets hover for free the
+    /// moment `InteractionEngine::handle`'s generic `chrome_hover_hit`
+    /// bookkeeping (keyed off this exact `chrome_hits` entry) sees a
+    /// `MouseMoved` land inside it.
+    #[test]
+    fn create_label_registers_one_chrome_hit_keyed_by_palette_id() {
+        let hits = chrome_hits_for(Some("Create 'foo'"));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1, WidgetId::new("pal"));
+    }
 }

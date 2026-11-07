@@ -25,7 +25,8 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::measure_text;
-use crate::primitives::list::{ListView, ListViewLayout};
+use crate::primitives::list::{ListItemMeasure, ListPaintState, ListView, ListViewLayout};
+use crate::style::Style;
 use crate::theme::Theme;
 
 /// Compute the layout the macOS rasteriser would produce for `list`
@@ -66,6 +67,42 @@ pub fn mac_list_layout(
     crate::primitives::layout_metrics::list_layout(list, w, h, line_height, char_width, 0.0)
 }
 
+/// Like [`mac_list_layout`], but threads an explicit pixel-precise
+/// scroll position (`scroll_px`) through to
+/// [`ListView::layout_with_scroll_px`] instead of only
+/// [`ListView::scroll_offset`]'s whole-row value — mirrors
+/// [`crate::primitives::layout_metrics::list_layout`]'s h-scrollbar
+/// reservation (border inset is always `0.0` here, matching
+/// `mac_list_layout`; macOS doesn't support [`ListView::bordered`] yet —
+/// see this module's "Scope omissions"), just calling the scroll_px-aware
+/// layout method the plain [`crate::primitives::layout_metrics::list_layout`]
+/// can't reach. `scroll_px: None` produces byte-identical output to
+/// `mac_list_layout`.
+pub fn mac_list_layout_with_scroll_px(
+    list: &ListView,
+    w: f64,
+    h: f64,
+    line_height: f64,
+    char_width: f64,
+    scroll_px: Option<f32>,
+) -> ListViewLayout {
+    let visible_px = w.max(0.0);
+    let needs_hscrollbar = list
+        .max_content_width
+        .is_some_and(|n| n as f64 * char_width > visible_px);
+    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
+    let title_h = if list.title.is_some() {
+        line_height as f32
+    } else {
+        0.0
+    };
+    let layout_w = w as f32;
+    let layout_h = (h - hscrollbar_h).max(0.0) as f32;
+    list.layout_with_scroll_px(layout_w, layout_h, title_h, scroll_px, |_| {
+        ListItemMeasure::new(line_height as f32)
+    })
+}
+
 /// Draw a [`ListView`] into `(x, y, w, h)` on `ctx`. Returns the same
 /// layout `mac_list_layout` would produce — callers route clicks
 /// against this to consume one layout per frame.
@@ -93,6 +130,7 @@ pub unsafe fn draw_list(
     h: f64,
     list: &ListView,
     theme: &Theme,
+    style: &Style,
     line_height: f64,
     nerd_fonts_enabled: bool,
 ) -> ListViewLayout {
@@ -129,6 +167,90 @@ pub unsafe fn draw_list(
         /* supports_hscrollbar */ true,
         &mut surface,
         theme,
+        style,
+        // `hovered_idx` / `pressed_idx`: this base painter never tints
+        // rows — that's `draw_list_with_state`'s job, which composes
+        // both indices (and the focus-visible ring below) from
+        // `ListPaintState`. `None`/`false` here keep `draw_list`
+        // pixel-identical to the contract above.
+        None,
+        None,
+        false,
+    );
+
+    CGContextRestoreGState(ctx);
+    layout
+}
+
+/// [`draw_list`], plus hover/press row tinting, a focus-visible ring,
+/// and — when `state.scroll_px` is `Some` — a pixel-precise scroll
+/// position instead of only [`ListView::scroll_offset`]'s whole-row
+/// value: the first visible row is shifted up by the sub-row
+/// remainder and clipped against the list's own viewport (see
+/// [`crate::primitives::list::native_surface_paint::paint_with_scroll_px`]),
+/// producing the "partial first row clipped" look of pixel-smooth
+/// scrolling. `state.scroll_px: None` paints pixel-identically to
+/// [`draw_list`].
+///
+/// # Safety
+///
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
+/// the call.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_list_with_state(
+    ctx: CGContextRef,
+    font: &CTFont,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    list: &ListView,
+    theme: &Theme,
+    style: &Style,
+    line_height: f64,
+    nerd_fonts_enabled: bool,
+    state: &ListPaintState,
+    focus_ring_visible: bool,
+) -> ListViewLayout {
+    let (char_w, _) = measure_text(font, "M");
+    let char_w = char_w.max(1.0);
+
+    if w <= 0.0 || h <= 0.0 {
+        return mac_list_layout_with_scroll_px(
+            list,
+            w.max(0.0),
+            h.max(0.0),
+            line_height,
+            char_w,
+            state.scroll_px,
+        );
+    }
+
+    let layout = mac_list_layout_with_scroll_px(list, w, h, line_height, char_w, state.scroll_px);
+
+    CGContextSaveGState(ctx);
+    CGContextClipToRect(ctx, CGRect::new_xywh(x, y, w, h));
+
+    let area = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    crate::primitives::list::native_surface_paint::paint_with_scroll_px(
+        list,
+        area,
+        &layout,
+        line_height as f32,
+        nerd_fonts_enabled,
+        /* supports_border */ false,
+        /* supports_hscrollbar */ true,
+        &mut surface,
+        theme,
+        style,
+        state.hovered_idx,
+        state.pressed_idx,
+        focus_ring_visible,
+        state.scroll_px,
     );
 
     CGContextRestoreGState(ctx);
@@ -494,6 +616,143 @@ mod tests {
             "a row with an icon should paint strictly more ink ({with_icon}px) than \
              the same row without one ({without_icon}px) — the #1075 icon-paint \
              regression this test guards"
+        );
+    }
+
+    /// `ListPaintState::scroll_px: None` must paint pixel-identically to
+    /// [`draw_list`] — `draw_list_with_state` additive, not a behaviour
+    /// change for the default path.
+    #[test]
+    fn scroll_px_none_paints_identically_to_draw_list() {
+        let list = ListView {
+            title: None,
+            ..sample_list()
+        };
+        let plain_bytes = {
+            let (surface, _layout) = paint_via_backend(&list);
+            surface.bytes().to_vec()
+        };
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let state = crate::primitives::list::ListPaintState::default();
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_list_with_state(rect, &list, &state, false);
+        });
+        backend.end_frame();
+
+        assert_eq!(
+            plain_bytes,
+            surface.bytes().to_vec(),
+            "scroll_px: None must paint the same pixels as draw_list"
+        );
+    }
+
+    /// A sub-row `scroll_px` shifts row 0 above the viewport top and
+    /// reveals row 1 one sub-row-remainder early — the "partial first
+    /// row clipped" look of pixel-smooth scrolling. Asserted two ways:
+    /// the resolved layout (`scroll_sub_px`, row 0's negative `bounds.y`,
+    /// via the no-paint [`mac_list_layout_with_scroll_px`]) and the
+    /// actual painted pixel at the boundary where row 0 ends and row 1
+    /// begins.
+    #[test]
+    fn scroll_px_shifts_the_first_row_above_the_viewport_top() {
+        let list = ListView {
+            title: None,
+            selected_idx: 0,
+            ..sample_list()
+        };
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        let baseline = backend.list_layout(rect, &list);
+        let row_h = baseline.visible_items[0].bounds.height;
+        let half = row_h / 2.0;
+
+        // No-paint layout, using the same resolved row height `draw_list`
+        // painted into `baseline` — `mac_list_layout_with_scroll_px`'s
+        // `char_width` only matters for the h-scrollbar-overflow check,
+        // which `sample_list()` never triggers.
+        let layout = mac_list_layout_with_scroll_px(
+            &list,
+            W as f64,
+            H as f64,
+            row_h as f64,
+            8.0,
+            Some(half),
+        );
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let state = crate::primitives::list::ListPaintState::default().with_scroll_px(Some(half));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_list_with_state(rect, &list, &state, false);
+        });
+        backend.end_frame();
+
+        assert!(
+            (layout.scroll_sub_px - half).abs() < 0.01,
+            "scroll_sub_px should resolve to the sub-row remainder, got {}",
+            layout.scroll_sub_px
+        );
+        assert_eq!(layout.visible_items[0].item_idx, 0);
+        assert!(
+            layout.visible_items[0].bounds.y < 0.0,
+            "row 0 should be shifted above the viewport top by the sub-row \
+             remainder, got y={}",
+            layout.visible_items[0].bounds.y
+        );
+
+        // Row 0 is selected, so probing just past its bottom edge must
+        // land on row 1's (unselected) background once the sub-row
+        // shift is applied — at that same absolute pixel, the
+        // `scroll_px: None` paint is still inside row 0's selected band.
+        let theme = Theme::default();
+        let probe_y = (half + 1.0) as u32;
+        let probe_x = (W / 2).min(W - 1);
+        let (r, g, b, _) = surface.pixel(probe_x, probe_y.min(H - 1));
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "pixel just below row 0's shifted bottom edge should show row 1's \
+             background, not the still-selected row 0 a whole-row paint would \
+             show there"
+        );
+
+        // Prove the other half of the claim: at that exact same absolute
+        // pixel, a `scroll_px: None` paint (today's baseline behaviour)
+        // *is* still inside row 0's selected band — the two assertions
+        // together show the sub-row shift, not some other difference,
+        // is what moved the boundary.
+        let baseline_surface = BitmapSurface::new(W, H);
+        baseline_surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut baseline_backend = MacBackend::new();
+        baseline_backend.set_current_font(font());
+        baseline_backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        baseline_backend.enter_frame_scope(baseline_surface.context_ptr(), |b| {
+            b.draw_list(rect, &list);
+        });
+        baseline_backend.end_frame();
+        let (br, bg, bb, _) = baseline_surface.pixel(probe_x, probe_y.min(H - 1));
+        assert_eq!(
+            (br, bg, bb),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "the same probe pixel on a scroll_px: None paint must still show \
+             row 0's selected background"
         );
     }
 }

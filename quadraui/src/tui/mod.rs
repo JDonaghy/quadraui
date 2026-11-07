@@ -94,9 +94,11 @@ pub use context_menu::{
     draw_context_menu, draw_context_menu_with_glyphs, draw_context_menu_with_submenus,
     BORDER_INSET as CONTEXT_MENU_BORDER_INSET,
 };
-pub use data_table::{data_table_layout, draw_data_table, draw_data_table_with_glyphs};
+pub use data_table::{
+    data_table_layout, draw_data_table, draw_data_table_with_glyphs, draw_data_table_with_state,
+};
 pub use date_picker::draw_date_picker;
-pub use dialog::{draw_dialog, tui_dialog_layout};
+pub use dialog::{draw_dialog, draw_dialog_with_nerd_fonts, tui_dialog_layout};
 pub use diff_view::draw_diff_view;
 pub use drop_overlay::draw_drop_overlay;
 pub use editor::{draw_editor, draw_editor_with_reserve, EditorPaintResult};
@@ -105,7 +107,9 @@ pub use float::draw_float;
 pub use focus_ring::draw_focus_ring;
 pub use form::{draw_form, draw_settings_chrome, tui_form_layout};
 pub use image::draw_image;
-pub use list::{draw_list, tui_list_layout};
+pub use list::{
+    draw_list, draw_list_with_scroll_px, tui_list_layout, tui_list_layout_with_scroll_px,
+};
 pub use menu_bar::{draw_menu_bar, tui_menu_bar_layout};
 pub use message_list::draw_message_list;
 pub use minimap::{
@@ -145,7 +149,9 @@ pub use toolbar::{draw_toolbar, draw_toolbar_with_options, tui_toolbar_layout};
 pub use tooltip::{
     draw_tooltip, draw_tooltip_with_chrome, painted_bounds as tooltip_painted_bounds,
 };
-pub use tree::{draw_tree, tui_tree_layout};
+pub use tree::{
+    draw_tree, draw_tree_with_scroll_px, tui_tree_layout, tui_tree_layout_with_scroll_px,
+};
 
 /// Convert a `quadraui::Color` to the ratatui palette colour used by
 /// `set_cell`. Public so apps adopting these rasterisers can mirror the

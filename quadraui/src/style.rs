@@ -33,11 +33,12 @@
 //!   is this: [`crate::tui::draw_focus_ring`] always paints a 1-cell
 //!   box-drawing border regardless of what a GUI backend's style carries
 //!   (its own doc already says so — this struct doesn't change that).
-//! - **Cell-quantised** — a future spacing/padding token would round to
-//!   whole cells rather than being dropped outright, the same way
+//! - **Cell-quantised** — a spacing/padding token rounds to whole cells
+//!   rather than being dropped outright, the same way
 //!   `LayoutMetrics::cell_quantum` already quantises hit-test geometry
 //!   (`docs/decisions/DECISIONS.md` D-016's "Paint/click drift" note).
-//!   No token is shaped that way yet — see *Scope* below.
+//!   [`Self::row_padding_x`]/[`Self::tab_padding_x`] are this — see
+//!   their own docs for the exact rounding rule.
 //! - **Pre-blend** — a token whose pixel-backend refinement is alpha
 //!   compositing, which ratatui's `Buffer` has no primitive for.
 //!   [`Self::backdrop_opacity`] is this: [`crate::tui::draw_palette`]
@@ -70,10 +71,10 @@
 //! Code surface it mirrors.
 //!
 //! [`Self::scrollbar_width`] is a further single-owner token, the same
-//! shape as [`Self::backdrop_opacity`]: only `List`/`TreeView`/
-//! `DataTable`'s vertical scrollbar reads it (once a future PR wires
-//! the rasterisers to it — see that field's own doc), independent of
-//! the chrome-metric group's `row_height`.
+//! shape as [`Self::backdrop_opacity`]: `List`/`TreeView`'s shared
+//! vertical-scrollbar painters read it (`DataTable` keeps its own fixed
+//! override — see that field's own doc for why), independent of the
+//! chrome-metric group's `row_height`.
 //!
 //! A second group of five tokens — [`Self::tab_height`],
 //! [`Self::status_bar_height`], [`Self::activity_bar_width`],
@@ -84,6 +85,17 @@
 //! overlay primitive reads them. They follow the same cell-grid-no-op
 //! TUI story as the rest of this struct — see each field's own
 //! "TUI story" paragraph.
+//!
+//! [`Self::row_padding_x`] and [`Self::tab_padding_x`] are a third
+//! group of two: horizontal content insets rather than chrome sizes or
+//! overlay padding/radius/border. `row_padding_x` is read by the one
+//! shared [`crate::paint_surface::PaintSurface`] painter `List`/
+//! `TreeView`/`ContextMenu`/`Palette` all route every GTK/macOS/Win32
+//! rasteriser through; `tab_padding_x` is read by each backend's own
+//! `tab_bar.rs` painter instead, since tab-strip painting isn't on that
+//! shared path. Both are the cell-quantised TUI case the mapping
+//! section above describes — see each field's own doc for the rounding
+//! rule.
 //!
 //! Each further token lands as its own additive field, the same shape
 //! [`Self::focus_ring_width`] already has — `docs/decisions/DECISIONS.md`
@@ -303,29 +315,55 @@ pub struct Style {
     #[serde(default = "default_toolbar_height")]
     pub toolbar_height: f32,
 
-    /// Width, in surface-native pixels, of a `List`/`TreeView`/
-    /// `DataTable` vertical scrollbar track — independent of
-    /// [`Self::row_height`], since VS Code's overlay scrollbar is a
-    /// fixed 10px regardless of the row pitch it scrolls.
+    /// Width, in surface-native pixels, of a `List`/`TreeView` vertical
+    /// scrollbar track — independent of [`Self::row_height`], since VS
+    /// Code's overlay scrollbar is a fixed 10px regardless of the row
+    /// pitch it scrolls.
     ///
     /// **TUI story: no-op.** A terminal scrollbar is always exactly one
     /// cell wide; every TUI rasteriser for `List`/`TreeView`/`DataTable`
     /// keeps that one-cell track regardless of this field.
     ///
-    /// No pixel-backend rasteriser reads this field yet — `TreeView`
-    /// currently paints its vertical scrollbar at the fixed
+    /// Read by the one shared
+    /// [`crate::primitives::tree::native_surface_paint::paint`] and
+    /// [`crate::primitives::list::native_surface_paint::paint`] functions
+    /// every GTK/macOS/Win32 rasteriser routes its `TreeView`/`List`
+    /// vertical scrollbar paint through — via
+    /// [`crate::primitives::tree::TreeView::vscrollbar_with_track_width`]
+    /// / [`crate::primitives::list::ListView::vscrollbar_with_track_width`]
+    /// — so wiring either widget to this token is one change to its
+    /// shared painter, not one per backend. Each backend's own
+    /// `Backend::list_vscrollbar` hit-testing impl passes this same live
+    /// field (`self.current_style.scrollbar_width`), so `List`'s paint and
+    /// hit-test can't drift apart at a non-default style. Win's
+    /// `Backend::tree_vscrollbar` passes this same live field too. GTK's
+    /// and macOS's `Backend::tree_vscrollbar` still pass the fixed
     /// [`crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`]
-    /// (`10.0`, already matching this field's default) through the single
-    /// shared [`crate::primitives::tree::native_surface_paint`] paint path
-    /// GTK, macOS and Win32 all call, so wiring the tree to this token is
-    /// one change to that shared function, not one per backend.
-    /// `DataTable` paints at the separate
+    /// constant (`10.0`, matching this field's default) literally — a
+    /// per-backend follow-up threads a live `Style` through those too,
+    /// which is a no-op today since the constant equals this field's
+    /// default.
+    ///
+    /// **`DataTable` keeps its own fixed
     /// [`crate::primitives::layout_metrics::pixel::DATA_TABLE_SCROLLBAR_WIDTH`]
-    /// (`8.0`), so wiring it to this field — for the same reason as
-    /// [`Self::padding`] above, tracked separately from adding the
-    /// themeable seam here — would widen that scrollbar from `8.0` to
-    /// this field's `10.0` default unless that follow-up gives
-    /// `DataTable` its own override.
+    /// (`8.0`) override, deliberately not wired to this field.** Doing so
+    /// would require threading `&Style` through
+    /// [`crate::primitives::layout_metrics::pixel_data_table_layout`] and
+    /// therefore every backend's own `*_data_table_layout` resolver —
+    /// layout, not just paint, since `DataTable`'s column widths are
+    /// computed against the viewport width net of the scrollbar column —
+    /// which is per-backend wiring, not this shared-painter seam. It also
+    /// means `DataTable`'s scrollbar stays visually narrower than
+    /// `List`/`TreeView`'s; a later issue can add a `DataTable`-specific
+    /// width override field instead of widening this one and changing
+    /// `DataTable`'s look.
+    ///
+    /// `Palette`'s own scrollbar similarly keeps its narrower
+    /// `primitives::palette::native_surface_paint::SB_W` (`6.0`)
+    /// convention rather than reading this field — the popup's inline
+    /// command list was never part of this field's VS Code reference
+    /// (list/tree sidebar rows), so widening it to `10.0` would be a
+    /// visual change with no VS Code target to match, not a bug fix.
     ///
     /// Default `10.0` — VS Code's own list/tree overlay scrollbar width,
     /// matching the
@@ -333,6 +371,71 @@ pub struct Style {
     /// constant.
     #[serde(default = "default_scrollbar_width")]
     pub scrollbar_width: f32,
+
+    /// Horizontal inset, in surface-native pixels, between a row's
+    /// left edge and its leading chevron/icon/text — the gap `List`,
+    /// `TreeView`, `ContextMenu` and `Palette` all reserve before
+    /// painting a row's leading content. Consumed directly by the one
+    /// shared [`crate::paint_surface::PaintSurface`] painter each of
+    /// those four primitives routes every GTK/macOS/Win32 rasteriser
+    /// through — `primitives::{list,tree,context_menu,palette}::native_surface_paint`'s
+    /// own `paint`/`paint_with_glyphs` — so wiring this token there is
+    /// one change per primitive, not one per backend, the same shape
+    /// [`Self::scrollbar_width`]'s own doc describes for a future
+    /// `TreeView` scrollbar wire-up.
+    ///
+    /// `ContextMenu` also uses this token as the trailing inset before
+    /// a row's check-glyph/submenu-arrow/shortcut; `List`/`TreeView`/
+    /// `Palette` still reserve their trailing detail/badge gap with a
+    /// fixed literal — a host-set `row_padding_x` only moves those
+    /// three primitives' leading edge today.
+    ///
+    /// **TUI story: cell-quantised, dropped below one cell.** A sub-cell
+    /// inset has no grid column to paint into; a TUI rasteriser that
+    /// wants to honour this token rounds it up to whole cells first —
+    /// `ceil(row_padding_x / nominal_cell_px)`, the same nominal-cell-width
+    /// fallback [`Self::padding`]'s own doc describes — *except* that a
+    /// result below one whole cell is dropped to `0` rather than forced
+    /// up to a 1-cell minimum: a terminal list row is already flush
+    /// against its own border character, and forcing every row's text
+    /// one full cell inward by default would look like a layout bug, not
+    /// VS Code's much subtler sub-cell inset. No TUI primitive reads this
+    /// field yet, for the same reason as [`Self::padding`] above.
+    ///
+    /// Default `8.0` — VS Code's own list/tree/menu row horizontal inset.
+    #[serde(default = "default_row_padding_x")]
+    pub row_padding_x: f32,
+
+    /// Horizontal inset, in surface-native pixels, between a tab strip's
+    /// edge and a tab label's text. Defined here alongside
+    /// [`Self::row_padding_x`] but consumed by each GUI backend's own
+    /// `tab_bar.rs` painter rather than a primitive shared across
+    /// backends — see the per-backend follow-up issues this field's
+    /// introducing change tracks.
+    ///
+    /// **TUI story: cell-quantised, dropped below one cell** — the same
+    /// rule as [`Self::row_padding_x`]'s own doc.
+    ///
+    /// Default `10.0` — VS Code's own tab label horizontal inset.
+    #[serde(default = "default_tab_padding_x")]
+    pub tab_padding_x: f32,
+
+    /// How long the pointer has to stay over a widget's hover zone,
+    /// in milliseconds, before a hover-driven tooltip shows — the delay
+    /// a [`crate::compose::HoverTooltipTracker`] waits out via its own
+    /// `tick` before transitioning from pending to visible. Independent
+    /// of every other token in this struct: it gates *when* a tooltip
+    /// appears, not how it's painted once shown.
+    ///
+    /// **TUI story: no-op.** A terminal has no continuous pointer-motion
+    /// stream to time a hover delay against — `crate::tui`'s tooltip
+    /// treatment stays keyboard-focus-driven (shown immediately once a
+    /// widget has focus, same as before this field existed), so no TUI
+    /// rasteriser reads this token.
+    ///
+    /// Default `500` — VS Code's own hover-card delay.
+    #[serde(default = "default_tooltip_delay_ms")]
+    pub tooltip_delay_ms: u64,
 }
 
 /// `#[serde(default)]` value for [`Style::tab_height`] — a struct
@@ -379,6 +482,25 @@ fn default_scrollbar_width() -> f32 {
     10.0
 }
 
+/// `#[serde(default)]` value for [`Style::row_padding_x`] — see
+/// [`default_tab_height`].
+fn default_row_padding_x() -> f32 {
+    8.0
+}
+
+/// `#[serde(default)]` value for [`Style::tab_padding_x`] — see
+/// [`default_tab_height`].
+fn default_tab_padding_x() -> f32 {
+    10.0
+}
+
+/// `#[serde(default)]` value for [`Style::tooltip_delay_ms`] — a struct
+/// serialized before this field existed deserializes at the VS Code
+/// hover delay, matching [`Style::default`].
+fn default_tooltip_delay_ms() -> u64 {
+    500
+}
+
 impl Default for Style {
     fn default() -> Self {
         Self {
@@ -395,6 +517,9 @@ impl Default for Style {
             row_height: 22.0,
             toolbar_height: 35.0,
             scrollbar_width: 10.0,
+            row_padding_x: 8.0,
+            tab_padding_x: 10.0,
+            tooltip_delay_ms: 500,
         }
     }
 }
@@ -499,6 +624,27 @@ impl Style {
     #[must_use]
     pub fn with_scrollbar_width(mut self, scrollbar_width: f32) -> Self {
         self.scrollbar_width = scrollbar_width;
+        self
+    }
+
+    /// Set [`Self::row_padding_x`].
+    #[must_use]
+    pub fn with_row_padding_x(mut self, row_padding_x: f32) -> Self {
+        self.row_padding_x = row_padding_x;
+        self
+    }
+
+    /// Set [`Self::tab_padding_x`].
+    #[must_use]
+    pub fn with_tab_padding_x(mut self, tab_padding_x: f32) -> Self {
+        self.tab_padding_x = tab_padding_x;
+        self
+    }
+
+    /// Set [`Self::tooltip_delay_ms`].
+    #[must_use]
+    pub fn with_tooltip_delay_ms(mut self, tooltip_delay_ms: u64) -> Self {
+        self.tooltip_delay_ms = tooltip_delay_ms;
         self
     }
 }
@@ -695,5 +841,83 @@ mod tests {
         let style: Style =
             serde_json::from_str(json).expect("deserialize without backdrop_opacity");
         assert_eq!(style.backdrop_opacity, 1.0);
+    }
+
+    /// Pins the VS-Code-matching defaults for the row/tab padding
+    /// tokens, so a future edit to either is a deliberate, reviewed
+    /// visual change.
+    #[test]
+    fn defaults_match_vs_code_row_and_tab_padding() {
+        let style = Style::default();
+        assert_eq!(style.row_padding_x, 8.0);
+        assert_eq!(style.tab_padding_x, 10.0);
+    }
+
+    /// Same proof as `with_focus_ring_width_builder_overrides_only_that_field`,
+    /// for [`Style::row_padding_x`] and [`Style::tab_padding_x`].
+    #[test]
+    fn row_and_tab_padding_builders_each_override_only_their_own_field() {
+        let defaults = Style::default();
+
+        let row_padding_x = defaults.with_row_padding_x(12.0);
+        assert_eq!(row_padding_x.row_padding_x, 12.0);
+        assert_eq!(row_padding_x.tab_padding_x, defaults.tab_padding_x);
+
+        let tab_padding_x = defaults.with_tab_padding_x(14.0);
+        assert_eq!(tab_padding_x.tab_padding_x, 14.0);
+        assert_eq!(tab_padding_x.row_padding_x, defaults.row_padding_x);
+    }
+
+    /// A JSON payload serialized before [`Style::row_padding_x`] /
+    /// [`Style::tab_padding_x`] existed has no such keys;
+    /// `#[serde(default = "…")]` must deserialize them at the VS Code
+    /// defaults rather than erroring.
+    #[test]
+    fn deserializing_without_row_or_tab_padding_defaults_to_vs_code_values() {
+        let json = r#"{
+            "focus_ring_width": 2.0,
+            "padding": 8.0,
+            "corner_radius": 6.0,
+            "border_width": 1.0,
+            "shadow_elevation": 1,
+            "control_height": 26.0
+        }"#;
+        let style: Style = serde_json::from_str(json).expect("deserialize without row/tab padding");
+        assert_eq!(style.row_padding_x, 8.0);
+        assert_eq!(style.tab_padding_x, 10.0);
+    }
+
+    /// Pins the VS-Code-matching hover delay default, so a future edit
+    /// is a deliberate, reviewed change.
+    #[test]
+    fn default_tooltip_delay_is_five_hundred_ms() {
+        assert_eq!(Style::default().tooltip_delay_ms, 500);
+    }
+
+    /// Same proof as `with_focus_ring_width_builder_overrides_only_that_field`,
+    /// for [`Style::tooltip_delay_ms`].
+    #[test]
+    fn with_tooltip_delay_ms_builder_overrides_only_that_field() {
+        let style = Style::default().with_tooltip_delay_ms(750);
+        assert_eq!(style.tooltip_delay_ms, 750);
+        assert_eq!(style.padding, Style::default().padding);
+    }
+
+    /// A JSON payload serialized before [`Style::tooltip_delay_ms`]
+    /// existed has no such key; `#[serde(default = "…")]` must
+    /// deserialize it at the VS Code default rather than erroring.
+    #[test]
+    fn deserializing_without_tooltip_delay_defaults_to_five_hundred_ms() {
+        let json = r#"{
+            "focus_ring_width": 2.0,
+            "padding": 8.0,
+            "corner_radius": 6.0,
+            "border_width": 1.0,
+            "shadow_elevation": 1,
+            "control_height": 26.0
+        }"#;
+        let style: Style =
+            serde_json::from_str(json).expect("deserialize without tooltip_delay_ms");
+        assert_eq!(style.tooltip_delay_ms, 500);
     }
 }

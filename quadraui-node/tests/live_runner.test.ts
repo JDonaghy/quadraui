@@ -217,3 +217,34 @@ test("startTui accepts mouse: false and fails the same way without a real tty", 
   assert.equal(status, 0, `script did not exit cleanly: ${stdout}`);
   assert.match(stdout, /START_TUI_RAISED:InternalError: startTui:/);
 });
+
+{
+  const { QuiApp, NoNativeBackendError } = require("../js/index.ts");
+  // `QuiApp.nativeBackend()` reports which native feature (if any) this
+  // build was compiled with -- see that method's own doc. With one
+  // enabled, `startNative` takes a real backend's own arm instead of the
+  // "no native backend compiled" one this test exercises; that arm's own
+  // behaviour is each backend's own capability-lane test (e.g.
+  // `tests/live_runner_gtk.test.ts` for `gtk`), not this platform-neutral
+  // suite.
+  const nativeBackend: string | null = QuiApp.nativeBackend();
+  test(
+    "startNative raises NoNativeBackendError on a build with no gtk/macos/win feature, and leaves the headless app usable",
+    { skip: nativeBackend !== null && `built with the ${nativeBackend} native feature` },
+    () => {
+      const app = new QuiApp(10, 10);
+      app.insertButton({ id: "demo:ok", label: "OK", focused: true });
+      assert.throws(
+        () => app.startNative(),
+        (err: unknown) => {
+          assert.ok(err instanceof NoNativeBackendError);
+          assert.match((err as Error).message, /NoNativeBackendError: startNative/);
+          return true;
+        },
+      );
+      // The headless app must still work afterwards -- `startNative` never
+      // moved anything out of it on this failure path.
+      assert.match(app.screen(), /OK/);
+    },
+  );
+}

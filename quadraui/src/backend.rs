@@ -55,7 +55,9 @@ use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::command_line::{CommandLine, CommandLineLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuGlyphs, ContextMenuLayout};
-use crate::primitives::data_table::{DataTable, DataTableGlyphs, DataTableLayout};
+use crate::primitives::data_table::{
+    DataTable, DataTableGlyphs, DataTableLayout, DataTablePaintState,
+};
 use crate::primitives::date_picker::{DatePicker, DatePickerLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout, DialogSeverity};
 use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
@@ -65,7 +67,7 @@ use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::float::{Float, FloatLayout};
 use crate::primitives::form::FormLayout;
 use crate::primitives::image::{Image, ImageSource};
-use crate::primitives::list::ListViewLayout;
+use crate::primitives::list::{ListPaintState, ListViewLayout};
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::minimap::{Minimap, MinimapLayout, MinimapScale};
@@ -96,7 +98,7 @@ use crate::primitives::text_input::{TextInput, TextInputLayout};
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
 use crate::primitives::toolbar::{Toolbar, ToolbarLayout, ToolbarPaintOptions};
 use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
-use crate::primitives::tree::TreeViewLayout;
+use crate::primitives::tree::{TreePaintState, TreeViewLayout};
 use crate::types::{Color, WidgetId};
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, GlobalShortcutId, ListView, Palette,
@@ -1994,6 +1996,51 @@ pub trait Backend: sealed::Sealed {
     /// `let viewport_cols = ((rect.width - gutter) / backend.char_width()).floor();`
     fn char_width(&self) -> f32;
 
+    /// Convert a [`crate::ScrollDelta::y`] component into fractional row
+    /// units for [`crate::compose::TreeController`] (currently the only
+    /// row-based scroll controller reading this) to accumulate into a
+    /// paint-time `scroll_px` ([`TreePaintState`]) without snapping to a
+    /// whole row on every event. `row_height` is the caller's px↔row
+    /// basis for the *same* scroll gesture (on `TreeController`,
+    /// [`Self::tree_scroll_row_height`]'s result) — a backend that needs
+    /// to convert a native points-based delta into row notches divides by
+    /// it; a backend whose native delta already *is* row notches ignores
+    /// it.
+    ///
+    /// Every backend but macOS already reports wheel/trackpad deltas in
+    /// row-notch units: TUI is `±1.0` per crossterm notch, GTK's
+    /// `EventControllerScroll::dy` is pre-scaled by the OS's
+    /// lines-per-notch setting, and Win32's is `raw_delta / WHEEL_DELTA`.
+    /// The default implementation returns `delta_y` unchanged, matching
+    /// all three. macOS's `NSEvent.scrollingDeltaY` carries real points
+    /// instead, so `MacBackend` overrides this to divide by `row_height`
+    /// and land back in the same row-unit currency every other backend
+    /// already uses — critically, the *same* `row_height` the caller then
+    /// multiplies back by to recover pixels, so the conversion round-trips
+    /// to the real pixel delta rather than drifting by whatever ratio
+    /// `row_height` happens to differ from [`Self::line_height`] by.
+    fn wheel_delta_rows(&self, delta_y: f32, row_height: f32) -> f32 {
+        let _ = row_height;
+        delta_y
+    }
+
+    /// The real row pitch a row-based scroll controller should treat as
+    /// its px↔row basis for `tree`, so wheel-scroll clamping and the
+    /// derived whole-row `scroll_offset` agree with what [`Self::tree_layout`]
+    /// / [`Self::draw_tree_with_state`] actually paint.
+    ///
+    /// Defaults to [`Self::line_height`], which already *is* the real
+    /// per-row pixel pitch [`Self::tree_layout`] paints at on every
+    /// backend except macOS — whose tree rows paint at
+    /// `resolved_row_height(chrome_line_height)` run through the tree's
+    /// own row-pitch formula, a value [`Self::line_height`] (the
+    /// *editor* font metric) does not report. `MacBackend` overrides
+    /// this to return that real painted pitch instead.
+    fn tree_scroll_row_height(&self, tree: &TreeView) -> f32 {
+        let _ = tree;
+        self.line_height()
+    }
+
     /// Line height of the chrome / UI font, in surface-native units.
     ///
     /// Chrome elements — tab strips, breadcrumb bars, status bars —
@@ -2260,6 +2307,90 @@ pub trait Backend: sealed::Sealed {
     /// (a terminal cell can't be subdivided).
     fn draw_tree(&mut self, rect: Rect, tree: &TreeView);
     fn draw_list(&mut self, rect: Rect, list: &ListView);
+
+    /// [`Self::draw_tree`], tinting the hovered/pressed row's background
+    /// via [`crate::Theme::tree_hover_bg`] / [`crate::Theme::tree_pressed_bg`].
+    ///
+    /// Index-keyed rather than [`crate::InteractionState`]-keyed, unlike
+    /// [`Self::draw_button_with_state`] — see `interaction.rs`'s module
+    /// doc for why a tree row has no stable id to key off. Feed
+    /// [`crate::compose::TreeHoverTracker`] from `MouseMoved` and pass
+    /// its `hovered_idx()` here; `pressed_idx` follows the same
+    /// left-button-down bookkeeping a host already does for
+    /// `TreeView::rows` clicks.
+    ///
+    /// Additive over [`Self::draw_tree`], not a replacement — the
+    /// default forwards to it (ignoring both indices and
+    /// `focus_ring_visible`), so every existing call site and
+    /// implementor keeps compiling unchanged.
+    ///
+    /// `focus_ring_visible` strokes a `Theme::focus_ring_color` ring
+    /// at `Style::focus_ring_width` around the row
+    /// [`crate::TreeView::selected_path`] points at. Not the same
+    /// signal as [`crate::TreeView::has_focus`] — see that field's doc
+    /// for why some hosts set it as a persistent "currently showing"
+    /// indicator unrelated to real keyboard focus. Pass
+    /// `ring.is_focused(&tree.id) && ring.is_focus_visible()` from a
+    /// host's own [`crate::compose::FocusRing`] instead.
+    ///
+    /// `state.scroll_px`, when `Some`, is a pixel-precise scroll position
+    /// a host has accumulated from fractional wheel/trackpad deltas (see
+    /// [`crate::compose::TreeController::scroll_px`]) — it wins over
+    /// [`TreeView::scroll_offset`] and paints a partially clipped first
+    /// row instead of snapping to a whole one, via
+    /// [`TreeView::layout_with_scroll_px`]. `None` (the default a `state`
+    /// built with [`TreePaintState::default`] carries) paints exactly as
+    /// [`Self::draw_tree`] already does.
+    fn draw_tree_with_state(
+        &mut self,
+        rect: Rect,
+        tree: &TreeView,
+        state: &TreePaintState,
+        _focus_ring_visible: bool,
+    ) {
+        let _ = state;
+        self.draw_tree(rect, tree)
+    }
+
+    /// [`Self::draw_list`], tinting the hovered/pressed row's background
+    /// via [`crate::Theme::list_hover_bg`] / [`crate::Theme::list_pressed_bg`].
+    ///
+    /// Index-keyed for the same reason [`Self::draw_tree_with_state`]
+    /// is — see that method's doc. Feed
+    /// [`crate::compose::ListHoverTracker`] from `MouseMoved` and pass
+    /// its `hovered_idx()` here.
+    ///
+    /// Additive over [`Self::draw_list`], not a replacement — the
+    /// default forwards to it (ignoring both indices and
+    /// `focus_ring_visible`), so every existing call site and
+    /// implementor keeps compiling unchanged.
+    ///
+    /// `focus_ring_visible` strokes a `Theme::focus_ring_color` ring
+    /// at `Style::focus_ring_width` around the row
+    /// [`crate::ListView::selected_idx`] points at. Not the same
+    /// signal as [`crate::ListView::has_focus`] — see that field's doc
+    /// for why some hosts set it as a persistent "currently showing"
+    /// indicator unrelated to real keyboard focus. Pass
+    /// `ring.is_focused(&list.id) && ring.is_focus_visible()` from a
+    /// host's own [`crate::compose::FocusRing`] instead.
+    ///
+    /// `state.scroll_px`, when `Some`, is a pixel-precise scroll position
+    /// a host has accumulated from fractional wheel/trackpad deltas — it
+    /// wins over [`ListView::scroll_offset`] and paints a partially
+    /// clipped first item instead of snapping to a whole one, via
+    /// [`ListView::layout_with_scroll_px`]. `None` (the default a
+    /// `state` built with [`ListPaintState::default`] carries) paints
+    /// exactly as [`Self::draw_list`] already does.
+    fn draw_list_with_state(
+        &mut self,
+        rect: Rect,
+        list: &ListView,
+        state: &ListPaintState,
+        _focus_ring_visible: bool,
+    ) {
+        let _ = state;
+        self.draw_list(rect, list)
+    }
     /// Draw `table` into `rect` and return its layout for hit-testing.
     /// Coordinate frame: **LOCAL** — `hit_regions` / row bounds are
     /// relative to `rect`'s origin, matching [`Self::data_table_layout`].
@@ -2269,6 +2400,27 @@ pub trait Backend: sealed::Sealed {
         table: &DataTable,
         hovered_idx: Option<usize>,
     ) -> DataTableLayout;
+    /// [`Self::draw_data_table`], plus a pixel-precise scroll position via
+    /// [`DataTablePaintState::scroll_px`] instead of only
+    /// [`DataTable::scroll_offset`]'s whole-row value.
+    ///
+    /// Additive over [`Self::draw_data_table`], not a replacement — the
+    /// default forwards to it with `state.hovered_idx` (ignoring
+    /// `scroll_px`), so every existing call site and implementor keeps
+    /// compiling unchanged. `state.scroll_px: None` (the default a
+    /// `state` built with [`DataTablePaintState::default`] carries)
+    /// paints exactly as [`Self::draw_data_table`] already does;
+    /// `Some(px)` wins over `scroll_offset` and resolves via
+    /// [`DataTable::effective_scroll_offset`] /
+    /// [`DataTable::scroll_sub_row_px`].
+    fn draw_data_table_with_state(
+        &mut self,
+        rect: Rect,
+        table: &DataTable,
+        state: &DataTablePaintState,
+    ) -> DataTableLayout {
+        self.draw_data_table(rect, table, state.hovered_idx)
+    }
     /// Draw `table` into `rect` with an optional [`DataTableGlyphs`]
     /// override for the sort-ascending/sort-descending arrows. Returns
     /// its layout for hit-testing, same contract as [`Self::draw_data_table`].
@@ -2326,6 +2478,31 @@ pub trait Backend: sealed::Sealed {
     fn list_layout(&self, rect: Rect, list: &ListView) -> ListViewLayout;
     fn draw_form(&mut self, rect: Rect, form: &Form);
     fn draw_palette(&mut self, rect: Rect, palette: &Palette);
+
+    /// [`Self::draw_palette`], reading hover/pressed state from a single
+    /// [`InteractionState`] keyed by [`WidgetId`]: a backend that
+    /// implements this tints [`Palette`]'s pinned create-action row
+    /// (the one row in a `Palette` with a stable id — `palette.id`
+    /// itself, since [`crate::PaletteItem`] carries none; see
+    /// `primitives::palette::native_surface_paint`'s module doc) when
+    /// `interaction.is_hovered(&palette.id)` / `is_pressed(&palette.id)` —
+    /// see [`crate::Theme::menu_item_hover_bg`] /
+    /// [`crate::Theme::menu_item_pressed_bg`] for the derived tint
+    /// colours.
+    ///
+    /// Additive over [`Self::draw_palette`], not a replacement — the
+    /// default forwards to it (ignoring `interaction`), so this method
+    /// is the one new backends/hosts adopt for hover feedback while
+    /// every existing call site and implementor keeps compiling
+    /// unchanged.
+    fn draw_palette_with_state(
+        &mut self,
+        rect: Rect,
+        palette: &Palette,
+        _interaction: &InteractionState,
+    ) {
+        self.draw_palette(rect, palette)
+    }
 
     /// Compute the palette layout without painting — the no-paint twin
     /// of [`Self::draw_palette`]. Every backend's `palette_layout` shares
@@ -2486,6 +2663,46 @@ pub trait Backend: sealed::Sealed {
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits;
+
+    /// [`Self::draw_tab_bar`], plus a `hovered_tab` index naming the
+    /// whole tab (not its close glyph) the mouse is over, and a
+    /// `pressed_tab` index naming the tab a mouse-down is currently held
+    /// on.
+    ///
+    /// Both are index-keyed, like the existing `hovered_close_tab`,
+    /// rather than [`InteractionState`]-keyed by [`WidgetId`]: [`TabItem`]
+    /// carries no id of its own — only [`TabBar::id`], one per *bar*,
+    /// which can't name *which* tab within it is hovered or pressed — so
+    /// this joins `draw_tab_bar`'s own `hovered_close_tab` in
+    /// `interaction.rs`'s "Methods that remain positional" table rather
+    /// than taking an `InteractionState`. Mirrors the shape
+    /// [`ListPaintState`]/[`TreePaintState`] already use for the same
+    /// "no stable per-item id" reason: a plain `hovered_idx` /
+    /// `pressed_idx` pair rather than a struct, since a tab bar's only
+    /// other positional slot (`hovered_close_tab`) is already a bare
+    /// argument, not a state struct.
+    ///
+    /// Additive over [`Self::draw_tab_bar`], not a replacement — the
+    /// default forwards to it (ignoring `hovered_tab`/`pressed_tab`), so
+    /// every existing implementor keeps compiling unchanged. A backend's
+    /// own whole-tab hover/pressed treatment (painting a tab's own
+    /// background when `Some(i) == hovered_tab` / `Some(i) ==
+    /// pressed_tab`) is implemented per backend, not here.
+    ///
+    /// [`ListPaintState`]: crate::primitives::list::ListPaintState
+    /// [`TreePaintState`]: crate::primitives::tree::TreePaintState
+    #[allow(deprecated)]
+    fn draw_tab_bar_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        _hovered_tab: Option<usize>,
+        _pressed_tab: Option<usize>,
+    ) -> TabBarHits {
+        self.draw_tab_bar(rect, bar, hovered_close_tab)
+    }
+
     /// Draw a tab bar, returning [`TabBarLayout`] instead of the
     /// deprecated [`TabBarHits`]. Added *alongside* [`Self::draw_tab_bar`]
     /// rather than in place of it, so no existing caller breaks.
@@ -2510,6 +2727,27 @@ pub trait Backend: sealed::Sealed {
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
     ) -> TabBarLayout;
+
+    /// [`Self::draw_tab_bar_layout`], plus a `hovered_tab`/`pressed_tab`
+    /// index pair naming the whole tab the mouse is over/held down on —
+    /// the [`TabBarLayout`]-returning twin of
+    /// [`Self::draw_tab_bar_with_state`], reachable from the `py`/`node`
+    /// paint path (`quadraui-binding-core`'s renderer calls
+    /// `draw_tab_bar_layout`, never the deprecated `draw_tab_bar`).
+    ///
+    /// Additive over [`Self::draw_tab_bar_layout`], not a replacement —
+    /// the default forwards to it (ignoring `hovered_tab`/`pressed_tab`),
+    /// so every existing implementor keeps compiling unchanged.
+    fn draw_tab_bar_layout_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        _hovered_tab: Option<usize>,
+        _pressed_tab: Option<usize>,
+    ) -> TabBarLayout {
+        self.draw_tab_bar_layout(rect, bar, hovered_close_tab)
+    }
     /// Draw a tab bar with per-tab icon glyphs — VS Code's coloured
     /// language/file-type badge on each tab.
     ///
@@ -3088,6 +3326,27 @@ pub trait Backend: sealed::Sealed {
         layout: &ContextMenuLayout,
     ) -> Vec<(Rect, WidgetId)>;
 
+    /// [`Self::draw_context_menu`], reading hover/pressed state from a
+    /// single [`InteractionState`] keyed by [`WidgetId`]: a backend
+    /// that implements this tints the background of the item whose
+    /// [`ContextMenuItem::id`](crate::primitives::context_menu::ContextMenuItem::id)
+    /// matches `interaction.hovered()` / `interaction.pressed()` — see
+    /// [`crate::Theme::menu_item_hover_bg`] /
+    /// [`crate::Theme::menu_item_pressed_bg`] for the derived tint
+    /// colours.
+    ///
+    /// Additive over [`Self::draw_context_menu`], not a replacement —
+    /// the default forwards to it (ignoring `interaction`), so every
+    /// existing implementor keeps compiling unchanged.
+    fn draw_context_menu_with_state(
+        &mut self,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+        _interaction: &InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        self.draw_context_menu(menu, layout)
+    }
+
     /// Draw a [`ContextMenu`] popup with an optional [`ContextMenuGlyphs`]
     /// override for the checked-item check mark and submenu pull-right
     /// arrow.
@@ -3471,6 +3730,27 @@ pub trait Backend: sealed::Sealed {
     /// `layout.hit_test(x, y)` without re-deriving metrics. Same
     /// coordinate frame as [`Self::menu_bar_layout`] (ABSOLUTE).
     fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout;
+
+    /// [`Self::draw_menu_bar`], reading hover/pressed state from a
+    /// single [`InteractionState`] keyed by [`WidgetId`]: a backend
+    /// that implements this tints the background of the top-level item
+    /// whose [`MenuBarItem::id`](crate::primitives::menu_bar::MenuBarItem::id)
+    /// matches `interaction.hovered()` / `interaction.pressed()` — see
+    /// [`crate::Theme::menu_item_hover_bg`] /
+    /// [`crate::Theme::menu_item_pressed_bg`] for the derived tint
+    /// colours.
+    ///
+    /// Additive over [`Self::draw_menu_bar`], not a replacement — the
+    /// default forwards to it (ignoring `interaction`), so every
+    /// existing implementor keeps compiling unchanged.
+    fn draw_menu_bar_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &MenuBar,
+        _interaction: &InteractionState,
+    ) -> MenuBarLayout {
+        self.draw_menu_bar(rect, bar)
+    }
 
     /// Compute the menu-bar layout the rasteriser would produce for
     /// `bar` in `rect`, using the backend's native metrics. Hosts
@@ -5425,6 +5705,21 @@ pub struct MessageDialogButton {
     /// When true, Escape (or the platform's cancel gesture) activates
     /// this button.
     pub is_cancel: bool,
+    /// Optional [`crate::primitives::button::ButtonSpec`] override,
+    /// mirroring [`crate::primitives::dialog::DialogButton::spec`] — the
+    /// B3a vocabulary (variant intent, icon, tooltip) this button's own
+    /// `label`/`is_default`/`is_cancel` fields can't express. `None`
+    /// keeps today's plain rendering.
+    ///
+    /// Honored on TUI, where [`crate::compose::MessageDialogController`]
+    /// carries it straight through to the [`crate::primitives::dialog::Dialog`]
+    /// button it builds. Not yet read by the native GTK/macOS/Win32 alert
+    /// facilities `PlatformServices::show_message_dialog` calls there — no
+    /// native alert API exposes per-button icon/variant styling — so it is
+    /// silently ignored on those backends until a per-backend adoption
+    /// issue is filed, the same fence `ButtonSpec`'s own doc draws for
+    /// `ToolbarButton::Action`/`ButtonRowItem`/`ToastButton`.
+    pub spec: Option<crate::primitives::button::ButtonSpec>,
 }
 
 /// The [`WidgetId`] of the [`MessageDialogButton`] the user chose from a

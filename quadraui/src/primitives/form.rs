@@ -509,6 +509,27 @@ pub struct ButtonRowItem {
     /// rows (commit, push, pull, fetch) in source-control panels.
     #[serde(default)]
     pub icon: Option<crate::types::Icon>,
+    /// Optional [`crate::ButtonSpec`] override, carrying the B3a
+    /// vocabulary (variant intent, icon placement/gap, a tooltip) this
+    /// item's own legacy fields above can't express. `None` (the
+    /// default) renders the plain bracket-chrome look; see
+    /// [`Self::resolved_button_spec`].
+    #[serde(default)]
+    pub spec: Option<crate::primitives::button::ButtonSpec>,
+}
+
+impl ButtonRowItem {
+    /// This item's explicit [`Self::spec`] override when set, otherwise
+    /// one derived from its legacy `label`/`icon`/`disabled` fields.
+    pub fn resolved_button_spec(&self) -> crate::primitives::button::ButtonSpec {
+        if let Some(spec) = &self.spec {
+            return spec.clone();
+        }
+        let mut derived = crate::primitives::button::ButtonSpec::new(self.label.clone());
+        derived.icon = self.icon.clone();
+        derived.disabled = self.disabled;
+        derived
+    }
 }
 
 fn slider_default_step() -> f32 {
@@ -1071,6 +1092,16 @@ mod native_surface_paint {
             flayout.viewport_width,
             flayout.viewport_height,
         );
+        // Clip every row paint to `form_rect`: a row's own geometry is
+        // already height-clamped by `Form::layout` (see its "Row
+        // clipping" doc), but a control that draws at its *unclamped*
+        // glyph/box height (e.g. a checkbox's fixed box size, or a
+        // validation message's own line) can still paint a few pixels
+        // past the clamped row — and past the form's own bottom edge —
+        // into whatever the host paints below it (a status bar, another
+        // section). The clip is the backstop that keeps that bleed from
+        // reaching the screen regardless of backend.
+        surface.surface_push_clip(form_rect);
         surface.surface_fill_rect(form_rect, theme.tab_bar_bg);
         let left_label_width = left_label_column_width(form, surface);
 
@@ -1087,18 +1118,20 @@ mod native_surface_paint {
             // strip below it, instead of painting the message on top of
             // the label at the same vertical centre.
             let validation_info = field.validation.as_ref().and_then(|vs| {
-                let (color, msg) = match vs {
-                    ValidationState::Error(m) => (theme.error_fg, m.as_str()),
-                    ValidationState::Warning(m) => (theme.warning_fg, m.as_str()),
+                let (color, strip_bg, msg) = match vs {
+                    ValidationState::Error(m) => (theme.error_fg, theme.danger_bg(), m.as_str()),
+                    ValidationState::Warning(m) => {
+                        (theme.warning_fg, theme.warning_bg(), m.as_str())
+                    }
                 };
                 if msg.is_empty() {
                     None
                 } else {
-                    Some((color, msg))
+                    Some((color, strip_bg, msg))
                 }
             });
             let message_h = validation_info
-                .map(|(_, msg)| surface.surface_measure_text(msg).1)
+                .map(|(_, _, msg)| surface.surface_measure_text(msg).1)
                 .unwrap_or(0.0);
             let row_h = (row_h_full - message_h).max(row_h_full * 0.5);
 
@@ -1694,14 +1727,31 @@ mod native_surface_paint {
                 }
             }
 
-            if let Some((color, msg)) = validation_info {
+            if let Some((color, strip_bg, msg)) = validation_info {
                 // Message strip: below the content strip computed
-                // above, not overlapping the label.
+                // above, not overlapping the label. Tinted with the
+                // severity's own `Theme::danger_bg`/`warning_bg` so the
+                // strip reads as a small banner (VS Code's own
+                // validation-message styling), not just coloured text on
+                // the plain row background. The fill spans only the
+                // control column — the same `label_right + CONTROL_GAP`
+                // .. `content_rect`'s right edge span the control body
+                // itself paints into above — not the label column, so
+                // the banner sits under the input the way VS Code's
+                // does, rather than under the label too.
                 let strip_y = row_rect.y + row_h;
                 let strip_h = (row_h_full - row_h).max(0.0);
+                let strip_x = if no_label {
+                    label_x
+                } else {
+                    label_right + CONTROL_GAP
+                };
+                let strip_right = content_rect.x + content_rect.width - 8.0;
+                let strip_w = (strip_right - strip_x).max(0.0);
+                surface.surface_fill_rect(Rect::new(strip_x, strip_y, strip_w, strip_h), strip_bg);
                 surface.surface_fill_rect(
                     Rect::new(
-                        row_rect.x + 2.0,
+                        strip_x + 2.0,
                         strip_y + (strip_h - 3.0).max(0.0) / 2.0,
                         3.0,
                         3.0,
@@ -1710,9 +1760,10 @@ mod native_surface_paint {
                 );
                 let (mw, mh) = surface.surface_measure_text(msg);
                 let my = strip_y + (strip_h - mh).max(0.0) / 2.0;
-                surface.surface_draw_text_run(Rect::new(row_rect.x + 8.0, my, mw, mh), msg, color);
+                surface.surface_draw_text_run(Rect::new(strip_x + 8.0, my, mw, mh), msg, color);
             }
         }
+        surface.surface_pop_clip();
     }
 
     /// Horizontal inset (in pixels) between a text input box's stroked
@@ -1921,7 +1972,7 @@ mod native_surface_paint {
         use crate::primitives::form::{ControlWidth, FormField, ToggleGroupItem};
         use crate::primitives::layout_metrics::{form_field_measure, form_row_height, TextMeasure};
         use crate::types::{StyledSpan, WidgetId};
-        use crate::Image;
+        use crate::{FormFieldMeasure, Image};
 
         /// Records every drawing verb `paint` issues, so a paint
         /// assertion can run on any host — no cairo, Core Graphics or
@@ -1941,6 +1992,13 @@ mod native_surface_paint {
             /// `surface_stroke_rect` call, so tests can assert the drawn
             /// checkbox / text-input-box borders.
             strokes: Vec<(Rect, Color, f32)>,
+            /// Every rect passed to `surface_push_clip`, in push order —
+            /// so a regression test can assert `paint` clips to the
+            /// form's own bounds exactly once.
+            clip_pushes: Vec<Rect>,
+            /// Count of `surface_pop_clip` calls, so a test can assert
+            /// every push is balanced.
+            clip_pops: usize,
         }
 
         /// 6 units per character — same fixed-width stand-in the
@@ -1999,8 +2057,12 @@ mod native_surface_paint {
                 _stroke_width: f32,
             ) {
             }
-            fn surface_push_clip(&mut self, _rect: Rect) {}
-            fn surface_pop_clip(&mut self) {}
+            fn surface_push_clip(&mut self, rect: Rect) {
+                self.clip_pushes.push(rect);
+            }
+            fn surface_pop_clip(&mut self) {
+                self.clip_pops += 1;
+            }
             fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
                 ImagePaintResult::Unsupported
             }
@@ -2051,6 +2113,108 @@ mod native_surface_paint {
                 control_width: Default::default(),
                 min_control_width: None,
             }
+        }
+
+        /// Two toggle rows at `row_h = 20.0` in a viewport only 23px
+        /// tall: the second (last) row's layout-clamped height is 3px —
+        /// far below `Toggle`'s own checkbox-size floor of 10px (see
+        /// the `box_size` clamp in `paint`'s `FieldKind::Toggle` arm).
+        /// Without a pixel clip, that floor pushes the checkbox's fill
+        /// rect below the row *and* past the form's own bottom edge —
+        /// the exact "last row paints under the status bar" shape.
+        fn two_toggle_form_overflowing_its_viewport() -> (Form, f32) {
+            let row_h = 20.0_f32;
+            let viewport_height = row_h + 3.0;
+            let form = Form {
+                id: WidgetId::new("settings"),
+                fields: vec![
+                    FormField {
+                        id: WidgetId::new("toggle-0"),
+                        label: StyledText::plain("Setting 1"),
+                        kind: FieldKind::Toggle { value: false },
+                        hint: StyledText::default(),
+                        disabled: false,
+                        validation: None,
+                        label_position: None,
+                        label_align: None,
+                        label_width: None,
+                        tab_index: None,
+                        control_width: None,
+                        min_control_width: None,
+                    },
+                    FormField {
+                        id: WidgetId::new("toggle-1"),
+                        label: StyledText::plain("Setting 2"),
+                        kind: FieldKind::Toggle { value: true },
+                        hint: StyledText::default(),
+                        disabled: false,
+                        validation: None,
+                        label_position: None,
+                        label_align: None,
+                        label_width: None,
+                        tab_index: None,
+                        control_width: None,
+                        min_control_width: None,
+                    },
+                ],
+                focused_field: None,
+                scroll_offset: 0,
+                has_focus: false,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
+                control_width: Default::default(),
+                min_control_width: None,
+            };
+            (form, viewport_height)
+        }
+
+        /// Regression: `paint` must clip to the form's own bounds on
+        /// every backend, so a row whose content overflows a
+        /// layout-clamped height (the `Toggle` checkbox floor above)
+        /// never bleeds past the form into whatever a host paints below
+        /// it (a status bar, another section).
+        #[test]
+        fn paint_clips_to_the_forms_own_bounds_when_scrolled() {
+            let (form, viewport_height) = two_toggle_form_overflowing_its_viewport();
+            let row_h = 20.0_f32;
+            let flayout = form.layout(320.0, viewport_height, |_| FormFieldMeasure::new(row_h));
+            let mut surface = RecordingSurface::default();
+            paint(
+                &form,
+                &flayout,
+                &mut surface,
+                &Theme::default(),
+                crate::Point::new(0.0, 0.0),
+            );
+
+            let form_rect = Rect::new(0.0, 0.0, 320.0, viewport_height);
+            assert_eq!(
+                surface.clip_pushes,
+                vec![form_rect],
+                "paint must push exactly one clip, at the form's own bounds"
+            );
+            assert_eq!(
+                surface.clip_pops, 1,
+                "every surface_push_clip must be balanced by surface_pop_clip"
+            );
+
+            // Prove the clip is load-bearing, not vacuous: the second
+            // toggle's checked checkbox fill (`surface_fill_rounded_rect`,
+            // recorded into the same `fills` list) geometrically
+            // overflows past the form's clipped bottom edge — exactly
+            // what a backend's `surface_push_clip` must cut off.
+            let bottom = form_rect.y + form_rect.height;
+            let overflowing = surface
+                .fills
+                .iter()
+                .any(|(rect, _)| rect.y + rect.height > bottom);
+            assert!(
+                overflowing,
+                "expected the last row's checkbox fill to extend past the \
+                 form's clipped bottom edge ({bottom}) — otherwise this \
+                 test doesn't exercise the bleed the clip guards against"
+            );
         }
 
         /// The pill a selected item paints: full item width, inset 2 at
@@ -2580,6 +2744,71 @@ mod native_surface_paint {
                 label_bottom,
                 label_rect,
                 msg_rect,
+            );
+        }
+
+        /// The validation-message strip is painted with the severity's
+        /// `Theme::danger_bg`/`warning_bg` tint, and only under the
+        /// control column (not the label column) — so a later refactor
+        /// can't silently drop the fill or widen it back under the
+        /// label.
+        #[test]
+        fn validation_strip_fills_danger_bg_under_the_control_only() {
+            let mut form = one_field_form(
+                "name",
+                FieldKind::TextInput {
+                    value: String::new(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            );
+            form.fields[0].label = StyledText::plain("Name");
+            form.fields[0].validation = Some(ValidationState::Error("Required".to_string()));
+
+            let row_h = form_row_height(14.0);
+            let measure = form_field_measure(&form.fields[0], row_h, &FixedMeasure);
+            let flayout = form.layout(320.0, 160.0, |_| measure.clone());
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &form,
+                &flayout,
+                &mut surface,
+                &theme,
+                crate::Point::new(0.0, 0.0),
+            );
+
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Name")
+                .expect("label text run recorded");
+            let (msg_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Required")
+                .expect("validation message text run recorded");
+
+            let strip_fill = surface
+                .fills
+                .iter()
+                .find(|(r, c)| *c == theme.danger_bg() && (r.y - msg_rect.y).abs() < r.height)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "expected a danger_bg fill behind the validation \
+                         message; fills were {:?}",
+                        surface.fills,
+                    )
+                });
+            assert!(
+                strip_fill.0.x >= label_rect.x + label_rect.width,
+                "the validation strip (x={}) must start at or after the \
+                 label's right edge (x={}), not span under the label \
+                 column too; label was {:?}",
+                strip_fill.0.x,
+                label_rect.x + label_rect.width,
+                label_rect,
             );
         }
 
@@ -3493,12 +3722,14 @@ mod tests {
             kind: FieldKind::ButtonRow {
                 buttons: vec![
                     ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("next"),
                         label: "Find Next".into(),
                         disabled: false,
                         icon: None,
                     },
                     ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("all"),
                         label: "Replace All".into(),
                         disabled: true,
@@ -3775,5 +4006,38 @@ mod tests {
 
         let unset = control_width_test_field(None);
         assert_eq!(form.resolved_min_control_width(&unset), Some(40.0));
+    }
+
+    // ── B3b: ButtonSpec seam ─────────────────────────────────────────────
+
+    #[test]
+    fn button_row_item_without_spec_derives_one_from_its_legacy_fields() {
+        let item = ButtonRowItem {
+            id: WidgetId::new("row:commit"),
+            label: "Commit".to_string(),
+            disabled: true,
+            icon: Some(crate::types::Icon::new("\u{f00c}", "+")),
+            spec: None,
+        };
+
+        let spec = item.resolved_button_spec();
+        assert_eq!(spec.label, "Commit");
+        assert_eq!(spec.icon, item.icon);
+        assert!(spec.disabled);
+    }
+
+    #[test]
+    fn button_row_item_with_explicit_spec_overrides_the_legacy_fields() {
+        let mut explicit = crate::primitives::button::ButtonSpec::new("Discard");
+        explicit.variant = crate::primitives::button::ButtonVariant::Danger;
+        let item = ButtonRowItem {
+            id: WidgetId::new("row:discard"),
+            label: "Discard changes".to_string(),
+            disabled: false,
+            icon: None,
+            spec: Some(explicit.clone()),
+        };
+
+        assert_eq!(item.resolved_button_spec(), explicit);
     }
 }

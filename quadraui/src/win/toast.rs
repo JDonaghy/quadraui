@@ -72,6 +72,7 @@ mod tests {
             body: "Details here".into(),
             severity: ToastSeverity::Info,
             actions: vec![ToastButton {
+                spec: None,
                 id: WidgetId::new(format!("{id}:act")),
                 label: "Undo".into(),
                 primary: false,

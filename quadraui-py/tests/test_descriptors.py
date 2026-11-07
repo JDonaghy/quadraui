@@ -26,6 +26,22 @@ def test_insert_button():
     assert app.screen_contains("OK")
 
 
+def test_insert_button_accepts_an_optional_tooltip():
+    app = QuiApp(40, 20)
+    app.insert_button({"id": "demo:ok", "label": "OK", "tooltip": "Confirm the action"})
+    assert app.screen_contains("OK")
+
+
+def test_insert_button_rejects_a_non_string_tooltip():
+    # `Button::tooltip` is typed `Option<String>`, not merely ignored the
+    # way an unrecognized key would be -- a non-string value must fail to
+    # decode, proving the field is actually wired into `Button`'s own
+    # `Deserialize` rather than silently dropped.
+    app = QuiApp(40, 20)
+    with pytest.raises(InvalidDescriptorError):
+        app.insert_button({"id": "demo:ok", "label": "OK", "tooltip": 123})
+
+
 def test_insert_text_display():
     app = QuiApp(40, 20)
     app.insert_text_display(
@@ -156,6 +172,69 @@ def test_insert_tree():
         }
     )
     assert app.screen_contains("Alpha")
+
+
+def test_insert_tree_with_codicon_icon():
+    """A tree row's `icon` accepts `{"codicon": "...", "fallback": "..."}`
+    in place of `{"glyph": "...", "fallback": "..."}` — the wire shape
+    `Icon`'s `Deserialize` impl resolves through the bundled codicon name
+    table. `QuiApp`'s headless driver defaults to nerd fonts off, so the
+    rendered row shows the icon's plain-text fallback.
+    """
+    app = QuiApp(40, 20)
+    app.insert_tree(
+        {
+            "id": "tree:1",
+            "rows": [
+                {
+                    "path": [0],
+                    "indent": 0,
+                    "icon": {"codicon": "folder", "fallback": "DIR"},
+                    "text": {"spans": [{"text": "src", "fg": None, "bg": None}]},
+                    "badge": None,
+                    "is_expanded": None,
+                }
+            ],
+            "selection_mode": "Single",
+            "selected_path": None,
+            "style": {
+                "indent": 2,
+                "show_chevrons": True,
+                "chevron_expanded": "v",
+                "chevron_collapsed": ">",
+            },
+        }
+    )
+    assert app.screen_contains("DIR")
+    assert app.screen_contains("src")
+
+
+def test_insert_tree_with_unknown_codicon_name_raises():
+    app = QuiApp(40, 20)
+    with pytest.raises(InvalidDescriptorError):
+        app.insert_tree(
+            {
+                "id": "tree:1",
+                "rows": [
+                    {
+                        "path": [0],
+                        "indent": 0,
+                        "icon": {"codicon": "not-a-real-codicon-name", "fallback": "?"},
+                        "text": {"spans": [{"text": "src", "fg": None, "bg": None}]},
+                        "badge": None,
+                        "is_expanded": None,
+                    }
+                ],
+                "selection_mode": "Single",
+                "selected_path": None,
+                "style": {
+                    "indent": 2,
+                    "show_chevrons": True,
+                    "chevron_expanded": "v",
+                    "chevron_collapsed": ">",
+                },
+            }
+        )
 
 
 def test_insert_data_table():

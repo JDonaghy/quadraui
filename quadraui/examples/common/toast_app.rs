@@ -160,6 +160,7 @@ impl AppLogic for ToastApp {
                 self.add_toast(
                     ToastSeverity::Error,
                     vec![ToastButton {
+                        spec: None,
                         id: WidgetId::new("retry"),
                         label: "Retry".into(),
                         primary: true,

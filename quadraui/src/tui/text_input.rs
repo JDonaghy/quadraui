@@ -175,4 +175,37 @@ mod tests {
     fn paint_and_click_round_trip_at_nonzero_origin() {
         paint_and_click_round_trip_at(7, 13);
     }
+
+    /// TUI's focus treatment for a `TextInput`: the border tints to
+    /// `theme.accent_fg` while `has_focus` is `true`, and back to
+    /// `theme.border_fg` while it's `false`. This is the "existing
+    /// treatment" the primitive's focus-ring seam defers to rather than
+    /// adding a TUI-side ring stroke.
+    #[test]
+    fn border_tints_to_accent_when_focused_and_back_when_not() {
+        let theme = Theme::default();
+        let rect = Rect::new(0, 0, 10, 4);
+
+        let mut focused = mk_input(vec!["hi"]);
+        focused.has_focus = true;
+        let mut buf_focused = Buffer::empty(rect);
+        draw_text_input(&mut buf_focused, rect, &focused, &theme);
+
+        let mut unfocused = mk_input(vec!["hi"]);
+        unfocused.has_focus = false;
+        let mut buf_unfocused = Buffer::empty(rect);
+        draw_text_input(&mut buf_unfocused, rect, &unfocused, &theme);
+
+        // Sample the top border edge (not a corner, not content) in both
+        // buffers.
+        let focused_border_fg = buf_focused[(1, 0)].fg;
+        let unfocused_border_fg = buf_unfocused[(1, 0)].fg;
+
+        assert_eq!(focused_border_fg, qc(theme.accent_fg));
+        assert_eq!(unfocused_border_fg, qc(theme.border_fg));
+        assert_ne!(
+            focused_border_fg, unfocused_border_fg,
+            "focus must change the painted border colour"
+        );
+    }
 }
