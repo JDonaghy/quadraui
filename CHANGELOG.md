@@ -70,13 +70,14 @@ only a push to `main` runs this workflow.
   common aliases (`Esc` -> `Escape`, `Return`/`CR` -> `Enter`, `ArrowUp` ->
   `Up`, etc.) so `"<Esc>"`, `"Ctrl+escape"`, and `"Ctrl+Return"` all match the
   key events backends actually emit.
-- `Color::lighten`/`Color::darken` (round-trip toward white/black) and the
+- `Color::lighten`/`Color::darken` (interpolation toward white/black) and the
   internal `dim_fg` faint-text helper now all go through `Color::blend`'s
   round-to-nearest arithmetic instead of each rounding differently
-  (`lighten`/`darken` truncated, `dim_fg` floored); a handful of channel
-  values that used to land on the even boundary below their true midpoint
-  (e.g. `darken(0.5)` of `255` was `127`) are now 1 LSB higher (`128`),
-  matching `blend(0.5)`.
+  (`lighten`/`darken` truncated, `dim_fg` floored); a channel whose exact
+  value lands on a midpoint is now 1 LSB higher (`darken(0.5)` of `255` is
+  `128`, not `127`), matching `blend(0.5)`. `lighten`/`darken` still preserve
+  the receiver's alpha, and `Color::try_from_hex_over` now composites through
+  `blend` too — same arithmetic as before, one implementation.
 ### Added
 - `quadraui-node` exposes every `quadraui-binding-core::services` seam as a
   thin `QuiApp` method (auto-update, the power-save blocker, launch-at-
