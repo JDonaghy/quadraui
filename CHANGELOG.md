@@ -94,6 +94,31 @@ only a push to `main` runs this workflow.
   that carries this change, per `ci.yml`'s `downstream` job "pin-and-
   defer" policy. This change needs a semver minor bump at the next
   `develop` → `main` promotion.
+- `MessageDialogButton` (`backend`) gains the same optional
+  `spec: Option<ButtonSpec>` override `DialogButton` already has, closing
+  the gap where a binding's `show_message_dialog` decoded a
+  `DialogButton.spec` (variant/icon/tooltip) but
+  `message_dialog_options_from_buttons` silently dropped it building the
+  `MessageDialogButton` row — so it never reached any backend.
+  `native_dialog_options` (the `Dialog` → `MessageDialogOptions` direction)
+  and `MessageDialogController::new` (the reverse, used by
+  `TuiPlatformServices::show_message_dialog`) now both carry `spec`
+  straight through instead of hardcoding `None`. Honored on TUI, where
+  `MessageDialogController` paints it through `Dialog`'s own spec-aware
+  path; not yet read by the native GTK/macOS/Win32 alert facilities
+  (no native alert API exposes per-button icon/variant styling), the same
+  fence the `ButtonSpec` entry above draws for the other three kinds.
+
+  **Downstream impact**: `MessageDialogButton` is a plain all-`pub`-field
+  struct, not `#[non_exhaustive]`, with known construction sites in this
+  repo (examples, `quadraui-binding-core`, `quadraui-gallery`, every
+  backend's own tests) all migrated in this same PR (`spec: None`);
+  adding this field is breaking for any downstream literal naming every
+  field, the same shape as the `ButtonSpec` entry above. `ci.yml`'s
+  `downstream` job (`cargo check --all-targets` against `vimcode` and
+  `coord-tui`) is the gate for whether either consumer constructs
+  `MessageDialogButton` directly; this change needs a semver minor bump
+  at the next `develop` → `main` promotion either way.
 ### Removed
 - `Eq` impl on `Toolbar`/`ToolbarButton`, `Dialog`/`DialogInput`/
   `DialogButton` and `Toast`/`ToastOverlay`/`ToastButton`: each now

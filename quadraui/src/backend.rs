@@ -5705,6 +5705,21 @@ pub struct MessageDialogButton {
     /// When true, Escape (or the platform's cancel gesture) activates
     /// this button.
     pub is_cancel: bool,
+    /// Optional [`crate::primitives::button::ButtonSpec`] override,
+    /// mirroring [`crate::primitives::dialog::DialogButton::spec`] — the
+    /// B3a vocabulary (variant intent, icon, tooltip) this button's own
+    /// `label`/`is_default`/`is_cancel` fields can't express. `None`
+    /// keeps today's plain rendering.
+    ///
+    /// Honored on TUI, where [`crate::compose::MessageDialogController`]
+    /// carries it straight through to the [`crate::primitives::dialog::Dialog`]
+    /// button it builds. Not yet read by the native GTK/macOS/Win32 alert
+    /// facilities `PlatformServices::show_message_dialog` calls there — no
+    /// native alert API exposes per-button icon/variant styling — so it is
+    /// silently ignored on those backends until a per-backend adoption
+    /// issue is filed, the same fence `ButtonSpec`'s own doc draws for
+    /// `ToolbarButton::Action`/`ButtonRowItem`/`ToastButton`.
+    pub spec: Option<crate::primitives::button::ButtonSpec>,
 }
 
 /// The [`WidgetId`] of the [`MessageDialogButton`] the user chose from a

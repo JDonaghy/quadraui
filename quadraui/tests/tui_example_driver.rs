@@ -7354,6 +7354,28 @@ fn message_dialog_app_escape_resolves_cancel_button() {
     );
 }
 
+/// `MessageDialogButton::spec` (a `Danger` override on "Discard") carries
+/// through `MessageDialogController::new` into the `DialogButton` it
+/// builds, and paints in `theme.error_fg` — the "Danger" intent colour —
+/// through the same bracket-chrome path a standalone `Button` uses.
+#[test]
+fn message_dialog_app_discard_button_paints_with_the_danger_spec_tint() {
+    let driver = TuiDriver::new(MessageDialogApp::new(), 100, 20);
+    let bounds = driver
+        .find_bounds("Discard")
+        .expect("Discard button label must be visible on the initial frame");
+    let theme = driver.backend().theme();
+    let style = driver
+        .style_at(bounds.x as u16, bounds.y as u16)
+        .expect("Discard button label cell must be styled");
+    assert_eq!(
+        style.fg,
+        quadraui::tui::ratatui_color(theme.error_fg),
+        "a MessageDialogButton::spec with ButtonVariant::Danger must tint the label in \
+         theme.error_fg, not the plain legacy colour"
+    );
+}
+
 /// Right (move focus) then Enter resolves the *non-default* button —
 /// proves the focus-cycling state machine reaches the app, not just the
 /// Enter/Escape fast paths above.

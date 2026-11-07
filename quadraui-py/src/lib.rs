@@ -8780,6 +8780,61 @@ def handle(event):
         });
     }
 
+    /// A button dict's `spec` (the `ButtonSpec` override —
+    /// variant/icon/tooltip) decodes through to the painted dialog: a
+    /// `Danger`-variant "Delete" button reads tinted in `theme.error_fg`,
+    /// proving `spec` survives `show_message_dialog`'s whole
+    /// decode → `message_dialog_options_from_buttons` → `MessageDialogButton`
+    /// → `MessageDialogController` round trip rather than being silently
+    /// dropped along the way.
+    #[test]
+    fn show_message_dialog_button_spec_variant_paints_the_danger_tint() {
+        Python::attach(|py| {
+            let (mut app, _locals) = app_recording_events(py);
+
+            let buttons_any = py
+                .eval(
+                    c"[
+                        {'id': 'delete', 'label': 'Delete', 'is_default': True, \
+                         'spec': {'label': 'Delete', 'variant': 'Danger'}},
+                        {'id': 'cancel', 'label': 'Cancel', 'is_cancel': True},
+                    ]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+
+            // Title/body deliberately avoid the word "Delete" so
+            // `find_bounds("Delete")` below can only match the button's
+            // own label, not an earlier occurrence painted above it.
+            app.show_message_dialog(
+                "Confirm".to_string(),
+                "This cannot be undone.".to_string(),
+                buttons,
+                None,
+            )
+            .expect("show_message_dialog must open the dialog");
+
+            let button_bounds = app
+                .driver
+                .find_bounds("Delete")
+                .expect("the 'Delete' button must be on screen");
+            let style = app
+                .driver
+                .style_at(button_bounds.x as u16, button_bounds.y as u16)
+                .expect("Delete button label cell must be styled");
+            let theme = app.driver.backend().theme();
+            assert_eq!(
+                style.fg,
+                quadraui::tui::ratatui_color(theme.error_fg),
+                "a 'Danger' spec on the 'Delete' button must tint its label in theme.error_fg"
+            );
+        });
+    }
+
     /// Enter activates the keyboard-focused button — seeded on the first
     /// `is_default` button — closing the dialog the same way a click on it
     /// does.

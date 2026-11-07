@@ -1734,8 +1734,12 @@ impl InteractionEngine {
 /// non-empty (a dialog with no buttons can never be resolved by Enter or
 /// Escape) and no button setting `tint` (accepted for shape compatibility
 /// with the in-canvas `Dialog` primitive's own `buttons` field, but not yet
-/// honored by [`MessageDialogController`]). `Err` carries the message a
-/// binding's own "invalid input" error wraps.
+/// honored by [`MessageDialogController`]). `spec`, unlike `tint`, carries
+/// straight through to the built [`MessageDialogButton`] — honored by
+/// [`MessageDialogController`] on TUI, silently ignored by the native
+/// GTK/macOS/Win32 alert facilities, the same fence
+/// [`quadraui::ButtonSpec`]'s own doc draws elsewhere. `Err` carries the
+/// message a binding's own "invalid input" error wraps.
 pub fn message_dialog_options_from_buttons(
     title: String,
     body: String,
@@ -1766,6 +1770,7 @@ pub fn message_dialog_options_from_buttons(
                 label: b.label,
                 is_default: b.is_default,
                 is_cancel: b.is_cancel,
+                spec: b.spec,
             })
             .collect(),
         severity,
@@ -2160,12 +2165,14 @@ mod tests {
                     label: "Save".to_string(),
                     is_default: true,
                     is_cancel: false,
+                    spec: None,
                 },
                 MessageDialogButton {
                     id: WidgetId::new("cancel"),
                     label: "Cancel".to_string(),
                     is_default: false,
                     is_cancel: true,
+                    spec: None,
                 },
             ],
             severity: None,
@@ -2263,6 +2270,7 @@ mod tests {
                 label: "OK".to_string(),
                 is_default: true,
                 is_cancel: false,
+                spec: None,
             }],
             severity: None,
         };
@@ -3564,5 +3572,56 @@ mod tests {
             "Enter on the focused toolbar must activate button 1 (reset): {:?}",
             dispatched
         );
+    }
+
+    /// `message_dialog_options_from_buttons` carries each button's
+    /// `DialogButton::spec` through to the built `MessageDialogButton`
+    /// unchanged — it must not silently drop it the way it used to.
+    #[test]
+    fn message_dialog_options_from_buttons_carries_spec_through() {
+        use quadraui::{ButtonSpec, ButtonVariant, DialogButton};
+
+        let mut spec = ButtonSpec::new("Delete");
+        spec.variant = ButtonVariant::Danger;
+        let buttons = vec![DialogButton {
+            id: WidgetId::new("delete"),
+            label: "Delete".to_string(),
+            is_default: true,
+            is_cancel: false,
+            tint: None,
+            spec: Some(spec.clone()),
+        }];
+        let opts = super::message_dialog_options_from_buttons(
+            "T".to_string(),
+            "B".to_string(),
+            buttons,
+            None,
+        )
+        .expect("no tint set — must be accepted");
+        assert_eq!(opts.buttons[0].spec, Some(spec));
+    }
+
+    /// A button with no `spec` override still builds cleanly, with
+    /// `MessageDialogButton::spec` left `None`.
+    #[test]
+    fn message_dialog_options_from_buttons_leaves_spec_none_by_default() {
+        use quadraui::DialogButton;
+
+        let buttons = vec![DialogButton {
+            id: WidgetId::new("ok"),
+            label: "OK".to_string(),
+            is_default: true,
+            is_cancel: false,
+            tint: None,
+            spec: None,
+        }];
+        let opts = super::message_dialog_options_from_buttons(
+            "T".to_string(),
+            "B".to_string(),
+            buttons,
+            None,
+        )
+        .expect("no tint set — must be accepted");
+        assert_eq!(opts.buttons[0].spec, None);
     }
 }
