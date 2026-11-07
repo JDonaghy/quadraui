@@ -2008,10 +2008,10 @@ pub trait Backend: sealed::Sealed {
     /// `EventControllerScroll::dy` is pre-scaled by the OS's
     /// lines-per-notch setting, and Win32's is `raw_delta / WHEEL_DELTA`.
     /// The default implementation returns `delta_y` unchanged, matching
-    /// all three. macOS's `NSEvent.scrollingDeltaY` passes straight
-    /// through as real points instead — a sibling macOS issue overrides
-    /// this to divide by [`Self::line_height`] and land back in the same
-    /// row-unit currency every other backend already uses.
+    /// all three. macOS's `NSEvent.scrollingDeltaY` carries real points
+    /// instead, so `MacBackend` overrides this to divide by
+    /// [`Self::line_height`] and land back in the same row-unit currency
+    /// every other backend already uses.
     fn wheel_delta_rows(&self, delta_y: f32) -> f32 {
         delta_y
     }

@@ -6239,8 +6239,7 @@ mod tests {
     fn wheel_delta_rows_divides_points_by_line_height() {
         let b = MacBackend::new();
         assert_eq!(b.line_height(), 16.0);
-        // A 10-point trackpad notch lands as 0.625 rows, not 10 whole
-        // rows — the bug this override fixes.
+        // A 10-point trackpad notch is 0.625 rows, not 10 whole rows.
         assert_eq!(b.wheel_delta_rows(10.0), 0.625);
         assert_eq!(b.wheel_delta_rows(-32.0), -2.0);
     }
