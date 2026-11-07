@@ -220,9 +220,9 @@ pub fn cursor_accent_rect(
 /// (rather than toward black) keeps faint text legibly faded on light
 /// themes too, where darkening would instead *increase* contrast.
 ///
-/// Goes through [`Color::blend`] (round-to-nearest) so it shares the same
-/// rounding rule as [`Color::lighten`]/[`Color::darken`], then restores
-/// `fg`'s own alpha — `blend` always discards it (`a: 255`).
+/// Goes through [`Color::blend`] (round-to-nearest) so it shares one
+/// rounding rule with [`Color::lighten`]/[`Color::darken`], then restores
+/// `fg`'s own alpha, which `blend` discards (`a: 255`).
 fn dim_fg(fg: Color, bg: Color) -> Color {
     Color {
         a: fg.a,
@@ -449,12 +449,10 @@ mod tests {
         let theme = Theme::default();
         let (resolved_bg, resolved_fg) = resolve_cell_style(&c, &theme);
         assert_eq!(resolved_bg, theme.selection_bg);
-        let expected_fg = Color::rgb(
-            ((fg.r as u16 + theme.selection_bg.r as u16) / 2) as u8,
-            ((fg.g as u16 + theme.selection_bg.g as u16) / 2) as u8,
-            ((fg.b as u16 + theme.selection_bg.b as u16) / 2) as u8,
-        );
-        assert_eq!(resolved_fg, expected_fg);
+        // Expressed via `Color::blend` rather than a hand-rolled channel
+        // average, so this pins "faded toward the selection highlight"
+        // without pinning a second, divergent rounding rule.
+        assert_eq!(resolved_fg, fg.blend(theme.selection_bg, 0.5));
     }
 
     /// Cursor precedence still wins over `dim` — an inverted cursor cell
@@ -472,10 +470,10 @@ mod tests {
         assert_eq!(resolve_cell_style(&c, &theme), (fg, bg));
     }
 
-    /// `dim_fg` rounds like [`Color::blend`] (half away from zero), not
-    /// the old integer-floor average — an odd channel sum (255 + 0 = 255,
-    /// /2 = 127.5) now lands on 128, matching `fg.blend(bg, 0.5)` exactly,
-    /// and preserves `fg`'s own alpha (`blend` always discards it).
+    /// `dim_fg` rounds like [`Color::blend`] (half away from zero) rather
+    /// than flooring: an odd channel sum (255 + 0 = 255, /2 = 127.5) lands
+    /// on 128, matching `fg.blend(bg, 0.5)` exactly. It also preserves
+    /// `fg`'s own alpha, which `blend` discards.
     #[test]
     fn dim_fg_rounds_like_blend_and_keeps_fg_alpha() {
         let fg = Color::rgba(255, 255, 255, 77);

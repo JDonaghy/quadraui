@@ -109,9 +109,9 @@ impl Color {
     /// (clamped to `[0.0, 1.0]`). Used by primitives that derive a
     /// hover/highlight tint from a base background colour.
     ///
-    /// Goes through [`Self::blend`] (round-to-nearest) so it shares one
-    /// rounding rule with `darken` and `blend` itself, rather than its
-    /// own truncating arithmetic.
+    /// Goes through [`Self::blend`], so every channel is rounded to the
+    /// nearest byte by the one rounding rule `darken` and `blend` share.
+    /// The caller's own alpha is preserved (`blend` forces `a: 255`).
     pub fn lighten(self, amount: f64) -> Self {
         Self {
             a: self.a,
@@ -120,7 +120,8 @@ impl Color {
     }
 
     /// Linearly interpolate each channel toward black by `amount`
-    /// (clamped to `[0.0, 1.0]`). Symmetric counterpart of [`Self::lighten`].
+    /// (clamped to `[0.0, 1.0]`). Symmetric counterpart of [`Self::lighten`],
+    /// including its rounding rule and alpha handling.
     pub fn darken(self, amount: f64) -> Self {
         Self {
             a: self.a,
@@ -830,8 +831,8 @@ mod tests {
     }
 
     /// `darken(0.5)` of 255 rounds to 128 (`255 * 0.5 = 127.5`), the same
-    /// value `blend` toward black at 0.5 produces — both round half away
-    /// from zero rather than `darken`'s old truncation (which gave 127).
+    /// value `blend` toward black at 0.5 produces: both round half away
+    /// from zero, so neither truncates the midpoint down to 127.
     #[test]
     fn darken_half_matches_blend_toward_black_rounding() {
         let c = Color::rgb(255, 255, 255);
@@ -840,8 +841,8 @@ mod tests {
     }
 
     /// `lighten(0.5)` of 0 rounds to 128 (`255 * 0.5 = 127.5`), matching
-    /// `blend` toward white at 0.5 — same rounding rule, not `lighten`'s
-    /// old truncation (which gave 127).
+    /// `blend` toward white at 0.5 — the same round-half-away-from-zero
+    /// rule, not a truncation down to 127.
     #[test]
     fn lighten_half_matches_blend_toward_white_rounding() {
         let c = Color::rgb(0, 0, 0);
@@ -849,8 +850,8 @@ mod tests {
         assert_eq!(c.lighten(0.5), Color::rgb(128, 128, 128));
     }
 
-    /// `lighten`/`darken` preserve the caller's own alpha — `blend` (which
-    /// they're implemented via) always discards it to 255.
+    /// `lighten`/`darken` preserve the caller's own alpha, even though the
+    /// `blend` they delegate to always discards it to 255.
     #[test]
     fn lighten_and_darken_preserve_alpha() {
         let c = Color::rgba(10, 20, 30, 77);
