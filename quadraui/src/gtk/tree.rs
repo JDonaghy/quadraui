@@ -17,9 +17,11 @@ use gtk4::pango;
 
 use super::toolbar::PangoMeasure;
 use crate::event::Rect as QRect;
-use crate::primitives::tree::{TreeView, TreeViewLayout};
+use crate::primitives::layout_metrics::{tree_row_pitch, TextMeasure};
+use crate::primitives::tree::{tree_chevron_glyph, TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::style::Style;
 use crate::theme::Theme;
+use crate::types::Decoration;
 
 /// Compute the layout the GTK rasteriser would produce for `tree` in
 /// `area` at `line_height`. Hosts and tests call this to drive
@@ -71,6 +73,57 @@ pub fn gtk_tree_layout_measured(
         &measure,
         row_padding_x,
     )
+}
+
+/// Like [`gtk_tree_layout_measured`], but threads an explicit
+/// pixel-precise scroll position (`scroll_px`) through to
+/// [`TreeView::layout_with_scroll_px`] instead of only
+/// [`TreeView::scroll_offset`]'s whole-row value. The row-measurement
+/// closure mirrors [`crate::primitives::layout_metrics::tree_layout_measured`]'s
+/// (chevron glyph width measured via `pango_layout`, same as
+/// [`gtk_tree_layout_measured`]) — that shared fn calls `TreeView::layout`,
+/// which can't reach the scroll_px-aware method, so this duplicates its
+/// small measurement closure rather than widening that fn's signature
+/// (the same approach
+/// [`super::super::macos::tree::mac_tree_layout_with_scroll_px`] takes).
+/// `scroll_px: None` produces byte-identical output to
+/// [`gtk_tree_layout_measured`].
+pub fn gtk_tree_layout_measured_with_scroll_px(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    pango_layout: Option<&pango::Layout>,
+    char_width: f64,
+    row_padding_x: f32,
+    scroll_px: Option<f32>,
+) -> TreeViewLayout {
+    let measure = PangoMeasure {
+        pango_layout,
+        char_width,
+    };
+    let header_height = (line_height * 1.2).round();
+    let item_height = tree_row_pitch(tree, line_height);
+    let indent_px = (line_height * 0.9).round();
+    let show_chevrons = tree.style.show_chevrons;
+    tree.layout_with_scroll_px(area.width, area.height, scroll_px, |i| {
+        let row = &tree.rows[i];
+        let is_header = matches!(row.decoration, Decoration::Header);
+        let row_h = if is_header {
+            header_height as f32
+        } else {
+            item_height as f32
+        };
+        let chevron_end_x = if let Some(expanded) = row.is_expanded.filter(|_| show_chevrons) {
+            let glyph_w = measure.width_of(&tree_chevron_glyph(&tree.style, expanded)) as f64;
+            Some((row_padding_x as f64 + row.indent as f64 * indent_px + glyph_w + 4.0) as f32)
+        } else {
+            None
+        };
+        TreeRowMeasure {
+            height: row_h,
+            chevron_end_x,
+        }
+    })
 }
 
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `cr`. `nerd_fonts_enabled`
@@ -139,14 +192,21 @@ pub fn draw_tree(
         None,
         None,
         false,
+        None,
     )
 }
 
-/// [`draw_tree`], tinting the hovered/pressed row's background —
+/// [`draw_tree`], tinting the hovered/pressed row's background, and —
+/// when `scroll_px` is `Some` — painting at a pixel-precise scroll
+/// position instead of only [`TreeView::scroll_offset`]'s whole-row
+/// value: the first visible row shifts up by the sub-row remainder
+/// (via [`gtk_tree_layout_measured_with_scroll_px`]) and the vertical
+/// scrollbar thumb tracks the same position (via
+/// [`crate::primitives::tree::native_surface_paint::paint_with_scroll_px`]).
 /// `hovered_idx` / `pressed_idx` are indices into `tree.rows`, same as
-/// [`crate::Backend::draw_tree_with_state`]. `None` for both paints
-/// byte-for-byte what [`draw_tree`] paints. `focus_ring_visible` — see
-/// [`crate::Backend::draw_tree_with_state`]'s matching doc.
+/// [`crate::Backend::draw_tree_with_state`]. `None`/`None`/`false`/`None`
+/// paints byte-for-byte what [`draw_tree`] paints. `focus_ring_visible` —
+/// see [`crate::Backend::draw_tree_with_state`]'s matching doc.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_tree_with_state(
     cr: &Context,
@@ -163,6 +223,7 @@ pub fn draw_tree_with_state(
     hovered_idx: Option<usize>,
     pressed_idx: Option<usize>,
     focus_ring_visible: bool,
+    scroll_px: Option<f32>,
 ) {
     draw_tree_impl(
         cr,
@@ -179,6 +240,7 @@ pub fn draw_tree_with_state(
         hovered_idx,
         pressed_idx,
         focus_ring_visible,
+        scroll_px,
     )
 }
 
@@ -198,6 +260,7 @@ fn draw_tree_impl(
     hovered_idx: Option<usize>,
     pressed_idx: Option<usize>,
     focus_ring_visible: bool,
+    scroll_px: Option<f32>,
 ) {
     if w <= 0.0 || h <= 0.0 {
         return;
@@ -205,13 +268,14 @@ fn draw_tree_impl(
 
     layout.set_attributes(None);
 
-    let tree_layout = gtk_tree_layout_measured(
+    let tree_layout = gtk_tree_layout_measured_with_scroll_px(
         tree,
         QRect::new(0.0, 0.0, w as f32, h as f32),
         line_height,
         Some(layout),
         0.0,
         style.row_padding_x,
+        scroll_px,
     );
 
     let area = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
@@ -220,7 +284,7 @@ fn draw_tree_impl(
         layout: Some(layout),
         translucent_fill: true,
     };
-    crate::primitives::tree::native_surface_paint::paint(
+    crate::primitives::tree::native_surface_paint::paint_with_scroll_px(
         tree,
         area,
         &tree_layout,
@@ -232,6 +296,7 @@ fn draw_tree_impl(
         hovered_idx,
         pressed_idx,
         focus_ring_visible,
+        scroll_px,
     );
 
     layout.set_attributes(None);
@@ -1176,6 +1241,134 @@ mod tests {
             painted.is_some(),
             "editing row interior should still contain painted pixels (caret + text) \
              after the #1075 migration"
+        );
+    }
+
+    fn paint_bytes_tree(tree: &TreeView, scroll_px: Option<f32>) -> (Vec<u8>, usize) {
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_tree_with_state(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                tree,
+                &test_theme(),
+                &Style::default(),
+                LINE_HEIGHT,
+                false,
+                None,
+                None,
+                false,
+                scroll_px,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data").to_vec();
+        (data, stride)
+    }
+
+    fn overflowing_tree() -> TreeView {
+        let mut tree = make_tree((0..30).map(|i| leaf(i, &format!("row {i}"))).collect());
+        tree.selected_path = Some(vec![0]);
+        tree
+    }
+
+    /// `scroll_px: None` must paint pixel-identically to [`draw_tree`] —
+    /// `draw_tree_with_state` is additive, not a behaviour change for the
+    /// default path.
+    #[test]
+    fn scroll_px_none_paints_identically_to_draw_tree() {
+        let tree = overflowing_tree();
+
+        let mut plain_surface =
+            ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&plain_surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_tree(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                &tree,
+                &test_theme(),
+                &Style::default(),
+                LINE_HEIGHT,
+                false,
+            );
+        }
+        plain_surface.flush();
+        let plain_bytes = plain_surface.data().expect("surface data").to_vec();
+
+        let (state_bytes, _) = paint_bytes_tree(&tree, None);
+
+        assert_eq!(
+            plain_bytes, state_bytes,
+            "scroll_px: None must paint the same pixels as draw_tree"
+        );
+    }
+
+    /// A sub-row `scroll_px` shifts row 0 above the viewport top and
+    /// reveals row 1 one sub-row-remainder early — the "partial first
+    /// row clipped" look of pixel-smooth scrolling.
+    #[test]
+    fn scroll_px_shifts_the_first_row_above_the_viewport_top() {
+        let tree = overflowing_tree();
+        // Leaf/branch rows pitch at `(line_height * 1.4).round()` — half
+        // of that real painted pitch, not half of `LINE_HEIGHT`.
+        let row_h = crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT) as f32;
+        let half = row_h / 2.0;
+
+        let (scrolled_bytes, stride) = paint_bytes_tree(&tree, Some(half));
+        let (baseline_bytes, _) = paint_bytes_tree(&tree, None);
+
+        // Row 0 is selected, so probing just past its unscrolled bottom
+        // edge must land on row 1's (unselected) background once the
+        // sub-row shift is applied — at that same absolute pixel, the
+        // `scroll_px: None` paint is still inside row 0's selected band.
+        let theme = test_theme();
+        let probe_y = (half + 1.0) as i32;
+        let probe_x = (W / 2).min(W - 1);
+        let (r, g, b) = pixel(&scrolled_bytes, stride, probe_x, probe_y.min(H - 1));
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "pixel just below row 0's shifted bottom edge should show row 1's \
+             background, not the still-selected row 0 a whole-row paint would \
+             show there"
+        );
+
+        // Prove the other half of the claim: at that exact same absolute
+        // pixel, a `scroll_px: None` paint (today's baseline behaviour)
+        // *is* still inside row 0's selected band — the two assertions
+        // together show the sub-row shift, not some other difference,
+        // moved the boundary.
+        let (br, bg, bb) = pixel(&baseline_bytes, stride, probe_x, probe_y.min(H - 1));
+        assert_eq!(
+            (br, bg, bb),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "the same probe pixel on a scroll_px: None paint must still show \
+             row 0's selected background"
         );
     }
 }

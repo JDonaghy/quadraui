@@ -59,6 +59,18 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- GTK `List`/`Tree`/`DataTable` painters (`Backend::draw_list_with_state`,
+  `draw_tree_with_state`, and the new `Backend::draw_data_table_with_state`
+  override) now honour a `Some` `scroll_px` on their paint state: the
+  partially visible first row is shifted up by the sub-row remainder and
+  clipped against the viewport, and the vertical scrollbar thumb tracks
+  the same pixel-precise position — the gtk half of the pixel-smooth
+  scrolling seam (TUI/macOS already had this). `scroll_px: None` paints
+  pixel-identically to the pre-existing `draw_list`/`draw_tree`/
+  `draw_data_table`. `GtkBackend::tree_scroll_row_height` is also
+  overridden so `TreeController`'s wheel-scroll accumulation lands on the
+  same real painted row pitch (`tree_row_pitch`, not the raw
+  `line_height`) the tree painter resolves `scroll_px` against.
 - `ButtonSpec` (`primitives::button`): a shared, kind-agnostic button
   description — `label`/`variant`/`icon`/`icon_position`/`icon_gap`/
   `tooltip`/`disabled`, the B3a vocabulary `Button` itself carries minus

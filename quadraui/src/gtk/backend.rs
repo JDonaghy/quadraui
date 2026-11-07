@@ -1457,6 +1457,103 @@ impl GtkBackend {
         });
     }
 
+    /// Record header + visible body + footer cell text into the
+    /// painted-text map that `GtkDriver::find` scans, for
+    /// [`Backend::draw_data_table_with_glyphs`] / [`Backend::draw_data_table_with_state`].
+    /// Bounds are derived from `table_layout` + the declarative `table`,
+    /// not by re-deriving Cairo/Pango geometry, so they can't drift from
+    /// what was actually drawn. `scroll_offset`/`sub_row_px` are the
+    /// resolved (possibly `scroll_px`-aware) body-row starting index and
+    /// sub-row pixel shift the caller painted at — `0.0` from
+    /// `draw_data_table_with_glyphs` reproduces the pre-existing
+    /// whole-row bookkeeping exactly.
+    fn record_data_table_painted_text(
+        &mut self,
+        rect: QRect,
+        table: &crate::DataTable,
+        table_layout: &crate::DataTableLayout,
+        scroll_offset: usize,
+        sub_row_px: f32,
+    ) {
+        let h_off = table.h_scroll as f64;
+        let header_height = table_layout.header_height as f64;
+        for (col_idx, rc) in table_layout.columns.iter().enumerate() {
+            if rc.width <= 0.0 {
+                continue;
+            }
+            if let Some(col) = table.columns.get(col_idx) {
+                let bounds = QRect::new(
+                    (rect.x as f64 + rc.x as f64 - h_off) as f32,
+                    rect.y,
+                    rc.width,
+                    header_height as f32,
+                );
+                self.record_painted_text(&col.title, bounds);
+            }
+        }
+
+        let row_height = table_layout.row_height as f64;
+        let body_y = rect.y as f64 + header_height - sub_row_px as f64;
+        let visible = table_layout
+            .visible_rows
+            .min(table.rows.len().saturating_sub(scroll_offset));
+        for row_idx in 0..visible {
+            let abs_idx = scroll_offset + row_idx;
+            let row = &table.rows[abs_idx];
+            let row_y = body_y + row_idx as f64 * row_height;
+            for (col_idx, rc) in table_layout.columns.iter().enumerate() {
+                if rc.width <= 0.0 {
+                    continue;
+                }
+                let Some(cell) = row.cells.get(col_idx) else {
+                    continue;
+                };
+                if cell.spans.is_empty() {
+                    continue;
+                }
+                let text: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
+                if text.is_empty() {
+                    continue;
+                }
+                let bounds = QRect::new(
+                    (rect.x as f64 + rc.x as f64 - h_off) as f32,
+                    row_y as f32,
+                    rc.width,
+                    row_height as f32,
+                );
+                self.record_painted_text(&text, bounds);
+            }
+        }
+
+        if let Some(footer) = &table.footer {
+            if table_layout.footer_height > 0.0 {
+                let footer_y = rect.y as f64 + rect.height as f64 - row_height;
+                for (col_idx, rc) in table_layout.columns.iter().enumerate() {
+                    if rc.width <= 0.0 {
+                        continue;
+                    }
+                    let Some(cell) = footer.cells.get(col_idx) else {
+                        continue;
+                    };
+                    if cell.spans.is_empty() {
+                        continue;
+                    }
+                    let text: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let bounds = QRect::new(
+                        (rect.x as f64 + rc.x as f64 - h_off) as f32,
+                        footer_y as f32,
+                        rc.width,
+                        row_height as f32,
+                    );
+                    self.record_painted_text(&text, bounds);
+                }
+            }
+        }
+    }
+
     /// Paint the active text selection highlight onto `cr`. Must be called
     /// after `app.render` (so the highlight sits on top of the rendered
     /// content).
@@ -2593,10 +2690,6 @@ impl Backend for GtkBackend {
         state: &crate::primitives::tree::TreePaintState,
         focus_ring_visible: bool,
     ) {
-        // `state.scroll_px` is read by the TUI backend (see
-        // `tui::backend::TuiBackend::draw_tree_with_state`) but not yet
-        // by this GTK painter — pixel-smooth GTK scrolling is a sibling
-        // issue's job (the seam only guarantees the trait shape here).
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
@@ -2618,8 +2711,25 @@ impl Backend for GtkBackend {
             state.hovered_idx,
             state.pressed_idx,
             focus_ring_visible,
+            state.scroll_px,
         );
         layout.set_font_description(saved_font.as_ref());
+    }
+
+    /// The tree's real painted row pitch: [`Self::resolved_row_height`]
+    /// of the editor font metric, run through the same
+    /// [`crate::primitives::layout_metrics::tree_row_pitch`] formula
+    /// [`Self::draw_tree`]/[`Self::draw_tree_with_state`] paint rows
+    /// at — not the trait default ([`Backend::line_height`] alone),
+    /// which disagrees with that painted pitch by the leaf/branch
+    /// `1.4×` multiplier `tree_row_pitch` applies (unless
+    /// `tree.style.row_height` overrides it). Matches `MacBackend`'s
+    /// override of the same method.
+    fn tree_scroll_row_height(&self, tree: &TreeView) -> f32 {
+        crate::primitives::layout_metrics::tree_row_pitch(
+            tree,
+            self.resolved_row_height(self.current_line_height),
+        ) as f32
     }
 
     fn draw_list(&mut self, rect: QRect, list: &ListView) {
@@ -2659,10 +2769,6 @@ impl Backend for GtkBackend {
         state: &crate::primitives::list::ListPaintState,
         focus_ring_visible: bool,
     ) {
-        // `state.scroll_px` is read by the TUI backend (see
-        // `tui::backend::TuiBackend::draw_list_with_state`) but not yet
-        // by this GTK painter — pixel-smooth GTK scrolling is a sibling
-        // issue's job (the seam only guarantees the trait shape here).
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
@@ -2684,6 +2790,7 @@ impl Backend for GtkBackend {
             state.hovered_idx,
             state.pressed_idx,
             focus_ring_visible,
+            state.scroll_px,
         );
         layout.set_font_description(saved_font.as_ref());
     }
@@ -2743,92 +2850,52 @@ impl Backend for GtkBackend {
             glyphs,
             nerd_fonts_enabled,
             opacity,
+            None,
+        );
+        layout.set_font_description(saved_font.as_ref());
+        self.record_data_table_painted_text(rect, table, &table_layout, table.scroll_offset, 0.0);
+        table_layout
+    }
+
+    /// [`Self::draw_data_table_with_glyphs`], plus — when
+    /// `state.scroll_px` is `Some` — a pixel-precise scroll position
+    /// instead of only [`crate::DataTable::scroll_offset`]'s whole-row
+    /// value, via [`crate::gtk::data_table::draw_data_table_with_state`].
+    /// `state.scroll_px: None` paints pixel-identically to
+    /// [`Self::draw_data_table_with_glyphs`].
+    fn draw_data_table_with_state(
+        &mut self,
+        rect: QRect,
+        table: &crate::DataTable,
+        state: &crate::primitives::data_table::DataTablePaintState,
+    ) -> crate::DataTableLayout {
+        let lh = self.resolved_row_height(self.current_line_height);
+        let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_data_table_with_state called outside enter_frame_scope");
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
+        let table_layout = crate::gtk::data_table::draw_data_table_with_state(
+            cr,
+            layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            table,
+            &theme,
+            lh,
+            nerd_fonts_enabled,
+            state,
         );
         layout.set_font_description(saved_font.as_ref());
 
-        // Record header + visible body + footer cell text into the
-        // painted-text map that GtkDriver::find scans. Bounds are
-        // derived from `table_layout` + the declarative `table`, not by
-        // re-deriving Cairo/Pango geometry, so they can't drift from
-        // what was actually drawn.
-        let h_off = table.h_scroll as f64;
-        let header_height = table_layout.header_height as f64;
-        for (col_idx, rc) in table_layout.columns.iter().enumerate() {
-            if rc.width <= 0.0 {
-                continue;
-            }
-            if let Some(col) = table.columns.get(col_idx) {
-                let bounds = QRect::new(
-                    (rect.x as f64 + rc.x as f64 - h_off) as f32,
-                    rect.y,
-                    rc.width,
-                    header_height as f32,
-                );
-                self.record_painted_text(&col.title, bounds);
-            }
-        }
-
-        let row_height = table_layout.row_height as f64;
-        let body_y = rect.y as f64 + header_height;
-        let visible = table_layout
-            .visible_rows
-            .min(table.rows.len().saturating_sub(table.scroll_offset));
-        for row_idx in 0..visible {
-            let abs_idx = table.scroll_offset + row_idx;
-            let row = &table.rows[abs_idx];
-            let row_y = body_y + row_idx as f64 * row_height;
-            for (col_idx, rc) in table_layout.columns.iter().enumerate() {
-                if rc.width <= 0.0 {
-                    continue;
-                }
-                let Some(cell) = row.cells.get(col_idx) else {
-                    continue;
-                };
-                if cell.spans.is_empty() {
-                    continue;
-                }
-                let text: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
-                if text.is_empty() {
-                    continue;
-                }
-                let bounds = QRect::new(
-                    (rect.x as f64 + rc.x as f64 - h_off) as f32,
-                    row_y as f32,
-                    rc.width,
-                    row_height as f32,
-                );
-                self.record_painted_text(&text, bounds);
-            }
-        }
-
-        if let Some(footer) = &table.footer {
-            if table_layout.footer_height > 0.0 {
-                let footer_y = rect.y as f64 + rect.height as f64 - row_height;
-                for (col_idx, rc) in table_layout.columns.iter().enumerate() {
-                    if rc.width <= 0.0 {
-                        continue;
-                    }
-                    let Some(cell) = footer.cells.get(col_idx) else {
-                        continue;
-                    };
-                    if cell.spans.is_empty() {
-                        continue;
-                    }
-                    let text: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
-                    if text.is_empty() {
-                        continue;
-                    }
-                    let bounds = QRect::new(
-                        (rect.x as f64 + rc.x as f64 - h_off) as f32,
-                        footer_y as f32,
-                        rc.width,
-                        row_height as f32,
-                    );
-                    self.record_painted_text(&text, bounds);
-                }
-            }
-        }
-
+        let scroll_offset = table.effective_scroll_offset(lh as f32, state.scroll_px);
+        let sub_px = table.scroll_sub_row_px(lh as f32, state.scroll_px);
+        self.record_data_table_painted_text(rect, table, &table_layout, scroll_offset, sub_px);
         table_layout
     }
 
