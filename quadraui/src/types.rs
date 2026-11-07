@@ -12,6 +12,15 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{OnceLock, RwLock};
 
+/// Parse the two ASCII hex digits at byte offset `i..i+2` of `s` as a
+/// `u8`. Shared by [`Color::from_hex`] and [`Color::try_from_hex_over`] so
+/// neither repeats the same `from_str_radix` call four times. Callers must
+/// already have verified `s` is all ASCII hex digits of sufficient length —
+/// this only parses, it doesn't re-validate.
+fn hex_byte(s: &str, i: usize) -> Option<u8> {
+    u8::from_str_radix(&s[i..i + 2], 16).ok()
+}
+
 /// RGBA colour, 0-255 each channel.
 ///
 /// Matches the shape of `vimcode::Color` conceptually. Adapter code in apps
@@ -46,17 +55,12 @@ impl Color {
             return None;
         }
         let (r, g, b, a) = match s.len() {
-            6 => (
-                u8::from_str_radix(&s[0..2], 16).ok()?,
-                u8::from_str_radix(&s[2..4], 16).ok()?,
-                u8::from_str_radix(&s[4..6], 16).ok()?,
-                255,
-            ),
+            6 => (hex_byte(s, 0)?, hex_byte(s, 2)?, hex_byte(s, 4)?, 255),
             8 => (
-                u8::from_str_radix(&s[0..2], 16).ok()?,
-                u8::from_str_radix(&s[2..4], 16).ok()?,
-                u8::from_str_radix(&s[4..6], 16).ok()?,
-                u8::from_str_radix(&s[6..8], 16).ok()?,
+                hex_byte(s, 0)?,
+                hex_byte(s, 2)?,
+                hex_byte(s, 4)?,
+                hex_byte(s, 6)?,
             ),
             _ => return None,
         };
@@ -88,44 +92,39 @@ impl Color {
         if !stripped.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
-        let r = u8::from_str_radix(&stripped[0..2], 16).ok()?;
-        let g = u8::from_str_radix(&stripped[2..4], 16).ok()?;
-        let b = u8::from_str_radix(&stripped[4..6], 16).ok()?;
-        let a = u8::from_str_radix(&stripped[6..8], 16).ok()?;
+        let r = hex_byte(stripped, 0)?;
+        let g = hex_byte(stripped, 2)?;
+        let b = hex_byte(stripped, 4)?;
+        let a = hex_byte(stripped, 6)?;
         let alpha = a as f64 / 255.0;
-        let blend = |fg: u8, bg: u8| -> u8 {
-            (fg as f64 * alpha + bg as f64 * (1.0 - alpha)).round() as u8
-        };
-        Some(Self {
-            r: blend(r, bg.r),
-            g: blend(g, bg.g),
-            b: blend(b, bg.b),
-            a: 255,
-        })
+        // `blend`'s `self` is the base (weight `1 - alpha`) and `over` is
+        // the overlay (weight `alpha`), so composite the parsed colour
+        // over `bg` as `bg.blend(fg, alpha)` — `blend` already forces
+        // `a: 255`, matching this method's "alpha channel is discarded"
+        // contract.
+        Some(bg.blend(Self::rgb(r, g, b), alpha))
     }
 
     /// Linearly interpolate each channel toward white by `amount`
     /// (clamped to `[0.0, 1.0]`). Used by primitives that derive a
     /// hover/highlight tint from a base background colour.
+    ///
+    /// Goes through [`Self::blend`] (round-to-nearest) so it shares one
+    /// rounding rule with `darken` and `blend` itself, rather than its
+    /// own truncating arithmetic.
     pub fn lighten(self, amount: f64) -> Self {
-        let f = amount.clamp(0.0, 1.0);
         Self {
-            r: (self.r as f64 + (255.0 - self.r as f64) * f) as u8,
-            g: (self.g as f64 + (255.0 - self.g as f64) * f) as u8,
-            b: (self.b as f64 + (255.0 - self.b as f64) * f) as u8,
             a: self.a,
+            ..self.blend(Self::rgb(255, 255, 255), amount)
         }
     }
 
     /// Linearly interpolate each channel toward black by `amount`
     /// (clamped to `[0.0, 1.0]`). Symmetric counterpart of [`Self::lighten`].
     pub fn darken(self, amount: f64) -> Self {
-        let f = amount.clamp(0.0, 1.0);
         Self {
-            r: (self.r as f64 * (1.0 - f)) as u8,
-            g: (self.g as f64 * (1.0 - f)) as u8,
-            b: (self.b as f64 * (1.0 - f)) as u8,
             a: self.a,
+            ..self.blend(Self::rgb(0, 0, 0), amount)
         }
     }
 
@@ -828,6 +827,35 @@ mod tests {
         let over = Color::rgba(200, 100, 50, 20);
         let mixed = base.blend(over, 0.5);
         assert_eq!((mixed.r, mixed.g, mixed.b, mixed.a), (100, 50, 25, 255));
+    }
+
+    /// `darken(0.5)` of 255 rounds to 128 (`255 * 0.5 = 127.5`), the same
+    /// value `blend` toward black at 0.5 produces — both round half away
+    /// from zero rather than `darken`'s old truncation (which gave 127).
+    #[test]
+    fn darken_half_matches_blend_toward_black_rounding() {
+        let c = Color::rgb(255, 255, 255);
+        assert_eq!(c.darken(0.5), Color::rgb(0, 0, 0).blend(c, 0.5));
+        assert_eq!(c.darken(0.5), Color::rgb(128, 128, 128));
+    }
+
+    /// `lighten(0.5)` of 0 rounds to 128 (`255 * 0.5 = 127.5`), matching
+    /// `blend` toward white at 0.5 — same rounding rule, not `lighten`'s
+    /// old truncation (which gave 127).
+    #[test]
+    fn lighten_half_matches_blend_toward_white_rounding() {
+        let c = Color::rgb(0, 0, 0);
+        assert_eq!(c.lighten(0.5), c.blend(Color::rgb(255, 255, 255), 0.5));
+        assert_eq!(c.lighten(0.5), Color::rgb(128, 128, 128));
+    }
+
+    /// `lighten`/`darken` preserve the caller's own alpha — `blend` (which
+    /// they're implemented via) always discards it to 255.
+    #[test]
+    fn lighten_and_darken_preserve_alpha() {
+        let c = Color::rgba(10, 20, 30, 77);
+        assert_eq!(c.lighten(0.5).a, 77);
+        assert_eq!(c.darken(0.5).a, 77);
     }
 
     #[test]
