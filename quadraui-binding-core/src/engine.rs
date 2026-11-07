@@ -420,6 +420,17 @@ impl InteractionEngine {
 
     // ── Tooltip ──────────────────────────────────────────────────────
 
+    /// The current hit-tested hover target — the same `(id, detail)` pair
+    /// [`Self::handle`] dispatches as `MouseEntered`/`MouseLeft`, read
+    /// back by a caller that wants to know what's hovered right now
+    /// without re-deriving it from the raw hit map (e.g. a hover-tooltip
+    /// driver deciding whether a tooltip should be pending for this
+    /// frame). `None` once the pointer has left every hoverable
+    /// primitive — see [`Self::hover`]'s own doc.
+    pub fn hovered(&self) -> Option<(WidgetId, HitDetail)> {
+        self.hover.borrow().clone()
+    }
+
     /// Shows `tooltip` anchored against `anchor` (the rect of whatever
     /// widget it describes, in the backend's ABSOLUTE frame). Replaces
     /// any tooltip already showing.
@@ -433,6 +444,16 @@ impl InteractionEngine {
     /// explicit "hide now" (e.g. the hovered widget itself changed).
     pub fn hide_tooltip(&mut self) -> bool {
         self.tooltip.take().is_some()
+    }
+
+    /// Whether a tooltip is currently open — the `bool` half of
+    /// [`Self::show_tooltip`]/[`Self::hide_tooltip`]'s own state, read
+    /// back by a caller that needs to resync its own idea of "is a
+    /// tooltip showing" (e.g. a hover-tooltip driver whose tracker
+    /// thinks one is visible) against whatever [`Self::handle`]'s own
+    /// click/key auto-dismiss just did to it.
+    pub fn tooltip_open(&self) -> bool {
+        self.tooltip.is_some()
     }
 
     fn tooltip_layout(
