@@ -1081,6 +1081,166 @@ mod open_with_default_tests {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// validate_open_url
+// ─────────────────────────────────────────────────────────────────────
+
+/// Schemes [`validate_open_url`] accepts unconditionally: the only
+/// things [`open_with_default`]'s `open`/`xdg-open`/`ShellExecuteW` is
+/// actually documented to hand to a browser or mail client.
+///
+/// `#[cfg(feature = "tui")]`: [`validate_open_url`]'s only adopter today
+/// is `tui::services::TuiPlatformServices::open_url_result`. GTK, macOS,
+/// and Win-GUI adopt it in their own follow-up issues, at which point
+/// this cfg widens to match.
+#[cfg(feature = "tui")]
+const OPEN_URL_SAFE_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
+
+/// File extensions [`validate_open_url`] treats as "launches code or an
+/// app bundle" rather than "opens a document", even under the otherwise-
+/// allowed `file:` scheme. `app` covers a macOS bundle (a directory, not
+/// a single file, but every opener resolves it the same way it resolves a
+/// file target); the rest cover a Windows executable, script, or
+/// installer, plus a Linux `.desktop` launcher.
+#[cfg(feature = "tui")]
+const OPEN_URL_EXECUTABLE_EXTENSIONS: [&str; 10] = [
+    "exe", "bat", "cmd", "com", "scr", "msi", "app", "command", "sh", "desktop",
+];
+
+/// Validate that `url` is safe to hand to [`open_with_default`]/
+/// [`try_open_with_default`] before any backend's
+/// `PlatformServices::open_url`/`open_url_result` spawns it. Those
+/// openers treat their argument as "whatever its scheme (or, for a bare
+/// path, its file association) says to launch", not specifically "open a
+/// URL in a browser" — an unvalidated call can hand them a local
+/// executable or an app bundle instead of a URL.
+///
+/// Accepts `http:`, `https:`, and `mailto:` unconditionally
+/// ([`OPEN_URL_SAFE_SCHEMES`]). Accepts `file:` only when the target's
+/// last path segment does not end in one of
+/// [`OPEN_URL_EXECUTABLE_EXTENSIONS`]. Rejects everything else with
+/// [`crate::backend::BackendError::Unsupported`]:
+/// - a bare filesystem path with no scheme at all, including a Windows
+///   drive-letter path (`C:\Windows\System32\calc.exe`) — its
+///   single-letter prefix before the colon is not one of the three
+///   recognized schemes, so it falls through to this same rejection
+///   rather than needing a separate "looks like a drive letter" check;
+/// - any other scheme this crate's openers have no documented reason to
+///   launch, e.g. `javascript:` or `data:`.
+#[cfg(feature = "tui")]
+pub(crate) fn validate_open_url(url: &str) -> crate::backend::ServiceResult<()> {
+    let Some((scheme, rest)) = url.split_once(':') else {
+        return Err(crate::backend::BackendError::Unsupported);
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    if OPEN_URL_SAFE_SCHEMES.contains(&scheme.as_str()) {
+        return Ok(());
+    }
+    if scheme == "file" && !open_url_target_is_executable(rest) {
+        return Ok(());
+    }
+    Err(crate::backend::BackendError::Unsupported)
+}
+
+/// Whether a `file:` URL's target (everything after the scheme's `:`,
+/// query/fragment included) names something in
+/// [`OPEN_URL_EXECUTABLE_EXTENSIONS`] — the check [`validate_open_url`]'s
+/// `file` arm runs. Strips a trailing `?query`/`#fragment` and any
+/// trailing path separators before looking at the final segment's
+/// extension, so `file:///Applications/Calculator.app/` and
+/// `file:///C:/tmp/run.exe?x=1` are both caught.
+#[cfg(feature = "tui")]
+fn open_url_target_is_executable(target: &str) -> bool {
+    let path_part = target.split(['?', '#']).next().unwrap_or(target);
+    let trimmed = path_part.trim_end_matches('/');
+    let last_segment = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    let Some((_, ext)) = last_segment.rsplit_once('.') else {
+        return false;
+    };
+    let ext_lower = ext.to_ascii_lowercase();
+    OPEN_URL_EXECUTABLE_EXTENSIONS.contains(&ext_lower.as_str())
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod validate_open_url_tests {
+    use super::*;
+    use crate::backend::BackendError;
+
+    #[test]
+    fn accepts_http_https_and_mailto() {
+        assert_eq!(validate_open_url("http://example.com/2141"), Ok(()));
+        assert_eq!(validate_open_url("https://example.com/2141"), Ok(()));
+        assert_eq!(validate_open_url("mailto:user@example.com"), Ok(()));
+    }
+
+    #[test]
+    fn accepts_scheme_case_insensitively() {
+        assert_eq!(validate_open_url("HTTPS://example.com/2141"), Ok(()));
+    }
+
+    #[test]
+    fn accepts_a_file_url_pointing_at_an_ordinary_document() {
+        assert_eq!(validate_open_url("file:///home/user/report.pdf"), Ok(()));
+    }
+
+    #[test]
+    fn rejects_a_bare_unix_path_with_no_scheme() {
+        assert_eq!(
+            validate_open_url("/Applications/Calculator.app"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn rejects_a_bare_windows_executable_path() {
+        assert_eq!(
+            validate_open_url("C:\\Windows\\System32\\calc.exe"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn rejects_a_file_url_pointing_at_a_windows_executable() {
+        assert_eq!(
+            validate_open_url("file:///C:/Windows/System32/calc.exe"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn rejects_a_file_url_pointing_at_a_macos_app_bundle() {
+        assert_eq!(
+            validate_open_url("file:///Applications/Calculator.app"),
+            Err(BackendError::Unsupported)
+        );
+        // A trailing slash on the bundle directory must not dodge the check.
+        assert_eq!(
+            validate_open_url("file:///Applications/Calculator.app/"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn rejects_a_file_url_pointing_at_an_executable_with_a_query_string() {
+        assert_eq!(
+            validate_open_url("file:///C:/tmp/run.exe?x=1"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn rejects_javascript_and_data_schemes() {
+        assert_eq!(
+            validate_open_url("javascript:alert(1)"),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(
+            validate_open_url("data:text/html,<script>alert(1)</script>"),
+            Err(BackendError::Unsupported)
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // reveal_in_file_manager
 // ─────────────────────────────────────────────────────────────────────
 

@@ -204,7 +204,13 @@
 //! tray icon, a dock badge); a terminal session on a desktop can launch a
 //! browser perfectly well, so that answer was never earned.
 //!
-//! [`TuiPlatformServices::open_url_result`] now tries, in order:
+//! [`TuiPlatformServices::open_url_result`] first validates `url` through
+//! [`crate::desktop::validate_open_url`] — the backend-neutral seam every
+//! `PlatformServices::open_url` implementation is meant to run its input
+//! through before handing it to a platform opener, so a bare executable
+//! path or app-bundle `file:` URL is rejected with
+//! `Err(BackendError::Unsupported)` instead of being launched. Once a
+//! `url` passes that check, this method tries, in order:
 //!
 //! 1. **The platform opener** ([`crate::desktop::try_open_with_default`],
 //!    issue #1087 — originally this module's own `try_platform_opener`,
@@ -1306,6 +1312,73 @@ mod open_url_tests {
         assert_eq!(result, Ok(()));
     }
 
+    /// Acceptance bar: `open_url_result` rejects a bare
+    /// executable path with `Err(BackendError::Unsupported)` and never
+    /// spawns anything, even when an opener binary that *would* succeed
+    /// is sitting right there on `$PATH` — [`crate::desktop::validate_open_url`]
+    /// rejects the input before `open_url_via` ever runs the opener
+    /// closure. Uses the same `$PATH`-stub technique as
+    /// `open_url_result_returns_ok_through_the_real_delegation`, except
+    /// the stub opener here writes a marker file so this test can prove
+    /// it was never invoked, rather than merely assuming so from the
+    /// `Err` return value alone.
+    ///
+    /// **Unix only** — see that test's doc for why Windows has no
+    /// `$PATH`-resolved-binary equivalent to intercept this way.
+    #[cfg(unix)]
+    #[test]
+    fn open_url_result_rejects_a_bare_executable_path_and_spawns_nothing() {
+        let _guard = crate::desktop::PATH_OVERRIDE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        #[cfg(target_os = "macos")]
+        const OPENER_NAME: &str = "open";
+        #[cfg(all(unix, not(target_os = "macos")))]
+        const OPENER_NAME: &str = "xdg-open";
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stub_path = tmp.path().join(OPENER_NAME);
+        let marker_path = tmp.path().join("opener-was-invoked");
+        std::fs::write(
+            &stub_path,
+            format!("#!/bin/sh\ntouch {:?}\nexit 0\n", marker_path),
+        )
+        .expect("write stub opener");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod +x stub opener");
+        }
+
+        let original_path = std::env::var_os("PATH");
+        struct RestorePath(Option<std::ffi::OsString>);
+        impl Drop for RestorePath {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+        let _restore = RestorePath(original_path.clone());
+
+        let mut new_path = std::ffi::OsString::from(tmp.path());
+        if let Some(existing) = &original_path {
+            new_path.push(":");
+            new_path.push(existing);
+        }
+        std::env::set_var("PATH", new_path);
+
+        let services = TuiPlatformServices::new();
+        let result = services.open_url_result("/usr/bin/calc.exe");
+        assert_eq!(result, Err(BackendError::Unsupported));
+        assert!(
+            !marker_path.exists(),
+            "the opener must never be spawned for a bare executable path"
+        );
+    }
+
     /// Before this fix,
     /// `TuiPlatformServices::open_path` hand-rolled its own
     /// `std::process::Command::new(OPENER).arg(path).spawn()` instead of
@@ -1851,16 +1924,22 @@ impl PlatformServices for TuiPlatformServices {
     }
 
     /// Genuinely opens `url`, rather than #949's honest but
-    /// unconditional `Err(BackendError::Unsupported)`. Tries the platform
-    /// URL opener first ([`crate::desktop::try_open_with_default`] —
-    /// `xdg-open`/`open` on Unix, `ShellExecuteW` directly on Windows,
-    /// never a shell); if it can't even launch (no desktop session,
-    /// opener binary missing), falls back to an OSC 8 hyperlink
-    /// ([`emit_osc8_hyperlink`]) so a capable terminal still makes the
-    /// URL clickable. Only reports `Err(BackendError::Unsupported)` when
-    /// *neither* leg reached anything — see the module doc for the full
+    /// unconditional `Err(BackendError::Unsupported)`. First validates
+    /// `url` via [`crate::desktop::validate_open_url`] — rejecting a bare
+    /// path, a `javascript:`/`data:` scheme, or a `file:` URL that points
+    /// at an executable or app bundle, so this method stays "open a URL
+    /// in a browser", not "run whatever string a caller hands it" — then
+    /// tries the platform URL opener
+    /// ([`crate::desktop::try_open_with_default`] — `xdg-open`/`open` on
+    /// Unix, `ShellExecuteW` directly on Windows, never a shell); if it
+    /// can't even launch (no desktop session, opener binary missing),
+    /// falls back to an OSC 8 hyperlink ([`emit_osc8_hyperlink`]) so a
+    /// capable terminal still makes the URL clickable. Only reports
+    /// `Err(BackendError::Unsupported)` when validation fails or *neither*
+    /// opener leg reached anything — see the module doc for the full
     /// three-step story.
     fn open_url_result(&self, url: &str) -> ServiceResult<()> {
+        crate::desktop::validate_open_url(url)?;
         open_url_via(url, |u| {
             crate::desktop::try_open_with_default(std::ffi::OsStr::new(u))
         })
