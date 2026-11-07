@@ -12,7 +12,7 @@
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use crate::primitives::data_table::{DataTable, DataTableGlyphs};
+use crate::primitives::data_table::{DataTable, DataTableGlyphs, DataTablePaintState};
 use crate::primitives::layout_metrics::pixel_data_table_layout;
 use crate::theme::Theme;
 use crate::DataTableLayout;
@@ -110,6 +110,54 @@ pub unsafe fn draw_data_table_with_glyphs(
         hovered_idx,
         glyphs,
         nerd_fonts_enabled,
+    )
+}
+
+/// [`draw_data_table_with_glyphs`], plus — when `state.scroll_px` is
+/// `Some` — a pixel-precise scroll position instead of only
+/// [`DataTable::scroll_offset`]'s whole-row value: the body rows shift
+/// up by the sub-row remainder, clipped to the band below the fixed
+/// header, and the vertical scrollbar thumb tracks the same position
+/// (see
+/// [`crate::primitives::data_table::native_surface_paint::paint_with_state`]).
+/// `state.scroll_px: None` paints pixel-identically to
+/// [`draw_data_table_with_glyphs`]. The layout `mac_data_table_layout`
+/// returns doesn't depend on `scroll_px` (unlike `ListView`/`TreeView`,
+/// `DataTableLayout::visible_rows` is a plain viewport/row-height count,
+/// not individual row bounds), so there is no `mac_data_table_layout`
+/// counterpart to thread `scroll_px` through.
+///
+/// # Safety
+///
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
+/// the call.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_data_table_with_state(
+    ctx: CGContextRef,
+    font: &CTFont,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    table: &DataTable,
+    theme: &Theme,
+    line_height: f64,
+    state: &DataTablePaintState,
+) -> DataTableLayout {
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    let rect = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
+    crate::primitives::data_table::native_surface_paint::paint_with_state(
+        table,
+        &mut surface,
+        theme,
+        rect,
+        line_height as f32,
+        state,
+        None,
+        false,
     )
 }
 
@@ -444,6 +492,105 @@ mod tests {
             total,
         );
         assert!(matches!(hit, DataTableHit::Row { idx: 1 }));
+    }
+
+    /// `DataTablePaintState::scroll_px: None` must paint
+    /// pixel-identically to [`draw_data_table`] —
+    /// `draw_data_table_with_state` is additive, not a behaviour change
+    /// for the default path.
+    #[test]
+    fn scroll_px_none_paints_identically_to_draw_data_table() {
+        let table = sample_table();
+        let plain_bytes = {
+            let (surface, _layout) = paint_via_backend(&table, None);
+            surface.bytes().to_vec()
+        };
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let state = DataTablePaintState::default();
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_data_table_with_state(rect, &table, &state);
+        });
+        backend.end_frame();
+
+        assert_eq!(
+            plain_bytes,
+            surface.bytes().to_vec(),
+            "scroll_px: None must paint the same pixels as draw_data_table"
+        );
+    }
+
+    /// A sub-row `scroll_px` shifts the body up by the sub-row
+    /// remainder — resolved via [`DataTable::effective_scroll_offset`] /
+    /// [`DataTable::scroll_sub_row_px`] — and reveals row 1 one
+    /// sub-row-remainder early. Asserted two ways: those resolvers'
+    /// return values and the actual painted pixel at the boundary where
+    /// row 0 ends and row 1 begins.
+    #[test]
+    fn scroll_px_shifts_the_body_above_the_header_boundary() {
+        let theme = Theme {
+            selection_alpha: 1.0,
+            ..Theme::default()
+        };
+        let mut table = sample_table();
+        table.selected_idx = Some(0);
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.set_theme(theme);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let baseline_layout = backend.data_table_layout(rect, &table);
+        let row_h = baseline_layout.row_height;
+        let half = row_h / 2.0;
+
+        let state = DataTablePaintState::default().with_scroll_px(Some(half));
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let l = b.draw_data_table_with_state(rect, &table, &state);
+            *layout.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        let layout = layout.into_inner().unwrap();
+
+        assert_eq!(
+            table.effective_scroll_offset(layout.row_height, Some(half)),
+            0,
+            "a sub-row scroll_px shouldn't advance the whole-row offset yet"
+        );
+        assert!(
+            (table.scroll_sub_row_px(layout.row_height, Some(half)) - half).abs() < 0.01,
+            "scroll_sub_row_px should resolve to the sub-row remainder"
+        );
+
+        // Row 0 is selected, so probing just past its shifted bottom
+        // edge must land on row 1's (unselected) background — at that
+        // same absolute pixel, the `scroll_px: None` paint is still
+        // inside row 0's selected band.
+        let probe_y = (layout.header_height + half + 1.0) as u32;
+        let probe_x = (layout.columns[0].x + layout.columns[0].width * 0.85) as u32;
+        let (r, g, b) = {
+            let (r, g, b, _) = surface.pixel(probe_x.min(W - 1), probe_y.min(H - 1));
+            (r, g, b)
+        };
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selection_bg.r,
+                theme.selection_bg.g,
+                theme.selection_bg.b
+            ),
+            "pixel just below row 0's shifted bottom edge should show row 1's \
+             background, not the still-selected row 0 a whole-row paint would \
+             show there"
+        );
     }
 }
 
