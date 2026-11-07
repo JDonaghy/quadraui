@@ -130,6 +130,16 @@ only a push to `main` runs this workflow.
   `Buffer`/`Uint8Array`/`ArrayBuffer` passed under `{Bytes: ...}` decodes
   into `quadraui::ImageSource::Bytes` correctly instead of raising a
   spurious `InvalidDescriptorError`.
+- TUI DataTable body cells, the MenuBar label measurer, the chat input's
+  exact-reconstruction line wrap, and the Toast single-word hard-truncate
+  fallback now all measure and clip CJK/emoji text by terminal display width
+  (via `text_util::display_width`/`truncate_with_ellipsis`) instead of char
+  count: a wide-glyph DataTable cell now ellipsizes within its own column
+  instead of bleeding into the next, a `TreeView` badge with wide glyphs is
+  positioned and painted at its real width, and a Toast word too wide even
+  for `"x…"` now falls back to a bare `"…"` instead of overflowing its
+  budget by one character. `tui::text::truncate_to_width_ellipsis` now
+  delegates its ellipsis search to the same shared helper.
 
 ## [0.9.0] - 2026-11-07
 ### Added

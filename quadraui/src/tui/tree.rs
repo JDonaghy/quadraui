@@ -12,7 +12,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::{draw_styled_text, qc, ratatui_color, set_cell};
+use super::{draw_styled_text, qc, ratatui_color, set_cell, set_cell_wide};
 use crate::primitives::tree::{TreeRowEditState, TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::theme::Theme;
 use crate::types::Decoration;
@@ -206,10 +206,9 @@ pub fn draw_tree_with_scroll_px(
             // painting the label, clamping the label to end at least one
             // blank column short of the badge. The label must not overwrite
             // the badge; a gap indicates when the label is truncated.
-            let badge_start_col = row
-                .badge
-                .as_ref()
-                .map(|badge| (row_w as usize).saturating_sub(badge.text.chars().count()));
+            let badge_start_col = row.badge.as_ref().map(|badge| {
+                (row_w as usize).saturating_sub(crate::text_util::display_width(&badge.text))
+            });
             let draw_badge = badge_start_col.is_some_and(|start| start > text_start);
             let max_text_col = if draw_badge {
                 // Reserve one blank gap column between the label and the
@@ -270,11 +269,18 @@ pub fn draw_tree_with_scroll_px(
                     badge_start_col.expect("draw_badge is only true when badge_start_col is Some");
                 let badge_fg = badge.fg.map(qc).unwrap_or(dim_fg);
                 let badge_bg = badge.bg.map(qc).unwrap_or(bg);
-                for (bx, ch) in (badge_start_col..).zip(badge.text.chars()) {
+                let mut bx = badge_start_col;
+                for ch in badge.text.chars() {
                     if bx >= row_w as usize {
                         break;
                     }
-                    set_cell(buf, row_x + bx as u16, y, ch, badge_fg, badge_bg);
+                    let w = crate::text_util::char_cell_width(ch) as usize;
+                    if w == 2 && bx + 1 < row_w as usize {
+                        set_cell_wide(buf, row_x + bx as u16, y, ch, badge_fg, badge_bg);
+                    } else {
+                        set_cell(buf, row_x + bx as u16, y, ch, badge_fg, badge_bg);
+                    }
+                    bx += w;
                 }
             }
         }
@@ -614,6 +620,35 @@ mod tests {
     /// by the badge with no gap or truncation indicator (vimcode's
     /// Explorer showed `BACKEND_SPECU`, where the trailing `U` was
     /// actually the git-untracked badge glued onto the label).
+    #[test]
+    fn wide_glyph_badge_is_measured_and_positioned_by_display_width() {
+        use crate::types::Badge;
+
+        let mut tree = make_tree();
+        // A 2-char CJK badge is 4 display columns wide, not 2 — positioning
+        // it by char count would place it two columns too far right,
+        // running it off the row.
+        tree.rows[1].text = StyledText::plain("short");
+        tree.rows[1].badge = Some(Badge::plain("新着"));
+
+        let width = 20u16;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 5));
+        draw_tree(
+            &mut buf,
+            Rect::new(0, 0, width, 5),
+            &tree,
+            &Theme::default(),
+            false,
+        );
+
+        let text = row_text(&buf, 1);
+        // The badge's two wide chars occupy 4 display columns (2 each),
+        // not 2 — each wide glyph's own cell carries the glyph, and the
+        // cell immediately after it is its (empty) continuation cell.
+        assert_eq!(cell_char(&buf, width - 4, 1), '新', "row text: {text:?}");
+        assert_eq!(cell_char(&buf, width - 2, 1), '着', "row text: {text:?}");
+    }
+
     #[test]
     fn long_label_with_badge_leaves_gap_and_ellipsizes() {
         use crate::types::Badge;

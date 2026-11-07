@@ -1900,13 +1900,36 @@ fn wrap_input_rows(text: &str, col_budget: usize) -> Vec<InputRow> {
 /// [`crate::text_util::word_wrap`]'s convention.
 fn wrap_line_exact(line: &str, col_budget: usize) -> Vec<(usize, String)> {
     let chars: Vec<char> = line.chars().collect();
-    if col_budget == 0 || chars.len() <= col_budget {
+    let total_width: usize = chars
+        .iter()
+        .map(|&c| crate::text_util::char_cell_width(c) as usize)
+        .sum();
+    if col_budget == 0 || total_width <= col_budget {
         return vec![(0, line.to_string())];
     }
     let mut rows = Vec::new();
     let mut start = 0usize;
     while start < chars.len() {
-        let mut end = (start + col_budget).min(chars.len());
+        // Grow `end` by display width, not char count, so a row of CJK
+        // or emoji never exceeds `col_budget` cells — each of those
+        // chars claims two columns, not one.
+        let mut width = 0usize;
+        let mut end = start;
+        while end < chars.len() {
+            let w = crate::text_util::char_cell_width(chars[end]) as usize;
+            if width + w > col_budget {
+                break;
+            }
+            width += w;
+            end += 1;
+        }
+        if end == start {
+            // Not even one (possibly double-width) char fits the
+            // budget — take it anyway so the loop always makes forward
+            // progress, same as every other row-budget clamp in this
+            // file.
+            end = start + 1;
+        }
         if end < chars.len() {
             if let Some(space_rel) = chars[start..end].iter().rposition(|&c| c == ' ') {
                 let space_idx = start + space_rel;
@@ -3000,6 +3023,23 @@ mod tests {
                 (6, "gh".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn wrap_line_exact_never_exceeds_budget_with_wide_glyphs() {
+        // 4 CJK chars (8 display columns) at a budget of 4 cells must
+        // split into rows that each measure <= 4 cells — a char-count
+        // budget would instead put all 4 chars (8 cols) on one row.
+        let rows = wrap_line_exact("日本語日", 4);
+        for (_, text) in &rows {
+            assert!(
+                crate::text_util::display_width(text) <= 4,
+                "row {text:?} exceeds the 4-cell budget"
+            );
+        }
+        // Still an exact, lossless reconstruction.
+        let joined: String = rows.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(joined, "日本語日");
     }
 
     #[test]
