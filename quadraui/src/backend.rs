@@ -1997,11 +1997,15 @@ pub trait Backend: sealed::Sealed {
     fn char_width(&self) -> f32;
 
     /// Convert a [`crate::ScrollDelta::y`] component into fractional row
-    /// units for a row-based scroll controller ([`crate::compose::TreeController`],
-    /// and any `ListView`/`DataTable`-driving equivalent) to accumulate
-    /// into a paint-time `scroll_px` ([`ListPaintState`], [`TreePaintState`],
-    /// [`DataTablePaintState`]) without snapping to a whole row on every
-    /// event.
+    /// units for [`crate::compose::TreeController`] (currently the only
+    /// row-based scroll controller reading this) to accumulate into a
+    /// paint-time `scroll_px` ([`TreePaintState`]) without snapping to a
+    /// whole row on every event. `row_height` is the caller's px↔row
+    /// basis for the *same* scroll gesture (on `TreeController`,
+    /// [`Self::tree_scroll_row_height`]'s result) — a backend that needs
+    /// to convert a native points-based delta into row notches divides by
+    /// it; a backend whose native delta already *is* row notches ignores
+    /// it.
     ///
     /// Every backend but macOS already reports wheel/trackpad deltas in
     /// row-notch units: TUI is `±1.0` per crossterm notch, GTK's
@@ -2009,11 +2013,32 @@ pub trait Backend: sealed::Sealed {
     /// lines-per-notch setting, and Win32's is `raw_delta / WHEEL_DELTA`.
     /// The default implementation returns `delta_y` unchanged, matching
     /// all three. macOS's `NSEvent.scrollingDeltaY` carries real points
-    /// instead, so `MacBackend` overrides this to divide by
-    /// [`Self::line_height`] and land back in the same row-unit currency
-    /// every other backend already uses.
-    fn wheel_delta_rows(&self, delta_y: f32) -> f32 {
+    /// instead, so `MacBackend` overrides this to divide by `row_height`
+    /// and land back in the same row-unit currency every other backend
+    /// already uses — critically, the *same* `row_height` the caller then
+    /// multiplies back by to recover pixels, so the conversion round-trips
+    /// to the real pixel delta rather than drifting by whatever ratio
+    /// `row_height` happens to differ from [`Self::line_height`] by.
+    fn wheel_delta_rows(&self, delta_y: f32, row_height: f32) -> f32 {
+        let _ = row_height;
         delta_y
+    }
+
+    /// The real row pitch a row-based scroll controller should treat as
+    /// its px↔row basis for `tree`, so wheel-scroll clamping and the
+    /// derived whole-row `scroll_offset` agree with what [`Self::tree_layout`]
+    /// / [`Self::draw_tree_with_state`] actually paint.
+    ///
+    /// Defaults to [`Self::line_height`], which already *is* the real
+    /// per-row pixel pitch [`Self::tree_layout`] paints at on every
+    /// backend except macOS — whose tree rows paint at
+    /// `resolved_row_height(chrome_line_height)` run through the tree's
+    /// own row-pitch formula, a value [`Self::line_height`] (the
+    /// *editor* font metric) does not report. `MacBackend` overrides
+    /// this to return that real painted pitch instead.
+    fn tree_scroll_row_height(&self, tree: &TreeView) -> f32 {
+        let _ = tree;
+        self.line_height()
     }
 
     /// Line height of the chrome / UI font, in surface-native units.

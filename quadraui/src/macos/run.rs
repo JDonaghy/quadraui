@@ -937,10 +937,14 @@ define_class!(
             // delta — precise trackpad and discrete wheel notch alike —
             // so the bar snaps to full opacity for the hold window
             // regardless of which `WheelRouting` arm handles delivery.
+            // `line_height` is also what `route_wheel_event` scales an
+            // imprecise (discrete wheel) delta by to land it in points.
+            let mut line_height = 1.0_f32;
             if let Ok(mut backend) = self.ivars().backend.try_borrow_mut() {
                 backend.note_scroll_activity();
+                line_height = backend.line_height();
             }
-            match route_wheel_event(precise, dx, dy, x, y) {
+            match route_wheel_event(precise, dx, dy, x, y, line_height) {
                 WheelRouting::Immediate(ev) => {
                     self.cancel_wheel_momentum();
                     self.dispatch(ev);

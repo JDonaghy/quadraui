@@ -993,10 +993,16 @@ mod tests {
         let mut backend = MacBackend::new();
         backend.set_current_theme(theme);
         backend.set_current_font(font());
-        let line_height = backend.chrome_line_height() as f64;
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        // Must match exactly what `MacBackend::draw_tree_with_state` paints
+        // at (`resolved_row_height(chrome_line_height)`, not the raw chrome
+        // font metric) — otherwise this test's reference geometry and the
+        // pixels it probes disagree whenever the host's chrome font
+        // reports a line height below `Style::row_height`.
+        let line_height = backend.resolved_row_height(backend.chrome_line_height().into());
         let row_h = tree_row_pitch(&tree, line_height) as f32;
         let half = row_h / 2.0;
-        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
 
         let layout =
             mac_tree_layout_with_scroll_px(&tree, area, line_height, &font(), 8.0, Some(half));
@@ -1065,6 +1071,142 @@ mod tests {
             ),
             "the same probe pixel on a scroll_px: None paint must still show \
              row 0's selected background"
+        );
+    }
+
+    /// End-to-end: a fractional wheel delta fed through
+    /// [`crate::compose::TreeController`] — exactly the path
+    /// `MacBackend::wheel_delta_rows`/`tree_scroll_row_height` feed —
+    /// must land as a sub-row offset in what `MacBackend` actually
+    /// paints, and must keep `TreeController`'s own `scroll_offset`
+    /// (what hit-testing resolves against) in step with that paint.
+    ///
+    /// `delta_y` is deliberately chosen strictly between
+    /// `Backend::line_height()` (the *editor* font metric a stale
+    /// currency would have divided/multiplied by) and the tree's real
+    /// painted pitch (`tree_scroll_row_height`, driven by the *chrome*
+    /// font metric and a 1.4x row-pitch expansion) — large enough that
+    /// the wrong basis would wrongly cross a row boundary
+    /// (`floor(delta_y / line_height()) == 1`) while the right basis
+    /// correctly stays within row 0 (`floor(delta_y / row_h) == 0`).
+    /// Before `MacBackend::tree_scroll_row_height` existed, this
+    /// delta's `scroll_offset` would have jumped to `1` a full row
+    /// early and a click at the paint's row-0 band would have resolved
+    /// against the wrong row.
+    #[test]
+    fn wheel_scroll_feeds_a_fractional_row_delta_into_the_painted_scroll_px_end_to_end() {
+        use crate::compose::TreeController;
+        use crate::UiEvent;
+
+        let theme = Theme {
+            tab_bar_bg: Color::rgb(255, 255, 255),
+            background: Color::rgb(255, 255, 255),
+            ..Theme::default()
+        };
+
+        let mut backend = MacBackend::new();
+        backend.set_current_theme(theme);
+        backend.set_current_font(font());
+
+        // The real painted row pitch for this tree, and the editor
+        // line height a stale currency would have used instead — both
+        // used only to size the test's own delta/assertions, not
+        // duplicated into the production math under test.
+        let probe_tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        let row_h = backend.tree_scroll_row_height(&probe_tree);
+        let line_h = backend.line_height();
+        assert!(
+            row_h > line_h,
+            "this test needs the tree's real pitch to exceed line_height() to \
+             be a discriminating regression guard, got row_h={row_h} \
+             line_h={line_h}"
+        );
+        let delta_y = (row_h + line_h) / 2.0; // strictly between the two
+
+        // A viewport tall enough for exactly two rows, so the tree's
+        // third row leaves one whole row of scrollable range — a
+        // viewport that already fits every row would clamp
+        // `scroll_by_wheel`'s `max_px` to zero and this test would
+        // trivially pass without exercising the clamp at all.
+        let rect = QRect::new(0.0, 0.0, W as f32, row_h * 2.0);
+
+        let mut tc = TreeController::new("t");
+        tc.set_rows(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        tc.set_selected_path(Some(vec![0]));
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -delta_y),
+            position: crate::Point::new(5.0, 5.0),
+        };
+        tc.handle(&ev, &mut backend, rect);
+
+        assert_eq!(
+            tc.scroll_offset(),
+            0,
+            "a wheel delta smaller than the tree's real row pitch must not \
+             advance scroll_offset, even though it exceeds line_height()"
+        );
+        let scroll_px = tc
+            .scroll_px()
+            .expect("a wheel scroll must accumulate scroll_px");
+        assert!(
+            (scroll_px - delta_y).abs() < 0.01,
+            "scroll_px should land on the real pixel delta, got {scroll_px}"
+        );
+
+        // Click where row 0's still-visible (shifted-up) band now is:
+        // just inside the viewport top. Hit-testing must agree with
+        // scroll_offset == 0 and resolve to row 0, not row 1 — the
+        // concrete "clicks select the wrong row" regression a drifted
+        // scroll_offset would cause.
+        let click_ev = crate::event::mouse_down(
+            crate::MouseButton::Left,
+            5.0,
+            1.0,
+            crate::Modifiers::default(),
+        );
+        let hit = tc.handle(&click_ev, &mut backend, rect);
+        match hit {
+            crate::compose::TreeControllerEvent::RowSelected { path } => {
+                assert_eq!(
+                    path,
+                    vec![0],
+                    "a click just inside the viewport top should still hit row 0, \
+                     not a row scroll_offset drift would shift it onto"
+                );
+            }
+            other => panic!("expected RowSelected, got {other:?}"),
+        }
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            tc.render(b, rect);
+        });
+        backend.end_frame();
+
+        // Row 0 (selected) should now be shifted up by `delta_y`
+        // (which is less than one full row pitch), so the probe pixel
+        // just past its shifted bottom edge shows row 1's unselected
+        // background — the same assertion
+        // `scroll_px_shifts_the_first_row_above_the_viewport_top` makes
+        // against a hand-built layout, now proven against the real
+        // wheel-driven controller + painter round trip.
+        let probe_y = (delta_y + 1.0) as u32;
+        let probe_x = (W / 2).min(W - 1);
+        let (r, g, b, _) = surface.pixel(probe_x, probe_y.min(H - 1));
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "pixel just below row 0's wheel-shifted bottom edge should show row \
+             1's background, not the still-selected row 0 a whole-row paint \
+             would show there"
         );
     }
 }
