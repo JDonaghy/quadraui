@@ -41,9 +41,12 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::DWrite;
 use crate::event::Rect;
-use crate::primitives::layout_metrics::TextMeasure;
-use crate::primitives::tree::{TreeView, TreeViewLayout};
+use crate::primitives::layout_metrics::{tree_row_pitch, TextMeasure};
+use crate::primitives::tree::{
+    tree_chevron_glyph, TreePaintState, TreeRowMeasure, TreeView, TreeViewLayout,
+};
 use crate::theme::Theme;
+use crate::types::Decoration;
 
 /// Compute a [`TreeView`]'s layout without painting and without a real
 /// measurer — the `line_height * 0.65` chevron-width *estimate*, for
@@ -89,6 +92,50 @@ pub fn win_tree_layout_measured(
         measure,
         row_padding_x,
     )
+}
+
+/// Like [`win_tree_layout_measured`], but threads an explicit
+/// pixel-precise scroll position (`scroll_px`) through to
+/// [`TreeView::layout_with_scroll_px`] instead of only
+/// [`TreeView::scroll_offset`]'s whole-row value. The row-measurement
+/// closure mirrors [`crate::primitives::layout_metrics::tree_layout_measured`]'s
+/// (chevron glyph width measured via `measure`, same as
+/// [`win_tree_layout_measured`]) — that shared fn calls
+/// [`TreeView::layout`], which can't reach the scroll_px-aware method,
+/// so this duplicates its small measurement closure rather than
+/// widening that fn's signature. `scroll_px: None` produces
+/// byte-identical output to [`win_tree_layout_measured`].
+pub fn win_tree_layout_measured_with_scroll_px(
+    measure: &dyn TextMeasure,
+    rect: Rect,
+    tree: &TreeView,
+    line_height: f32,
+    row_padding_x: f32,
+    scroll_px: Option<f32>,
+) -> TreeViewLayout {
+    let header_height = (line_height * 1.2).round();
+    let item_height = tree_row_pitch(tree, line_height as f64) as f32;
+    let indent_px = (line_height * 0.9).round();
+    let show_chevrons = tree.style.show_chevrons;
+    tree.layout_with_scroll_px(rect.width, rect.height, scroll_px, |i| {
+        let row = &tree.rows[i];
+        let is_header = matches!(row.decoration, Decoration::Header);
+        let row_h = if is_header {
+            header_height
+        } else {
+            item_height
+        };
+        let chevron_end_x = if let Some(expanded) = row.is_expanded.filter(|_| show_chevrons) {
+            let glyph_w = measure.width_of(&tree_chevron_glyph(&tree.style, expanded));
+            Some(row_padding_x + row.indent as f32 * indent_px + glyph_w + 4.0)
+        } else {
+            None
+        };
+        TreeRowMeasure {
+            height: row_h,
+            chevron_end_x,
+        }
+    })
 }
 
 /// Draw a [`TreeView`] into `rect` (DIPs) on `target`. Returns the
@@ -152,16 +199,66 @@ pub fn draw_tree(
         &mut surface,
         theme,
         style,
-        // `hovered_idx` / `pressed_idx`: row tinting is not wired on this
-        // backend — `WinBackend` uses the `Backend::draw_tree_with_state`
-        // default, which forwards to `draw_tree` and drops both indices.
-        // `None` keeps this paint pixel-identical to the contract above.
+        // `hovered_idx` / `pressed_idx`: this base painter never tints
+        // rows — that's `draw_tree_with_state`'s job, which composes both
+        // indices (and the focus-visible ring below) from
+        // `TreePaintState`. `None`/`false` here keep `draw_tree`
+        // pixel-identical to the contract above.
         None,
         None,
-        // Same reasoning for the focus-visible ring: this backend has
-        // no `Backend::draw_tree_with_state` override to compose
-        // `focus_ring_visible` from, so it never shows here yet.
         false,
+    );
+
+    layout
+}
+
+/// [`draw_tree`], plus hover/press row tinting, a focus-visible ring,
+/// and — when `state.scroll_px` is `Some` — a pixel-precise scroll
+/// position instead of only [`TreeView::scroll_offset`]'s whole-row
+/// value: the first visible row is shifted up by the sub-row remainder
+/// (via [`win_tree_layout_measured_with_scroll_px`]) and the vertical
+/// scrollbar thumb tracks the same position (via
+/// [`crate::primitives::tree::native_surface_paint::paint_with_scroll_px`]).
+/// `state.scroll_px: None` paints pixel-identically to [`draw_tree`].
+#[allow(clippy::too_many_arguments)]
+pub fn draw_tree_with_state(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    rect: Rect,
+    tree: &TreeView,
+    line_height: f32,
+    nerd_fonts_enabled: bool,
+    theme: &Theme,
+    style: &crate::style::Style,
+    state: &TreePaintState,
+    focus_ring_visible: bool,
+) -> TreeViewLayout {
+    let layout = win_tree_layout_measured_with_scroll_px(
+        dwrite,
+        rect,
+        tree,
+        line_height,
+        style.row_padding_x,
+        state.scroll_px,
+    );
+
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    crate::primitives::tree::native_surface_paint::paint_with_scroll_px(
+        tree,
+        rect,
+        &layout,
+        line_height,
+        nerd_fonts_enabled,
+        &mut surface,
+        theme,
+        style,
+        state.hovered_idx,
+        state.pressed_idx,
+        focus_ring_visible,
+        state.scroll_px,
     );
 
     layout
@@ -376,6 +473,131 @@ mod tests {
             .expect("paint");
         let no_paint = win_tree_layout(&tree, rect, LINE_HEIGHT, 8.0);
         assert_eq!(painted, no_paint);
+    }
+
+    /// `scroll_px: None` must produce byte-identical output to
+    /// [`win_tree_layout_measured`] — the "paints exactly as before"
+    /// contract [`draw_tree_with_state`] documents.
+    #[test]
+    fn win_tree_layout_measured_with_scroll_px_none_matches_win_tree_layout_measured() {
+        let tree = make_tree((0..6).map(|i| leaf(i, &format!("row-{i}"))).collect());
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+
+        let via_plain = win_tree_layout_measured(&dwrite, rect, &tree, LINE_HEIGHT, 8.0);
+        let via_scroll_px =
+            win_tree_layout_measured_with_scroll_px(&dwrite, rect, &tree, LINE_HEIGHT, 8.0, None);
+        assert_eq!(via_plain, via_scroll_px);
+    }
+
+    /// A fractional `scroll_px` shifts the first visible row's bounds up
+    /// by the sub-row remainder and reports it back as `scroll_sub_px`,
+    /// matching `mac_tree_layout_with_scroll_px`'s contract.
+    #[test]
+    fn win_tree_layout_measured_with_scroll_px_shifts_first_row_by_sub_row_remainder() {
+        let tree = make_tree((0..6).map(|i| leaf(i, &format!("row-{i}"))).collect());
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+
+        let item_height =
+            crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT as f64) as f32;
+        let half_row = item_height / 2.0;
+        let layout = win_tree_layout_measured_with_scroll_px(
+            &dwrite,
+            rect,
+            &tree,
+            LINE_HEIGHT,
+            8.0,
+            Some(half_row),
+        );
+
+        assert_eq!(layout.resolved_scroll_offset, 0);
+        assert_eq!(layout.scroll_sub_px, half_row);
+        assert_eq!(
+            layout.visible_rows[0].bounds.y, -half_row,
+            "the first visible row must shift up by the sub-row remainder"
+        );
+    }
+
+    /// `draw_tree_with_state` with `scroll_px: None` must paint
+    /// pixel-identically to [`draw_tree`]; a fractional `scroll_px` must
+    /// paint a visibly different first row — the clipped partial-row
+    /// look of pixel-smooth scrolling.
+    #[test]
+    fn draw_tree_with_state_scroll_px_shifts_first_row_pixels() {
+        let tree = make_tree((0..6).map(|i| leaf(i, &format!("row-{i}"))).collect());
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let item_height =
+            crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT as f64) as f32;
+
+        let paint_at = |scroll_px: Option<f32>| -> HeadlessSurface {
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            let state =
+                crate::primitives::tree::TreePaintState::default().with_scroll_px(scroll_px);
+            surface
+                .paint(|target| {
+                    draw_tree_with_state(
+                        target,
+                        &dwrite,
+                        rect,
+                        &tree,
+                        LINE_HEIGHT,
+                        false,
+                        &Theme::default(),
+                        &Style::default(),
+                        &state,
+                        false,
+                    );
+                })
+                .expect("paint tree");
+            surface
+        };
+
+        let unscrolled = paint_at(None);
+        let half_row_scrolled = paint_at(Some(item_height / 2.0));
+
+        let reference = {
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            surface
+                .paint(|target| {
+                    draw_tree(
+                        target,
+                        &dwrite,
+                        rect,
+                        &tree,
+                        LINE_HEIGHT,
+                        false,
+                        &Theme::default(),
+                        &Style::default(),
+                    );
+                })
+                .expect("paint tree");
+            surface
+        };
+        for y in 0..(H as u32) {
+            for x in 0..(W as u32) {
+                assert_eq!(
+                    unscrolled.pixel_at(x, y),
+                    reference.pixel_at(x, y),
+                    "scroll_px: None must paint pixel-identically to draw_tree at ({x}, {y})"
+                );
+            }
+        }
+
+        let mut any_diff = false;
+        for y in 0..(item_height as u32) {
+            for x in 0..(W as u32) {
+                if unscrolled.pixel_at(x, y) != half_row_scrolled.pixel_at(x, y) {
+                    any_diff = true;
+                }
+            }
+        }
+        assert!(
+            any_diff,
+            "a half-row scroll_px must paint a visibly different first row \
+             than scroll_px: None"
+        );
     }
 
     /// `nerd_fonts_enabled` selects `row.icon.glyph` vs

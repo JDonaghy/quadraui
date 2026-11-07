@@ -223,9 +223,33 @@ only a push to `main` runs this workflow.
   clamp and the whole-row `scroll_offset` it derives for hit-testing
   agree with what the paint path resolves `scroll_px` against — not
   just the raw pixel delta, which happened to round-trip correctly
-  either way. GTK/Win32 still ignore `scroll_px` (sibling issues); both
-  default `tree_scroll_row_height` to `Backend::line_height`, unchanged
-  from their pre-existing behaviour.
+  either way. GTK still ignores `scroll_px` (sibling issue) and defaults
+  `tree_scroll_row_height` to `Backend::line_height`, unchanged from its
+  pre-existing behaviour — Win-GUI now honours `scroll_px` for real; see
+  below.
+- Win-GUI now paints `scroll_px` for real too, mirroring the macOS work
+  above: `WinBackend::draw_list_with_state`/`draw_tree_with_state`/
+  `draw_data_table_with_state` shift the first visible row/item up by
+  the sub-row remainder and clip it against the viewport, and position
+  the vertical scrollbar thumb from the same pixel-precise value —
+  `scroll_px: None` paints pixel-identically to the existing
+  `draw_list`/`draw_tree`/`draw_data_table`. These `*_with_state`
+  overrides also compose `state.hovered_idx`/`state.pressed_idx` and
+  `focus_ring_visible`. New `win::list::win_list_layout_with_scroll_px`/
+  `win::tree::win_tree_layout_measured_with_scroll_px` thread it through
+  to `ListView`/`TreeView::layout_with_scroll_px`, matching
+  `win_list_layout`'s/`win_tree_layout_measured`'s existing
+  `border_inset`/chevron-measurement handling; `DataTable` needs no such
+  layout counterpart (see the macOS bullet above for why). `WinBackend`
+  also overrides `Backend::tree_scroll_row_height` to return the real
+  painted pitch (`resolved_row_height` run through the tree's row-pitch
+  formula), not the raw editor `line_height`, so a `TreeController`
+  accumulating `scroll_px` against this basis agrees with what the
+  painters above actually paint. `Backend::wheel_delta_rows` is left at
+  its default on Win-GUI: Win32's `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL`
+  delta is already divided by `WHEEL_DELTA` into fractional row-notch
+  units before it becomes a `UiEvent::Scroll`, the same currency every
+  non-macOS backend already reports.
 - `compose::HoverTooltipTracker<T>`: the delay + auto-dismiss state
   machine a hover-driven tooltip needs on top of
   `ToolbarHoverTracker`/`ListHoverTracker`/`TreeHoverTracker`'s plain

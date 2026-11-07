@@ -2762,6 +2762,21 @@ impl Backend for WinBackend {
         self.current_char_width
     }
 
+    /// The tree's real painted row pitch: [`Self::resolved_row_height`]
+    /// run through the same
+    /// [`crate::primitives::layout_metrics::tree_row_pitch`] formula
+    /// [`Self::draw_tree`]/[`Self::draw_tree_with_state`] paint rows
+    /// at — not [`Self::line_height`] (`current_line_height` raw), which
+    /// disagrees with that painted pitch whenever a host sets
+    /// [`crate::style::Style::row_height`] above the chrome font's own
+    /// line height. Mirrors `MacBackend::tree_scroll_row_height`.
+    fn tree_scroll_row_height(&self, tree: &TreeView) -> f32 {
+        crate::primitives::layout_metrics::tree_row_pitch(
+            tree,
+            self.resolved_row_height(self.current_line_height) as f64,
+        ) as f32
+    }
+
     /// Forwards to [`Self::set_current_line_height`] — the
     /// `Backend`-trait-object-reachable twin of that inherent method, the
     /// Win-GUI counterpart of `GtkBackend`'s / `MacBackend`'s overrides of
@@ -2895,6 +2910,41 @@ impl Backend for WinBackend {
         let _ = (rect, tree);
     }
 
+    /// [`Self::draw_tree`], plus hover/press row tinting, a
+    /// focus-visible ring, and — when `state.scroll_px` is `Some` — a
+    /// pixel-precise scroll position instead of only
+    /// [`TreeView::scroll_offset`]'s whole-row value, via
+    /// [`super::tree::draw_tree_with_state`]. `state.scroll_px: None`
+    /// paints pixel-identically to [`Self::draw_tree`].
+    fn draw_tree_with_state(
+        &mut self,
+        rect: Rect,
+        tree: &TreeView,
+        state: &crate::primitives::tree::TreePaintState,
+        focus_ring_visible: bool,
+    ) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            super::tree::draw_tree_with_state(
+                &surface.target,
+                dwrite,
+                rect,
+                tree,
+                self.resolved_row_height(self.current_line_height),
+                self.nerd_fonts_enabled,
+                &self.current_theme,
+                &self.current_style,
+                state,
+                focus_ring_visible,
+            );
+            return;
+        }
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking.
+        let _ = (rect, tree, state, focus_ring_visible);
+    }
+
     /// see [`Self::draw_tree`]'s doc. `List` is
     /// `ChromePrimitive::List` — see `draw_tree`'s note for the
     /// font-swap shape.
@@ -2915,6 +2965,39 @@ impl Backend for WinBackend {
         // See `draw_tree`'s doc for why this degrades to a no-op instead
         // of panicking.
         let _ = (rect, list);
+    }
+
+    /// [`Self::draw_list`], plus hover/press row tinting, a
+    /// focus-visible ring, and — when `state.scroll_px` is `Some` — a
+    /// pixel-precise scroll position instead of only
+    /// [`ListView::scroll_offset`]'s whole-row value, via
+    /// [`super::list::draw_list_with_state`]. `state.scroll_px: None`
+    /// paints pixel-identically to [`Self::draw_list`].
+    fn draw_list_with_state(
+        &mut self,
+        rect: Rect,
+        list: &ListView,
+        state: &crate::primitives::list::ListPaintState,
+        focus_ring_visible: bool,
+    ) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            super::list::draw_list_with_state(
+                &surface.target,
+                dwrite,
+                rect,
+                list,
+                self.resolved_row_height(self.current_line_height),
+                &self.current_style,
+                state,
+                focus_ring_visible,
+            );
+            return;
+        }
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking.
+        let _ = (rect, list, state, focus_ring_visible);
     }
 
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
@@ -2990,6 +3073,36 @@ impl Backend for WinBackend {
         #[cfg(not(target_os = "windows"))]
         let _ = glyphs;
         self.draw_data_table(rect, table, hovered_idx)
+    }
+
+    /// [`Self::draw_data_table`], plus — when `state.scroll_px` is
+    /// `Some` — a pixel-precise scroll position instead of only
+    /// [`crate::DataTable::scroll_offset`]'s whole-row value, via
+    /// [`super::data_table::draw_data_table_with_state`].
+    /// `state.scroll_px: None` paints pixel-identically to
+    /// [`Self::draw_data_table`].
+    fn draw_data_table_with_state(
+        &mut self,
+        rect: Rect,
+        table: &crate::DataTable,
+        state: &crate::primitives::data_table::DataTablePaintState,
+    ) -> crate::DataTableLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            return super::data_table::draw_data_table_with_state(
+                &surface.target,
+                dwrite,
+                rect,
+                table,
+                self.resolved_row_height(self.current_line_height),
+                state,
+            );
+        }
+        // No surface/DWrite yet — see `Self::draw_data_table`'s doc for
+        // the same fallback; only `state.hovered_idx` affects the
+        // no-paint layout this falls back to.
+        self.draw_data_table(rect, table, state.hovered_idx)
     }
 
     /// Pure measurement — only needs `self.dwrite`, not a live
@@ -7001,6 +7114,44 @@ mod tests {
             sb.thumb_len >= expected_row_h,
             "minimum thumb length (and row pitch) must match tree_layout's \
              non-header item_height, not the raw line_height"
+        );
+    }
+
+    /// `tree_scroll_row_height` must report the real painted pitch —
+    /// [`crate::primitives::layout_metrics::tree_row_pitch`] run through
+    /// [`WinBackend::resolved_row_height`] — not the raw editor
+    /// `line_height`, so a `TreeController` accumulating `scroll_px`
+    /// against this basis agrees with what `draw_tree`/
+    /// `draw_tree_with_state` actually paint. Mirrors
+    /// `MacBackend::tree_scroll_row_height_is_the_real_painted_pitch_not_the_editor_line_height`.
+    #[test]
+    fn tree_scroll_row_height_is_the_real_painted_pitch_not_the_editor_line_height() {
+        let mut backend = WinBackend::new();
+        let tree = flat_tree(1);
+
+        let default_row_height = backend.tree_scroll_row_height(&tree);
+        assert_ne!(
+            default_row_height,
+            backend.line_height(),
+            "the real painted pitch (line_height * 1.4) must not equal the \
+             raw editor line_height"
+        );
+        assert_eq!(
+            default_row_height as f64,
+            crate::primitives::layout_metrics::tree_row_pitch(
+                &tree,
+                backend.resolved_row_height(backend.current_line_height) as f64
+            )
+        );
+
+        // A host-set `Style::row_height` above the font's own line
+        // height must be honoured too — `resolved_row_height` floors at
+        // it, and `tree_scroll_row_height` must track that override.
+        backend.set_style(crate::Style::default().with_row_height(50.0));
+        let overridden_row_height = backend.tree_scroll_row_height(&tree);
+        assert_eq!(
+            overridden_row_height as f64,
+            crate::primitives::layout_metrics::tree_row_pitch(&tree, 50.0)
         );
     }
 
