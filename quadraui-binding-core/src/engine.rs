@@ -148,6 +148,20 @@ pub struct InteractionEngine {
     /// on every `MouseUp`, same as [`Self::active_drag`]/[`Self::scrollbar_drag`]/
     /// [`Self::column_drag`].
     chrome_pressed: RefCell<HashMap<WidgetId, WidgetId>>,
+    /// The whole-widget-level hover target — any painted primitive, not
+    /// just a chrome-bar child (see [`Self::chrome_hover`] for that
+    /// narrower case) — the most recent `MouseMoved` landed on, paired
+    /// with its [`HitDetail`]. [`InteractionEngine::handle`] compares this
+    /// against each new `MouseMoved`'s own `hit_test_painted` result and,
+    /// when it changes (by id or by detail alone — e.g. moving from one
+    /// tree row to another within the same `Tree`), dispatches a
+    /// `UiEvent::MouseLeft` for the old target and a `UiEvent::MouseEntered`
+    /// for the new one through `sink`, each carrying its own `HitDetail`
+    /// the same way a click would — the hit-tested hover signal a
+    /// binding's own toolbar/tree/details-pane hover tooltip needs,
+    /// without re-deriving hit-testing from the raw position itself.
+    /// `None` once the pointer has left every hoverable primitive.
+    hover: RefCell<Option<(WidgetId, HitDetail)>>,
     /// One [`FormController`] per `"form"` extra painted this (or a prior)
     /// frame, keyed by the extra's own id — rebuilt from [`Self::sync_forms`]
     /// every render so a submit/button click, toggle, or keystroke inside
@@ -1293,6 +1307,57 @@ impl InteractionEngine {
             }
         }
 
+        // Whole-widget hover bookkeeping — see `Self::hover`'s own doc.
+        // Synthesizes `UiEvent::MouseEntered`/`UiEvent::MouseLeft` through
+        // `sink` so a binding's own handler gets a real hit-tested hover
+        // signal instead of re-deriving hit-testing itself from the raw
+        // `MouseMoved` position, mirroring the chrome-bar hover bookkeeping
+        // just above but at `hit_test_painted`'s full granularity (toolbar
+        // button, tree row, list item, details-pane body, ...) rather than
+        // `chrome_hover_hit`'s narrower chrome-bar-child scope. Each
+        // synthesized event carries its own `HitDetail` the same way a
+        // click would, so a row-to-row move within the same `Tree` (same
+        // `WidgetId`, different detail) still reaches the binding as a
+        // hover change. Skipped while a divider/scrollbar/column drag is
+        // armed — the `MouseMoved` below is about to become that drag's
+        // own semantic substitute (`SplitDividerDragged`/
+        // `ScrollOffsetChanged`/`ColumnResized`), not a real pointer move
+        // over whatever the drag happens to pass over, so synthesizing a
+        // hover change here would be event-handler noise rather than
+        // signal.
+        let mut hover_reaction = Reaction::Continue;
+        let drag_armed = self.active_drag.borrow().is_some()
+            || self.scrollbar_drag.borrow().is_some()
+            || self.column_drag.borrow().is_some();
+        if let UiEvent::MouseMoved { position, .. } = &event {
+            if !drag_armed {
+                let hit_now = hit_test_painted(&self.hit_map.borrow(), *position);
+                let changed = *self.hover.borrow() != hit_now;
+                if changed {
+                    if let Some((old_id, old_detail)) = self.hover.borrow_mut().take() {
+                        hover_reaction =
+                            hover_reaction.merge(sink.dispatch(
+                                &UiEvent::MouseLeft { widget: old_id },
+                                Some(&old_detail),
+                            ));
+                    }
+                    if matches!(hover_reaction, Reaction::Exit) {
+                        return hover_reaction;
+                    }
+                    if let Some((new_id, new_detail)) = &hit_now {
+                        hover_reaction = hover_reaction.merge(sink.dispatch(
+                            &UiEvent::MouseEntered { widget: *new_id },
+                            Some(new_detail),
+                        ));
+                    }
+                    *self.hover.borrow_mut() = hit_now;
+                    if matches!(hover_reaction, Reaction::Exit) {
+                        return hover_reaction;
+                    }
+                }
+            }
+        }
+
         // A move while a divider drag is armed becomes the drag itself —
         // checked before the hit-test below, since `MouseMoved` has no
         // `widget` field for `event_position`/`set_event_widget` to touch.
@@ -1657,6 +1722,7 @@ impl InteractionEngine {
         };
         tooltip_reaction
             .merge(menu_reaction)
+            .merge(hover_reaction)
             .merge(focus_reaction)
             .merge(event_reaction)
     }
@@ -1955,6 +2021,109 @@ mod tests {
         assert!(
             dispatched[1].1.is_some(),
             "a button has no semantic click substitution, so the raw click keeps its hit"
+        );
+    }
+
+    /// A `MouseMoved` landing on a painted button, then one moving off it,
+    /// round-trips through [`InteractionEngine::handle`] as a hit-tested
+    /// `UiEvent::MouseEntered` followed later by a `UiEvent::MouseLeft`,
+    /// each carrying the button's own `HitDetail::ButtonBody` — the real
+    /// hover signal a binding's own toolbar/tree/details-pane hover
+    /// tooltip needs, synthesized the same way for every binding since it
+    /// lives in this shared engine rather than each binding re-deriving
+    /// hit-testing from the raw position itself.
+    #[test]
+    fn mouse_moved_onto_then_off_a_button_synthesizes_entered_then_left() {
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 5);
+
+        let button_bounds = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    crate::hit::PaintedHit::Button { layout, .. } => Some(layout.bounds),
+                    _ => None,
+                })
+                .expect("button should have painted a hit")
+        };
+        let inside = Point::new(
+            button_bounds.x + button_bounds.width / 2.0,
+            button_bounds.y + button_bounds.height / 2.0,
+        );
+        let outside = Point::new(button_bounds.x + button_bounds.width + 5.0, 0.0);
+
+        // A move that lands nowhere painted synthesizes no hover event:
+        // nothing was hovered before, nothing is hovered now — only the
+        // raw `MouseMoved` itself reaches `sink`, same as every other
+        // event this engine passes through unconditionally.
+        driver.dispatch(UiEvent::MouseMoved {
+            position: outside,
+            buttons: quadraui::ButtonMask::default(),
+        });
+        assert_eq!(
+            driver.app().sink.borrow().dispatched.len(),
+            1,
+            "a move with nothing under the cursor, before or after, synthesizes no hover event"
+        );
+        driver.app().sink.borrow_mut().dispatched.clear();
+
+        driver.dispatch(UiEvent::MouseMoved {
+            position: inside,
+            buttons: quadraui::ButtonMask::default(),
+        });
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert_eq!(
+                dispatched.len(),
+                2,
+                "expected the synthesized MouseEntered followed by the raw MouseMoved: {dispatched:?}"
+            );
+            assert_eq!(
+                dispatched[0],
+                (
+                    UiEvent::MouseEntered {
+                        widget: WidgetId::new("go")
+                    },
+                    Some(HitDetail::ButtonBody)
+                ),
+                "entering the button must dispatch MouseEntered with its hit attached"
+            );
+            assert!(
+                matches!(dispatched[1].0, UiEvent::MouseMoved { .. }),
+                "the raw move must still follow: {:?}",
+                dispatched[1]
+            );
+        }
+        driver.app().sink.borrow_mut().dispatched.clear();
+
+        driver.dispatch(UiEvent::MouseMoved {
+            position: outside,
+            buttons: quadraui::ButtonMask::default(),
+        });
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert_eq!(
+            dispatched.len(),
+            2,
+            "expected the synthesized MouseLeft followed by the raw MouseMoved: {dispatched:?}"
+        );
+        assert_eq!(
+            dispatched[0],
+            (
+                UiEvent::MouseLeft {
+                    widget: WidgetId::new("go")
+                },
+                Some(HitDetail::ButtonBody)
+            ),
+            "leaving the button must dispatch MouseLeft with its old hit attached"
+        );
+        assert!(
+            matches!(dispatched[1].0, UiEvent::MouseMoved { .. }),
+            "the raw move must still follow: {:?}",
+            dispatched[1]
         );
     }
 

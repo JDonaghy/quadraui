@@ -199,7 +199,13 @@ pub enum PaintedHit {
 /// attached to the enriched event's `"hit"` key (alongside `widget`, the
 /// primitive's own id) so the binding's own event handler can react to
 /// "row 3" or "the divider" without re-deriving hit geometry itself.
-#[derive(Debug, Clone, serde::Serialize)]
+///
+/// `PartialEq`/`Eq` let [`InteractionEngine::handle`][crate::engine::InteractionEngine::handle]
+/// compare a `MouseMoved`'s new hit against its previous one to decide
+/// whether to synthesize `MouseEntered`/`MouseLeft` — two hits with the
+/// same `WidgetId` but a different detail (e.g. a `Tree`'s row 2 vs. row
+/// 3) still count as a hover change.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HitDetail {
     ButtonBody,

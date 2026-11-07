@@ -6017,6 +6017,150 @@ def handle(event):
         });
     }
 
+    /// A `MouseMoved` landing on a painted button's bounds dispatches a
+    /// hit-tested `MouseEntered` ahead of the raw move itself, each key
+    /// the handler sees carrying the button's own id and `button_body`
+    /// `hit` -- the real hover signal a Python-side toolbar/tree/details
+    /// hover tooltip needs instead of re-deriving hit-testing from the raw
+    /// position. A later move off the button dispatches the matching
+    /// `MouseLeft` the same way.
+    #[test]
+    fn mouse_moved_over_a_painted_button_dispatches_mouse_entered_then_mouse_left() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'button': {'id': 'btn:ok', 'label': 'OK'}}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("OK").expect("render must not raise"),
+                "the button's label must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("OK")
+                .expect("button label must be on screen");
+            let inside = Point::new(bounds.x + 0.5, bounds.y + 0.5);
+            let outside = Point::new(1_000.0, 1_000.0);
+
+            let dispatch_move = |app: &mut QuiApp, position: Point| {
+                let mv = UiEvent::MouseMoved {
+                    position,
+                    buttons: quadraui::ButtonMask::default(),
+                };
+                let mv_any = pythonize::pythonize(py, &mv).expect("UiEvent must pythonize");
+                let mv_dict = mv_any
+                    .cast::<PyDict>()
+                    .expect("MouseMoved must pythonize to a dict");
+                app.push_event(mv_dict).expect("valid event shape");
+                app.step().expect("no handler/render error");
+            };
+
+            dispatch_move(&mut app, inside);
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received.len(),
+                2,
+                "entering the button must dispatch MouseEntered ahead of the raw MouseMoved"
+            );
+            let entered_dict = received
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let entered_widget: String = entered_dict
+                .get_item("MouseEntered")
+                .expect("dict lookup")
+                .expect("payload must carry a MouseEntered key")
+                .cast_into::<PyDict>()
+                .expect("MouseEntered payload must be a dict")
+                .get_item("widget")
+                .expect("dict lookup")
+                .expect("widget key must be present")
+                .extract()
+                .expect("widget must be a string");
+            assert_eq!(entered_widget, "btn:ok");
+            let entered_hit_kind: String = entered_dict
+                .get_item("hit")
+                .expect("dict lookup")
+                .expect("hit key must be attached alongside the MouseEntered key")
+                .cast_into::<PyDict>()
+                .expect("hit must be a dict")
+                .get_item("kind")
+                .expect("dict lookup")
+                .expect("kind key must be present")
+                .extract()
+                .expect("kind must be a string");
+            assert_eq!(entered_hit_kind, "button_body");
+            assert!(
+                received
+                    .get_item(1)
+                    .expect("second item")
+                    .cast_into::<PyDict>()
+                    .expect("event payload must be a dict")
+                    .contains("MouseMoved")
+                    .expect("dict lookup"),
+                "the raw move must still follow the synthesized MouseEntered"
+            );
+
+            let before_leave = received.len();
+
+            dispatch_move(&mut app, outside);
+
+            assert_eq!(
+                received.len(),
+                before_leave + 2,
+                "leaving the button must dispatch MouseLeft ahead of the raw MouseMoved"
+            );
+            let left_dict = received
+                .get_item(before_leave)
+                .expect("first new item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let left_widget: String = left_dict
+                .get_item("MouseLeft")
+                .expect("dict lookup")
+                .expect("payload must carry a MouseLeft key")
+                .cast_into::<PyDict>()
+                .expect("MouseLeft payload must be a dict")
+                .get_item("widget")
+                .expect("dict lookup")
+                .expect("widget key must be present")
+                .extract()
+                .expect("widget must be a string");
+            assert_eq!(left_widget, "btn:ok");
+        });
+    }
+
     /// A primitive nested inside a `Split` pane -- not the `Split` itself --
     /// must claim a click landing on it: `PaintedHit::Split` covers its
     /// whole pane with no "miss" case, so it is pushed into the hit map
