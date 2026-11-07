@@ -21,8 +21,8 @@
 //!     title: "Unsaved Changes".to_string(),
 //!     body: "Do you want to save?".to_string(),
 //!     buttons: vec![
-//!         MessageDialogButton { id: WidgetId::new("save"), label: "Save".into(), is_default: true, is_cancel: false },
-//!         MessageDialogButton { id: WidgetId::new("cancel"), label: "Cancel".into(), is_default: false, is_cancel: true },
+//!         MessageDialogButton { id: WidgetId::new("save"), label: "Save".into(), is_default: true, is_cancel: false, spec: None },
+//!         MessageDialogButton { id: WidgetId::new("cancel"), label: "Cancel".into(), is_default: false, is_cancel: true, spec: None },
 //!     ],
 //!     severity: Some(DialogSeverity::Warning),
 //! });
@@ -115,7 +115,7 @@ impl MessageDialogController {
                 is_default: b.is_default,
                 is_cancel: b.is_cancel,
                 tint: None,
-                spec: None,
+                spec: b.spec.clone(),
             })
             .collect();
         let focused = buttons.iter().position(|b| b.is_default).unwrap_or(0);
@@ -314,12 +314,14 @@ mod tests {
                     label: "Save".into(),
                     is_default: true,
                     is_cancel: false,
+                    spec: None,
                 },
                 MessageDialogButton {
                     id: WidgetId::new("cancel"),
                     label: "Cancel".into(),
                     is_default: false,
                     is_cancel: true,
+                    spec: None,
                 },
             ],
             severity: Some(crate::primitives::dialog::DialogSeverity::Warning),
@@ -335,6 +337,7 @@ mod tests {
                 label: "OK".into(),
                 is_default: true,
                 is_cancel: false,
+                spec: None,
             }],
             severity: None,
         }
@@ -524,6 +527,28 @@ mod tests {
             controller.handle(&ev, &backend),
             MessageDialogEvent::Consumed
         );
+    }
+
+    /// A `MessageDialogButton::spec` override reaches the built `Dialog`'s
+    /// `DialogButton::spec` unchanged — `new()` must not drop it the way
+    /// it used to hardcode `spec: None` regardless of what `opts` carried.
+    #[test]
+    fn new_carries_button_spec_through_to_the_dialog() {
+        let mut opts = opts_ok_only();
+        let mut spec = crate::primitives::button::ButtonSpec::new("Move to Trash");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        opts.buttons[0].spec = Some(spec.clone());
+
+        let controller = MessageDialogController::new(opts);
+        assert_eq!(controller.dialog().buttons[0].spec, Some(spec));
+    }
+
+    /// A `MessageDialogButton` with no `spec` override still builds a
+    /// `DialogButton` with `spec: None`, unaffected by this plumbing.
+    #[test]
+    fn new_leaves_spec_none_when_opts_set_none() {
+        let controller = MessageDialogController::new(opts_ok_only());
+        assert_eq!(controller.dialog().buttons[0].spec, None);
     }
 
     #[test]

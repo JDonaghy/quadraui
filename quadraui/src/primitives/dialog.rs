@@ -732,6 +732,7 @@ pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
                 label: b.label.clone(),
                 is_default: b.is_default,
                 is_cancel: b.is_cancel,
+                spec: b.spec.clone(),
             })
             .collect(),
         severity: d.severity,
@@ -1628,6 +1629,21 @@ mod tests {
         let opts =
             native_dialog_options(&d).expect("no table/input — must be natively expressible");
         assert_eq!(opts.severity, None);
+    }
+
+    /// `DialogButton::spec` carries through to [`MessageDialogButton::spec`]
+    /// unchanged — unlike `tint`, which has no native-alert equivalent and
+    /// is dropped (see this function's own doc).
+    #[test]
+    fn native_dialog_options_carries_button_spec_through() {
+        let mut d = dialog_with_buttons();
+        let mut spec = crate::primitives::button::ButtonSpec::new("Save");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        d.buttons[0].spec = Some(spec.clone());
+        let opts =
+            native_dialog_options(&d).expect("no table/input — must be natively expressible");
+        assert_eq!(opts.buttons[0].spec, Some(spec));
+        assert_eq!(opts.buttons[1].spec, None);
     }
 
     #[test]
