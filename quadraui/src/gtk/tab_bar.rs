@@ -564,6 +564,8 @@ pub fn draw_tab_bar_with_chrome_and_glyphs(
         hovered_close_tab,
         glyphs,
         nerd_fonts_enabled,
+        None,
+        None,
     )
 }
 
@@ -607,6 +609,8 @@ pub fn draw_tab_bar_icons_with_chrome(
         hovered_close_tab,
         None,
         false,
+        None,
+        None,
     )
 }
 
@@ -617,6 +621,13 @@ pub fn draw_tab_bar_icons_with_chrome(
 /// [`crate::types::Icon`]'s `glyph` vs. `fallback` form. `glyphs: None`
 /// (what [`draw_tab_bar_icons_with_chrome`] passes) renders byte-for-byte
 /// the same as today's codicon defaults.
+///
+/// `hovered_tab`/`pressed_tab` name the whole tab (not its close glyph,
+/// which `hovered_close_tab` already covers) the mouse is over/held down
+/// on. `None`/`None` paints every tab's resting background, matching
+/// [`draw_tab_bar_icons_with_chrome`] exactly. Pressed wins over hovered
+/// when both name the same tab, mirroring every other `_with_state`
+/// painter in this crate (status bar, menu, context menu).
 #[allow(clippy::too_many_arguments)]
 #[allow(deprecated)]
 pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
@@ -635,6 +646,8 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
     hovered_close_tab: Option<usize>,
     glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
     nerd_fonts_enabled: bool,
+    hovered_tab: Option<usize>,
+    pressed_tab: Option<usize>,
 ) -> (TabBarHits, TabBarLayout) {
     let tab_row_height = row_height;
     let text_y_offset = y_offset + (tab_row_height - line_height) / 2.0;
@@ -763,6 +776,27 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         let tab_x = vt.bounds.x as f64;
         let tab_visual_w = vt.bounds.width as f64 - tab_outer_gap;
 
+        // Whole-tab hover/pressed tint, independent of `is_close_hovered`
+        // below (which only tints the close glyph itself). Reuses
+        // `Theme::list_hover_bg`/`list_pressed_bg` — the same "blend the
+        // row's own resting background toward `foreground`" derivation
+        // `macos::tab_bar`'s twin painter already reuses — rather than
+        // growing a dedicated `tab_hover_bg`/`tab_pressed_bg` accessor,
+        // since a tab strip is the same flat "row under the cursor" shape.
+        // Pressed wins over hovered, matching every other `_with_state`
+        // painter in this crate.
+        let is_tab_pressed = pressed_tab == Some(vt.tab_idx);
+        let is_tab_hovered = hovered_tab == Some(vt.tab_idx);
+        let tint = |base: crate::types::Color| -> crate::types::Color {
+            if is_tab_pressed {
+                theme.list_pressed_bg(base)
+            } else if is_tab_hovered {
+                theme.list_hover_bg(base)
+            } else {
+                base
+            }
+        };
+
         // Tab background. The active tab paints an inset, rounded chip
         // (VS Code's pill, ~24px inside a 35px strip) rather than a square
         // block filling the full row height edge to edge. Inactive
@@ -772,7 +806,7 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         let chip_y = y_offset + TAB_CHIP_INSET_Y;
         let chip_h = (tab_row_height - 2.0 * TAB_CHIP_INSET_Y).max(0.0);
         if tab.is_active {
-            set_source(cr, theme.tab_active_bg);
+            set_source(cr, tint(theme.tab_active_bg));
             rounded_rect_path(
                 cr,
                 x_offset + tab_x,
@@ -783,7 +817,7 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
             );
             cr.fill().ok();
         } else {
-            set_source(cr, theme.tab_bar_bg);
+            set_source(cr, tint(theme.tab_bar_bg));
             cr.rectangle(x_offset + tab_x, y_offset, tab_visual_w, tab_row_height);
             cr.fill().ok();
         }

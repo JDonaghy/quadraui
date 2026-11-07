@@ -95,10 +95,10 @@ only a push to `main` runs this workflow.
   `quadraui-binding-core`'s paint path, which calls
   `draw_tab_bar_layout`, never the deprecated `draw_tab_bar`. Painting
   a tab's own hover/pressed background is a per-backend follow-up
-  (GTK/macOS/Win32); **macOS now implements both** (`macos/tab_bar.rs`),
-  tinting the hovered/pressed tab's whole background via
-  `Theme::list_hover_bg`/`list_pressed_bg` — GTK/Win32 still fall
-  through to the untinted default.
+  (GTK/macOS/Win32); **macOS and GTK now implement both** (`macos/tab_bar.rs`,
+  `gtk/tab_bar.rs`), tinting the hovered/pressed tab's whole background via
+  `Theme::list_hover_bg`/`list_pressed_bg` — Win32 still falls through to
+  the untinted default.
 - `ListPaintState`/`TreePaintState`/`DataTablePaintState`: per-frame,
   `#[non_exhaustive]` paint-time state (`hovered_idx`, `pressed_idx`,
   `scroll_px: Option<f32>`) for `ListView`/`TreeView`/`DataTable`,
