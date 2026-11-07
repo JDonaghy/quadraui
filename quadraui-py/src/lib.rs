@@ -485,6 +485,24 @@ impl PyAppLogic {
     fn clear_extra_slot(&mut self, kind: &str) -> bool {
         self.host.clear_extra_slot(kind)
     }
+
+    /// Drives [`Self::host`]'s hover-tooltip tracker for this dispatch —
+    /// [`BindingHost::drive_hover_tooltip`] fed [`BindingHost::now_ms`]'s
+    /// own real wall clock (there is no fake one to inject from Python; a
+    /// test instead uses a short real [`Self::host`]-level
+    /// `tooltip_delay_ms` override, same as this crate's existing
+    /// `QuiAppWaker::post_after`/`wake_after` timer tests) and
+    /// [`Self::host`]'s own `style.tooltip_delay_ms` (or the
+    /// behaviour-preserving default when no style has been set). Called
+    /// from both [`AppLogic::handle`] (so a hover change is noticed the
+    /// same frame) and [`AppLogic::tick`] (so the delay still elapses
+    /// with the pointer held still and no further event arriving).
+    fn drive_hover_tooltip(&mut self) -> Reaction {
+        let now_ms = self.host.now_ms();
+        let delay_ms = self.host.style.unwrap_or_default().tooltip_delay_ms;
+        self.host
+            .drive_hover_tooltip(&mut self.engine, now_ms, delay_ms)
+    }
 }
 
 impl WindowCloseHandling for PyAppLogic {
@@ -704,6 +722,7 @@ impl AppLogic for PyAppLogic {
                 self.engine.handle(event, backend, &mut sink)
             }
         };
+        let reaction = reaction.merge(self.drive_hover_tooltip());
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw
@@ -730,6 +749,7 @@ impl AppLogic for PyAppLogic {
                 })
             }
         };
+        let reaction = reaction.merge(self.drive_hover_tooltip());
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw

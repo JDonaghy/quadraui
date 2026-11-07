@@ -219,6 +219,28 @@ impl<T: Clone + PartialEq> HoverTooltipTracker<T> {
     pub fn is_pending(&self) -> bool {
         matches!(self.phase, Phase::Pending { .. })
     }
+
+    /// Milliseconds until a [`Phase::Pending`] tooltip is due to flip to
+    /// [`Phase::Visible`] — `0` once the deadline has already passed but
+    /// [`Self::tick`] hasn't been called yet to notice, `None` while idle
+    /// or already showing. This is the deadline a host needs to turn
+    /// "something is pending" into an exact `Reaction::RedrawAfter(Duration)`
+    /// wake (`runner.rs`'s own "time-driven state should return the exact
+    /// interval" rule) instead of guessing a poll cadence or waiting for
+    /// some unrelated event to call [`Self::tick`] again.
+    ///
+    /// `now_ms`/`delay_ms` are the same caller-supplied clock value and
+    /// [`crate::Style::tooltip_delay_ms`] [`Self::tick`] itself takes — see
+    /// this module's "headless-clock contract".
+    pub fn next_wake_ms(&self, now_ms: u64, delay_ms: u64) -> Option<u64> {
+        match &self.phase {
+            Phase::Pending { since_ms, .. } => {
+                let deadline = since_ms.saturating_add(delay_ms);
+                Some(deadline.saturating_sub(now_ms))
+            }
+            Phase::Idle | Phase::Visible { .. } => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -346,6 +368,29 @@ mod tests {
         t.tick(500, 500);
         assert!(t.tick_auto_dismiss_for(Duration::from_secs(5), 5_600));
         assert_eq!(t.visible_item(), None);
+    }
+
+    #[test]
+    fn next_wake_ms_is_none_while_idle() {
+        let t: HoverTooltipTracker<WidgetId> = HoverTooltipTracker::new();
+        assert_eq!(t.next_wake_ms(0, 500), None);
+    }
+
+    #[test]
+    fn next_wake_ms_counts_down_to_the_delay_while_pending() {
+        let mut t: HoverTooltipTracker<WidgetId> = HoverTooltipTracker::new();
+        t.on_hover(Some(WidgetId::new("a")), 100);
+        assert_eq!(t.next_wake_ms(100, 500), Some(500));
+        assert_eq!(t.next_wake_ms(300, 500), Some(300));
+        assert_eq!(t.next_wake_ms(600, 500), Some(0));
+    }
+
+    #[test]
+    fn next_wake_ms_is_none_once_visible() {
+        let mut t: HoverTooltipTracker<WidgetId> = HoverTooltipTracker::new();
+        t.on_hover(Some(WidgetId::new("a")), 0);
+        t.tick(500, 500);
+        assert_eq!(t.next_wake_ms(500, 500), None);
     }
 
     #[test]
