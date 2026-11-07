@@ -3043,6 +3043,22 @@ mod tests {
     }
 
     #[test]
+    fn wrap_line_exact_single_wide_glyph_overflows_a_degenerate_one_cell_budget() {
+        // At `col_budget == 1`, a single 2-cell-wide glyph can never fit
+        // without being dropped or split mid-glyph — neither of which
+        // `wrap_line_exact` will do, since lossless reconstruction (every
+        // row's text concatenates back to the exact input) always wins
+        // over the cell budget here. The forward-progress fallback takes
+        // the whole glyph anyway, so this row is intentionally 2 cells
+        // wide despite the 1-cell budget. Pinned so a future reader sees
+        // this is deliberate overflow, not an untested gap, and doesn't
+        // "fix" it into a wrap that silently drops or mangles the glyph.
+        let rows = wrap_line_exact("日", 1);
+        assert_eq!(rows, vec![(0, "日".to_string())]);
+        assert_eq!(crate::text_util::display_width(&rows[0].1), 2);
+    }
+
+    #[test]
     fn wrap_line_exact_reconstructs_original_text() {
         // The defining property: concatenating every row's text
         // reconstructs the input exactly — no whitespace collapsed or

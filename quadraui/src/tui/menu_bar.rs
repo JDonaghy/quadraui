@@ -11,7 +11,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
-use super::{ratatui_color, set_cell, set_cell_styled};
+use super::{ratatui_color, set_cell, set_cell_styled, set_cell_wide, set_cell_wide_styled};
 use crate::primitives::menu_bar::{MenuBar, MenuBarItemMeasure, MenuBarLayout};
 use crate::theme::Theme;
 
@@ -91,12 +91,19 @@ pub fn draw_menu_bar(buf: &mut Buffer, area: Rect, bar: &MenuBar, theme: &Theme)
             if cx >= area.x + area.width {
                 break;
             }
-            if underline_pos == Some(char_idx) {
-                set_cell_styled(buf, cx, y, ch, fg, bg, Modifier::UNDERLINED, None);
-            } else {
-                set_cell(buf, cx, y, ch, fg, bg);
+            let w = crate::text_util::char_cell_width(ch);
+            let is_wide = w == 2 && cx + 1 < area.x + area.width;
+            match (underline_pos == Some(char_idx), is_wide) {
+                (true, true) => {
+                    set_cell_wide_styled(buf, cx, y, ch, fg, bg, Modifier::UNDERLINED, None)
+                }
+                (true, false) => {
+                    set_cell_styled(buf, cx, y, ch, fg, bg, Modifier::UNDERLINED, None)
+                }
+                (false, true) => set_cell_wide(buf, cx, y, ch, fg, bg),
+                (false, false) => set_cell(buf, cx, y, ch, fg, bg),
             }
-            cx += crate::text_util::char_cell_width(ch);
+            cx += w;
             char_idx += 1;
         }
     }
@@ -315,6 +322,31 @@ mod tests {
         }
         // Sanity: the label itself still paints, just without underline.
         assert_eq!(cell_char(&buf, start_x + 1, area.y), 'F');
+    }
+
+    /// A wide (CJK) label glyph leaves its continuation cell as the
+    /// wide-char marker `set_cell_wide` writes (empty symbol), not a
+    /// stale space — matching the convention every other painter in this
+    /// module touches (`data_table`, `tree`, `draw_styled_text`).
+    #[test]
+    fn wide_glyph_label_leaves_continuation_cell_empty() {
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        let mut bar = make_bar();
+        bar.items[0].label = "&文件".into();
+        let layout = draw_menu_bar(&mut buf, area, &bar, &Theme::default());
+
+        let vi = &layout.visible_items[0];
+        let start_x = vi.bounds.x.round() as u16;
+        // Label paints starting 1 cell in from the item's left padding;
+        // "文" occupies that cell plus its continuation.
+        assert_eq!(cell_char(&buf, start_x + 1, area.y), '文');
+        assert_eq!(
+            buf[(start_x + 2, area.y)].symbol(),
+            "",
+            "the cell after a wide glyph must be the empty continuation marker"
+        );
+        assert_eq!(cell_char(&buf, start_x + 3, area.y), '件');
     }
 
     #[test]

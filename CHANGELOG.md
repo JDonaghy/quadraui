@@ -139,7 +139,16 @@ only a push to `main` runs this workflow.
   positioned and painted at its real width, and a Toast word too wide even
   for `"x…"` now falls back to a bare `"…"` instead of overflowing its
   budget by one character. `tui::text::truncate_to_width_ellipsis` now
-  delegates its ellipsis search to the same shared helper.
+  delegates its ellipsis search to the same shared helper. The MenuBar
+  rasteriser also now paints a wide label glyph's continuation cell as the
+  proper empty wide-char marker (via `set_cell_wide`/`set_cell_wide_styled`)
+  instead of leaving a stale space, and the `TreeView` label-truncation
+  ellipsis backs up off a wide glyph's continuation cell to overwrite the
+  glyph itself, instead of overwriting (and potentially orphaning) the
+  continuation cell alone. `Toast::wrap_text_lines`'s cap-past-`max_lines`
+  path also now leaves a line empty, rather than pushing a guaranteed
+  over-budget `"…"`, in the degenerate case where even a bare ellipsis
+  doesn't fit a (pixel-measured) `max_width`.
 
 ## [0.9.0] - 2026-11-07
 ### Added

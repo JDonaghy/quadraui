@@ -873,6 +873,7 @@ mod tests {
 
         let b_col = &layout.columns[1];
         let b_start = b_col.x.round() as usize;
+        assert!(b_start > 0, "column B must not start at x=0: {row_str:?}");
 
         // Column A's cell (reserving one cell for the separator) never
         // overflows into column B's start — only an ellipsis (or blank
@@ -889,6 +890,29 @@ mod tests {
         );
         // Column B's own content paints intact, undisturbed by A's overflow.
         assert_eq!(row[b_start], 't', "row: {row_str:?}");
+
+        // The three assertions above hold under a char-count budget too
+        // (it also stops at the separator and also ends in '…' at this
+        // column width), so they alone don't pin the display-width fix.
+        // What distinguishes the two: a char-count budget treats each of
+        // the 2-cell-wide glyphs as 1 cell and packs four of them — 日,
+        // 本, 語, 日 — into columns 0..4 before the ellipsis, so column 2
+        // holds '語'. A display-width budget fits only two whole glyphs
+        // (日, 本 — 4 cells) before the ellipsis, leaving each glyph's
+        // second cell as the wide-char continuation marker that
+        // `set_cell_wide` writes, so column 2 holds '本' and column 1 is
+        // the empty continuation of column 0's glyph.
+        assert_eq!(
+            row[2], '本',
+            "a display-width budget fits only 2 whole glyphs before the ellipsis, \
+             not 4 char-counted ones: {row_str:?}"
+        );
+        assert_eq!(
+            buf[(1, 1)].symbol(),
+            "",
+            "column 1 must be the wide-char continuation cell of column 0's glyph, \
+             not a second glyph painted one-char-per-cell"
+        );
     }
 
     #[test]
