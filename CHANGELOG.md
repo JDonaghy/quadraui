@@ -70,6 +70,23 @@ only a push to `main` runs this workflow.
   common aliases (`Esc` -> `Escape`, `Return`/`CR` -> `Enter`, `ArrowUp` ->
   `Up`, etc.) so `"<Esc>"`, `"Ctrl+escape"`, and `"Ctrl+Return"` all match the
   key events backends actually emit.
+### Added
+- `quadraui-node` exposes every `quadraui-binding-core::services` seam as a
+  thin `QuiApp` method (auto-update, the power-save blocker, launch-at-
+  login, protocol registration, drag-out, recent docs/dock menu/jump
+  list), a new `UnsupportedError` for a `ServiceError::Unsupported` on a
+  backend with no implementation, a `QuiAppActions` mirror for each
+  void-returning one of those methods, and three module-level, app-less
+  functions (`appPath`, `setAppIdentifier`, `installCrashHandler`) --
+  the same surface `quadraui-py` already exposed. Also gains the three
+  surfaces only `quadraui-py` had before this change: the tray
+  (`setTrayIcon`/`setTrayTooltip`/`setTrayMenu`), runtime cursor
+  (`setCursor`, the full `PointerShape` name set), and window
+  document-state (`setDocumentEdited`/`setRepresentedFilename`) methods,
+  each a thin napi-rs wrapper calling the same
+  `quadraui_binding_core::{with_window, with_tray, menu_for_surface}`
+  logic `quadraui-py` already calls, with no logic duplicated between the
+  two bindings.
 
 ## [0.9.0] - 2026-11-07
 ### Added

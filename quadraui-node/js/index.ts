@@ -128,6 +128,10 @@ exports.NoDisplayError = NoDisplayError;
 class InvalidAppIdError extends QuadrauiError {}
 exports.InvalidAppIdError = InvalidAppIdError;
 
+/** A platform-services call (`checkForUpdate`, `setTrayIcon`, `setCursor`'s underlying seam, ...) this backend has no implementation for at all -- distinct from {@link InternalError}, which means the backend tried and failed -- mirrors `quadraui-py`'s `UnsupportedError`. */
+class UnsupportedError extends QuadrauiError {}
+exports.UnsupportedError = UnsupportedError;
+
 /**
  * Every subclass above, keyed by both its own name and the tag its native
  * `Error.message` prefix carries (the two always match -- see
@@ -152,6 +156,7 @@ const ERROR_CLASSES_BY_TAG: Record<string, new (message: string) => QuadrauiErro
   NoNativeBackendError,
   NoDisplayError,
   InvalidAppIdError,
+  UnsupportedError,
 };
 exports.ERROR_CLASSES = Object.freeze({ ...ERROR_CLASSES_BY_TAG });
 
@@ -219,6 +224,60 @@ wrapNativeErrors(native.QuiApp.prototype);
 wrapNativeErrors(native.QuiShellApp.prototype);
 wrapNativeErrors(native.QuiAppWaker.prototype);
 wrapNativeErrors(native.QuiAppActions.prototype);
+
+// ─── Module-level platform-services functions ──────────────────────────
+//
+// The three app-less seams `quadraui_binding_core::services` exposes with
+// no live app needed at all -- mirrors `quadraui-py`'s own module-level
+// `app_path`/`set_app_identifier`/`install_crash_handler` functions.
+// `wrapNativeErrors` only reaches object prototypes, not these bare
+// `native.*` functions, so each gets its own `toQuadrauiError` wrapper
+// here, the same shape the `QuiApp` constructor above needs for the same
+// reason.
+
+/**
+ * The standard, per-app filesystem location named by `kind` (one of
+ * `"user_data"`, `"app_config"`, `"app_cache"`, `"logs"`, `"temp"`,
+ * `"downloads"`, `"documents"`, `"home"`), as a path string. Every
+ * app-scoped kind (everything but `"temp"`/`"downloads"`/`"documents"`/
+ * `"home"`) is resolved relative to whatever identifier
+ * {@link setAppIdentifier} last set, and raises {@link UnsupportedError}
+ * until one has been.
+ */
+function appPath(kind: string): string {
+  try {
+    return native.appPath(kind);
+  } catch (err) {
+    throw toQuadrauiError(err);
+  }
+}
+exports.appPath = appPath;
+
+/**
+ * Sets the app identifier scoping {@link appPath}'s app-scoped kinds. A
+ * process-global setting, not per-`QuiApp`.
+ */
+function setAppIdentifier(identifier: string): void {
+  native.setAppIdentifier(identifier);
+}
+exports.setAppIdentifier = setAppIdentifier;
+
+/**
+ * Installs a crash handler that writes a crash record on an uncaught
+ * panic, decoding `cfg` (an `{appVersion, uploadEndpoint, metadata,
+ * logDir}` object, every key optional -- in the underlying Rust shape's
+ * own `snake_case` field names: `app_version`/`upload_endpoint`/
+ * `metadata`/`log_dir`) into a crash-reporter config. No live `QuiApp` is
+ * needed: this installs a process-global Rust panic hook.
+ */
+function installCrashHandler(cfg: unknown): void {
+  try {
+    native.installCrashHandler(cfg);
+  } catch (err) {
+    throw toQuadrauiError(err);
+  }
+}
+exports.installCrashHandler = installCrashHandler;
 
 /**
  * A headless quadraui app, driven entirely from JavaScript/TypeScript.
