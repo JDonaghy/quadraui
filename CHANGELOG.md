@@ -71,6 +71,16 @@ only a push to `main` runs this workflow.
   overridden so `TreeController`'s wheel-scroll accumulation lands on the
   same real painted row pitch (`tree_row_pitch`, not the raw
   `line_height`) the tree painter resolves `scroll_px` against.
+- `HoverTooltipTracker::next_wake_ms` (`compose::hover_tooltip_tracker`): a
+  deadline accessor returning the milliseconds remaining until a pending
+  tooltip is due to flip to visible (`0` once already due, `None` while
+  idle or already showing) — the piece a host needs to request an exact
+  `Reaction::RedrawAfter` wake instead of guessing a poll interval.
+  `quadraui-binding-core::BindingHost` is the first caller: its new
+  `drive_hover_tooltip` wires `HoverTooltipTracker` to a shared binding
+  host's own hit-tested hover and a caller-supplied headless clock, so
+  `quadraui-py`/`quadraui-node` both get `Button.tooltip` hover delay with
+  no per-binding reimplementation.
 - `ButtonSpec` (`primitives::button`): a shared, kind-agnostic button
   description — `label`/`variant`/`icon`/`icon_position`/`icon_gap`/
   `tooltip`/`disabled`, the B3a vocabulary `Button` itself carries minus
