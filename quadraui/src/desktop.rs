@@ -1088,11 +1088,12 @@ mod open_with_default_tests {
 /// things [`open_with_default`]'s `open`/`xdg-open`/`ShellExecuteW` is
 /// actually documented to hand to a browser or mail client.
 ///
-/// `#[cfg(feature = "tui")]`: [`validate_open_url`]'s only adopter today
-/// is `tui::services::TuiPlatformServices::open_url_result`. GTK, macOS,
-/// and Win-GUI adopt it in their own follow-up issues, at which point
-/// this cfg widens to match.
-#[cfg(feature = "tui")]
+/// `#[cfg(any(feature = "tui", feature = "gtk"))]`: [`validate_open_url`]'s
+/// adopters today are `tui::services::TuiPlatformServices::open_url_result`
+/// and `gtk::services::GtkPlatformServices::open_url_result`. macOS and
+/// Win-GUI adopt it in their own follow-up issues, at which point this cfg
+/// widens to match.
+#[cfg(any(feature = "tui", feature = "gtk"))]
 const OPEN_URL_SAFE_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
 
 /// File extensions [`validate_open_url`] treats as "launches code or an
@@ -1113,7 +1114,7 @@ const OPEN_URL_SAFE_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
 /// set and a shebang (or a well-known binary like `/usr/bin/xterm`) is not
 /// caught here. Closing that gap needs a filesystem `stat` on the
 /// resolved target, which is out of scope for a pure string check.
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", feature = "gtk"))]
 const OPEN_URL_EXECUTABLE_EXTENSIONS: [&str; 28] = [
     "exe", "bat", "cmd", "com", "scr", "msi", "app", "command", "sh", "desktop", "lnk", "hta",
     "vbs", "vbe", "js", "jse", "wsf", "ps1", "pif", "cpl", "msc", "reg", "jar", "pkg", "webloc",
@@ -1141,7 +1142,7 @@ const OPEN_URL_EXECUTABLE_EXTENSIONS: [&str; 28] = [
 ///   rather than needing a separate "looks like a drive letter" check;
 /// - any other scheme this crate's openers have no documented reason to
 ///   launch, e.g. `javascript:` or `data:`.
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", feature = "gtk"))]
 pub(crate) fn validate_open_url(url: &str) -> crate::backend::ServiceResult<()> {
     let Some((scheme, rest)) = url.split_once(':') else {
         return Err(crate::backend::BackendError::Unsupported);
@@ -1171,7 +1172,7 @@ pub(crate) fn validate_open_url(url: &str) -> crate::backend::ServiceResult<()> 
 /// at the final segment's extension, so
 /// `file:///Applications/Calculator.app/` and
 /// `file:///C:/tmp/run.exe?x=1` are both caught.
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", feature = "gtk"))]
 fn open_url_target_is_executable(target: &str) -> bool {
     let decoded = percent_decode_fully(target);
     let path_part = decoded.split(['?', '#']).next().unwrap_or(&decoded);
@@ -1196,7 +1197,7 @@ fn open_url_target_is_executable(target: &str) -> bool {
 /// parser, so "decode what's decodable, leave the rest alone" is the
 /// right failure mode — it only ever makes the executable check see
 /// *more* of the target, never less.
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", feature = "gtk"))]
 fn percent_decode_fully(s: &str) -> std::borrow::Cow<'_, str> {
     fn decode_once(s: &str) -> Option<String> {
         if !s.contains('%') {
@@ -1234,7 +1235,7 @@ fn percent_decode_fully(s: &str) -> std::borrow::Cow<'_, str> {
     current
 }
 
-#[cfg(all(test, feature = "tui"))]
+#[cfg(all(test, any(feature = "tui", feature = "gtk")))]
 mod validate_open_url_tests {
     use super::*;
     use crate::backend::BackendError;
