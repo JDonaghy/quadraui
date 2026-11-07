@@ -545,7 +545,7 @@ impl FormController {
         if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd {
             if let Some(key_name) = date_picker_key_name(key) {
                 if self.focused_field_is_enabled_date_picker() {
-                    return self.handle_date_picker_key(key_name);
+                    return self.handle_date_picker_key(&key_name);
                 }
             }
             // `ComboBox` has no pre-filtered key set the way
@@ -1273,15 +1273,21 @@ fn overlay_required_marker(form: &mut Form, rules: &FormRules, theme: Option<&Th
 /// Maps a key to the string name [`crate::primitives::date_picker::DatePicker::navigate`]
 /// recognises, or `None` for a key it doesn't act on (e.g. `Tab`, so focus
 /// traversal off a `DatePicker` field keeps working in `handle_key`).
-fn date_picker_key_name(key: &Key) -> Option<&'static str> {
+///
+/// The name itself comes from the shared [`NamedKey::name`] table — this
+/// function only narrows *which* keys `DatePicker` claims, not how they're
+/// spelled.
+fn date_picker_key_name(key: &Key) -> Option<std::borrow::Cow<'static, str>> {
     match key {
-        Key::Named(NamedKey::Left) => Some("Left"),
-        Key::Named(NamedKey::Right) => Some("Right"),
-        Key::Named(NamedKey::Up) => Some("Up"),
-        Key::Named(NamedKey::Down) => Some("Down"),
-        Key::Named(NamedKey::PageUp) => Some("PageUp"),
-        Key::Named(NamedKey::PageDown) => Some("PageDown"),
-        Key::Named(NamedKey::Enter) => Some("Enter"),
+        Key::Named(
+            named @ (NamedKey::Left
+            | NamedKey::Right
+            | NamedKey::Up
+            | NamedKey::Down
+            | NamedKey::PageUp
+            | NamedKey::PageDown
+            | NamedKey::Enter),
+        ) => Some(named.name()),
         _ => None,
     }
 }

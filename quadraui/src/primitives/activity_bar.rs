@@ -455,46 +455,10 @@ pub enum ActivityBarEvent {
     feature = "win"
 ))]
 pub(crate) fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
-    use crate::event::{Key, NamedKey};
+    use crate::event::Key;
     match key {
         Key::Char(c) => c.to_string(),
-        Key::Named(named) => {
-            let s = match named {
-                NamedKey::Escape => "Escape",
-                NamedKey::Tab => "Tab",
-                NamedKey::BackTab => "BackTab",
-                NamedKey::Enter => "Enter",
-                NamedKey::Backspace => "Backspace",
-                NamedKey::Delete => "Delete",
-                NamedKey::Insert => "Insert",
-                NamedKey::Home => "Home",
-                NamedKey::End => "End",
-                NamedKey::PageUp => "PageUp",
-                NamedKey::PageDown => "PageDown",
-                NamedKey::Up => "Up",
-                NamedKey::Down => "Down",
-                NamedKey::Left => "Left",
-                NamedKey::Right => "Right",
-                NamedKey::F(1) => "F1",
-                NamedKey::F(2) => "F2",
-                NamedKey::F(3) => "F3",
-                NamedKey::F(4) => "F4",
-                NamedKey::F(5) => "F5",
-                NamedKey::F(6) => "F6",
-                NamedKey::F(7) => "F7",
-                NamedKey::F(8) => "F8",
-                NamedKey::F(9) => "F9",
-                NamedKey::F(10) => "F10",
-                NamedKey::F(11) => "F11",
-                NamedKey::F(12) => "F12",
-                NamedKey::F(_) => "F?",
-                NamedKey::CapsLock => "CapsLock",
-                NamedKey::NumLock => "NumLock",
-                NamedKey::ScrollLock => "ScrollLock",
-                NamedKey::Menu => "Menu",
-            };
-            s.to_string()
-        }
+        Key::Named(named) => named.name().into_owned(),
     }
 }
 

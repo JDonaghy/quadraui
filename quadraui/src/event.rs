@@ -171,6 +171,45 @@ pub enum NamedKey {
     Menu,
 }
 
+impl NamedKey {
+    /// Canonical cross-backend name for this key — TitleCase, `F(n)` →
+    /// `"F{n}"` for every `n` (not just 1-12).
+    ///
+    /// This is the **single** source of truth for stringifying a
+    /// `NamedKey`: [`crate::accelerator::key_to_binding_name`],
+    /// `primitives::activity_bar::key_to_activity_bar_string`,
+    /// `quadraui-binding-core`'s `key_to_focus_string`, and
+    /// `compose::form_controller::date_picker_key_name` all defer to it so
+    /// a `Ctrl+F13` accelerator and a `KeyPressed { key: "F13", .. }` event
+    /// agree on the same spelling.
+    pub fn name(&self) -> std::borrow::Cow<'static, str> {
+        use std::borrow::Cow;
+        use NamedKey::*;
+        match self {
+            Escape => Cow::Borrowed("Escape"),
+            Tab => Cow::Borrowed("Tab"),
+            BackTab => Cow::Borrowed("BackTab"),
+            Enter => Cow::Borrowed("Enter"),
+            Backspace => Cow::Borrowed("Backspace"),
+            Delete => Cow::Borrowed("Delete"),
+            Insert => Cow::Borrowed("Insert"),
+            Home => Cow::Borrowed("Home"),
+            End => Cow::Borrowed("End"),
+            PageUp => Cow::Borrowed("PageUp"),
+            PageDown => Cow::Borrowed("PageDown"),
+            Up => Cow::Borrowed("Up"),
+            Down => Cow::Borrowed("Down"),
+            Left => Cow::Borrowed("Left"),
+            Right => Cow::Borrowed("Right"),
+            F(n) => Cow::Owned(format!("F{n}")),
+            CapsLock => Cow::Borrowed("CapsLock"),
+            NumLock => Cow::Borrowed("NumLock"),
+            ScrollLock => Cow::Borrowed("ScrollLock"),
+            Menu => Cow::Borrowed("Menu"),
+        }
+    }
+}
+
 /// Mouse button identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum MouseButton {
@@ -1299,6 +1338,27 @@ pub fn classify_open_args(args: impl IntoIterator<Item = String>) -> UiEvent {
         }
     }
     UiEvent::OpenRequested { urls, files }
+}
+
+#[cfg(test)]
+mod named_key_tests {
+    use super::*;
+
+    #[test]
+    fn f_key_name_is_not_truncated_above_f12() {
+        assert_eq!(NamedKey::F(1).name(), "F1");
+        assert_eq!(NamedKey::F(12).name(), "F12");
+        assert_eq!(NamedKey::F(13).name(), "F13");
+        assert_eq!(NamedKey::F(24).name(), "F24");
+    }
+
+    #[test]
+    fn named_keys_keep_their_title_case_spelling() {
+        assert_eq!(NamedKey::Escape.name(), "Escape");
+        assert_eq!(NamedKey::Enter.name(), "Enter");
+        assert_eq!(NamedKey::Up.name(), "Up");
+        assert_eq!(NamedKey::Menu.name(), "Menu");
+    }
 }
 
 #[cfg(test)]
