@@ -572,10 +572,9 @@ fn request_exit_before_drop(live: &mut LiveRunner) {
 /// [`QuiAppActions`] method passes to the same underlying
 /// `quadraui`/`quadraui_binding_core` call, so applying one in
 /// [`flush_deferred_actions`] is a direct Rust call with no further
-/// decoding or validation left to do -- except the platform-services
-/// variants below `RestoreFromTrash` (`ApplyUpdateOnQuit` through
-/// `SetJumpList`), whose own `quadraui_binding_core::services` call still
-/// does its own `kind`/items decode at flush time, same as every other
+/// decoding or validation left to do -- except [`Self::SetDockMenu`]/
+/// [`Self::SetJumpList`], whose own `quadraui_binding_core::services` call
+/// still does its own items decode at flush time, same as every other
 /// variant's matching `QuiApp` method does synchronously -- see
 /// `quadraui-py`'s `test_deferred_actions.py` module doc for why that one
 /// exception exists.
@@ -603,6 +602,7 @@ enum DeferredAction {
     TrayMenu(Vec<ContextMenuItem>),
     DocumentEdited(bool),
     RepresentedFilename(Option<PathBuf>),
+    Cursor(PointerShape),
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin napi-rs leaf around
@@ -1150,35 +1150,31 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app: &mut NodeAppLogic) -> 
                 backend.services().send_notification(notification);
             }
             DeferredAction::OpenPath(path) => {
-                if let Err(err) = backend.services().open_path(&path) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("open_path: {err:?}")),
-                    );
+                if let Err(err) = service_result("open_path", backend.services().open_path(&path)) {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::RevealInFileManager(path) => {
-                if let Err(err) = backend.services().reveal_in_file_manager(&path) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("reveal_in_file_manager: {err:?}")),
-                    );
+                if let Err(err) = service_result(
+                    "reveal_in_file_manager",
+                    backend.services().reveal_in_file_manager(&path),
+                ) {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::MoveToTrash(path) => {
-                if let Err(err) = backend.services().move_to_trash(&path) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("move_to_trash: {err:?}")),
-                    );
+                if let Err(err) =
+                    service_result("move_to_trash", backend.services().move_to_trash(&path))
+                {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::RestoreFromTrash(path) => {
-                if let Err(err) = backend.services().restore_from_trash(&path) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("restore_from_trash: {err:?}")),
-                    );
+                if let Err(err) = service_result(
+                    "restore_from_trash",
+                    backend.services().restore_from_trash(&path),
+                ) {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::ApplyUpdateOnQuit(handle) => {
@@ -1262,47 +1258,52 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app: &mut NodeAppLogic) -> 
                 }
             }
             DeferredAction::TrayIcon(icon) => {
-                if let Err(err) = with_tray(backend, |t| t.set_icon(icon)) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("set_tray_icon: {err:?}")),
-                    );
+                if let Err(err) =
+                    service_result("set_tray_icon", with_tray(backend, |t| t.set_icon(icon)))
+                {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::TrayTooltip(tooltip) => {
-                if let Err(err) = with_tray(backend, |t| t.set_tooltip(&tooltip)) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("set_tray_tooltip: {err:?}")),
-                    );
+                if let Err(err) = service_result(
+                    "set_tray_tooltip",
+                    with_tray(backend, |t| t.set_tooltip(&tooltip)),
+                ) {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::TrayMenu(items) => {
                 let menu = menu_for_surface(WidgetId::new("qui-tray-menu"), items);
-                if let Err(err) = with_tray(backend, |t| t.set_menu(&menu)) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("set_tray_menu: {err:?}")),
-                    );
+                if let Err(err) =
+                    service_result("set_tray_menu", with_tray(backend, |t| t.set_menu(&menu)))
+                {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::DocumentEdited(edited) => {
-                if let Err(err) = with_window(backend, |w| w.set_document_edited(edited)) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("set_document_edited: {err:?}")),
-                    );
+                if let Err(err) = service_result(
+                    "set_document_edited",
+                    with_window(backend, |w| w.set_document_edited(edited)),
+                ) {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::RepresentedFilename(path) => {
-                if let Err(err) =
-                    with_window(backend, |w| w.set_represented_filename(path.as_deref()))
-                {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("set_represented_filename: {err:?}")),
-                    );
+                if let Err(err) = service_result(
+                    "set_represented_filename",
+                    with_window(backend, |w| w.set_represented_filename(path.as_deref())),
+                ) {
+                    record_error(&app.pending_error, err);
                 }
+            }
+            DeferredAction::Cursor(shape) => {
+                // Fire-and-forget, the same shape `quadraui-py`'s own
+                // `DeferredAction::Cursor` arm uses: whether the glyph was
+                // actually applied is only observable synchronously via
+                // `QuiApp::set_cursor`'s own return value, and a deferred
+                // action by definition isn't applied until after that
+                // return value would already be gone.
+                let _ = backend.set_cursor(shape);
             }
         }
     }
@@ -1389,6 +1390,16 @@ fn service_error_to_napi(what: &str, err: ServiceError) -> Error {
         // than failing to compile.
         other => internal_error(format!("{what}: {other}")),
     }
+}
+
+/// Maps a [`quadraui::ServiceResult`] failure to [`internal_error`],
+/// prefixed with `what` -- the one place every `PlatformServices`/
+/// `WindowControl`/`TrayService` method this crate exposes
+/// (`openPath`/`moveToTrash`/.../`setTrayIcon`/`setDocumentEdited`/...)
+/// routes its `Err` through, the napi-rs analog of `quadraui-py`'s own
+/// `service_result`.
+fn service_result(what: &str, result: quadraui::ServiceResult<()>) -> Result<()> {
+    result.map_err(|err| internal_error(format!("{what}: {err:?}")))
 }
 
 /// Mirrors [`invalid_descriptor_error`] for a byte buffer whose length
@@ -1958,10 +1969,14 @@ impl QuiAppActions {
     }
 
     /// Queues a [`DeferredAction::TrayIcon`] -- same argument, same
-    /// decoding, as `quadraui-py`'s `set_tray_icon`.
+    /// decoding, as `quadraui-py`'s `set_tray_icon`. `icon` decodes via
+    /// [`decode_via_json`], not [`decode_direct`]: a `Buffer`/`Uint8Array`
+    /// `{Bytes: ...}` source needs the byte-array materialization
+    /// [`to_descriptor_value`] does -- see [`QuiApp::set_tray_icon`]'s own
+    /// doc.
     #[napi(js_name = "setTrayIcon")]
-    pub fn set_tray_icon(&self, env: Env, icon: Unknown) -> Result<()> {
-        let icon: ImageSource = decode_direct(env, "setTrayIcon", icon)?;
+    pub fn set_tray_icon(&self, icon: Unknown) -> Result<()> {
+        let icon: ImageSource = decode_via_json("setTrayIcon", icon)?;
         self.queue
             .borrow_mut()
             .push_back(DeferredAction::TrayIcon(icon));
@@ -2006,6 +2021,22 @@ impl QuiAppActions {
         self.queue
             .borrow_mut()
             .push_back(DeferredAction::RepresentedFilename(path.map(PathBuf::from)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::Cursor`] -- same arguments, same
+    /// decoding, as `quadraui-py`'s `QuiAppActions.set_cursor`. Unlike
+    /// [`QuiApp::set_cursor`], this has no return value: whether the glyph
+    /// was actually applied is only observable synchronously, and a
+    /// deferred action by definition isn't applied until after this call
+    /// returns.
+    #[napi(js_name = "setCursor")]
+    pub fn set_cursor(&self, shape: String, edge: Option<String>) -> Result<()> {
+        let shape: PointerShape = pointer_shape(&shape, edge.as_deref())
+            .map_err(|err| invalid_descriptor_error(format!("setCursor: {err}")))?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Cursor(shape));
         Ok(())
     }
 }

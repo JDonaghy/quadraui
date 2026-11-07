@@ -128,7 +128,7 @@ exports.NoDisplayError = NoDisplayError;
 class InvalidAppIdError extends QuadrauiError {}
 exports.InvalidAppIdError = InvalidAppIdError;
 
-/** A platform-services call (`checkForUpdate`, `setTrayIcon`, `setCursor`'s underlying seam, ...) this backend has no implementation for at all -- distinct from {@link InternalError}, which means the backend tried and failed -- mirrors `quadraui-py`'s `UnsupportedError`. */
+/** A `quadraui_binding_core::services` call (`checkForUpdate`, `setLoginItem`, `setDockMenu`, `setJumpList`, ...) this backend has no implementation for at all -- distinct from {@link InternalError}, which `setTrayIcon`/`setTrayMenu`/`setDocumentEdited`/`setRepresentedFilename` raise instead for the same "no implementation" reason (their own `WindowControl`/`TrayService` seam reports it differently), and from `setCursor`, which raises neither and instead returns `false` -- mirrors `quadraui-py`'s `UnsupportedError`. */
 class UnsupportedError extends QuadrauiError {}
 exports.UnsupportedError = UnsupportedError;
 
@@ -258,17 +258,23 @@ exports.appPath = appPath;
  * process-global setting, not per-`QuiApp`.
  */
 function setAppIdentifier(identifier: string): void {
-  native.setAppIdentifier(identifier);
+  try {
+    native.setAppIdentifier(identifier);
+  } catch (err) {
+    throw toQuadrauiError(err);
+  }
 }
 exports.setAppIdentifier = setAppIdentifier;
 
 /**
  * Installs a crash handler that writes a crash record on an uncaught
- * panic, decoding `cfg` (an `{appVersion, uploadEndpoint, metadata,
- * logDir}` object, every key optional -- in the underlying Rust shape's
- * own `snake_case` field names: `app_version`/`upload_endpoint`/
- * `metadata`/`log_dir`) into a crash-reporter config. No live `QuiApp` is
- * needed: this installs a process-global Rust panic hook.
+ * panic, decoding `cfg` into a crash-reporter config. `cfg` is a plain
+ * object keyed by the underlying Rust shape's own `snake_case` field
+ * names -- `app_version`/`upload_endpoint`/`metadata`/`log_dir`, every
+ * key optional (a camelCase `appVersion`/`uploadEndpoint`/`metadata`/
+ * `logDir` key is silently ignored, not an error, since this decodes with
+ * no `camelCase` remap). No live `QuiApp` is needed: this installs a
+ * process-global Rust panic hook.
  */
 function installCrashHandler(cfg: unknown): void {
   try {

@@ -350,6 +350,28 @@ test("setTrayIcon raises InternalError on TUI (no tray concept)", () => {
   );
 });
 
+test("setTrayIcon accepts a Buffer Bytes source, still raising InternalError on TUI", () => {
+  // `Buffer`/`Uint8Array`/`ArrayBuffer` under `Bytes` needs the
+  // byte-array materialization `setTrayIcon`'s decode does via
+  // `decode_via_json` rather than `decode_direct` -- asserting
+  // `InternalError` here (not `InvalidDescriptorError`) is what proves
+  // the icon was decoded successfully and only then rejected by
+  // `with_tray`'s `Unsupported` fold on this backend.
+  const app = new QuiApp(10, 10);
+  assert.throws(
+    () => app.setTrayIcon({ Bytes: Buffer.from([0, 1, 2, 3]) }),
+    (err: unknown) => err instanceof InternalError,
+  );
+});
+
+test("setTrayIcon rejects a malformed descriptor", () => {
+  const app = new QuiApp(10, 10);
+  assert.throws(
+    () => app.setTrayIcon({ NotAVariant: "oops" }),
+    (err: unknown) => err instanceof InvalidDescriptorError,
+  );
+});
+
 test("setTrayTooltip raises InternalError on TUI", () => {
   const app = new QuiApp(10, 10);
   assert.throws(
@@ -366,6 +388,14 @@ test("setTrayMenu raises InternalError on TUI", () => {
   );
 });
 
+test("setTrayMenu rejects a malformed items value", () => {
+  const app = new QuiApp(10, 10);
+  assert.throws(
+    () => app.setTrayMenu([{ not: "an item" }]),
+    (err: unknown) => err instanceof InvalidDescriptorError,
+  );
+});
+
 test("setDocumentEdited raises InternalError on TUI", () => {
   const app = new QuiApp(10, 10);
   assert.throws(
@@ -378,6 +408,14 @@ test("setRepresentedFilename raises InternalError on TUI", () => {
   const app = new QuiApp(10, 10);
   assert.throws(
     () => app.setRepresentedFilename("/tmp/document.txt"),
+    (err: unknown) => err instanceof InternalError,
+  );
+});
+
+test("setRepresentedFilename accepts null to clear", () => {
+  const app = new QuiApp(10, 10);
+  assert.throws(
+    () => app.setRepresentedFilename(null),
     (err: unknown) => err instanceof InternalError,
   );
 });
@@ -404,6 +442,14 @@ test("setCursor('resize') requires an edge", () => {
   assert.equal(app.setCursor("resize", "north"), false);
 });
 
+test("setCursor('resize') rejects an unknown edge", () => {
+  const app = new QuiApp(10, 10);
+  assert.throws(
+    () => app.setCursor("resize", "not_an_edge"),
+    (err: unknown) => err instanceof InvalidDescriptorError,
+  );
+});
+
 test("actions().setTrayIcon surfaces InternalError after dispatch", () => {
   const app = new QuiApp(10, 10);
   const actions = app.actions();
@@ -417,6 +463,22 @@ test("actions().setTrayIcon surfaces InternalError after dispatch", () => {
   );
 });
 
+test("actions().setTrayMenu rejects a malformed items value at queue time", () => {
+  // Decoding happens synchronously inside the queueing call itself, from
+  // the handler's own call frame -- a malformed descriptor still raises
+  // right there, not deferred to `flush_deferred_actions`.
+  const app = new QuiApp(10, 10);
+  const actions = app.actions();
+  app.setHandler(() => {
+    assert.throws(
+      () => actions.setTrayMenu([{ not: "an item" }]),
+      (err: unknown) => err instanceof InvalidDescriptorError,
+    );
+  });
+  app.pushKeyEvent("a".codePointAt(0));
+  app.run(1);
+});
+
 test("actions().setDocumentEdited surfaces InternalError after dispatch", () => {
   const app = new QuiApp(10, 10);
   const actions = app.actions();
@@ -428,4 +490,19 @@ test("actions().setDocumentEdited surfaces InternalError after dispatch", () => 
     () => app.run(1),
     (err: unknown) => err instanceof InternalError,
   );
+});
+
+test("actions().setCursor queued from a handler does not raise", () => {
+  // Unlike the direct `QuiApp.setCursor`, `QuiAppActions.setCursor` has
+  // no return value to assert on -- this only proves the deferred path
+  // is reachable at all (the gap this fix round closes) and doesn't
+  // itself raise, the same shape `quadraui-py`'s
+  // `test_set_cursor_queued_from_a_handler_does_not_raise` pins.
+  const app = new QuiApp(10, 10);
+  const actions = app.actions();
+  app.setHandler(() => {
+    actions.setCursor("col_resize");
+  });
+  app.pushKeyEvent("a".codePointAt(0));
+  app.run(1);
 });

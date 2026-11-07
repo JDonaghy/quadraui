@@ -1,16 +1,28 @@
 //! Platform services -- file dialogs, notifications, URL/path opening,
-//! trash, beep, system theme, platform identity -- thin napi-rs leaves
-//! straight over [`quadraui::PlatformServices`], the napi-rs analog of
-//! `quadraui-py`'s own platform-services methods on `QuiApp`.
+//! trash, beep, system theme, platform identity, the auto-update/
+//! power-save-blocker/launch-at-login/protocol-registration/drag-out/
+//! recent-documents/dock-menu/jump-list services layer, tray icon/tooltip/
+//! menu, runtime pointer cursor, and window document state
+//! (`setDocumentEdited`/`setRepresentedFilename`) -- thin napi-rs leaves
+//! straight over [`quadraui::PlatformServices`]/`quadraui_binding_core::services`/
+//! [`quadraui::WindowControl`]/[`quadraui::backend::TrayService`]/
+//! [`Backend::set_cursor`], the napi-rs analog of `quadraui-py`'s own
+//! platform-services methods on `QuiApp`. Also owns three module-level,
+//! app-less free functions: [`app_path`], [`set_app_identifier_js`], and
+//! [`install_crash_handler_js`].
 //!
-//! Every method resolves [`quadraui::PlatformServices`] off
-//! `self.driver.backend()`, this app's own headless `TuiBackend`, and so
-//! calls [`QuiApp::check_not_live`] first: once `startTui`/`startNative`
-//! is running, that backend is the dormant pre-live one, not the live
+//! Every method resolves its service surface off `self.driver.backend()`,
+//! this app's own headless `TuiBackend`, and so calls
+//! [`QuiApp::check_not_live`] first: once `startTui`/`startNative` is
+//! running, that backend is the dormant pre-live one, not the live
 //! session's own.
 //! `TuiPlatformServices` (`quadraui::tui::services`) is a genuine,
-//! non-stub implementation for every method here -- see that module's doc
-//! for exactly what each one does on a terminal.
+//! non-stub implementation for every file-dialog/notification/URL/path/
+//! trash/beep/theme/identity method here -- see that module's doc for
+//! exactly what each one does on a terminal. The services-layer, tray, and
+//! window document-state methods below instead call straight into
+//! `quadraui_binding_core::services`/[`with_window`]/[`with_tray`], which
+//! `TuiBackend` answers with `BackendError::Unsupported` for every one.
 //!
 //! `openPath`/`revealInFileManager`/`moveToTrash`/`restoreFromTrash`/
 //! `sendNotification` each has a deferred-queue twin on [`QuiAppActions`]
@@ -348,8 +360,8 @@ impl QuiApp {
     /// [`quadraui_binding_core::update_download_and_stage`].
     #[napi(js_name = "downloadAndStage")]
     pub fn download_and_stage(&mut self, env: Env, info: Unknown) -> Result<i64> {
-        let info: UpdateInfoWire = decode_via_json("downloadAndStage", info)?;
         self.check_not_live()?;
+        let info: UpdateInfoWire = decode_via_json("downloadAndStage", info)?;
         self.guarded(env, |app| {
             update_download_and_stage(app.driver.backend().services(), info)
                 .map(|handle| handle as i64)
@@ -541,9 +553,9 @@ impl QuiApp {
     /// from a handler instead.
     #[napi(js_name = "setDockMenu")]
     pub fn set_dock_menu(&mut self, env: Env, items: Unknown) -> Result<()> {
+        self.check_not_live()?;
         let items = to_descriptor_value(items)
             .map_err(|detail| invalid_descriptor_error(format!("setDockMenu: {detail}")))?;
-        self.check_not_live()?;
         self.guarded(env, |app| {
             set_dock_menu(app.driver.backend().services(), items)
                 .map_err(|err| service_error_to_napi("setDockMenu", err))
@@ -558,9 +570,9 @@ impl QuiApp {
     /// from a handler instead.
     #[napi(js_name = "setJumpList")]
     pub fn set_jump_list(&mut self, env: Env, items: Unknown) -> Result<()> {
+        self.check_not_live()?;
         let items = to_descriptor_value(items)
             .map_err(|detail| invalid_descriptor_error(format!("setJumpList: {detail}")))?;
-        self.check_not_live()?;
         self.guarded(env, |app| {
             set_jump_list(app.driver.backend().services(), items)
                 .map_err(|err| service_error_to_napi("setJumpList", err))
@@ -593,8 +605,10 @@ impl QuiApp {
     pub fn set_document_edited(&mut self, env: Env, edited: bool) -> Result<()> {
         self.check_not_live()?;
         self.guarded(env, |app| {
-            with_window(app.driver.parts_mut().0, |w| w.set_document_edited(edited))
-                .map_err(|err| internal_error(format!("setDocumentEdited: {err:?}")))
+            service_result(
+                "setDocumentEdited",
+                with_window(app.driver.parts_mut().0, |w| w.set_document_edited(edited)),
+            )
         })
     }
 
@@ -606,10 +620,12 @@ impl QuiApp {
     pub fn set_represented_filename(&mut self, env: Env, path: Option<String>) -> Result<()> {
         self.check_not_live()?;
         self.guarded(env, |app| {
-            with_window(app.driver.parts_mut().0, |w| {
-                w.set_represented_filename(path.as_deref().map(Path::new))
-            })
-            .map_err(|err| internal_error(format!("setRepresentedFilename: {err:?}")))
+            service_result(
+                "setRepresentedFilename",
+                with_window(app.driver.parts_mut().0, |w| {
+                    w.set_represented_filename(path.as_deref().map(Path::new))
+                }),
+            )
         })
     }
 
@@ -617,17 +633,22 @@ impl QuiApp {
     /// [`quadraui::backend::TrayService::set_icon`]. `icon` is an
     /// [`ImageSource`] object, e.g. `{Path: "/path/to.png"}` or
     /// `{Bytes: [...]}` -- the same externally-tagged shape
-    /// `quadraui::ImageSource`'s derived `Deserialize` accepts. Raises
-    /// `InternalError` on every in-tree backend except a `gtk`/`macos`/
-    /// `win` `startNative` window: TUI has no tray/status-bar concept at
-    /// all ([`quadraui::Backend::tray`] stays `None` there permanently).
+    /// `quadraui::ImageSource`'s derived `Deserialize` accepts, including a
+    /// `Buffer`/`Uint8Array`/`ArrayBuffer` under `Bytes` (decoded via
+    /// [`decode_via_json`], not [`decode_direct`], for exactly that
+    /// reason). Raises `InternalError` on every in-tree backend except a
+    /// `gtk`/`macos`/`win` `startNative` window: TUI has no tray/status-bar
+    /// concept at all ([`quadraui::Backend::tray`] stays `None` there
+    /// permanently).
     #[napi(js_name = "setTrayIcon")]
     pub fn set_tray_icon(&mut self, env: Env, icon: Unknown) -> Result<()> {
-        let icon: ImageSource = decode_direct(env, "setTrayIcon", icon)?;
         self.check_not_live()?;
+        let icon: ImageSource = decode_via_json("setTrayIcon", icon)?;
         self.guarded(env, |app| {
-            with_tray(app.driver.parts_mut().0, |t| t.set_icon(icon))
-                .map_err(|err| internal_error(format!("setTrayIcon: {err:?}")))
+            service_result(
+                "setTrayIcon",
+                with_tray(app.driver.parts_mut().0, |t| t.set_icon(icon)),
+            )
         })
     }
 
@@ -638,8 +659,10 @@ impl QuiApp {
     pub fn set_tray_tooltip(&mut self, env: Env, tooltip: String) -> Result<()> {
         self.check_not_live()?;
         self.guarded(env, |app| {
-            with_tray(app.driver.parts_mut().0, |t| t.set_tooltip(&tooltip))
-                .map_err(|err| internal_error(format!("setTrayTooltip: {err:?}")))
+            service_result(
+                "setTrayTooltip",
+                with_tray(app.driver.parts_mut().0, |t| t.set_tooltip(&tooltip)),
+            )
         })
     }
 
@@ -652,12 +675,14 @@ impl QuiApp {
     /// [`Self::set_tray_icon`].
     #[napi(js_name = "setTrayMenu")]
     pub fn set_tray_menu(&mut self, env: Env, items: Unknown) -> Result<()> {
-        let items: Vec<ContextMenuItem> = decode_direct(env, "setTrayMenu", items)?;
         self.check_not_live()?;
+        let items: Vec<ContextMenuItem> = decode_direct(env, "setTrayMenu", items)?;
         self.guarded(env, |app| {
             let menu = menu_for_surface(WidgetId::new("qui-tray-menu"), items);
-            with_tray(app.driver.parts_mut().0, |t| t.set_menu(&menu))
-                .map_err(|err| internal_error(format!("setTrayMenu: {err:?}")))
+            service_result(
+                "setTrayMenu",
+                with_tray(app.driver.parts_mut().0, |t| t.set_menu(&menu)),
+            )
         })
     }
 
@@ -671,11 +696,18 @@ impl QuiApp {
     /// applied -- `false` on the headless `TuiBackend`, which has no
     /// native pointer concept at all, same as [`Backend::set_cursor`]'s
     /// own "no window yet" case on a windowed backend.
+    ///
+    /// Calling this from inside the registered event handler or render
+    /// callback raises `ReentrantCallError` -- call
+    /// [`QuiAppActions::set_cursor`] (via `QuiApp::actions()`) from a
+    /// handler instead; unlike this method, that one has no return value,
+    /// since whether the glyph was actually applied is only observable
+    /// synchronously.
     #[napi(js_name = "setCursor")]
     pub fn set_cursor(&mut self, env: Env, shape: String, edge: Option<String>) -> Result<bool> {
+        self.check_not_live()?;
         let shape: PointerShape = pointer_shape(&shape, edge.as_deref())
             .map_err(|err| invalid_descriptor_error(format!("setCursor: {err}")))?;
-        self.check_not_live()?;
         self.guarded(env, |app| Ok(app.driver.parts_mut().0.set_cursor(shape)))
     }
 }
