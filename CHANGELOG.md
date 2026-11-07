@@ -81,12 +81,21 @@ only a push to `main` runs this workflow.
   the same surface `quadraui-py` already exposed. Also gains the three
   surfaces only `quadraui-py` had before this change: the tray
   (`setTrayIcon`/`setTrayTooltip`/`setTrayMenu`), runtime cursor
-  (`setCursor`, the full `PointerShape` name set), and window
-  document-state (`setDocumentEdited`/`setRepresentedFilename`) methods,
-  each a thin napi-rs wrapper calling the same
+  (`setCursor`, the full `PointerShape` name set, plus a
+  `QuiAppActions.setCursor` deferred mirror for use from inside a
+  registered handler), and window document-state
+  (`setDocumentEdited`/`setRepresentedFilename`) methods, each a thin
+  napi-rs wrapper calling the same
   `quadraui_binding_core::{with_window, with_tray, menu_for_surface}`
   logic `quadraui-py` already calls, with no logic duplicated between the
   two bindings.
+
+### Fixed
+- `quadraui-node`'s `setTrayIcon`/`QuiAppActions.setTrayIcon` now decode
+  `icon` via `decode_via_json` instead of `decode_direct`, so a
+  `Buffer`/`Uint8Array`/`ArrayBuffer` passed under `{Bytes: ...}` decodes
+  into `quadraui::ImageSource::Bytes` correctly instead of raising a
+  spurious `InvalidDescriptorError`.
 
 ## [0.9.0] - 2026-11-07
 ### Added
