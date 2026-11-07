@@ -54,6 +54,18 @@ pub fn tui_dialog_layout(dialog: &Dialog, viewport: crate::event::Rect) -> Dialo
     let default_w = (viewport.width * 0.5).clamp(30.0, 60.0);
     let dialog_w = default_w.max(table_preferred_w).min(viewport.width - 4.0);
 
+    // Floored at today's 8-cell estimate so a row of short legacy
+    // labels ("OK" / "No") doesn't shrink below what every existing
+    // caller already renders; widened per-button via
+    // `resolved_button_spec()` so an explicit `spec`'s icon + longer
+    // label (e.g. a `Danger` "Move to Trash") never clips its closing
+    // bracket — see `ButtonSpec::min_cell_width`'s own doc.
+    let button_width = dialog
+        .buttons
+        .iter()
+        .map(|b| b.resolved_button_spec().min_cell_width())
+        .fold(8.0_f32, f32::max);
+
     let measure = DialogMeasure {
         width: dialog_w,
         title_height: if dialog.title.spans.iter().any(|s| !s.text.is_empty()) {
@@ -65,7 +77,7 @@ pub fn tui_dialog_layout(dialog: &Dialog, viewport: crate::event::Rect) -> Dialo
         table_height: table_h,
         input_height: input_h,
         button_row_height: 1.0,
-        button_width: 8.0,
+        button_width,
         button_gap: 2.0,
         padding: 1.0,
     };
@@ -204,9 +216,9 @@ fn draw_table(
 /// Draw a [`Dialog`] at its resolved layout.
 ///
 /// Equivalent to [`draw_dialog_with_nerd_fonts`] with `nerd_fonts_enabled:
-/// false` — kept as a separate, **unchanged** function (rather than
-/// growing this one's argument list) so every existing caller of this
-/// re-exported `pub fn` keeps compiling untouched. See `CLAUDE.md`'s
+/// false` — a separate function (rather than a grown argument list on
+/// this one) so a caller of this re-exported `pub fn` with the original
+/// 4-argument signature keeps compiling untouched. See `CLAUDE.md`'s
 /// *Downstream consumers* rule 2.
 pub fn draw_dialog(buf: &mut Buffer, dialog: &Dialog, layout: &DialogLayout, theme: &Theme) {
     draw_dialog_with_nerd_fonts(buf, dialog, layout, theme, false);
@@ -347,11 +359,14 @@ pub fn draw_dialog_with_nerd_fonts(
         // bracket-chrome/icon/intent-colour path instead of this bare
         // highlighted-row look, so e.g. a `Danger` spec reads as
         // `[ ⚠ Move to Trash ]` in `theme.error_fg`. A `spec: None`
-        // button (every pre-existing `DialogButton`) keeps painting
-        // through the legacy path below, byte-for-byte unchanged.
+        // button paints through the plain legacy path below instead.
+        // `btn.is_default` maps to `focused` on the materialised
+        // `Button` so the "this is the default" cue (`accent_fg`
+        // bracket chrome) survives on a spec-backed button the same
+        // way the legacy path's `selected_bg` highlight does below.
         if let Some(spec) = &btn.spec {
             let area = RRect::new(bx, by, bw, 1);
-            let button = spec.to_button(btn.id, false);
+            let button = spec.to_button(btn.id, btn.is_default);
             draw_button(buf, area, &button, theme, nerd_fonts_enabled);
             continue;
         }
@@ -487,6 +502,13 @@ mod tests {
     /// `[ ⚠ Move to Trash ]` in `theme.error_fg`, through the same
     /// bracket-chrome path `crate::tui::button` paints a standalone
     /// `Button` with — not the dialog's own bare highlighted-row look.
+    ///
+    /// Goes through the real `tui_dialog_layout` (not a hand-built
+    /// `DialogMeasure`), so the button box it hands `draw_dialog` is
+    /// exactly what every production TUI caller would compute — this
+    /// is the regression guard for `tui_dialog_layout` sizing its
+    /// button row from `resolved_button_spec()` rather than a fixed
+    /// legacy width.
     #[test]
     fn danger_spec_button_renders_with_the_intent_colour_and_bracket_chrome() {
         let mut d = make_dialog();
@@ -494,22 +516,9 @@ mod tests {
         spec.variant = crate::primitives::button::ButtonVariant::Danger;
         spec.icon = Some(crate::types::Icon::new("\u{f071}", "!"));
         d.buttons[0].spec = Some(spec);
-        // Wide enough for `[ ! Move to Trash ]` — `make_layout`'s own
-        // 8-cell `button_width` fits only the short legacy labels
-        // ("Save"/"Cancel") the other tests here use.
-        let measure = DialogMeasure {
-            width: 40.0,
-            title_height: 1.0,
-            body_height: 2.0,
-            table_height: 0.0,
-            input_height: 0.0,
-            button_row_height: 1.0,
-            button_width: 22.0,
-            button_gap: 2.0,
-            padding: 1.0,
-        };
+
         let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
-        let layout = d.layout(viewport, measure, |_| ToolbarItemMeasure::new(0.0));
+        let layout = tui_dialog_layout(&d, viewport);
         let theme = Theme::default();
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
@@ -522,8 +531,12 @@ mod tests {
         let row: String = (bx..bx + bw).map(|x| cell_char(&buf, x, by)).collect();
 
         assert!(
-            row.contains('['),
+            row.starts_with('['),
             "a spec-backed button paints bracket chrome, got {row:?}"
+        );
+        assert!(
+            row.trim_end().ends_with(']'),
+            "a spec-backed button's closing bracket must not be clipped, got {row:?}"
         );
         assert!(row.contains("Move to Trash"));
         // The fallback half, since this test never turns Nerd Fonts on.
@@ -532,9 +545,8 @@ mod tests {
     }
 
     /// The flip side of the test above: a `DialogButton` with no `spec`
-    /// (every pre-existing construction site) keeps painting through the
-    /// legacy bare-highlighted-row path, byte-for-byte unchanged — no
-    /// bracket chrome, same label text as before.
+    /// paints through the plain legacy bare-highlighted-row path — no
+    /// bracket chrome, just the label text.
     #[test]
     fn legacy_only_button_renders_exactly_as_before() {
         let d = make_dialog();

@@ -271,8 +271,8 @@ pub struct DialogButton {
     /// vocabulary (variant intent — e.g. [`crate::ButtonVariant::Danger`]
     /// for "Move to Trash" — icon, icon placement/gap, a tooltip) this
     /// button's own legacy fields above can't express. `None` (the
-    /// default — every pre-existing construction site) keeps today's
-    /// plain-highlighted-row rendering; see [`Self::resolved_button_spec`].
+    /// default) renders the plain highlighted-row look; see
+    /// [`Self::resolved_button_spec`].
     #[serde(default)]
     pub spec: Option<crate::primitives::button::ButtonSpec>,
 }
@@ -651,15 +651,26 @@ impl Dialog {
             .max(table_preferred_w)
             .min(viewport.width - char_width * 4.0 - border_chrome_inset * 2.0);
 
+        // Floored at today's 8-char-width estimate so a row of short
+        // legacy labels doesn't shrink below what every existing caller
+        // of `measure_generic`/`measure_generic_measured` already
+        // renders; widened per-button via `resolved_button_spec()` so an
+        // explicit `spec`'s icon + longer label never clips its closing
+        // bracket — see `ButtonSpec::min_cell_width`'s own doc.
         let estimated_button_w = char_width * 8.0;
-        let button_width = match measure {
-            Some(m) => self
-                .buttons
-                .iter()
-                .map(|b| m.width_of(&b.label) + char_width * 2.0)
-                .fold(estimated_button_w, f32::max),
-            None => estimated_button_w,
-        };
+        let button_width = self
+            .buttons
+            .iter()
+            .map(|b| {
+                let spec = b.resolved_button_spec();
+                let spec_w = spec.min_cell_width() * char_width;
+                let measured_w = match measure {
+                    Some(m) => m.width_of(&spec.label) + char_width * 2.0,
+                    None => estimated_button_w,
+                };
+                spec_w.max(measured_w)
+            })
+            .fold(estimated_button_w, f32::max);
 
         DialogMeasure {
             width: dialog_w,
@@ -1868,7 +1879,10 @@ mod tests {
         let table = d.table.as_ref().unwrap();
         assert_eq!(m.table_height, table.tui_total_height() as f32);
         assert_eq!(m.button_row_height, 1.0);
-        assert_eq!(m.button_width, 8.0);
+        // `btn("close")`'s label is 5 chars; `ButtonSpec::min_cell_width`'s
+        // `4 cells of chrome + label width` (9 cells) exceeds the flat
+        // 8-char-width floor, so it — not the floor — wins here.
+        assert_eq!(m.button_width, 9.0);
         assert_eq!(m.button_gap, 2.0);
         assert_eq!(m.padding, 1.0);
         assert_eq!(m.input_height, 0.0, "no DialogInput on table_dialog()");
@@ -1965,9 +1979,13 @@ mod tests {
         let measured =
             d.measure_generic_measured(char_width, line_height, viewport, 0.0, &FakeMeasure);
 
+        // With no real text measurer, `measure_generic` falls back to
+        // `ButtonSpec::min_cell_width`'s cell-count estimate, which for
+        // this long label already exceeds the flat 8-char-width floor.
+        let spec_w = d.buttons[0].resolved_button_spec().min_cell_width() * char_width;
         assert_eq!(
-            estimated.button_width, 8.0,
-            "measure_generic always uses the flat char_width * 8.0 estimate"
+            estimated.button_width, spec_w,
+            "measure_generic falls back to the spec-derived estimate"
         );
         let label_w = FakeMeasure.width_of("a-very-long-button-label");
         assert_eq!(

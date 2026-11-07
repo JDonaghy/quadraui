@@ -151,9 +151,8 @@ pub struct ToastButton {
     pub primary: bool,
     /// Optional [`crate::ButtonSpec`] override, carrying the B3a
     /// vocabulary (variant intent, icon, a tooltip) this button's own
-    /// legacy `primary` field can't express. `None` (the default — every
-    /// pre-existing construction site) keeps today's filled-chip/plain
-    /// rendering; see [`Self::resolved_button_spec`].
+    /// legacy `primary` field can't express. `None` (the default) renders
+    /// the plain filled-chip/plain look; see [`Self::resolved_button_spec`].
     #[serde(default)]
     pub spec: Option<crate::primitives::button::ButtonSpec>,
 }
