@@ -12,6 +12,16 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- A `MouseMoved` event landing on (or leaving) any painted primitive now
+  dispatches a hit-tested `MouseEntered`/`MouseLeft` to the registered
+  handler ahead of the raw move itself, each carrying the primitive's own
+  `widget` id and `hit` detail — the real hover signal a tree/details-row
+  (or any other non-toolbar widget) hover tooltip needs, instead of a
+  handler re-deriving hit-testing from the raw cursor position itself.
+  Moving between two hits with the same widget id but a different detail
+  (e.g. row 2 to row 3 within the same tree) still reads as a hover
+  change. Suppressed while a divider/scrollbar/column drag is in
+  progress.
 - A `"tabs"` layout-node dict accepts an optional `"focused_index"` key
   naming the keyboard-focused tab. TUI paints it in reverse video;
   omitting the key (or passing `None`) keeps today's unfocused paint.
