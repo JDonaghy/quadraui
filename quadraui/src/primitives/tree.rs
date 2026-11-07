@@ -718,17 +718,15 @@ pub(crate) mod native_surface_paint {
             // Skip rows the layout clipped to a partial height — painting
             // them produces a compressed background band at the section
             // boundary (matches GTK/macOS's whole-row behaviour; Win's
-            // `draw_tree` did not skip these, an oversight fixed by this
-            // unification rather than a deliberate per-backend choice —
-            // nothing documented it as one).
+            // `draw_tree` paints these unconditionally, a difference this
+            // unification resolves in GTK/macOS's favor).
             //
             // When a sub-row `scroll_px` is in effect, `layout_with_scroll_px`
             // always height-clips the last visible row by construction (it
             // is the row the sub-row shift pushes partway below the
             // viewport), so skipping it here would leave a bare
             // `tab_bar_bg` band at the bottom whose height breathes as the
-            // scroll position changes. Paint it instead; its clipped
-            // bounds already stop at the viewport edge.
+            // scroll position changes. Paint it instead.
             let is_header = matches!(row.decoration, Decoration::Header);
             let full_h = if is_header {
                 header_height
@@ -738,6 +736,16 @@ pub(crate) mod native_surface_paint {
             if scroll_px.is_none() && row_h < full_h - 0.5 {
                 continue;
             }
+            // Paint at the row's full, unclipped height rather than the
+            // layout's possibly bottom-clipped `row_h` — the first row
+            // gets the same treatment for free via its negative `y` and
+            // full `height` from `layout_with_scroll_px`. Using the
+            // clipped height here would vertically compress the row's
+            // chevron/icon/badge/text toward the viewport edge as the
+            // scroll position changes; using the full height and letting
+            // the `area` clip pushed above trim the overflow keeps every
+            // row's content at its normal size, just partially hidden.
+            let row_h = full_h;
 
             let path_selected = tree.selected_path.as_ref().is_some_and(|p| p == &row.path);
             let is_selected = tree.has_focus && path_selected;

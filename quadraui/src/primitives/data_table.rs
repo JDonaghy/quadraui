@@ -1295,13 +1295,20 @@ pub(crate) mod native_surface_paint {
         // can shift the first row's top above `header_height`, and
         // without this clip its background would paint over the
         // header's bottom edge instead of appearing to scroll in from
-        // underneath it.
-        surface.surface_push_clip(Rect::new(
-            rect.x,
-            rect.y + header_height,
-            rect.width,
-            body_h,
-        ));
+        // underneath it. Gated on `sub_px > 0.0` so the `scroll_px: None`
+        // path never pushes a clip a pre-existing caller wouldn't expect
+        // — every row background/separator is already exactly
+        // `line_height` tall and `visible` already keeps the last row
+        // inside the body band, so the clip is a no-op there anyway.
+        let body_clip_active = sub_px > 0.0;
+        if body_clip_active {
+            surface.surface_push_clip(Rect::new(
+                rect.x,
+                rect.y + header_height,
+                rect.width,
+                body_h,
+            ));
+        }
 
         for row_idx in 0..visible {
             let abs_idx = scroll_offset + row_idx;
@@ -1418,7 +1425,9 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        surface.surface_pop_clip();
+        if body_clip_active {
+            surface.surface_pop_clip();
+        }
 
         // ── Scrollbars ───────────────────────────────────────────────────
         if table.show_scrollbar

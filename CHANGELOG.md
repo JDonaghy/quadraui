@@ -180,7 +180,11 @@ only a push to `main` runs this workflow.
   the sub-row remainder and clip it against the viewport, and position
   the vertical scrollbar thumb from the same pixel-precise value —
   `scroll_px: None` paints pixel-identically to the existing
-  `draw_list`/`draw_tree`/`draw_data_table`. New
+  `draw_list`/`draw_tree`/`draw_data_table`. These `*_with_state`
+  overrides also compose `state.hovered_idx`/`state.pressed_idx` and
+  `focus_ring_visible` (previously dropped by the trait default), so a
+  macOS host already passing a populated `ListPaintState`/
+  `TreePaintState` now sees those painted. New
   `mac_list_layout_with_scroll_px`/`mac_tree_layout_with_scroll_px`
   thread it through to `ListView`/`TreeView::layout_with_scroll_px`;
   `DataTable`'s layout needs no such counterpart (`DataTableLayout`
@@ -190,15 +194,38 @@ only a push to `main` runs this workflow.
   it with `None`), and `primitives::data_table::native_surface_paint`
   gains `paint_with_state`, both clipping the scrolled body to the
   region below any fixed title/header so a sub-row shift can't paint
-  over still-pinned chrome. macOS's trackpad `scrollWheel:` deltas
-  (`NSEvent::scrollingDeltaY`) are pixel-precise but arrive in real
-  points, not the row-notch units every other backend already reports
-  — `MacBackend` now overrides `Backend::wheel_delta_rows` to divide
-  by `Self::line_height` (guarding a non-positive/non-finite line
-  height) so `TreeController`'s wheel accumulator lands in the same
-  row-unit currency, and the macOS painters' `scroll_px` is fed a true
-  sub-row remainder end to end. GTK/Win32 still ignore `scroll_px`
-  (sibling issues).
+  over still-pinned chrome — the data-table body clip is gated on a
+  nonzero sub-row remainder, matching the list painter's `scroll_px`
+  gating, so the `scroll_px: None` path never pushes a clip a Win-GUI
+  caller of the unaffected `draw_data_table`/`draw_data_table_with_glyphs`
+  wouldn't expect. The tree painter also now paints a height-clipped
+  last visible row at its full, unclipped row height (relying on the
+  same viewport clip to trim the overflow) instead of the layout's
+  clipped height, so its content no longer compresses toward the
+  viewport edge as the scroll position changes — the same treatment
+  the first (negative-`y`) row already got for free.
+  macOS's trackpad `scrollWheel:` deltas (`NSEvent::scrollingDeltaY`)
+  are pixel-precise but arrive in real points, not the row-notch units
+  every other backend already reports, and a discrete (non-trackpad)
+  wheel notch reports its delta in *lines* instead of points — AppKit's
+  own convention for `hasPreciseScrollingDeltas() == false`.
+  `route_wheel_event` (`macos/events.rs`) now scales an imprecise delta
+  by the current line height before it becomes a `UiEvent::Scroll`, so
+  both device classes arrive in points. `Backend::wheel_delta_rows`
+  gains a `row_height` parameter (the caller's px↔row basis for the
+  same gesture) and a new `Backend::tree_scroll_row_height(&TreeView)`
+  method supplies it — `MacBackend` overrides both: `wheel_delta_rows`
+  divides by `row_height`, and `tree_scroll_row_height` returns the
+  tree's real painted pitch (the *chrome* font metric run through the
+  tree's row-pitch formula), not `Backend::line_height` (the *editor*
+  font metric). `TreeController::scroll_by_wheel` now takes that real
+  pitch instead of `line_height` as its own px↔row basis, so its wheel
+  clamp and the whole-row `scroll_offset` it derives for hit-testing
+  agree with what the paint path resolves `scroll_px` against — not
+  just the raw pixel delta, which happened to round-trip correctly
+  either way. GTK/Win32 still ignore `scroll_px` (sibling issues); both
+  default `tree_scroll_row_height` to `Backend::line_height`, unchanged
+  from their pre-existing behaviour.
 - `compose::HoverTooltipTracker<T>`: the delay + auto-dismiss state
   machine a hover-driven tooltip needs on top of
   `ToolbarHoverTracker`/`ListHoverTracker`/`TreeHoverTracker`'s plain

@@ -381,7 +381,20 @@ impl TreeController {
 
             UiEvent::Scroll { delta, .. } => {
                 let vr = self.viewport_rows(backend, rect);
-                self.scroll_by_wheel(backend.wheel_delta_rows(delta.y), backend.line_height(), vr);
+                // `row_height` is the backend's real painted row pitch for
+                // this tree, not `Backend::line_height()` — used as both
+                // `wheel_delta_rows`'s divisor and `scroll_by_wheel`'s
+                // pixel-per-row multiplier so the two cancel back to a
+                // real pixel delta on a backend whose native delta is
+                // already in points (macOS), while `scroll_by_wheel`'s
+                // clamp and derived `scroll_offset` land on the same
+                // basis the paint path resolves `scroll_px` against.
+                let row_height = backend.tree_scroll_row_height(&self.build_tree_view(rect));
+                self.scroll_by_wheel(
+                    backend.wheel_delta_rows(delta.y, row_height),
+                    row_height,
+                    vr,
+                );
                 TreeControllerEvent::Consumed
             }
 
@@ -908,7 +921,11 @@ impl TreeController {
     /// `row_delta` is already in row units (positive = scroll content up
     /// per [`crate::ScrollDelta`]'s convention) — see
     /// [`Backend::wheel_delta_rows`]. `row_height` converts it to the
-    /// pixel currency `scroll_px` is stored in.
+    /// pixel currency `scroll_px` is stored in — callers pass
+    /// [`Backend::tree_scroll_row_height`]'s result, the real painted row
+    /// pitch, not [`Backend::line_height`], so the clamp and the derived
+    /// [`Self::scroll_offset`] agree with what the paint path resolves
+    /// `scroll_px` against.
     fn scroll_by_wheel(&mut self, row_delta: f32, row_height: f32, viewport_rows: usize) {
         let row_height = if row_height.is_finite() && row_height > 0.0 {
             row_height

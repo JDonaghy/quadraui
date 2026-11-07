@@ -1140,7 +1140,7 @@ impl MacBackend {
     /// chrome strips use), `Style` tokens are a documented no-op (see
     /// that module's "Where each token maps on TUI"), so the raw
     /// candidate passes through unchanged.
-    fn resolved_row_height(&self, candidate_line_height: f64) -> f64 {
+    pub(crate) fn resolved_row_height(&self, candidate_line_height: f64) -> f64 {
         if candidate_line_height > 1.0 {
             candidate_line_height.max(self.current_style.row_height as f64)
         } else {
@@ -2421,18 +2421,32 @@ impl Backend for MacBackend {
 
     /// `NSEvent.scrollingDeltaY` is already in real points, not row
     /// notches like every other backend reports — divide by
-    /// [`Self::line_height`] to land in the same row-unit currency
-    /// `TreeController`/`ListView`/`DataTable` scroll controllers expect.
-    /// Guards a non-positive or non-finite line height (degenerate font
+    /// `row_height` (on `TreeController`, [`Self::tree_scroll_row_height`]'s
+    /// result, the *same* basis the caller multiplies back by) to land
+    /// in row-unit currency without losing the real-pixel round-trip.
+    /// Guards a non-positive or non-finite `row_height` (degenerate font
     /// state) by falling back to the trait default (pass delta through
     /// unchanged) rather than dividing by zero or producing `NaN`/`inf`.
-    fn wheel_delta_rows(&self, delta_y: f32) -> f32 {
-        let lh = self.line_height();
-        if lh > 0.0 && lh.is_finite() {
-            delta_y / lh
+    fn wheel_delta_rows(&self, delta_y: f32, row_height: f32) -> f32 {
+        if row_height > 0.0 && row_height.is_finite() {
+            delta_y / row_height
         } else {
             delta_y
         }
+    }
+
+    /// The tree's real painted row pitch: [`Self::resolved_row_height`]
+    /// of the chrome font metric, run through the same
+    /// [`crate::primitives::layout_metrics::tree_row_pitch`] formula
+    /// [`Self::tree_layout`]/[`Self::draw_tree_with_state`] paint rows
+    /// at — not [`Self::line_height`] (the *editor* font metric), which
+    /// disagrees with that painted pitch whenever the chrome font's
+    /// line height differs from the editor font's.
+    fn tree_scroll_row_height(&self, tree: &TreeView) -> f32 {
+        crate::primitives::layout_metrics::tree_row_pitch(
+            tree,
+            self.resolved_row_height(self.chrome_line_height),
+        ) as f32
     }
 
     /// Forwards to [`Self::set_current_line_height`] — the
@@ -6236,21 +6250,56 @@ mod tests {
     }
 
     #[test]
-    fn wheel_delta_rows_divides_points_by_line_height() {
+    fn wheel_delta_rows_divides_points_by_row_height() {
         let b = MacBackend::new();
-        assert_eq!(b.line_height(), 16.0);
-        // A 10-point trackpad notch is 0.625 rows, not 10 whole rows.
-        assert_eq!(b.wheel_delta_rows(10.0), 0.625);
-        assert_eq!(b.wheel_delta_rows(-32.0), -2.0);
+        // A 10-point trackpad notch against a 16.0 row basis is 0.625
+        // rows, not 10 whole rows.
+        assert_eq!(b.wheel_delta_rows(10.0, 16.0), 0.625);
+        assert_eq!(b.wheel_delta_rows(-32.0, 16.0), -2.0);
     }
 
     #[test]
-    fn wheel_delta_rows_falls_back_to_passthrough_on_degenerate_line_height() {
-        let mut b = MacBackend::new();
-        MacBackend::set_current_line_height(&mut b, 0.0);
-        assert_eq!(b.wheel_delta_rows(10.0), 10.0);
-        MacBackend::set_current_line_height(&mut b, -4.0);
-        assert_eq!(b.wheel_delta_rows(10.0), 10.0);
+    fn wheel_delta_rows_falls_back_to_passthrough_on_degenerate_row_height() {
+        let b = MacBackend::new();
+        assert_eq!(b.wheel_delta_rows(10.0, 0.0), 10.0);
+        assert_eq!(b.wheel_delta_rows(10.0, -4.0), 10.0);
+        assert_eq!(b.wheel_delta_rows(10.0, f32::NAN), 10.0);
+    }
+
+    #[test]
+    fn tree_scroll_row_height_is_the_real_painted_pitch_not_the_editor_line_height() {
+        let b = MacBackend::new();
+        assert_eq!(b.line_height(), 16.0);
+        let tree = TreeView {
+            id: WidgetId::new("tree"),
+            rows: vec![crate::primitives::tree::TreeRow {
+                path: vec![0],
+                indent: 0,
+                icon: None,
+                text: crate::types::StyledText::plain("a"),
+                badge: None,
+                is_expanded: None,
+                decoration: crate::Decoration::Normal,
+                edit: None,
+            }],
+            selection_mode: crate::SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: 0,
+            style: crate::TreeStyle::default(),
+            has_focus: true,
+        };
+        let row_height = b.tree_scroll_row_height(&tree);
+        // The real painted pitch is floored at `Style::row_height` and
+        // run through the tree's own 1.4x row-pitch formula, so it must
+        // not equal the raw editor `line_height()`.
+        assert_ne!(row_height, b.line_height());
+        assert_eq!(
+            row_height as f64,
+            crate::primitives::layout_metrics::tree_row_pitch(
+                &tree,
+                b.resolved_row_height(b.chrome_line_height() as f64)
+            )
+        );
     }
 
     /// The registry itself now lives in `BackendCore` — its
