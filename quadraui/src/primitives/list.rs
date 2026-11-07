@@ -1027,15 +1027,14 @@ pub(crate) mod native_surface_paint {
     /// (`scroll_px`) that wins over [`ListView::scroll_offset`] for both
     /// the rows (via `list_layout.visible_items`, already resolved
     /// against `scroll_px` by whichever of
-    /// [`ListView::layout_with_scroll_px`]/`mac_list_layout_with_scroll_px`/
-    /// `gtk_list_layout_with_scroll_px` built `list_layout`) and the
-    /// vertical scrollbar thumb (resolved here, via
-    /// [`ListView::vscrollbar_with_scroll_px`]).
+    /// [`ListView::layout_with_scroll_px`]/`mac_list_layout_with_scroll_px`
+    /// built `list_layout`) and the vertical scrollbar thumb (resolved
+    /// here, via [`ListView::vscrollbar_with_scroll_px`]).
     ///
     /// `scroll_px: None` (what [`paint`] passes) is pixel-identical to
-    /// `paint` — the items-region clip added below bounds exactly the
-    /// region items already painted into, so it changes nothing when
-    /// `scroll_px` never shifts a row above the title.
+    /// `paint` — the items-region clip that bounds a sub-row shift
+    /// against the pinned title is pushed only when `scroll_px.is_some()`,
+    /// so the `None` path never pushes it at all.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint_with_scroll_px(
         list: &ListView,
@@ -1130,21 +1129,29 @@ pub(crate) mod native_surface_paint {
         // `ListView::layout_with_scroll_px`), which can land inside the
         // title's own band. Without this clip that item's background
         // would paint over the bottom edge of a still-pinned title.
-        // `scroll_px: None` never shifts an item above
-        // `title_bounds`'s bottom, so this clip is a no-op then — same
-        // region the items already painted into.
-        let title_h = list_layout
-            .title_bounds
-            .map(|b| b.y + b.height)
-            .unwrap_or(0.0);
-        let items_region_y = item_y_offset + title_h;
-        let items_region_h = (area.height - border_inset * 2.0 - title_h).max(0.0);
-        surface.surface_push_clip(Rect::new(
-            item_x_offset,
-            items_region_y,
-            (area.width - border_inset * 2.0).max(0.0),
-            items_region_h,
-        ));
+        //
+        // Gated on `scroll_px.is_some()`: with `scroll_px: None`, no item
+        // is ever shifted above `title_bounds`'s bottom, so the clip
+        // would be a no-op for row painting — but it would still clip
+        // anything else that paints outside the items band (e.g. a
+        // focus-ring stroke on the first row of an untitled, bordered
+        // list), which the `None` path must leave pixel-identical to
+        // before this fn existed.
+        let items_clip_active = scroll_px.is_some();
+        if items_clip_active {
+            let title_h = list_layout
+                .title_bounds
+                .map(|b| b.y + b.height)
+                .unwrap_or(0.0);
+            let items_region_y = item_y_offset + title_h;
+            let items_region_h = (area.height - border_inset * 2.0 - title_h).max(0.0);
+            surface.surface_push_clip(Rect::new(
+                item_x_offset,
+                items_region_y,
+                (area.width - border_inset * 2.0).max(0.0),
+                items_region_h,
+            ));
+        }
 
         for vis_item in &list_layout.visible_items {
             let item = &list.items[vis_item.item_idx];
@@ -1291,7 +1298,9 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        surface.surface_pop_clip();
+        if items_clip_active {
+            surface.surface_pop_clip();
+        }
 
         // ── Horizontal scrollbar ──────────────────────────────────────
         // Painted after items so it overlays the bottom row's background.

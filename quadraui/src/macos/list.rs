@@ -168,15 +168,13 @@ pub unsafe fn draw_list(
         &mut surface,
         theme,
         style,
-        // `hovered_idx` / `pressed_idx`: row tinting is not wired on this
-        // backend — `MacBackend` uses the `Backend::draw_list_with_state`
-        // default, which forwards to `draw_list` and drops both indices.
-        // `None` keeps this paint pixel-identical to the contract above.
+        // `hovered_idx` / `pressed_idx`: this base painter never tints
+        // rows — that's `draw_list_with_state`'s job, which composes
+        // both indices (and the focus-visible ring below) from
+        // `ListPaintState`. `None`/`false` here keep `draw_list`
+        // pixel-identical to the contract above.
         None,
         None,
-        // Same reasoning for the focus-visible ring: this backend has
-        // no `Backend::draw_list_with_state` override to compose
-        // `focus_ring_visible` from, so it never shows here yet.
         false,
     );
 
@@ -729,6 +727,32 @@ mod tests {
             "pixel just below row 0's shifted bottom edge should show row 1's \
              background, not the still-selected row 0 a whole-row paint would \
              show there"
+        );
+
+        // Prove the other half of the claim: at that exact same absolute
+        // pixel, a `scroll_px: None` paint (today's baseline behaviour)
+        // *is* still inside row 0's selected band — the two assertions
+        // together show the sub-row shift, not some other difference,
+        // is what moved the boundary.
+        let baseline_surface = BitmapSurface::new(W, H);
+        baseline_surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut baseline_backend = MacBackend::new();
+        baseline_backend.set_current_font(font());
+        baseline_backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        baseline_backend.enter_frame_scope(baseline_surface.context_ptr(), |b| {
+            b.draw_list(rect, &list);
+        });
+        baseline_backend.end_frame();
+        let (br, bg, bb, _) = baseline_surface.pixel(probe_x, probe_y.min(H - 1));
+        assert_eq!(
+            (br, bg, bb),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "the same probe pixel on a scroll_px: None paint must still show \
+             row 0's selected background"
         );
     }
 }

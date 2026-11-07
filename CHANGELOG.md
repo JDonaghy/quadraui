@@ -146,10 +146,15 @@ only a push to `main` runs this workflow.
   it with `None`), and `primitives::data_table::native_surface_paint`
   gains `paint_with_state`, both clipping the scrolled body to the
   region below any fixed title/header so a sub-row shift can't paint
-  over still-pinned chrome. macOS's trackpad `scrollWheel:` deltas are
-  already pixel-precise (`NSEvent::scrollingDeltaY`), so no new event
-  plumbing was needed to feed them in — only the painters were
-  missing. GTK/Win32 still ignore `scroll_px` (sibling issues).
+  over still-pinned chrome. macOS's trackpad `scrollWheel:` deltas
+  (`NSEvent::scrollingDeltaY`) are pixel-precise but arrive in real
+  points, not the row-notch units every other backend already reports
+  — `MacBackend` now overrides `Backend::wheel_delta_rows` to divide
+  by `Self::line_height` (guarding a non-positive/non-finite line
+  height) so `TreeController`'s wheel accumulator lands in the same
+  row-unit currency, and the macOS painters' `scroll_px` is fed a true
+  sub-row remainder end to end. GTK/Win32 still ignore `scroll_px`
+  (sibling issues).
 - `compose::HoverTooltipTracker<T>`: the delay + auto-dismiss state
   machine a hover-driven tooltip needs on top of
   `ToolbarHoverTracker`/`ListHoverTracker`/`TreeHoverTracker`'s plain
