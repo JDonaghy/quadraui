@@ -184,12 +184,17 @@ use quadraui_binding_core::tree_scroll_state;
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
-    callback_reaction, caret_shape, click_down_up_events, color_depth_name, decode_extra_primitive,
-    dialog_severity, draw_bands, font_role, key_pressed_event, menu_for_surface, merge_overrides,
+    add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction, caret_shape,
+    clear_recent_documents, click_down_up_events, color_depth_name, decode_extra_primitive,
+    dialog_severity, draw_bands, end_power_save_block, font_role, is_default_protocol_client,
+    key_pressed_event, login_item_enabled, menu_for_surface, merge_overrides,
     message_dialog_options_from_buttons, paint_layout, panic_message, pointer_shape,
-    render_overlays, step_driver, text_display_from_lines, theme_color_value, toast_corner,
-    window_close_reaction, with_tray, with_window, BindingHost, ErasedShellDriver, EventSink,
-    HitDetail, InteractionEngine, OverrideError, RenderOutput, WindowCloseHandling,
+    remove_as_default_protocol_client, render_overlays, resolve_app_path,
+    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
+    text_display_from_lines, theme_color_value, toast_corner, update_apply_on_quit,
+    update_check_for_update, update_download_and_stage, window_close_reaction, with_tray,
+    with_window, BindingHost, ErasedShellDriver, EventSink, HitDetail, InteractionEngine,
+    OverrideError, RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling,
 };
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`)
@@ -351,6 +356,20 @@ create_exception!(
     \"editor\" -- the only two `FontRole` variants a caller can name."
 );
 
+create_exception!(
+    _quadraui,
+    UnsupportedError,
+    QuadrauiError,
+    "A platform-services call (auto-update, the power-save blocker, launch- \
+    at-login, protocol registration, drag-out, recent documents/dock menu/ \
+    jump list, ...) has no implementation on this app's current backend -- \
+    `quadraui_binding_core::services::ServiceError::Unsupported` (mirrors \
+    `QUI_ERR_UNSUPPORTED`). Raised instead of silently no-opping or \
+    panicking, so a caller can tell \"this backend doesn't do that\" apart \
+    from a genuine failure (`InternalError`) or a bad argument \
+    (`InvalidDescriptorError`)."
+);
+
 /// Slot id of the app's `Button` descriptor.
 const SLOT_BUTTON: i64 = quadraui_binding_core::SLOT_BUTTON;
 /// Slot id of the app's `TextDisplay` descriptor.
@@ -377,13 +396,24 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 /// `quadraui`/`quadraui_binding_core` call, so applying one is a direct call
 /// with no further decoding or validation left to do.
 ///
-/// `Theme`'s overrides are the one exception: unlike `QuiApp::set_theme`,
+/// `Theme`'s overrides are one exception: unlike `QuiApp::set_theme`,
 /// [`QuiAppActions::set_theme`] has no live backend to merge onto at queue
 /// time (that's the whole problem this type exists to solve), so each
 /// override is decoded and validated against [`Theme::default`]'s field set
 /// only — [`flush_deferred_actions`] re-merges the stored `(field, value)`
 /// pairs onto the real live backend's current theme right before applying
 /// it.
+///
+/// The ten platform-services variants below (`ApplyUpdateOnQuit` through
+/// `SetJumpList`) are a second exception, for the same underlying reason:
+/// every one of them is applied via a `quadraui_binding_core::services`
+/// function that itself takes the `&dyn PlatformServices` this type has no
+/// access to until [`flush_deferred_actions`] runs. Rather than decode (or
+/// call) twice, each stores its plain/wire argument unchanged and
+/// [`flush_deferred_actions`] calls the exact same core function
+/// `QuiApp`'s own matching method calls — so, like `Theme`, validation
+/// happens at flush time, surfaced via `pending_error` the same way a
+/// failing `OpenPath`/`MoveToTrash` already is.
 enum DeferredAction {
     MessageDialog(MessageDialogOptions),
     ContextMenu(Vec<ContextMenuItem>, Point),
@@ -402,6 +432,23 @@ enum DeferredAction {
     TrayMenu(Vec<ContextMenuItem>),
     Cursor(PointerShape),
     Theme(Vec<(String, serde_json::Value)>),
+    ApplyUpdateOnQuit(u64),
+    EndPowerSaveBlock(u64),
+    SetLoginItem {
+        enabled: bool,
+        open_hidden: bool,
+        args: Vec<String>,
+    },
+    SetAsDefaultProtocolClient(String),
+    RemoveAsDefaultProtocolClient(String),
+    BeginDragOut {
+        files: Vec<String>,
+        text: Option<String>,
+    },
+    AddRecentDocument(PathBuf),
+    ClearRecentDocuments,
+    SetDockMenu(serde_json::Value),
+    SetJumpList(serde_json::Value),
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
@@ -596,6 +643,35 @@ fn parse_pointer_shape(what: &str, shape: &str, edge: Option<&str>) -> PyResult<
 /// for `PlatformServices`' own `ServiceResult`-returning methods.
 fn service_result(what: &str, result: ServiceResult<()>) -> PyResult<()> {
     result.map_err(|err| InternalError::new_err(format!("{what}: {err:?}")))
+}
+
+/// Maps a [`quadraui_binding_core::services`] call's [`ServiceError`] to
+/// this binding's own exception taxonomy, prefixed with `what` -- the one
+/// place every `quadraui-py` platform-services method (update, power-save
+/// blocker, launch-at-login, protocol registration, drag-out, recent
+/// documents/dock menu/jump list, `app_path`, `install_crash_handler`)
+/// routes its `Err` through, so a new method added there never needs its
+/// own ad hoc mapping. [`ServiceError::Unsupported`] becomes
+/// [`UnsupportedError`] (this backend has no implementation at all --
+/// distinct from a genuine failure); [`ServiceError::Failure`] becomes
+/// [`InternalError`] (the backend tried and it broke);
+/// [`ServiceError::InvalidArgument`] becomes [`InvalidDescriptorError`] (a
+/// wire argument -- an enum-name string, a descriptor dict -- never even
+/// reached a service call).
+fn service_error_to_py(what: &str, err: ServiceError) -> PyErr {
+    match err {
+        ServiceError::Unsupported => {
+            UnsupportedError::new_err(format!("{what}: unsupported on this backend"))
+        }
+        ServiceError::Failure(context) => InternalError::new_err(format!("{what}: {context}")),
+        ServiceError::InvalidArgument(message) => {
+            InvalidDescriptorError::new_err(format!("{what}: {message}"))
+        }
+        // `ServiceError` is `#[non_exhaustive]`: a future core variant this
+        // leaf doesn't know about yet still raises a typed exception
+        // rather than failing to compile.
+        other => InternalError::new_err(format!("{what}: {other}")),
+    }
 }
 
 /// Builds a [`ContextMenu`] for [`quadraui::backend::TrayService::set_menu`], which takes a
@@ -1843,6 +1919,116 @@ impl QuiAppActions {
             .push_back(DeferredAction::Theme(decoded));
         Ok(())
     }
+
+    /// Queues a [`DeferredAction::ApplyUpdateOnQuit`] — same argument as
+    /// `QuiApp::apply_on_quit`.
+    fn apply_on_quit(&self, handle: u64) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ApplyUpdateOnQuit(handle));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::EndPowerSaveBlock`] — same argument as
+    /// `QuiApp::end_power_save_block`.
+    fn end_power_save_block(&self, handle: u64) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::EndPowerSaveBlock(handle));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetLoginItem`] — same arguments as
+    /// `QuiApp::set_login_item`.
+    #[pyo3(signature = (enabled, open_hidden=false, args=Vec::new()))]
+    fn set_login_item(&self, enabled: bool, open_hidden: bool, args: Vec<String>) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetLoginItem {
+                enabled,
+                open_hidden,
+                args,
+            });
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetAsDefaultProtocolClient`] — same
+    /// argument as `QuiApp::set_as_default_protocol_client`.
+    fn set_as_default_protocol_client(&self, scheme: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetAsDefaultProtocolClient(
+                scheme.to_string(),
+            ));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::RemoveAsDefaultProtocolClient`] — same
+    /// argument as `QuiApp::remove_as_default_protocol_client`.
+    fn remove_as_default_protocol_client(&self, scheme: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::RemoveAsDefaultProtocolClient(
+                scheme.to_string(),
+            ));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::BeginDragOut`] — same arguments as
+    /// `QuiApp::begin_drag_out`.
+    #[pyo3(signature = (files=Vec::new(), text=None))]
+    fn begin_drag_out(&self, files: Vec<String>, text: Option<String>) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::BeginDragOut { files, text });
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::AddRecentDocument`] — same argument as
+    /// `QuiApp::add_recent_document`.
+    fn add_recent_document(&self, path: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::AddRecentDocument(PathBuf::from(path)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::ClearRecentDocuments`] — no arguments,
+    /// same as `QuiApp::clear_recent_documents`.
+    fn clear_recent_documents(&self) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ClearRecentDocuments);
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetDockMenu`] — same argument as
+    /// `QuiApp::set_dock_menu`, converted to JSON here (the only work this
+    /// method does before queueing); the item list itself is decoded by
+    /// [`quadraui_binding_core::set_dock_menu`] when
+    /// [`flush_deferred_actions`] applies it, same as `QuiApp::set_dock_menu`.
+    fn set_dock_menu(&self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let items = pyany_to_json(items).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_dock_menu: invalid items: {err}"))
+        })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetDockMenu(items));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetJumpList`] — same argument as
+    /// `QuiApp::set_jump_list`, the same JSON-conversion-only shape as
+    /// [`Self::set_dock_menu`].
+    fn set_jump_list(&self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let items = pyany_to_json(items).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_jump_list: invalid items: {err}"))
+        })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetJumpList(items));
+        Ok(())
+    }
 }
 
 /// Applies every action queued on `app_logic.deferred_actions` directly
@@ -1987,6 +2173,90 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
                 let theme: Theme = serde_json::from_value(value)
                     .expect("fields were already validated by QuiAppActions::set_theme");
                 backend.set_theme(theme);
+            }
+            DeferredAction::ApplyUpdateOnQuit(handle) => {
+                if let Err(err) = update_apply_on_quit(backend.services(), handle) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("apply_on_quit", err),
+                    );
+                }
+            }
+            DeferredAction::EndPowerSaveBlock(handle) => {
+                if let Err(err) = end_power_save_block(backend.services(), handle) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("end_power_save_block", err),
+                    );
+                }
+            }
+            DeferredAction::SetLoginItem {
+                enabled,
+                open_hidden,
+                args,
+            } => {
+                if let Err(err) = set_login_item(backend.services(), enabled, open_hidden, args) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("set_login_item", err),
+                    );
+                }
+            }
+            DeferredAction::SetAsDefaultProtocolClient(scheme) => {
+                if let Err(err) = set_as_default_protocol_client(backend.services(), &scheme) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("set_as_default_protocol_client", err),
+                    );
+                }
+            }
+            DeferredAction::RemoveAsDefaultProtocolClient(scheme) => {
+                if let Err(err) = remove_as_default_protocol_client(backend.services(), &scheme) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("remove_as_default_protocol_client", err),
+                    );
+                }
+            }
+            DeferredAction::BeginDragOut { files, text } => {
+                if let Err(err) = begin_drag_out(backend.services(), files, text) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("begin_drag_out", err),
+                    );
+                }
+            }
+            DeferredAction::AddRecentDocument(path) => {
+                if let Err(err) = add_recent_document(backend.services(), &path.to_string_lossy()) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("add_recent_document", err),
+                    );
+                }
+            }
+            DeferredAction::ClearRecentDocuments => {
+                if let Err(err) = clear_recent_documents(backend.services()) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("clear_recent_documents", err),
+                    );
+                }
+            }
+            DeferredAction::SetDockMenu(items) => {
+                if let Err(err) = set_dock_menu(backend.services(), items) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("set_dock_menu", err),
+                    );
+                }
+            }
+            DeferredAction::SetJumpList(items) => {
+                if let Err(err) = set_jump_list(backend.services(), items) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("set_jump_list", err),
+                    );
+                }
             }
         }
     }
@@ -4473,6 +4743,227 @@ impl QuiApp {
     fn platform_name(&mut self) -> PyResult<&'static str> {
         self.guarded(|app| Ok(app.driver.backend().services().platform_name()))
     }
+
+    // ─── Platform services: update, power-save, login item, protocol,
+    // crash reporter, drag-out, recent docs/dock menu/jump list ──────────
+    //
+    // Every method below is argument conversion + one
+    // `quadraui_binding_core::services` call + `service_error_to_py` --
+    // see that module's own doc for why the actual service-building logic
+    // (parsing `kind` strings, collapsing `BackendError`, minting an opaque
+    // handle) lives there rather than here. Every one of these raises
+    // `UnsupportedError` on the headless `TuiBackend`, which implements
+    // none of them -- see `quadraui::tui::services`'s module doc for which
+    // `PlatformServices` methods it does implement. `apply_on_quit`,
+    // `end_power_save_block`, `set_login_item`,
+    // `set_as_default_protocol_client`, `remove_as_default_protocol_client`,
+    // `begin_drag_out`, `add_recent_document`, `clear_recent_documents`,
+    // `set_dock_menu`, and `set_jump_list` have no return value a caller
+    // needs synchronously, so each has a [`QuiAppActions`] mirror (via
+    // [`Self::actions`]) for use from inside a registered handler, the same
+    // handler restriction `show_message_dialog`'s own doc describes.
+    // `check_for_update`, `download_and_stage`, `begin_power_save_block`,
+    // `login_item_enabled`, and `is_default_protocol_client` each return a
+    // value a caller needs right away, so they have no `QuiAppActions`
+    // mirror -- same reason `QuiAppActions::set_theme`'s doc gives for why
+    // it can't just forward to a live backend at queue time.
+
+    /// Queries `feed_url` for a newer version, as a `{"version": str,
+    /// "notes": str, "url": str, "signature": str}` dict (or `None` when
+    /// nothing newer is published) --
+    /// [`quadraui_binding_core::update_check_for_update`].
+    fn check_for_update(&mut self, py: Python<'_>, feed_url: &str) -> PyResult<Py<PyAny>> {
+        self.guarded(|app| {
+            let info = update_check_for_update(app.driver.backend().services(), feed_url)
+                .map_err(|err| service_error_to_py("check_for_update", err))?;
+            pythonize::pythonize(py, &info)
+                .map(|v| v.unbind())
+                .map_err(|err| InternalError::new_err(format!("check_for_update: {err}")))
+        })
+    }
+
+    /// Downloads and stages `info` (the dict [`Self::check_for_update`]
+    /// returned), returning an opaque handle for a later
+    /// [`Self::apply_on_quit`] call -- [`quadraui_binding_core::update_download_and_stage`].
+    fn download_and_stage(&mut self, info: &Bound<'_, PyDict>) -> PyResult<u64> {
+        let info: UpdateInfoWire = pythonize::depythonize(info.as_any()).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("download_and_stage: invalid info: {err}"))
+        })?;
+        self.guarded(|app| {
+            update_download_and_stage(app.driver.backend().services(), info)
+                .map_err(|err| service_error_to_py("download_and_stage", err))
+        })
+    }
+
+    /// Installs the update staged under `handle` --
+    /// [`quadraui_binding_core::update_apply_on_quit`]. `handle` is
+    /// consumed: a second call with the same value raises
+    /// `InvalidDescriptorError`.
+    ///
+    /// Call [`QuiAppActions::apply_on_quit`] (via [`Self::actions`]) from a
+    /// handler instead.
+    fn apply_on_quit(&mut self, handle: u64) -> PyResult<()> {
+        self.guarded(|app| {
+            update_apply_on_quit(app.driver.backend().services(), handle)
+                .map_err(|err| service_error_to_py("apply_on_quit", err))
+        })
+    }
+
+    /// Starts a sleep/suspend inhibitor of the kind named by `kind`
+    /// (`"prevent_display_sleep"` or `"prevent_app_suspension"`), returning
+    /// an opaque handle for a later [`Self::end_power_save_block`] call --
+    /// [`quadraui_binding_core::begin_power_save_block`].
+    fn begin_power_save_block(&mut self, kind: &str) -> PyResult<u64> {
+        self.guarded(|app| {
+            begin_power_save_block(app.driver.backend().services(), kind)
+                .map_err(|err| service_error_to_py("begin_power_save_block", err))
+        })
+    }
+
+    /// Ends the sleep/suspend inhibitor started under `handle` --
+    /// [`quadraui_binding_core::end_power_save_block`]. `handle` is
+    /// consumed, the same one-shot story [`Self::apply_on_quit`]'s doc
+    /// describes.
+    ///
+    /// Call [`QuiAppActions::end_power_save_block`] (via [`Self::actions`])
+    /// from a handler instead.
+    fn end_power_save_block(&mut self, handle: u64) -> PyResult<()> {
+        self.guarded(|app| {
+            end_power_save_block(app.driver.backend().services(), handle)
+                .map_err(|err| service_error_to_py("end_power_save_block", err))
+        })
+    }
+
+    /// Registers (`enabled=True`) or unregisters (`enabled=False`) this app
+    /// to launch at login -- [`quadraui_binding_core::set_login_item`].
+    /// `open_hidden`/`args` are ignored when `enabled` is `False`.
+    ///
+    /// Call [`QuiAppActions::set_login_item`] (via [`Self::actions`]) from
+    /// a handler instead.
+    #[pyo3(signature = (enabled, open_hidden=false, args=Vec::new()))]
+    fn set_login_item(
+        &mut self,
+        enabled: bool,
+        open_hidden: bool,
+        args: Vec<String>,
+    ) -> PyResult<()> {
+        self.guarded(|app| {
+            set_login_item(app.driver.backend().services(), enabled, open_hidden, args)
+                .map_err(|err| service_error_to_py("set_login_item", err))
+        })
+    }
+
+    /// Whether this app is currently registered to launch at login --
+    /// [`quadraui_binding_core::login_item_enabled`].
+    fn login_item_enabled(&mut self) -> PyResult<bool> {
+        self.guarded(|app| {
+            login_item_enabled(app.driver.backend().services())
+                .map_err(|err| service_error_to_py("login_item_enabled", err))
+        })
+    }
+
+    /// Registers this app as the OS-level default handler for `scheme` --
+    /// [`quadraui_binding_core::set_as_default_protocol_client`].
+    ///
+    /// Call [`QuiAppActions::set_as_default_protocol_client`] (via
+    /// [`Self::actions`]) from a handler instead.
+    fn set_as_default_protocol_client(&mut self, scheme: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            set_as_default_protocol_client(app.driver.backend().services(), scheme)
+                .map_err(|err| service_error_to_py("set_as_default_protocol_client", err))
+        })
+    }
+
+    /// Whether this app is currently the OS-level default handler for
+    /// `scheme` -- [`quadraui_binding_core::is_default_protocol_client`].
+    fn is_default_protocol_client(&mut self, scheme: &str) -> PyResult<bool> {
+        self.guarded(|app| {
+            is_default_protocol_client(app.driver.backend().services(), scheme)
+                .map_err(|err| service_error_to_py("is_default_protocol_client", err))
+        })
+    }
+
+    /// Unregisters this app as the OS-level default handler for `scheme` --
+    /// [`quadraui_binding_core::remove_as_default_protocol_client`].
+    ///
+    /// Call [`QuiAppActions::remove_as_default_protocol_client`] (via
+    /// [`Self::actions`]) from a handler instead.
+    fn remove_as_default_protocol_client(&mut self, scheme: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            remove_as_default_protocol_client(app.driver.backend().services(), scheme)
+                .map_err(|err| service_error_to_py("remove_as_default_protocol_client", err))
+        })
+    }
+
+    /// Starts an OS-level drag of `files`/`text` out of this app's window
+    /// -- [`quadraui_binding_core::begin_drag_out`]. At least one of
+    /// `files`/`text` must be given.
+    ///
+    /// Call [`QuiAppActions::begin_drag_out`] (via [`Self::actions`]) from
+    /// a handler instead.
+    #[pyo3(signature = (files=Vec::new(), text=None))]
+    fn begin_drag_out(&mut self, files: Vec<String>, text: Option<String>) -> PyResult<()> {
+        self.guarded(|app| {
+            begin_drag_out(app.driver.backend().services(), files, text)
+                .map_err(|err| service_error_to_py("begin_drag_out", err))
+        })
+    }
+
+    /// Adds `path` to the OS "recent documents" list --
+    /// [`quadraui_binding_core::add_recent_document`].
+    ///
+    /// Call [`QuiAppActions::add_recent_document`] (via [`Self::actions`])
+    /// from a handler instead.
+    fn add_recent_document(&mut self, path: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            add_recent_document(app.driver.backend().services(), path)
+                .map_err(|err| service_error_to_py("add_recent_document", err))
+        })
+    }
+
+    /// Clears the OS "recent documents" list --
+    /// [`quadraui_binding_core::clear_recent_documents`].
+    ///
+    /// Call [`QuiAppActions::clear_recent_documents`] (via
+    /// [`Self::actions`]) from a handler instead.
+    fn clear_recent_documents(&mut self) -> PyResult<()> {
+        self.guarded(|app| {
+            clear_recent_documents(app.driver.backend().services())
+                .map_err(|err| service_error_to_py("clear_recent_documents", err))
+        })
+    }
+
+    /// Attaches (or replaces) this app's Dock icon menu from `items` (a
+    /// list of context-menu-item dicts, the same shape `set_tray_menu`
+    /// takes) -- [`quadraui_binding_core::set_dock_menu`].
+    ///
+    /// Call [`QuiAppActions::set_dock_menu`] (via [`Self::actions`]) from a
+    /// handler instead.
+    fn set_dock_menu(&mut self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let items = pyany_to_json(items).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_dock_menu: invalid items: {err}"))
+        })?;
+        self.guarded(|app| {
+            set_dock_menu(app.driver.backend().services(), items)
+                .map_err(|err| service_error_to_py("set_dock_menu", err))
+        })
+    }
+
+    /// Sets this app's Windows taskbar jump list from `items` (a list of
+    /// `{"title": str, "program": str, "args": [str, ...], "description":
+    /// str}` dicts) -- [`quadraui_binding_core::set_jump_list`].
+    ///
+    /// Call [`QuiAppActions::set_jump_list`] (via [`Self::actions`]) from a
+    /// handler instead.
+    fn set_jump_list(&mut self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let items = pyany_to_json(items).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_jump_list: invalid items: {err}"))
+        })?;
+        self.guarded(|app| {
+            set_jump_list(app.driver.backend().services(), items)
+                .map_err(|err| service_error_to_py("set_jump_list", err))
+        })
+    }
 }
 
 /// Converts an arbitrary Python value into a [`serde_json::Value`] via
@@ -4646,6 +5137,46 @@ impl QuiApp {
     }
 }
 
+/// The standard, per-app filesystem location named by `kind` (one of
+/// `"user_data"`, `"app_config"`, `"app_cache"`, `"logs"`, `"temp"`,
+/// `"downloads"`, `"documents"`, `"home"`), as a path string --
+/// [`quadraui_binding_core::resolve_app_path`]. A module-level function,
+/// like that one: no live [`QuiApp`] is needed. Every app-scoped kind
+/// (everything but `"temp"`/`"downloads"`/`"documents"`/`"home"`) is
+/// resolved relative to whatever identifier
+/// [`set_app_identifier`] last set, and raises `UnsupportedError` until one
+/// has been.
+#[pyfunction]
+fn app_path(kind: &str) -> PyResult<String> {
+    resolve_app_path(kind)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|err| service_error_to_py("app_path", err))
+}
+
+/// Sets the app identifier scoping [`app_path`]'s app-scoped kinds --
+/// [`quadraui_binding_core::set_app_identifier`]. A module-level function:
+/// the identifier is process-global, not per-`QuiApp`.
+#[pyfunction]
+fn set_app_identifier(identifier: &str) {
+    quadraui_binding_core::set_app_identifier(identifier);
+}
+
+/// Installs a crash handler that writes a [`quadraui::crash::CrashRecord`]
+/// on an uncaught panic, decoding `cfg` (a `{"app_version": str,
+/// "upload_endpoint": str, "metadata": {str: str}, "log_dir": str}` dict,
+/// every key optional) into a [`quadraui::crash::CrashReporterConfig`] --
+/// [`quadraui_binding_core::install_crash_handler`]. A module-level
+/// function, like that one: no live [`QuiApp`] is needed, since this
+/// installs a process-global Rust panic hook.
+#[pyfunction]
+fn install_crash_handler(cfg: &Bound<'_, PyAny>) -> PyResult<()> {
+    let cfg = pyany_to_json(cfg).map_err(|err| {
+        InvalidDescriptorError::new_err(format!("install_crash_handler: invalid cfg: {err}"))
+    })?;
+    quadraui_binding_core::install_crash_handler(cfg)
+        .map_err(|err| service_error_to_py("install_crash_handler", err))
+}
+
 /// The compiled extension module (`_quadraui`) that `python/quadraui/__init__.py`
 /// imports names from.
 #[pymodule]
@@ -4654,6 +5185,9 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QuiAppWaker>()?;
     m.add_class::<QuiAppActions>()?;
     m.add_class::<QuiShellApp>()?;
+    m.add_function(wrap_pyfunction!(app_path, m)?)?;
+    m.add_function(wrap_pyfunction!(set_app_identifier, m)?)?;
+    m.add_function(wrap_pyfunction!(install_crash_handler, m)?)?;
     let py = m.py();
     m.add("QuadrauiError", py.get_type::<QuadrauiError>())?;
     m.add(
@@ -4684,6 +5218,7 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "InvalidFontRoleError",
         py.get_type::<InvalidFontRoleError>(),
     )?;
+    m.add("UnsupportedError", py.get_type::<UnsupportedError>())?;
     // Which native *feature* (if any) this build was compiled with — `gtk`
     // wins over `macos`, and both win over `win`, when more than one is
     // enabled (see `run_native`'s doc). This is a build configuration

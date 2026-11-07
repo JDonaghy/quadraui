@@ -61,6 +61,15 @@ only a push to `main` runs this workflow.
 
 ## [0.9.0] - 2026-11-07
 ### Added
+- `quadraui-py` exposes every `quadraui-binding-core::services` seam as a
+  thin `QuiApp` method (auto-update, the power-save blocker, launch-at-
+  login, protocol registration, drag-out, recent docs/dock menu/jump
+  list), a new `UnsupportedError` exception for a `ServiceError::Unsupported`
+  on a backend with no implementation, a `QuiAppActions` mirror for each
+  void-returning one of those methods, and three module-level, app-less
+  functions (`quadraui.app_path`, `quadraui.set_app_identifier`,
+  `quadraui.install_crash_handler`) — see `quadraui-py/CHANGELOG.md` for
+  the full method list.
 - `quadraui-binding-core::services` — a language-neutral wrapper over every
   `PlatformServices` seam named in the bindings-parity epic's "missing in
   both" table (auto-update, the power-save blocker, app standard paths,
