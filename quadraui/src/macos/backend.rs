@@ -2419,6 +2419,22 @@ impl Backend for MacBackend {
         self.current_char_width as f32
     }
 
+    /// `NSEvent.scrollingDeltaY` is already in real points, not row
+    /// notches like every other backend reports — divide by
+    /// [`Self::line_height`] to land in the same row-unit currency
+    /// `TreeController`/`ListView`/`DataTable` scroll controllers expect.
+    /// Guards a non-positive or non-finite line height (degenerate font
+    /// state) by falling back to the trait default (pass delta through
+    /// unchanged) rather than dividing by zero or producing `NaN`/`inf`.
+    fn wheel_delta_rows(&self, delta_y: f32) -> f32 {
+        let lh = self.line_height();
+        if lh > 0.0 && lh.is_finite() {
+            delta_y / lh
+        } else {
+            delta_y
+        }
+    }
+
     /// Forwards to [`Self::set_current_line_height`] — the
     /// `Backend`-trait-object-reachable twin of that inherent method, the
     /// macOS counterpart of `GtkBackend`'s / `WinBackend`'s overrides of
@@ -6217,6 +6233,25 @@ mod tests {
         let b = MacBackend::new();
         assert_eq!(b.line_height(), 16.0);
         assert_eq!(b.char_width(), 8.0);
+    }
+
+    #[test]
+    fn wheel_delta_rows_divides_points_by_line_height() {
+        let b = MacBackend::new();
+        assert_eq!(b.line_height(), 16.0);
+        // A 10-point trackpad notch lands as 0.625 rows, not 10 whole
+        // rows — the bug this override fixes.
+        assert_eq!(b.wheel_delta_rows(10.0), 0.625);
+        assert_eq!(b.wheel_delta_rows(-32.0), -2.0);
+    }
+
+    #[test]
+    fn wheel_delta_rows_falls_back_to_passthrough_on_degenerate_line_height() {
+        let mut b = MacBackend::new();
+        MacBackend::set_current_line_height(&mut b, 0.0);
+        assert_eq!(b.wheel_delta_rows(10.0), 10.0);
+        MacBackend::set_current_line_height(&mut b, -4.0);
+        assert_eq!(b.wheel_delta_rows(10.0), 10.0);
     }
 
     /// The registry itself now lives in `BackendCore` — its

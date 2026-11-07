@@ -1437,7 +1437,17 @@ pub(crate) mod native_surface_paint {
             // pixel-precise position the body rows above were painted
             // at, matching `TreeView`/`ListView`'s
             // `vscrollbar_with_scroll_px` convention.
-            let scroll_rows = scroll_offset as f32 + sub_px / line_height;
+            //
+            // Guarded against `line_height <= 0.0`: `sub_px` is always
+            // `0.0` on the `scroll_px: None` path, but `0.0 / 0.0` is
+            // still `NaN`, which would corrupt `Scrollbar::vertical`'s
+            // thumb math even though that path must stay provably
+            // unchanged from the pre-existing `scroll_offset as f32`.
+            let scroll_rows = if line_height > 0.0 {
+                scroll_offset as f32 + sub_px / line_height
+            } else {
+                scroll_offset as f32
+            };
             let sb = Scrollbar::vertical(
                 table.id,
                 track,

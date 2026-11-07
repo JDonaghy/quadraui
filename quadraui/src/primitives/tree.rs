@@ -677,8 +677,7 @@ pub(crate) mod native_surface_paint {
     /// [`TreeView::vscrollbar_with_scroll_px`]) — row positions come from
     /// `tree_layout.visible_rows`, already resolved against `scroll_px`
     /// by whichever of [`TreeView::layout_with_scroll_px`]/
-    /// `mac_tree_layout_with_scroll_px`/`gtk_tree_layout_with_scroll_px`
-    /// built `tree_layout`.
+    /// `mac_tree_layout_with_scroll_px` built `tree_layout`.
     ///
     /// `scroll_px: None` (what [`paint`] passes) resolves the thumb
     /// identically to `paint`.
@@ -718,17 +717,25 @@ pub(crate) mod native_surface_paint {
 
             // Skip rows the layout clipped to a partial height — painting
             // them produces a compressed background band at the section
-            // boundary (matches GTK/macOS's pre-migration behaviour; Win's
-            // pre-migration `draw_tree` did not skip these, an oversight
-            // fixed by this unification rather than a deliberate
-            // per-backend choice — nothing documented it as one).
+            // boundary (matches GTK/macOS's whole-row behaviour; Win's
+            // `draw_tree` did not skip these, an oversight fixed by this
+            // unification rather than a deliberate per-backend choice —
+            // nothing documented it as one).
+            //
+            // When a sub-row `scroll_px` is in effect, `layout_with_scroll_px`
+            // always height-clips the last visible row by construction (it
+            // is the row the sub-row shift pushes partway below the
+            // viewport), so skipping it here would leave a bare
+            // `tab_bar_bg` band at the bottom whose height breathes as the
+            // scroll position changes. Paint it instead; its clipped
+            // bounds already stop at the viewport edge.
             let is_header = matches!(row.decoration, Decoration::Header);
             let full_h = if is_header {
                 header_height
             } else {
                 item_height
             };
-            if row_h < full_h - 0.5 {
+            if scroll_px.is_none() && row_h < full_h - 0.5 {
                 continue;
             }
 

@@ -591,6 +591,22 @@ mod tests {
              background, not the still-selected row 0 a whole-row paint would \
              show there"
         );
+
+        // Prove the other half of the claim: at that exact same absolute
+        // pixel, a `scroll_px: None` paint (today's baseline behaviour)
+        // *is* still inside row 0's selected band.
+        let (baseline_surface, _baseline_layout) = paint_via_backend_themed(&table, None, theme);
+        let (br, bg, bb, _) = baseline_surface.pixel(probe_x.min(W - 1), probe_y.min(H - 1));
+        assert_eq!(
+            (br, bg, bb),
+            (
+                theme.selection_bg.r,
+                theme.selection_bg.g,
+                theme.selection_bg.b
+            ),
+            "the same probe pixel on a scroll_px: None paint must still show \
+             row 0's selected background"
+        );
     }
 }
 
