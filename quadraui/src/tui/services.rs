@@ -283,20 +283,24 @@
 //!
 //! ## Login items
 //!
-//! `login_item_enabled` overrides the trait default with an honest
-//! no-op that always reports `false`, since a terminal has no OS
-//! login-item registration of its own to query and `set_login_item`
-//! itself stays `Unsupported` on this backend — quadraui itself can
-//! never have created a registration here. This `false` only reflects
-//! that: it says nothing about a registration a host or packaging step
-//! may have created out of band (e.g. a cron/systemd-user entry that
-//! happens to launch this binary), so a settings screen built on this
-//! query can display "off" for an app that does, in fact, start at
-//! login by some other mechanism. `set_login_item` stays at the trait's
-//! `Unsupported` default: there is no honest "success" value for a
-//! mutation with nothing in this backend to mutate. See
-//! [`TuiPlatformServices::login_item_enabled`]'s own doc and
-//! `login_item`'s module doc.
+//! `login_item_enabled` and `set_login_item` both keep the trait's
+//! `Unsupported` default on TUI, matching every other in-tree backend
+//! that doesn't override either: a terminal has no OS login-item
+//! registration of its own to query or mutate, so there is no honest
+//! non-error answer for either — a faked-up `Ok(false)` would read as
+//! "this app is not registered to start at login", which this backend
+//! has no way to actually know (e.g. a cron/systemd-user entry could
+//! still launch it out of band). See `login_item`'s module doc.
+//!
+//! ## Power-save blocking
+//!
+//! `begin_power_save_block`/`end_power_save_block` both keep the
+//! trait's `Unsupported` default on TUI, matching every other in-tree
+//! backend: a terminal has no sleep-inhibitor API to call into, and a
+//! blocker id minted without ever asking the OS to stay awake is not a
+//! truthful `Ok` — a caller needs to be able to tell "this backend
+//! can't hold the machine awake" from "it did". See `power`'s module
+//! doc.
 //!
 //! ## Recent documents / Dock menu
 //!
@@ -310,7 +314,7 @@
 //! all four.
 
 use std::cell::RefCell;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -324,7 +328,6 @@ use crate::compose::{
 };
 use crate::diagnostics;
 use crate::event::{Point, Rect, UiEvent};
-use crate::power::{BlockerId, PowerSaveKind};
 use crate::tui::backend::TuiBackend;
 use crate::update::{StagedUpdate, UpdateInfo, UpdateService};
 use crate::{Key, Modifiers, NamedKey};
@@ -1593,11 +1596,6 @@ pub struct TuiPlatformServices {
     /// empty queue — means "test mode, never touch the real terminal".
     /// Set via [`Self::queue_dialog_events`].
     scripted_dialog_events: RefCell<Option<VecDeque<UiEvent>>>,
-    /// Ids minted by [`Self::begin_power_save_block`] and not yet passed
-    /// to [`Self::end_power_save_block`] — see `power`'s module doc for
-    /// why TUI tracks this honestly instead of leaving the pair
-    /// `Unsupported`.
-    power_save_blocks: RefCell<HashSet<BlockerId>>,
 }
 
 impl TuiPlatformServices {
@@ -1606,7 +1604,6 @@ impl TuiPlatformServices {
             clipboard: TuiClipboard::new(),
             dialog_surface: RefCell::new(None),
             scripted_dialog_events: RefCell::new(None),
-            power_save_blocks: RefCell::new(HashSet::new()),
         }
     }
 
@@ -2082,44 +2079,16 @@ impl PlatformServices for TuiPlatformServices {
         &SERVICE
     }
 
-    /// An honest no-op blocker, not `Unsupported`: a terminal has no
-    /// sleep-inhibitor API to call into, but it can still mint and track
-    /// a real [`BlockerId`] so a TUI app's begin/end lifecycle behaves
-    /// consistently rather than failing on the very first call. See
-    /// `power`'s module doc.
-    fn begin_power_save_block(&self, kind: PowerSaveKind) -> ServiceResult<BlockerId> {
-        let _ = kind;
-        let id = BlockerId::next();
-        self.power_save_blocks.borrow_mut().insert(id);
-        Ok(id)
-    }
-
-    /// Ends a blocker previously started by [`Self::begin_power_save_block`].
-    /// Errors on an unknown or already-ended id rather than silently
-    /// succeeding — the bookkeeping is the whole point of the no-op
-    /// degrade, so it stays honest about what it actually tracked.
-    fn end_power_save_block(&self, id: BlockerId) -> ServiceResult<()> {
-        if self.power_save_blocks.borrow_mut().remove(&id) {
-            Ok(())
-        } else {
-            Err(BackendError::PlatformFailure {
-                context: "end_power_save_block: unknown or already-ended blocker id".to_string(),
-            })
-        }
-    }
-
-    /// An honest no-op, not `Unsupported`: this backend itself never
-    /// creates a login-item registration (`set_login_item` stays
-    /// `Unsupported` on TUI), so `false` is always truthful about *this
-    /// backend's own* state — see this module's "Login items" doc
-    /// section for the caveat that a host or packaging step can still
-    /// have registered the binary out of band, in which case this call
-    /// reports `false` for an app that does start at login some other
-    /// way. `login_item`'s module doc has why `set_login_item` keeps the
-    /// trait's `Unsupported` default while this query does not.
-    fn login_item_enabled(&self) -> ServiceResult<bool> {
-        Ok(false)
-    }
+    // `begin_power_save_block`/`end_power_save_block` and
+    // `login_item_enabled` all fall through to the trait's own
+    // `Unsupported` default — a terminal has no sleep-inhibitor API and
+    // no OS login-item registration to query, so there is no honest
+    // non-error answer to give for any of the three. See this module's
+    // "Login items" doc section and `power`'s module doc. Left
+    // unoverridden (rather than restated here) so that default is the
+    // one place this behavior lives, the same posture
+    // `add_recent_document`/`clear_recent_documents`/`set_dock_menu`
+    // already have below.
 
     // `add_recent_document`, `clear_recent_documents`, and `set_dock_menu`
     // all fall through to the trait's own `Unsupported` default — see
@@ -2201,40 +2170,25 @@ mod update_service_tests {
 #[cfg(test)]
 mod power_save_block_tests {
     use super::*;
+    use crate::power::{BlockerId, PowerSaveKind};
 
+    /// A terminal has no sleep-inhibitor API to call into — `begin`/
+    /// `end_power_save_block` stay at the trait's own `Unsupported`
+    /// default, the same answer GTK/macOS/Win give (none of them
+    /// override either method). Callers must be able to tell "this
+    /// backend can't hold the machine awake" from "it did and is now
+    /// holding it", so a faked-up blocker id that never asked the OS for
+    /// anything is not an honest `Ok`.
     #[test]
-    fn begin_mints_distinct_ids() {
+    fn begin_and_end_stay_unsupported() {
         let service = TuiPlatformServices::new();
-        let a = service
-            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
-            .unwrap();
-        let b = service
-            .begin_power_save_block(PowerSaveKind::PreventAppSuspension)
-            .unwrap();
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn end_succeeds_on_a_just_begun_id() {
-        let service = TuiPlatformServices::new();
-        let id = service
-            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
-            .unwrap();
-        assert_eq!(service.end_power_save_block(id), Ok(()));
-    }
-
-    #[test]
-    fn end_fails_on_an_unknown_or_already_ended_id() {
-        let service = TuiPlatformServices::new();
-        let id = service
-            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
-            .unwrap();
-        assert_eq!(service.end_power_save_block(id), Ok(()));
         assert_eq!(
-            service.end_power_save_block(id),
-            Err(BackendError::PlatformFailure {
-                context: "end_power_save_block: unknown or already-ended blocker id".to_string(),
-            })
+            service.begin_power_save_block(PowerSaveKind::PreventDisplaySleep),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(
+            service.end_power_save_block(BlockerId::next()),
+            Err(BackendError::Unsupported)
         );
     }
 
@@ -2417,15 +2371,19 @@ mod message_dialog_tests {
     }
 
     /// A terminal has no OS login-item registration to query — this pins
-    /// the honest no-op degrade: always `Ok(false)`, on every host this
-    /// runs on (no environment dependency, unlike `displays` above).
-    /// See the module doc's "Login items" section for why `false` here
-    /// is not the same claim as "this app is not registered to start at
-    /// login by any mechanism".
+    /// the trait's own `Unsupported` default, the same answer GTK/
+    /// macOS/Win give (none of them override this method either), on
+    /// every host this runs on (no environment dependency, unlike
+    /// `displays` above). A faked-up `Ok(false)` would read as "this app
+    /// is not registered to start at login", which this backend has no
+    /// way to actually know.
     #[test]
-    fn login_item_enabled_always_reports_false_on_tui() {
+    fn login_item_enabled_always_reports_unsupported_on_tui() {
         let services = TuiPlatformServices::new();
-        assert_eq!(services.login_item_enabled(), Ok(false));
+        assert_eq!(
+            services.login_item_enabled(),
+            Err(BackendError::Unsupported)
+        );
     }
 
     /// A terminal has no OS-level recent-documents list to add to — this

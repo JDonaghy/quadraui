@@ -19,15 +19,16 @@
 //! of those a contract to implement against.
 //!
 //! TUI cannot query battery/thermal state and has no sleep-inhibitor API of
-//! its own to call into, but [`crate::tui::services::TuiPlatformServices`]
-//! still overrides [`PlatformServices::begin_power_save_block`][crate::PlatformServices::begin_power_save_block]/
+//! its own to call into, so
+//! [`crate::tui::services::TuiPlatformServices`] leaves
+//! [`PlatformServices::begin_power_save_block`][crate::PlatformServices::begin_power_save_block]/
 //! [`PlatformServices::end_power_save_block`][crate::PlatformServices::end_power_save_block]
-//! with an honest no-op blocker (bookkeeping-only — it mints and tracks a
-//! real [`BlockerId`], it just never asks the OS to stay awake) rather than
-//! leaving them `Unsupported`: a TUI app that starts a blocker and later
-//! ends it should see a consistent, truthful lifecycle, not an error on the
-//! very first call. TUI never emits [`crate::UiEvent::PowerStateChanged`] —
-//! a terminal has no OS suspend/resume/AC notification to forward.
+//! at the trait's own `Unsupported` default, matching every other
+//! in-tree backend: a blocker id minted without ever asking the OS to
+//! stay awake would not be a truthful `Ok`, and a caller needs to be
+//! able to tell "this backend can't hold the machine awake" from "it
+//! did". TUI never emits [`crate::UiEvent::PowerStateChanged`] — a
+//! terminal has no OS suspend/resume/AC notification to forward.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -83,14 +84,14 @@ impl BlockerId {
     /// app never constructs one of these itself, only receives one back
     /// from [`crate::PlatformServices::begin_power_save_block`].
     ///
-    /// `#[cfg_attr(not(feature = "tui"), allow(dead_code))]` for the same
-    /// reason `desktop.rs`'s `windows_explorer_select_parameters` carries
-    /// one: this module is platform-neutral and compiles under every
-    /// feature set, but today only `tui::services::TuiPlatformServices`'s
-    /// `begin_power_save_block` override calls it in production code — a
-    /// `win`/`gtk` override added later picks up the same call. The
-    /// `#[cfg(test)]` module below exercises it regardless of feature set.
-    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    /// `#[allow(dead_code)]`: no in-tree backend overrides
+    /// `begin_power_save_block` today (every one of them, TUI included,
+    /// leaves it at the trait's `Unsupported` default — see this
+    /// module's doc), so nothing in production code calls this yet; a
+    /// `win`/`gtk`/`macos`/TUI override that mints a real inhibitor
+    /// later picks up the call. The `#[cfg(test)]` module below
+    /// exercises it regardless of feature set.
+    #[allow(dead_code)]
     pub(crate) fn next() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
