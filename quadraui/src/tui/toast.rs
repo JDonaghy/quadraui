@@ -90,12 +90,15 @@ fn toast_height(toast: &Toast, width: f32) -> f32 {
     1.0 + body_lines as f32 + button_row + TUI_BORDER_ROWS
 }
 
+/// `Info` stays on the neutral `theme.surface_bg` panel colour rather
+/// than `Theme::info_bg`'s accent tint — see
+/// `primitives::toast::native_surface_paint::severity_bg`'s doc for why.
 fn severity_bg(severity: ToastSeverity, theme: &Theme) -> crate::types::Color {
     match severity {
         ToastSeverity::Info => theme.surface_bg,
-        ToastSeverity::Success => crate::types::Color::rgb(30, 80, 30),
-        ToastSeverity::Warning => crate::types::Color::rgb(100, 80, 20),
-        ToastSeverity::Error => theme.error_fg,
+        ToastSeverity::Success => theme.success_bg(),
+        ToastSeverity::Warning => theme.warning_bg(),
+        ToastSeverity::Error => theme.danger_bg(),
     }
 }
 
@@ -293,6 +296,28 @@ fn paint_toast(
         } else {
             (bg_color, theme.link_fg)
         };
+        // An explicit `spec` override's `variant` tints the foreground in
+        // the intent colour and clears any `accent_bg` fill `primary`
+        // would otherwise set — no background fill of its own on TUI,
+        // same "no-op background" convention `crate::tui::button` uses
+        // for a standalone `Danger`/`Warning` `Button`, regardless of
+        // the legacy `primary` flag. A `spec: None` action keeps its
+        // plain primary/secondary look, unaffected. Only `variant` is
+        // honoured here today — `icon`/`icon_position`/`icon_gap`/
+        // `tooltip`/`disabled` on the spec have no TUI toast effect yet.
+        if let Some(spec) = &action.spec {
+            match spec.variant {
+                crate::primitives::button::ButtonVariant::Danger => {
+                    row_fg = theme.error_fg;
+                    row_bg = bg_color;
+                }
+                crate::primitives::button::ButtonVariant::Warning => {
+                    row_fg = theme.warning_fg;
+                    row_bg = bg_color;
+                }
+                _ => {}
+            }
+        }
         if action_focused {
             // Visible focus indicator — invert to a
             // `theme.link_fg` filled row, same treatment as dismiss.
@@ -430,6 +455,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 60, origin_y + 20));
         let mut toast = info_toast("t1", "Error occurred");
         toast.actions = vec![ToastButton {
+            spec: None,
             id: WidgetId::new("retry"),
             label: "Retry".into(),
             primary: false,
@@ -485,6 +511,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let mut toast = info_toast("t1", "Install Markdown Language Server?");
         toast.actions = vec![ToastButton {
+            spec: None,
             id: WidgetId::new("install"),
             label: "Install".into(),
             primary: true,
@@ -544,11 +571,13 @@ mod tests {
         let mut toast = info_toast("t1", "Install?");
         toast.actions = vec![
             ToastButton {
+                spec: None,
                 id: WidgetId::new("install"),
                 label: "Install".into(),
                 primary: true,
             },
             ToastButton {
+                spec: None,
                 id: WidgetId::new("skip"),
                 label: "Skip".into(),
                 primary: false,
@@ -570,6 +599,73 @@ mod tests {
         let ay = install.y.round() as u16;
         let cell = &buf[(ax, ay)];
         assert_eq!(cell.bg, ratatui_color(theme.accent_bg));
+    }
+
+    /// A `ToastButton` with an explicit `Danger` spec tints its label
+    /// `theme.error_fg` — no background fill of its own, same "intent
+    /// via foreground only" convention `crate::tui::button` uses on TUI.
+    /// A `spec: None` action (every pre-existing construction site) keeps
+    /// its plain primary/secondary look, unaffected.
+    #[test]
+    fn danger_spec_action_tints_error_fg_with_no_background_fill() {
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        let mut toast = info_toast("t1", "Delete this file?");
+        let mut spec = crate::primitives::button::ButtonSpec::new("Delete");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        toast.actions = vec![ToastButton {
+            spec: Some(spec),
+            id: WidgetId::new("delete"),
+            label: "Delete".into(),
+            primary: false,
+        }];
+        let stack = stack_br(vec![toast]);
+        let theme = Theme::default();
+        let layout = draw_toast_stack(&mut buf, area, &stack, &theme);
+
+        let action = layout.visible_toasts[0].action_rects[0];
+        let ax = action.x.round() as u16;
+        let ay = action.y.round() as u16;
+        let cell = &buf[(ax, ay)];
+        assert_eq!(cell.fg, ratatui_color(theme.error_fg));
+        assert_ne!(
+            cell.bg,
+            ratatui_color(theme.accent_bg),
+            "Danger must not fall back to the primary accent fill"
+        );
+    }
+
+    /// A `Danger`/`Warning` spec clears `accent_bg` even when the
+    /// legacy `primary` flag is also set — "no background fill of its
+    /// own" holds regardless of `primary`, not only when it's `false`.
+    #[test]
+    fn danger_spec_action_clears_accent_bg_even_when_primary_is_set() {
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        let mut toast = info_toast("t1", "Delete this file?");
+        let mut spec = crate::primitives::button::ButtonSpec::new("Delete");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        toast.actions = vec![ToastButton {
+            spec: Some(spec),
+            id: WidgetId::new("delete"),
+            label: "Delete".into(),
+            primary: true,
+        }];
+        let stack = stack_br(vec![toast]);
+        let theme = Theme::default();
+        let layout = draw_toast_stack(&mut buf, area, &stack, &theme);
+
+        let action = layout.visible_toasts[0].action_rects[0];
+        let ax = action.x.round() as u16;
+        let ay = action.y.round() as u16;
+        let cell = &buf[(ax, ay)];
+        assert_eq!(cell.fg, ratatui_color(theme.error_fg));
+        assert_ne!(
+            cell.bg,
+            ratatui_color(theme.accent_bg),
+            "Danger must not fall back to the primary accent fill, even \
+             when the legacy `primary` flag is also set"
+        );
     }
 
     /// The controller's `ToastFocus` gets a visible focus

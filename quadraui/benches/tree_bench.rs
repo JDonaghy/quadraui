@@ -102,11 +102,12 @@ mod gtk_bench {
     use gtk4::pango;
     use pangocairo::cairo::{Context, Format, ImageSurface};
     use quadraui::gtk::draw_tree;
-    use quadraui::Theme;
+    use quadraui::{Style, Theme};
 
     pub fn bench_paint(c: &mut Criterion) {
         let tree = build_tree(ROWS);
         let theme = Theme::default();
+        let style = Style::default();
         let surface = ImageSurface::create(Format::ARgb32, 600, 800).expect("create ImageSurface");
         let cr = Context::new(&surface).expect("Context::new on headless ImageSurface");
         let pctx = pangocairo::functions::create_context(&cr);
@@ -115,7 +116,7 @@ mod gtk_bench {
         c.bench_function("tree_paint_gtk_100k_rows", |b| {
             b.iter(|| {
                 draw_tree(
-                    &cr, &layout, 0.0, 0.0, 600.0, 800.0, &tree, &theme, 20.0, false,
+                    &cr, &layout, 0.0, 0.0, 600.0, 800.0, &tree, &theme, &style, 20.0, false,
                 );
                 black_box(());
             })

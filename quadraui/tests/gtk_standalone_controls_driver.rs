@@ -16,9 +16,9 @@
 
 use quadraui::gtk::testing::GtkDriver;
 use quadraui::{
-    AppLogic, Backend, Button, ButtonEvent, Key, Modifiers, MouseButton, NamedKey, Point,
-    RadioGroup, RadioGroupEvent, RadioOption, Reaction, Rect, Switch, SwitchEvent, UiEvent,
-    WidgetId,
+    AppLogic, Backend, Button, ButtonEvent, ButtonHit, ButtonVariant, Icon, InteractionState, Key,
+    Modifiers, MouseButton, NamedKey, Point, RadioGroup, RadioGroupEvent, RadioOption, Reaction,
+    Rect, Switch, SwitchEvent, UiEvent, WidgetId,
 };
 
 /// Which of the three standalone controls currently holds keyboard focus.
@@ -47,9 +47,25 @@ const SWITCH_BOUNDS: Rect = Rect {
     width: 40.0,
     height: 24.0,
 };
+/// A static `Danger` button, painted but not reachable from focus/click
+/// — probed only for its fill colour against [`BUTTON_BOUNDS`]'s
+/// `Primary` one.
+const DANGER_BOUNDS: Rect = Rect {
+    x: 8.0,
+    y: 128.0,
+    width: 120.0,
+    height: 24.0,
+};
+/// A static `Warning` button, same role as [`DANGER_BOUNDS`].
+const WARNING_BOUNDS: Rect = Rect {
+    x: 8.0,
+    y: 160.0,
+    width: 120.0,
+    height: 24.0,
+};
 
 const CANVAS_W: i32 = 160;
-const CANVAS_H: i32 = 140;
+const CANVAS_H: i32 = 192;
 
 /// Minimal `AppLogic` wiring the three standalone controls together with
 /// an app-owned `Focus` cursor and an event log, used only by this
@@ -59,13 +75,32 @@ struct StandaloneControlsApp {
     button: Button,
     radios: RadioGroup,
     switch: Switch,
+    /// `Danger`/`Warning` siblings of `button`, painted at fixed bounds
+    /// outside the focus/click wiring — probed only for their fill
+    /// colour (see `danger_and_warning_fills_differ_from_primary`).
+    danger: Button,
+    warning: Button,
     events: Vec<String>,
+    /// Hover/pressed state for `button`, fed from `MouseMoved` below —
+    /// `button` is the only control here painted via
+    /// `Backend::draw_button_with_state` (B3's pointer-enter hover
+    /// story).
+    interaction: InteractionState,
 }
 
 impl StandaloneControlsApp {
     fn new() -> Self {
         let mut button = Button::new(WidgetId::new("demo:save"), "Save");
         button.focused = true;
+        // A leading icon, `6.0` px clear of the label — exercises
+        // `Button::icon`/`icon_position`/`icon_gap` on the one control
+        // whose ordering/spacing this driver actually probes.
+        button.icon = Some(Icon::codicon("save", "S").expect("\"save\" is a real codicon name"));
+        button.icon_gap = 6.0;
+        let mut danger = Button::new(WidgetId::new("demo:delete"), "Delete");
+        danger.variant = ButtonVariant::Danger;
+        let mut warning = Button::new(WidgetId::new("demo:overwrite"), "Overwrite");
+        warning.variant = ButtonVariant::Warning;
         let radios = RadioGroup::new(
             WidgetId::new("demo:theme"),
             vec![
@@ -79,7 +114,10 @@ impl StandaloneControlsApp {
             button,
             radios,
             switch,
+            danger,
+            warning,
             events: Vec::new(),
+            interaction: InteractionState::new(),
         }
     }
 
@@ -103,7 +141,9 @@ impl AppLogic for StandaloneControlsApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        backend.draw_button(BUTTON_BOUNDS, &self.button);
+        backend.draw_button_with_state(BUTTON_BOUNDS, &self.button, &self.interaction);
+        backend.draw_button(DANGER_BOUNDS, &self.danger);
+        backend.draw_button(WARNING_BOUNDS, &self.warning);
         backend.draw_radio_group(RADIOS_BOUNDS, &self.radios);
         backend.draw_switch(SWITCH_BOUNDS, &self.switch);
     }
@@ -142,6 +182,16 @@ impl AppLogic for StandaloneControlsApp {
                     }
                 }
                 Reaction::Redraw
+            }
+            UiEvent::MouseMoved { position, .. } => {
+                let button_layout = backend.button_layout(BUTTON_BOUNDS, &self.button);
+                let hovered = matches!(button_layout.hit_test(position), ButtonHit::Body)
+                    .then_some(self.button.id);
+                if self.interaction.set_hovered(hovered) {
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
+                }
             }
             UiEvent::MouseDown { position, .. } => {
                 let button_layout = backend.button_layout(BUTTON_BOUNDS, &self.button);
@@ -285,4 +335,92 @@ fn mouse_click_toggles_the_switch_without_requiring_focus() {
     });
     assert!(driver.app().switch.value);
     assert_eq!(driver.app().events, vec!["Toggled(demo:wrap, true)"]);
+}
+
+/// A pixel offset from each button's own left edge, at mid-height, that
+/// always lands on the fill rather than its centred label/icon text:
+/// `Style::default().padding == 8.0` is the inset
+/// `native_surface_paint::paint` never draws label/icon content inside
+/// of, and `6 < 8` sits inside that padding band.
+const FILL_PROBE_X: f32 = 6.0;
+
+fn fill_pixel(driver: &mut GtkDriver<StandaloneControlsApp>, bounds: Rect) -> (u8, u8, u8) {
+    driver.pixel(
+        (bounds.x + FILL_PROBE_X) as i32,
+        (bounds.y + bounds.height / 2.0) as i32,
+    )
+}
+
+/// `Danger`/`Warning` fill with `Theme::button_danger_bg`/
+/// `button_warning_bg`, visibly distinct from `Primary`'s `accent_bg` —
+/// the intent-colouring half of this issue's acceptance.
+#[test]
+fn danger_and_warning_fills_differ_from_primary() {
+    let mut driver = GtkDriver::new(StandaloneControlsApp::new(), CANVAS_W, CANVAS_H);
+
+    let primary = fill_pixel(&mut driver, BUTTON_BOUNDS);
+    let danger = fill_pixel(&mut driver, DANGER_BOUNDS);
+    let warning = fill_pixel(&mut driver, WARNING_BOUNDS);
+
+    assert_ne!(danger, primary, "Danger must not fill the same as Primary");
+    assert_ne!(
+        warning, primary,
+        "Warning must not fill the same as Primary"
+    );
+    assert_ne!(danger, warning, "Danger and Warning must look distinct");
+}
+
+/// `Backend::draw_button_with_state` repaints the fill on pointer enter
+/// — the hover half of this issue's acceptance.
+#[test]
+fn hover_changes_the_button_fill_on_pointer_enter() {
+    let mut driver = GtkDriver::new(StandaloneControlsApp::new(), CANVAS_W, CANVAS_H);
+
+    let resting = fill_pixel(&mut driver, BUTTON_BOUNDS);
+    driver.mouse_move(BUTTON_BOUNDS.x + FILL_PROBE_X, BUTTON_BOUNDS.y + 12.0);
+    let hovered = fill_pixel(&mut driver, BUTTON_BOUNDS);
+
+    assert_ne!(
+        resting, hovered,
+        "hovering the button must repaint its fill"
+    );
+
+    // Moving off the button restores the resting fill.
+    driver.mouse_move(1.0, 1.0);
+    let after = fill_pixel(&mut driver, BUTTON_BOUNDS);
+    assert_eq!(
+        after, resting,
+        "moving off the button must clear the hover fill"
+    );
+}
+
+/// `Button::icon` with the default `Leading` position paints before the
+/// label, `icon_gap` clear of it — the icon-placement half of this
+/// issue's acceptance.
+#[test]
+fn leading_icon_paints_before_the_label_icon_gap_apart() {
+    let driver = GtkDriver::new(StandaloneControlsApp::new(), CANVAS_W, CANVAS_H);
+
+    let save_glyph = Icon::codicon("save", "S")
+        .expect("\"save\" is a real codicon name")
+        .glyph;
+    let icon_bounds = driver
+        .find_bounds(&save_glyph)
+        .expect("the Save button's leading icon must paint a text run");
+    let label_bounds = driver
+        .find_bounds("Save")
+        .expect("the Save button's label must paint a text run");
+
+    assert!(
+        icon_bounds.x < label_bounds.x,
+        "a Leading icon must paint before the label: icon.x={}, label.x={}",
+        icon_bounds.x,
+        label_bounds.x,
+    );
+    let gap = label_bounds.x - (icon_bounds.x + icon_bounds.width);
+    assert!(
+        (gap - driver.app().button.icon_gap).abs() < 0.5,
+        "expected icon_gap ({}) clear of the icon, got {gap}",
+        driver.app().button.icon_gap,
+    );
 }

@@ -1993,6 +1993,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("reset"),
                     label: "Reset".into(),
                     icon: None,
@@ -2002,6 +2003,7 @@ mod tests {
                     tooltip: String::new(),
                 },
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("export"),
                     label: "Export".into(),
                     icon: None,
@@ -2050,6 +2052,7 @@ mod tests {
         form.fields[0].kind = FieldKind::Toolbar(Toolbar {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("noop"),
                 label: "Noop".into(),
                 icon: None,
@@ -2165,6 +2168,7 @@ mod tests {
                 id: WidgetId::new("tb"),
                 buttons: vec![
                     ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("btn-a"),
                         label: "A".into(),
                         icon: None,
@@ -2174,6 +2178,7 @@ mod tests {
                         tooltip: String::new(),
                     },
                     ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("btn-b"),
                         label: "BB".into(),
                         icon: None,
@@ -2250,6 +2255,7 @@ mod tests {
                 id: WidgetId::new("tb"),
                 buttons: vec![
                     ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("btn-a"),
                         label: "A".into(),
                         icon: None,
@@ -2260,6 +2266,7 @@ mod tests {
                     },
                     ToolbarButton::Separator,
                     ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("btn-b"),
                         label: "B".into(),
                         icon: None,
@@ -2314,6 +2321,7 @@ mod tests {
             form.fields[0].kind = FieldKind::Toolbar(Toolbar {
                 id: WidgetId::new("tb"),
                 buttons: vec![ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("btn-a"),
                     label: "A".into(),
                     icon: None,

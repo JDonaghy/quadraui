@@ -61,6 +61,7 @@ pub fn notify_or_toast(backend: &dyn Backend, n: Notification) -> Option<Toast> 
             id: *action_id,
             label: label.clone(),
             primary: false,
+            spec: None,
         })
         .collect();
     Some(Toast {

@@ -86,6 +86,43 @@ test("setTheme rejects a malformed hex colour", () => {
   );
 });
 
+test("setTheme error_fg recolours the derived toast danger background", () => {
+  // `Theme::danger_bg` is an accessor, not a `Theme` field -- it derives
+  // from `error_fg` (see `theme.rs`'s "Success / warning / danger / info
+  // roles" section), so there is no `danger_bg` key to set directly.
+  // Overriding the field it derives from must still change what an
+  // `Error`-severity toast paints -- a port of
+  // `quadraui-py/tests/test_theme.py`'s equivalent test.
+  const app = new QuiApp(40, 20);
+  app.showToast(
+    { id: "toast:before", title: "Boom", body: "", severity: "Error" },
+    "top_left",
+  );
+  // Sample the toast box's top-left border cell -- every cell in the
+  // box shares the same background fill regardless of row/column (see
+  // `tui::toast::paint_toast`), so this corner is as good a probe as the
+  // interior.
+  const [, beforeBg] = app.cellColors(1, 1) as [number[], number[]];
+
+  app.setTheme({ error_fg: "#ff0000" });
+  app.showToast(
+    { id: "toast:after", title: "Boom", body: "", severity: "Error" },
+    "top_left",
+  );
+  const [, afterBg] = app.cellColors(1, 1) as [number[], number[]];
+
+  assert.notDeepEqual(
+    beforeBg,
+    afterBg,
+    "recolouring error_fg must change the Error-severity toast's danger_bg-derived background",
+  );
+  // `danger_bg` blends `background` toward `error_fg` -- a brighter red
+  // `error_fg` should visibly shift the tint toward red (higher red
+  // channel, lower green/blue) rather than an unrelated colour.
+  assert.ok(afterBg[0] > beforeBg[0]);
+  assert.ok(afterBg[1] < beforeBg[1]);
+});
+
 test("setTheme rejects an undefined value instead of raising on the app", () => {
   // `Object.keys` reports `background` as an own key even though its value
   // is JS `undefined` -- a one-character slip in caller code
@@ -170,6 +207,42 @@ test("setStyle overrides the scrollbar width token and round trips", () => {
 
   const after: any = app.style();
   assert.equal(after.scrollbar_width, 14.0);
+  // Unrelated token is untouched.
+  assert.deepEqual(after.padding, before.padding);
+});
+
+// `Style::row_padding_x`/`Style::tab_padding_x` reach `QuiApp` through the
+// same `#[serde(default)]`-decoded `setStyle` object every other `Style`
+// field already does -- no binding-side change needed to carry a new
+// descriptor field.
+test("setStyle overrides the row and tab padding tokens and round trips", () => {
+  const app = new QuiApp(20, 5);
+  const before: any = app.style();
+  assert.equal(before.row_padding_x, 8.0);
+  assert.equal(before.tab_padding_x, 10.0);
+
+  app.setStyle({ row_padding_x: 12.0, tab_padding_x: 14.0 });
+
+  const after: any = app.style();
+  assert.equal(after.row_padding_x, 12.0);
+  assert.equal(after.tab_padding_x, 14.0);
+  // Unrelated token is untouched.
+  assert.deepEqual(after.padding, before.padding);
+});
+
+// `Style::tooltip_delay_ms` reaches `QuiApp` through the same
+// `#[serde(default)]`-decoded `setStyle` object every other `Style` field
+// already does -- no binding-side change needed to carry a new descriptor
+// field.
+test("setStyle overrides the tooltip delay token and round trips", () => {
+  const app = new QuiApp(20, 5);
+  const before: any = app.style();
+  assert.equal(before.tooltip_delay_ms, 500);
+
+  app.setStyle({ tooltip_delay_ms: 750 });
+
+  const after: any = app.style();
+  assert.equal(after.tooltip_delay_ms, 750);
   // Unrelated token is untouched.
   assert.deepEqual(after.padding, before.padding);
 });

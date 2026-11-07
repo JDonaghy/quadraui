@@ -214,6 +214,7 @@ impl Demo for ToastDemo {
                 self.add(
                     ToastSeverity::Error,
                     vec![ToastButton {
+                        spec: None,
                         id: WidgetId::new("gallery:toast-action:retry"),
                         label: "Retry".into(),
                         primary: true,

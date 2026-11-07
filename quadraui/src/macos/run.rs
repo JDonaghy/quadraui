@@ -75,12 +75,14 @@ use core_graphics::sys::CGContextRef;
 use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{define_class, msg_send, sel, ClassType, DefinedClass, MainThreadOnly, Message};
+use objc2::{
+    define_class, msg_send, sel, AnyThread, ClassType, DefinedClass, MainThreadOnly, Message,
+};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationTerminateReply, NSBackingStoreType, NSDragOperation, NSDraggingInfo, NSEvent,
-    NSEventMask, NSGraphicsContext, NSPasteboardTypeFileURL, NSView,
-    NSViewFrameDidChangeNotification, NSWindow, NSWindowDelegate,
+    NSEventMask, NSGraphicsContext, NSPasteboardTypeFileURL, NSTrackingArea, NSTrackingAreaOptions,
+    NSView, NSViewFrameDidChangeNotification, NSWindow, NSWindowDelegate,
     NSWindowDidChangeBackingPropertiesNotification, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{
@@ -88,7 +90,7 @@ use objc2_foundation::{
     NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSTimer, NSURL,
 };
 
-use super::backend::MacBackend;
+use super::backend::{mac_cursor_for_shape, MacBackend};
 use super::events::{
     ease_out_cubic, fold_wheel_momentum_remaining, ns_files_dropped, ns_key_to_uievent,
     ns_mouse_down, ns_mouse_moved, ns_mouse_up, route_wheel_event, wheel_momentum_quantized_target,
@@ -589,6 +591,13 @@ pub(crate) struct QuadraViewIvars {
     /// the hook's own doc for why the first call is swallowed rather
     /// than dispatched.
     appearance_change_seen: Cell<bool>,
+    /// The `NSTrackingArea` installed by `update_tracking_areas` the
+    /// first time AppKit calls it, kept alive here so it isn't
+    /// deallocated out from under AppKit's tracking-area list. `None`
+    /// until that first call — see that method's doc for why one
+    /// `NSTrackingAreaOptions::InVisibleRect` area, installed once,
+    /// never needs replacing on resize.
+    cursor_tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
 }
 
 define_class!(
@@ -685,6 +694,117 @@ define_class!(
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             true
+        }
+
+        // ── Pointer cursor ────────────────────────────────────────
+        //
+        // `Backend::set_cursor` (see `MacBackend::set_cursor`'s doc)
+        // applies the requested shape immediately via a one-shot
+        // `NSCursor::set()`, which only lasts until AppKit's own
+        // cursor machinery next decides what the pointer should show.
+        // These three overrides are what makes that machinery agree
+        // with the shape the app asked for instead of silently
+        // reverting to the arrow on the next mouse move:
+        //
+        // - `updateTrackingAreas` installs one `NSTrackingArea`
+        //   covering the view (`InVisibleRect`, so it never needs
+        //   recreating on resize) with the `CursorUpdate` option —
+        //   this is what makes AppKit call `cursorUpdate:` on every
+        //   subsequent mouse move.
+        //   `EnabledDuringMouseDrag` keeps those calls coming while a
+        //   mouse button is held, so a divider drag that calls
+        //   `set_cursor` on `MouseDown` keeps its resize cursor for
+        //   the whole drag instead of only the first frame.
+        //   `ActiveAlways` (rather than the conventional
+        //   `ActiveInKeyWindow`) keeps this view re-asserting its own
+        //   cursor even while another app is frontmost — matching
+        //   `NSCursor::set()`'s own global, not-key-window-scoped
+        //   behavior, which the rest of this mechanism exists to keep
+        //   current.
+        // - `cursorUpdate:` re-applies `MacBackend::requested_cursor()`
+        //   every time AppKit invokes it.
+        // - `resetCursorRects` is AppKit's older, rect-based cursor
+        //   mechanism — invoked independently of the tracking area
+        //   above (e.g. when the window becomes key). Registering the
+        //   same shape there too means a code path that only
+        //   triggers *that* mechanism still shows the right cursor.
+
+        /// See the "Pointer cursor" section doc above.
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            unsafe {
+                let _: () = msg_send![super(self), updateTrackingAreas];
+            }
+            if self.ivars().cursor_tracking_area.borrow().is_some() {
+                return;
+            }
+            // SAFETY: `owner` points at this live `QuadraView`, which
+            // implements `cursorUpdate:` below — the selector
+            // `NSTrackingArea` sends it. The cast is a no-op upcast
+            // through the Obj-C class chain (`QuadraView` → `NSView` →
+            // `NSResponder` → `NSObject`), the same one [`run_with`]'s
+            // `view_obj` performs for its own notification-observer
+            // registrations.
+            let owner: &AnyObject = unsafe { &*(self as *const Self as *const AnyObject) };
+            // `InVisibleRect` makes the `rect` argument itself
+            // irrelevant — AppKit recomputes the tracked region from
+            // the view's own visible rect on every geometry change —
+            // so the view's current bounds are just a reasonable
+            // initial value.
+            let area = unsafe {
+                NSTrackingArea::initWithRect_options_owner_userInfo(
+                    NSTrackingArea::alloc(),
+                    self.bounds(),
+                    NSTrackingAreaOptions::CursorUpdate
+                        | NSTrackingAreaOptions::ActiveAlways
+                        | NSTrackingAreaOptions::InVisibleRect
+                        | NSTrackingAreaOptions::EnabledDuringMouseDrag,
+                    Some(owner),
+                    None,
+                )
+            };
+            self.addTrackingArea(&area);
+            *self.ivars().cursor_tracking_area.borrow_mut() = Some(area);
+        }
+
+        /// See the "Pointer cursor" section doc above. `try_borrow`, not
+        /// `borrow`: AppKit can dispatch this selector while
+        /// `AppLogic::handle` is still holding `backend.borrow_mut()`
+        /// further up this exact call stack — `MacBackend::show_context_menu`
+        /// blocks in `popUpMenuPositioningItem:atLocation:inView:` and
+        /// `services.rs`'s `NSOpenPanel`/`NSSavePanel`/`NSAlert` all block in
+        /// `runModal()`, each spinning a *nested* AppKit run loop that keeps
+        /// delivering `cursorUpdate:` (the tracking area above is
+        /// `ActiveAlways` + `EnabledDuringMouseDrag`) while the mouse moves
+        /// over the view. A plain `.borrow()` here would hit
+        /// `BorrowMutError` and panic straight across this `define_class!`
+        /// trampoline's C ABI boundary — no `catch_unwind` sits between here
+        /// and the nested run loop's caller, so that panic aborts the
+        /// process instead of unwinding — the same hazard
+        /// `viewDidChangeEffectiveAppearance` documents and guards against
+        /// above. Dropping one cursor re-apply under contention is
+        /// invisible; aborting the host process is not.
+        #[unsafe(method(cursorUpdate:))]
+        fn objc_cursor_update(&self, _event: &NSEvent) {
+            let Ok(backend) = self.ivars().backend.try_borrow() else {
+                return;
+            };
+            let shape = backend.requested_cursor();
+            drop(backend);
+            mac_cursor_for_shape(shape).set();
+        }
+
+        /// See the "Pointer cursor" section doc above, and
+        /// `cursorUpdate:`'s doc for why this borrows with `try_borrow`
+        /// rather than `borrow`.
+        #[unsafe(method(resetCursorRects))]
+        fn objc_reset_cursor_rects(&self) {
+            let Ok(backend) = self.ivars().backend.try_borrow() else {
+                return;
+            };
+            let shape = backend.requested_cursor();
+            drop(backend);
+            self.addCursorRect_cursor(self.bounds(), &mac_cursor_for_shape(shape));
         }
 
         // ── Mouse press / release ────────────────────────────────
@@ -813,7 +933,18 @@ define_class!(
             let dx = event.scrollingDeltaX();
             let dy = event.scrollingDeltaY();
             let precise = event.hasPreciseScrollingDeltas();
-            match route_wheel_event(precise, dx, dy, x, y) {
+            // Reset the overlay scrollbar idle-fade clock on every
+            // delta — precise trackpad and discrete wheel notch alike —
+            // so the bar snaps to full opacity for the hold window
+            // regardless of which `WheelRouting` arm handles delivery.
+            // `line_height` is also what `route_wheel_event` scales an
+            // imprecise (discrete wheel) delta by to land it in points.
+            let mut line_height = 1.0_f32;
+            if let Ok(mut backend) = self.ivars().backend.try_borrow_mut() {
+                backend.note_scroll_activity();
+                line_height = backend.line_height();
+            }
+            match route_wheel_event(precise, dx, dy, x, y, line_height) {
                 WheelRouting::Immediate(ev) => {
                     self.cancel_wheel_momentum();
                     self.dispatch(ev);
@@ -1216,6 +1347,7 @@ impl QuadraView {
             wheel_momentum: RefCell::new(None),
             momentum_timer: RefCell::new(None),
             appearance_change_seen: Cell::new(false),
+            cursor_tracking_area: RefCell::new(None),
         });
         unsafe { msg_send![super(this), init] }
     }

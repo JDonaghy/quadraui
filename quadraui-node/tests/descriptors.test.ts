@@ -23,6 +23,24 @@ test("insertButton renders its label", () => {
   assert.ok(app.screenContains("OK"));
 });
 
+test("insertButton accepts an optional tooltip", () => {
+  const app = new QuiApp(40, 20);
+  app.insertButton({ id: "demo:ok", label: "OK", tooltip: "Confirm the action" });
+  assert.ok(app.screenContains("OK"));
+});
+
+test("insertButton rejects a non-string tooltip", () => {
+  // `Button::tooltip` is typed `Option<String>`, not merely ignored the
+  // way an unrecognized key would be -- a non-string value must fail to
+  // decode, proving the field is actually wired into `Button`'s own
+  // `Deserialize` rather than silently dropped.
+  const app = new QuiApp(40, 20);
+  assert.throws(
+    () => app.insertButton({ id: "demo:ok", label: "OK", tooltip: 123 }),
+    /InvalidDescriptorError/,
+  );
+});
+
 test("insertTextDisplay renders its line text", () => {
   const app = new QuiApp(40, 20);
   app.insertTextDisplay({

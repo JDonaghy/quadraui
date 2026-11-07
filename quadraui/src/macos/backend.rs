@@ -204,6 +204,25 @@ pub struct MacBackend {
     /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
     /// `current_char_width` wide.
     editor_v_scrollbar_w: Option<f32>,
+    /// Timestamp of the most recent trackpad/wheel scroll, fed in by
+    /// `super::run`'s `scrollWheel:` handler via
+    /// [`Self::note_scroll_activity`]. [`Self::new`] seeds this with its
+    /// own construction instant rather than `None`, so a scrollbar
+    /// painted immediately after startup — a live app's first frame, a
+    /// headless pixel test, a gallery capture — still shows at full
+    /// opacity like VS Code's overlay scrollbars briefly do on load,
+    /// instead of starting invisible. With no further scroll activity
+    /// it fades out exactly like any other idle period. `None` is a
+    /// reachable test seam ([`Self::set_scroll_last_interaction`]) for
+    /// "never interacted, already fully faded".
+    scroll_fade_last_interaction: Option<std::time::Instant>,
+    /// Test seam overriding "now" for [`idle_fade_opacity`] instead of
+    /// [`std::time::Instant::now`], so pixel tests can assert the fade
+    /// curve deterministically without a real sleep. `None` (the
+    /// default) uses real wall-clock time, as a live app does.
+    ///
+    /// [`idle_fade_opacity`]: crate::primitives::scrollbar::idle_fade_opacity
+    scroll_fade_clock_override: Option<std::time::Instant>,
     /// Chrome (UI) font — macOS is the only pixel backend where
     /// `set_ui_font` was a silent no-op and every piece of chrome
     /// painted in `current_font`, the *editor* font, instead. Unlike
@@ -267,6 +286,24 @@ pub struct MacBackend {
     /// [`crate::testing::FrameInventory::zones`] via
     /// [`super::testing::MacDriver::inventory`].
     zones: Vec<ZoneRec>,
+    /// Bounds of every tooltip/toast painted so far this frame, via
+    /// [`Backend::draw_tooltip_with_chrome`]/[`Backend::draw_toast_overlay`].
+    /// Cleared at the start of each frame by [`Backend::begin_frame`], same
+    /// per-frame lifecycle as `zones`.
+    ///
+    /// [`Backend::draw_focus_ring`] reads this to skip the portion of the
+    /// generic focus-ring convention that would otherwise stroke on top of
+    /// an overlay drawn earlier in the same frame — tooltip/toast must stay
+    /// topmost (see that method's own doc for the regression this guards).
+    overlay_bounds_this_frame: Vec<Rect>,
+    /// Every delay [`Self::request_frame_in`] has been asked to schedule a
+    /// tick for, in call order. `request_frame_in` takes `&self`, so this
+    /// is a `RefCell`, not a plain field — mirrors `invalidation_log`'s
+    /// role for `invalidate_rect`, giving a headless test a way to assert
+    /// a timer-driven repaint (e.g. a hover tooltip's dismiss delay) was
+    /// actually requested, not just simulated by hand-driving
+    /// `MacDriver::tick`.
+    frame_requests: std::cell::RefCell<Vec<Duration>>,
     /// Whether [`Self::enter_frame_scope`] should wrap its closure in
     /// [`super::text::start_recording_text`] / `stop_recording_text` and
     /// stash the result into `text_runs`. Off by default — the live
@@ -320,6 +357,19 @@ pub struct MacBackend {
     /// type's doc comment) — so the `origin_x`/`origin_y` `arm()`
     /// arguments are always `0.0` and go unread.
     pending_window_press: WindowDragArm<Retained<NSEvent>>,
+    /// The [`PointerShape`] most recently requested via
+    /// [`Backend::set_cursor`]. `macos::run`'s `QuadraView` reads this
+    /// through [`Self::requested_cursor`] from its `cursorUpdate:` /
+    /// `resetCursorRects` overrides, so AppKit keeps re-applying the
+    /// right native cursor on every subsequent mouse move — including
+    /// mid-drag — instead of reverting to the arrow the instant the
+    /// one-shot `NSCursor::set()` call in `set_cursor` gets overwritten
+    /// by AppKit's own tracking. A plain field: `QuadraView` reaches it
+    /// through a `try_borrow()`/`borrow()` on the shared
+    /// `Rc<RefCell<MacBackend>>`, which already hands back `&MacBackend`,
+    /// so there's no `&self`-vs-`&mut self` aliasing to route around with
+    /// a `Cell`.
+    requested_cursor: PointerShape,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
     // /. Picks `Icon::glyph` vs `Icon::fallback` in
     /// `draw_activity_bar` and (since #804) `draw_tree`. Set via
@@ -584,6 +634,56 @@ fn union_ns_rect(a: NSRect, b: NSRect) -> NSRect {
     }
 }
 
+/// Whether rects `a` and `b` share any area — used by
+/// [`MacBackend::draw_focus_ring`] to avoid stroking on top of a
+/// tooltip/toast painted earlier this frame; see
+/// `overlay_bounds_this_frame`'s own doc. A shared edge with zero overlap
+/// width/height doesn't count as overlapping.
+fn rects_overlap(a: Rect, b: Rect) -> bool {
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+}
+
+/// Whether `overlay` would land on the pixels [`MacBackend::draw_focus_ring`]
+/// actually paints for `rect` at `stroke_width`.
+///
+/// `CGContextStrokeRect` centers a `stroke_width`-thick line on each of
+/// `rect`'s four edges, so the ring only occupies the thin band straddling
+/// those edges by `stroke_width / 2` in each direction — never `rect`'s full
+/// interior. An overlay that lands strictly inside `rect` without reaching
+/// any edge (e.g. a toast inset from the viewport it's raised over, landing
+/// inside a focused widget that spans that same viewport) never shares a
+/// pixel with the ring, so it must not suppress the stroke.
+fn focus_ring_band_overlaps(rect: Rect, stroke_width: f32, overlay: Rect) -> bool {
+    let half = stroke_width / 2.0;
+    let top = Rect::new(
+        rect.x - half,
+        rect.y - half,
+        rect.width + stroke_width,
+        stroke_width,
+    );
+    let bottom = Rect::new(
+        rect.x - half,
+        rect.y + rect.height - half,
+        rect.width + stroke_width,
+        stroke_width,
+    );
+    let left = Rect::new(
+        rect.x - half,
+        rect.y - half,
+        stroke_width,
+        rect.height + stroke_width,
+    );
+    let right = Rect::new(
+        rect.x + rect.width - half,
+        rect.y - half,
+        stroke_width,
+        rect.height + stroke_width,
+    );
+    [top, bottom, left, right]
+        .into_iter()
+        .any(|band| rects_overlap(band, overlay))
+}
+
 /// Map a [`PointerShape`] to the [`MacCursorKind`] it should show.
 /// Mirrors `gtk::backend::pointer_shape_cursor_name`, but `NSCursor`'s
 /// public API (`objc2-app-kit`'s binding of it — see
@@ -609,11 +709,17 @@ fn mac_cursor_kind(shape: PointerShape) -> MacCursorKind {
             | ResizeEdge::SouthEast
             | ResizeEdge::SouthWest,
         ) => MacCursorKind::Arrow,
+        // `ColResize`/`RowResize` are the in-content divider counterparts
+        // of `Resize(East|West)`/`Resize(North|South)` above — same two
+        // AppKit glyphs, just reached from a sash/column-border drag
+        // rather than a window-edge one.
+        PointerShape::ColResize => MacCursorKind::ResizeLeftRight,
+        PointerShape::RowResize => MacCursorKind::ResizeUpDown,
         // AppKit has first-class cursors for several of these
         // (`NSCursor::iBeamCursor`/`pointingHandCursor`/etc.) but none are
-        // wired up yet, so every shape beyond `Default`/`Resize` falls back
-        // to the plain arrow — a deliberate no-regression default, not a
-        // missing case.
+        // wired up yet, so every shape beyond `Default`/`Resize`/
+        // `ColResize`/`RowResize` falls back to the plain arrow — a
+        // deliberate no-regression default, not a missing case.
         _ => MacCursorKind::Arrow,
     }
 }
@@ -621,7 +727,7 @@ fn mac_cursor_kind(shape: PointerShape) -> MacCursorKind {
 /// Vend the shared `NSCursor` singleton for a [`PointerShape`], via
 /// [`mac_cursor_kind`]. The only AppKit-touching half of the
 /// mapping; see [`MacCursorKind`] for why the two halves are separate.
-fn mac_cursor_for_shape(shape: PointerShape) -> Retained<NSCursor> {
+pub(crate) fn mac_cursor_for_shape(shape: PointerShape) -> Retained<NSCursor> {
     // `resizeUpDownCursor`/`resizeLeftRightCursor` are deprecated in AppKit
     // in favour of `rowResizeCursorInDirections:`/`columnResizeCursorInDirections:`
     // (divider-drag) or `frameResizeCursorFromPosition:inDirections:` (rectangular
@@ -713,6 +819,8 @@ impl MacBackend {
             current_line_height: 16.0,
             current_char_width: 8.0,
             editor_v_scrollbar_w: None,
+            scroll_fade_last_interaction: Some(std::time::Instant::now()),
+            scroll_fade_clock_override: None,
             chrome_font,
             chrome_line_height: chrome_metrics.line_height,
             chrome_char_width: chrome_metrics.char_width,
@@ -725,6 +833,8 @@ impl MacBackend {
                 std::time::Instant::now(),
             )),
             zones: Vec::new(),
+            overlay_bounds_this_frame: Vec::new(),
+            frame_requests: std::cell::RefCell::new(Vec::new()),
             painted_text_recording: false,
             skip_animations: false,
             text_runs: Vec::new(),
@@ -732,6 +842,7 @@ impl MacBackend {
             minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             window: None,
             pending_window_press: WindowDragArm::new(),
+            requested_cursor: PointerShape::Default,
             nerd_fonts_enabled: true,
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
@@ -749,6 +860,17 @@ impl MacBackend {
     /// / [`Backend::set_cursor`] — mirrors `GtkBackend::set_window`.
     pub(crate) fn set_window(&mut self, window: Retained<NSWindow>) {
         self.window = Some(window);
+    }
+
+    /// The [`PointerShape`] last requested via [`Backend::set_cursor`] —
+    /// `Default` before the first call. Read by `macos::run`'s
+    /// `cursorUpdate:` / `resetCursorRects` `QuadraView` overrides (via
+    /// [`mac_cursor_for_shape`]) every time AppKit re-evaluates which
+    /// cursor belongs over the content view, so the shape an app asked
+    /// for keeps winning on every later mouse move — not just the one
+    /// frame `set_cursor` happened to run on.
+    pub(crate) fn requested_cursor(&self) -> PointerShape {
+        self.requested_cursor
     }
 
     /// Install the closure [`Backend::waker`]'s returned handle invokes on
@@ -840,6 +962,60 @@ impl MacBackend {
     /// when this is `false`.
     pub fn caret_visible(&self) -> bool {
         self.caret_visible.get()
+    }
+
+    /// Record that a scroll event just arrived, resetting the overlay
+    /// scrollbar's idle-fade clock to "now". `super::run`'s
+    /// `scrollWheel:` handler calls this for every delta it receives
+    /// — precise trackpad deltas and discrete wheel notches alike —
+    /// before dispatching the translated [`UiEvent::Scroll`].
+    ///
+    /// [`UiEvent::Scroll`]: crate::UiEvent::Scroll
+    pub fn note_scroll_activity(&mut self) {
+        self.scroll_fade_last_interaction = Some(self.fade_now());
+    }
+
+    /// Test seam: pin the overlay scrollbar's last-interaction instant
+    /// directly instead of going through a synthetic
+    /// [`Self::note_scroll_activity`] call. `None` resets to "never
+    /// scrolled" (fully faded).
+    pub fn set_scroll_last_interaction(&mut self, at: Option<std::time::Instant>) {
+        self.scroll_fade_last_interaction = at;
+    }
+
+    /// The overlay scrollbar's current last-interaction instant —
+    /// [`Self::new`]'s own construction time until a real scroll (or a
+    /// test) resets it. `None` once explicitly cleared via
+    /// [`Self::set_scroll_last_interaction`].
+    pub fn scroll_last_interaction(&self) -> Option<std::time::Instant> {
+        self.scroll_fade_last_interaction
+    }
+
+    /// Test seam: override what [`Self::fade_now`] returns, so a pixel
+    /// test can assert the fade curve at an exact offset from the last
+    /// interaction without a real sleep. `None` (the default) falls
+    /// back to [`std::time::Instant::now`].
+    pub fn set_fade_clock_override(&mut self, now: Option<std::time::Instant>) {
+        self.scroll_fade_clock_override = now;
+    }
+
+    /// "Now", for overlay-scrollbar fade purposes — real wall-clock
+    /// time unless a test pinned [`Self::set_fade_clock_override`].
+    fn fade_now(&self) -> std::time::Instant {
+        self.scroll_fade_clock_override
+            .unwrap_or_else(std::time::Instant::now)
+    }
+
+    /// Opacity multiplier [`Backend::draw_scrollbar`] paints the track
+    /// and thumb at: `0.0` if [`Self::scroll_last_interaction`] has been
+    /// explicitly cleared to `None`, otherwise
+    /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
+    /// sampled at [`Self::fade_now`].
+    fn scrollbar_fade_opacity(&self) -> f32 {
+        match self.scroll_fade_last_interaction {
+            Some(last) => crate::primitives::scrollbar::idle_fade_opacity(last, self.fade_now()),
+            None => 0.0,
+        }
     }
 
     /// Install the font that subsequent `draw_*` calls use for text.
@@ -964,7 +1140,7 @@ impl MacBackend {
     /// chrome strips use), `Style` tokens are a documented no-op (see
     /// that module's "Where each token maps on TUI"), so the raw
     /// candidate passes through unchanged.
-    fn resolved_row_height(&self, candidate_line_height: f64) -> f64 {
+    pub(crate) fn resolved_row_height(&self, candidate_line_height: f64) -> f64 {
         if candidate_line_height > 1.0 {
             candidate_line_height.max(self.current_style.row_height as f64)
         } else {
@@ -1055,6 +1231,17 @@ impl MacBackend {
     /// [`Backend::register_zone`].
     pub(crate) fn zones(&self) -> &[ZoneRec] {
         &self.zones
+    }
+
+    /// Every delay [`Backend::request_frame_in`] has been called with, in
+    /// call order — see `frame_requests`'s own doc. A headless test uses
+    /// this to assert a timer-driven repaint was actually scheduled
+    /// (e.g. a hover tooltip's dismiss delay) instead of only hand-driving
+    /// `MacDriver::tick` and never checking the real wake-up path got
+    /// asked for.
+    #[cfg(test)]
+    pub(crate) fn frame_requests(&self) -> Vec<Duration> {
+        self.frame_requests.borrow().clone()
     }
 
     /// The currently-stashed `CGContextRef`, or null outside a frame
@@ -1468,6 +1655,10 @@ impl Backend for MacBackend {
         // `enter_frame_scope`) until whatever reads them after the frame
         // (e.g. `MacDriver::inventory`).
         self.zones.clear();
+        // Clear last frame's tooltip/toast bounds — see
+        // `overlay_bounds_this_frame`'s own doc. Same per-frame lifecycle
+        // as `zones`.
+        self.overlay_bounds_this_frame.clear();
         // Clear the focused activity bar — re-set by `draw_activity_bar`
         // during this render pass if a bar is still keyboard-focused. Same
         // per-frame lifecycle as `zones`, matching `GtkBackend::begin_frame`.
@@ -1759,6 +1950,7 @@ impl Backend for MacBackend {
     /// closure below simply finds nothing to call, same posture as
     /// `waker`'s own "no callback yet" case.
     fn request_frame_in(&self, delay: Duration) {
+        self.frame_requests.borrow_mut().push(delay);
         let tick_callback = Arc::clone(&self.tick_callback);
         let Ok(when) = DispatchTime::try_from(delay) else {
             return;
@@ -1885,9 +2077,36 @@ impl Backend for MacBackend {
         self.focus.set_focus(id)
     }
 
+    /// Strokes the generic tab-stop focus-ring convention around `rect`.
+    ///
+    /// Called by [`super::run::render_frame`] *after* `AppLogic::render`
+    /// returns, deliberately — so the ring paints on top of whatever the
+    /// focused widget's own content drew (see `focus_demo`'s module doc:
+    /// "the ring overlays rather than clears"). That same lateness means
+    /// it would also paint on top of a tooltip or toast `render` drew
+    /// over this same rect, inverting the overlay-order contract (see
+    /// [`Backend::draw_focus_ring`]'s own trait doc: tooltip/toast stay
+    /// topmost of all). Skipping the stroke wherever it would land on a
+    /// tooltip/toast bound recorded this frame — see
+    /// `overlay_bounds_this_frame` — keeps the ring out of the way of an
+    /// overlay without needing to defer either paint call.
+    ///
+    /// The ring is a perimeter stroke, not a filled rect
+    /// ([`focus_ring_band_overlaps`]), so an overlay that lands strictly
+    /// inside `rect` without touching the stroke band — e.g. a toast
+    /// inset within a focused widget that spans the whole viewport —
+    /// never conflicts with the ring and leaves it (and its
+    /// `register_zone` chrome entry) intact.
     fn draw_focus_ring(&mut self, rect: Rect) {
-        let theme = self.current_theme;
         let stroke_width = self.current_style.focus_ring_width;
+        if self
+            .overlay_bounds_this_frame
+            .iter()
+            .any(|overlay| focus_ring_band_overlaps(rect, stroke_width, *overlay))
+        {
+            return;
+        }
+        let theme = self.current_theme;
         self.surface_stroke_rect(rect, theme.accent_fg, stroke_width);
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
@@ -2040,8 +2259,10 @@ impl Backend for MacBackend {
         true
     }
 
-    /// Sets the cursor via `NSCursor::set()`, not the `push`/`pop`
-    /// pairing AppKit's own `cursorUpdate:`/tracking-area handlers
+    /// Stashes `shape` (read back by `macos::run`'s `cursorUpdate:` /
+    /// `resetCursorRects` overrides via [`Self::requested_cursor`]) and
+    /// applies it immediately via plain `NSCursor::set()` — not the
+    /// `push`/`pop` pairing AppKit's own tracking-area handlers
     /// conventionally use. That pairing exists to *restore* whatever
     /// cursor was showing before a transient region was entered; this
     /// backend has no such transient-region concept — `Backend::set_cursor`
@@ -2054,10 +2275,16 @@ impl Backend for MacBackend {
     /// hover cursor that must restore the ambient one), that's a new,
     /// deliberately-scoped API on top of this one — not a reason to
     /// replace this plain `.set()`.
+    ///
+    /// The immediate `.set()` call alone doesn't survive AppKit's own
+    /// cursor-rect machinery kicking in on the next mouse move — see
+    /// [`Self::requested_cursor`]'s doc for the half of the fix that
+    /// makes it stick.
     fn set_cursor(&mut self, shape: PointerShape) -> bool {
         if self.window.is_none() {
             return false;
         }
+        self.requested_cursor = shape;
         // `NSCursor::set` is a safe method — called from `AppLogic::handle`
         // (via `Backend::set_cursor`), which only ever runs on the main
         // thread inside the live AppKit run loop.
@@ -2192,6 +2419,36 @@ impl Backend for MacBackend {
         self.current_char_width as f32
     }
 
+    /// `NSEvent.scrollingDeltaY` is already in real points, not row
+    /// notches like every other backend reports — divide by
+    /// `row_height` (on `TreeController`, [`Self::tree_scroll_row_height`]'s
+    /// result, the *same* basis the caller multiplies back by) to land
+    /// in row-unit currency without losing the real-pixel round-trip.
+    /// Guards a non-positive or non-finite `row_height` (degenerate font
+    /// state) by falling back to the trait default (pass delta through
+    /// unchanged) rather than dividing by zero or producing `NaN`/`inf`.
+    fn wheel_delta_rows(&self, delta_y: f32, row_height: f32) -> f32 {
+        if row_height > 0.0 && row_height.is_finite() {
+            delta_y / row_height
+        } else {
+            delta_y
+        }
+    }
+
+    /// The tree's real painted row pitch: [`Self::resolved_row_height`]
+    /// of the chrome font metric, run through the same
+    /// [`crate::primitives::layout_metrics::tree_row_pitch`] formula
+    /// [`Self::tree_layout`]/[`Self::draw_tree_with_state`] paint rows
+    /// at — not [`Self::line_height`] (the *editor* font metric), which
+    /// disagrees with that painted pitch whenever the chrome font's
+    /// line height differs from the editor font's.
+    fn tree_scroll_row_height(&self, tree: &TreeView) -> f32 {
+        crate::primitives::layout_metrics::tree_row_pitch(
+            tree,
+            self.resolved_row_height(self.chrome_line_height),
+        ) as f32
+    }
+
     /// Forwards to [`Self::set_current_line_height`] — the
     /// `Backend`-trait-object-reachable twin of that inherent method, the
     /// macOS counterpart of `GtkBackend`'s / `WinBackend`'s overrides of
@@ -2257,8 +2514,49 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 tree,
                 &theme,
+                &self.current_style,
                 line_height,
                 self.nerd_fonts_enabled,
+            );
+        }
+    }
+    /// [`Self::draw_tree`], plus hover/press tinting, a focus-visible
+    /// ring, and — when `state.scroll_px` is `Some` — a pixel-precise
+    /// scroll position instead of only [`TreeView::scroll_offset`]'s
+    /// whole-row value, via [`super::tree::draw_tree_with_state`].
+    /// `state.scroll_px: None` paints pixel-identically to
+    /// [`Self::draw_tree`].
+    fn draw_tree_with_state(
+        &mut self,
+        rect: Rect,
+        tree: &TreeView,
+        state: &crate::primitives::tree::TreePaintState,
+        focus_ring_visible: bool,
+    ) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_tree_with_state called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.resolved_row_height(self.chrome_line_height);
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::tree::draw_tree_with_state(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                tree,
+                &theme,
+                &self.current_style,
+                line_height,
+                self.nerd_fonts_enabled,
+                state,
+                focus_ring_visible,
             );
         }
     }
@@ -2285,8 +2583,49 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 list,
                 &theme,
+                &self.current_style,
                 line_height,
                 self.nerd_fonts_enabled,
+            );
+        }
+    }
+    /// [`Self::draw_list`], plus hover/press tinting, a focus-visible
+    /// ring, and — when `state.scroll_px` is `Some` — a pixel-precise
+    /// scroll position instead of only [`ListView::scroll_offset`]'s
+    /// whole-row value, via [`super::list::draw_list_with_state`].
+    /// `state.scroll_px: None` paints pixel-identically to
+    /// [`Self::draw_list`].
+    fn draw_list_with_state(
+        &mut self,
+        rect: Rect,
+        list: &ListView,
+        state: &crate::primitives::list::ListPaintState,
+        focus_ring_visible: bool,
+    ) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_list_with_state called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.resolved_row_height(self.chrome_line_height);
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::list::draw_list_with_state(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                list,
+                &theme,
+                &self.current_style,
+                line_height,
+                self.nerd_fonts_enabled,
+                state,
+                focus_ring_visible,
             );
         }
     }
@@ -2359,6 +2698,42 @@ impl Backend for MacBackend {
             )
         }
     }
+    /// [`Self::draw_data_table`], plus — when `state.scroll_px` is
+    /// `Some` — a pixel-precise scroll position instead of only
+    /// [`DataTable::scroll_offset`]'s whole-row value, via
+    /// [`super::data_table::draw_data_table_with_state`].
+    /// `state.scroll_px: None` paints pixel-identically to
+    /// [`Self::draw_data_table`].
+    fn draw_data_table_with_state(
+        &mut self,
+        rect: Rect,
+        table: &DataTable,
+        state: &crate::primitives::data_table::DataTablePaintState,
+    ) -> DataTableLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_data_table_with_state called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.resolved_row_height(self.current_line_height);
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::data_table::draw_data_table_with_state(
+                ctx,
+                font,
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+                table,
+                &theme,
+                line_height,
+                state,
+            )
+        }
+    }
     fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout {
         // No-paint twin of `draw_data_table` — must agree with what
         // that method painted.
@@ -2403,13 +2778,14 @@ impl Backend for MacBackend {
     fn list_vscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
         // macOS ListView vertical-scrollbar rasteriser not yet implemented.
         // Delegate to the primitive's geometry method using pixel units:
-        // each "row" is `resolved_row_height` tall (the primitive
-        // column-width parameter is reused as row_height here, same as
-        // for TUI) — matches `draw_list`'s own row pitch.
+        // each "row" is `resolved_row_height` tall, matching `draw_list`'s
+        // own row pitch. `scrollbar_width` sets the track's column width so
+        // this hit-test agrees exactly with what `draw_list` paints.
         let row_h = self.resolved_row_height(self.chrome_line_height() as f64) as f32;
-        list.vscrollbar(
+        list.vscrollbar_with_track_width(
             crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height),
             row_h,
+            self.current_style.scrollbar_width,
         )
     }
     fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
@@ -2658,6 +3034,7 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 bar,
                 &theme,
+                &self.current_style,
                 hovered_close_tab,
                 icons,
             );
@@ -2666,12 +3043,91 @@ impl Backend for MacBackend {
             hits
         }
     }
+    /// Trait-level entry point the gallery and `quadraui-binding-core`'s
+    /// render path actually call (`draw_tab_bar_with_chrome_layout`'s
+    /// sibling) — delegates to [`Self::draw_tab_bar_with_chrome_and_glyphs`]
+    /// with `glyphs: None` so `chrome.focused_index`'s ring paints from
+    /// this entry point too, not only from the `_and_glyphs` spelling.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits`
+    fn draw_tab_bar_with_chrome(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        chrome: &crate::primitives::tab_bar::TabChrome,
+    ) -> TabBarHits {
+        self.draw_tab_bar_with_chrome_and_glyphs(rect, bar, hovered_close_tab, chrome, None)
+    }
+    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar_with_chrome`]
+    /// — the twin `quadraui-binding-core`'s `render.rs` actually calls
+    /// (`TabChrome::default().with_focused_index(tabs.focused_index)`).
+    /// Paints through [`super::tab_bar::draw_tab_bar_icons_with_glyphs`]
+    /// directly, honouring `chrome.focused_index`, even though the ring
+    /// it paints plays no part in the returned [`TabBarLayout`] — then
+    /// resolves that layout the same icon-less way
+    /// [`Self::draw_tab_bar_layout`] does.
+    fn draw_tab_bar_with_chrome_layout(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        chrome: &crate::primitives::tab_bar::TabChrome,
+    ) -> TabBarLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_tab_bar_with_chrome_layout called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.chrome_line_height;
+        // SAFETY: `ctx` is non-null inside the frame scope. Same X-only
+        // CTM translate as `Self::draw_tab_bar_icons_layout` — this call
+        // discards the painted `TabBarHits`, so only the ink needs to
+        // land at `rect.x`.
+        #[allow(deprecated)] // discarded `TabBarHits`
+        unsafe {
+            CGContextSaveGState(ctx);
+            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
+            let _ = super::tab_bar::draw_tab_bar_icons_with_glyphs(
+                ctx,
+                font,
+                rect.width as f64,
+                line_height,
+                rect.y as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+                &self.current_style,
+                hovered_close_tab,
+                &[],
+                None,
+                self.nerd_fonts_enabled,
+                None,
+                None,
+                chrome.focused_index,
+            );
+            CGContextRestoreGState(ctx);
+        }
+        super::tab_bar::mac_tab_bar_native_layout_icons(
+            font,
+            rect.width as f64,
+            rect.height as f64,
+            bar,
+            &[],
+            &self.current_style,
+        )
+    }
     /// [`Self::draw_tab_bar_icons`], but honouring an optional
     /// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
     /// close/dirty mark — `glyphs: None` reproduces
-    /// [`Self::draw_tab_bar_icons`] exactly. `chrome` is unused: this
-    /// rasteriser has no bracket-chrome support, matching the trait
-    /// default's own posture of ignoring `chrome` on backends without it.
+    /// [`Self::draw_tab_bar_icons`] exactly. `chrome.active_frame` is
+    /// unused: this rasteriser has no bracket-chrome support, matching the
+    /// trait default's own posture of ignoring that knob on backends
+    /// without it. `chrome.focused_index` *is* honoured: it paints a
+    /// focus-visible ring on the named tab (see
+    /// [`super::tab_bar::draw_tab_bar_icons_with_glyphs`]'s paint-loop
+    /// comment for the ring geometry).
     #[allow(deprecated)] // returns the deprecated `TabBarHits`
     fn draw_tab_bar_with_chrome_and_glyphs(
         &mut self,
@@ -2681,7 +3137,6 @@ impl Backend for MacBackend {
         chrome: &crate::primitives::tab_bar::TabChrome,
         glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
     ) -> TabBarHits {
-        let _ = chrome;
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
@@ -2705,10 +3160,14 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 bar,
                 &theme,
+                &self.current_style,
                 hovered_close_tab,
                 &[],
                 glyphs,
                 self.nerd_fonts_enabled,
+                None,
+                None,
+                chrome.focused_index,
             );
             CGContextRestoreGState(ctx);
             crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
@@ -2773,6 +3232,7 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 bar,
                 &theme,
+                &self.current_style,
                 hovered_close_tab,
                 icons,
             );
@@ -2784,6 +3244,124 @@ impl Backend for MacBackend {
             rect.height as f64,
             bar,
             icons,
+            &self.current_style,
+        )
+    }
+    /// [`Self::draw_tab_bar_icons`], plus `hovered_tab`/`pressed_tab`
+    /// indices naming the whole tab (not its close glyph) the mouse is
+    /// over/held down on. Paints a tinted background behind the hovered
+    /// or pressed tab — `Theme::list_hover_bg`/`list_pressed_bg`, the
+    /// same derivation [`super::tab_bar::draw_tab_bar_icons_with_glyphs`]'s
+    /// own doc explains — rather than only tinting the close glyph the
+    /// way [`Self::draw_tab_bar`] already does.
+    ///
+    /// Calls [`super::tab_bar::draw_tab_bar_icons_with_glyphs`] directly
+    /// (icon-less, glyph-less) instead of widening [`Self::draw_tab_bar_icons`]'s
+    /// own signature — the same choice [`Self::draw_tab_bar_with_chrome_and_glyphs`]
+    /// already makes to reach the same painter.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits`
+    fn draw_tab_bar_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> TabBarHits {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_tab_bar_with_state called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.chrome_line_height;
+        // SAFETY: `ctx` is non-null inside the frame scope. See
+        // `Self::draw_tab_bar_icons`'s doc for the CTM-translate /
+        // hit-shift dance this mirrors.
+        unsafe {
+            CGContextSaveGState(ctx);
+            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
+            let mut hits = super::tab_bar::draw_tab_bar_icons_with_glyphs(
+                ctx,
+                font,
+                rect.width as f64,
+                line_height,
+                rect.y as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+                &self.current_style,
+                hovered_close_tab,
+                &[],
+                None,
+                self.nerd_fonts_enabled,
+                hovered_tab,
+                pressed_tab,
+                None,
+            );
+            CGContextRestoreGState(ctx);
+            crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
+            hits
+        }
+    }
+    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar_with_state`]
+    /// — the twin the `quadraui-binding-core` paint path can actually
+    /// reach, since it calls `draw_tab_bar_layout`, never the deprecated
+    /// `draw_tab_bar`. Same hover/pressed tint as
+    /// [`Self::draw_tab_bar_with_state`]; only the returned type differs.
+    fn draw_tab_bar_layout_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> TabBarLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_tab_bar_layout_with_state called outside enter_frame_scope",
+        );
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        let line_height = self.chrome_line_height;
+        // SAFETY: `ctx` is non-null inside the frame scope. Same X-only
+        // CTM translate as `Self::draw_tab_bar_icons` above — this call
+        // discards the painted `TabBarHits` anyway, so there is no
+        // return value left to shift; only the ink needs to land at
+        // `rect.x`.
+        #[allow(deprecated)] // discarded `TabBarHits`
+        unsafe {
+            CGContextSaveGState(ctx);
+            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
+            let _ = super::tab_bar::draw_tab_bar_icons_with_glyphs(
+                ctx,
+                font,
+                rect.width as f64,
+                line_height,
+                rect.y as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+                &self.current_style,
+                hovered_close_tab,
+                &[],
+                None,
+                self.nerd_fonts_enabled,
+                hovered_tab,
+                pressed_tab,
+                None,
+            );
+            CGContextRestoreGState(ctx);
+        }
+        super::tab_bar::mac_tab_bar_native_layout_icons(
+            font,
+            rect.width as f64,
+            rect.height as f64,
+            bar,
+            &[],
+            &self.current_style,
         )
     }
     fn draw_activity_bar(
@@ -2922,6 +3500,7 @@ impl Backend for MacBackend {
             rect.width as f64,
             bar,
             icons,
+            &self.current_style,
         );
         // Bar-relative → target-surface-absolute, the same
         // shift `Self::draw_tab_bar_icons` applies to its own returned
@@ -2958,6 +3537,7 @@ impl Backend for MacBackend {
             rect.height as f64,
             bar,
             icons,
+            &self.current_style,
         )
     }
 
@@ -3138,10 +3718,11 @@ impl Backend for MacBackend {
         // disagree with the glyphs they sit between. Same hazard
         // `Self::list_char_width`'s doc documents for `draw_list`.
         let theme = self.current_theme;
+        let style = self.style();
         let line_height = self.chrome_line_height as f32;
         let char_width = self.chrome_char_width as f32;
         let layout = super::text_input::mac_text_input_layout(ti, rect, line_height, char_width);
-        crate::primitives::text_input::paint(ti, &layout, self, &theme);
+        crate::primitives::text_input::paint(ti, &layout, self, &theme, &style);
         layout
     }
     fn text_input_layout(
@@ -3199,6 +3780,10 @@ impl Backend for MacBackend {
             &theme,
             &style,
         );
+        // See `overlay_bounds_this_frame`'s own doc: a later
+        // `draw_focus_ring` call this same frame must not stroke over this
+        // tooltip.
+        self.overlay_bounds_this_frame.push(layout.bounds);
     }
     fn draw_context_menu(
         &mut self,
@@ -3226,13 +3811,17 @@ impl Backend for MacBackend {
             ctx,
             font: Some(font),
         };
-        crate::primitives::context_menu::native_surface_paint::paint(
+        // `None` keeps `paint_with_glyphs`'s check/arrow defaults; the
+        // flag resolves an item's own `ContextMenuItem::icon`.
+        crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
             menu,
             layout,
             crate::accelerator::Platform::Macos,
             &mut surface,
             &theme,
             &style,
+            None,
+            self.nerd_fonts_enabled,
         )
     }
     /// [`Self::draw_context_menu`], but honouring an optional
@@ -3404,6 +3993,7 @@ impl Backend for MacBackend {
                 rect.height as f64,
                 view,
                 &theme,
+                &self.current_style,
                 line_height,
                 char_width,
                 caret_visible,
@@ -3422,6 +4012,7 @@ impl Backend for MacBackend {
             rect,
             self.resolved_row_height(self.chrome_line_height),
             &self.chrome_font,
+            self.current_style.row_padding_x,
         )
     }
     fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<crate::Scrollbar> {
@@ -3583,7 +4174,10 @@ impl Backend for MacBackend {
     }
     fn draw_scrollbar(&mut self, _rect: Rect, scrollbar: &Scrollbar) {
         let theme = self.current_theme;
-        crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, self, &theme);
+        let opacity = self.scrollbar_fade_opacity();
+        crate::primitives::scrollbar::native_surface_paint::paint_with_opacity(
+            scrollbar, self, &theme, opacity,
+        );
     }
 
     fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
@@ -3855,6 +4449,20 @@ impl Backend for MacBackend {
         if still_animating {
             self.request_frame_in(Duration::from_millis(16));
         }
+
+        // See `overlay_bounds_this_frame`'s own doc: a later
+        // `draw_focus_ring` call this same frame must not stroke over any
+        // of these. `layout.visible_toasts[].bounds` is the toast's
+        // *resting* position (`paint_with_x_offset`'s own doc: it stays
+        // there "without perturbing the returned `ToastStackLayout`"), but
+        // during the entrance slide this frame actually painted each box
+        // shifted by `offsets[id]` — record the rect that's actually on
+        // screen, not the one it's sliding toward.
+        self.overlay_bounds_this_frame
+            .extend(layout.visible_toasts.iter().map(|t| {
+                let dx = offsets.get(&t.id).copied().unwrap_or(0.0);
+                Rect::new(t.bounds.x + dx, t.bounds.y, t.bounds.width, t.bounds.height)
+            }));
 
         layout
     }
@@ -5641,6 +6249,59 @@ mod tests {
         assert_eq!(b.char_width(), 8.0);
     }
 
+    #[test]
+    fn wheel_delta_rows_divides_points_by_row_height() {
+        let b = MacBackend::new();
+        // A 10-point trackpad notch against a 16.0 row basis is 0.625
+        // rows, not 10 whole rows.
+        assert_eq!(b.wheel_delta_rows(10.0, 16.0), 0.625);
+        assert_eq!(b.wheel_delta_rows(-32.0, 16.0), -2.0);
+    }
+
+    #[test]
+    fn wheel_delta_rows_falls_back_to_passthrough_on_degenerate_row_height() {
+        let b = MacBackend::new();
+        assert_eq!(b.wheel_delta_rows(10.0, 0.0), 10.0);
+        assert_eq!(b.wheel_delta_rows(10.0, -4.0), 10.0);
+        assert_eq!(b.wheel_delta_rows(10.0, f32::NAN), 10.0);
+    }
+
+    #[test]
+    fn tree_scroll_row_height_is_the_real_painted_pitch_not_the_editor_line_height() {
+        let b = MacBackend::new();
+        assert_eq!(b.line_height(), 16.0);
+        let tree = TreeView {
+            id: WidgetId::new("tree"),
+            rows: vec![crate::primitives::tree::TreeRow {
+                path: vec![0],
+                indent: 0,
+                icon: None,
+                text: crate::types::StyledText::plain("a"),
+                badge: None,
+                is_expanded: None,
+                decoration: crate::Decoration::Normal,
+                edit: None,
+            }],
+            selection_mode: crate::SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: 0,
+            style: crate::TreeStyle::default(),
+            has_focus: true,
+        };
+        let row_height = b.tree_scroll_row_height(&tree);
+        // The real painted pitch is floored at `Style::row_height` and
+        // run through the tree's own 1.4x row-pitch formula, so it must
+        // not equal the raw editor `line_height()`.
+        assert_ne!(row_height, b.line_height());
+        assert_eq!(
+            row_height as f64,
+            crate::primitives::layout_metrics::tree_row_pitch(
+                &tree,
+                b.resolved_row_height(b.chrome_line_height() as f64)
+            )
+        );
+    }
+
     /// The registry itself now lives in `BackendCore` — its
     /// `contains_key` isn't reachable from here anymore, so this observes
     /// the same round trip behaviourally via `match_keypress`.
@@ -6114,6 +6775,68 @@ mod tests {
         ));
     }
 
+    /// Mirrors `set_cursor_false_without_window`: a rejected `set_cursor`
+    /// call must leave [`MacBackend::requested_cursor`] untouched — the
+    /// early-return guard runs before the stash, not after it — so
+    /// `macos::run`'s `cursorUpdate:`/`resetCursorRects` overrides never
+    /// see a shape the backend itself rejected.
+    #[test]
+    fn set_cursor_without_window_does_not_update_requested_cursor() {
+        let mut b = MacBackend::new();
+        assert_eq!(b.requested_cursor(), PointerShape::Default);
+        assert!(!Backend::set_cursor(
+            &mut b,
+            PointerShape::Resize(ResizeEdge::East)
+        ));
+        assert_eq!(b.requested_cursor(), PointerShape::Default);
+    }
+
+    /// The half of the set-cursor-sticks fix that's testable without a
+    /// live `NSWindow`/AppKit event loop: once `set_cursor` accepts a
+    /// shape (window present), [`MacBackend::requested_cursor`] reports
+    /// it back — the state `macos::run`'s `cursorUpdate:` /
+    /// `resetCursorRects` overrides re-apply on every later mouse move.
+    /// The AppKit-side half (the `NSTrackingArea` actually firing
+    /// `cursorUpdate:`, and the native cursor glyph it leaves on
+    /// screen) needs a live window + run loop and is covered by the
+    /// operator-run smoke tier instead — see this test's sibling
+    /// `titlebar_control_inset_is_narrow_on_a_live_window` for the same
+    /// headless-test-binary limitation.
+    #[test]
+    fn set_cursor_updates_requested_cursor_on_a_live_window() {
+        use objc2::msg_send;
+        use objc2_app_kit::{NSBackingStoreType, NSWindowStyleMask};
+
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(800.0, 600.0));
+        let style = NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Closable
+            | NSWindowStyleMask::Resizable
+            | NSWindowStyleMask::Miniaturizable;
+        // SAFETY: see `titlebar_control_inset_is_narrow_on_a_live_window`'s
+        // identical construction above.
+        let window: Retained<NSWindow> = unsafe {
+            msg_send![
+                mtm.alloc::<NSWindow>(),
+                initWithContentRect: content_rect,
+                styleMask: style,
+                backing: NSBackingStoreType::Buffered,
+                defer: false,
+            ]
+        };
+
+        let mut b = MacBackend::new();
+        b.set_window(window);
+        assert_eq!(b.requested_cursor(), PointerShape::Default);
+        assert!(Backend::set_cursor(
+            &mut b,
+            PointerShape::Resize(ResizeEdge::East)
+        ));
+        assert_eq!(b.requested_cursor(), PointerShape::Resize(ResizeEdge::East));
+    }
+
     /// Same no-window guard as the three tests above —
     /// `titlebar_control_inset` must short-circuit to the trait's own
     /// `Rect::default()` before touching `standardWindowButton` at all.
@@ -6290,10 +7013,10 @@ mod tests {
         // `desktop::ALL_RESIZE_EDGES`: N, S, E, W, NE, NW, SE, SW, then
         // `Text`/`Pointer`/`Grab`/`Grabbing`/`Crosshair`/`Wait`/
         // `NotAllowed`/`ColResize`/`RowResize`). The four corner edges and
-        // every variant past `Resize` fall back to the plain arrow — see
-        // `mac_cursor_kind`'s doc for why there's no public
-        // diagonal-resize `NSCursor` to use instead, and no AppKit mapping
-        // wired up yet for the new shapes.
+        // every variant past `Resize`/`ColResize`/`RowResize` fall back to
+        // the plain arrow — see `mac_cursor_kind`'s doc for why there's no
+        // public diagonal-resize `NSCursor` to use instead, and no AppKit
+        // mapping wired up yet for the remaining shapes.
         let expected = [
             MacCursorKind::Arrow,
             MacCursorKind::ResizeUpDown,
@@ -6304,15 +7027,15 @@ mod tests {
             MacCursorKind::Arrow,
             MacCursorKind::Arrow,
             MacCursorKind::Arrow,
-            MacCursorKind::Arrow, // Text
-            MacCursorKind::Arrow, // Pointer
-            MacCursorKind::Arrow, // Grab
-            MacCursorKind::Arrow, // Grabbing
-            MacCursorKind::Arrow, // Crosshair
-            MacCursorKind::Arrow, // Wait
-            MacCursorKind::Arrow, // NotAllowed
-            MacCursorKind::Arrow, // ColResize
-            MacCursorKind::Arrow, // RowResize
+            MacCursorKind::Arrow,           // Text
+            MacCursorKind::Arrow,           // Pointer
+            MacCursorKind::Arrow,           // Grab
+            MacCursorKind::Arrow,           // Grabbing
+            MacCursorKind::Arrow,           // Crosshair
+            MacCursorKind::Arrow,           // Wait
+            MacCursorKind::Arrow,           // NotAllowed
+            MacCursorKind::ResizeLeftRight, // ColResize
+            MacCursorKind::ResizeUpDown,    // RowResize
         ];
         let shapes = crate::desktop::all_pointer_shapes();
         assert_eq!(
@@ -7854,6 +8577,82 @@ mod tests {
         );
     }
 
+    /// Focus-visible ring: present when `TextInput::has_focus` is set
+    /// (the composed `ring.is_focused(id) && ring.is_focus_visible()`
+    /// Tab-focus produces, see `TextInput::has_focus`'s own doc), absent
+    /// when it's clear (same convention as `Button::focused` — a click's
+    /// paint composes `has_focus = false`, VS Code's `:focus-visible`
+    /// suppression; `TextInput` itself carries no "how did focus arrive"
+    /// state). Samples a pixel in the outset gap
+    /// `crate::primitives::button::native_surface_paint::
+    /// focus_ring_geometry` resolves — strictly outside the stroked
+    /// border, so it can only be non-background if the ring itself
+    /// painted there. Pins `focus_ring_width` explicitly (rather than
+    /// relying on `Style::default()`'s value) so the stroke's centred
+    /// edges land on whole pixel rows/columns the exact-equality pixel
+    /// probe below needs — an odd width would antialias the probe pixel
+    /// for a reason unrelated to the ring's presence.
+    #[test]
+    fn mac_backend_draw_text_input_paints_focus_ring_when_focused() {
+        use super::super::headless::BitmapSurface;
+        use crate::primitives::button::native_surface_paint::focus_ring_geometry;
+        use crate::primitives::text_input::TextInput;
+
+        const W: u32 = 200;
+        const H: u32 = 60;
+
+        let rect = Rect::new(20.0, 20.0, 160.0, 20.0);
+        let theme = Theme::default();
+        let style = crate::Style::default().with_focus_ring_width(2.0);
+        let ring = focus_ring_geometry(rect, &style);
+        // Mid-point of the ring's top edge: strictly outside `rect`
+        // (the gap), so untouched by `TextInput`'s own fill/border.
+        let probe_x = (ring.rect.x + ring.rect.width / 2.0) as u32;
+        let probe_y = ring.rect.y as u32;
+
+        let paint_and_sample = |has_focus: bool| -> (u8, u8, u8, u8) {
+            let surface = BitmapSurface::new(W, H);
+            let mut backend = MacBackend::new();
+            backend.set_current_font(font());
+            backend.set_current_style(style);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+            let mut ti = TextInput::new(WidgetId::new("focus-ring"));
+            ti.lines = vec!["hello".to_string()];
+            ti.has_focus = has_focus;
+
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                b.draw_text_input(rect, &ti);
+            });
+            backend.end_frame();
+            surface.pixel(probe_x, probe_y)
+        };
+
+        let (r, g, b, _a) = paint_and_sample(true);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "expected the focus-visible ring to paint in theme.focus_ring_color() in \
+             the outset gap after Tab focus (has_focus = true)",
+        );
+
+        let (r, g, b, _a) = paint_and_sample(false);
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "expected no focus-visible ring in the outset gap after a click \
+             (has_focus = false)",
+        );
+    }
+
     /// `TextInput` paints through plain `self`, which resolves
     /// `chrome_font` for its glyphs — so its caret grid has to use
     /// `chrome_char_width`, not `current_char_width`, or the caret lands
@@ -9377,6 +10176,48 @@ mod tests {
         assert!(sb.thumb_len >= 50.0);
     }
 
+    /// `list_vscrollbar`'s track width must follow a host-set
+    /// `Style::scrollbar_width`, the same live field
+    /// `native_surface_paint::paint` reads — so the painted track and
+    /// the hit-tested track can never drift apart, at the default width
+    /// or a host override.
+    #[test]
+    fn mac_backend_list_vscrollbar_track_width_follows_style_token() {
+        let mut backend = MacBackend::new();
+        let list = ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..30)
+                .map(|i| crate::ListItem {
+                    text: crate::types::StyledText::plain(format!("row {i}")),
+                    detail: None,
+                    icon: None,
+                    decoration: crate::types::Decoration::default(),
+                })
+                .collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: true,
+        };
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+
+        let default_sb = Backend::list_vscrollbar(&backend, rect, &list)
+            .expect("30 rows must overflow a 100px viewport");
+        assert_eq!(
+            default_sb.track.width,
+            backend.current_style().scrollbar_width
+        );
+
+        backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
+        let overridden_sb = Backend::list_vscrollbar(&backend, rect, &list)
+            .expect("30 rows must overflow a 100px viewport");
+        assert_eq!(overridden_sb.track.width, 24.0);
+    }
+
     /// `menu_bar_layout`/`draw_menu_bar` twin of
     /// `draw_tree_uses_ui_font_not_editor_font`: verify the returned
     /// `MenuBarLayout`'s measured item width is correct. `draw_menu_bar`
@@ -9890,7 +10731,7 @@ mod tests {
         let cx = (vt.bounds.x + vt.bounds.width / 2.0) as u32;
         let cy = (vt.bounds.y + vt.bounds.height / 2.0) as u32;
         let (r, g, b, _a) = surface.pixel(cx, cy);
-        let success_bg = Color::rgb(30, 80, 30);
+        let success_bg = Theme::default().success_bg();
         assert_ne!(
             (r, g, b),
             (success_bg.r, success_bg.g, success_bg.b),
@@ -9922,11 +10763,181 @@ mod tests {
         let cx = (vt.bounds.x + vt.bounds.width / 2.0) as u32;
         let cy = (vt.bounds.y + vt.bounds.height / 2.0) as u32;
         let (r, g, b, _a) = surface.pixel(cx, cy);
-        let success_bg = Color::rgb(30, 80, 30);
+        // `Success` severity's fallback tint, resolved through the same
+        // `Theme` accessor as
+        // `primitives::toast::native_surface_paint::severity_bg`.
+        let success_bg = Theme::default().success_bg();
         assert_eq!(
             (r, g, b),
             (success_bg.r, success_bg.g, success_bg.b),
             "toast should be painted at its resting position once the slide finishes",
+        );
+    }
+
+    // ── overlay order: tooltip/toast stay topmost of the focus ring ──────
+
+    /// `super::run::render_frame` calls `Backend::draw_focus_ring` *after*
+    /// `AppLogic::render` returns (see that method's own doc), so an app
+    /// that paints a toast overlapping the currently-focused widget's rect
+    /// — e.g. a toast that lands over a focused, bordered editor — must
+    /// not have the generic focus-ring convention stroke on top of it on
+    /// the very same frame. Regression for the overlay-order seam
+    /// documented on [`Backend::draw_focus_ring`] itself: tooltip/toast
+    /// stay topmost of all.
+    #[test]
+    fn draw_focus_ring_does_not_paint_over_a_toast_from_the_same_frame() {
+        use super::super::headless::BitmapSurface;
+
+        let overlay = sample_toast_overlay();
+        let mut backend = MacBackend::new();
+        backend.set_current_font(super::super::text::make_font("Menlo", 14.0).expect("Menlo"));
+        backend.set_skip_animations(true);
+
+        let surface = BitmapSurface::new(TOAST_W, TOAST_H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        backend.begin_frame(Viewport::new(TOAST_W as f32, TOAST_H as f32, 1.0));
+        let toast_bounds = std::cell::RefCell::new(Rect::new(0.0, 0.0, 0.0, 0.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let layout = b.draw_toast_overlay(
+                Rect::new(0.0, 0.0, TOAST_W as f32, TOAST_H as f32),
+                &overlay,
+            );
+            let vt = layout.visible_toasts[0].bounds;
+            *toast_bounds.borrow_mut() = vt;
+            // A tab-stop focus ring whose rect is the toast's own bounds —
+            // the worst case, a toast that lands exactly over the focused
+            // widget it was raised from.
+            b.draw_focus_ring(vt);
+        });
+        backend.end_frame();
+
+        let vt = *toast_bounds.borrow();
+        let theme = Theme::default();
+        let success_bg = theme.success_bg();
+        // Probe right at the toast's edge, where the ring would have
+        // stroked had it not been skipped.
+        let probe_x = (vt.x + vt.width / 2.0) as u32;
+        let probe_y = vt.y as u32;
+        let (r, g, b, _a) = surface.pixel(probe_x, probe_y);
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must not stroke over a toast painted earlier this frame",
+        );
+        // The toast's own fill is still intact at its centre.
+        let cx = (vt.x + vt.width / 2.0) as u32;
+        let cy = (vt.y + vt.height / 2.0) as u32;
+        let (r, g, b, _a) = surface.pixel(cx, cy);
+        assert_eq!(
+            (r, g, b),
+            (success_bg.r, success_bg.g, success_bg.b),
+            "the toast's own fill must still paint",
+        );
+    }
+
+    /// The ring is a perimeter stroke
+    /// ([`focus_ring_band_overlaps`]), not a filled rect, so a toast that
+    /// lands strictly *inside* a large focused widget — the issue's own
+    /// headline scenario, e.g. `draw_toast_overlay` insetting the stack by
+    /// `TOAST_MARGIN` from a focused editor/list that spans the whole
+    /// viewport — must leave the ring (and its `chrome:focus-ring` zone)
+    /// intact: there is no pixel conflict to suppress.
+    #[test]
+    fn draw_focus_ring_survives_a_toast_interior_to_the_focused_widget() {
+        use super::super::headless::BitmapSurface;
+
+        let overlay = sample_toast_overlay();
+        let mut backend = MacBackend::new();
+        backend.set_current_font(super::super::text::make_font("Menlo", 14.0).expect("Menlo"));
+        backend.set_skip_animations(true);
+
+        let surface = BitmapSurface::new(TOAST_W, TOAST_H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        backend.begin_frame(Viewport::new(TOAST_W as f32, TOAST_H as f32, 1.0));
+        // The focused widget spans the whole viewport (a focused
+        // editor/list behind the toast stack); the toast itself is inset
+        // from that same rect by `TOAST_MARGIN`, so it never reaches the
+        // focused rect's edges — the stroke band the ring actually paints.
+        let focused_rect = Rect::new(0.0, 0.0, TOAST_W as f32, TOAST_H as f32);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let _layout = b.draw_toast_overlay(focused_rect, &overlay);
+            b.draw_focus_ring(focused_rect);
+        });
+        backend.end_frame();
+
+        let theme = Theme::default();
+        // Probe at the focused rect's own top edge, inside the stroke
+        // band, well away from the inset toast box.
+        let probe_x = (focused_rect.x + 2.0) as u32;
+        let probe_y = focused_rect.y as u32;
+        let (r, g, b, _a) = surface.pixel(probe_x, probe_y);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must still paint when the toast is interior to the \
+             focused widget and never touches the ring's stroke band",
+        );
+        assert!(
+            backend
+                .zones()
+                .iter()
+                .any(|z| z.id == WidgetId::new("chrome:focus-ring")),
+            "the ring's chrome zone must still be registered",
+        );
+    }
+
+    /// Same contract as the toast regression above, for a tooltip anchored
+    /// directly over the currently-focused widget — the exact "hover
+    /// tooltip over a focused, bordered widget" scenario this issue's
+    /// acceptance criteria name.
+    #[test]
+    fn draw_focus_ring_does_not_paint_over_a_tooltip_from_the_same_frame() {
+        use super::super::headless::BitmapSurface;
+        use crate::primitives::tooltip::{ResolvedPlacement, Tooltip, TooltipLayout};
+
+        const W: u32 = 200;
+        const H: u32 = 100;
+        let rect = Rect::new(20.0, 20.0, 100.0, 30.0);
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+        let tooltip = Tooltip::new(WidgetId::new("tip"), "Hover text");
+        let layout = TooltipLayout {
+            bounds: rect,
+            resolved_placement: ResolvedPlacement::Bottom,
+        };
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_tooltip(&tooltip, &layout);
+            // The focused widget this tooltip is anchored to shares the
+            // tooltip's own bounds exactly — the ring must yield.
+            b.draw_focus_ring(rect);
+        });
+        backend.end_frame();
+
+        let theme = Theme::default();
+        let probe_x = (rect.x + rect.width / 2.0) as u32;
+        let probe_y = rect.y as u32;
+        let (r, g, b, _a) = surface.pixel(probe_x, probe_y);
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must not stroke over a tooltip painted earlier this frame",
         );
     }
 }

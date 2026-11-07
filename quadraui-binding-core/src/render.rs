@@ -10,15 +10,15 @@ use std::rc::Rc;
 use serde::{Deserialize, Deserializer};
 
 use quadraui::{
-    Backend, Button, DataTable, InteractionState, ListView, Rect, Scrollbar, Split, TabBar,
-    TextDisplay, TextDisplayLayout, TextRegion, TreeView, WidgetId,
+    Backend, Button, DataTable, InteractionState, ListView, Rect, Scrollbar, Split, SplitDirection,
+    SplitHit, SplitLayout, TabBar, TabChrome, TextDisplay, TextDisplayLayout, TextRegion, TreeView,
+    WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
 use crate::hit::PaintedHit;
 use crate::layout::{
-    quantise_horizontal, quantise_margin_horizontal, quantise_margin_vertical, quantise_vertical,
-    LayoutContainer, LayoutLeaf, LayoutNode, LeafDescriptor,
+    quantise_horizontal, quantise_vertical, LayoutContainer, LayoutLeaf, LayoutNode, LeafDescriptor,
 };
 
 /// Owned decode of a render callback's returned descriptor set — one
@@ -37,6 +37,15 @@ pub struct RenderFrame {
     pub tab_bar: Option<TabBar>,
     /// Additive primitive slots present in this frame, keyed by kind name.
     pub extra: HashMap<String, Rc<dyn ExtraPaint>>,
+    /// Optional pixel-precise scroll position lifted out of the `"list"`
+    /// slot's raw dict by [`crate::scroll_px_from_value`] — `None` unless
+    /// the dict set a numeric `"scroll_px"` key, in which case it wins
+    /// over [`ListView::scroll_offset`] in [`draw_bands`].
+    pub list_scroll_px: Option<f32>,
+    /// Same as `list_scroll_px`, for the `"tree"` slot.
+    pub tree_scroll_px: Option<f32>,
+    /// Same as `list_scroll_px`, for the `"data_table"` slot.
+    pub data_table_scroll_px: Option<f32>,
 }
 
 /// Decodes a render callback's returned `dict` into a [`RenderFrame`] —
@@ -66,6 +75,9 @@ impl RenderFrame {
             data_table: self.data_table.as_ref(),
             tab_bar: self.tab_bar.as_ref(),
             extra: &self.extra,
+            list_scroll_px: self.list_scroll_px,
+            tree_scroll_px: self.tree_scroll_px,
+            data_table_scroll_px: self.data_table_scroll_px,
         }
     }
 }
@@ -84,6 +96,15 @@ pub struct RenderRefs<'a> {
     /// Additive primitive slots, keyed by kind name. Painted after the six
     /// fixed bands above, in a binding's own `EXTRA_PRIMITIVES` order.
     pub extra: &'a HashMap<String, Rc<dyn ExtraPaint>>,
+    /// See [`RenderFrame::list_scroll_px`]. `None` for a `RenderRefs` a
+    /// binding builds by hand from its own static fields (no dict to
+    /// lift a `scroll_px` out of) — [`draw_bands`] paints exactly as
+    /// before in that case.
+    pub list_scroll_px: Option<f32>,
+    /// See [`RenderFrame::tree_scroll_px`].
+    pub tree_scroll_px: Option<f32>,
+    /// See [`RenderFrame::data_table_scroll_px`].
+    pub data_table_scroll_px: Option<f32>,
 }
 
 /// Paints each present slot top-to-bottom in a fixed-height band, skipping
@@ -141,19 +162,22 @@ pub fn draw_bands(
     }
     if let Some(list) = refs.list {
         if let Some(rect) = next_band(4.0) {
-            backend.draw_list(rect, list);
+            let state = quadraui::ListPaintState::default().with_scroll_px(refs.list_scroll_px);
+            backend.draw_list_with_state(rect, list, &state, false);
             let layout = backend.list_layout(rect, list);
             hits.push(PaintedHit::List {
                 id: list.id,
                 area: rect,
                 layout,
+                selected_idx: list.selected_idx,
+                total_items: list.items.len(),
             });
         }
     }
     if let Some(tree) = refs.tree {
         if let Some(rect) = next_band(4.0) {
             let (content_rect, scrollbar, viewport_rows) =
-                draw_tree_with_scrollbar(backend, rect, tree);
+                draw_tree_with_scrollbar_and_state(backend, rect, tree, refs.tree_scroll_px);
             let layout = backend.tree_layout(content_rect, tree);
             hits.push(PaintedHit::Tree {
                 id: tree.id,
@@ -172,7 +196,9 @@ pub fn draw_bands(
     }
     if let Some(data_table) = refs.data_table {
         if let Some(rect) = next_band(4.0) {
-            let layout = backend.draw_data_table(rect, data_table, None);
+            let state =
+                quadraui::DataTablePaintState::default().with_scroll_px(refs.data_table_scroll_px);
+            let layout = backend.draw_data_table_with_state(rect, data_table, &state);
             hits.push(PaintedHit::DataTable {
                 id: data_table.id,
                 area: rect,
@@ -190,6 +216,8 @@ pub fn draw_bands(
                 id: tab_bar.id,
                 area: rect,
                 layout,
+                focused_index: None,
+                tab_count: tab_bar.tabs.len(),
             });
         }
     }
@@ -369,18 +397,33 @@ pub fn paint_layout(
         }
         LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf, hits, chrome_interaction),
         LayoutNode::Split(split) => {
+            let char_width = backend.char_width();
+            let line_height = backend.line_height();
+            let area = split.spacing.inset(area, char_width, line_height);
             // `split.split.first_min`/`second_min` are decoded as portable
             // line counts (see `crate::wire::decode_layout_node`'s split
             // decode); scale them into the backend's native unit here,
             // right before painting, so every backend gets a minimum pane
             // size of the same visual weight from the same decoded number.
-            let line_height = backend.line_height();
             let native_split = Split {
                 first_min: split.split.first_min * line_height,
                 second_min: split.split.second_min * line_height,
                 ..split.split.clone()
             };
-            let layout = backend.draw_split(area, &native_split);
+            let horizontal = matches!(native_split.direction, SplitDirection::Horizontal);
+            let gap = if horizontal {
+                quantise_horizontal(split.spacing.gap, char_width)
+            } else {
+                quantise_vertical(split.spacing.gap, line_height)
+            };
+            // `Split::layout`'s own min-size clamping evaluates against
+            // whatever rect it's handed, so the gap is carved out of
+            // `area` BEFORE calling `draw_split` -- `first_min`/
+            // `second_min` apply to the pane after the gap is already
+            // subtracted, not before.
+            let draw_area = shrink_main_axis(area, horizontal, gap);
+            let mut layout = backend.draw_split(draw_area, &native_split);
+            apply_split_gap(&mut layout, horizontal, gap);
             // Pushed before recursing so the divider/pane hit only wins
             // over a descendant primitive's own, more specific hit when
             // nothing painted inside either pane claims the point first —
@@ -404,13 +447,34 @@ pub fn paint_layout(
             );
         }
         LayoutNode::Tabs(tabs) => {
+            let char_width = backend.char_width();
+            let line_height = backend.line_height();
+            let area = tabs.spacing.inset(area, char_width, line_height);
             let strip_height = (3.0 * backend.line_height()).min(area.height);
             let strip_rect = Rect::new(area.x, area.y, area.width, strip_height);
-            let layout = backend.draw_tab_bar_layout(strip_rect, &tabs.tab_bar, None);
+            // `focused_index` threads through `TabChrome` rather than
+            // `tabs.tab_bar` itself, so `None` (the common case) composes
+            // to `TabChrome::default()`. Neither `Backend` the bindings
+            // actually render with (`TuiBackend`, `GtkBackend`) takes the
+            // trait-default `draw_tab_bar_with_chrome_layout` passthrough
+            // to `draw_tab_bar_layout` — both override it with their own
+            // measurer and paint call. `TuiBackend`'s override reproduces
+            // plain `draw_tab_bar_layout` exactly for `TabChrome::default()`
+            // — see `tui::backend::tests::draw_tab_bar_with_chrome_layout_default_chrome_matches_draw_tab_bar_layout`,
+            // which asserts this at the trait-method level this call site
+            // uses, not just at the free-function level.
+            // `GtkBackend`'s equivalent is unverified by an equivalent
+            // test; its own `draw_tab_bar_with_chrome_layout` is at
+            // `gtk/backend.rs`.
+            let chrome = TabChrome::default().with_focused_index(tabs.focused_index);
+            let layout =
+                backend.draw_tab_bar_with_chrome_layout(strip_rect, &tabs.tab_bar, None, &chrome);
             hits.push(PaintedHit::TabBar {
                 id: tabs.tab_bar.id,
                 area: strip_rect,
                 layout,
+                focused_index: tabs.focused_index,
+                tab_count: tabs.tab_bar.tabs.len(),
             });
             let content_rect = Rect::new(
                 area.x,
@@ -429,6 +493,9 @@ pub fn paint_layout(
             }
         }
         LayoutNode::Panel(panel_node) => {
+            let char_width = backend.char_width();
+            let line_height = backend.line_height();
+            let area = panel_node.spacing.inset(area, char_width, line_height);
             let layout = backend.draw_panel(area, &panel_node.panel);
             // Pushed before recursing into content, same reasoning as
             // `LayoutNode::Split`'s own push above: a descendant primitive's
@@ -456,6 +523,7 @@ pub fn paint_layout(
             hits.push(PaintedHit::SidebarPanel {
                 id: sidebar_node.sidebar_panel.id,
                 layout: layout.clone(),
+                toolbar: sidebar_node.sidebar_panel.toolbar.clone(),
             });
             paint_layout(
                 backend,
@@ -478,34 +546,79 @@ pub fn paint_layout(
     }
 }
 
-/// Shrinks `area` by `container.spacing`'s `margin` (the space the parent
-/// leaves around the whole container, inset uniformly on every side) then
-/// its `padding` (the space inset from the container's own edges before
-/// laying out children) — `margin` quantised per-axis via
-/// [`quantise_margin_horizontal`]/[`quantise_margin_vertical`], `padding`
-/// via [`crate::layout::EdgeInsets::inset`]. `char_width`/`line_height` are
-/// the painting backend's own `Backend::char_width()`/`Backend::line_height()`
-/// — see [`crate::layout::Spacing`]'s doc for why both quantisers need
-/// them. The order matters: margin is outside the container's own box,
-/// padding is inside it, same as CSS's box model.
+/// Shrinks `area`'s main-axis extent by `gap`, anchored at the same
+/// origin — the rect [`paint_layout`]'s `Split` arm feeds `Backend::draw_split`
+/// so `Split::layout`'s own ratio/min-size clamping evaluates against the
+/// space actually available once the gap between panes is carved out,
+/// matching `Split::first_min`/`second_min`'s "a minimum applies to the
+/// pane" contract. [`apply_split_gap`] reinserts the carved-out space
+/// after painting.
+fn shrink_main_axis(area: Rect, horizontal: bool, gap: f32) -> Rect {
+    if horizontal {
+        Rect::new(area.x, area.y, (area.width - gap).max(0.0), area.height)
+    } else {
+        Rect::new(area.x, area.y, area.width, (area.height - gap).max(0.0))
+    }
+}
+
+/// Reinserts `gap` between a [`SplitLayout`]'s two panes after
+/// `Backend::draw_split` painted it into [`shrink_main_axis`]'s
+/// gap-reduced rect: the divider and first pane stay exactly where they
+/// were painted (so the divider's own visuals/hit region are untouched),
+/// and the second pane — its `second_bounds` plus its `SplitHit::SecondPane`
+/// hit region — shifts forward by `gap` along the main axis, so the two
+/// panes end up visually separated by blank space rather than both
+/// touching the divider. A no-op when `gap` is `0.0`, the overwhelmingly
+/// common case.
+fn apply_split_gap(layout: &mut SplitLayout, horizontal: bool, gap: f32) {
+    if gap <= 0.0 {
+        return;
+    }
+    let shift = |rect: Rect| -> Rect {
+        if horizontal {
+            Rect::new(rect.x + gap, rect.y, rect.width, rect.height)
+        } else {
+            Rect::new(rect.x, rect.y + gap, rect.width, rect.height)
+        }
+    };
+    layout.second_bounds = shift(layout.second_bounds);
+    for (rect, hit) in layout.hit_regions.iter_mut() {
+        if matches!(hit, SplitHit::SecondPane(_)) {
+            *rect = shift(*rect);
+        }
+    }
+    // Widen `bounds` back out so it reports the real (pre-shrink) area
+    // this split occupies, not the gap-reduced rect fed to `draw_split`.
+    layout.bounds = if horizontal {
+        Rect::new(
+            layout.bounds.x,
+            layout.bounds.y,
+            layout.bounds.width + gap,
+            layout.bounds.height,
+        )
+    } else {
+        Rect::new(
+            layout.bounds.x,
+            layout.bounds.y,
+            layout.bounds.width,
+            layout.bounds.height + gap,
+        )
+    };
+}
+
+/// Shrinks `area` by `container.spacing` — see [`crate::layout::Spacing::inset`]
+/// for the margin-then-padding rule and why `char_width`/`line_height` (the
+/// painting backend's own `Backend::char_width()`/`Backend::line_height()`)
+/// are needed. Kept as its own name for every `Row`/`Column` call site;
+/// `Split`/`Tabs`/`Panel` call `Spacing::inset` directly since they have no
+/// [`LayoutContainer`] to unwrap it from.
 fn inset_for_spacing(
     area: Rect,
     container: &LayoutContainer,
     char_width: f32,
     line_height: f32,
 ) -> Rect {
-    let margin_h = quantise_margin_horizontal(container.spacing.margin, char_width);
-    let margin_v = quantise_margin_vertical(container.spacing.margin, line_height);
-    let after_margin = Rect::new(
-        area.x + margin_h,
-        area.y + margin_v,
-        (area.width - margin_h * 2.0).max(0.0),
-        (area.height - margin_v * 2.0).max(0.0),
-    );
-    container
-        .spacing
-        .padding
-        .inset(after_margin, char_width, line_height)
+    container.spacing.inset(area, char_width, line_height)
 }
 
 /// Divides `area` into `n` equal shares, side by side when `horizontal` or
@@ -600,35 +713,58 @@ pub fn draw_tree_with_scrollbar(
     area: Rect,
     tree: &TreeView,
 ) -> (Rect, Option<Scrollbar>, usize) {
+    draw_tree_with_scrollbar_and_state(backend, area, tree, None)
+}
+
+/// [`draw_tree_with_scrollbar`], plus an optional pixel-precise
+/// `scroll_px` (lifted out of the leaf's raw descriptor dict by
+/// [`crate::scroll_px_from_value`]) painted via
+/// [`Backend::draw_tree_with_state`] instead of [`Backend::draw_tree`].
+/// `scroll_px: None` paints exactly as [`draw_tree_with_scrollbar`]
+/// already does; `Some(px)` also moves the scrollbar thumb to the same
+/// continuous position [`crate::primitives::TreeController`]'s own
+/// scrollbar does (`px / line_height`, not quantised to a whole row).
+pub fn draw_tree_with_scrollbar_and_state(
+    backend: &mut dyn Backend,
+    area: Rect,
+    tree: &TreeView,
+    scroll_px: Option<f32>,
+) -> (Rect, Option<Scrollbar>, usize) {
+    let state = quadraui::TreePaintState::default().with_scroll_px(scroll_px);
     if backend.tree_paints_own_scrollbar() {
-        backend.draw_tree(area, tree);
+        backend.draw_tree_with_state(area, tree, &state, false);
         let scrollbar = backend.tree_vscrollbar(area, tree);
         let viewport_rows = tree_viewport_rows(backend, area, tree);
         return (area, scrollbar, viewport_rows);
     }
     let track_width = backend.line_height();
     if area.width <= track_width {
-        backend.draw_tree(area, tree);
+        backend.draw_tree_with_state(area, tree, &state, false);
         let viewport_rows = tree_viewport_rows(backend, area, tree);
         return (area, None, viewport_rows);
     }
     let content_rect = Rect::new(area.x, area.y, area.width - track_width, area.height);
     let viewport_rows = tree_viewport_rows(backend, content_rect, tree);
     if tree.rows.len() <= viewport_rows {
-        backend.draw_tree(area, tree);
+        backend.draw_tree_with_state(area, tree, &state, false);
         return (area, None, viewport_rows);
     }
-    backend.draw_tree(content_rect, tree);
+    backend.draw_tree_with_state(content_rect, tree, &state, false);
     let track_rect = Rect::new(
         area.x + content_rect.width,
         area.y,
         track_width,
         area.height,
     );
+    let line_height = backend.line_height();
+    let thumb_offset = match scroll_px {
+        Some(px) if line_height > 0.0 => px / line_height,
+        _ => tree.scroll_offset as f32,
+    };
     let scrollbar = Scrollbar::vertical(
         format!("{}-scrollbar", tree.id),
         track_rect,
-        tree.scroll_offset as f32,
+        thumb_offset,
         tree.rows.len() as f32,
         viewport_rows as f32,
         track_width.max(1.0),
@@ -659,13 +795,20 @@ pub fn paint_leaf(
             hits.push(draw_text_display_hit(backend, id, area, text_display));
         }
         LeafDescriptor::List(list) => {
-            backend.draw_list(area, list);
+            let state = quadraui::ListPaintState::default().with_scroll_px(leaf.scroll_px);
+            backend.draw_list_with_state(area, list, &state, false);
             let layout = backend.list_layout(area, list);
-            hits.push(PaintedHit::List { id, area, layout });
+            hits.push(PaintedHit::List {
+                id,
+                area,
+                layout,
+                selected_idx: list.selected_idx,
+                total_items: list.items.len(),
+            });
         }
         LeafDescriptor::Tree(tree) => {
             let (content_rect, scrollbar, viewport_rows) =
-                draw_tree_with_scrollbar(backend, area, tree);
+                draw_tree_with_scrollbar_and_state(backend, area, tree, leaf.scroll_px);
             let layout = backend.tree_layout(content_rect, tree);
             hits.push(PaintedHit::Tree {
                 id,
@@ -682,7 +825,8 @@ pub fn paint_leaf(
             });
         }
         LeafDescriptor::DataTable(data_table) => {
-            let layout = backend.draw_data_table(area, data_table, None);
+            let state = quadraui::DataTablePaintState::default().with_scroll_px(leaf.scroll_px);
+            let layout = backend.draw_data_table_with_state(area, data_table, &state);
             hits.push(PaintedHit::DataTable {
                 id,
                 area,
@@ -694,7 +838,13 @@ pub fn paint_leaf(
         }
         LeafDescriptor::TabBar(tab_bar) => {
             let layout = backend.draw_tab_bar_layout(area, tab_bar, None);
-            hits.push(PaintedHit::TabBar { id, area, layout });
+            hits.push(PaintedHit::TabBar {
+                id,
+                area,
+                layout,
+                focused_index: None,
+                tab_count: tab_bar.tabs.len(),
+            });
         }
         LeafDescriptor::Extra(extra) => {
             let interaction = chrome_interaction(id);
@@ -893,5 +1043,216 @@ mod tests {
         let area = Rect::new(0.0, 0.0, 20.0, 10.0);
         let rects = split_rects_with_gap(area, 2, true, 0.4, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
         assert_eq!(rects[1].x - (rects[0].x + rects[0].width), 1.0);
+    }
+
+    // ── Split/Tabs/Panel spacing (issue #2025) ──────────────────────────
+
+    use quadraui::SplitMeasure;
+
+    /// A `"split"` node's `margin`/`padding` inset the whole split area
+    /// before `Split::layout` divides it — the exact [`Spacing::inset`]
+    /// call `paint_layout`'s `LayoutNode::Split` arm makes, on a pixel
+    /// backend where the padding/margin values pass straight through.
+    #[test]
+    fn split_spacing_insets_the_whole_area_on_a_pixel_backend() {
+        let area = Rect::new(0.0, 0.0, 100.0, 50.0);
+        let spacing = Spacing {
+            padding: EdgeInsets::uniform(5.0),
+            margin: 3.0,
+            gap: 0.0,
+        };
+        let inset = spacing.inset(area, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
+        assert_eq!(inset, Rect::new(8.0, 8.0, 100.0 - 16.0, 50.0 - 16.0));
+    }
+
+    /// The same inset on TUI shrinks the pixel padding/margin into whole
+    /// cells, same rule as a `"row"`/`"column"` node's own spacing.
+    #[test]
+    fn split_spacing_insets_the_whole_area_on_tui() {
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let spacing = Spacing {
+            padding: EdgeInsets::uniform(12.0),
+            margin: 0.0,
+            gap: 0.0,
+        };
+        let inset = spacing.inset(area, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
+        // ceil(12 / 8) = 2 columns each side, ceil(12 / 16) = 1 row each side.
+        assert_eq!(inset, Rect::new(2.0, 1.0, 80.0 - 4.0, 24.0 - 2.0));
+    }
+
+    /// [`shrink_main_axis`]/[`apply_split_gap`] together implement a
+    /// split's `gap`: the available space `Split::layout` divides is
+    /// reduced by the gap first (so `first_min`/`second_min` are evaluated
+    /// against the space left AFTER the gap, not before), and the second
+    /// pane is shifted forward by exactly the gap afterwards, landing it
+    /// flush with the original area's far edge.
+    #[test]
+    fn split_gap_is_carved_out_before_dividing_then_reinserted() {
+        let area = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let gap = 10.0;
+        let draw_area = shrink_main_axis(area, true, gap);
+        assert_eq!(draw_area, Rect::new(0.0, 0.0, 90.0, 40.0));
+
+        let split = Split {
+            id: WidgetId::new("s"),
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first_min: 0.0,
+            second_min: 0.0,
+        };
+        let mut layout = split.layout(draw_area, SplitMeasure::new(1.0));
+        let first_width_before = layout.first_bounds.width;
+        let second_x_before = layout.second_bounds.x;
+
+        apply_split_gap(&mut layout, true, gap);
+
+        // The divider/first pane painted into `draw_area` stay exactly
+        // where they were -- only the second pane and its hit region move.
+        assert_eq!(layout.first_bounds.width, first_width_before);
+        assert_eq!(layout.second_bounds.x, second_x_before + gap);
+        // The second pane now reaches exactly the far edge of the
+        // original (pre-shrink) area -- the gap didn't leak room outside
+        // it, and didn't leave any slack short of it either.
+        assert_eq!(
+            layout.second_bounds.x + layout.second_bounds.width,
+            area.x + area.width
+        );
+        let second_hit = layout
+            .hit_regions
+            .iter()
+            .find(|(_, hit)| matches!(hit, SplitHit::SecondPane(_)))
+            .expect("a second-pane hit region");
+        assert_eq!(second_hit.0.x, second_x_before + gap);
+    }
+
+    /// `gap: 0.0` is a no-op — [`apply_split_gap`] leaves every rect and
+    /// hit region exactly as `Backend::draw_split` returned it.
+    #[test]
+    fn split_gap_zero_is_a_no_op() {
+        let area = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let split = Split {
+            id: WidgetId::new("s"),
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first_min: 0.0,
+            second_min: 0.0,
+        };
+        let mut layout = split.layout(area, SplitMeasure::new(1.0));
+        let before = layout.clone();
+        apply_split_gap(&mut layout, true, 0.0);
+        assert_eq!(layout, before);
+    }
+
+    /// The acceptance scenario for `"split"`: `padding: 12, margin: 4,
+    /// gap: 8` on a stock 80×24 terminal must still leave both panes real
+    /// room to paint into, and the second pane must never overflow past
+    /// the original area's edge.
+    #[test]
+    fn split_spacing_does_not_clip_or_overflow_a_terminal_sized_area() {
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let spacing = Spacing {
+            padding: EdgeInsets::uniform(12.0),
+            margin: 4.0,
+            gap: 8.0,
+        };
+        let inset = spacing.inset(area, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
+        let gap = quantise_horizontal(spacing.gap, TUI_CHAR_WIDTH);
+        let draw_area = shrink_main_axis(inset, true, gap);
+
+        let split = Split {
+            id: WidgetId::new("s"),
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first_min: 0.0,
+            second_min: 0.0,
+        };
+        let mut layout = split.layout(draw_area, SplitMeasure::new(1.0));
+        apply_split_gap(&mut layout, true, gap);
+
+        assert!(layout.first_bounds.width > 0.0, "first pane must not clip");
+        assert!(
+            layout.second_bounds.width > 0.0,
+            "second pane must not clip"
+        );
+        assert!(
+            layout.second_bounds.x + layout.second_bounds.width <= inset.x + inset.width + 0.001,
+            "second pane must not overflow the inset area: {:?}",
+            layout.second_bounds
+        );
+    }
+
+    /// A `"tabs"` node's `margin`/`padding` inset the whole node's area —
+    /// strip and content both — before the strip band is reserved,
+    /// exactly like a `"row"`/`"column"` node's own [`Spacing::inset`]
+    /// call. `padding: 12` on an 80×24 terminal must leave real room for
+    /// both the strip and the content beneath it.
+    #[test]
+    fn tabs_spacing_insets_the_whole_area_and_does_not_clip_on_tui() {
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let spacing = Spacing {
+            padding: EdgeInsets::uniform(12.0),
+            margin: 0.0,
+            gap: 0.0,
+        };
+        let inset = spacing.inset(area, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
+        assert_eq!(inset, Rect::new(2.0, 1.0, 80.0 - 4.0, 24.0 - 2.0));
+
+        // Mirrors `paint_layout`'s `LayoutNode::Tabs` arm: a 3-line-high
+        // strip reserved from the (already inset) area, clamped to its
+        // height.
+        let strip_height = (3.0 * TUI_LINE_HEIGHT).min(inset.height);
+        let content_height = (inset.height - strip_height).max(0.0);
+        assert!(strip_height > 0.0, "tab strip must not clip to zero height");
+        assert!(
+            content_height > 0.0,
+            "tab content must not clip to zero height"
+        );
+        assert_eq!(strip_height + content_height, inset.height);
+    }
+
+    /// The same inset on a pixel backend passes the padding/margin values
+    /// straight through, same as every other spacing-aware node kind.
+    #[test]
+    fn tabs_spacing_insets_the_whole_area_on_a_pixel_backend() {
+        let area = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let spacing = Spacing {
+            padding: EdgeInsets::uniform(5.0),
+            margin: 3.0,
+            gap: 0.0,
+        };
+        let inset = spacing.inset(area, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
+        assert_eq!(inset, Rect::new(8.0, 8.0, 200.0 - 16.0, 100.0 - 16.0));
+    }
+
+    /// A `"panel"` node's `margin`/`padding` inset the whole panel area —
+    /// chrome and content both — before `Backend::draw_panel` paints it,
+    /// the same [`Spacing::inset`] call every other spacing-aware node
+    /// kind makes. `padding: 12` on an 80×24 terminal must leave real room
+    /// to paint the panel into.
+    #[test]
+    fn panel_spacing_insets_the_whole_area_and_does_not_clip_on_tui() {
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let spacing = Spacing {
+            padding: EdgeInsets::uniform(12.0),
+            margin: 0.0,
+            gap: 0.0,
+        };
+        let inset = spacing.inset(area, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
+        assert_eq!(inset, Rect::new(2.0, 1.0, 80.0 - 4.0, 24.0 - 2.0));
+        assert!(inset.width > 0.0, "panel must not clip to zero width");
+        assert!(inset.height > 0.0, "panel must not clip to zero height");
+    }
+
+    /// The same inset on a pixel backend.
+    #[test]
+    fn panel_spacing_insets_the_whole_area_on_a_pixel_backend() {
+        let area = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let spacing = Spacing {
+            padding: EdgeInsets::uniform(5.0),
+            margin: 3.0,
+            gap: 0.0,
+        };
+        let inset = spacing.inset(area, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
+        assert_eq!(inset, Rect::new(8.0, 8.0, 200.0 - 16.0, 100.0 - 16.0));
     }
 }

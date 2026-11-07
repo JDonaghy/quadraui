@@ -26,6 +26,22 @@ def test_insert_button():
     assert app.screen_contains("OK")
 
 
+def test_insert_button_accepts_an_optional_tooltip():
+    app = QuiApp(40, 20)
+    app.insert_button({"id": "demo:ok", "label": "OK", "tooltip": "Confirm the action"})
+    assert app.screen_contains("OK")
+
+
+def test_insert_button_rejects_a_non_string_tooltip():
+    # `Button::tooltip` is typed `Option<String>`, not merely ignored the
+    # way an unrecognized key would be -- a non-string value must fail to
+    # decode, proving the field is actually wired into `Button`'s own
+    # `Deserialize` rather than silently dropped.
+    app = QuiApp(40, 20)
+    with pytest.raises(InvalidDescriptorError):
+        app.insert_button({"id": "demo:ok", "label": "OK", "tooltip": 123})
+
+
 def test_insert_text_display():
     app = QuiApp(40, 20)
     app.insert_text_display(

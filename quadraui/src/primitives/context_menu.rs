@@ -197,7 +197,7 @@ pub enum ResolvedContextMenuPlacement {
 ///
 /// Construct items via the struct literal with `..Default::default()`
 /// — only the fields you care about need to be set, the rest
-/// (`detail`, `key_equivalent`, `checked`, `submenu`) default to
+/// (`detail`, `key_equivalent`, `checked`, `icon`, `submenu`) default to
 /// `None`, `disabled` to `false`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextMenuItem {
@@ -228,6 +228,22 @@ pub struct ContextMenuItem {
     /// so a column of items aligns visually.
     #[serde(default)]
     pub checked: Option<bool>,
+    /// Optional leading icon, painted in the same reserved gutter column
+    /// [`Self::checked`]'s `✓` uses. Only shown when `checked` is `None`
+    /// — a checkable item's state mark always takes priority over a
+    /// decorative icon in that one shared slot, the same way a tree row
+    /// never shows both a chevron and an icon in the same cell. Build one
+    /// with [`crate::types::Icon::codicon`] for a bundled codicon, or
+    /// [`crate::types::Icon::new`] for an app-supplied glyph/fallback
+    /// pair.
+    ///
+    /// Unlike `checked`, `icon` has no `Some(false)`-style reservation
+    /// without a fill: the gutter is per-item, not per-menu, so in a menu
+    /// where only some items carry an icon, those items' labels shift
+    /// right relative to the rest. Give every item in the menu an icon
+    /// (or none) to keep labels aligned to one gutter.
+    #[serde(default)]
+    pub icon: Option<Icon>,
     /// Nested submenu. When `Some`, activating the item opens the child
     /// menu instead of firing an action. The TUI rasteriser renders a `▶`
     /// affordance and a pull-right popup (see
@@ -526,9 +542,12 @@ impl ContextMenu {
     /// `crate::primitives::dialog::Dialog::measure_generic`.
     ///
     /// Per item, counts: a 2-char prefix slot when `checked` is
-    /// `Some(_)` (mirrors the `"✓ "` / `"  "` prefix both
+    /// `Some(_)` or [`ContextMenuItem::icon`] is `Some(_)` (mirrors the
+    /// `"✓ "` / icon-glyph / `"  "` prefix both
     /// `tui::context_menu::draw_context_menu` and this module's
-    /// `native_surface_paint::paint` reserve); the label text; and,
+    /// `native_surface_paint::paint` reserve — the two share one slot,
+    /// so the reservation is never doubled when both are set); the label
+    /// text; and,
     /// when present, a 1-char gap plus either a 1-char `▶` submenu
     /// arrow or [`ContextMenuItem::detail`]'s length — whichever
     /// trailing content the item carries. [`ContextMenuItem::key_equivalent`]-rendered
@@ -561,7 +580,11 @@ impl ContextMenu {
     /// label, and optional trailing submenu arrow / detail text. See
     /// [`Self::measure_generic_width`]'s doc for the exact accounting.
     fn item_content_chars(item: &ContextMenuItem) -> usize {
-        let prefix_len = if item.checked.is_some() { 2 } else { 0 };
+        let prefix_len = if item.checked.is_some() || item.icon.is_some() {
+            2
+        } else {
+            0
+        };
         let label_len: usize = item
             .label
             .spans
@@ -603,6 +626,7 @@ impl ContextMenu {
 pub(crate) mod native_surface_paint {
     use super::{ContextMenu, ContextMenuGlyphs, ContextMenuItem, ContextMenuLayout};
     use crate::accelerator::{render_accelerator, Platform};
+    use crate::interaction::InteractionState;
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
     use crate::theme::Theme;
@@ -652,6 +676,35 @@ pub(crate) mod native_surface_paint {
         )
     }
 
+    /// [`paint`], reading hover/pressed state from a single
+    /// [`InteractionState`] keyed by [`WidgetId`]: the item whose
+    /// [`ContextMenuItem::id`] matches `interaction.hovered()` /
+    /// `interaction.pressed()` paints with
+    /// [`Theme::menu_item_hover_bg`] / [`Theme::menu_item_pressed_bg`]
+    /// instead of its plain selection/resting fill — see
+    /// [`crate::Backend::draw_context_menu_with_state`]'s own doc.
+    pub(crate) fn paint_interactive(
+        menu: &ContextMenu,
+        menu_layout: &ContextMenuLayout,
+        platform: Platform,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        interaction: &InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        paint_with_glyphs_interactive(
+            menu,
+            menu_layout,
+            platform,
+            surface,
+            theme,
+            style,
+            None,
+            false,
+            interaction,
+        )
+    }
+
     /// Identical to [`paint`], plus an optional [`ContextMenuGlyphs`]
     /// override for the check-mark / submenu-arrow glyphs and the
     /// `nerd_fonts_enabled` flag (see [`crate::Backend::nerd_fonts_enabled`])
@@ -668,6 +721,59 @@ pub(crate) mod native_surface_paint {
         style: &Style,
         glyphs: Option<&ContextMenuGlyphs>,
         nerd_fonts_enabled: bool,
+    ) -> Vec<(Rect, WidgetId)> {
+        paint_with_glyphs_impl(
+            menu,
+            menu_layout,
+            platform,
+            surface,
+            theme,
+            style,
+            glyphs,
+            nerd_fonts_enabled,
+            None,
+        )
+    }
+
+    /// [`paint_with_glyphs`] + [`paint_interactive`]'s hover/pressed
+    /// treatment combined — the method a backend that wants both glyph
+    /// overrides and hover feedback calls.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_glyphs_interactive(
+        menu: &ContextMenu,
+        menu_layout: &ContextMenuLayout,
+        platform: Platform,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        glyphs: Option<&ContextMenuGlyphs>,
+        nerd_fonts_enabled: bool,
+        interaction: &InteractionState,
+    ) -> Vec<(Rect, WidgetId)> {
+        paint_with_glyphs_impl(
+            menu,
+            menu_layout,
+            platform,
+            surface,
+            theme,
+            style,
+            glyphs,
+            nerd_fonts_enabled,
+            Some(interaction),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_with_glyphs_impl(
+        menu: &ContextMenu,
+        menu_layout: &ContextMenuLayout,
+        platform: Platform,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        glyphs: Option<&ContextMenuGlyphs>,
+        nerd_fonts_enabled: bool,
+        interaction: Option<&InteractionState>,
     ) -> Vec<(Rect, WidgetId)> {
         let bounds = menu_layout.bounds;
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -722,10 +828,31 @@ pub(crate) mod native_surface_paint {
             }
 
             let is_selected = vis.item_idx == menu.selected_idx && vis.clickable;
-            if is_selected {
+            let item_id = menu.items[vis.item_idx].id;
+            let is_pressed = vis.clickable
+                && item_id.is_some_and(|id| interaction.is_some_and(|i| i.is_pressed(&id)));
+            let is_hovered = vis.clickable
+                && item_id.is_some_and(|id| interaction.is_some_and(|i| i.is_hovered(&id)));
+            // `is_selected` (the keyboard-moved cursor) outranks
+            // `is_hovered` here: a mouse can hover the very row the
+            // keyboard last selected, and `theme.selected_bg` is meant
+            // to read as the stronger of the two cues. Were hover
+            // checked first, hovering the selected row would downgrade
+            // it to the fainter `menu_item_hover_bg`. Pressed still wins
+            // over both.
+            let row_bg = if is_pressed {
+                Some(theme.menu_item_pressed_bg(bg))
+            } else if is_selected {
+                Some(theme.selected_bg)
+            } else if is_hovered {
+                Some(theme.menu_item_hover_bg(bg))
+            } else {
+                None
+            };
+            if let Some(row_bg) = row_bg {
                 let sel_rect =
                     Rect::new(row.x + 1.0, row.y, (row.width - 2.0).max(0.0), row.height);
-                surface.surface_fill_rect(sel_rect, theme.selected_bg);
+                surface.surface_fill_rect(sel_rect, row_bg);
             }
 
             if vis.clickable {
@@ -745,11 +872,12 @@ pub(crate) mod native_surface_paint {
             let item = &menu.items[vis.item_idx];
             let row = vis.bounds;
 
-            // Reserve a fixed-width leading slot for the check glyph so
-            // a column of mixed checked/unchecked items aligns —
-            // `Some(false)`/`None` reserve it with two plain spaces,
-            // `Some(true)` fills it with the codicon check glyph
-            // painted *separately* via `surface_draw_icon_glyph`
+            // Reserve a fixed-width leading slot for the check glyph /
+            // item icon so a column of mixed items aligns — `checked ==
+            // Some(false)` or an item with neither reserves it with two
+            // plain spaces, `checked == Some(true)` or `icon.is_some()`
+            // fills it with the codicon check glyph or the item's own
+            // icon, painted *separately* via `surface_draw_icon_glyph`
             // (below) rather than embedded in this plain
             // `surface_draw_text_run` call: a PUA codepoint baked into
             // an ordinary text run resolves through whatever font that
@@ -757,9 +885,12 @@ pub(crate) mod native_surface_paint {
             // guaranteed to be the fallback-wrapped description
             // `surface_draw_icon_glyph` resolves through — the same
             // reason the submenu pull-right arrow below gets its own
-            // draw call instead of living in this label string.
+            // draw call instead of living in this label string. A
+            // checkable item's state mark always wins that one slot over
+            // a decorative icon — see [`ContextMenuItem::icon`]'s doc.
             let has_check_slot = item.checked.is_some();
-            let label_text: String = if has_check_slot {
+            let has_icon_slot = !has_check_slot && item.icon.is_some();
+            let label_text: String = if has_check_slot || has_icon_slot {
                 std::iter::once("  ".to_string())
                     .chain(item.label.spans.iter().map(|s| s.text.clone()))
                     .collect()
@@ -774,7 +905,12 @@ pub(crate) mod native_surface_paint {
             let (_, lh) = surface.surface_measure_text(&label_text);
             let text_y = row.y + (row.height - lh) / 2.0;
             surface.surface_draw_text_run(
-                Rect::new(row.x + 8.0, text_y, (row.width - 8.0).max(0.0), lh),
+                Rect::new(
+                    row.x + style.row_padding_x,
+                    text_y,
+                    (row.width - style.row_padding_x).max(0.0),
+                    lh,
+                ),
                 &label_text,
                 label_fg,
             );
@@ -782,10 +918,25 @@ pub(crate) mod native_surface_paint {
             if item.checked == Some(true) {
                 let (cw, ch) = surface.surface_measure_text(&check_glyph);
                 surface.surface_draw_icon_glyph(
-                    Rect::new(row.x + 8.0, text_y, cw.max(1.0), ch.max(1.0)),
+                    Rect::new(
+                        row.x + style.row_padding_x,
+                        text_y,
+                        cw.max(1.0),
+                        ch.max(1.0),
+                    ),
                     &check_glyph,
                     label_fg,
                 );
+            } else if has_icon_slot {
+                if let Some(icon) = &item.icon {
+                    let glyph = icon.resolve(nerd_fonts_enabled);
+                    let (iw, ih) = surface.surface_measure_text(glyph);
+                    surface.surface_draw_icon_glyph(
+                        Rect::new(row.x + 8.0, text_y, iw.max(1.0), ih.max(1.0)),
+                        glyph,
+                        label_fg,
+                    );
+                }
             }
 
             if item.submenu.is_some() {
@@ -798,7 +949,12 @@ pub(crate) mod native_surface_paint {
                 // hint would never fire anyway.
                 let (aw, ah) = surface.surface_measure_text(&submenu_arrow_glyph);
                 surface.surface_draw_icon_glyph(
-                    Rect::new(row.x + row.width - aw - 8.0, text_y, aw.max(1.0), ah),
+                    Rect::new(
+                        row.x + row.width - aw - style.row_padding_x,
+                        text_y,
+                        aw.max(1.0),
+                        ah,
+                    ),
                     &submenu_arrow_glyph,
                     label_fg,
                 );
@@ -806,7 +962,12 @@ pub(crate) mod native_surface_paint {
                 if !shortcut.is_empty() {
                     let (sw, sh) = surface.surface_measure_text(&shortcut);
                     surface.surface_draw_text_run(
-                        Rect::new(row.x + row.width - sw - 8.0, text_y, sw.max(1.0), sh),
+                        Rect::new(
+                            row.x + row.width - sw - style.row_padding_x,
+                            text_y,
+                            sw.max(1.0),
+                            sh,
+                        ),
                         &shortcut,
                         theme.muted_fg,
                     );
@@ -1241,6 +1402,38 @@ mod tests {
     }
 
     #[test]
+    fn measure_generic_width_icon_reserves_leading_space() {
+        let plain = menu(vec![cm_action("a", "Reveal")]);
+        let mut icon_items = vec![cm_action("a", "Reveal")];
+        icon_items[0].icon = Some(crate::types::Icon::new("G", "F"));
+        let with_icon = menu(icon_items);
+        assert!(
+            with_icon.measure_generic_width(1.0, 0.0) > plain.measure_generic_width(1.0, 0.0),
+            "icon reserves extra leading width"
+        );
+    }
+
+    #[test]
+    fn measure_generic_width_icon_and_checked_do_not_double_reserve() {
+        // The icon and the check mark share one leading slot (the icon
+        // is only shown when `checked` is `None`) — an item carrying
+        // both must not reserve width twice.
+        let mut checked_only = vec![cm_action("a", "Reveal")];
+        checked_only[0].checked = Some(true);
+        let checked_only_menu = menu(checked_only);
+
+        let mut both = vec![cm_action("a", "Reveal")];
+        both[0].checked = Some(true);
+        both[0].icon = Some(crate::types::Icon::new("G", "F"));
+        let both_menu = menu(both);
+
+        assert_eq!(
+            both_menu.measure_generic_width(1.0, 0.0),
+            checked_only_menu.measure_generic_width(1.0, 0.0),
+        );
+    }
+
+    #[test]
     fn measure_generic_width_detail_reserves_trailing_space() {
         let plain = menu(vec![cm_action("a", "Save")]);
         let mut detail_items = vec![cm_action("a", "Save")];
@@ -1425,6 +1618,403 @@ mod tests {
             assert!(surface.runs.iter().any(|r| r == ">"));
             let default_codicon = crate::codicon::CHEVRON_RIGHT.to_string();
             assert!(!surface.runs.iter().any(|r| r == &default_codicon));
+        }
+
+        /// An item's own [`ContextMenuItem::icon`] paints its resolved
+        /// glyph in the leading slot when `checked` is `None`.
+        /// `nerd_fonts_enabled` selects `Icon::glyph` vs. `Icon::fallback`,
+        /// same as every other icon-bearing row primitive.
+        #[test]
+        fn item_icon_paints_resolved_glyph() {
+            let mut item = cm_action("a", "New File");
+            item.icon = Some(crate::types::Icon::new("G", "F"));
+            let (m, layout) = popup_layout(item);
+
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_with_glyphs(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                true,
+            );
+            assert!(
+                surface.runs.iter().any(|r| r == "G"),
+                "expected the icon's nerd-font glyph among {:?}",
+                surface.runs
+            );
+
+            let mut fallback_surface = RecordingSurface::default();
+            native_surface_paint::paint_with_glyphs(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut fallback_surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                false,
+            );
+            assert!(
+                fallback_surface.runs.iter().any(|r| r == "F"),
+                "expected the icon's plain-text fallback among {:?}",
+                fallback_surface.runs
+            );
+        }
+
+        /// A checked item's check mark wins the shared leading slot over
+        /// its own icon — the icon never paints when `checked` is
+        /// `Some(_)`.
+        #[test]
+        fn checked_state_wins_shared_slot_over_icon() {
+            let mut item = cm_action("a", "Word Wrap");
+            item.checked = Some(true);
+            item.icon = Some(crate::types::Icon::new("G", "F"));
+            let (m, layout) = popup_layout(item);
+
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_with_glyphs(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                true,
+            );
+            let expected_check = crate::codicon::CHECK.to_string();
+            assert!(surface.runs.iter().any(|r| r == &expected_check));
+            assert!(
+                !surface.runs.iter().any(|r| r == "G"),
+                "icon must not paint when checked wins the shared slot: {:?}",
+                surface.runs
+            );
+        }
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    mod row_padding_x_paint_surface {
+        use super::*;
+        use crate::accelerator::Platform;
+        use crate::paint_surface::PaintSurface;
+        use crate::style::Style;
+        use crate::theme::Theme;
+        use crate::types::{Color, StyledText};
+        use crate::{Point, Rect, Viewport};
+
+        /// Records every painted text run's rect (not just the glyph
+        /// string `glyph_override::RecordingSurface` needs) — the
+        /// geometry assertions below need to compare against the row's
+        /// own bounds.
+        #[derive(Default)]
+        struct RecordingSurface {
+            texts: Vec<(Rect, String)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(0.0, 0.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, _color: Color) {
+                self.texts.push((rect, text.to_string()));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: Point,
+                _to: Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(
+                &mut self,
+                _rect: Rect,
+                _image: &crate::Image,
+            ) -> crate::backend::ImagePaintResult {
+                crate::backend::ImagePaintResult::Unsupported
+            }
+        }
+
+        /// The issue's first acceptance bullet: a row's text starts
+        /// `row_padding_x` in from its rect. Painted with a non-default
+        /// [`Style::row_padding_x`] (15.0, not the 8.0 default) so
+        /// reverting the token back to a hardcoded literal in `paint`
+        /// would fail this test — both the leading label and the
+        /// trailing shortcut move with it.
+        #[test]
+        fn label_and_shortcut_sit_row_padding_x_in_from_the_row_edges() {
+            let mut item = cm_action("a", "Save");
+            item.detail = Some(StyledText::plain("Ctrl+S"));
+            let m = menu(vec![item]);
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let layout = m.layout(10.0, 10.0, viewport, 100.0, |_| {
+                ContextMenuItemMeasure::new(20.0)
+            });
+            let row = layout.visible_items[0].bounds;
+
+            let style = Style::default().with_row_padding_x(15.0);
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &Theme::default(),
+                &style,
+            );
+
+            let (label_rect, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t)| t == "Save")
+                .expect("label painted");
+            assert_eq!(
+                label_rect.x,
+                row.x + style.row_padding_x,
+                "label must start row_padding_x in from the row's left edge"
+            );
+
+            let (shortcut_rect, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t)| t == "Ctrl+S")
+                .expect("shortcut painted");
+            let shortcut_right = shortcut_rect.x + shortcut_rect.width;
+            let expected_right = row.x + row.width - style.row_padding_x;
+            assert!(
+                (shortcut_right - expected_right).abs() < 0.01,
+                "shortcut's right edge ({shortcut_right}) must sit row_padding_x in from \
+                 the row's right edge ({expected_right})"
+            );
+        }
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    mod interactive_hover {
+        use super::*;
+        use crate::accelerator::Platform;
+        use crate::interaction::InteractionState;
+        use crate::paint_surface::PaintSurface;
+        use crate::style::Style;
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::{Point, Rect, Viewport};
+
+        /// Records every filled rect's colour — what the hover/pressed
+        /// assertions below need, unlike the other `RecordingSurface`
+        /// test doubles in this module which only record text runs.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(0.0, 0.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_line(
+                &mut self,
+                _from: Point,
+                _to: Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(
+                &mut self,
+                _rect: Rect,
+                _image: &crate::Image,
+            ) -> crate::backend::ImagePaintResult {
+                crate::backend::ImagePaintResult::Unsupported
+            }
+        }
+
+        fn popup(id: &str) -> (ContextMenu, ContextMenuLayout) {
+            let m = menu(vec![cm_action(id, "Copy"), cm_action("other", "Paste")]);
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let layout = m.layout(10.0, 10.0, viewport, 100.0, |_| {
+                ContextMenuItemMeasure::new(20.0)
+            });
+            (m, layout)
+        }
+
+        #[test]
+        fn hovered_item_paints_menu_item_hover_bg() {
+            // Hovers "other" (index 1), not "copy" (index 0, the
+            // `menu()` helper's default `selected_idx`) — hovering the
+            // keyboard-selected row is covered separately below, and
+            // paints `theme.selected_bg` instead; see
+            // `hovering_the_selected_row_keeps_selected_bg_not_hover_bg`.
+            let (m, layout) = popup("copy");
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(WidgetId::new("other")));
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_interactive(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                &interaction,
+            );
+            let expected = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == expected),
+                "hovered item must paint Theme::menu_item_hover_bg: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn hovering_the_selected_row_keeps_selected_bg_not_hover_bg() {
+            // "copy" is index 0, the `menu()` helper's default
+            // `selected_idx` — hovering it with the mouse must not
+            // downgrade its stronger `theme.selected_bg` highlight to
+            // the fainter hover tint.
+            let (m, layout) = popup("copy");
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(WidgetId::new("copy")));
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_interactive(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                &interaction,
+            );
+            let hover_bg = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == hover_bg),
+                "the keyboard-selected row must not downgrade to the hover tint when hovered: {:?}",
+                surface.fills
+            );
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == theme.selected_bg),
+                "the keyboard-selected row must keep theme.selected_bg while hovered: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn leaving_the_item_clears_the_hover_fill() {
+            let (m, layout) = popup("copy");
+            let theme = Theme::default();
+            let interaction = InteractionState::new(); // nothing hovered
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_interactive(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                &interaction,
+            );
+            let hover_bg = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == hover_bg),
+                "no item is hovered, so no row should paint the hover tint: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn pressed_item_paints_menu_item_pressed_bg_not_hover_bg() {
+            let (m, layout) = popup("copy");
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(WidgetId::new("copy")));
+            interaction.set_pressed(Some(WidgetId::new("copy")));
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint_interactive(
+                &m,
+                &layout,
+                Platform::Linux,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                &interaction,
+            );
+            let pressed = theme.menu_item_pressed_bg(theme.hover_bg);
+            let hover = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == pressed),
+                "pressed item must paint Theme::menu_item_pressed_bg: {:?}",
+                surface.fills
+            );
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == hover),
+                "a pressed item must not also paint the plain hover tint: {:?}",
+                surface.fills
+            );
         }
     }
 }

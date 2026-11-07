@@ -36,18 +36,46 @@
 //! rebuild an `InteractionState` via [`InteractionState::from_parts`]
 //! and forward.
 //!
+//! A second group of `Backend` methods never had a positional
+//! predecessor to deprecate — they add hover/pressed to a primitive
+//! that previously took none, so the `_with_state` name is purely
+//! additive (default forwards to the plain method, ignoring
+//! `interaction`), not a replacement:
+//!
+//! - [`crate::Backend::draw_context_menu_with_state`]
+//! - [`crate::Backend::draw_palette_with_state`]
+//! - [`crate::Backend::draw_menu_bar_with_state`]
+//!
 //! ## Methods that remain positional
 //!
-//! Four `Backend` methods still take a positional hover argument, keyed
+//! Several `Backend` methods take a positional hover argument, keyed
 //! by position within a collection rather than [`WidgetId`]:
 //!
 //! - `draw_activity_bar(.., hovered_idx: Option<usize>)`
-//! - `draw_tab_bar(.., hovered_close_tab: Option<usize>)`
+//! - `draw_tab_bar(.., hovered_close_tab: Option<usize>)`, and its
+//!   `hovered_tab: Option<usize>`/`pressed_tab: Option<usize>`-carrying
+//!   twins [`crate::Backend::draw_tab_bar_with_state`] /
+//!   [`crate::Backend::draw_tab_bar_layout_with_state`] — `TabItem`
+//!   carries no [`WidgetId`] of its own, only `TabBar::id` (one per
+//!   *bar*), which can't name which tab is hovered or pressed
 //! - `draw_data_table(.., hovered_idx: Option<usize>)`
 //! - `draw_chart(.., hovered_point: Option<(usize, usize)>)`
+//! - [`crate::Backend::draw_list_with_state`] /
+//!   [`crate::Backend::draw_tree_with_state`] (`&ListPaintState` /
+//!   `&TreePaintState`, each carrying a positional `hovered_idx: Option<usize>`
+//!   / `pressed_idx: Option<usize>` plus an optional pixel-precise
+//!   `scroll_px`)
 //!
 //! These would need stable ids for their items before moving into
-//! `InteractionState`.
+//! `InteractionState`. `ListView`/`TreeView` rows join this group rather
+//! than taking an `InteractionState` the way `draw_button_with_state`
+//! does: a `ListItem`/`TreeRow` carries no [`WidgetId`] of its own, and
+//! minting one per row index on the fly would permanently intern a new
+//! string per distinct (list id, row index) pair ever shown — an
+//! unbounded leak for a growing log pane. [`crate::compose::ListHoverTracker`]
+//! / [`crate::compose::TreeHoverTracker`] track the hovered row index
+//! instead, the same shape `draw_data_table`'s own host-side tracking
+//! already uses.
 //!
 //! ## Ownership
 //!

@@ -15,9 +15,13 @@
 //! row emits `ListViewEvent::SelectionChanged { idx }` (select); a
 //! double-click emits the distinct `ListViewEvent::ItemDoubleClicked { idx }`
 //! (open) rather than reusing `ItemActivated`, so an app can tell "select"
-//! from "open" apart — see `ItemActivated`'s own doc. Keyboard `j`/`k`/`Enter`
-//! emit the corresponding events. The app updates `selected_idx` and
-//! `scroll_offset` for the next frame.
+//! from "open" apart — see `ItemActivated`'s own doc. Keyboard `j`/`k`
+//! move the selection the same way `SelectionChanged` does; Enter activates
+//! the current selection as `ItemActivated`, mirroring the mouse's
+//! double-click rather than its single click. An app that wants "open this
+//! row" from mouse, keyboard, and a screen reader's default action alike
+//! listens for both `ItemActivated` and `ItemDoubleClicked`. The app
+//! updates `selected_idx` and `scroll_offset` for the next frame.
 
 use crate::event::Rect;
 use crate::primitives::scrollbar::Scrollbar;
@@ -62,6 +66,21 @@ pub struct ListView {
     pub selected_idx: usize,
     #[serde(default)]
     pub scroll_offset: usize,
+    /// Whether this list currently holds keyboard focus. Gates the
+    /// selected row's highlight (TUI reverse-video/`▶` prefix, GUI
+    /// `Theme::selected_bg` fill).
+    ///
+    /// Deliberately **not** the same "host pre-composes
+    /// `ring.is_focused(id) && ring.is_focus_visible()`" convention
+    /// [`crate::Button::focused`]/[`crate::TextInput::has_focus`]
+    /// follow: several existing hosts (e.g. a sidebar's "currently
+    /// showing" nav row) set this unconditionally `true` as a
+    /// persistent indicator unrelated to real keyboard focus, so a
+    /// focus-visible ring can't ride on this field without painting a
+    /// ring on every one of them. The GUI focus-visible ring instead
+    /// reads [`crate::Backend::draw_list_with_state`]'s own
+    /// `focus_ring_visible` parameter — pass
+    /// `ring.is_focused(&list.id) && ring.is_focus_visible()` there.
     #[serde(default)]
     pub has_focus: bool,
     /// When true, backends draw a `╭─╮ │ │ ╰─╯` frame around the list
@@ -190,7 +209,13 @@ pub enum ListViewHit {
 }
 
 /// Fully-resolved list-view layout.
+///
+/// `#[non_exhaustive]`: a backend-returned value, never constructed by a
+/// consumer via struct literal (same convention as the sibling
+/// [`crate::DataTableLayout`]), so a future field add here is additive —
+/// no `cargo-semver-checks` `constructible_struct_adds_field` finding.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ListViewLayout {
     pub viewport_width: f32,
     pub viewport_height: f32,
@@ -204,6 +229,16 @@ pub struct ListViewLayout {
     pub hit_regions: Vec<(Rect, ListViewHit)>,
     /// Scroll offset actually used. Clamped to `[0, items.len())`.
     pub resolved_scroll_offset: usize,
+    /// Sub-row pixel remainder when a non-`None` `scroll_px` (see
+    /// [`ListView::layout_with_scroll_px`]) is in effect — see
+    /// [`crate::primitives::scrollbar::resolve_scroll_px`]. `0.0` from
+    /// plain [`ListView::layout`], so a TUI rasteriser that never reads
+    /// this field keeps the pre-existing whole-row behaviour. A GUI
+    /// painter shifts the first visible item's top up by this many units
+    /// (relying on the surface's own clip to show only the portion still
+    /// inside the viewport), producing the "partial first row clipped"
+    /// look of pixel-smooth scrolling.
+    pub scroll_sub_px: f32,
 }
 
 impl ListViewLayout {
@@ -215,6 +250,47 @@ impl ListViewLayout {
             }
         }
         ListViewHit::Empty
+    }
+}
+
+/// Per-frame paint-time state for a `ListView` — hover/press row
+/// tracking plus a pixel-precise scroll position, none of which live on
+/// the declarative [`ListView`] descriptor itself (see that struct's
+/// doc for why: consumers build it with full struct literals, so a
+/// required field there is a breaking change, per `PRIMITIVE_RULES.md`
+/// rule 8).
+///
+/// `#[non_exhaustive]`: construct via [`Default::default`] plus the
+/// `with_*` builders, so a future field here is additive.
+///
+/// `scroll_px: None` paints exactly as [`ListView::layout`] /
+/// [`ListView::vscrollbar`] already do (whole-row from
+/// `scroll_offset`); `Some(px)` wins and is resolved via
+/// [`crate::primitives::scrollbar::resolve_scroll_px`] into a
+/// `scroll_offset` plus a sub-row remainder — see
+/// [`ListView::layout_with_scroll_px`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ListPaintState {
+    pub hovered_idx: Option<usize>,
+    pub pressed_idx: Option<usize>,
+    pub scroll_px: Option<f32>,
+}
+
+impl ListPaintState {
+    pub fn with_hovered_idx(mut self, idx: Option<usize>) -> Self {
+        self.hovered_idx = idx;
+        self
+    }
+
+    pub fn with_pressed_idx(mut self, idx: Option<usize>) -> Self {
+        self.pressed_idx = idx;
+        self
+    }
+
+    pub fn with_scroll_px(mut self, px: Option<f32>) -> Self {
+        self.scroll_px = px;
+        self
     }
 }
 
@@ -245,6 +321,37 @@ impl ListView {
         viewport_width: f32,
         viewport_height: f32,
         title_height: f32,
+        measure_item: F,
+    ) -> ListViewLayout
+    where
+        F: Fn(usize) -> ListItemMeasure,
+    {
+        self.layout_with_scroll_px(
+            viewport_width,
+            viewport_height,
+            title_height,
+            None,
+            measure_item,
+        )
+    }
+
+    /// Like [`Self::layout`], but with an explicit pixel-precise scroll
+    /// position (`scroll_px`) a GUI painter has accumulated in a
+    /// [`ListPaintState`], instead of only [`ListView::scroll_offset`]'s
+    /// whole-row value.
+    ///
+    /// `scroll_px` wins over `scroll_offset` when it is `Some` and usable
+    /// — see [`crate::primitives::scrollbar::resolve_scroll_px`] — and
+    /// the sub-row remainder is reported back as
+    /// [`ListViewLayout::scroll_sub_px`] for the painter to clip the
+    /// first visible item against. `None` (what [`Self::layout`] passes)
+    /// resolves to exactly the pre-existing whole-row behaviour.
+    pub fn layout_with_scroll_px<F>(
+        &self,
+        viewport_width: f32,
+        viewport_height: f32,
+        title_height: f32,
+        scroll_px: Option<f32>,
         measure_item: F,
     ) -> ListViewLayout
     where
@@ -297,9 +404,26 @@ impl ListView {
             title_bounds.map(|b| b.y + b.height).unwrap_or(0.0)
         };
 
-        // Clamp scroll_offset.
-        let resolved_scroll_offset =
-            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.items.len());
+        // Resolve `scroll_offset` vs. `scroll_px` (the latter wins when
+        // set). The first item's height is the uniform row-height basis
+        // for the pixel conversion — the same approximation
+        // `vscrollbar`/`hscrollbar` already make for thumb sizing on
+        // lists with per-row-varying heights. Only measured when
+        // `scroll_px` is actually in play — `measure_item` can do real
+        // text-measurement work (Pango layout on GTK), and `None` never
+        // reads this value.
+        let row_height_basis = if scroll_px.is_none() || self.items.is_empty() {
+            1.0
+        } else {
+            measure_item(0).height
+        };
+        let (resolved_scroll_offset, scroll_sub_px) =
+            crate::primitives::scrollbar::resolve_scroll_px(
+                self.scroll_offset,
+                scroll_px,
+                self.items.len(),
+                row_height_basis,
+            );
 
         let items_y_end = if self.bordered {
             inset_y + items_h_max
@@ -307,7 +431,7 @@ impl ListView {
             viewport_height
         };
 
-        let mut y = items_y_start;
+        let mut y = items_y_start - scroll_sub_px;
         for i in resolved_scroll_offset..self.items.len() {
             if y >= items_y_end {
                 break;
@@ -334,6 +458,7 @@ impl ListView {
             visible_items,
             hit_regions,
             resolved_scroll_offset,
+            scroll_sub_px,
         }
     }
 
@@ -408,7 +533,48 @@ impl ListView {
     ///   thumb length (i.e. `1.0` on TUI — one cell wide, one cell tall
     ///   minimum thumb).
     pub fn vscrollbar(&self, area: Rect, row_height: f32) -> Option<Scrollbar> {
+        self.vscrollbar_with_track_width(area, row_height, row_height)
+    }
+
+    /// Like [`vscrollbar`](Self::vscrollbar), but with an explicit
+    /// `track_width` instead of defaulting it to `row_height` — the same
+    /// split [`crate::primitives::tree::TreeView::vscrollbar_with_track_width`]
+    /// already has.
+    ///
+    /// - `track_width` — width of the scrollbar column, occupying the
+    ///   rightmost `track_width` of `area`: `1.0` on TUI (one cell), or
+    ///   [`crate::style::Style::scrollbar_width`] on pixel backends —
+    ///   [`native_surface_paint::paint`] passes `style.scrollbar_width`.
+    ///   `row_height` still serves as the row-counting pitch (how many
+    ///   rows fit the track height) and the minimum thumb length,
+    ///   independent of the column's own width.
+    pub fn vscrollbar_with_track_width(
+        &self,
+        area: Rect,
+        row_height: f32,
+        track_width: f32,
+    ) -> Option<Scrollbar> {
+        self.vscrollbar_with_scroll_px(area, row_height, track_width, None)
+    }
+
+    /// Like [`Self::vscrollbar_with_track_width`], but with an explicit
+    /// pixel-precise scroll position (`scroll_px`) from a
+    /// [`ListPaintState`] so the thumb tracks the continuous pixel
+    /// position (whole row + sub-row fraction) instead of snapping to a
+    /// whole row — the scrollbar-geometry counterpart of
+    /// [`Self::layout_with_scroll_px`]. `None` resolves to exactly the
+    /// pre-existing whole-row behaviour.
+    pub fn vscrollbar_with_scroll_px(
+        &self,
+        area: Rect,
+        row_height: f32,
+        track_width: f32,
+        scroll_px: Option<f32>,
+    ) -> Option<Scrollbar> {
         if !self.show_v_scrollbar {
+            return None;
+        }
+        if row_height <= 0.0 || track_width <= 0.0 {
             return None;
         }
         let total = self.items.len() as f32;
@@ -417,12 +583,12 @@ impl ListView {
         }
         // Track occupies the rightmost content column; its height spans the
         // content rows (below the title in flat mode, between borders in
-        // bordered mode).
+        // bordered mode). In `bordered` mode the column is inset
+        // `row_height` from the right edge (the same inset `layout` uses
+        // for its last content column) rather than the 1-unit border
+        // stroke itself, `track_width` wide either way.
         let (track_x, track_y, track_h) = if self.bordered {
-            // In bordered mode: right border at area.x + area.width - 1,
-            // so the track sits at area.x + area.width - 2*row_height (last
-            // content column), spanning from top-border to bottom-border.
-            let x = area.x + area.width - 2.0 * row_height;
+            let x = area.x + area.width - row_height - track_width;
             let y = area.y + row_height;
             let h = (area.height - 2.0 * row_height).max(0.0);
             (x, y, h)
@@ -434,7 +600,7 @@ impl ListView {
             } else {
                 0.0
             };
-            let x = area.x + area.width - row_height;
+            let x = area.x + area.width - track_width;
             let y = area.y + title_h;
             let h = (area.height - title_h).max(0.0);
             (x, y, h)
@@ -447,11 +613,22 @@ impl ListView {
         if total <= visible {
             return None;
         }
-        let track = Rect::new(track_x, track_y, row_height, track_h);
+        let track = Rect::new(track_x, track_y, track_width, track_h);
+        // `scroll_px` wins over `scroll_offset` when set, so the thumb
+        // moves smoothly alongside the sub-row paint shift
+        // `layout_with_scroll_px` applies.
+        let (resolved_scroll_offset, scroll_sub_px) =
+            crate::primitives::scrollbar::resolve_scroll_px(
+                self.scroll_offset,
+                scroll_px,
+                self.items.len(),
+                row_height,
+            );
+        let scroll_rows = resolved_scroll_offset as f32 + scroll_sub_px / row_height;
         Some(Scrollbar::vertical(
             self.id,
             track,
-            self.scroll_offset as f32,
+            scroll_rows,
             total,
             visible,
             row_height,
@@ -694,6 +871,44 @@ mod vscrollbar_tests {
             "scrolling down should move the thumb down"
         );
     }
+
+    #[test]
+    fn scroll_px_moves_the_thumb_smoothly_between_whole_rows() {
+        // Row height 22px (a GUI-ish value): half a row of `scroll_px`
+        // moves the thumb strictly between the whole-row-0 and
+        // whole-row-1 positions — not snapped to either.
+        let row0 = vlist(30, 0)
+            .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0), 22.0, 22.0)
+            .unwrap();
+        let row1 = vlist(30, 1)
+            .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0), 22.0, 22.0)
+            .unwrap();
+        let half_sb = vlist(30, 0)
+            .vscrollbar_with_scroll_px(
+                Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0),
+                22.0,
+                22.0,
+                Some(11.0),
+            )
+            .unwrap();
+        assert!(
+            half_sb.thumb_start > row0.thumb_start && half_sb.thumb_start < row1.thumb_start,
+            "half-row scroll_px should land the thumb strictly between rows 0 and 1"
+        );
+    }
+
+    #[test]
+    fn scroll_px_wins_over_scroll_offset_for_the_thumb() {
+        let mut l = vlist(30, 0);
+        l.scroll_offset = 5; // stale, overridden by scroll_px
+        let sb = l
+            .vscrollbar_with_scroll_px(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0, Some(0.0))
+            .unwrap();
+        let at_zero = vlist(30, 0)
+            .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+            .unwrap();
+        assert_eq!(sb.thumb_start, at_zero.thumb_start);
+    }
 }
 
 // ── PaintSurface paint ─────────────────────────────────────────────
@@ -728,6 +943,7 @@ mod vscrollbar_tests {
 pub(crate) mod native_surface_paint {
     use super::{ListView, ListViewLayout};
     use crate::paint_surface::PaintSurface;
+    use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::Decoration;
     use crate::Rect;
@@ -751,6 +967,28 @@ pub(crate) mod native_surface_paint {
     ///   scrollbar"), so painting one there without a reservation would
     ///   overlap the last content row — a new (and wrong) visual, not a
     ///   fix. `true` on GTK/macOS, which both already reserve the row.
+    /// - `style` supplies [`Style::row_padding_x`], the horizontal inset
+    ///   a row's leading content (chevron-less here, so its icon/text)
+    ///   starts at — callers pass `&self.current_style` (GTK/macOS);
+    ///   Windows passes `&Style::default()`, matching `win::list`'s own
+    ///   documented "no live theme either" gap.
+    /// - `hovered_idx` / `pressed_idx` — index into `list.items` (not
+    ///   `vis_item.item_idx` offset by anything) to tint via
+    ///   [`Theme::list_hover_bg`] / [`Theme::list_pressed_bg`]. `None`
+    ///   paints byte-for-byte what this function painted before hover
+    ///   support existed. Applied on top of whatever background the row
+    ///   already has (selected, header, or base fill) — pressed takes
+    ///   priority over hover, matching every other
+    ///   `InteractionState`-adjacent rasteriser in this crate.
+    /// - `focus_ring_visible` — when `true`, strokes a
+    ///   `Theme::focus_ring_color` ring at `Style::focus_ring_width`,
+    ///   flush with [`ListView::selected_idx`]'s row bounds, on top of
+    ///   whatever background that row already has. Separate from
+    ///   [`ListView::has_focus`] (see that field's doc for why) — the
+    ///   caller passes `ring.is_focused(&list.id) &&
+    ///   ring.is_focus_visible()` here, not `list.has_focus`. `false`
+    ///   paints byte-for-byte what this function painted before the
+    ///   ring existed.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         list: &ListView,
@@ -762,6 +1000,57 @@ pub(crate) mod native_surface_paint {
         supports_hscrollbar: bool,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        style: &Style,
+        hovered_idx: Option<usize>,
+        pressed_idx: Option<usize>,
+        focus_ring_visible: bool,
+    ) {
+        paint_with_scroll_px(
+            list,
+            area,
+            list_layout,
+            line_height,
+            nerd_fonts_enabled,
+            supports_border,
+            supports_hscrollbar,
+            surface,
+            theme,
+            style,
+            hovered_idx,
+            pressed_idx,
+            focus_ring_visible,
+            None,
+        )
+    }
+
+    /// Like [`paint`], plus an explicit pixel-precise scroll position
+    /// (`scroll_px`) that wins over [`ListView::scroll_offset`] for both
+    /// the rows (via `list_layout.visible_items`, already resolved
+    /// against `scroll_px` by whichever of
+    /// [`ListView::layout_with_scroll_px`]/`mac_list_layout_with_scroll_px`
+    /// built `list_layout`) and the vertical scrollbar thumb (resolved
+    /// here, via [`ListView::vscrollbar_with_scroll_px`]).
+    ///
+    /// `scroll_px: None` (what [`paint`] passes) is pixel-identical to
+    /// `paint` — the items-region clip that bounds a sub-row shift
+    /// against the pinned title is pushed only when `scroll_px.is_some()`,
+    /// so the `None` path never pushes it at all.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_scroll_px(
+        list: &ListView,
+        area: Rect,
+        list_layout: &ListViewLayout,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+        supports_border: bool,
+        supports_hscrollbar: bool,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        hovered_idx: Option<usize>,
+        pressed_idx: Option<usize>,
+        focus_ring_visible: bool,
+        scroll_px: Option<f32>,
     ) {
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
@@ -834,6 +1123,36 @@ pub(crate) mod native_surface_paint {
         let item_x_offset = area.x + border_inset;
         let item_y_offset = area.y + border_inset;
 
+        // Clip row painting to the region below the pinned title —
+        // `scroll_px`'s sub-row remainder shifts the first visible
+        // item's `bounds.y` up by less than one row (see
+        // `ListView::layout_with_scroll_px`), which can land inside the
+        // title's own band. Without this clip that item's background
+        // would paint over the bottom edge of a still-pinned title.
+        //
+        // Gated on `scroll_px.is_some()`: with `scroll_px: None`, no item
+        // is ever shifted above `title_bounds`'s bottom, so the clip
+        // would be a no-op for row painting — but it would still clip
+        // anything else that paints outside the items band (e.g. a
+        // focus-ring stroke on the first row of an untitled, bordered
+        // list), which the `None` path must leave pixel-identical to
+        // before this fn existed.
+        let items_clip_active = scroll_px.is_some();
+        if items_clip_active {
+            let title_h = list_layout
+                .title_bounds
+                .map(|b| b.y + b.height)
+                .unwrap_or(0.0);
+            let items_region_y = item_y_offset + title_h;
+            let items_region_h = (area.height - border_inset * 2.0 - title_h).max(0.0);
+            surface.surface_push_clip(Rect::new(
+                item_x_offset,
+                items_region_y,
+                (area.width - border_inset * 2.0).max(0.0),
+                items_region_h,
+            ));
+        }
+
         for vis_item in &list_layout.visible_items {
             let item = &list.items[vis_item.item_idx];
             let row_x = item_x_offset + vis_item.bounds.x;
@@ -856,9 +1175,33 @@ pub(crate) mod native_surface_paint {
             } else {
                 base_bg
             };
+            let row_bg = if Some(vis_item.item_idx) == pressed_idx {
+                theme.list_pressed_bg(row_bg)
+            } else if Some(vis_item.item_idx) == hovered_idx {
+                theme.list_hover_bg(row_bg)
+            } else {
+                row_bg
+            };
 
             let row_rect = Rect::new(row_x, row_y, row_w, row_h);
             surface.surface_fill_rect(row_rect, row_bg);
+
+            // Focus-visible ring: a square stroke flush with the
+            // selected row's own bounds, in `Theme::focus_ring_color`
+            // at `Style::focus_ring_width`. Unlike `Button`'s/
+            // `TextInput`'s ring, this one is not outset — adjacent
+            // rows have no gap between them, so an outset stroke would
+            // bleed into the row above/below. Gated on
+            // `focus_ring_visible`, not `list.has_focus` — see this
+            // fn's own doc and `ListView::has_focus`'s doc for why the
+            // two are kept separate.
+            if is_selected && focus_ring_visible {
+                surface.surface_stroke_rect(
+                    row_rect,
+                    theme.focus_ring_color(),
+                    style.focus_ring_width,
+                );
+            }
 
             // Per-row clip: with h_scroll the cursor starts to the left
             // of `row_x`, so scrolled-off glyphs would paint outside the
@@ -868,7 +1211,7 @@ pub(crate) mod native_surface_paint {
             // the selected row with `theme.selected_bg`, so the chevron
             // is a redundant terminal affordance here (the TUI painter
             // still draws it — it has no row-fill cue to lean on).
-            let mut cursor_x = row_x + 2.0 - h_off_px;
+            let mut cursor_x = row_x + style.row_padding_x - h_off_px;
 
             if let Some(ref icon) = item.icon {
                 let glyph = if nerd_fonts_enabled {
@@ -955,6 +1298,10 @@ pub(crate) mod native_surface_paint {
             }
         }
 
+        if items_clip_active {
+            surface.surface_pop_clip();
+        }
+
         // ── Horizontal scrollbar ──────────────────────────────────────
         // Painted after items so it overlays the bottom row's background.
         if needs_hscrollbar {
@@ -985,7 +1332,13 @@ pub(crate) mod native_surface_paint {
         }
 
         // ── Vertical scrollbar ─────────────────────────────────────
-        if let Some(vsb) = list.vscrollbar(area, line_height) {
+        // Track width is `Style::scrollbar_width`, independent of row
+        // pitch — see that field's own doc. `scroll_px` wins over
+        // `scroll_offset` when set, so the thumb tracks the same
+        // sub-row position the items above were painted at.
+        if let Some(vsb) =
+            list.vscrollbar_with_scroll_px(area, line_height, style.scrollbar_width, scroll_px)
+        {
             crate::primitives::scrollbar::native_surface_paint::paint(&vsb, surface, theme);
         }
 
@@ -1001,13 +1354,14 @@ pub(crate) mod native_surface_paint {
         use crate::types::{Color, Icon, StyledText, WidgetId};
         use crate::Image;
 
-        /// Records every fill + text-run call — mirrors
+        /// Records every fill + stroke + text-run call — mirrors
         /// `primitives::scrollbar`'s `RecordingSurface` test double,
         /// scoped to the verbs this primitive uses, so this test runs on
         /// any host without Cairo/Core Graphics/Direct2D.
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color, f32)>,
             texts: Vec<(Rect, String, Color)>,
         }
 
@@ -1032,14 +1386,17 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
                 self.fills.push((rect, color));
             }
-            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
             fn surface_stroke_rounded_rect(
                 &mut self,
-                _rect: Rect,
+                rect: Rect,
                 _radius: f32,
-                _color: Color,
-                _stroke_width: f32,
+                color: Color,
+                stroke_width: f32,
             ) {
+                self.strokes.push((rect, color, stroke_width));
             }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.texts.push((rect, text.to_string(), color));
@@ -1102,10 +1459,14 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
 
             let expected = list
-                .vscrollbar(AREA, LINE_HEIGHT)
+                .vscrollbar_with_track_width(AREA, LINE_HEIGHT, Style::default().scrollbar_width)
                 .expect("50 rows in an 80px/16px viewport must need a v-scrollbar");
             assert!(
                 surface
@@ -1119,6 +1480,141 @@ pub(crate) mod native_surface_paint {
                 expected.track,
                 surface.fills
             );
+        }
+
+        /// `layout_with_scroll_px`'s `scroll_px` set to half a row shifts
+        /// every painted row's `y` up by exactly that half-row — the
+        /// "partial first row clipped" GUI look of pixel-smooth
+        /// scrolling. The row is recorded with a `y` above `area.y` here
+        /// (`RecordingSurface` doesn't actually clip); the real
+        /// `surface_push_clip(area)` call right before painting rows is
+        /// what makes a live GUI surface show only the portion still
+        /// inside the viewport.
+        #[test]
+        fn scroll_px_shifts_rows_by_the_sub_row_remainder() {
+            let list = vlist(50);
+            let layout = list.layout_with_scroll_px(
+                AREA.width,
+                AREA.height,
+                0.0,
+                Some(LINE_HEIGHT / 2.0),
+                |_| super::super::ListItemMeasure::new(LINE_HEIGHT),
+            );
+            assert_eq!(layout.resolved_scroll_offset, 0);
+            assert!((layout.scroll_sub_px - LINE_HEIGHT / 2.0).abs() < 0.01);
+
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
+            );
+
+            // Item 0 is `selected_idx` with `has_focus: true`, so its
+            // row-background fill is uniquely `theme.selected_bg` —
+            // distinguishing it from the area background and every
+            // other (unselected) row's fill.
+            let selected_fill = surface
+                .fills
+                .iter()
+                .find(|(_, c)| *c == theme.selected_bg)
+                .expect("row 0's selected background should still be painted, just shifted up");
+            assert!(
+                selected_fill.0.y < AREA.y,
+                "half a row of scroll_px should shift row 0 above the viewport top, got y={}",
+                selected_fill.0.y
+            );
+        }
+
+        /// The painted track's width follows `Style::scrollbar_width`,
+        /// not `line_height` — a host-set non-default width must
+        /// actually reach the paint surface.
+        #[test]
+        fn vertical_scrollbar_track_width_follows_style_token() {
+            let list = vlist(50);
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let style = Style::default().with_scrollbar_width(20.0);
+            let mut surface = RecordingSurface::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &Theme::default(),
+                &style,
+                None,
+                None,
+                false,
+            );
+
+            let track_fill = surface
+                .fills
+                .iter()
+                .find(|(r, _)| (r.width - 20.0).abs() < 0.01)
+                .expect("expected a fill at the 20px-wide scrollbar track");
+            assert_eq!(track_fill.0.x, AREA.x + AREA.width - 20.0);
+        }
+
+        /// The "always-visible bar" acceptance item is not a painter bug:
+        /// [`ListView::vscrollbar_with_track_width`] already returns `None`
+        /// once every row fits the viewport (`total <= visible`, checked
+        /// before any track geometry is computed), and this shared paint
+        /// path is the only place any backend's vertical scrollbar fill
+        /// comes from — so a list whose content fits paints no scrollbar
+        /// fill at all, on every backend, with no per-backend code to fix.
+        #[test]
+        fn no_vertical_scrollbar_fill_when_content_fits_the_viewport() {
+            // AREA is 80px tall at LINE_HEIGHT 16 → 5 rows fit; 3 items
+            // is strictly fewer, so no scrollbar is needed.
+            let list = vlist(3);
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let mut surface = RecordingSurface::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                None,
+                false,
+            );
+            assert!(
+                list.vscrollbar(AREA, LINE_HEIGHT).is_none(),
+                "3 items in a 5-row viewport must not need a v-scrollbar"
+            );
+            for (r, _) in &surface.fills {
+                assert!(
+                    r.x + r.width <= AREA.x + AREA.width + 0.01,
+                    "unexpected fill past the list's right edge (a scrollbar \
+                     track painted when content fits): {:?}",
+                    r
+                );
+            }
         }
 
         #[test]
@@ -1140,6 +1636,10 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
             assert!(list.vscrollbar(AREA, LINE_HEIGHT).is_none());
             // Every recorded fill must stay within the list's own bounds
@@ -1181,6 +1681,10 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut supported,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
             assert!(
                 !supported.fills.is_empty(),
@@ -1199,6 +1703,10 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut unsupported,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
             // Every fill must stay within the row content area — none of
             // them may be the bottom-row-height h-scrollbar track, which
@@ -1234,6 +1742,10 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
 
             let row1 = layout
@@ -1255,6 +1767,147 @@ pub(crate) mod native_surface_paint {
                         && (r.y - row1_rect.y).abs() < 0.01
                         && *c == theme.selected_bg),
                 "selected row must paint theme.selected_bg at its own bounds"
+            );
+        }
+
+        /// The focused row's ring strokes exactly at the selected row's
+        /// own bounds, in `Theme::focus_ring_color` at
+        /// `Style::focus_ring_width` — and only there, not at any other
+        /// visible row. Discriminated from `selected_row_paints_selected_bg`
+        /// above by checking `surface.strokes` (a distinct call) rather
+        /// than `surface.fills`, so this test can't pass on the
+        /// pre-existing fill alone.
+        #[test]
+        fn focused_row_paints_a_ring_at_its_own_bounds() {
+            let mut list = vlist(3);
+            list.selected_idx = 1;
+            list.has_focus = true;
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let style = Style::default().with_focus_ring_width(3.0);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &theme,
+                &style,
+                None,
+                None,
+                /* focus_ring_visible */ true,
+            );
+
+            let row1 = layout
+                .visible_items
+                .iter()
+                .find(|v| v.item_idx == 1)
+                .expect("row 1 visible");
+            let row1_rect = Rect::new(
+                row1.bounds.x,
+                row1.bounds.y,
+                row1.bounds.width,
+                row1.bounds.height,
+            );
+            assert!(
+                surface
+                    .strokes
+                    .iter()
+                    .any(|(r, c, w)| (r.x - row1_rect.x).abs() < 0.01
+                        && (r.y - row1_rect.y).abs() < 0.01
+                        && (r.width - row1_rect.width).abs() < 0.01
+                        && (r.height - row1_rect.height).abs() < 0.01
+                        && *c == theme.focus_ring_color()
+                        && (*w - 3.0).abs() < 0.01),
+                "focused row must stroke a ring at its own bounds with \
+                 Style::focus_ring_width, got strokes: {:?}",
+                surface.strokes
+            );
+            assert_eq!(
+                surface.strokes.len(),
+                1,
+                "only the focused row gets a ring, got strokes: {:?}",
+                surface.strokes
+            );
+        }
+
+        /// `focus_ring_visible: false` paints no ring even though the
+        /// row is genuinely selected-and-focused — the default a call
+        /// site gets unless it explicitly composes
+        /// `ring.is_focused(id) && ring.is_focus_visible()`. Paired with
+        /// `no_ring_without_a_selected_row_even_when_focus_ring_visible`
+        /// below: either gate alone must suppress the ring.
+        #[test]
+        fn no_ring_when_focus_ring_visible_is_false() {
+            let mut list = vlist(3);
+            list.selected_idx = 1;
+            list.has_focus = true;
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let mut surface = RecordingSurface::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                None,
+                /* focus_ring_visible */ false,
+            );
+            assert!(
+                surface.strokes.is_empty(),
+                "focus_ring_visible: false must paint no ring even on a \
+                 selected, has_focus: true row, got strokes: {:?}",
+                surface.strokes
+            );
+        }
+
+        /// `focus_ring_visible: true` alone doesn't paint a ring on a
+        /// list with nothing selected-and-focused (`has_focus: false`
+        /// here) — the ring is still scoped to
+        /// [`ListView::selected_idx`]'s row via `is_selected`.
+        #[test]
+        fn no_ring_without_a_selected_row_even_when_focus_ring_visible() {
+            let mut list = vlist(3);
+            list.selected_idx = 1;
+            list.has_focus = false;
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let mut surface = RecordingSurface::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                None,
+                /* focus_ring_visible */ true,
+            );
+            assert!(
+                surface.strokes.is_empty(),
+                "an unfocused list must paint no ring even when \
+                 focus_ring_visible: true, got strokes: {:?}",
+                surface.strokes
             );
         }
 
@@ -1280,6 +1933,10 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut surface,
                 &Theme::default(),
+                &Style::default(),
+                None,
+                None,
+                false,
             );
 
             assert!(
@@ -1309,6 +1966,10 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut nerd_surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
             assert!(nerd_surface.texts.iter().any(|(_, t, _)| t == "nf-glyph"));
 
@@ -1323,6 +1984,10 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut ascii_surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
             assert!(ascii_surface.texts.iter().any(|(_, t, _)| t == "F"));
         }
@@ -1349,6 +2014,10 @@ pub(crate) mod native_surface_paint {
                 true,
                 &mut surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
 
             let row_text = surface
@@ -1366,6 +2035,54 @@ pub(crate) mod native_surface_paint {
                 "overlong row text must be shorter than the source, got {row_text:?}"
             );
         }
+
+        /// The issue's first acceptance bullet: a row's text starts
+        /// `row_padding_x` in from its rect. Painted with a non-default
+        /// [`Style::row_padding_x`] (15.0, not the 8.0 default) so
+        /// reverting the token back to the old hardcoded `2.0` literal
+        /// in `paint` would fail this test.
+        #[test]
+        fn row_text_starts_row_padding_x_in_from_the_row_rect() {
+            let list = vlist(1);
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let row = layout
+                .visible_items
+                .first()
+                .expect("one visible row")
+                .bounds;
+
+            let style = Style::default().with_row_padding_x(15.0);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &theme,
+                &style,
+                None,
+                None,
+                false,
+            );
+
+            let (text_rect, _, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t, _)| t.starts_with("row 0"))
+                .expect("row text painted");
+            assert_eq!(
+                text_rect.x,
+                row.x + style.row_padding_x,
+                "row text must start row_padding_x in from the row's left edge"
+            );
+        }
     }
 }
 
@@ -1374,13 +2091,17 @@ pub(crate) mod native_surface_paint {
 pub enum ListViewEvent {
     /// Keyboard / mouse moved selection to a different row.
     SelectionChanged { idx: usize },
-    /// User confirmed a row via the keyboard (Enter). Documented meaning is
-    /// "click or Enter", but the pointer side is `ItemDoubleClicked` below —
-    /// a single click only ever emits `SelectionChanged`.
+    /// User pressed Enter while the list had focus and a row was selected
+    /// — the keyboard equivalent of [`Self::ItemDoubleClicked`]'s mouse
+    /// gesture, and the event [`crate::a11y::A11yAction::Click`] routes to
+    /// for a screen reader's own "activate" action. An app wiring up "open
+    /// this row" listens for both this and `ItemDoubleClicked`, since a
+    /// single click never emits either — only `SelectionChanged`.
     ItemActivated { idx: usize },
     /// User double-clicked a row — distinct from `SelectionChanged` (a
     /// plain click) so an app can tell "select" apart from "open" without
-    /// both folding into `ItemActivated`.
+    /// both folding into `ItemActivated`. See `ItemActivated`'s own doc for
+    /// the keyboard/screen-reader side of the same "open" meaning.
     ItemDoubleClicked { idx: usize },
     /// A key was pressed while the list had focus and the primitive
     /// did not consume it. App may interpret it (e.g. `q` closes the

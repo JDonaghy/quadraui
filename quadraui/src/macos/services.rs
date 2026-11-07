@@ -1488,6 +1488,7 @@ mod tests {
             label: id.to_string(),
             is_default,
             is_cancel,
+            spec: None,
         }
     }
 

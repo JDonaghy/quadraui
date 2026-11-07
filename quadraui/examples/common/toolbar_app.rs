@@ -112,6 +112,7 @@ impl ToolbarApp {
         Toolbar::new(WidgetId::new("demo:toolbar"))
             .with_buttons(vec![
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("demo:continue"),
                     label: "Continue".into(),
                     icon: Some("▶".into()),
@@ -121,6 +122,7 @@ impl ToolbarApp {
                     tooltip: "Resume execution".into(),
                 },
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("demo:pause"),
                     label: "Pause".into(),
                     icon: Some("⏸".into()),
@@ -131,6 +133,7 @@ impl ToolbarApp {
                 },
                 ToolbarButton::Separator,
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("demo:filter"),
                     label: "Filter".into(),
                     icon: Some("⚙".into()),
@@ -140,6 +143,7 @@ impl ToolbarApp {
                     tooltip: "Toggle filter".into(),
                 },
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("demo:reset"),
                     label: "Reset".into(),
                     icon: Some("↺".into()),
@@ -150,6 +154,7 @@ impl ToolbarApp {
                 },
                 ToolbarButton::Separator,
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("demo:debug"),
                     label: "Debug".into(),
                     icon: None,

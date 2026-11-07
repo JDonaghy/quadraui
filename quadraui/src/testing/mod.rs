@@ -705,6 +705,11 @@ pub struct RecordingBackend {
     /// pure bookkeeping, same shape every real backend's `BackendCore`
     /// delegates to.
     pub invalidation_log: crate::backend::InvalidationLog,
+    /// Every shape passed to [`Backend::set_cursor`], in call order —
+    /// lets a test assert *which* shape a controller requested and in
+    /// what sequence, the same "record, don't rasterise" trade `calls`
+    /// makes for `draw_*`.
+    pub cursor_calls: Vec<crate::PointerShape>,
 }
 
 impl Default for RecordingBackend {
@@ -722,6 +727,7 @@ impl Default for RecordingBackend {
             current_style: crate::Style::default(),
             focus: crate::focus::FocusManager::new(),
             invalidation_log: crate::backend::InvalidationLog::new(),
+            cursor_calls: Vec::new(),
         }
     }
 }
@@ -812,6 +818,10 @@ impl crate::Backend for RecordingBackend {
     }
     fn draw_focus_ring(&mut self, _r: Rect) {
         self.record("draw_focus_ring");
+    }
+    fn set_cursor(&mut self, shape: crate::PointerShape) -> bool {
+        self.cursor_calls.push(shape);
+        true
     }
     fn drag_state_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::DragState>> {
         unimplemented!(

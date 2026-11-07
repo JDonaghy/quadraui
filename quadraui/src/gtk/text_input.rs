@@ -3,12 +3,27 @@
 //! Paints a 1px border, the visible text lines, and a thin vertical
 //! cursor bar (matches `FieldKind::TextInput` rendering inside `Form`).
 //! Placeholder renders in `theme.muted_fg` when active.
+//!
+//! # Focus-visible ring
+//!
+//! When `ti.has_focus`, [`draw_text_input`] strokes an outset ring in
+//! [`Theme::focus_ring_color`] around `rect`, geometry resolved through
+//! the shared
+//! [`crate::primitives::button::native_surface_paint::focus_ring_geometry`]
+//! helper (`style.focus_ring_width`) — the same seam `gtk::button` and
+//! `gtk::switch` already paint through for their own rings, and the same
+//! convention `win::text_input` and the macOS `TextInput` painter use.
+//! `TextInput`'s own border always strokes square (no radius), so the
+//! ring strokes square too (a plain `cr.rectangle`), ignoring the
+//! geometry's `corner_radius`.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::cairo_rgb;
+use crate::primitives::button::native_surface_paint::focus_ring_geometry;
 use crate::primitives::text_input::{TextInput, TextInputLayout, TextInputMeasure};
+use crate::style::Style;
 use crate::theme::Theme;
 use crate::types::Color;
 
@@ -28,6 +43,7 @@ pub fn draw_text_input(
     rect: crate::event::Rect,
     ti: &TextInput,
     theme: &Theme,
+    style: &Style,
     line_height: f64,
     char_width: f64,
 ) -> TextInputLayout {
@@ -65,6 +81,27 @@ pub fn draw_text_input(
         rect.height as f64 - 1.0,
     );
     cr.stroke().ok();
+
+    // Focus-visible ring: a second, outset stroke in the theme's ring
+    // colour, independent of the border tint above — see this module's
+    // doc for why it strokes square rather than at the geometry's
+    // `corner_radius`. `ti.has_focus` already carries the caller's
+    // focus-visible suppression (composed via
+    // `crate::compose::FocusRing::is_focus_visible` before it's set on
+    // `TextInput`), so no separate check is needed here.
+    if ti.has_focus {
+        let ring = focus_ring_geometry(rect, style);
+        let (ring_r, ring_g, ring_b) = cairo_rgb(theme.focus_ring_color());
+        cr.set_source_rgb(ring_r, ring_g, ring_b);
+        cr.set_line_width(ring.width as f64);
+        cr.rectangle(
+            ring.rect.x as f64,
+            ring.rect.y as f64,
+            ring.rect.width as f64,
+            ring.rect.height as f64,
+        );
+        cr.stroke().ok();
+    }
 
     // Clip content rendering to the box interior so glyphs that
     // overhang the rect (proportional fonts, last visible char at the
@@ -208,5 +245,99 @@ mod layout_tests {
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);
+    }
+}
+
+#[cfg(test)]
+mod paint_tests {
+    use super::*;
+    use crate::event::Rect;
+    use crate::types::WidgetId;
+    use pangocairo::cairo::{Format, ImageSurface};
+
+    const W: i32 = 200;
+    const H: i32 = 60;
+
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        // Cairo ARGB32 byte order on little-endian is BGRA.
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    fn sample(ti: &TextInput, rect: Rect, style: &Style) -> ImageSurface {
+        let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            // Baseline fill distinct from every colour `draw_text_input`
+            // paints, so any pixel still showing it proves nothing was
+            // painted there.
+            cr.set_source_rgb(10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0);
+            cr.paint().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_text_input(
+                &cr,
+                &pango_layout,
+                rect,
+                ti,
+                &Theme::default(),
+                style,
+                16.0,
+                8.0,
+            );
+        }
+        surface
+    }
+
+    /// Focus-visible ring: present (outset of the border, in
+    /// `theme.focus_ring_color()`) when `ti.has_focus`, absent when not
+    /// — the gtk-rasteriser half of the seam's "ring present after Tab
+    /// focus, absent after a click" acceptance. Samples a point on the
+    /// ring's *outset* band (outside `rect` entirely, in the
+    /// `focus_ring_geometry` gap), so unlike a sample inside `rect` this
+    /// cannot pass merely because the border happens to share
+    /// `theme.accent_fg` with `Theme::focus_ring_color()`; only the ring
+    /// stroke itself reaches this pixel.
+    #[test]
+    fn focus_visible_ring_paints_in_the_outset_gap_only_when_focused() {
+        let rect = Rect::new(20.0, 15.0, 100.0, 30.0);
+        let style = Style::default();
+        let theme = Theme::default();
+
+        // Centre of the ring's stroke band on the left edge, well clear
+        // of the top/bottom corners: `focus_ring_geometry`'s outset gap
+        // is 2px, so `rect.x - 2.0` sits on the ring's own outset rect
+        // edge, inside the 2px-wide stroke centred on it.
+        let ring_x = (rect.x - 2.0) as i32;
+        let ring_y = (rect.y + rect.height / 2.0) as i32;
+
+        for has_focus in [true, false] {
+            let mut ti = TextInput::new(WidgetId::new("ti"));
+            ti.lines = vec!["hello".into()];
+            ti.has_focus = has_focus;
+
+            let mut surface = sample(&ti, rect, &style);
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            let (r, g, b) = pixel(&data, stride, ring_x, ring_y);
+
+            if has_focus {
+                assert_eq!(
+                    (r, g, b),
+                    (
+                        theme.focus_ring_color().r,
+                        theme.focus_ring_color().g,
+                        theme.focus_ring_color().b
+                    ),
+                    "focused TextInput should paint the focus-visible ring in the outset gap",
+                );
+            } else {
+                assert_eq!(
+                    (r, g, b),
+                    (10, 20, 30),
+                    "unfocused TextInput should not paint a focus-visible ring",
+                );
+            }
+        }
     }
 }

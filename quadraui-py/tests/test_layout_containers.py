@@ -17,6 +17,11 @@ binding work:
 - a `"row"`/`"column"` node's optional `"padding"`/`"gap"`/`"margin"`
   spacing keys, siblings of the `"row"`/`"column"` key in the same node
   dict, are honoured by the shared layout pass.
+- a `"split"`/`"tabs"`/`"panel"` node's own `"padding"`/`"margin"`
+  spacing keys, honoured the same way; a `"split"` node's `"gap"` also
+  works (the space between its two panes), while `"tabs"`/`"panel"` reject
+  `"gap"` as a decode error -- there's no second sibling to space it
+  from.
 
 Run against a built wheel/extension, e.g.:
 
@@ -125,11 +130,11 @@ def test_clicking_a_panel_title_bar_sets_the_click_s_widget_to_the_panel_id():
     assert mouse_downs[0]["widget"] == "panel:outer", received
 
 
-def test_clicking_a_sidebar_panel_toolbar_button_sets_the_click_s_widget_to_its_id():
+def test_clicking_a_sidebar_panel_toolbar_button_emits_toolbar_button_clicked():
     # The lone toolbar button starts at the toolbar's own x=0, row 0.
     # `quadraui-binding-core`'s `InteractionEngine` records the sidebar
-    # panel's own chrome layout as a hit, so the raw `MouseDown` carries
-    # the button's own id as `widget`.
+    # panel's own chrome layout (and its embedded toolbar) as a hit, so the
+    # click is delivered as a typed `Toolbar` event naming the bar and button.
     app = QuiApp(40, 20)
 
     def render():
@@ -154,9 +159,11 @@ def test_clicking_a_sidebar_panel_toolbar_button_sets_the_click_s_widget_to_its_
     )
     app.run(1)
 
-    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
-    assert mouse_downs, received
-    assert mouse_downs[0]["widget"] == "refine", received
+    toolbar_events = [event["Toolbar"] for event in received if "Toolbar" in event]
+    assert toolbar_events, received
+    bar, payload = toolbar_events[0]
+    assert bar == "sidebar:outer:toolbar", received
+    assert payload == {"ButtonClicked": {"id": "refine", "is_active": True}}, received
 
 
 def test_sidebar_panel_renders_nested_content():
@@ -373,6 +380,176 @@ def test_row_with_no_spacing_keys_still_decodes_the_legacy_array_shape():
 
     app.set_render(render)
     assert app.screen().splitlines()[0][0] == "L"
+
+
+def test_panel_padding_and_margin_inset_the_whole_panel_on_tui():
+    # A "panel" node's "padding"/"margin" keys are siblings of the "panel"
+    # key, honoured by the same shared layout pass a "row"/"column" node's
+    # own spacing keys use -- the whole panel (chrome and content both) is
+    # inset before `Backend::draw_panel` paints it. `padding: 12` insets a
+    # panel with no title bar by `ceil(12 / 8) == 2` columns and
+    # `ceil(12 / 16) == 1` row from the corner of a 10x5 screen.
+    app = QuiApp(10, 5)
+
+    def render():
+        return {
+            "panel": {
+                "id": "panel:1",
+                "content": _text("text:body", "X"),
+            },
+            "padding": 12,
+        }
+
+    app.set_render(render)
+    lines = app.screen().splitlines()
+    assert lines[0].strip() == "", "no padding row stays blank"
+    assert lines[1][:2] == "  ", "padding columns stay blank"
+    assert lines[1].strip() == "X"
+
+
+def test_panel_rejects_a_gap_key_it_does_not_support():
+    # "gap" has no meaning on a "panel" node -- there's no second sibling
+    # to space it from -- so it's a decode error, same as "padding"/
+    # "margin" were before this node kind supported them.
+    app = QuiApp(10, 5)
+
+    def render():
+        return {
+            "panel": {
+                "id": "panel:1",
+                "content": _text("text:body", "X"),
+            },
+            "gap": 8,
+        }
+
+    app.set_render(render)
+    with pytest.raises(InvalidDescriptorError):
+        app.screen()
+
+
+def test_tabs_accepts_an_optional_focused_index():
+    # An optional "focused_index" key marks a tab keyboard-focused
+    # (painted as reverse video on TUI, see `tui::tab_bar`'s own test for
+    # the pixel-level treatment). Passing it must not raise and must not
+    # change which tab's content is shown -- that's still "selected"'s job.
+    app = QuiApp(10, 8)
+
+    def render():
+        return {
+            "tabs": {
+                "id": "tabbar:1",
+                "selected": 0,
+                "focused_index": 1,
+                "tabs": [
+                    {"id": "one", "title": "One", "content": _text("text:one", "O")},
+                    {"id": "two", "title": "Two", "content": _text("text:two", "T")},
+                ],
+            }
+        }
+
+    app.set_render(render)
+    lines = app.screen().splitlines()
+    assert "One" in lines[0]
+    assert "Two" in lines[0]
+    assert "O" in "".join(lines[1:])
+
+
+def test_tabs_rejects_an_out_of_range_focused_index():
+    # Same out-of-range convention "selected" already uses.
+    app = QuiApp(10, 8)
+
+    def render():
+        return {
+            "tabs": {
+                "id": "tabbar:1",
+                "focused_index": 5,
+                "tabs": [
+                    {"id": "one", "title": "One", "content": _text("text:one", "O")},
+                ],
+            }
+        }
+
+    app.set_render(render)
+    with pytest.raises(InvalidDescriptorError):
+        app.screen()
+
+
+def test_tabs_padding_and_margin_inset_the_whole_node_on_tui():
+    # A "tabs" node's "padding"/"margin" keys inset the whole node -- tab
+    # strip and content both -- before the strip band is reserved.
+    # `padding: 12` insets by `ceil(12 / 8) == 2` columns and
+    # `ceil(12 / 16) == 1` row; the 3-row-tall strip then starts at row 1
+    # and the content starts at row 4 on an 8-row screen.
+    app = QuiApp(10, 8)
+
+    def render():
+        return {
+            "tabs": {
+                "id": "tabbar:1",
+                "tabs": [
+                    {"id": "one", "title": "T", "content": _text("text:body", "X")},
+                ],
+            },
+            "padding": 12,
+        }
+
+    app.set_render(render)
+    lines = app.screen().splitlines()
+    assert lines[0].strip() == "", "no padding row stays blank"
+    assert lines[1][:2] == "  ", "padding columns stay blank in the tab strip row"
+    content_row = lines[4]
+    assert content_row[:2] == "  ", "padding columns stay blank in the content row"
+    assert content_row[2] == "X"
+
+
+def test_tabs_rejects_a_gap_key_it_does_not_support():
+    # "gap" has no meaning on a "tabs" node either.
+    app = QuiApp(10, 8)
+
+    def render():
+        return {
+            "tabs": {"id": "tabbar:1", "tabs": []},
+            "gap": 8,
+        }
+
+    app.set_render(render)
+    with pytest.raises(InvalidDescriptorError):
+        app.screen()
+
+
+def test_split_padding_margin_and_gap_are_honoured_on_tui():
+    # A "split" node's "padding"/"margin"/"gap" keys are siblings of the
+    # "split" key -- "gap" is the one spacing key with a real meaning here:
+    # extra blank space carved out between the divider and the second
+    # pane, subtracted from the available width before `first_min`/
+    # `second_min` are evaluated. `padding: 8` insets by one column/row
+    # each (`ceil(8/8) == 1`, `ceil(8/16) == 1`); `gap: 16` then inserts
+    # `ceil(16/8) == 2` blank columns after the 1-column-wide divider.
+    app = QuiApp(20, 4)
+
+    def render():
+        return {
+            "split": {
+                "id": "split:1",
+                "orientation": "horizontal",
+                "ratio": 0.5,
+                "first": _text("text:left", "L"),
+                "second": _text("text:right", "R"),
+            },
+            "padding": 8,
+            "gap": 16,
+        }
+
+    app.set_render(render)
+    lines = app.screen().splitlines()
+    assert lines[0].strip() == "", "no padding row stays blank"
+    content_line = lines[1]
+    assert content_line[1] == "L", "first pane starts right after the padding column"
+    divider_col = content_line.index("│")
+    right_col = content_line.index("R")
+    assert right_col - divider_col == 1 + 2, (
+        "second pane starts 1 divider column plus the 2-column gap past the divider"
+    )
 
 
 def test_duplicate_leaf_id_inside_panel_content_is_rejected():

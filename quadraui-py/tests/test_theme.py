@@ -83,6 +83,41 @@ def test_set_theme_rejects_a_malformed_hex_colour():
         app.set_theme({"background": "not-a-colour"})
 
 
+def test_set_theme_error_fg_recolours_the_derived_toast_danger_background():
+    # `Theme::danger_bg` is an *accessor*, not a `Theme` field -- it
+    # derives from `error_fg` (see `theme.rs`'s "Success / warning /
+    # danger / info roles" section), so there is no `danger_bg` key to
+    # set directly. Overriding the field it derives from must still
+    # change what an `Error`-severity `Toast` paints.
+    app = QuiApp(40, 20)
+    app.show_toast(
+        {"id": "toast:before", "title": "Boom", "body": "", "severity": "Error"},
+        "top_left",
+    )
+    # Sample the toast box's top-left border cell -- every cell in the
+    # box shares the same background fill regardless of row/column (see
+    # `tui::toast::paint_toast`), so this corner is as good a probe as
+    # the interior.
+    _, before_bg = app.cell_colors(1, 1)
+
+    app.set_theme({"error_fg": "#ff0000"})
+    app.show_toast(
+        {"id": "toast:after", "title": "Boom", "body": "", "severity": "Error"},
+        "top_left",
+    )
+    _, after_bg = app.cell_colors(1, 1)
+
+    assert before_bg != after_bg, (
+        "recolouring error_fg must change the Error-severity toast's "
+        "danger_bg-derived background"
+    )
+    # `danger_bg` blends `background` toward `error_fg` -- a brighter red
+    # `error_fg` should visibly shift the tint toward red (higher red
+    # channel, lower green/blue) rather than an unrelated colour.
+    assert after_bg[0] > before_bg[0]
+    assert after_bg[1] < before_bg[1]
+
+
 def test_set_style_overrides_a_single_token_and_round_trips():
     app = QuiApp(20, 5)
     default_padding = app.style()["padding"]
@@ -150,6 +185,44 @@ def test_set_style_overrides_the_scrollbar_width_token_and_round_trips():
 
     after = app.style()
     assert after["scrollbar_width"] == 14.0
+    # Unrelated token is untouched.
+    assert after["padding"] == before["padding"]
+
+
+def test_set_style_overrides_the_row_and_tab_padding_tokens_and_round_trips():
+    """`Style::row_padding_x`/`Style::tab_padding_x` reach `QuiApp` through
+    the same `#[serde(default)]`-decoded `set_style` dict every other
+    `Style` field already does -- no binding-side change needed to carry
+    a new descriptor field, matching `quadraui-binding-core`'s wire decode.
+    """
+    app = QuiApp(20, 5)
+    before = app.style()
+    assert before["row_padding_x"] == 8.0
+    assert before["tab_padding_x"] == 10.0
+
+    app.set_style({"row_padding_x": 12.0, "tab_padding_x": 14.0})
+
+    after = app.style()
+    assert after["row_padding_x"] == 12.0
+    assert after["tab_padding_x"] == 14.0
+    # Unrelated token is untouched.
+    assert after["padding"] == before["padding"]
+
+
+def test_set_style_overrides_the_tooltip_delay_token_and_round_trips():
+    """`Style::tooltip_delay_ms` reaches `QuiApp` through the same
+    `#[serde(default)]`-decoded `set_style` dict every other `Style`
+    field already does -- no binding-side change needed to carry a new
+    descriptor field, matching `quadraui-binding-core`'s wire decode.
+    """
+    app = QuiApp(20, 5)
+    before = app.style()
+    assert before["tooltip_delay_ms"] == 500
+
+    app.set_style({"tooltip_delay_ms": 750})
+
+    after = app.style()
+    assert after["tooltip_delay_ms"] == 750
     # Unrelated token is untouched.
     assert after["padding"] == before["padding"]
 

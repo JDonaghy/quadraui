@@ -5,8 +5,9 @@
 //!
 //! Every method resolves [`quadraui::PlatformServices`] off
 //! `self.driver.backend()`, this app's own headless `TuiBackend`, and so
-//! calls [`QuiApp::check_not_live`] first: once `startTui` is running,
-//! that backend is the dormant pre-live one, not the live session's own.
+//! calls [`QuiApp::check_not_live`] first: once `startTui`/`startNative`
+//! is running, that backend is the dormant pre-live one, not the live
+//! session's own.
 //! `TuiPlatformServices` (`quadraui::tui::services`) is a genuine,
 //! non-stub implementation for every method here -- see that module's doc
 //! for exactly what each one does on a terminal.

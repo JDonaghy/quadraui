@@ -593,6 +593,13 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     # `target_os = "macos"` in `lib.rs`, so only the `macOS` workflow's
     # `macos-latest` runner ever compiles the import.
     "NSCursor",
+    # `QuadraView`'s `updateTrackingAreas` installs one `NSTrackingArea`
+    # with the `CursorUpdate` option so AppKit keeps calling
+    # `cursorUpdate:` — the hook that re-applies the shape
+    # `Backend::set_cursor` asked for instead of reverting to the arrow
+    # on the next mouse move. Gates `NSTrackingArea`,
+    # `NSTrackingAreaOptions` and `NSView::addTrackingArea:`.
+    "NSTrackingArea",
     "NSCell",
     "NSMenu",
     "NSMenuItem",
@@ -2017,6 +2024,15 @@ required-features = ["gtk"]
 name = "win_controls"
 path = "examples/win_controls.rs"
 required-features = ["win"]
+
+# macOS leg of the Button/RadioGroup/Switch controls demo — same
+# `ControlsApp` `tui_controls`/`gtk_controls`/`win_controls` already run,
+# real CoreGraphics/CoreText chrome instead of the TUI/GTK/Direct2D
+# painters.
+[[example]]
+name = "macos_controls"
+path = "examples/macos_controls.rs"
+required-features = ["macos"]
 
 # Declarative `visible_when`/`enabled_when` field conditions demo. Both
 # entries are mandatory (see the note above): without an explicit

@@ -84,7 +84,7 @@ The full version is `quadraui/examples/hello.rs`:
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
   silently doing nothing.
-- **Heavily tested.** Around 6,400 tests, including headless
+- **Heavily tested.** Around 6,800 tests, including headless
   paint-then-click round trips on all four backends, an end-to-end
   `TuiDriver` that drives real example apps through the event loop, and
   benchmarks for 100k-row tables and trees and a 4k-line editor.
@@ -250,6 +250,7 @@ machines, so an app matches on semantic events (`MenuEvent::Activated`,
 | `FocusRing` / `FocusGroup` | Tab / Shift+Tab focus cycling. |
 | `HelpOverlayController` | A context-sensitive key-binding help overlay. |
 | `StatusBarInteraction` / `ToolbarHoverTracker` | Hover and press state for status-bar segments and toolbar buttons. |
+| `HoverTooltipTracker` | When a hover tooltip shows: hover delay, dismiss and auto-dismiss. |
 
 Also in `compose`: a Markdown-to-`StyledText` adapter, and
 `notify_or_toast`, which sends a system notification where the platform

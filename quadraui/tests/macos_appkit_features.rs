@@ -124,6 +124,12 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     ("NSStatusBar", "NSStatusBar"),
     ("NSStatusItem", "NSStatusItem"),
     ("NSVariableStatusItemLength", "NSStatusBar"),
+    // Both live in the `NSTrackingArea` header, same shape as `NSImage`/
+    // `NSColor`/`NSAlert`. `NSView::addTrackingArea:` — the method
+    // `QuadraView::updateTrackingAreas` hands the area to — is cfg'd on
+    // this same feature, so the two rows below cover it too.
+    ("NSTrackingArea", "NSTrackingArea"),
+    ("NSTrackingAreaOptions", "NSTrackingArea"),
     ("NSView", "NSView"),
     ("NSViewFrameDidChangeNotification", "NSView"),
     ("NSWindow", "NSWindow"),

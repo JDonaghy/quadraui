@@ -257,6 +257,9 @@ pub struct Icon {
     /// [`crate::primitives::tab_bar::TabBarGlyphs`]) resolve an `Icon`
     /// via [`Self::resolve`] but do not paint `color`: their glyph cells
     /// always use the surrounding theme foreground.
+    /// [`crate::primitives::context_menu::ContextMenuItem::icon`] is the
+    /// same: its glyph paints in the row's `label_fg` on GUI and
+    /// `item_fg` on TUI, so `color` has no effect there either.
     #[serde(default)]
     pub color: Option<Color>,
 }

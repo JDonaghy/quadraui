@@ -249,6 +249,28 @@ pub struct GtkBackend {
     /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
     /// `current_char_width` wide.
     editor_v_scrollbar_w: Option<f32>,
+    /// Timestamp of the most recent scroll-wheel delta, fed in by
+    /// `super::run`'s scroll controller via
+    /// [`Self::note_scroll_activity`]. [`Self::new`] seeds this with its
+    /// own construction instant rather than `None`, so a scrollbar
+    /// painted immediately after startup — a live app's first frame, a
+    /// headless pixel test, a gallery capture — still shows at full
+    /// opacity like VS Code's overlay scrollbars briefly do on load,
+    /// instead of starting invisible. With no further scroll activity it
+    /// fades out exactly like any other idle period. `None` is a
+    /// reachable test seam ([`Self::set_scroll_last_interaction`]) for
+    /// "never interacted, already fully faded". Mirrors
+    /// `MacBackend::scroll_fade_last_interaction` /
+    /// `WinBackend::scroll_fade_last_interaction`.
+    scroll_fade_last_interaction: Option<std::time::Instant>,
+    /// Test seam overriding "now" for [`idle_fade_opacity`] instead of
+    /// [`std::time::Instant::now`], so pixel tests can assert the fade
+    /// curve deterministically without a real sleep. `None` (the
+    /// default) uses real wall-clock time, as a live app does. Mirrors
+    /// `MacBackend::scroll_fade_clock_override`.
+    ///
+    /// [`idle_fade_opacity`]: crate::primitives::scrollbar::idle_fade_opacity
+    scroll_fade_clock_override: Option<std::time::Instant>,
     /// Per-frame Pango advance for `ui_font` (the chrome twin of
     /// `current_char_width`), in DIPs — backs [`Backend::list_char_width`].
     /// `draw_list` paints row text in `ui_font`, not the editor font
@@ -303,6 +325,17 @@ pub struct GtkBackend {
     /// [`super::testing::GtkDriver::inventory`] to populate
     /// [`crate::testing::FrameInventory::zones`].
     pub(crate) zones: Vec<ZoneRec>,
+    /// Bounds of every tooltip/toast painted so far this frame, via
+    /// [`Backend::draw_tooltip_with_chrome`]/[`Backend::draw_toast_overlay`].
+    /// Cleared at the start of each frame by [`Self::begin_frame`], same
+    /// per-frame lifecycle as `zones`. Mirrors
+    /// `MacBackend::overlay_bounds_this_frame`/`WinBackend`'s equivalent.
+    ///
+    /// [`Backend::draw_focus_ring`] reads this to skip the portion of the
+    /// generic focus-ring convention that would otherwise stroke on top of
+    /// an overlay drawn earlier in the same frame — tooltip/toast must stay
+    /// topmost (see that method's own doc for the regression this guards).
+    overlay_bounds_this_frame: Vec<QRect>,
     /// The `(text, bounds)` map painted this frame — recorded by trait
     /// methods that compute a label's on-surface rect so
     /// [`super::testing::GtkDriver::find`] can locate a control without
@@ -600,6 +633,11 @@ impl GtkBackend {
             current_line_height: 16.0,
             current_char_width: 8.0,
             editor_v_scrollbar_w: None,
+            // See the field's own doc: seeding "now" rather than `None`
+            // means a scrollbar painted right after construction starts
+            // visible, fading out only after a real idle period.
+            scroll_fade_last_interaction: Some(std::time::Instant::now()),
+            scroll_fade_clock_override: None,
             // Arbitrary but plausible seed (mirrors `current_char_width`
             // above) — a real value is only established once
             // `refresh_chrome_char_width` runs inside a live frame; a
@@ -613,6 +651,7 @@ impl GtkBackend {
             editor_font_family: "Monospace".to_string(),
             editor_font_size_pt: 11.0,
             zones: Vec::new(),
+            overlay_bounds_this_frame: Vec::new(),
             painted_text: Vec::new(),
             painted_text_recording: false,
             focused_activity_bar: None,
@@ -686,6 +725,62 @@ impl GtkBackend {
     /// contract.
     pub(crate) fn set_dpi_scale(&mut self, scale: f32) {
         self.dpi_scale = scale;
+    }
+
+    /// Record that a scroll event just arrived, resetting the overlay
+    /// scrollbar's idle-fade clock to "now". `super::run`'s scroll
+    /// controller calls this for every delta it receives before
+    /// dispatching the translated [`UiEvent::Scroll`]. Mirrors
+    /// `MacBackend::note_scroll_activity` / `WinBackend::note_scroll_activity`.
+    ///
+    /// [`UiEvent::Scroll`]: crate::UiEvent::Scroll
+    pub fn note_scroll_activity(&mut self) {
+        self.scroll_fade_last_interaction = Some(self.fade_now());
+    }
+
+    /// Test seam: pin the overlay scrollbar's last-interaction instant
+    /// directly instead of going through a synthetic
+    /// [`Self::note_scroll_activity`] call. `None` resets to "never
+    /// scrolled" (fully faded). Mirrors `MacBackend::set_scroll_last_interaction`.
+    pub fn set_scroll_last_interaction(&mut self, at: Option<std::time::Instant>) {
+        self.scroll_fade_last_interaction = at;
+    }
+
+    /// The overlay scrollbar's current last-interaction instant —
+    /// [`Self::new`]'s own construction time until a real scroll (or a
+    /// test) resets it. `None` once explicitly cleared via
+    /// [`Self::set_scroll_last_interaction`].
+    pub fn scroll_last_interaction(&self) -> Option<std::time::Instant> {
+        self.scroll_fade_last_interaction
+    }
+
+    /// Test seam: override what [`Self::fade_now`] returns, so a pixel
+    /// test can assert the fade curve at an exact offset from the last
+    /// interaction without a real sleep. `None` (the default) falls
+    /// back to [`std::time::Instant::now`]. Mirrors
+    /// `MacBackend::set_fade_clock_override`.
+    pub fn set_fade_clock_override(&mut self, now: Option<std::time::Instant>) {
+        self.scroll_fade_clock_override = now;
+    }
+
+    /// "Now", for overlay-scrollbar fade purposes — real wall-clock time
+    /// unless a test pinned [`Self::set_fade_clock_override`].
+    fn fade_now(&self) -> std::time::Instant {
+        self.scroll_fade_clock_override
+            .unwrap_or_else(std::time::Instant::now)
+    }
+
+    /// Opacity multiplier [`Backend::draw_scrollbar`] (and the
+    /// `DataTable` rasteriser's own scrollbars) paint the track and
+    /// thumb at: `0.0` if [`Self::scroll_last_interaction`] has been
+    /// explicitly cleared to `None`, otherwise
+    /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
+    /// sampled at [`Self::fade_now`]. Mirrors `MacBackend::scrollbar_fade_opacity`.
+    fn scrollbar_fade_opacity(&self) -> f32 {
+        match self.scroll_fade_last_interaction {
+            Some(last) => crate::primitives::scrollbar::idle_fade_opacity(last, self.fade_now()),
+            None => 0.0,
+        }
     }
 
     /// Clone of the platform services' dialog-pump-depth counter — `> 0`
@@ -1362,6 +1457,107 @@ impl GtkBackend {
         });
     }
 
+    /// Record header + visible body + footer cell text into the
+    /// painted-text map that `GtkDriver::find` scans, for
+    /// [`Backend::draw_data_table_with_glyphs`] / [`Backend::draw_data_table_with_state`].
+    /// Bounds are derived from `table_layout` + the declarative `table`,
+    /// not by re-deriving Cairo/Pango geometry, so they can't drift from
+    /// what was actually drawn. `scroll_offset`/`sub_row_px` are the
+    /// resolved (possibly `scroll_px`-aware) body-row starting index and
+    /// sub-row pixel shift the caller painted at — `0.0` from
+    /// `draw_data_table_with_glyphs` reproduces the pre-existing
+    /// whole-row bookkeeping exactly.
+    fn record_data_table_painted_text(
+        &mut self,
+        rect: QRect,
+        table: &crate::DataTable,
+        table_layout: &crate::DataTableLayout,
+        scroll_offset: usize,
+        sub_row_px: f32,
+    ) {
+        let h_off = table.h_scroll as f64;
+        let header_height = table_layout.header_height as f64;
+        for (col_idx, rc) in table_layout.columns.iter().enumerate() {
+            if rc.width <= 0.0 {
+                continue;
+            }
+            if let Some(col) = table.columns.get(col_idx) {
+                let bounds = QRect::new(
+                    (rect.x as f64 + rc.x as f64 - h_off) as f32,
+                    rect.y,
+                    rc.width,
+                    header_height as f32,
+                );
+                self.record_painted_text(&col.title, bounds);
+            }
+        }
+
+        let row_height = table_layout.row_height as f64;
+        let body_y = rect.y as f64 + header_height - sub_row_px as f64;
+        // Mirrors `draw_data_table_with_opacity`'s own `extra_row`: a
+        // positive `sub_row_px` paints one more, partially clipped body
+        // row at the bottom, so it must be recorded too or `find` can't
+        // see it.
+        let extra_row = usize::from(sub_row_px > 0.0);
+        let visible = (table_layout.visible_rows + extra_row)
+            .min(table.rows.len().saturating_sub(scroll_offset));
+        for row_idx in 0..visible {
+            let abs_idx = scroll_offset + row_idx;
+            let row = &table.rows[abs_idx];
+            let row_y = body_y + row_idx as f64 * row_height;
+            for (col_idx, rc) in table_layout.columns.iter().enumerate() {
+                if rc.width <= 0.0 {
+                    continue;
+                }
+                let Some(cell) = row.cells.get(col_idx) else {
+                    continue;
+                };
+                if cell.spans.is_empty() {
+                    continue;
+                }
+                let text: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
+                if text.is_empty() {
+                    continue;
+                }
+                let bounds = QRect::new(
+                    (rect.x as f64 + rc.x as f64 - h_off) as f32,
+                    row_y as f32,
+                    rc.width,
+                    row_height as f32,
+                );
+                self.record_painted_text(&text, bounds);
+            }
+        }
+
+        if let Some(footer) = &table.footer {
+            if table_layout.footer_height > 0.0 {
+                let footer_y = rect.y as f64 + rect.height as f64 - row_height;
+                for (col_idx, rc) in table_layout.columns.iter().enumerate() {
+                    if rc.width <= 0.0 {
+                        continue;
+                    }
+                    let Some(cell) = footer.cells.get(col_idx) else {
+                        continue;
+                    };
+                    if cell.spans.is_empty() {
+                        continue;
+                    }
+                    let text: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let bounds = QRect::new(
+                        (rect.x as f64 + rc.x as f64 - h_off) as f32,
+                        footer_y as f32,
+                        rc.width,
+                        row_height as f32,
+                    );
+                    self.record_painted_text(&text, bounds);
+                }
+            }
+        }
+    }
+
     /// Paint the active text selection highlight onto `cr`. Must be called
     /// after `app.render` (so the highlight sits on top of the rendered
     /// content).
@@ -1760,6 +1956,58 @@ fn theme_prefers_dark(theme: crate::Theme) -> bool {
     luma < 128
 }
 
+/// Whether rects `a` and `b` share any area — used by
+/// [`GtkBackend::draw_focus_ring`] to avoid stroking on top of a
+/// tooltip/toast painted earlier this frame; see
+/// `overlay_bounds_this_frame`'s own doc. A shared edge with zero overlap
+/// width/height doesn't count as overlapping. Mirrors
+/// `macos::backend::rects_overlap`/`win::backend::rects_overlap`.
+fn rects_overlap(a: QRect, b: QRect) -> bool {
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+}
+
+/// Whether `overlay` would land on the pixels [`GtkBackend::draw_focus_ring`]
+/// actually paints for `rect` at `stroke_width`.
+///
+/// `surface_stroke_rect` centers a `stroke_width`-thick line on each of
+/// `rect`'s four edges, so the ring only occupies the thin band straddling
+/// those edges by `stroke_width / 2` in each direction — never `rect`'s full
+/// interior. An overlay that lands strictly inside `rect` without reaching
+/// any edge (e.g. a toast inset from the viewport it's raised over, landing
+/// inside a focused widget that spans that same viewport) never shares a
+/// pixel with the ring, so it must not suppress the stroke. Mirrors
+/// `macos::backend::focus_ring_band_overlaps`/`win::backend::focus_ring_band_overlaps`.
+fn focus_ring_band_overlaps(rect: QRect, stroke_width: f32, overlay: QRect) -> bool {
+    let half = stroke_width / 2.0;
+    let top = QRect::new(
+        rect.x - half,
+        rect.y - half,
+        rect.width + stroke_width,
+        stroke_width,
+    );
+    let bottom = QRect::new(
+        rect.x - half,
+        rect.y + rect.height - half,
+        rect.width + stroke_width,
+        stroke_width,
+    );
+    let left = QRect::new(
+        rect.x - half,
+        rect.y - half,
+        stroke_width,
+        rect.height + stroke_width,
+    );
+    let right = QRect::new(
+        rect.x + rect.width - half,
+        rect.y - half,
+        stroke_width,
+        rect.height + stroke_width,
+    );
+    [top, bottom, left, right]
+        .into_iter()
+        .any(|band| rects_overlap(band, overlay))
+}
+
 /// Rewrite any `system-ui` generic family token in `desc` (a bare family
 /// name, or a Pango-style `"family[,family...] [size]"` description —
 /// [`Backend::set_editor_font`]/[`Backend::set_ui_font`]'s shapes) to
@@ -1818,6 +2066,10 @@ impl Backend for GtkBackend {
         // Clear per-frame widget zones for the same reason. Same
         // lifecycle as text_regions.
         self.zones.clear();
+        // Clear last frame's tooltip/toast bounds — see
+        // `overlay_bounds_this_frame`'s own doc. Same per-frame lifecycle
+        // as `zones`.
+        self.overlay_bounds_this_frame.clear();
         // Clear last frame's painted-text map — see `painted_text`'s docs.
         self.painted_text.clear();
         // Clear the focused activity bar — re-set by draw_activity_bar
@@ -2092,9 +2344,36 @@ impl Backend for GtkBackend {
         self.focus.set_focus(id)
     }
 
+    /// Strokes the generic tab-stop focus-ring convention around `rect`.
+    ///
+    /// Called by [`super::run::render_frame`] *after* `AppLogic::render`
+    /// returns, deliberately — so the ring paints on top of whatever the
+    /// focused widget's own content drew. That same lateness means it
+    /// would also paint on top of a tooltip or toast `render` drew over
+    /// this same rect, inverting the overlay-order contract (tooltip/toast
+    /// stay topmost of all — see `quadraui-binding-core::host::render_overlays`'s
+    /// doc). Skipping the stroke wherever it would land on a tooltip/toast
+    /// bound recorded this frame — see `overlay_bounds_this_frame` — keeps
+    /// the ring out of the way of an overlay without needing to defer
+    /// either paint call.
+    ///
+    /// The ring is a perimeter stroke, not a filled rect
+    /// ([`focus_ring_band_overlaps`]), so an overlay that lands strictly
+    /// inside `rect` without touching the stroke band — e.g. a toast inset
+    /// within a focused widget that spans the whole viewport — never
+    /// conflicts with the ring and leaves it (and its `register_zone`
+    /// chrome entry) intact. Mirrors `macos::backend::MacBackend::draw_focus_ring`/
+    /// `win::backend::WinBackend::draw_focus_ring`'s identical fix.
     fn draw_focus_ring(&mut self, rect: QRect) {
-        let theme = self.current_theme;
         let stroke_width = self.current_style.focus_ring_width;
+        if self
+            .overlay_bounds_this_frame
+            .iter()
+            .any(|overlay| focus_ring_band_overlaps(rect, stroke_width, *overlay))
+        {
+            return;
+        }
+        let theme = self.current_theme;
         self.surface_stroke_rect(rect, theme.accent_fg, stroke_width);
         // A chrome-only paint (no text of its own) is only "observable"
         // via a registered zone.
@@ -2401,10 +2680,60 @@ impl Backend for GtkBackend {
             rect.height as f64,
             tree,
             &self.current_theme,
+            &self.current_style,
             self.resolved_row_height(self.current_line_height),
             self.nerd_fonts_enabled,
         );
         layout.set_font_description(saved_font.as_ref());
+    }
+
+    fn draw_tree_with_state(
+        &mut self,
+        rect: QRect,
+        tree: &TreeView,
+        state: &crate::primitives::tree::TreePaintState,
+        focus_ring_visible: bool,
+    ) {
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_tree_with_state called outside enter_frame_scope");
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
+        crate::gtk::draw_tree_with_state(
+            cr,
+            layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            tree,
+            &self.current_theme,
+            &self.current_style,
+            self.resolved_row_height(self.current_line_height),
+            self.nerd_fonts_enabled,
+            state.hovered_idx,
+            state.pressed_idx,
+            focus_ring_visible,
+            state.scroll_px,
+        );
+        layout.set_font_description(saved_font.as_ref());
+    }
+
+    /// The tree's real painted row pitch: [`Self::resolved_row_height`]
+    /// of the editor font metric, run through the same
+    /// [`crate::primitives::layout_metrics::tree_row_pitch`] formula
+    /// [`Self::draw_tree`]/[`Self::draw_tree_with_state`] paint rows
+    /// at — not the trait default ([`Backend::line_height`] alone),
+    /// which disagrees with that painted pitch by the leaf/branch
+    /// `1.4×` multiplier `tree_row_pitch` applies (unless
+    /// `tree.style.row_height` overrides it). Matches `MacBackend`'s
+    /// override of the same method.
+    fn tree_scroll_row_height(&self, tree: &TreeView) -> f32 {
+        crate::primitives::layout_metrics::tree_row_pitch(
+            tree,
+            self.resolved_row_height(self.current_line_height),
+        ) as f32
     }
 
     fn draw_list(&mut self, rect: QRect, list: &ListView) {
@@ -2430,8 +2759,42 @@ impl Backend for GtkBackend {
             rect.height as f64,
             list,
             &self.current_theme,
+            &self.current_style,
             self.resolved_row_height(self.current_line_height),
             self.nerd_fonts_enabled,
+        );
+        layout.set_font_description(saved_font.as_ref());
+    }
+
+    fn draw_list_with_state(
+        &mut self,
+        rect: QRect,
+        list: &ListView,
+        state: &crate::primitives::list::ListPaintState,
+        focus_ring_visible: bool,
+    ) {
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_list_with_state called outside enter_frame_scope");
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
+        crate::gtk::draw_list_with_state(
+            cr,
+            layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            list,
+            &self.current_theme,
+            &self.current_style,
+            self.resolved_row_height(self.current_line_height),
+            self.nerd_fonts_enabled,
+            state.hovered_idx,
+            state.pressed_idx,
+            focus_ring_visible,
+            state.scroll_px,
         );
         layout.set_font_description(saved_font.as_ref());
     }
@@ -2472,7 +2835,12 @@ impl Backend for GtkBackend {
         // per-frame font happened to be (the editor font by default).
         let saved_font = layout.font_description();
         layout.set_font_description(Some(&ui_font_desc));
-        let table_layout = crate::gtk::draw_data_table_with_glyphs(
+        // `draw_data_table_with_opacity` (not the public
+        // `draw_data_table_with_glyphs`, which always paints at full
+        // opacity) so the table's vertical/horizontal scrollbars follow
+        // the same overlay idle-fade as `Self::draw_scrollbar`.
+        let opacity = self.scrollbar_fade_opacity();
+        let table_layout = crate::gtk::data_table::draw_data_table_with_opacity(
             cr,
             layout,
             rect.x as f64,
@@ -2485,92 +2853,65 @@ impl Backend for GtkBackend {
             hovered_idx,
             glyphs,
             nerd_fonts_enabled,
+            opacity,
+            None,
+        );
+        layout.set_font_description(saved_font.as_ref());
+        self.record_data_table_painted_text(rect, table, &table_layout, table.scroll_offset, 0.0);
+        table_layout
+    }
+
+    /// [`Self::draw_data_table_with_glyphs`], plus — when
+    /// `state.scroll_px` is `Some` — a pixel-precise scroll position
+    /// instead of only [`crate::DataTable::scroll_offset`]'s whole-row
+    /// value, via [`crate::gtk::data_table::draw_data_table_with_opacity`]
+    /// (same free function [`Self::draw_data_table_with_glyphs`] uses,
+    /// so both paths apply [`Self::scrollbar_fade_opacity`] to the
+    /// scrollbars). `state.scroll_px: None` paints pixel-identically to
+    /// [`Self::draw_data_table_with_glyphs`].
+    fn draw_data_table_with_state(
+        &mut self,
+        rect: QRect,
+        table: &crate::DataTable,
+        state: &crate::primitives::data_table::DataTablePaintState,
+    ) -> crate::DataTableLayout {
+        let lh = self.resolved_row_height(self.current_line_height);
+        let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_data_table_with_state called outside enter_frame_scope");
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
+        // `draw_data_table_with_opacity` directly (not the
+        // `draw_data_table_with_state` free function, which always
+        // paints its scrollbars at full opacity) so the table's
+        // vertical/horizontal scrollbars keep following the same
+        // overlay idle-fade as `Self::draw_data_table_with_glyphs` and
+        // `Self::draw_scrollbar`, even when `state.scroll_px` is `Some`.
+        let opacity = self.scrollbar_fade_opacity();
+        let table_layout = crate::gtk::data_table::draw_data_table_with_opacity(
+            cr,
+            layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            table,
+            &theme,
+            lh,
+            state.hovered_idx,
+            None,
+            nerd_fonts_enabled,
+            opacity,
+            state.scroll_px,
         );
         layout.set_font_description(saved_font.as_ref());
 
-        // Record header + visible body + footer cell text into the
-        // painted-text map that GtkDriver::find scans. Bounds are
-        // derived from `table_layout` + the declarative `table`, not by
-        // re-deriving Cairo/Pango geometry, so they can't drift from
-        // what was actually drawn.
-        let h_off = table.h_scroll as f64;
-        let header_height = table_layout.header_height as f64;
-        for (col_idx, rc) in table_layout.columns.iter().enumerate() {
-            if rc.width <= 0.0 {
-                continue;
-            }
-            if let Some(col) = table.columns.get(col_idx) {
-                let bounds = QRect::new(
-                    (rect.x as f64 + rc.x as f64 - h_off) as f32,
-                    rect.y,
-                    rc.width,
-                    header_height as f32,
-                );
-                self.record_painted_text(&col.title, bounds);
-            }
-        }
-
-        let row_height = table_layout.row_height as f64;
-        let body_y = rect.y as f64 + header_height;
-        let visible = table_layout
-            .visible_rows
-            .min(table.rows.len().saturating_sub(table.scroll_offset));
-        for row_idx in 0..visible {
-            let abs_idx = table.scroll_offset + row_idx;
-            let row = &table.rows[abs_idx];
-            let row_y = body_y + row_idx as f64 * row_height;
-            for (col_idx, rc) in table_layout.columns.iter().enumerate() {
-                if rc.width <= 0.0 {
-                    continue;
-                }
-                let Some(cell) = row.cells.get(col_idx) else {
-                    continue;
-                };
-                if cell.spans.is_empty() {
-                    continue;
-                }
-                let text: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
-                if text.is_empty() {
-                    continue;
-                }
-                let bounds = QRect::new(
-                    (rect.x as f64 + rc.x as f64 - h_off) as f32,
-                    row_y as f32,
-                    rc.width,
-                    row_height as f32,
-                );
-                self.record_painted_text(&text, bounds);
-            }
-        }
-
-        if let Some(footer) = &table.footer {
-            if table_layout.footer_height > 0.0 {
-                let footer_y = rect.y as f64 + rect.height as f64 - row_height;
-                for (col_idx, rc) in table_layout.columns.iter().enumerate() {
-                    if rc.width <= 0.0 {
-                        continue;
-                    }
-                    let Some(cell) = footer.cells.get(col_idx) else {
-                        continue;
-                    };
-                    if cell.spans.is_empty() {
-                        continue;
-                    }
-                    let text: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
-                    if text.is_empty() {
-                        continue;
-                    }
-                    let bounds = QRect::new(
-                        (rect.x as f64 + rc.x as f64 - h_off) as f32,
-                        footer_y as f32,
-                        rc.width,
-                        row_height as f32,
-                    );
-                    self.record_painted_text(&text, bounds);
-                }
-            }
-        }
-
+        let scroll_offset = table.effective_scroll_offset(lh as f32, state.scroll_px);
+        let sub_px = table.scroll_sub_row_px(lh as f32, state.scroll_px);
+        self.record_data_table_painted_text(rect, table, &table_layout, scroll_offset, sub_px);
         table_layout
     }
 
@@ -2626,10 +2967,12 @@ impl Backend for GtkBackend {
         // GTK ListView vertical-scrollbar rasteriser not yet implemented.
         // Delegate to the primitive's geometry method using pixel units:
         // each "row" is `resolved_row_height` tall, matching `draw_list`'s
-        // own row pitch.
-        list.vscrollbar(
+        // own row pitch. `scrollbar_width` sets the track's column width so
+        // this hit-test agrees exactly with what `draw_list` paints.
+        list.vscrollbar_with_track_width(
             rect,
             self.resolved_row_height(self.line_height() as f64) as f32,
+            self.current_style.scrollbar_width,
         )
     }
 
@@ -2890,6 +3233,7 @@ impl Backend for GtkBackend {
             bar,
             icons,
             &self.current_theme,
+            &self.current_style,
             hovered_close_tab,
         );
         pango_layout.set_font_description(saved_font.as_ref());
@@ -2929,6 +3273,7 @@ impl Backend for GtkBackend {
             bar,
             icons,
             &self.current_theme,
+            &self.current_style,
             hovered_close_tab,
         );
         pango_layout.set_font_description(saved_font.as_ref());
@@ -2963,6 +3308,7 @@ impl Backend for GtkBackend {
             &[],
             chrome,
             &self.current_theme,
+            &self.current_style,
             hovered_close_tab,
         );
         pango_layout.set_font_description(saved_font.as_ref());
@@ -3002,13 +3348,109 @@ impl Backend for GtkBackend {
             &[],
             chrome,
             &self.current_theme,
+            &self.current_style,
             hovered_close_tab,
             glyphs,
             nerd_fonts_enabled,
+            None,
+            None,
         );
         pango_layout.set_font_description(saved_font.as_ref());
         self.tab_bar_layouts.insert(bar.id, (rect, resolved_layout));
         hits
+    }
+
+    /// [`Self::draw_tab_bar_with_chrome_and_glyphs`], plus `hovered_tab`/
+    /// `pressed_tab` indices naming the whole tab (not its close glyph)
+    /// the mouse is over/held down on. Paints a tinted background behind
+    /// the hovered or pressed tab — `Theme::list_hover_bg`/`list_pressed_bg`,
+    /// the same derivation [`crate::gtk::draw_tab_bar_icons_with_chrome_and_glyphs`]'s
+    /// own doc explains — rather than only tinting the close glyph the
+    /// way [`Self::draw_tab_bar`] already does.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+    fn draw_tab_bar_with_state(
+        &mut self,
+        rect: QRect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> crate::TabBarHits {
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_tab_bar_with_state called outside enter_frame_scope");
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let (hits, resolved_layout) = crate::gtk::draw_tab_bar_icons_with_chrome_and_glyphs(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.width as f64,
+            self.current_line_height,
+            rect.y as f64,
+            rect.height as f64,
+            bar,
+            &[],
+            &TabChrome::default(),
+            &self.current_theme,
+            &self.current_style,
+            hovered_close_tab,
+            None,
+            nerd_fonts_enabled,
+            hovered_tab,
+            pressed_tab,
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        self.tab_bar_layouts.insert(bar.id, (rect, resolved_layout));
+        hits
+    }
+
+    /// `TabBarLayout`-returning counterpart to [`Self::draw_tab_bar_with_state`]
+    /// — the twin the `quadraui-binding-core` paint path can actually
+    /// reach, since it calls `draw_tab_bar_layout`, never the deprecated
+    /// `draw_tab_bar`. Same hover/pressed tint as
+    /// [`Self::draw_tab_bar_with_state`]; only the returned type differs.
+    fn draw_tab_bar_layout_with_state(
+        &mut self,
+        rect: QRect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> TabBarLayout {
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_tab_bar_layout_with_state called outside enter_frame_scope");
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        #[allow(deprecated)] // discarded `TabBarHits` half of the pair — issue #823
+        let (_hits, resolved_layout) = crate::gtk::draw_tab_bar_icons_with_chrome_and_glyphs(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.width as f64,
+            self.current_line_height,
+            rect.y as f64,
+            rect.height as f64,
+            bar,
+            &[],
+            &TabChrome::default(),
+            &self.current_theme,
+            &self.current_style,
+            hovered_close_tab,
+            None,
+            nerd_fonts_enabled,
+            hovered_tab,
+            pressed_tab,
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        self.tab_bar_layouts
+            .insert(bar.id, (rect, resolved_layout.clone()));
+        resolved_layout
     }
 
     /// Counterpart to [`Self::draw_tab_bar_with_chrome`] that returns [`TabBarLayout`] instead.
@@ -3038,6 +3480,7 @@ impl Backend for GtkBackend {
             &[],
             chrome,
             &self.current_theme,
+            &self.current_style,
             hovered_close_tab,
         );
         pango_layout.set_font_description(saved_font.as_ref());
@@ -3223,7 +3666,11 @@ impl Backend for GtkBackend {
                 .collect(),
         };
 
-        let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
+        let tab_pad: f32 = if bar.compact {
+            2.0
+        } else {
+            self.current_style.tab_padding_x
+        };
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
         let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
 
@@ -3238,8 +3685,13 @@ impl Backend for GtkBackend {
             layout: &pango_layout,
             char_w,
         };
-        let (layout, corrected_scroll_offset, available_cols) =
-            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+        // Calls the same `pixel_tab_bar_layout_fitting_boundary` the paint
+        // path (`gtk::tab_bar::draw_tab_bar_icons_with_chrome_and_glyphs`)
+        // calls, so this no-paint twin agrees with what a narrow strip
+        // actually painted instead of reporting the ellipsis-fitted
+        // boundary tab as scrolled out of view.
+        let (layout, corrected_scroll_offset, available_cols, _fitted) =
+            crate::gtk::tab_bar::pixel_tab_bar_layout_fitting_boundary(
                 bar,
                 rect.width,
                 rect.height,
@@ -3250,6 +3702,10 @@ impl Backend for GtkBackend {
                 &icon_extras,
                 &TabChrome::default(),
                 &measure,
+                pango_layout.as_ref(),
+                char_w,
+                &ui_font_desc,
+                &ui_font_desc,
             );
 
         let mut hits = tab_bar_hits_from_layout(&layout, bar);
@@ -3309,7 +3765,11 @@ impl Backend for GtkBackend {
                 .collect(),
         };
 
-        let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
+        let tab_pad: f32 = if bar.compact {
+            2.0
+        } else {
+            self.current_style.tab_padding_x
+        };
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
         let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
 
@@ -3324,8 +3784,11 @@ impl Backend for GtkBackend {
             layout: &pango_layout,
             char_w,
         };
-        let (layout, _corrected_scroll_offset, _available_cols) =
-            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+        // See `tab_bar_layout_icons` for why this goes through
+        // `pixel_tab_bar_layout_fitting_boundary` rather than
+        // `pixel_tab_bar_layout` directly.
+        let (layout, _corrected_scroll_offset, _available_cols, _fitted) =
+            crate::gtk::tab_bar::pixel_tab_bar_layout_fitting_boundary(
                 bar,
                 rect.width,
                 rect.height,
@@ -3336,6 +3799,10 @@ impl Backend for GtkBackend {
                 &icon_extras,
                 &TabChrome::default(),
                 &measure,
+                pango_layout.as_ref(),
+                char_w,
+                &ui_font_desc,
+                &ui_font_desc,
             );
 
         if let Some(pl) = &pango_layout {
@@ -3372,7 +3839,11 @@ impl Backend for GtkBackend {
             pl.set_font_description(Some(&ui_font_desc));
         }
 
-        let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
+        let tab_pad: f32 = if bar.compact {
+            2.0
+        } else {
+            self.current_style.tab_padding_x
+        };
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
         let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
 
@@ -3389,8 +3860,11 @@ impl Backend for GtkBackend {
             layout: &pango_layout,
             char_w,
         };
-        let (layout, corrected_scroll_offset, available_cols) =
-            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+        // See `tab_bar_layout_icons` for why this goes through
+        // `pixel_tab_bar_layout_fitting_boundary` rather than
+        // `pixel_tab_bar_layout` directly.
+        let (layout, corrected_scroll_offset, available_cols, _fitted) =
+            crate::gtk::tab_bar::pixel_tab_bar_layout_fitting_boundary(
                 bar,
                 rect.width,
                 rect.height,
@@ -3401,6 +3875,10 @@ impl Backend for GtkBackend {
                 &icon_extras,
                 chrome,
                 &measure,
+                pango_layout.as_ref(),
+                char_w,
+                &ui_font_desc,
+                &ui_font_desc,
             );
 
         let mut hits = tab_bar_hits_from_layout(&layout, bar);
@@ -3438,7 +3916,11 @@ impl Backend for GtkBackend {
             pl.set_font_description(Some(&ui_font_desc));
         }
 
-        let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
+        let tab_pad: f32 = if bar.compact {
+            2.0
+        } else {
+            self.current_style.tab_padding_x
+        };
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
         let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
 
@@ -3453,8 +3935,11 @@ impl Backend for GtkBackend {
             layout: &pango_layout,
             char_w,
         };
-        let (layout, _corrected_scroll_offset, _available_cols) =
-            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+        // See `tab_bar_layout_icons` for why this goes through
+        // `pixel_tab_bar_layout_fitting_boundary` rather than
+        // `pixel_tab_bar_layout` directly.
+        let (layout, _corrected_scroll_offset, _available_cols, _fitted) =
+            crate::gtk::tab_bar::pixel_tab_bar_layout_fitting_boundary(
                 bar,
                 rect.width,
                 rect.height,
@@ -3465,6 +3950,10 @@ impl Backend for GtkBackend {
                 &icon_extras,
                 chrome,
                 &measure,
+                pango_layout.as_ref(),
+                char_w,
+                &ui_font_desc,
+                &ui_font_desc,
             );
 
         if let Some(pl) = &pango_layout {
@@ -3753,6 +4242,7 @@ impl Backend for GtkBackend {
         ti: &crate::primitives::text_input::TextInput,
     ) -> crate::primitives::text_input::TextInputLayout {
         let theme = self.current_theme;
+        let style = self.style();
         let lh = self.current_line_height;
         let cw = self.current_char_width;
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
@@ -3767,7 +4257,8 @@ impl Backend for GtkBackend {
         // `PaintSurface`.
         let saved_font = pango_layout.font_description();
         pango_layout.set_font_description(Some(&ui_font_desc));
-        let result = crate::gtk::draw_text_input(cr, pango_layout, rect, ti, &theme, lh, cw);
+        let result =
+            crate::gtk::draw_text_input(cr, pango_layout, rect, ti, &theme, &style, lh, cw);
         pango_layout.set_font_description(saved_font.as_ref());
         result
     }
@@ -3879,6 +4370,10 @@ impl Backend for GtkBackend {
         // full 4-sided box here before TUI did; this just makes
         // that box observable to a structural-parity assertion.
         self.register_zone(tooltip.id, layout_arg.bounds);
+        // See `overlay_bounds_this_frame`'s own doc: a later
+        // `draw_focus_ring` call this same frame must not stroke over
+        // this tooltip.
+        self.overlay_bounds_this_frame.push(layout_arg.bounds);
     }
 
     fn draw_context_menu(
@@ -3903,18 +4398,23 @@ impl Backend for GtkBackend {
         // additive-only and so cannot take a live `&Style`) so this live
         // backend path honours `Self::set_style` overrides.
         let style = self.style();
+        // `None` keeps `paint_with_glyphs`'s check/arrow defaults; the
+        // flag resolves an item's own `ContextMenuItem::icon`.
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let mut surface = crate::gtk::surface::CairoSurface {
             cr,
             layout: Some(pango_layout),
             translucent_fill: true,
         };
-        let hits = crate::primitives::context_menu::native_surface_paint::paint(
+        let hits = crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
             menu,
             layout_arg,
             crate::accelerator::Platform::Linux,
             &mut surface,
             &self.current_theme,
             &style,
+            None,
+            nerd_fonts_enabled,
         );
         pango_layout.set_attributes(None);
         pango_layout.set_font_description(saved_font.as_ref());
@@ -4068,6 +4568,7 @@ impl Backend for GtkBackend {
             rect.height as f64,
             view,
             &theme,
+            &self.current_style,
             line_height,
             nerd_fonts,
             caret_visible,
@@ -4102,27 +4603,30 @@ impl Backend for GtkBackend {
             self.resolved_row_height(self.current_line_height),
             pango_layout.as_ref(),
             char_w,
+            self.current_style.row_padding_x,
         )
     }
 
     fn tree_vscrollbar(&self, rect: QRect, tree: &TreeView) -> Option<crate::Scrollbar> {
-        // GTK tree vertical-scrollbar rasteriser not yet implemented.
-        // Delegate to the primitive's geometry method, but using the same
+        // Delegate to the primitive's geometry method, using the same
         // per-row pitch `Self::tree_layout` (via `layout_metrics::tree_layout`)
         // actually paints — not the raw `line_height`. Unlike `ListView`
         // (whose items really are `line_height` tall, see
         // `GtkBackend::list_vscrollbar`), `TreeView` rows pitch at
         // `line_height * 1.4` (or `TreeStyle::row_height`); see
         // `layout_metrics::tree_row_pitch`'s doc.
+        //
+        // Track width is the live `self.current_style.scrollbar_width`
+        // token, not the fixed `TREE_VSCROLLBAR_WIDTH` literal — same
+        // live field `Self::list_vscrollbar` already passes, so a
+        // host-set override can't make this hit-test geometry disagree
+        // with what `crate::primitives::tree::native_surface_paint::paint`
+        // (reached through `Self::draw_tree`) actually painted.
         let row_h = crate::primitives::layout_metrics::tree_row_pitch(
             tree,
             self.resolved_row_height(self.current_line_height),
         );
-        tree.vscrollbar_with_track_width(
-            rect,
-            row_h as f32,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-        )
+        tree.vscrollbar_with_track_width(rect, row_h as f32, self.current_style.scrollbar_width)
     }
 
     fn tree_paints_own_scrollbar(&self) -> bool {
@@ -4344,7 +4848,10 @@ impl Backend for GtkBackend {
         scrollbar: &crate::primitives::scrollbar::Scrollbar,
     ) {
         let theme = self.current_theme;
-        crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, self, &theme);
+        let opacity = self.scrollbar_fade_opacity();
+        crate::primitives::scrollbar::native_surface_paint::paint_with_opacity(
+            scrollbar, self, &theme, opacity,
+        );
         // A scrollbar strokes/fills only — no text — so on this
         // pixel backend it would otherwise be indistinguishable from the
         // no-op default. Register the primitive's own id at its own
@@ -4556,7 +5063,7 @@ impl Backend for GtkBackend {
         let theme = self.current_theme;
         let style = self.style();
         let line_height = self.current_line_height as f32;
-        crate::primitives::toast::native_surface_paint::paint(
+        let layout = crate::primitives::toast::native_surface_paint::paint(
             stack,
             self,
             &theme,
@@ -4566,7 +5073,13 @@ impl Backend for GtkBackend {
             rect.width,
             rect.height,
             line_height,
-        )
+        );
+        // See `overlay_bounds_this_frame`'s own doc: a later
+        // `draw_focus_ring` call this same frame must not stroke over
+        // any of these.
+        self.overlay_bounds_this_frame
+            .extend(layout.visible_toasts.iter().map(|t| t.bounds));
+        layout
     }
 
     /// Paint via the shared [`crate::primitives::pipeline_view::native_surface_paint::paint`].
@@ -6857,6 +7370,7 @@ mod tests {
                     id: WidgetId::new("tb"),
                     buttons: vec![
                         ToolbarButton::Action {
+                            spec: None,
                             id: WidgetId::new("reset"),
                             label: "Reset".into(),
                             icon: None,
@@ -6866,6 +7380,7 @@ mod tests {
                             tooltip: String::new(),
                         },
                         ToolbarButton::Action {
+                            spec: None,
                             id: WidgetId::new("export"),
                             label: "Export".into(),
                             icon: None,
@@ -8427,6 +8942,162 @@ mod tests {
         );
     }
 
+    /// Regression for `draw_data_table_with_state` hardcoding the
+    /// scrollbar to full opacity: both `draw_data_table` and
+    /// `draw_data_table_with_state` (with `scroll_px: None`) must apply
+    /// the same idle-fade, so once `set_scroll_last_interaction(None)`
+    /// pins the fade to fully faded (mirrors `gtk::scrollbar`'s own
+    /// `scrollbar_absent_when_explicitly_marked_never_interacted`), the
+    /// scrollbar column paints as plain background on *both* paths —
+    /// not full opacity on one and faded on the other.
+    #[test]
+    fn gtk_backend_draw_data_table_with_state_applies_idle_fade_like_draw_data_table() {
+        const W: i32 = 300;
+        const H: i32 = 150;
+        let table = crate::DataTable {
+            id: WidgetId::new("test:data-table-fade"),
+            columns: vec![crate::Column {
+                title: "Name".to_string(),
+                width: crate::ColumnWidth::Flex(1.0),
+                align: crate::ColumnAlign::Left,
+            }],
+            rows: (0..30)
+                .map(|i| crate::DataRow {
+                    cells: vec![crate::types::StyledText::plain(format!("row {i}"))],
+                    decoration: crate::types::Decoration::Normal,
+                })
+                .collect(),
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: true,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+        };
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let paint = |with_state: bool| {
+            let mut surface =
+                pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                    .expect("create ImageSurface");
+            let layout;
+            {
+                let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+                let theme = crate::Theme::default();
+                let (br, bgc, bb) = (
+                    theme.background.r as f64 / 255.0,
+                    theme.background.g as f64 / 255.0,
+                    theme.background.b as f64 / 255.0,
+                );
+                cr.set_source_rgb(br, bgc, bb);
+                cr.paint().ok();
+                let pango_ctx = pangocairo::functions::create_context(&cr);
+                pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 8"));
+                let frame_layout = pango::Layout::new(&pango_ctx);
+                let mut backend = GtkBackend::new();
+                Backend::set_current_line_height(&mut backend, 16.0);
+                // Fully faded, deterministically — no real scroll ever
+                // happened and no clock to fast-forward.
+                backend.set_scroll_last_interaction(None);
+                let mut out = None;
+                backend.enter_frame_scope(&cr, &frame_layout, |b| {
+                    out = Some(if with_state {
+                        b.draw_data_table_with_state(
+                            rect,
+                            &table,
+                            &crate::primitives::data_table::DataTablePaintState::default(),
+                        )
+                    } else {
+                        b.draw_data_table(rect, &table, None)
+                    });
+                });
+                layout = out.expect("draw ran");
+            }
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data").to_vec();
+            (data, stride, layout)
+        };
+
+        let (data_table_px, stride1, layout1) = paint(false);
+        let (with_state_px, stride2, layout2) = paint(true);
+        assert!(
+            layout1.visible_rows < table.rows.len(),
+            "fixture must actually overflow to exercise the v-scrollbar"
+        );
+
+        let pixel = |data: &[u8], stride: usize, x: usize, y: usize| {
+            let off = y * stride + x * 4;
+            (data[off + 2], data[off + 1], data[off])
+        };
+        let sb_x = (W as f64 - layout1.scrollbar_width as f64 + 2.0) as usize;
+        let sb_y = layout1.header_height as usize + 2;
+        let bg = {
+            let theme = crate::Theme::default();
+            (theme.background.r, theme.background.g, theme.background.b)
+        };
+
+        assert_eq!(
+            pixel(&data_table_px, stride1, sb_x, sb_y),
+            bg,
+            "draw_data_table must leave the scrollbar column as plain background once fully faded"
+        );
+        assert_eq!(
+            pixel(&with_state_px, stride2, sb_x, sb_y),
+            bg,
+            "draw_data_table_with_state must apply the same idle-fade as draw_data_table, \
+             not paint the scrollbar at full opacity regardless of fade state"
+        );
+        assert_eq!(
+            layout1.scrollbar_width, layout2.scrollbar_width,
+            "both paths must resolve the same layout"
+        );
+    }
+
+    /// `GtkBackend::tree_scroll_row_height` is the real painted pitch —
+    /// [`crate::primitives::layout_metrics::tree_row_pitch`]'s 1.4x
+    /// leaf/branch formula over [`GtkBackend::resolved_row_height`] —
+    /// not the trait default ([`Backend::line_height`] alone). Mirrors
+    /// `MacBackend`'s identically named test.
+    #[test]
+    fn gtk_backend_tree_scroll_row_height_is_the_real_painted_pitch_not_the_editor_line_height() {
+        let b = GtkBackend::new();
+        assert_eq!(b.line_height(), 16.0);
+        let tree = TreeView {
+            id: WidgetId::new("tree"),
+            rows: vec![crate::primitives::tree::TreeRow {
+                path: vec![0],
+                indent: 0,
+                icon: None,
+                text: crate::types::StyledText::plain("a"),
+                badge: None,
+                is_expanded: None,
+                decoration: crate::Decoration::Normal,
+                edit: None,
+            }],
+            selection_mode: crate::SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: 0,
+            style: crate::TreeStyle::default(),
+            has_focus: true,
+        };
+        let row_height = b.tree_scroll_row_height(&tree);
+        // The real painted pitch is floored at `Style::row_height` and
+        // run through the tree's own 1.4x row-pitch formula, so it must
+        // not equal the raw editor `line_height()`.
+        assert_ne!(row_height, b.line_height());
+        assert_eq!(
+            row_height as f64,
+            crate::primitives::layout_metrics::tree_row_pitch(
+                &tree,
+                b.resolved_row_height(b.line_height() as f64)
+            )
+        );
+    }
+
     /// `draw_data_table_with_glyphs`'s `DataTableGlyphs` override replaces
     /// the header's sort-direction glyph; `None` and an empty override
     /// (no fields set) must paint byte-identical to each other, and a
@@ -8631,7 +9302,8 @@ mod tests {
     /// at 16px default, 15 rows painted at the real 22.4px→22px pitch fit
     /// 13 into a 300px-tall viewport (300/22 = 13), so an overflow
     /// scrollbar must appear. The row pitch governs the minimum thumb
-    /// length, not the track's (fixed 10px) width.
+    /// length, not the track's width (the live `Style::scrollbar_width`
+    /// token, `10.0` at the default style used here).
     #[test]
     fn gtk_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
         let backend = GtkBackend::new();
@@ -8644,8 +9316,8 @@ mod tests {
         let expected_row_h = ((backend.current_line_height * 1.4).round()) as f32;
         assert_eq!(
             sb.track.width,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-            "track width must stay the fixed VS Code list/tree scrollbar width"
+            backend.current_style().scrollbar_width,
+            "track width must follow the live Style::scrollbar_width token"
         );
         assert!(
             sb.thumb_len >= expected_row_h,
@@ -8657,7 +9329,8 @@ mod tests {
     /// A host-set `TreeStyle::row_height` must be honored
     /// by `tree_vscrollbar`, exactly as `tree_layout`/`draw_tree` honor
     /// it — not silently ignored in favor of `line_height`. It governs the
-    /// minimum thumb length, not the track's (fixed 10px) width.
+    /// minimum thumb length, not the track's width (the live
+    /// `Style::scrollbar_width` token).
     #[test]
     fn gtk_backend_tree_vscrollbar_honors_tree_style_row_height_override() {
         let backend = GtkBackend::new();
@@ -8667,11 +9340,80 @@ mod tests {
 
         let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
             .expect("15 rows at a 50px override overflow a 300px viewport (6 visible)");
-        assert_eq!(
-            sb.track.width,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH
-        );
+        assert_eq!(sb.track.width, backend.current_style().scrollbar_width);
         assert!(sb.thumb_len >= 50.0);
+    }
+
+    /// `tree_vscrollbar`'s track width must follow a host-set
+    /// `Style::scrollbar_width`, the same live field
+    /// `crate::primitives::tree::native_surface_paint::paint` reads (via
+    /// `Self::draw_tree`) — so the painted track and the hit-tested
+    /// track can never drift apart at a non-default width. Mirrors
+    /// `gtk_backend_list_vscrollbar_track_width_follows_style_token`.
+    #[test]
+    fn gtk_backend_tree_vscrollbar_track_width_follows_style_token() {
+        let mut backend = GtkBackend::new();
+        let tree = flat_tree(15);
+        let rect = QRect::new(0.0, 0.0, 200.0, 300.0);
+
+        let default_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
+            .expect("15 rows must overflow a 300px viewport");
+        assert_eq!(
+            default_sb.track.width,
+            backend.current_style().scrollbar_width
+        );
+
+        backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
+        let overridden_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
+            .expect("15 rows must still overflow with a wider track reserved");
+        assert_eq!(overridden_sb.track.width, 24.0);
+        assert_eq!(
+            overridden_sb.track.x,
+            rect.x + rect.width - 24.0,
+            "widened track must still hug the tree's right edge"
+        );
+    }
+
+    /// `list_vscrollbar`'s track width must follow a host-set
+    /// `Style::scrollbar_width`, the same live field
+    /// `native_surface_paint::paint` reads — so the painted track and
+    /// the hit-tested track can never drift apart, at the default width
+    /// or a host override.
+    #[test]
+    fn gtk_backend_list_vscrollbar_track_width_follows_style_token() {
+        let mut backend = GtkBackend::new();
+        let list = ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..30)
+                .map(|i| crate::ListItem {
+                    text: crate::types::StyledText::plain(format!("row {i}")),
+                    detail: None,
+                    icon: None,
+                    decoration: crate::types::Decoration::default(),
+                })
+                .collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: true,
+        };
+        let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
+
+        let default_sb = Backend::list_vscrollbar(&backend, rect, &list)
+            .expect("30 rows must overflow a 100px viewport");
+        assert_eq!(
+            default_sb.track.width,
+            backend.current_style().scrollbar_width
+        );
+
+        backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
+        let overridden_sb = Backend::list_vscrollbar(&backend, rect, &list)
+            .expect("30 rows must overflow a 100px viewport");
+        assert_eq!(overridden_sb.track.width, 24.0);
     }
 
     /// `draw_list` paints item labels and icon glyphs with `ui_font`, not
@@ -9134,6 +9876,7 @@ mod tests {
         crate::primitives::toolbar::Toolbar {
             id: WidgetId::new("test:toolbar"),
             buttons: vec![crate::primitives::toolbar::ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("test:toolbar:action"),
                 label: "Refine".to_string(),
                 icon: None,
@@ -9251,7 +9994,7 @@ mod tests {
             id: WidgetId::new("dt"),
             columns: vec![Column {
                 title: "Name".into(),
-                width: ColumnWidth::Fixed(40.0),
+                width: ColumnWidth::FixedPx(40.0),
                 align: Default::default(),
             }],
             rows: vec![DataRow {
@@ -9294,7 +10037,7 @@ mod tests {
         let title = "日付"; // 2 chars, 6 UTF-8 bytes
         let table = crate::DataTable {
             id: WidgetId::new("dt"),
-            // A trailing `Fixed` column so `resolve_columns`'s pass 4
+            // A trailing `FixedPx` column so `resolve_columns`'s pass 4
             // (#521 defect 2: stretch the *last* column to fill any
             // viewport leftover) grows that one instead of masking
             // the `Content` column's own measured width under test.
@@ -9309,7 +10052,7 @@ mod tests {
                 },
                 Column {
                     title: "filler".into(),
-                    width: ColumnWidth::Fixed(50.0),
+                    width: ColumnWidth::FixedPx(50.0),
                     align: Default::default(),
                 },
             ],
@@ -10135,6 +10878,129 @@ mod tests {
         );
     }
 
+    /// `draw_tab_bar_with_state` must tint the *whole* background of a
+    /// hovered tab — not just its close glyph, which `draw_tab_bar`'s own
+    /// `hovered_close_tab` already covers. Tab 1 ("lib.rs") is inactive, so
+    /// its resting fill is `tab_bar_bg` — the same colour as the
+    /// surrounding strip, which is what makes a hover tint visible
+    /// against it.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn gtk_backend_hovered_tab_tints_the_whole_background_not_just_the_close_glyph() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let bar = audit_bar();
+        let theme = crate::Theme::default();
+        let rect = QRect::new(0.0, 0.0, 400.0, 30.0);
+
+        let surface = ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+        let mut backend = GtkBackend::new();
+        let hits =
+            backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_tab_bar(rect, &bar, None));
+        let (start, end) = hits.slot_positions[1];
+        assert!(end > start, "second tab slot must have non-zero width");
+        let probe_x = (start + 2.0) as i32;
+        let probe_y = 15;
+
+        let resting_surface =
+            ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
+        {
+            let cr = Context::new(&resting_surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_tab_bar_with_state(rect, &bar, None, None, None)
+            });
+        }
+        let mut resting_surface = resting_surface;
+        resting_surface.flush();
+        let resting = pixel_argb(&mut resting_surface, probe_x, probe_y);
+        assert_eq!(
+            resting,
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "with no hovered_tab, tab 1's background must stay tab_bar_bg"
+        );
+
+        let hovered_surface =
+            ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
+        {
+            let cr = Context::new(&hovered_surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_tab_bar_with_state(rect, &bar, None, Some(1), None)
+            });
+        }
+        let mut hovered_surface = hovered_surface;
+        hovered_surface.flush();
+        let hovered = pixel_argb(&mut hovered_surface, probe_x, probe_y);
+        let expected = theme.list_hover_bg(theme.tab_bar_bg);
+        assert_eq!(
+            hovered,
+            (expected.r, expected.g, expected.b),
+            "hovered_tab == Some(1) must tint tab 1's background toward list_hover_bg"
+        );
+    }
+
+    /// `pressed_tab` tints deeper than `hovered_tab` and wins when both name
+    /// the same tab — the same precedence
+    /// [`GtkBackend::draw_tab_bar_with_state`]'s doc links back to on every
+    /// sibling `_with_state` painter in this crate.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn gtk_backend_pressed_tab_tints_deeper_than_hovered_tab() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let bar = audit_bar();
+        let theme = crate::Theme::default();
+        let rect = QRect::new(0.0, 0.0, 400.0, 30.0);
+
+        let surface = ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+        let mut backend = GtkBackend::new();
+        let hits =
+            backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_tab_bar(rect, &bar, None));
+        let (start, _) = hits.slot_positions[1];
+        let probe_x = (start + 2.0) as i32;
+        let probe_y = 15;
+
+        let pressed_surface =
+            ImageSurface::create(Format::ARgb32, 400, 30).expect("create ImageSurface");
+        {
+            let cr = Context::new(&pressed_surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_tab_bar_with_state(rect, &bar, None, Some(1), Some(1))
+            });
+        }
+        let mut pressed_surface = pressed_surface;
+        pressed_surface.flush();
+        let pressed = pixel_argb(&mut pressed_surface, probe_x, probe_y);
+        let expected = theme.list_pressed_bg(theme.tab_bar_bg);
+        assert_eq!(
+            pressed,
+            (expected.r, expected.g, expected.b),
+            "pressed_tab == Some(1) must tint tab 1's background toward \
+             list_pressed_bg, even though hovered_tab also names it"
+        );
+
+        let hover_expected = theme.list_hover_bg(theme.tab_bar_bg);
+        assert_ne!(
+            (expected.r, expected.g, expected.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "pressed and hover tints must read as visibly different colours"
+        );
+    }
+
     /// `tab_bar_layout_with_chrome` must actually populate
     /// `TabBarHits::available_cols` with the shared helper's estimate, not
     /// leave it at the old bar-width-in-pixels placeholder. This compares
@@ -10781,6 +11647,222 @@ mod tests {
             paint_with_width(14.0),
             accent,
             "a style-overridden wider focus ring must reach 5px inside the edge"
+        );
+    }
+
+    // ── overlay order: tooltip/toast stay topmost of the focus ring ──────
+
+    fn sample_toast_overlay() -> crate::primitives::toast::ToastOverlay {
+        use crate::primitives::toast::{Toast, ToastCorner, ToastSeverity};
+        crate::primitives::toast::ToastOverlay {
+            id: WidgetId::new("toasts:bottom_right"),
+            corner: ToastCorner::BottomRight,
+            toasts: vec![Toast {
+                id: WidgetId::new("toast:1"),
+                title: "Saved".to_string(),
+                body: String::new(),
+                severity: ToastSeverity::Success,
+                actions: vec![],
+                accent: None,
+            }],
+            focus: None,
+        }
+    }
+
+    /// `super::run::render_frame` calls `GtkBackend::draw_focus_ring` *after*
+    /// `AppLogic::render` returns, so an app that paints a toast overlapping
+    /// the currently-focused widget's rect — e.g. a toast that lands over a
+    /// focused, bordered editor — must not have the generic focus-ring
+    /// convention stroke on top of it on the very same frame. Regression for
+    /// the overlay-order seam (tooltip/toast topmost of all,
+    /// `quadraui-binding-core::host::render_overlays`'s doc). Mirrors
+    /// `macos::backend::tests::draw_focus_ring_does_not_paint_over_a_toast_from_the_same_frame`.
+    #[test]
+    fn gtk_backend_draw_focus_ring_does_not_paint_over_a_toast_from_the_same_frame() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        const W: i32 = 400;
+        const H: i32 = 200;
+
+        let overlay = sample_toast_overlay();
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        backend.set_current_line_height(16.0);
+        backend.set_current_char_width(8.0);
+
+        let layout = {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.begin_frame(crate::Viewport::new(W as f32, H as f32, 1.0));
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                let layout =
+                    b.draw_toast_overlay(QRect::new(0.0, 0.0, W as f32, H as f32), &overlay);
+                let vt = layout.visible_toasts[0].bounds;
+                // A tab-stop focus ring whose rect is the toast's own
+                // bounds — the worst case, a toast that lands exactly
+                // over the focused widget it was raised from.
+                b.draw_focus_ring(vt);
+                layout
+            })
+        };
+        backend.end_frame();
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let vt = layout.visible_toasts[0].bounds;
+        let theme = crate::Theme::default();
+        let success_bg = theme.success_bg();
+
+        // Probe right at the toast's edge, where the ring would have
+        // stroked had it not been skipped.
+        let probe_x = (vt.x + vt.width / 2.0) as i32;
+        let probe_y = vt.y as i32;
+        assert_ne!(
+            probe_pixel_417(&data, stride, probe_x, probe_y),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must not stroke over a toast painted earlier this frame",
+        );
+        // The toast's own fill is still intact at its centre.
+        let cx = (vt.x + vt.width / 2.0) as i32;
+        let cy = (vt.y + vt.height / 2.0) as i32;
+        assert_eq!(
+            probe_pixel_417(&data, stride, cx, cy),
+            (success_bg.r, success_bg.g, success_bg.b),
+            "the toast's own fill must still paint",
+        );
+    }
+
+    /// The ring is a perimeter stroke, not a filled rect
+    /// (`focus_ring_band_overlaps`), so a toast that lands strictly
+    /// *inside* a large focused widget — e.g. `draw_toast_overlay` insetting
+    /// the stack from a focused editor/list that spans the whole viewport —
+    /// must leave the ring (and its `chrome:focus-ring` zone) intact: there
+    /// is no pixel conflict to suppress. Mirrors
+    /// `win::backend::tests::draw_focus_ring_survives_a_toast_interior_to_the_focused_widget`.
+    #[test]
+    fn gtk_backend_draw_focus_ring_survives_a_toast_interior_to_the_focused_widget() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        const W: i32 = 400;
+        const H: i32 = 200;
+
+        let overlay = sample_toast_overlay();
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        backend.set_current_line_height(16.0);
+        backend.set_current_char_width(8.0);
+
+        // The focused widget spans the whole viewport (a focused
+        // editor/list behind the toast stack); the toast itself is inset
+        // from that same rect by the toast margin, so it never reaches the
+        // focused rect's edges — the stroke band the ring actually paints.
+        let focused_rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.begin_frame(crate::Viewport::new(W as f32, H as f32, 1.0));
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                let _layout = b.draw_toast_overlay(focused_rect, &overlay);
+                b.draw_focus_ring(focused_rect);
+            });
+        }
+        backend.end_frame();
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let theme = crate::Theme::default();
+
+        // Probe at the focused rect's own top edge, inside the stroke
+        // band, well away from the inset toast box.
+        let probe_x = (focused_rect.x + 2.0) as i32;
+        let probe_y = focused_rect.y as i32;
+        assert_eq!(
+            probe_pixel_417(&data, stride, probe_x, probe_y),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must still paint when the toast is interior to the \
+             focused widget and never touches the ring's stroke band",
+        );
+        assert!(
+            backend
+                .zones
+                .iter()
+                .any(|z| z.id == WidgetId::new("chrome:focus-ring")),
+            "the ring's chrome zone must still be registered",
+        );
+    }
+
+    /// Same contract as the toast regression above, for a tooltip anchored
+    /// directly over the currently-focused widget — the exact "hover
+    /// tooltip over a focused, bordered widget" scenario this issue's
+    /// acceptance criteria name. Mirrors
+    /// `macos::backend::tests::draw_focus_ring_does_not_paint_over_a_tooltip_from_the_same_frame`.
+    #[test]
+    fn gtk_backend_draw_focus_ring_does_not_paint_over_a_tooltip_from_the_same_frame() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        use crate::primitives::tooltip::{ResolvedPlacement, Tooltip, TooltipLayout};
+
+        const W: i32 = 200;
+        const H: i32 = 100;
+        let rect = QRect::new(20.0, 20.0, 100.0, 30.0);
+
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        backend.set_current_line_height(16.0);
+        backend.set_current_char_width(8.0);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.begin_frame(crate::Viewport::new(W as f32, H as f32, 1.0));
+            let tooltip = Tooltip::new(WidgetId::new("tip"), "Hover text");
+            let tooltip_layout = TooltipLayout {
+                bounds: rect,
+                resolved_placement: ResolvedPlacement::Bottom,
+            };
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_tooltip(&tooltip, &tooltip_layout);
+                // The focused widget this tooltip is anchored to shares
+                // the tooltip's own bounds exactly — the ring must yield.
+                b.draw_focus_ring(rect);
+            });
+        }
+        backend.end_frame();
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let theme = crate::Theme::default();
+
+        let probe_x = (rect.x + rect.width / 2.0) as i32;
+        let probe_y = rect.y as i32;
+        assert_ne!(
+            probe_pixel_417(&data, stride, probe_x, probe_y),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must not stroke over a tooltip painted earlier this frame",
         );
     }
 

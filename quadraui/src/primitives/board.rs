@@ -652,12 +652,35 @@ fn count_fitting_columns(available: usize, col_w: f32, gap: f32, total_width: f3
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{
-        badge_fg_color, badge_icon, BoardCard, BoardLayout, BoardModel, BOARD_CARD_H_PAD_PX,
+        badge_fg_color, badge_icon, BadgeStatus, BoardCard, BoardLayout, BoardModel,
+        BOARD_CARD_H_PAD_PX,
     };
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::primitives::layout_metrics::pixel_board_layout;
     use crate::theme::Theme;
+    use std::borrow::Cow;
+
+    /// The codicon counterpart of [`badge_icon`] — every GUI backend
+    /// routes through this module, so a card badge paints as a
+    /// VS-Code-style vector glyph here while TUI keeps `badge_icon`'s
+    /// plain Unicode (TUI's own `draw_board` calls `badge_icon` directly
+    /// and never reaches this module). Falls back to `badge_icon` itself
+    /// if the name isn't registered, which cannot happen for any of
+    /// these four names — covered by this module's own test.
+    fn badge_codicon_glyph(status: BadgeStatus) -> Cow<'static, str> {
+        let name = match status {
+            BadgeStatus::Passed => "check",
+            BadgeStatus::Running => "circle-filled",
+            BadgeStatus::Warning => "warning",
+            BadgeStatus::Blocked => "close",
+            BadgeStatus::Pending => "circle",
+        };
+        match crate::codicon_names::codepoint(name) {
+            Some(c) => Cow::Owned(c.to_string()),
+            None => Cow::Owned(badge_icon(status).to_string()),
+        }
+    }
 
     /// Vertical offset of the card title baseline from the card top.
     const TITLE_Y_OFF: f32 = 6.0;
@@ -796,7 +819,8 @@ pub(crate) mod native_surface_paint {
                     surface.surface_push_clip(badge_band);
                     let mut badge_x = cb.x + h_pad;
                     for badge in &card.badges {
-                        let badge_str = format!("{}{} ", badge_icon(badge.status), badge.label);
+                        let badge_str =
+                            format!("{}{} ", badge_codicon_glyph(badge.status), badge.label);
                         let (bw, bh) = surface.surface_measure_text(&badge_str);
                         let color = badge_fg_color(badge.status, theme);
                         surface.surface_draw_text_run(
@@ -1198,7 +1222,10 @@ pub(crate) mod native_surface_paint {
         }
 
         /// Badge glyph + label text is drawn via `surface_draw_text_run`,
-        /// not a bespoke per-backend loop.
+        /// not a bespoke per-backend loop. A GUI backend paints the
+        /// codicon counterpart of the badge's status glyph
+        /// (`badge_codicon_glyph`), not `badge_icon`'s plain Unicode `✓`
+        /// — TUI never reaches this module, so TUI output is unaffected.
         #[test]
         fn badge_text_is_recorded() {
             let model = sample_model();
@@ -1209,10 +1236,22 @@ pub(crate) mod native_surface_paint {
                 &Theme::default(),
                 Rect::new(0.0, 0.0, 220.0, 300.0),
             );
-            assert!(surface
-                .text_runs
-                .iter()
-                .any(|(_, t, _)| t.starts_with('✓') && t.contains('P')));
+            let codicon_check = crate::codicon_names::codepoint("check")
+                .expect("\"check\" is a registered codicon name");
+            assert!(
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, _)| t.starts_with(codicon_check) && t.contains('P')),
+                "text_runs were {:?}",
+                surface.text_runs,
+            );
+            assert!(
+                !surface.text_runs.iter().any(|(_, t, _)| t.starts_with('✓')),
+                "the plain Unicode checkmark must not be painted on GUI; \
+                 text_runs were {:?}",
+                surface.text_runs,
+            );
         }
 
         /// A hint is only painted when there's room below the badge row.
