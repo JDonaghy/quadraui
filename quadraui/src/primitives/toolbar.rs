@@ -204,11 +204,11 @@ pub enum ToolbarButton {
         /// Optional [`crate::ButtonSpec`] override, carrying the B3a
         /// vocabulary (variant intent, icon placement/gap, a richer
         /// tooltip) this variant's own legacy fields above can't
-        /// express. `None` (the default — every pre-existing
-        /// construction site) keeps today's rendering and semantics
-        /// untouched; `Self::resolved_button_spec` is the single place
-        /// that decides between this override and a spec derived from
-        /// the legacy fields.
+        /// express. `None` (the default) keeps the plain rendering and
+        /// semantics those legacy fields already describe;
+        /// `Self::resolved_button_spec` is the single place that decides
+        /// between this override and a spec derived from the legacy
+        /// fields.
         #[serde(default)]
         spec: Option<crate::primitives::button::ButtonSpec>,
     },
@@ -230,15 +230,14 @@ impl ToolbarButton {
     /// legacy `icon`/`tooltip`/`enabled` fields; `None` for `Self::Separator`/
     /// `Self::Label`, neither of which is a button.
     ///
-    /// The derived spec (the `spec: None` branch, true for every
-    /// pre-existing `Action`) intentionally carries no variant/icon-position
-    /// opinion beyond [`crate::ButtonSpec::new`]'s own defaults — a
-    /// rasteriser that reads this method is expected to keep painting
-    /// those buttons through its existing legacy-field path, not this
-    /// derived spec, so today's rendering stays byte-for-byte unchanged.
-    /// This derivation exists so a conversion exists to test and so a
-    /// future host can inspect "what would this button look like as a
-    /// `ButtonSpec`" uniformly, regardless of whether an override is set.
+    /// The derived spec (the `spec: None` branch) intentionally carries
+    /// no variant/icon-position opinion beyond [`crate::ButtonSpec::new`]'s
+    /// own defaults — a rasteriser that reads this method is expected to
+    /// keep painting an `Action` with no explicit `spec` through its
+    /// existing legacy-field path, not this derived spec, so its plain
+    /// rendering stays unaffected. The derivation lets a host inspect
+    /// "what would this button look like as a `ButtonSpec`" uniformly,
+    /// regardless of whether an override is set.
     pub fn resolved_button_spec(&self) -> Option<crate::primitives::button::ButtonSpec> {
         match self {
             ToolbarButton::Action {

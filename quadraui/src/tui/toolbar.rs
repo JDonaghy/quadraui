@@ -202,7 +202,11 @@ pub fn draw_toolbar_with_options(
                 // paints a standalone `Danger`/`Warning` `Button` — see
                 // that module's doc. Lowest priority: pressed/hovered/
                 // focused/is_active all still win, same as a focused
-                // `Button` wins over its own intent colour.
+                // `Button` wins over its own intent colour. Only
+                // `variant` is honoured here today — `icon`/
+                // `icon_position`/`icon_gap`/`tooltip`/`disabled` on the
+                // spec have no TUI toolbar effect yet; this button keeps
+                // painting through its own legacy `icon`/`enabled` fields.
                 let intent_fg = spec.as_ref().and_then(|s| match s.variant {
                     crate::primitives::button::ButtonVariant::Danger => Some(theme.error_fg),
                     crate::primitives::button::ButtonVariant::Warning => Some(theme.warning_fg),

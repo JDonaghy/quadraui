@@ -512,8 +512,8 @@ pub struct ButtonRowItem {
     /// Optional [`crate::ButtonSpec`] override, carrying the B3a
     /// vocabulary (variant intent, icon placement/gap, a tooltip) this
     /// item's own legacy fields above can't express. `None` (the
-    /// default — every pre-existing construction site) keeps today's
-    /// bracket-chrome rendering; see [`Self::resolved_button_spec`].
+    /// default) renders the plain bracket-chrome look; see
+    /// [`Self::resolved_button_spec`].
     #[serde(default)]
     pub spec: Option<crate::primitives::button::ButtonSpec>,
 }

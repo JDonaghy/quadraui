@@ -297,15 +297,24 @@ fn paint_toast(
             (bg_color, theme.link_fg)
         };
         // An explicit `spec` override's `variant` tints the foreground in
-        // the intent colour — no background fill of its own on TUI, same
-        // "no-op background" convention `crate::tui::button` uses for a
-        // standalone `Danger`/`Warning` `Button`. A `spec: None` action
-        // (every pre-existing `ToastButton`) keeps its plain
-        // primary/secondary look, unaffected.
+        // the intent colour and clears any `accent_bg` fill `primary`
+        // would otherwise set — no background fill of its own on TUI,
+        // same "no-op background" convention `crate::tui::button` uses
+        // for a standalone `Danger`/`Warning` `Button`, regardless of
+        // the legacy `primary` flag. A `spec: None` action keeps its
+        // plain primary/secondary look, unaffected. Only `variant` is
+        // honoured here today — `icon`/`icon_position`/`icon_gap`/
+        // `tooltip`/`disabled` on the spec have no TUI toast effect yet.
         if let Some(spec) = &action.spec {
             match spec.variant {
-                crate::primitives::button::ButtonVariant::Danger => row_fg = theme.error_fg,
-                crate::primitives::button::ButtonVariant::Warning => row_fg = theme.warning_fg,
+                crate::primitives::button::ButtonVariant::Danger => {
+                    row_fg = theme.error_fg;
+                    row_bg = bg_color;
+                }
+                crate::primitives::button::ButtonVariant::Warning => {
+                    row_fg = theme.warning_fg;
+                    row_bg = bg_color;
+                }
                 _ => {}
             }
         }
@@ -623,6 +632,39 @@ mod tests {
             cell.bg,
             ratatui_color(theme.accent_bg),
             "Danger must not fall back to the primary accent fill"
+        );
+    }
+
+    /// A `Danger`/`Warning` spec clears `accent_bg` even when the
+    /// legacy `primary` flag is also set — "no background fill of its
+    /// own" holds regardless of `primary`, not only when it's `false`.
+    #[test]
+    fn danger_spec_action_clears_accent_bg_even_when_primary_is_set() {
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        let mut toast = info_toast("t1", "Delete this file?");
+        let mut spec = crate::primitives::button::ButtonSpec::new("Delete");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        toast.actions = vec![ToastButton {
+            spec: Some(spec),
+            id: WidgetId::new("delete"),
+            label: "Delete".into(),
+            primary: true,
+        }];
+        let stack = stack_br(vec![toast]);
+        let theme = Theme::default();
+        let layout = draw_toast_stack(&mut buf, area, &stack, &theme);
+
+        let action = layout.visible_toasts[0].action_rects[0];
+        let ax = action.x.round() as u16;
+        let ay = action.y.round() as u16;
+        let cell = &buf[(ax, ay)];
+        assert_eq!(cell.fg, ratatui_color(theme.error_fg));
+        assert_ne!(
+            cell.bg,
+            ratatui_color(theme.accent_bg),
+            "Danger must not fall back to the primary accent fill, even \
+             when the legacy `primary` flag is also set"
         );
     }
 

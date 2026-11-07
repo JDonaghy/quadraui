@@ -1026,9 +1026,12 @@ fn draw_field_button_row(
             // An explicit `spec` override's `variant` tints both the
             // label and the bracket chrome in the intent colour, same
             // convention `crate::tui::button` uses for a standalone
-            // `Danger`/`Warning` `Button` — a `spec: None` item (every
-            // pre-existing `ButtonRowItem`) keeps painting `field_fg`/
-            // `accent_fg`, unchanged.
+            // `Danger`/`Warning` `Button` — a `spec: None` item keeps
+            // painting `field_fg`/`accent_fg`. Only `variant` is
+            // honoured here today — `icon`/`icon_position`/`icon_gap`/
+            // `tooltip` on the spec have no TUI form-row effect yet, and
+            // `spec.disabled` does not override the item's own
+            // `disabled` field below.
             let intent_fg = button.spec.as_ref().and_then(|s| match s.variant {
                 crate::primitives::button::ButtonVariant::Danger => Some(theme.error_fg),
                 crate::primitives::button::ButtonVariant::Warning => Some(theme.warning_fg),

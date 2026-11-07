@@ -73,7 +73,12 @@ only a push to `main` runs this workflow.
   `Danger` `DialogButton` reads as `[ ⚠ Move to Trash ]` in
   `theme.error_fg`) or, for `Dialog` specifically, repaint through the
   same bracket-chrome/icon path `tui::button` uses for a standalone
-  `Button`. GUI backends (GTK/macOS/Win32) are unchanged — they keep
+  `Button`; `tui::dialog::tui_dialog_layout`, `Dialog::measure_generic_inner`
+  and `MessageDialogController::layout` all size the button row from
+  `ButtonSpec::min_cell_width()` so that bracket chrome never clips.
+  `tui::draw_dialog_with_nerd_fonts` (new `pub` re-export) is `draw_dialog`
+  plus a `nerd_fonts_enabled` flag, for resolving the Nerd-Font half of a
+  `spec`'s icon. GUI backends (GTK/macOS/Win32) are unchanged — they keep
   reading each kind's legacy fields until a per-backend adoption issue
   is filed.
 
@@ -89,6 +94,15 @@ only a push to `main` runs this workflow.
   that carries this change, per `ci.yml`'s `downstream` job "pin-and-
   defer" policy. This change needs a semver minor bump at the next
   `develop` → `main` promotion.
+### Removed
+- `Eq` impl on `Toolbar`/`ToolbarButton`, `Dialog`/`DialogInput`/
+  `DialogButton` and `Toast`/`ToastOverlay`/`ToastButton`: each now
+  carries an optional `ButtonSpec`, which has an `f32` (`icon_gap`) with
+  no total order, so only `PartialEq` holds (matching `Button` itself,
+  which has never been `Eq`). Breaking for any downstream `HashSet`/
+  `BTreeSet` key or `#[derive(Eq)]` wrapper over one of these eight
+  types; no such use was found in `vimcode` or `coord-tui`.
+### Added
 - `Backend::draw_context_menu_with_state`/`draw_palette_with_state`/
   `draw_menu_bar_with_state`: the hover/pressed seam for
   `ContextMenu`/`Palette`/`MenuBar`, reading a single `InteractionState`

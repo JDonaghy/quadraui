@@ -370,6 +370,44 @@ impl ButtonSpec {
             icon_gap: self.icon_gap,
         }
     }
+
+    /// Minimum cell-unit width that paints this spec's resolved
+    /// [`Button`] without clipping — the `[ ` / ` ]` bracket chrome
+    /// (4 cells) plus [`Self::label`]'s own display width, plus a
+    /// 1-cell icon glyph and its [`Self::icon_gap`]-derived gap
+    /// (`ceil(icon_gap / NOMINAL_CELL_PX_WIDTH)`, floored at one cell)
+    /// when [`Self::icon`] is set. [`ButtonVariant::Icon`] paints no
+    /// bracket chrome, so its width is just the icon block.
+    ///
+    /// `crate::tui::button::draw_button` paints exactly this content —
+    /// see that module's own doc for the chrome layout this mirrors. A
+    /// caller that must size a button box *before* handing it to that
+    /// rasteriser (e.g. [`crate::primitives::dialog::Dialog::measure_generic_inner`],
+    /// `crate::tui::dialog::tui_dialog_layout`,
+    /// `crate::compose::message_dialog::MessageDialogController`'s own
+    /// layout) uses this instead of a fixed per-label estimate, so a
+    /// `Danger`/`Warning` spec's icon and longer label never clip the
+    /// closing bracket.
+    pub fn min_cell_width(&self) -> f32 {
+        use crate::primitives::layout_metrics::pixel::NOMINAL_CELL_PX_WIDTH;
+
+        let label_w = crate::text_util::display_width(&self.label);
+        let icon_block = if self.icon.is_some() {
+            let gap_cells = if !self.icon_gap.is_finite() {
+                1
+            } else {
+                ((self.icon_gap / NOMINAL_CELL_PX_WIDTH).ceil() as usize).max(1)
+            };
+            1 + gap_cells
+        } else {
+            0
+        };
+        if matches!(self.variant, ButtonVariant::Icon) {
+            icon_block.max(1) as f32
+        } else {
+            (4 + icon_block + label_w) as f32
+        }
+    }
 }
 
 impl Default for ButtonSpec {
@@ -1276,6 +1314,37 @@ mod tests {
         assert_eq!(button.tooltip, spec.tooltip);
         assert!(button.disabled);
         assert!(button.focused);
+    }
+
+    #[test]
+    fn min_cell_width_is_label_plus_four_cells_of_chrome() {
+        let spec = ButtonSpec::new("Move to Trash");
+        // "[ " + "Move to Trash" (13) + " ]" = 4 + 13.
+        assert_eq!(spec.min_cell_width(), 17.0);
+    }
+
+    #[test]
+    fn min_cell_width_adds_a_one_cell_icon_plus_its_gap() {
+        let mut spec = ButtonSpec::new("Move to Trash");
+        spec.icon = Some(crate::types::Icon::new("\u{f071}", "!"));
+        // A 1-cell icon glyph plus a ≥1-cell gap, on top of the plain
+        // label's own `min_cell_width`.
+        let plain = ButtonSpec::new("Move to Trash").min_cell_width();
+        assert!(spec.min_cell_width() > plain);
+    }
+
+    #[test]
+    fn min_cell_width_floors_the_icon_gap_at_one_cell() {
+        let mut narrow_gap = ButtonSpec::new("Go");
+        narrow_gap.icon = Some(crate::types::Icon::new("\u{f061}", ">"));
+        narrow_gap.icon_gap = 0.0;
+        let mut wide_gap = ButtonSpec::new("Go");
+        wide_gap.icon = Some(crate::types::Icon::new("\u{f061}", ">"));
+        wide_gap.icon_gap = 64.0;
+
+        // 4 chrome + 1 icon + 1 floored gap + 2 label chars.
+        assert_eq!(narrow_gap.min_cell_width(), 8.0);
+        assert!(wide_gap.min_cell_width() > narrow_gap.min_cell_width());
     }
 
     #[test]

@@ -182,6 +182,16 @@ impl MessageDialogController {
         let char_w = m.char_width;
         let viewport = backend.viewport();
         let has_title = self.dialog.title.spans.iter().any(|s| !s.text.is_empty());
+        // Floored at today's 10-char-width estimate; widened per-button
+        // via `resolved_button_spec()` so an explicit `spec`'s icon +
+        // longer label never clips its closing bracket — see
+        // `ButtonSpec::min_cell_width`'s own doc.
+        let button_width = self
+            .dialog
+            .buttons
+            .iter()
+            .map(|b| b.resolved_button_spec().min_cell_width() * char_w)
+            .fold(char_w * 10.0, f32::max);
         // `button_row_height` is a *single* row; `Dialog::layout` itself
         // multiplies by `self.buttons.len()` when `vertical_buttons` is
         // set (see that method's own `button_block_h` local) — no need
@@ -193,7 +203,7 @@ impl MessageDialogController {
             table_height: 0.0,
             input_height: 0.0,
             button_row_height: lh,
-            button_width: char_w * 10.0,
+            button_width,
             button_gap: char_w * 2.0,
             padding: lh,
         };
@@ -529,6 +539,32 @@ mod tests {
         assert_eq!(
             controller.bounds(&backend),
             controller.layout(&backend).bounds
+        );
+    }
+
+    /// A `DialogButton` with an explicit `Danger` `spec` and a longer
+    /// label than the flat `char_w * 10.0` floor gets a button box wide
+    /// enough for `[ Move to Trash ]` to not clip — the same
+    /// `ButtonSpec::min_cell_width` sizing `tui_dialog_layout` and
+    /// `Dialog::measure_generic_inner` use.
+    #[test]
+    fn danger_spec_button_widens_the_button_row_so_it_is_not_clipped() {
+        let mut controller = MessageDialogController::new(opts_ok_only());
+        let mut spec = crate::primitives::button::ButtonSpec::new("Move to Trash");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        controller.dialog.buttons[0].label = "Move to Trash".into();
+        controller.dialog.buttons[0].spec = Some(spec.clone());
+
+        let backend = crate::tui::backend::TuiBackend::new();
+        let layout = controller.layout(&backend);
+        let vis = &layout.visible_buttons[0];
+        let char_w = backend.measure().char_width;
+
+        assert!(
+            vis.bounds.width >= spec.min_cell_width() * char_w,
+            "button box ({}) must be at least as wide as the spec needs ({})",
+            vis.bounds.width,
+            spec.min_cell_width() * char_w
         );
     }
 
