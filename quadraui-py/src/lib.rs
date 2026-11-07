@@ -145,7 +145,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use pyo3::types::{PyDict, PyList};
 
-use quadraui::backend::TrayService;
 #[cfg(test)]
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
@@ -168,11 +167,11 @@ use quadraui::NamedKey;
 use quadraui::Scrollbar;
 use quadraui::{
     Accelerator, AcceleratorId, AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps,
-    BackendError, BottomPanelEvent, Completions, ContextMenu, ContextMenuItem,
-    ContextMenuPlacement, DialogButton, DialogSeverity, FileDialogOptions, Float, FloatMeasure,
-    GlobalShortcutId, ImageSource, MessageDialogOptions, Notification, Point, PointerShape,
-    Reaction, Rect, RgbaImage, RichTextPopup, ServiceResult, ShellApp, ShellConfig, ShellContext,
-    Theme, Toast, ToastCorner, Tooltip, UiEvent, UserPayload, WidgetId, WindowControl,
+    BottomPanelEvent, Completions, ContextMenu, ContextMenuItem, DialogButton, DialogSeverity,
+    FileDialogOptions, Float, FloatMeasure, GlobalShortcutId, ImageSource, MessageDialogOptions,
+    Notification, Point, PointerShape, Reaction, Rect, RgbaImage, RichTextPopup, ServiceResult,
+    ShellApp, ShellConfig, ShellContext, Theme, Toast, ToastCorner, Tooltip, UiEvent, UserPayload,
+    WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -186,11 +185,11 @@ use quadraui_binding_core::tree_scroll_state;
 use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
     callback_reaction, caret_shape, click_down_up_events, color_depth_name, decode_extra_primitive,
-    dialog_severity, draw_bands, font_role, key_pressed_event, merge_overrides,
+    dialog_severity, draw_bands, font_role, key_pressed_event, menu_for_surface, merge_overrides,
     message_dialog_options_from_buttons, paint_layout, panic_message, pointer_shape,
     render_overlays, step_driver, text_display_from_lines, theme_color_value, toast_corner,
-    window_close_reaction, BindingHost, ErasedShellDriver, EventSink, HitDetail, InteractionEngine,
-    OverrideError, RenderOutput, WindowCloseHandling,
+    window_close_reaction, with_tray, with_window, BindingHost, ErasedShellDriver, EventSink,
+    HitDetail, InteractionEngine, OverrideError, RenderOutput, WindowCloseHandling,
 };
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`)
@@ -592,34 +591,6 @@ fn parse_pointer_shape(what: &str, shape: &str, edge: Option<&str>) -> PyResult<
         .map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
 }
 
-/// Applies `f` to `backend`'s [`WindowControl`] surface, folding
-/// [`Backend::window`] returning `None` (no window at all, or not
-/// constructed yet) into the same [`BackendError::Unsupported`] a missing
-/// method on a real window already reports -- the same fold
-/// `quadraui/examples/common/window_control_demo.rs`'s `describe` helper
-/// uses, so a caller sees one uniform error shape for either case.
-fn with_window<T>(
-    backend: &mut dyn Backend,
-    f: impl FnOnce(&mut dyn WindowControl) -> ServiceResult<T>,
-) -> ServiceResult<T> {
-    match backend.window() {
-        Some(window) => f(window),
-        None => Err(BackendError::Unsupported),
-    }
-}
-
-/// [`with_window`]'s [`TrayService`] counterpart -- folds [`Backend::tray`]
-/// returning `None` into [`BackendError::Unsupported`].
-fn with_tray<T>(
-    backend: &mut dyn Backend,
-    f: impl FnOnce(&mut dyn TrayService) -> ServiceResult<T>,
-) -> ServiceResult<T> {
-    match backend.tray() {
-        Some(tray) => f(tray),
-        None => Err(BackendError::Unsupported),
-    }
-}
-
 /// Maps a [`ServiceResult`] failure to `InternalError`, prefixed with
 /// `what` -- the same shape `open_path`/`move_to_trash`/... already use
 /// for `PlatformServices`' own `ServiceResult`-returning methods.
@@ -627,20 +598,11 @@ fn service_result(what: &str, result: ServiceResult<()>) -> PyResult<()> {
     result.map_err(|err| InternalError::new_err(format!("{what}: {err:?}")))
 }
 
-/// Builds a [`ContextMenu`] from `items` -- the same construction
-/// [`quadraui_binding_core::InteractionEngine::open_context_menu`] uses for
-/// a right-click context menu, reused here for [`TrayService::set_menu`],
-/// which takes a `&ContextMenu` rather than a bare item list.
+/// Builds a [`ContextMenu`] for [`quadraui::backend::TrayService::set_menu`], which takes a
+/// `&ContextMenu` rather than a bare item list -- thin wrapper over
+/// [`quadraui_binding_core::menu_for_surface`], named `"qui-tray-menu"`.
 fn tray_menu(items: Vec<ContextMenuItem>) -> ContextMenu {
-    let mut menu = ContextMenu {
-        id: WidgetId::new("qui-tray-menu"),
-        items,
-        selected_idx: 0,
-        bg: None,
-        placement: ContextMenuPlacement::AnchorPoint,
-    };
-    menu.selected_idx = menu.first_selectable();
-    menu
+    menu_for_surface(WidgetId::new("qui-tray-menu"), items)
 }
 
 impl AppLogic for PyAppLogic {
@@ -2976,7 +2938,7 @@ impl QuiApp {
     /// row-major top-to-bottom left-to-right, exactly `width * height * 4`
     /// bytes.
     ///
-    /// `None` collapses three different [`BackendError`]s this binding
+    /// `None` collapses three different [`quadraui::BackendError`]s this binding
     /// cannot tell apart from here: an empty / non-image clipboard
     /// (`PlatformFailure`, since `arboard` reports "nothing to read" the
     /// same way it reports a real platform error), and a backend with no
@@ -3907,7 +3869,7 @@ impl QuiApp {
     // callback instead of these, for the same re-entrant-borrow reason
     // `show_message_dialog`'s own doc describes.
 
-    /// Sets the window title -- [`WindowControl::set_title`]. On the
+    /// Sets the window title -- [`quadraui::WindowControl::set_title`]. On the
     /// headless `TuiBackend` this emits the OSC 0/2 terminal escape
     /// sequence (crossterm's `SetTitle`) to retitle the terminal
     /// emulator's tab/window -- genuinely applied, not a no-op.
@@ -3921,7 +3883,7 @@ impl QuiApp {
     }
 
     /// Marks the window's document as having unsaved changes (`True`) or
-    /// clean (`False`) -- [`WindowControl::set_document_edited`]. Raises
+    /// clean (`False`) -- [`quadraui::WindowControl::set_document_edited`]. Raises
     /// `InternalError` on every in-tree backend except a macOS
     /// `run_native` window, which has no reachable equivalent from this
     /// headless app.
@@ -3935,7 +3897,7 @@ impl QuiApp {
     }
 
     /// Associates the window with the file at `path` (or clears the
-    /// association when `None`) -- [`WindowControl::set_represented_filename`].
+    /// association when `None`) -- [`quadraui::WindowControl::set_represented_filename`].
     /// Same macOS-only story as [`Self::set_document_edited`].
     #[pyo3(signature = (path=None))]
     fn set_represented_filename(&mut self, path: Option<&str>) -> PyResult<()> {
@@ -3949,7 +3911,7 @@ impl QuiApp {
         })
     }
 
-    /// Sets (or replaces) the tray icon's image -- [`TrayService::set_icon`].
+    /// Sets (or replaces) the tray icon's image -- [`quadraui::backend::TrayService::set_icon`].
     /// `icon` is an [`ImageSource`] dict, e.g. `{"Path": "/path/to.png"}` or
     /// `{"Bytes": b"..."}` -- the same externally-tagged shape
     /// `quadraui::ImageSource`'s derived `Deserialize` accepts. Raises
@@ -3968,7 +3930,7 @@ impl QuiApp {
         })
     }
 
-    /// Sets the tray icon's hover tooltip text -- [`TrayService::set_tooltip`].
+    /// Sets the tray icon's hover tooltip text -- [`quadraui::backend::TrayService::set_tooltip`].
     /// Same tray-less-on-TUI story as [`Self::set_tray_icon`].
     fn set_tray_tooltip(&mut self, tooltip: &str) -> PyResult<()> {
         self.guarded(|app| {
@@ -3980,7 +3942,7 @@ impl QuiApp {
     }
 
     /// Attaches (or replaces) the tray icon's right-click/click menu --
-    /// [`TrayService::set_menu`]. `items` decodes the same way
+    /// [`quadraui::backend::TrayService::set_menu`]. `items` decodes the same way
     /// `show_context_menu`'s own `items` argument does -- a list of
     /// [`ContextMenuItem`] dicts; an activated entry fires
     /// `UiEvent::ContextMenuItemActivated` the same way a right-click
