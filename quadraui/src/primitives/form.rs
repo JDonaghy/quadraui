@@ -509,6 +509,27 @@ pub struct ButtonRowItem {
     /// rows (commit, push, pull, fetch) in source-control panels.
     #[serde(default)]
     pub icon: Option<crate::types::Icon>,
+    /// Optional [`crate::ButtonSpec`] override, carrying the B3a
+    /// vocabulary (variant intent, icon placement/gap, a tooltip) this
+    /// item's own legacy fields above can't express. `None` (the
+    /// default — every pre-existing construction site) keeps today's
+    /// bracket-chrome rendering; see [`Self::resolved_button_spec`].
+    #[serde(default)]
+    pub spec: Option<crate::primitives::button::ButtonSpec>,
+}
+
+impl ButtonRowItem {
+    /// This item's explicit [`Self::spec`] override when set, otherwise
+    /// one derived from its legacy `label`/`icon`/`disabled` fields.
+    pub fn resolved_button_spec(&self) -> crate::primitives::button::ButtonSpec {
+        if let Some(spec) = &self.spec {
+            return spec.clone();
+        }
+        let mut derived = crate::primitives::button::ButtonSpec::new(self.label.clone());
+        derived.icon = self.icon.clone();
+        derived.disabled = self.disabled;
+        derived
+    }
 }
 
 fn slider_default_step() -> f32 {
@@ -3701,12 +3722,14 @@ mod tests {
             kind: FieldKind::ButtonRow {
                 buttons: vec![
                     ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("next"),
                         label: "Find Next".into(),
                         disabled: false,
                         icon: None,
                     },
                     ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("all"),
                         label: "Replace All".into(),
                         disabled: true,
@@ -3983,5 +4006,38 @@ mod tests {
 
         let unset = control_width_test_field(None);
         assert_eq!(form.resolved_min_control_width(&unset), Some(40.0));
+    }
+
+    // ── B3b: ButtonSpec seam ─────────────────────────────────────────────
+
+    #[test]
+    fn button_row_item_without_spec_derives_one_from_its_legacy_fields() {
+        let item = ButtonRowItem {
+            id: WidgetId::new("row:commit"),
+            label: "Commit".to_string(),
+            disabled: true,
+            icon: Some(crate::types::Icon::new("\u{f00c}", "+")),
+            spec: None,
+        };
+
+        let spec = item.resolved_button_spec();
+        assert_eq!(spec.label, "Commit");
+        assert_eq!(spec.icon, item.icon);
+        assert!(spec.disabled);
+    }
+
+    #[test]
+    fn button_row_item_with_explicit_spec_overrides_the_legacy_fields() {
+        let mut explicit = crate::primitives::button::ButtonSpec::new("Discard");
+        explicit.variant = crate::primitives::button::ButtonVariant::Danger;
+        let item = ButtonRowItem {
+            id: WidgetId::new("row:discard"),
+            label: "Discard changes".to_string(),
+            disabled: false,
+            icon: None,
+            spec: Some(explicit.clone()),
+        };
+
+        assert_eq!(item.resolved_button_spec(), explicit);
     }
 }

@@ -294,6 +294,92 @@ impl Default for Button {
     }
 }
 
+/// Shared, kind-agnostic button description — the fields [`Button`]
+/// itself carries beyond `id`/`focused` (which only make sense on a
+/// standalone control), lifted out so [`crate::ToolbarButton::Action`],
+/// [`crate::ButtonRowItem`], [`crate::DialogButton`] and
+/// [`crate::ToastButton`] can each carry one through an optional `spec`
+/// field without pulling in `Button`'s own id/focus-tracking concerns.
+///
+/// **Deprecate-first.** Every one of those four kinds keeps its own
+/// legacy fields (icon string, tint, is_default/is_cancel, primary, …)
+/// working exactly as before; `spec` is an *additional*, optional
+/// override. A host that never sets it gets the same rendering those
+/// kinds have always had. A host that does set it gets the full B3a
+/// vocabulary — [`ButtonVariant::Danger`]/[`ButtonVariant::Warning`],
+/// icon placement, and a tooltip — on whichever backend reads it.
+///
+/// `#[non_exhaustive]` for the same reason [`Button`] itself is: an
+/// additive field here shouldn't force a downstream consumer's
+/// exhaustive struct literal to grow in lockstep. Construct with
+/// [`Self::new`] and set fields directly afterwards.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ButtonSpec {
+    pub label: String,
+    #[serde(default)]
+    pub variant: ButtonVariant,
+    #[serde(default)]
+    pub icon: Option<Icon>,
+    #[serde(default)]
+    pub icon_position: ButtonIconPosition,
+    #[serde(default = "default_icon_gap")]
+    pub icon_gap: f32,
+    #[serde(default)]
+    pub tooltip: Option<String>,
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+impl ButtonSpec {
+    /// A primary, enabled spec with `label` and every other field at
+    /// [`Button::new`]'s own defaults — so a legacy-kind's derived spec
+    /// and a host-authored one start from the identical baseline.
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            variant: ButtonVariant::Primary,
+            icon: None,
+            icon_position: ButtonIconPosition::Leading,
+            icon_gap: default_icon_gap(),
+            tooltip: None,
+            disabled: false,
+        }
+    }
+
+    /// Materialise a paintable [`Button`] from this spec, for a host
+    /// rasteriser that wants to paint a non-`Button` primitive's button
+    /// (a [`crate::ToolbarButton::Action`], [`crate::ButtonRowItem`],
+    /// [`crate::DialogButton`] or [`crate::ToastButton`] carrying a
+    /// `spec` override) through the same bracket-chrome / icon / intent-
+    /// colour path `crate::tui::button` already paints a standalone
+    /// `Button` with, rather than duplicating that logic per kind.
+    /// `id`/`focused` come from the host — a `ButtonSpec` carries
+    /// neither, since those only make sense once attached to a specific
+    /// widget instance.
+    pub fn to_button(&self, id: WidgetId, focused: bool) -> Button {
+        Button {
+            id,
+            label: self.label.clone(),
+            variant: self.variant,
+            disabled: self.disabled,
+            focused,
+            tooltip: self.tooltip.clone(),
+            icon: self.icon.clone(),
+            icon_position: self.icon_position,
+            icon_gap: self.icon_gap,
+        }
+    }
+}
+
+impl Default for ButtonSpec {
+    /// A primary, enabled spec with an empty label. See [`Self::new`]
+    /// for a spec with a real label.
+    fn default() -> Self {
+        Self::new("")
+    }
+}
+
 /// Fully-resolved button layout.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ButtonLayout {
@@ -1149,5 +1235,66 @@ mod tests {
         assert_eq!(metrics.height, style.control_height);
         assert_eq!(metrics.padding_x, style.padding);
         assert_eq!(metrics.corner_radius, style.corner_radius);
+    }
+
+    #[test]
+    fn button_spec_new_matches_button_new_defaults() {
+        let spec = ButtonSpec::new("OK");
+        assert_eq!(spec.label, "OK");
+        assert_eq!(spec.variant, ButtonVariant::Primary);
+        assert_eq!(spec.icon, None);
+        assert_eq!(spec.icon_position, ButtonIconPosition::Leading);
+        assert_eq!(spec.icon_gap, 4.0);
+        assert_eq!(spec.tooltip, None);
+        assert!(!spec.disabled);
+    }
+
+    #[test]
+    fn button_spec_default_is_an_empty_label_primary_spec() {
+        assert_eq!(ButtonSpec::default(), ButtonSpec::new(""));
+    }
+
+    #[test]
+    fn to_button_carries_every_field_and_the_given_id_and_focus() {
+        let mut spec = ButtonSpec::new("Delete");
+        spec.variant = ButtonVariant::Danger;
+        spec.icon = Some(crate::types::Icon::new("\u{f071}", "!"));
+        spec.icon_position = ButtonIconPosition::Trailing;
+        spec.icon_gap = 6.0;
+        spec.tooltip = Some("Permanently delete".to_string());
+        spec.disabled = true;
+
+        let id = WidgetId::new("dialog:delete");
+        let button = spec.to_button(id.clone(), true);
+
+        assert_eq!(button.id, id);
+        assert_eq!(button.label, "Delete");
+        assert_eq!(button.variant, ButtonVariant::Danger);
+        assert_eq!(button.icon, spec.icon);
+        assert_eq!(button.icon_position, ButtonIconPosition::Trailing);
+        assert_eq!(button.icon_gap, 6.0);
+        assert_eq!(button.tooltip, spec.tooltip);
+        assert!(button.disabled);
+        assert!(button.focused);
+    }
+
+    #[test]
+    fn button_spec_serde_round_trip() {
+        let mut spec = ButtonSpec::new("Overwrite");
+        spec.variant = ButtonVariant::Warning;
+        spec.icon = Some(crate::types::Icon::new("W", "W"));
+        let json = serde_json::to_string(&spec).unwrap();
+        let back: ButtonSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(spec, back);
+    }
+
+    /// A JSON payload serialized before every optional `ButtonSpec` field
+    /// existed has only `label`; `#[serde(default)]` must deserialize the
+    /// rest at [`ButtonSpec::new`]'s own defaults.
+    #[test]
+    fn button_spec_deserializes_with_defaults_when_only_label_is_present() {
+        let json = r#"{"label": "OK"}"#;
+        let spec: ButtonSpec = serde_json::from_str(json).expect("deserialize label-only spec");
+        assert_eq!(spec, ButtonSpec::new("OK"));
     }
 }

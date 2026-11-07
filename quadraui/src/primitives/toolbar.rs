@@ -92,6 +92,7 @@ fn default_true() -> bool {
 ///         enabled: true,
 ///         is_active: false,
 ///         tooltip: String::new(),
+///         spec: None,
 ///     },
 /// ]);
 ///
@@ -102,7 +103,7 @@ fn default_true() -> bool {
 /// );
 /// ```
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Toolbar {
     pub id: WidgetId,
     pub buttons: Vec<ToolbarButton>,
@@ -161,7 +162,10 @@ pub struct ToolbarPaintOptions {
 }
 
 /// One item in a [`Toolbar`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Eq`: [`ToolbarButton::Action::spec`] carries a [`crate::ButtonSpec`],
+/// which has an `f32` (`icon_gap`) with no total order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ToolbarButton {
     /// A clickable action button.
     Action {
@@ -197,6 +201,16 @@ pub enum ToolbarButton {
         /// Optional hover tooltip.
         #[serde(default)]
         tooltip: String,
+        /// Optional [`crate::ButtonSpec`] override, carrying the B3a
+        /// vocabulary (variant intent, icon placement/gap, a richer
+        /// tooltip) this variant's own legacy fields above can't
+        /// express. `None` (the default — every pre-existing
+        /// construction site) keeps today's rendering and semantics
+        /// untouched; `Self::resolved_button_spec` is the single place
+        /// that decides between this override and a spec derived from
+        /// the legacy fields.
+        #[serde(default)]
+        spec: Option<crate::primitives::button::ButtonSpec>,
     },
     /// Visual separator between button groups. No interaction, no id.
     Separator,
@@ -208,6 +222,50 @@ pub enum ToolbarButton {
         #[serde(default)]
         fg: Option<Color>,
     },
+}
+
+impl ToolbarButton {
+    /// Resolve this button's [`crate::ButtonSpec`] for painting: `Self::Action`'s
+    /// explicit `spec` override when set, otherwise one derived from its
+    /// legacy `icon`/`tooltip`/`enabled` fields; `None` for `Self::Separator`/
+    /// `Self::Label`, neither of which is a button.
+    ///
+    /// The derived spec (the `spec: None` branch, true for every
+    /// pre-existing `Action`) intentionally carries no variant/icon-position
+    /// opinion beyond [`crate::ButtonSpec::new`]'s own defaults — a
+    /// rasteriser that reads this method is expected to keep painting
+    /// those buttons through its existing legacy-field path, not this
+    /// derived spec, so today's rendering stays byte-for-byte unchanged.
+    /// This derivation exists so a conversion exists to test and so a
+    /// future host can inspect "what would this button look like as a
+    /// `ButtonSpec`" uniformly, regardless of whether an override is set.
+    pub fn resolved_button_spec(&self) -> Option<crate::primitives::button::ButtonSpec> {
+        match self {
+            ToolbarButton::Action {
+                spec: Some(spec), ..
+            } => Some(spec.clone()),
+            ToolbarButton::Action {
+                label,
+                icon,
+                enabled,
+                tooltip,
+                ..
+            } => {
+                let mut derived = crate::primitives::button::ButtonSpec::new(label.clone());
+                derived.icon = icon
+                    .as_ref()
+                    .map(|glyph| crate::types::Icon::new(glyph.clone(), glyph.clone()));
+                derived.tooltip = if tooltip.is_empty() {
+                    None
+                } else {
+                    Some(tooltip.clone())
+                };
+                derived.disabled = !enabled;
+                Some(derived)
+            }
+            ToolbarButton::Separator | ToolbarButton::Label { .. } => None,
+        }
+    }
 }
 
 /// Semantic event a [`Toolbar`] click or Enter/Space activation stands for.
@@ -249,6 +307,7 @@ pub enum ToolbarEvent {
 ///         enabled: true,
 ///         is_active: false,
 ///         tooltip: String::new(),
+///         spec: None,
 ///     },
 /// ]);
 /// let icons = ToolbarIcons::new()
@@ -885,6 +944,7 @@ mod tests {
 
     fn mk_action(id: &str, label: &str, enabled: bool) -> ToolbarButton {
         ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new(id),
             label: label.to_string(),
             icon: None,
@@ -1015,6 +1075,7 @@ mod tests {
         // clipped (width 5), still emitted in visible_items so apps see
         // the truncation, not silent drop.
         let mk_wide = |id: &str| ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new(id),
             label: "xxxxxxxx".into(), // 8 chars + "[  ]" wrapper = 12 cells via measurer
             icon: None,
@@ -1080,6 +1141,7 @@ mod tests {
             id: WidgetId::new("debug-toolbar"),
             buttons: vec![
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("debug:continue"),
                     label: "Continue".into(),
                     icon: Some("▶".into()),
@@ -1090,6 +1152,7 @@ mod tests {
                 },
                 ToolbarButton::Separator,
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("debug:stop"),
                     label: "Stop".into(),
                     icon: None,
@@ -1213,6 +1276,7 @@ mod tests {
         }"#;
         let _ = json; // serde tagging is internal; verify via a real round-trip
         let btn = ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new("x"),
             label: "X".into(),
             icon: None,
@@ -1230,6 +1294,7 @@ mod tests {
 
     fn mk_icon_action(id: &str, label: &str, icon: Option<&str>) -> ToolbarButton {
         ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new(id),
             label: label.to_string(),
             icon: icon.map(|s| s.to_string()),
@@ -1439,6 +1504,7 @@ mod tests {
     #[test]
     fn click_on_an_already_active_button_flips_is_active_to_false() {
         let bar = Toolbar::new(WidgetId::new("bar")).with_buttons(vec![ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new("filter"),
             label: "Filter".to_string(),
             icon: None,
@@ -1517,5 +1583,67 @@ mod tests {
             .with_buttons(vec![ToolbarButton::Separator])
             .with_focused_index(Some(0));
         assert_eq!(bar.activate_focused(), None);
+    }
+
+    // ── B3b: ButtonSpec seam ─────────────────────────────────────────────
+
+    #[test]
+    fn action_without_spec_derives_one_from_its_legacy_fields() {
+        let btn = ToolbarButton::Action {
+            spec: None,
+            id: WidgetId::new("toolbar:refresh"),
+            label: "Refresh".to_string(),
+            icon: Some("\u{f021}".to_string()),
+            key_hint: None,
+            enabled: false,
+            is_active: false,
+            tooltip: "Reload the tree".to_string(),
+        };
+
+        let spec = btn.resolved_button_spec().expect("Action has a spec");
+        assert_eq!(spec.label, "Refresh");
+        assert_eq!(
+            spec.icon,
+            Some(crate::types::Icon::new("\u{f021}", "\u{f021}"))
+        );
+        assert_eq!(spec.tooltip, Some("Reload the tree".to_string()));
+        assert!(spec.disabled, "disabled when the legacy enabled is false");
+    }
+
+    #[test]
+    fn action_with_explicit_spec_overrides_the_legacy_fields() {
+        let mut explicit = crate::primitives::button::ButtonSpec::new("Move to Trash");
+        explicit.variant = crate::primitives::button::ButtonVariant::Danger;
+        let btn = ToolbarButton::Action {
+            spec: Some(explicit.clone()),
+            id: WidgetId::new("toolbar:delete"),
+            label: "Delete".to_string(),
+            icon: None,
+            key_hint: None,
+            enabled: true,
+            is_active: false,
+            tooltip: String::new(),
+        };
+
+        let resolved = btn.resolved_button_spec().expect("Action has a spec");
+        assert_eq!(resolved, explicit);
+        assert_eq!(resolved.label, "Move to Trash");
+        assert_eq!(
+            resolved.variant,
+            crate::primitives::button::ButtonVariant::Danger
+        );
+    }
+
+    #[test]
+    fn separator_and_label_have_no_button_spec() {
+        assert_eq!(ToolbarButton::Separator.resolved_button_spec(), None);
+        assert_eq!(
+            ToolbarButton::Label {
+                text: "2 of 5".to_string(),
+                fg: None,
+            }
+            .resolved_button_spec(),
+            None
+        );
     }
 }

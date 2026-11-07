@@ -65,6 +65,7 @@ impl MessageDialogDemo {
             )],
             buttons: vec![
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("message-dialog-demo:keep"),
                     label: "Keep Editing".to_string(),
                     is_default: true,
@@ -72,6 +73,7 @@ impl MessageDialogDemo {
                     tint: None,
                 },
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("message-dialog-demo:discard"),
                     label: "Discard".to_string(),
                     is_default: false,

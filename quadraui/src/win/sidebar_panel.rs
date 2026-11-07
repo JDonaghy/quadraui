@@ -86,6 +86,7 @@ mod tests {
 
     fn mk_action(id: &str, label: &str) -> ToolbarButton {
         ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new(id),
             label: label.into(),
             icon: None,

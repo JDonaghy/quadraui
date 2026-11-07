@@ -59,6 +59,36 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `ButtonSpec` (`primitives::button`): a shared, kind-agnostic button
+  description — `label`/`variant`/`icon`/`icon_position`/`icon_gap`/
+  `tooltip`/`disabled`, the B3a vocabulary `Button` itself carries minus
+  `id`/`focused`. `ToolbarButton::Action`, `ButtonRowItem`, `DialogButton`
+  and `ToastButton` each gain an optional `spec: Option<ButtonSpec>`
+  (`#[serde(default)]`) plus a `resolved_button_spec`/`effective` method
+  that returns the explicit override when set, otherwise one derived
+  from that kind's own legacy fields. `spec: None` (every pre-existing
+  construction site across this repo) keeps painting exactly as before;
+  the TUI rasterisers for all four kinds (`tui::{toolbar,form,dialog,
+  toast}`) read the resolved spec and tint the intent colour (e.g. a
+  `Danger` `DialogButton` reads as `[ ⚠ Move to Trash ]` in
+  `theme.error_fg`) or, for `Dialog` specifically, repaint through the
+  same bracket-chrome/icon path `tui::button` uses for a standalone
+  `Button`. GUI backends (GTK/macOS/Win32) are unchanged — they keep
+  reading each kind's legacy fields until a per-backend adoption issue
+  is filed.
+
+  **Downstream impact**: `ToolbarButton::Action`, `ButtonRowItem`,
+  `DialogButton` and `ToastButton` are plain structs/enum variants, not
+  `#[non_exhaustive]`, and every known construction site (in this repo
+  and in `vimcode`) names every field with no `..Default::default()`
+  tail — adding `spec` is therefore a breaking change for any such
+  literal, in this repo and downstream, not merely an additive one.
+  Every in-repo site is migrated in this same PR (`spec: None`);
+  `vimcode` (crates.io, pinned to a `0.1.x` range) and `coord-tui` (git
+  rev-pinned) are unaffected until they each adopt the next release/rev
+  that carries this change, per `ci.yml`'s `downstream` job "pin-and-
+  defer" policy. This change needs a semver minor bump at the next
+  `develop` → `main` promotion.
 - `Backend::draw_context_menu_with_state`/`draw_palette_with_state`/
   `draw_menu_bar_with_state`: the hover/pressed seam for
   `ContextMenu`/`Palette`/`MenuBar`, reading a single `InteractionState`

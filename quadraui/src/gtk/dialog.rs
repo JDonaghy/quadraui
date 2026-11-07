@@ -125,6 +125,7 @@ mod tests {
             body: vec![StyledText::plain("Delete this file?")],
             buttons: vec![
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("cancel"),
                     label: "Cancel".into(),
                     is_default: false,
@@ -132,6 +133,7 @@ mod tests {
                     tint: None,
                 },
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("ok"),
                     label: "Delete".into(),
                     is_default: true,

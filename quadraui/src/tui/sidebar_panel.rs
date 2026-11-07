@@ -92,6 +92,7 @@ mod tests {
             toolbar: Some(Toolbar {
                 id: WidgetId::new("sb:toolbar"),
                 buttons: vec![ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("refine"),
                     label: "Refine".into(),
                     icon: None,

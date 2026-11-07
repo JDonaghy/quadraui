@@ -98,7 +98,7 @@ pub use data_table::{
     data_table_layout, draw_data_table, draw_data_table_with_glyphs, draw_data_table_with_state,
 };
 pub use date_picker::draw_date_picker;
-pub use dialog::{draw_dialog, tui_dialog_layout};
+pub use dialog::{draw_dialog, draw_dialog_with_nerd_fonts, tui_dialog_layout};
 pub use diff_view::draw_diff_view;
 pub use drop_overlay::draw_drop_overlay;
 pub use editor::{draw_editor, draw_editor_with_reserve, EditorPaintResult};

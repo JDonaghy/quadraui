@@ -115,6 +115,7 @@ impl MessageDialogController {
                 is_default: b.is_default,
                 is_cancel: b.is_cancel,
                 tint: None,
+                spec: None,
             })
             .collect();
         let focused = buttons.iter().position(|b| b.is_default).unwrap_or(0);

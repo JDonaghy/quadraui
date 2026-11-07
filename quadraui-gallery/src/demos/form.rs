@@ -126,18 +126,21 @@ impl SearchReplaceState {
                     kind: FieldKind::ButtonRow {
                         buttons: vec![
                             ButtonRowItem {
+                                spec: None,
                                 id: WidgetId::new("find-next"),
                                 label: "Find Next".into(),
                                 disabled: false,
                                 icon: None,
                             },
                             ButtonRowItem {
+                                spec: None,
                                 id: WidgetId::new("replace-one"),
                                 label: "Replace".into(),
                                 disabled: false,
                                 icon: None,
                             },
                             ButtonRowItem {
+                                spec: None,
                                 id: WidgetId::new("replace-all"),
                                 label: "Replace All".into(),
                                 disabled: self.search_query.is_empty(),
@@ -477,6 +480,7 @@ fn build_all_fields_form() -> Form {
                 label: StyledText::plain("Actions"),
                 kind: FieldKind::ButtonRow {
                     buttons: vec![ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("run"),
                         label: "Run action".into(),
                         disabled: false,
@@ -499,6 +503,7 @@ fn build_all_fields_form() -> Form {
                 kind: FieldKind::Toolbar(
                     Toolbar::new(WidgetId::new("toolbar-field")).with_buttons(vec![
                         ToolbarButton::Action {
+                            spec: None,
                             id: WidgetId::new("build"),
                             label: "Build".into(),
                             icon: None,

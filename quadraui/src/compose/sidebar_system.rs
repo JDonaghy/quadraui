@@ -2312,6 +2312,7 @@ mod tests {
                 label: StyledText::plain(""),
                 kind: FieldKind::ButtonRow {
                     buttons: vec![ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("replace-all"),
                         label: "Replace All".into(),
                         disabled: false,
@@ -2867,12 +2868,14 @@ mod tests {
             kind: FieldKind::ButtonRow {
                 buttons: vec![
                     ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("replace"),
                         label: "Replace".into(),
                         disabled: false,
                         icon: None,
                     },
                     ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("replace-all"),
                         label: "Replace All".into(),
                         disabled: false,

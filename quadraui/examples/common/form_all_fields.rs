@@ -235,6 +235,7 @@ impl FormAllFieldsApp {
                     label: StyledText::plain("Actions"),
                     kind: FieldKind::ButtonRow {
                         buttons: vec![ButtonRowItem {
+                            spec: None,
                             id: WidgetId::new("run"),
                             label: "Runaction".into(),
                             disabled: false,
@@ -257,6 +258,7 @@ impl FormAllFieldsApp {
                     kind: FieldKind::Toolbar(
                         Toolbar::new(WidgetId::new("toolbar-field")).with_buttons(vec![
                             ToolbarButton::Action {
+                                spec: None,
                                 id: WidgetId::new("build"),
                                 label: "Buildaction".into(),
                                 icon: None,

@@ -160,6 +160,7 @@ impl SidebarDemo {
     fn toolbar(&self) -> Toolbar {
         Toolbar::new(WidgetId::new("gallery:sidebar:toolbar")).with_buttons(vec![
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("gallery:sidebar:add"),
                 label: "".into(),
                 icon: Some("+".into()),
@@ -170,6 +171,7 @@ impl SidebarDemo {
             },
             ToolbarButton::Separator,
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("gallery:sidebar:filter"),
                 label: "Filter".into(),
                 icon: Some("⚙".into()),
@@ -179,6 +181,7 @@ impl SidebarDemo {
                 tooltip: "Toggle filter".into(),
             },
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("gallery:sidebar:clear"),
                 label: "Clear".into(),
                 icon: None,

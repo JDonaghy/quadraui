@@ -240,6 +240,7 @@ mod tests {
             corner: ToastCorner::BottomRight,
             toasts: vec![Toast {
                 actions: vec![ToastButton {
+                    spec: None,
                     id: WidgetId::new("undo"),
                     label: "Undo".into(),
                     primary: false,

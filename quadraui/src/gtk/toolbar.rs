@@ -174,6 +174,7 @@ mod tests {
         Toolbar {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("tb:action"),
                 label: "Refine".into(),
                 icon: None,
@@ -245,6 +246,7 @@ mod tests {
         let bar = Toolbar {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("tb:go"),
                 label: "Go".into(),
                 icon: None,

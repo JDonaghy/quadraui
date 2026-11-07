@@ -1114,6 +1114,7 @@ mod tests {
             "",
             FieldKind::ButtonRow {
                 buttons: vec![ButtonRowItem {
+                    spec: None,
                     id: WidgetId::new("find"),
                     label: "Find".into(), // 4 chars * 6.0 = 24.0
                     disabled: false,
@@ -1315,6 +1316,7 @@ mod tests {
                 "button-row",
                 FieldKind::ButtonRow {
                     buttons: vec![ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("find"),
                         label: "Find".into(),
                         disabled: false,
