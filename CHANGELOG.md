@@ -66,12 +66,13 @@ only a push to `main` runs this workflow.
   dodge the check) isn't an executable, script, shortcut, installer, or
   `.app`/`.pkg`/`.workflow`-style bundle, and rejects everything else (a bare
   filesystem path, `javascript:`, `data:`, …) with
-  `BackendError::Unsupported`. `tui::services::TuiPlatformServices::open_url_result`
-  and `gtk::services::GtkPlatformServices::open_url_result` now run every
-  `url` through it before trying the platform opener, so a bare executable
-  path (`"/Applications/Calculator.app"`, `"C:\\Windows\\System32\\calc.exe"`)
-  is rejected instead of launched. macOS and Win-GUI adopt the same seam in
-  their own follow-up issues.
+  `BackendError::Unsupported`. `tui::services::TuiPlatformServices::open_url_result`,
+  `gtk::services::GtkPlatformServices::open_url_result`, and
+  `win::services::WinPlatformServices::open_url_result` now run every `url`
+  through it before trying the platform opener, so a bare executable path
+  (`"/Applications/Calculator.app"`, `"C:\\Windows\\System32\\calc.exe"`) is
+  rejected instead of launched. macOS adopts the same seam in its own
+  follow-up issue.
 ### Changed
 - `tui::services::TuiPlatformServices::open_url`/`open_url_result` now rejects
   any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
@@ -82,9 +83,8 @@ only a push to `main` runs this workflow.
   an input `validate_open_url` rejects, since the new check happens first.
   **Downstream impact:** a consumer that calls `open_url`/`open_url_result`
   with a bare path or an unlisted scheme on the TUI backend, expecting at
-  least a clickable OSC 8 link, now gets `Unsupported` and no link. macOS and
-  Win-GUI backends are unaffected until their own follow-up issues adopt the
-  same seam.
+  least a clickable OSC 8 link, now gets `Unsupported` and no link. macOS is
+  unaffected until its own follow-up issue adopts the same seam.
 - `gtk::services::GtkPlatformServices::open_url`/`open_url_result` now rejects
   any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
   `BackendError::Unsupported` via the same `validate_open_url` seam, where it
@@ -94,6 +94,15 @@ only a push to `main` runs this workflow.
   that calls `open_url`/`open_url_result` with a bare path or an unlisted
   scheme on the GTK backend now gets `Unsupported` instead of whatever GIO's
   scheme lookup previously did with it.
+- `win::services::WinPlatformServices::open_url`/`open_url_result` now rejects
+  any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
+  `BackendError::Unsupported` via the same `validate_open_url` seam, where it
+  previously forwarded every input (including a bare path like
+  `C:\Windows\System32\calc.exe` or an unlisted scheme) straight to
+  `ShellExecuteW`. **Downstream impact:** a consumer that calls
+  `open_url`/`open_url_result` with a bare path or an unlisted scheme on the
+  Win-GUI backend now gets `Unsupported` instead of `ShellExecuteW` launching
+  it.
 ### Fixed
 - `NamedKey::F(n)` for `n` above 12 (F13-F24) now stringifies to `"F13"`-`"F24"`
   everywhere instead of silently dropping out on some call sites: a single
