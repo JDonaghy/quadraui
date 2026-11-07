@@ -12,7 +12,9 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::{cairo_rgb, set_source};
-use crate::primitives::data_table::{ColumnAlign, DataTable, DataTableLayout, SortDirection};
+use crate::primitives::data_table::{
+    ColumnAlign, DataTable, DataTableLayout, DataTablePaintState, SortDirection,
+};
 use crate::primitives::layout_metrics::pixel_data_table_layout;
 use crate::theme::Theme;
 
@@ -90,19 +92,27 @@ pub fn draw_data_table_with_glyphs(
         glyphs,
         nerd_fonts_enabled,
         1.0,
+        None,
     )
 }
 
 /// Like [`draw_data_table_with_glyphs`], but scales the vertical and
 /// horizontal scrollbars' alpha by `scrollbar_opacity` (`0.0..=1.0`) —
 /// the render-side half of the shared overlay idle-fade seam (see
-/// [`crate::primitives::scrollbar::idle_fade_opacity`]).
-/// `scrollbar_opacity = 1.0` paints byte-for-byte what
+/// [`crate::primitives::scrollbar::idle_fade_opacity`]) — and, when
+/// `scroll_px` is `Some`, paints at a pixel-precise scroll position
+/// instead of only [`DataTable::scroll_offset`]'s whole-row value: the
+/// body rows shift up by the sub-row remainder (via
+/// [`DataTable::effective_scroll_offset`] / [`DataTable::scroll_sub_row_px`]),
+/// clipped to the band below the fixed header, and the vertical
+/// scrollbar thumb tracks the same position. `scrollbar_opacity = 1.0,
+/// scroll_px: None` paints byte-for-byte what
 /// [`draw_data_table_with_glyphs`] always painted. Crate-internal: the
-/// one live caller is [`crate::gtk::GtkBackend::draw_data_table_with_glyphs`],
-/// which threads its own idle-fade opacity through; this stays
-/// `pub(crate)` rather than a new public export since no other backend
-/// or consumer needs to choose an opacity directly.
+/// live callers are [`crate::gtk::GtkBackend::draw_data_table_with_glyphs`]
+/// and [`draw_data_table_with_state`], which thread their own idle-fade
+/// opacity / scroll position through; this stays `pub(crate)` rather
+/// than a new public export since no other backend or consumer needs to
+/// choose an opacity directly.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_data_table_with_opacity(
     cr: &Context,
@@ -118,6 +128,7 @@ pub(crate) fn draw_data_table_with_opacity(
     glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
     nerd_fonts_enabled: bool,
     scrollbar_opacity: f32,
+    scroll_px: Option<f32>,
 ) -> DataTableLayout {
     pango_layout.set_attributes(None);
     let measure = super::toolbar::PangoMeasure {
@@ -132,6 +143,7 @@ pub(crate) fn draw_data_table_with_opacity(
         &measure,
     );
     let header_height = layout.header_height as f64;
+    let footer_h = layout.footer_height as f64;
 
     if width <= 0.0 || height <= 0.0 {
         return layout;
@@ -279,13 +291,35 @@ pub(crate) fn draw_data_table_with_opacity(
     }
 
     // ── Body rows ─────────────────────────────────────────────────────
-    let body_y = y + header_height;
-    let visible = layout
-        .visible_rows
-        .min(table.rows.len().saturating_sub(table.scroll_offset));
+    // `scroll_px` wins over `scroll_offset` when set (see
+    // `DataTable::effective_scroll_offset`); `scroll_sub_row_px` pairs
+    // with it to shift the body up by the sub-row remainder, revealing
+    // one more partially clipped row at the bottom — `scroll_px: None`
+    // always resolves `sub_px` to `0.0`, so `body_y`/`visible` collapse
+    // back to the pre-existing values.
+    let scroll_offset = table.effective_scroll_offset(line_height as f32, scroll_px);
+    let sub_px = table.scroll_sub_row_px(line_height as f32, scroll_px) as f64;
+    let body_y = y + header_height - sub_px;
+    let body_h = (height - header_height - footer_h - layout.h_scrollbar_height as f64).max(0.0);
+    let extra_row = usize::from(sub_px > 0.0);
+    let visible =
+        (layout.visible_rows + extra_row).min(table.rows.len().saturating_sub(scroll_offset));
+
+    // Clip body rows to the band below the fixed header — `sub_px` can
+    // shift the first row's top above `header_height`, and without this
+    // clip its background would paint over the header's bottom edge
+    // instead of appearing to scroll in from underneath it. Gated on
+    // `sub_px > 0.0` so the `scroll_px: None` path never pushes a clip a
+    // pre-existing caller wouldn't expect.
+    let body_clip_active = sub_px > 0.0;
+    if body_clip_active {
+        cr.save().ok();
+        cr.rectangle(x, y + header_height, width, body_h);
+        cr.clip();
+    }
 
     for row_idx in 0..visible {
-        let abs_idx = table.scroll_offset + row_idx;
+        let abs_idx = scroll_offset + row_idx;
         let row = &table.rows[abs_idx];
         let row_y = body_y + row_idx as f64 * line_height;
         let is_selected = table.selected_idx == Some(abs_idx);
@@ -416,8 +450,11 @@ pub(crate) fn draw_data_table_with_opacity(
         }
     }
 
+    if body_clip_active {
+        cr.restore().ok();
+    }
+
     // ── Scrollbar ──────────────────────────────────────────────────────
-    let footer_h = layout.footer_height as f64;
     if table.show_scrollbar
         && table.rows.len() > layout.visible_rows
         && layout.scrollbar_width > 0.0
@@ -429,10 +466,22 @@ pub(crate) fn draw_data_table_with_opacity(
             layout.scrollbar_width,
             (height - header_height - footer_h).max(0.0) as f32,
         );
+        // `scroll_offset` + the sub-row fraction (`sub_px` as a fraction
+        // of `line_height`) — the thumb tracks the same pixel-precise
+        // position the body rows above were painted at. Guarded against
+        // `line_height <= 0.0`: `sub_px` is always `0.0` on the
+        // `scroll_px: None` path, but `0.0 / 0.0` is still `NaN`, which
+        // would corrupt the thumb math even though that path must stay
+        // provably unchanged from the pre-existing `scroll_offset as f32`.
+        let scroll_rows = if line_height > 0.0 {
+            scroll_offset as f32 + (sub_px / line_height) as f32
+        } else {
+            scroll_offset as f32
+        };
         let sb = crate::primitives::scrollbar::Scrollbar::vertical(
             table.id,
             sb_track,
-            table.scroll_offset as f32,
+            scroll_rows,
             table.rows.len() as f32,
             layout.visible_rows as f32,
             line_height as f32,
@@ -596,6 +645,54 @@ pub(crate) fn draw_data_table_with_opacity(
 
     cr.restore().ok();
     layout
+}
+
+/// [`draw_data_table_with_glyphs`], plus — when `state.scroll_px` is
+/// `Some` — a pixel-precise scroll position instead of only
+/// [`DataTable::scroll_offset`]'s whole-row value: the body rows shift
+/// up by the sub-row remainder, clipped to the band below the fixed
+/// header, and the vertical scrollbar thumb tracks the same position
+/// (see [`draw_data_table_with_opacity`]). `state.scroll_px: None`
+/// paints pixel-identically to [`draw_data_table_with_glyphs`]. The
+/// layout this returns doesn't depend on `scroll_px` (unlike
+/// `ListView`/`TreeView`, [`DataTableLayout::visible_rows`] is a plain
+/// viewport/row-height count, not individual row bounds), so there is
+/// no scroll_px-aware layout counterpart to thread it through.
+///
+/// Paints its vertical/horizontal scrollbars at full opacity, matching
+/// [`draw_data_table_with_glyphs`] — [`crate::gtk::GtkBackend`] applies
+/// its own idle-fade opacity via [`draw_data_table_with_opacity`]
+/// directly when it needs both `scroll_px` and a live fade value.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_data_table_with_state(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    table: &DataTable,
+    theme: &Theme,
+    line_height: f64,
+    nerd_fonts_enabled: bool,
+    state: &DataTablePaintState,
+) -> DataTableLayout {
+    draw_data_table_with_opacity(
+        cr,
+        pango_layout,
+        x,
+        y,
+        width,
+        height,
+        table,
+        theme,
+        line_height,
+        state.hovered_idx,
+        None,
+        nerd_fonts_enabled,
+        1.0,
+        state.scroll_px,
+    )
 }
 
 /// Compute layout without painting (for hit-test from handle()).
@@ -783,6 +880,7 @@ mod tests {
                 None,
                 false,
                 opacity,
+                None,
             );
         }
         surface.flush();
@@ -1044,6 +1142,118 @@ mod tests {
         assert!(
             rendered.ends_with('…') && rendered.len() < long_title.len(),
             "overlong header title must paint an ellipsis-truncated prefix, got {rendered:?}"
+        );
+    }
+
+    fn paint_with_state(
+        table: &DataTable,
+        theme: &Theme,
+        state: &DataTablePaintState,
+    ) -> (Vec<u8>, i32, DataTableLayout) {
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let table_layout;
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(theme.background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            table_layout = draw_data_table_with_state(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                table,
+                theme,
+                LINE_H,
+                false,
+                state,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride();
+        let data = surface.data().expect("surface data").to_vec();
+        (data, stride, table_layout)
+    }
+
+    /// `DataTablePaintState::scroll_px: None` must paint pixel-identically
+    /// to [`draw_data_table`] — [`draw_data_table_with_state`] is
+    /// additive, not a behaviour change for the default path.
+    #[test]
+    fn scroll_px_none_paints_identically_to_draw_data_table() {
+        let mut table = overflowing_table();
+        table.selected_idx = Some(0);
+        let theme = Theme::default();
+
+        let (plain_bytes, _, _) = paint(&table, &theme);
+        let (state_bytes, _, _) = paint_with_state(&table, &theme, &DataTablePaintState::default());
+
+        assert_eq!(
+            plain_bytes, state_bytes,
+            "scroll_px: None must paint the same pixels as draw_data_table"
+        );
+    }
+
+    /// A sub-row `scroll_px` shifts the body up by the sub-row remainder,
+    /// revealing one more row early — the "partial first row clipped"
+    /// look of pixel-smooth scrolling.
+    #[test]
+    fn scroll_px_shifts_the_body_above_the_header_boundary() {
+        let mut table = overflowing_table();
+        table.selected_idx = Some(0);
+        let theme = Theme::default();
+        let half = (LINE_H / 2.0) as f32;
+
+        let state = DataTablePaintState::default().with_scroll_px(Some(half));
+        let (scrolled_bytes, stride, layout) = paint_with_state(&table, &theme, &state);
+        let (baseline_bytes, _, _) =
+            paint_with_state(&table, &theme, &DataTablePaintState::default());
+
+        // The selected row's background is alpha-blended (`selection_alpha`)
+        // over `theme.background`, not a solid fill — compute the actual
+        // composited colour `draw_data_table`'s `cr.set_source_rgba` +
+        // `cr.fill()` over the background paint produces.
+        let selected_rgb = rgb(theme
+            .background
+            .blend(theme.selection_bg, theme.selection_alpha as f64));
+
+        // Row 0 is selected and shifted up by `half` (the sub-row
+        // remainder), so it now spans
+        // `[header_height - half, header_height - half + LINE_H)` — probe
+        // just past that shifted bottom edge, which must land on row 1's
+        // (unselected) background. At that same absolute pixel, the
+        // `scroll_px: None` paint (row 0 still at `header_height`) is
+        // still inside row 0's selected band.
+        let probe_y = (layout.header_height as f64 - half as f64 + LINE_H + 1.0) as i32;
+        let probe_x = (W / 2).min(W - 1);
+        let (r, g, b) = pixel(
+            &scrolled_bytes,
+            stride as usize,
+            probe_x,
+            probe_y.min(H - 1),
+        );
+        assert_ne!(
+            (r, g, b),
+            selected_rgb,
+            "pixel just below row 0's shifted bottom edge should show row 1's \
+             background, not the still-selected row 0 a whole-row paint would \
+             show there"
+        );
+
+        let (br, bg, bb) = pixel(
+            &baseline_bytes,
+            stride as usize,
+            probe_x,
+            probe_y.min(H - 1),
+        );
+        assert_eq!(
+            (br, bg, bb),
+            selected_rgb,
+            "the same probe pixel on a scroll_px: None paint must still show \
+             row 0's selected background"
         );
     }
 }

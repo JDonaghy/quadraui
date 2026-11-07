@@ -61,6 +61,43 @@ pub fn gtk_list_layout(
     )
 }
 
+/// Like [`gtk_list_layout`], but threads an explicit pixel-precise
+/// scroll position (`scroll_px`) through to
+/// [`ListView::layout_with_scroll_px`] instead of only
+/// [`ListView::scroll_offset`]'s whole-row value — mirrors
+/// [`crate::primitives::layout_metrics::list_layout`]'s own border-inset
+/// and h-scrollbar reservation math (that shared fn calls
+/// `ListView::layout`, which can't reach the scroll_px-aware method, so
+/// this duplicates its small reservation arithmetic rather than widening
+/// that fn's signature — the same approach
+/// [`super::super::macos::list::mac_list_layout_with_scroll_px`] takes).
+/// `scroll_px: None` produces byte-identical output to [`gtk_list_layout`].
+pub fn gtk_list_layout_with_scroll_px(
+    w: f64,
+    h: f64,
+    list: &ListView,
+    line_height: f64,
+    char_width: f64,
+    scroll_px: Option<f32>,
+) -> ListViewLayout {
+    let border_inset: f64 = if list.bordered { 1.0 } else { 0.0 };
+    let visible_px = (w - border_inset * 2.0).max(0.0);
+    let needs_hscrollbar = list
+        .max_content_width
+        .is_some_and(|n| n as f64 * char_width > visible_px);
+    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
+    let title_h = if list.title.is_some() {
+        line_height as f32
+    } else {
+        0.0
+    };
+    let layout_w = (w - border_inset * 2.0) as f32;
+    let layout_h = (h - border_inset * 2.0 - hscrollbar_h).max(0.0) as f32;
+    list.layout_with_scroll_px(layout_w, layout_h, title_h, scroll_px, |_| {
+        crate::primitives::list::ListItemMeasure::new(line_height as f32)
+    })
+}
+
 /// Draw a [`ListView`] into `(x, y, w, h)` on `cr`.
 ///
 /// Caller owns `layout`'s font choice — the rasteriser doesn't
@@ -117,14 +154,21 @@ pub fn draw_list(
         None,
         None,
         false,
+        None,
     )
 }
 
-/// [`draw_list`], tinting the hovered/pressed row's background —
+/// [`draw_list`], tinting the hovered/pressed row's background, and —
+/// when `scroll_px` is `Some` — painting at a pixel-precise scroll
+/// position instead of only [`ListView::scroll_offset`]'s whole-row
+/// value: the first visible row shifts up by the sub-row remainder
+/// (via [`gtk_list_layout_with_scroll_px`]) and the vertical scrollbar
+/// thumb tracks the same position (via
+/// [`crate::primitives::list::native_surface_paint::paint_with_scroll_px`]).
 /// `hovered_idx` / `pressed_idx` are indices into `list.items`, same as
-/// [`crate::Backend::draw_list_with_state`]. `None` for both paints
-/// byte-for-byte what [`draw_list`] paints. `focus_ring_visible` — see
-/// [`crate::Backend::draw_list_with_state`]'s matching doc.
+/// [`crate::Backend::draw_list_with_state`]. `None`/`None`/`false`/`None`
+/// paints byte-for-byte what [`draw_list`] paints. `focus_ring_visible` —
+/// see [`crate::Backend::draw_list_with_state`]'s matching doc.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_list_with_state(
     cr: &Context,
@@ -141,6 +185,7 @@ pub fn draw_list_with_state(
     hovered_idx: Option<usize>,
     pressed_idx: Option<usize>,
     focus_ring_visible: bool,
+    scroll_px: Option<f32>,
 ) {
     draw_list_impl(
         cr,
@@ -157,6 +202,7 @@ pub fn draw_list_with_state(
         hovered_idx,
         pressed_idx,
         focus_ring_visible,
+        scroll_px,
     )
 }
 
@@ -176,6 +222,7 @@ fn draw_list_impl(
     hovered_idx: Option<usize>,
     pressed_idx: Option<usize>,
     focus_ring_visible: bool,
+    scroll_px: Option<f32>,
 ) {
     if w <= 0.0 || h <= 0.0 {
         return;
@@ -192,7 +239,7 @@ fn draw_list_impl(
     let (cw_px, _) = layout.pixel_size();
     let char_w = cw_px.max(1) as f64;
 
-    let list_layout = gtk_list_layout(w, h, list, line_height, char_w);
+    let list_layout = gtk_list_layout_with_scroll_px(w, h, list, line_height, char_w, scroll_px);
 
     if list.bordered {
         cr.save().ok();
@@ -206,7 +253,7 @@ fn draw_list_impl(
         layout: Some(layout),
         translucent_fill: true,
     };
-    crate::primitives::list::native_surface_paint::paint(
+    crate::primitives::list::native_surface_paint::paint_with_scroll_px(
         list,
         area,
         &list_layout,
@@ -220,6 +267,7 @@ fn draw_list_impl(
         hovered_idx,
         pressed_idx,
         focus_ring_visible,
+        scroll_px,
     );
 
     if list.bordered {
@@ -387,6 +435,130 @@ mod tests {
             "expected the v-scrollbar track `GtkBackend::list_vscrollbar` resolves at \
              ({probe_x}, {probe_y}) to be painted (non-background) by `GtkBackend::draw_list` \
              — paint and hit-test must agree on the track's column width"
+        );
+    }
+
+    fn paint_bytes(list: &ListView, scroll_px: Option<f32>) -> (Vec<u8>, usize) {
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(test_theme().background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_list_with_state(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                list,
+                &test_theme(),
+                &Style::default(),
+                LINE_HEIGHT,
+                false,
+                None,
+                None,
+                false,
+                scroll_px,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data").to_vec();
+        (data, stride)
+    }
+
+    /// `scroll_px: None` must paint pixel-identically to [`draw_list`] —
+    /// `draw_list_with_state` is additive, not a behaviour change for the
+    /// default path.
+    #[test]
+    fn scroll_px_none_paints_identically_to_draw_list() {
+        let list = vlist(30);
+
+        let mut plain_surface =
+            ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&plain_surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(test_theme().background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_list(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                &list,
+                &test_theme(),
+                &Style::default(),
+                LINE_HEIGHT,
+                false,
+            );
+        }
+        plain_surface.flush();
+        let plain_bytes = plain_surface.data().expect("surface data").to_vec();
+
+        let (state_bytes, _) = paint_bytes(&list, None);
+
+        assert_eq!(
+            plain_bytes, state_bytes,
+            "scroll_px: None must paint the same pixels as draw_list"
+        );
+    }
+
+    /// A sub-row `scroll_px` shifts row 0 above the viewport top and
+    /// reveals row 1 one sub-row-remainder early — the "partial first
+    /// row clipped" look of pixel-smooth scrolling.
+    #[test]
+    fn scroll_px_shifts_the_first_row_above_the_viewport_top() {
+        let list = ListView {
+            selected_idx: 0,
+            ..vlist(30)
+        };
+        let half = (LINE_HEIGHT / 2.0) as f32;
+
+        let (scrolled_bytes, stride) = paint_bytes(&list, Some(half));
+        let (baseline_bytes, _) = paint_bytes(&list, None);
+
+        // Row 0 is selected, so probing just past its unscrolled bottom
+        // edge must land on row 1's (unselected) background once the
+        // sub-row shift is applied — at that same absolute pixel, the
+        // `scroll_px: None` paint is still inside row 0's selected band.
+        let theme = test_theme();
+        let probe_y = (half + 1.0) as i32;
+        let probe_x = (W / 2).min(W - 1);
+        let (r, g, b) = pixel(&scrolled_bytes, stride, probe_x, probe_y.min(H - 1));
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "pixel just below row 0's shifted bottom edge should show row 1's \
+             background, not the still-selected row 0 a whole-row paint would \
+             show there"
+        );
+
+        // Prove the other half of the claim: at that exact same absolute
+        // pixel, a `scroll_px: None` paint (today's baseline behaviour)
+        // *is* still inside row 0's selected band — the two assertions
+        // together show the sub-row shift, not some other difference,
+        // moved the boundary.
+        let (br, bg, bb) = pixel(&baseline_bytes, stride, probe_x, probe_y.min(H - 1));
+        assert_eq!(
+            (br, bg, bb),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "the same probe pixel on a scroll_px: None paint must still show \
+             row 0's selected background"
         );
     }
 }
