@@ -283,13 +283,22 @@ pub(crate) fn wrap_text_lines(
     }
 
     // Words remain past `max_lines`: ellipsize the last line so the cut
-    // is visible rather than silently dropped.
+    // is visible rather than silently dropped. If even a bare "…" doesn't
+    // fit `max_width` — unreachable for the cell-unit TUI measurer, but
+    // reachable for a pixel measurer with a very small budget — there is
+    // no in-budget way to show the cut, so the line is left empty rather
+    // than pushing a guaranteed-over-budget "…", matching
+    // `truncate_with_ellipsis`'s own contract for the same degenerate case.
     if idx < words.len() {
         if let Some(last) = lines.last_mut() {
-            while !last.is_empty() && width_of(&format!("{last}…")) > max_width {
-                last.pop();
+            if width_of("…") <= max_width {
+                while !last.is_empty() && width_of(&format!("{last}…")) > max_width {
+                    last.pop();
+                }
+                last.push('…');
+            } else {
+                last.clear();
             }
-            last.push('…');
         }
     }
 
@@ -391,6 +400,26 @@ mod wrap_tests {
     #[test]
     fn empty_text_yields_no_lines() {
         assert!(wrap_text_lines("", 20.0, 3, &chars).is_empty());
+    }
+
+    /// A pixel-unit measurer (unlike the cell-unit TUI one, where the
+    /// ellipsis always costs exactly 1 cell) can make even a bare "…"
+    /// wider than `max_width`. The cap-past-`max_lines` path must not
+    /// respond by pushing a guaranteed-over-budget "…" — it leaves the
+    /// line empty, the same degenerate answer `truncate_with_ellipsis`
+    /// gives when nothing, not even the ellipsis, fits.
+    #[test]
+    fn sub_ellipsis_width_budget_never_overflows() {
+        // Each char (including '…') costs 3 width units; a budget of 2
+        // can't afford even one.
+        let three_per_char = |s: &str| 3.0 * s.chars().count() as f32;
+        let lines = wrap_text_lines("ab cd", 2.0, 1, &three_per_char);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            lines[0], "",
+            "no content fits the budget, including the ellipsis itself"
+        );
+        assert!(three_per_char(&lines[0]) <= 2.0);
     }
 }
 
