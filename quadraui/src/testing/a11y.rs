@@ -332,6 +332,7 @@ mod tests {
 
     fn button(id: &str, label: &str) -> ToolbarButton {
         ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new(id),
             label: label.to_string(),
             icon: None,

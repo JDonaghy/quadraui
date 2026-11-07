@@ -129,18 +129,21 @@ impl FormGroupsApp {
                     kind: FieldKind::ButtonRow {
                         buttons: vec![
                             ButtonRowItem {
+                                spec: None,
                                 id: WidgetId::new("find-next"),
                                 label: "Find Next".into(),
                                 disabled: false,
                                 icon: None,
                             },
                             ButtonRowItem {
+                                spec: None,
                                 id: WidgetId::new("replace-one"),
                                 label: "Replace".into(),
                                 disabled: false,
                                 icon: None,
                             },
                             ButtonRowItem {
+                                spec: None,
                                 id: WidgetId::new("replace-all"),
                                 label: "Replace All".into(),
                                 disabled: self.search_query.is_empty(),
@@ -165,6 +168,7 @@ impl FormGroupsApp {
                     kind: FieldKind::Toolbar(
                         Toolbar::new(WidgetId::new("scope-toolbar")).with_buttons(vec![
                             ToolbarButton::Action {
+                                spec: None,
                                 id: WidgetId::new("scope-ws"),
                                 label: "Workspace".into(),
                                 icon: None,
@@ -174,6 +178,7 @@ impl FormGroupsApp {
                                 tooltip: "Search entire workspace".into(),
                             },
                             ToolbarButton::Action {
+                                spec: None,
                                 id: WidgetId::new("scope-file"),
                                 label: "File".into(),
                                 icon: None,
@@ -183,6 +188,7 @@ impl FormGroupsApp {
                                 tooltip: "Search current file only".into(),
                             },
                             ToolbarButton::Action {
+                                spec: None,
                                 id: WidgetId::new("scope-sel"),
                                 label: "Selection".into(),
                                 icon: None,

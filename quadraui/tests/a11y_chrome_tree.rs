@@ -435,6 +435,7 @@ fn an_open_dialog_is_modal_and_hides_the_rest_of_the_tree() {
                 is_default: true,
                 is_cancel: false,
                 tint: None,
+                spec: None,
             },
             DialogButton {
                 id: WidgetId::new("dialog:cancel"),
@@ -442,6 +443,7 @@ fn an_open_dialog_is_modal_and_hides_the_rest_of_the_tree() {
                 is_default: false,
                 is_cancel: true,
                 tint: None,
+                spec: None,
             },
         ],
         severity: None,

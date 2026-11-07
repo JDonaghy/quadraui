@@ -7287,6 +7287,7 @@ mod tests {
                     id: WidgetId::new("tb"),
                     buttons: vec![
                         ToolbarButton::Action {
+                            spec: None,
                             id: WidgetId::new("reset"),
                             label: "Reset".into(),
                             icon: None,
@@ -7296,6 +7297,7 @@ mod tests {
                             tooltip: String::new(),
                         },
                         ToolbarButton::Action {
+                            spec: None,
                             id: WidgetId::new("export"),
                             label: "Export".into(),
                             icon: None,
@@ -9635,6 +9637,7 @@ mod tests {
         crate::primitives::toolbar::Toolbar {
             id: WidgetId::new("test:toolbar"),
             buttons: vec![crate::primitives::toolbar::ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("test:toolbar:action"),
                 label: "Refine".to_string(),
                 icon: None,

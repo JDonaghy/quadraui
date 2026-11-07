@@ -10426,6 +10426,7 @@ mod tests {
             toolbar: Some(crate::primitives::toolbar::Toolbar {
                 id: WidgetId::new("sb:toolbar"),
                 buttons: vec![ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("sb:refine"),
                     label: "Refine".into(),
                     icon: None,
@@ -10756,6 +10757,7 @@ mod tests {
                 kind: FieldKind::Toolbar(crate::Toolbar {
                     id: WidgetId::new("settings:toolbar:bar"),
                     buttons: vec![ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("settings:toolbar:refine"),
                         label: "Refine".into(),
                         icon: None,
@@ -11110,6 +11112,7 @@ mod tests {
                 kind: FieldKind::Toolbar(crate::Toolbar {
                     id: WidgetId::new("settings:toolbar:bar"),
                     buttons: vec![ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("settings:toolbar:refine"),
                         label: "Refine".into(),
                         icon: None,
@@ -11305,6 +11308,7 @@ mod tests {
         let bar = crate::primitives::toolbar::Toolbar {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("tb:on"),
                 label: "On".into(),
                 icon: None,

@@ -54,6 +54,7 @@ mod tests {
             toolbar: Some(Toolbar {
                 id: WidgetId::new("sb:toolbar"),
                 buttons: vec![ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("refine"),
                     label: "Refine".into(),
                     icon: None,
@@ -226,6 +227,7 @@ mod tests {
             toolbar: Some(Toolbar {
                 id: WidgetId::new("sb:toolbar"),
                 buttons: vec![ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("new-file"),
                     label: String::new(),
                     icon: Some("\u{EAF0}".into()),

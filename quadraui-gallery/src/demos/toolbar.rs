@@ -42,6 +42,7 @@ impl ToolbarDemo {
         Toolbar::new(WidgetId::new("gallery:toolbar"))
             .with_buttons(vec![
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("gallery:toolbar:continue"),
                     label: label("Continue"),
                     icon: Some("▶".into()),
@@ -51,6 +52,7 @@ impl ToolbarDemo {
                     tooltip: "Resume execution".into(),
                 },
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("gallery:toolbar:pause"),
                     label: label("Pause"),
                     icon: Some("⏸".into()),
@@ -61,6 +63,7 @@ impl ToolbarDemo {
                 },
                 ToolbarButton::Separator,
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("gallery:toolbar:filter"),
                     label: label("Filter"),
                     icon: Some("⚙".into()),
@@ -70,6 +73,7 @@ impl ToolbarDemo {
                     tooltip: "Toggle filter".into(),
                 },
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("gallery:toolbar:debug"),
                     label: label("Debug"),
                     // Every button carries an icon so the icon-only

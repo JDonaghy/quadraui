@@ -3169,6 +3169,7 @@ mod tests {
             id: WidgetId::new("sb"),
             toolbar: Some(Toolbar::new(WidgetId::new("sb:toolbar")).with_buttons(vec![
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("refine"),
                     label: "Refine".to_string(),
                     icon: None,
@@ -3268,6 +3269,7 @@ mod tests {
 
         Toolbar::new(WidgetId::new("toolbar:main")).with_buttons(vec![
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("filter"),
                 label: "Filter".to_string(),
                 icon: None,
@@ -3277,6 +3279,7 @@ mod tests {
                 tooltip: String::new(),
             },
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("reset"),
                 label: "Reset".to_string(),
                 icon: None,

@@ -3669,10 +3669,17 @@ impl Backend for TuiBackend {
         // See draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         // Issue #1117: same rationale as `draw_context_menu` just above —
         // the returned `Vec` comes from `layout`, not frame state.
         if let Some(frame) = self.current_frame_mut() {
-            crate::tui::draw_dialog(frame.buffer_mut(), dialog, layout, &theme);
+            crate::tui::draw_dialog_with_nerd_fonts(
+                frame.buffer_mut(),
+                dialog,
+                layout,
+                &theme,
+                nerd_fonts_enabled,
+            );
         } else {
             debug_assert!(
                 false,
@@ -5930,6 +5937,7 @@ mod tests {
             body: vec![crate::StyledText::plain("Really?")],
             table: None,
             buttons: vec![crate::DialogButton {
+                spec: None,
                 id: WidgetId::new("ok"),
                 label: "OK".into(),
                 is_default: true,

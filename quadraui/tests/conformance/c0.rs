@@ -1070,6 +1070,7 @@ pub const CASES: &[Case] = &[
                 title: StyledText::plain("Dialog"),
                 body: vec![StyledText::plain("c0dlgb")],
                 buttons: vec![DialogButton {
+                    spec: None,
                     id: id("dialog-ok"),
                     label: "OK".to_string(),
                     is_default: true,
@@ -1511,6 +1512,7 @@ pub const CASES: &[Case] = &[
         paint: |b, area| {
             let lh = b.line_height();
             let bar = Toolbar::new(id("toolbar")).with_buttons(vec![ToolbarButton::Action {
+                spec: None,
                 id: id("toolbar-button"),
                 label: "c0tbar".to_string(),
                 icon: None,
@@ -1539,6 +1541,7 @@ pub const CASES: &[Case] = &[
             let lh = b.line_height();
             let bar =
                 Toolbar::new(id("toolbar-valign")).with_buttons(vec![ToolbarButton::Action {
+                    spec: None,
                     id: id("toolbar-valign-button"),
                     label: "c0tbva".to_string(),
                     icon: None,
@@ -1563,6 +1566,7 @@ pub const CASES: &[Case] = &[
         paint: |b, area| {
             let toolbar =
                 Toolbar::new(id("sidebar-toolbar")).with_buttons(vec![ToolbarButton::Action {
+                    spec: None,
                     id: id("sidebar-toolbar-button"),
                     label: "c0sbpn".to_string(),
                     icon: None,

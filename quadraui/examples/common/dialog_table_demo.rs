@@ -44,6 +44,7 @@ impl DialogTableDemo {
                 column_widths: None,
             }),
             buttons: vec![DialogButton {
+                spec: None,
                 id: WidgetId::new("close"),
                 label: "Close".into(),
                 is_default: true,

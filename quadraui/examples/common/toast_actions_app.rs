@@ -97,11 +97,13 @@ fn install_toast(n: usize) -> Toast {
         severity: ToastSeverity::Info,
         actions: vec![
             ToastButton {
+                spec: None,
                 id: WidgetId::new(format!("install-{n}:install")),
                 label: "Install".into(),
                 primary: true,
             },
             ToastButton {
+                spec: None,
                 id: WidgetId::new(format!("install-{n}:dont-ask")),
                 label: "Don't ask again".into(),
                 primary: false,

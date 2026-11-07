@@ -141,6 +141,7 @@ impl DialogTable {
 ///         is_default: true,
 ///         is_cancel: false,
 ///         tint: None,
+///         spec: None,
 ///     }],
 ///     severity: None,
 ///     vertical_buttons: false,
@@ -167,7 +168,10 @@ impl DialogTable {
 /// let ok = layout.visible_buttons[0].bounds;
 /// assert_eq!(layout.hit_test(ok.x, ok.y), DialogHit::Button(dialog.buttons[0].id.clone()));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Eq`: [`DialogButton`] carries an `f32`-bearing [`crate::ButtonSpec`]
+/// override, which has no total order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dialog {
     pub id: WidgetId,
     pub title: StyledText,
@@ -207,7 +211,10 @@ pub struct Dialog {
 }
 
 /// Content of the slot rendered between the body text and the button row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Eq`: [`Toolbar`]/[`DialogButton`] each carry an `f32`-bearing
+/// [`crate::ButtonSpec`] override, which has no total order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DialogInput {
     /// Single-line text field (rename prompts, input-required confirms).
     TextInput(DialogTextInput),
@@ -240,7 +247,10 @@ pub enum DialogSeverity {
 }
 
 /// One button on a dialog.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Eq`: [`Self::spec`] carries a [`crate::ButtonSpec`], which has an
+/// `f32` (`icon_gap`) with no total order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DialogButton {
     pub id: WidgetId,
     pub label: String,
@@ -257,6 +267,32 @@ pub struct DialogButton {
     /// `None` = theme default.
     #[serde(default)]
     pub tint: Option<Color>,
+    /// Optional [`crate::ButtonSpec`] override, carrying the B3a
+    /// vocabulary (variant intent — e.g. [`crate::ButtonVariant::Danger`]
+    /// for "Move to Trash" — icon, icon placement/gap, a tooltip) this
+    /// button's own legacy fields above can't express. `None` (the
+    /// default — every pre-existing construction site) keeps today's
+    /// plain-highlighted-row rendering; see [`Self::resolved_button_spec`].
+    #[serde(default)]
+    pub spec: Option<crate::primitives::button::ButtonSpec>,
+}
+
+impl DialogButton {
+    /// This button's explicit [`Self::spec`] override when set, otherwise
+    /// one derived from its legacy `is_default` field (default → primary,
+    /// otherwise secondary) — see that field's own "deprecate-first" doc.
+    pub fn resolved_button_spec(&self) -> crate::primitives::button::ButtonSpec {
+        if let Some(spec) = &self.spec {
+            return spec.clone();
+        }
+        let mut derived = crate::primitives::button::ButtonSpec::new(self.label.clone());
+        derived.variant = if self.is_default {
+            crate::primitives::button::ButtonVariant::Primary
+        } else {
+            crate::primitives::button::ButtonVariant::Secondary
+        };
+        derived
+    }
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
@@ -1081,6 +1117,7 @@ pub(crate) mod native_surface_paint {
                 title: StyledText::plain("Confirm"),
                 body: vec![],
                 buttons: vec![DialogButton {
+                    spec: None,
                     id: WidgetId::new("dialog:ok"),
                     label: "OK".to_string(),
                     is_default: true,
@@ -1179,6 +1216,7 @@ mod tests {
 
     fn btn(id: &str) -> DialogButton {
         DialogButton {
+            spec: None,
             id: WidgetId::new(id),
             label: id.to_string(),
             is_default: false,
@@ -1222,6 +1260,7 @@ mod tests {
             id: WidgetId::new("body-tb"),
             buttons: vec![
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("preview"),
                     label: "Preview".into(),
                     icon: None,
@@ -1232,6 +1271,7 @@ mod tests {
                 },
                 ToolbarButton::Separator,
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("apply"),
                     label: "Apply".into(),
                     icon: None,
@@ -1256,6 +1296,7 @@ mod tests {
         let d = base_dialog(Some(DialogInput::Toolbar(Toolbar {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("a"),
                 label: "A".into(),
                 icon: None,
@@ -1311,6 +1352,7 @@ mod tests {
         let d = base_dialog(Some(DialogInput::Toolbar(Toolbar {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("preview"),
                 label: "Preview".into(),
                 icon: None,
@@ -1526,6 +1568,7 @@ mod tests {
             ],
             buttons: vec![
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("save"),
                     label: "Save".into(),
                     is_default: true,
@@ -1533,6 +1576,7 @@ mod tests {
                     tint: None,
                 },
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("cancel"),
                     label: "Cancel".into(),
                     is_default: false,
@@ -1601,6 +1645,7 @@ mod tests {
 
     fn mk_dialog_button(id: &str, label: &str) -> DialogButton {
         DialogButton {
+            spec: None,
             id: WidgetId::new(id),
             label: label.to_string(),
             is_default: false,
@@ -1970,5 +2015,61 @@ mod tests {
         assert_eq!(measured.button_row_height, estimated.button_row_height);
         assert_eq!(measured.button_gap, estimated.button_gap);
         assert_eq!(measured.padding, estimated.padding);
+    }
+
+    // ── B3b: ButtonSpec seam ─────────────────────────────────────────────
+
+    #[test]
+    fn default_button_without_spec_derives_a_primary_spec() {
+        let btn = DialogButton {
+            id: WidgetId::new("dialog:ok"),
+            label: "OK".to_string(),
+            is_default: true,
+            is_cancel: false,
+            tint: None,
+            spec: None,
+        };
+        let spec = btn.resolved_button_spec();
+        assert_eq!(spec.label, "OK");
+        assert_eq!(
+            spec.variant,
+            crate::primitives::button::ButtonVariant::Primary
+        );
+    }
+
+    #[test]
+    fn non_default_button_without_spec_derives_a_secondary_spec() {
+        let btn = DialogButton {
+            id: WidgetId::new("dialog:cancel"),
+            label: "Cancel".to_string(),
+            is_default: false,
+            is_cancel: true,
+            tint: None,
+            spec: None,
+        };
+        let spec = btn.resolved_button_spec();
+        assert_eq!(
+            spec.variant,
+            crate::primitives::button::ButtonVariant::Secondary
+        );
+    }
+
+    /// A destructive dialog button carries an explicit `Danger` spec,
+    /// which wins outright over the legacy `is_default`-derived variant.
+    #[test]
+    fn button_with_explicit_danger_spec_overrides_the_legacy_fields() {
+        let mut explicit = crate::primitives::button::ButtonSpec::new("Move to Trash");
+        explicit.variant = crate::primitives::button::ButtonVariant::Danger;
+        explicit.icon = Some(crate::types::Icon::new("\u{f071}", "!"));
+        let btn = DialogButton {
+            id: WidgetId::new("dialog:delete"),
+            label: "Delete".to_string(),
+            is_default: true,
+            is_cancel: false,
+            tint: None,
+            spec: Some(explicit.clone()),
+        };
+
+        assert_eq!(btn.resolved_button_spec(), explicit);
     }
 }
