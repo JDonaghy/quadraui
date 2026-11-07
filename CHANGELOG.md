@@ -58,6 +58,8 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+
+## [0.9.0] - 2026-11-07
 ### Added
 - `quadraui-binding-core::services` — a language-neutral wrapper over every
   `PlatformServices` seam named in the bindings-parity epic's "missing in
