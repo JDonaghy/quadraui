@@ -58,6 +58,17 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Added
+- `crate::desktop::validate_open_url` — a backend-neutral seam that checks a
+  `PlatformServices::open_url` input before any opener spawns it: accepts
+  `http:`/`https:`/`mailto:` unconditionally, accepts `file:` only when the
+  target isn't an executable or `.app` bundle, and rejects everything else
+  (a bare filesystem path, `javascript:`, `data:`, …) with
+  `BackendError::Unsupported`. `tui::services::TuiPlatformServices::open_url_result`
+  now runs every `url` through it before trying the platform opener, so a
+  bare executable path (`"/Applications/Calculator.app"`,
+  `"C:\\Windows\\System32\\calc.exe"`) is rejected instead of launched. GTK,
+  macOS, and Win-GUI adopt the same seam in their own follow-up issues.
 ### Fixed
 - `NamedKey::F(n)` for `n` above 12 (F13-F24) now stringifies to `"F13"`-`"F24"`
   everywhere instead of silently dropping out on some call sites: a single
