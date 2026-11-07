@@ -1326,8 +1326,11 @@ mod tests {
     #[test]
     fn scroll_px_shifts_the_first_row_above_the_viewport_top() {
         let tree = overflowing_tree();
-        // Leaf/branch rows pitch at `(line_height * 1.4).round()` — half
-        // of that real painted pitch, not half of `LINE_HEIGHT`.
+        // `tree_row_pitch` resolves the real painted pitch — here,
+        // `TreeStyle::default().row_height` (22px), not `LINE_HEIGHT`
+        // scaled by the leaf/branch 1.4x multiplier that applies only
+        // when `row_height` is unset — so half of *that*, not half of
+        // `LINE_HEIGHT`, is the sub-row shift under test.
         let row_h = crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT) as f32;
         let half = row_h / 2.0;
 
@@ -1341,7 +1344,12 @@ mod tests {
         let theme = test_theme();
         let probe_y = (half + 1.0) as i32;
         let probe_x = (W / 2).min(W - 1);
-        let (r, g, b) = pixel(&scrolled_bytes, stride, probe_x, probe_y.min(H - 1));
+        assert!(
+            probe_y < H,
+            "probe_y ({probe_y}) must be inside the {H}px-tall viewport, or this test \
+             probes the wrong pixel instead of failing loudly"
+        );
+        let (r, g, b) = pixel(&scrolled_bytes, stride, probe_x, probe_y);
         assert_ne!(
             (r, g, b),
             (
@@ -1359,7 +1367,7 @@ mod tests {
         // *is* still inside row 0's selected band — the two assertions
         // together show the sub-row shift, not some other difference,
         // moved the boundary.
-        let (br, bg, bb) = pixel(&baseline_bytes, stride, probe_x, probe_y.min(H - 1));
+        let (br, bg, bb) = pixel(&baseline_bytes, stride, probe_x, probe_y);
         assert_eq!(
             (br, bg, bb),
             (
@@ -1369,6 +1377,121 @@ mod tests {
             ),
             "the same probe pixel on a scroll_px: None paint must still show \
              row 0's selected background"
+        );
+    }
+
+    /// End-to-end: a fractional (sub-integer) wheel delta fed through
+    /// [`crate::compose::TreeController`] must land as a sub-row offset
+    /// in what `GtkBackend` actually paints, using
+    /// [`crate::Backend::tree_scroll_row_height`]'s real painted pitch
+    /// as the row↔pixel basis, not `line_height()`.
+    ///
+    /// GTK's `EventControllerScroll::dy` already arrives in row-notch
+    /// units (`Backend::wheel_delta_rows`'s trait default is identity
+    /// here, unlike macOS's points-based delta), so a "fractional wheel
+    /// delta" on GTK is a `delta.y` that is itself a non-integer number
+    /// of rows (`-0.5`, half a notch) rather than a pixel quantity — the
+    /// trackpad case `TreeController::scroll_by_wheel`'s doc calls out.
+    /// `row_h` and `line_h` differ (`TreeStyle::default().row_height`
+    /// vs. the font metric), so this also pins
+    /// `GtkBackend::tree_scroll_row_height` as the basis `scroll_px`
+    /// actually lands on, not a wrong-basis value that would happen to
+    /// coincide.
+    #[test]
+    fn wheel_scroll_feeds_a_fractional_row_delta_into_the_painted_scroll_px_end_to_end() {
+        use crate::compose::TreeController;
+        use crate::gtk::GtkBackend;
+        use crate::Backend;
+        use crate::UiEvent;
+
+        let theme = test_theme();
+        let mut backend = GtkBackend::new();
+        backend.set_current_theme(theme);
+        backend.set_current_line_height(LINE_HEIGHT);
+
+        let probe_tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        let row_h = backend.tree_scroll_row_height(&probe_tree);
+        let line_h = backend.line_height();
+        assert!(
+            row_h != line_h,
+            "this test needs the tree's real pitch to differ from line_height() \
+             to be a discriminating regression guard, got row_h={row_h} line_h={line_h}"
+        );
+
+        // A viewport tall enough for exactly two rows, so the tree's
+        // third row leaves one whole row of scrollable range — a
+        // viewport that already fits every row would clamp
+        // `scroll_by_wheel`'s `max_px` to zero and this test would
+        // trivially pass without exercising the clamp at all.
+        let rect = QRect::new(0.0, 0.0, W as f32, row_h * 2.0);
+
+        let mut tc = TreeController::new("t");
+        tc.set_rows(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        tc.set_selected_path(Some(vec![0]));
+
+        // Half a wheel notch — GTK's own fractional-trackpad-delta case —
+        // scrolling the content down (row 0 shifts up).
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -0.5),
+            position: crate::Point::new(5.0, 5.0),
+        };
+        tc.handle(&ev, &mut backend, rect);
+
+        assert_eq!(
+            tc.scroll_offset(),
+            0,
+            "half a row's wheel delta must not advance scroll_offset to a whole row"
+        );
+        let scroll_px = tc
+            .scroll_px()
+            .expect("a wheel scroll must accumulate scroll_px");
+        let expected_px = 0.5 * row_h;
+        assert!(
+            (scroll_px - expected_px).abs() < 0.01,
+            "scroll_px should land on half the real row pitch ({expected_px}), \
+             got {scroll_px} — a wrong basis (e.g. line_height={line_h}) would \
+             land on a different value"
+        );
+
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                tc.render(b, rect);
+            });
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        // Row 0 (selected) should now be shifted up by `expected_px`
+        // (half a row pitch), so the probe pixel just past its shifted
+        // bottom edge shows row 1's unselected background — the same
+        // assertion `scroll_px_shifts_the_first_row_above_the_viewport_top`
+        // makes against a hand-built layout, now proven against the real
+        // wheel-driven controller + painter round trip.
+        let probe_y = (expected_px + 1.0) as i32;
+        let probe_x = (W / 2).min(W - 1);
+        assert!(
+            probe_y < H,
+            "probe_y ({probe_y}) must be inside the {H}px-tall viewport, or this test \
+             probes the wrong pixel instead of failing loudly"
+        );
+        let (r, g, b) = pixel(&data, stride, probe_x, probe_y);
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "pixel just below row 0's wheel-shifted bottom edge should show row \
+             1's background, not the still-selected row 0 a whole-row paint \
+             would show there"
         );
     }
 }

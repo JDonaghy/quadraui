@@ -1229,12 +1229,12 @@ mod tests {
         // still inside row 0's selected band.
         let probe_y = (layout.header_height as f64 - half as f64 + LINE_H + 1.0) as i32;
         let probe_x = (W / 2).min(W - 1);
-        let (r, g, b) = pixel(
-            &scrolled_bytes,
-            stride as usize,
-            probe_x,
-            probe_y.min(H - 1),
+        assert!(
+            probe_y < H,
+            "probe_y ({probe_y}) must be inside the {H}px-tall viewport, or this test \
+             probes the wrong pixel instead of failing loudly"
         );
+        let (r, g, b) = pixel(&scrolled_bytes, stride as usize, probe_x, probe_y);
         assert_ne!(
             (r, g, b),
             selected_rgb,
@@ -1243,12 +1243,7 @@ mod tests {
              show there"
         );
 
-        let (br, bg, bb) = pixel(
-            &baseline_bytes,
-            stride as usize,
-            probe_x,
-            probe_y.min(H - 1),
-        );
+        let (br, bg, bb) = pixel(&baseline_bytes, stride as usize, probe_x, probe_y);
         assert_eq!(
             (br, bg, bb),
             selected_rgb,

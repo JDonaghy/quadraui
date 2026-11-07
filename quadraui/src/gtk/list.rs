@@ -515,10 +515,7 @@ mod tests {
     /// row clipped" look of pixel-smooth scrolling.
     #[test]
     fn scroll_px_shifts_the_first_row_above_the_viewport_top() {
-        let list = ListView {
-            selected_idx: 0,
-            ..vlist(30)
-        };
+        let list = vlist(30); // `vlist` already seeds `selected_idx: 0`.
         let half = (LINE_HEIGHT / 2.0) as f32;
 
         let (scrolled_bytes, stride) = paint_bytes(&list, Some(half));
@@ -531,7 +528,12 @@ mod tests {
         let theme = test_theme();
         let probe_y = (half + 1.0) as i32;
         let probe_x = (W / 2).min(W - 1);
-        let (r, g, b) = pixel(&scrolled_bytes, stride, probe_x, probe_y.min(H - 1));
+        assert!(
+            probe_y < H,
+            "probe_y ({probe_y}) must be inside the {H}px-tall viewport, or this test \
+             probes the wrong pixel instead of failing loudly"
+        );
+        let (r, g, b) = pixel(&scrolled_bytes, stride, probe_x, probe_y);
         assert_ne!(
             (r, g, b),
             (
@@ -549,7 +551,7 @@ mod tests {
         // *is* still inside row 0's selected band — the two assertions
         // together show the sub-row shift, not some other difference,
         // moved the boundary.
-        let (br, bg, bb) = pixel(&baseline_bytes, stride, probe_x, probe_y.min(H - 1));
+        let (br, bg, bb) = pixel(&baseline_bytes, stride, probe_x, probe_y);
         assert_eq!(
             (br, bg, bb),
             (
