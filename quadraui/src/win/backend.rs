@@ -1080,6 +1080,17 @@ impl WinBackend {
         // for why this can't just be read off `self.hwnd` from inside the closure.
         self.hwnd_raw
             .store(hwnd.0 as isize, std::sync::atomic::Ordering::Release);
+        // A waker called before this point (from `AppLogic::setup`, or a
+        // background thread racing window creation) queued its payload but
+        // had no window to nudge, so nothing would ever drain it. Post one
+        // wake now that the window exists; `wndproc`'s handler drains
+        // whatever is queued, and an empty queue makes it a no-op.
+        //
+        // SAFETY: `hwnd` is the live window this function was called with;
+        // `PostMessageW` only enqueues a message for it.
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_QUADRAUI_USER_EVENT, WPARAM(0), LPARAM(0));
+        }
         // Give `WinPlatformServices` the live window so file dialogs
         // open parented to it and notifications have an owning `HWND` —
         // mirrors `GtkBackend::set_window` calling

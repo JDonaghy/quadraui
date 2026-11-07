@@ -292,6 +292,11 @@ only a push to `main` runs this workflow.
   method) in `vimcode/src/render/welcome.rs`.
 
 ### Fixed
+- Win `Backend::waker` payloads queued before the window existed (from
+  `AppLogic::setup`, or a background thread racing window creation) are now
+  delivered: `WinBackend::attach_surface` posts one wake once the `HWND` is
+  live, so `wndproc` drains the pending `UiEvent::User` queue instead of
+  leaving it stranded until some later wake.
 - GTK `Backend::draw_focus_ring` (`gtk::backend`) no longer strokes over a
   tooltip or toast painted earlier the same frame: `gtk::run::render_frame`
   paints the generic tab-stop focus ring *after* `AppLogic::render` returns,
