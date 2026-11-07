@@ -1097,13 +1097,27 @@ const OPEN_URL_SAFE_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
 
 /// File extensions [`validate_open_url`] treats as "launches code or an
 /// app bundle" rather than "opens a document", even under the otherwise-
-/// allowed `file:` scheme. `app` covers a macOS bundle (a directory, not
-/// a single file, but every opener resolves it the same way it resolves a
-/// file target); the rest cover a Windows executable, script, or
-/// installer, plus a Linux `.desktop` launcher.
+/// allowed `file:` scheme. `app`, `pkg`, `webloc`, `scpt`, `terminal`, and
+/// `workflow` cover macOS bundles/launchers (a directory, not a single
+/// file, in `app`'s case, but every opener resolves it the same way it
+/// resolves a file target); `exe`, `bat`, `cmd`, `com`, `scr`, `msi`,
+/// `command`, `sh`, `lnk`, `hta`, `vbs`, `vbe`, `js`, `jse`, `wsf`, `ps1`,
+/// `pif`, `cpl`, `msc`, `reg`, and `jar` cover a Windows/cross-platform
+/// executable, script, shortcut, or installer; `desktop` covers a Linux
+/// launcher.
+///
+/// This is a denylist on the *last path segment's extension* and is a
+/// known-incomplete approximation, not a complete "is this executable"
+/// test: on Unix, the executable bit (not a suffix) is what the kernel
+/// actually honors, so an extension-less local script with the exec bit
+/// set and a shebang (or a well-known binary like `/usr/bin/xterm`) is not
+/// caught here. Closing that gap needs a filesystem `stat` on the
+/// resolved target, which is out of scope for a pure string check.
 #[cfg(feature = "tui")]
-const OPEN_URL_EXECUTABLE_EXTENSIONS: [&str; 10] = [
-    "exe", "bat", "cmd", "com", "scr", "msi", "app", "command", "sh", "desktop",
+const OPEN_URL_EXECUTABLE_EXTENSIONS: [&str; 28] = [
+    "exe", "bat", "cmd", "com", "scr", "msi", "app", "command", "sh", "desktop", "lnk", "hta",
+    "vbs", "vbe", "js", "jse", "wsf", "ps1", "pif", "cpl", "msc", "reg", "jar", "pkg", "webloc",
+    "scpt", "terminal", "workflow",
 ];
 
 /// Validate that `url` is safe to hand to [`open_with_default`]/
@@ -1116,7 +1130,8 @@ const OPEN_URL_EXECUTABLE_EXTENSIONS: [&str; 10] = [
 ///
 /// Accepts `http:`, `https:`, and `mailto:` unconditionally
 /// ([`OPEN_URL_SAFE_SCHEMES`]). Accepts `file:` only when the target's
-/// last path segment does not end in one of
+/// last path segment, after percent-decoding
+/// ([`open_url_target_is_executable`]), does not end in one of
 /// [`OPEN_URL_EXECUTABLE_EXTENSIONS`]. Rejects everything else with
 /// [`crate::backend::BackendError::Unsupported`]:
 /// - a bare filesystem path with no scheme at all, including a Windows
@@ -1144,20 +1159,79 @@ pub(crate) fn validate_open_url(url: &str) -> crate::backend::ServiceResult<()> 
 /// Whether a `file:` URL's target (everything after the scheme's `:`,
 /// query/fragment included) names something in
 /// [`OPEN_URL_EXECUTABLE_EXTENSIONS`] — the check [`validate_open_url`]'s
-/// `file` arm runs. Strips a trailing `?query`/`#fragment` and any
-/// trailing path separators before looking at the final segment's
-/// extension, so `file:///Applications/Calculator.app/` and
+/// `file` arm runs. Percent-decodes the target first
+/// ([`percent_decode_fully`]) so a caller cannot dodge the check by
+/// encoding the dot or the extension itself (`Calculator%2Eapp`,
+/// `run.e%78e`) — every opener this crate hands a `file:` URL to
+/// (`open`/`xdg-open`/`ShellExecuteW`) resolves it through a URL parser
+/// that performs the same decoding before touching the filesystem, so
+/// checking the raw, still-encoded text would validate a different string
+/// than the one that actually gets opened. Then strips a trailing
+/// `?query`/`#fragment` and any trailing path separators before looking
+/// at the final segment's extension, so
+/// `file:///Applications/Calculator.app/` and
 /// `file:///C:/tmp/run.exe?x=1` are both caught.
 #[cfg(feature = "tui")]
 fn open_url_target_is_executable(target: &str) -> bool {
-    let path_part = target.split(['?', '#']).next().unwrap_or(target);
+    let decoded = percent_decode_fully(target);
+    let path_part = decoded.split(['?', '#']).next().unwrap_or(&decoded);
     let trimmed = path_part.trim_end_matches('/');
-    let last_segment = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    let last_segment = trimmed.rsplit('/').next().expect(
+        "str::rsplit always yields at least one item, even for an empty or separator-only input",
+    );
     let Some((_, ext)) = last_segment.rsplit_once('.') else {
         return false;
     };
     let ext_lower = ext.to_ascii_lowercase();
     OPEN_URL_EXECUTABLE_EXTENSIONS.contains(&ext_lower.as_str())
+}
+
+/// Decode `%XX` percent-escapes in `s`, repeating until a pass changes
+/// nothing or a small iteration cap is hit, so a doubly-encoded escape
+/// (`%2561` → `%61` → `a`) cannot slip past a single decode pass the way
+/// it slipped past [`open_url_target_is_executable`] having no decode
+/// step at all. An invalid or truncated `%` escape (not followed by two
+/// hex digits) is left as literal text rather than treated as an error:
+/// this function backs a conservative security check, not a strict URL
+/// parser, so "decode what's decodable, leave the rest alone" is the
+/// right failure mode — it only ever makes the executable check see
+/// *more* of the target, never less.
+#[cfg(feature = "tui")]
+fn percent_decode_fully(s: &str) -> std::borrow::Cow<'_, str> {
+    fn decode_once(s: &str) -> Option<String> {
+        if !s.contains('%') {
+            return None;
+        }
+        let bytes = s.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        let mut changed = false;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    out.push((hi * 16 + lo) as u8);
+                    i += 3;
+                    changed = true;
+                    continue;
+                }
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+        changed.then(|| String::from_utf8_lossy(&out).into_owned())
+    }
+
+    const MAX_PASSES: u8 = 4;
+    let mut current = std::borrow::Cow::Borrowed(s);
+    for _ in 0..MAX_PASSES {
+        match decode_once(&current) {
+            Some(next) => current = std::borrow::Cow::Owned(next),
+            None => break,
+        }
+    }
+    current
 }
 
 #[cfg(all(test, feature = "tui"))]
@@ -1167,14 +1241,14 @@ mod validate_open_url_tests {
 
     #[test]
     fn accepts_http_https_and_mailto() {
-        assert_eq!(validate_open_url("http://example.com/2141"), Ok(()));
-        assert_eq!(validate_open_url("https://example.com/2141"), Ok(()));
+        assert_eq!(validate_open_url("http://example.com/docs"), Ok(()));
+        assert_eq!(validate_open_url("https://example.com/docs"), Ok(()));
         assert_eq!(validate_open_url("mailto:user@example.com"), Ok(()));
     }
 
     #[test]
     fn accepts_scheme_case_insensitively() {
-        assert_eq!(validate_open_url("HTTPS://example.com/2141"), Ok(()));
+        assert_eq!(validate_open_url("HTTPS://example.com/docs"), Ok(()));
     }
 
     #[test]
@@ -1236,6 +1310,50 @@ mod validate_open_url_tests {
         assert_eq!(
             validate_open_url("data:text/html,<script>alert(1)</script>"),
             Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn rejects_a_file_url_with_a_percent_encoded_dot_in_a_bundle_name() {
+        // "Calculator%2Eapp" has no literal `.`, so a check against the raw
+        // text would miss it; every opener this validates for decodes the
+        // percent-escape before resolving the path, so the check must too.
+        assert_eq!(
+            validate_open_url("file:///Applications/Calculator%2Eapp"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn rejects_a_file_url_with_a_percent_encoded_executable_extension() {
+        assert_eq!(
+            validate_open_url("file:///C:/tmp/run%2Eexe"),
+            Err(BackendError::Unsupported)
+        );
+        // The extension's own letters percent-encoded, not just the dot.
+        assert_eq!(
+            validate_open_url("file:///C:/tmp/run.e%78e"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn rejects_a_file_url_with_a_doubly_percent_encoded_extension() {
+        // `%2561` decodes to `%61` on the first pass and `a` on the second;
+        // a single decode pass would still miss this.
+        assert_eq!(
+            validate_open_url("file:///tmp/run.ex%2565"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn accepts_a_file_url_with_an_unrelated_percent_escape() {
+        // A percent-escaped space in an ordinary document name must not be
+        // rejected just because it contains a `%`.
+        assert_eq!(
+            validate_open_url("file:///home/user/My%20Report.pdf"),
+            Ok(())
         );
     }
 }

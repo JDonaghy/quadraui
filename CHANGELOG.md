@@ -62,13 +62,28 @@ only a push to `main` runs this workflow.
 - `crate::desktop::validate_open_url` — a backend-neutral seam that checks a
   `PlatformServices::open_url` input before any opener spawns it: accepts
   `http:`/`https:`/`mailto:` unconditionally, accepts `file:` only when the
-  target isn't an executable or `.app` bundle, and rejects everything else
-  (a bare filesystem path, `javascript:`, `data:`, …) with
+  target (after percent-decoding, so `Calculator%2Eapp`/`run%2Eexe` can't
+  dodge the check) isn't an executable, script, shortcut, installer, or
+  `.app`/`.pkg`/`.workflow`-style bundle, and rejects everything else (a bare
+  filesystem path, `javascript:`, `data:`, …) with
   `BackendError::Unsupported`. `tui::services::TuiPlatformServices::open_url_result`
   now runs every `url` through it before trying the platform opener, so a
   bare executable path (`"/Applications/Calculator.app"`,
   `"C:\\Windows\\System32\\calc.exe"`) is rejected instead of launched. GTK,
   macOS, and Win-GUI adopt the same seam in their own follow-up issues.
+### Changed
+- `tui::services::TuiPlatformServices::open_url`/`open_url_result` now rejects
+  any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
+  `BackendError::Unsupported`, where it previously forwarded every input
+  (including a bare path or an unlisted scheme like `ftp:`/`vscode:`/`tel:`)
+  straight to the OS opener and, on rejection from the opener itself, fell
+  back to an OSC 8 terminal hyperlink. That OSC 8 fallback no longer runs for
+  an input `validate_open_url` rejects, since the new check happens first.
+  **Downstream impact:** a consumer that calls `open_url`/`open_url_result`
+  with a bare path or an unlisted scheme on the TUI backend, expecting at
+  least a clickable OSC 8 link, now gets `Unsupported` and no link. GTK,
+  macOS, and Win-GUI backends are unaffected until their own follow-up issues
+  adopt the same seam.
 ### Fixed
 - `NamedKey::F(n)` for `n` above 12 (F13-F24) now stringifies to `"F13"`-`"F24"`
   everywhere instead of silently dropping out on some call sites: a single
