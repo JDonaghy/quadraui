@@ -6615,6 +6615,13 @@ mod tests {
             key_to_activity_bar_string(&Key::Named(NamedKey::Down)),
             "Down"
         );
+        // F13+ round-trips to "F13" rather than collapsing to a generic
+        // placeholder — the shared `NamedKey::name` table has no F-key
+        // upper bound.
+        assert_eq!(
+            key_to_activity_bar_string(&Key::Named(NamedKey::F(13))),
+            "F13"
+        );
     }
 
     // ── coalesce_mouse_moved tests ────────────────────────────────────────────

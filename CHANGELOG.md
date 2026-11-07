@@ -58,6 +58,18 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Fixed
+- `NamedKey::F(n)` for `n` above 12 (F13-F24) now stringifies to `"F13"`-`"F24"`
+  everywhere instead of silently dropping out on some call sites: a single
+  `NamedKey::name()` table in `quadraui::event` backs `accelerator::
+  key_to_binding_name`, `primitives::activity_bar::key_to_activity_bar_string`,
+  `compose::form_controller`'s `DatePicker` key dispatch, and
+  `quadraui-binding-core::semantic::key_to_focus_string`, so a GTK/Win
+  `Ctrl+F13` key press now matches an accelerator registered as `"F13"`.
+  `accelerator::parse_key_binding` also case-folds key names and accepts the
+  common aliases (`Esc` -> `Escape`, `Return`/`CR` -> `Enter`, `ArrowUp` ->
+  `Up`, etc.) so `"<Esc>"`, `"Ctrl+escape"`, and `"Ctrl+Return"` all match the
+  key events backends actually emit.
 
 ## [0.9.0] - 2026-11-07
 ### Added
