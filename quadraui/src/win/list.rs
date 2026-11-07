@@ -253,6 +253,7 @@ pub fn draw_list(
 /// scrolling. `state.scroll_px: None` paints pixel-identically to
 /// [`draw_list`].
 #[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
 pub fn draw_list_with_state(
     target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
     dwrite: &super::text::DWrite,
