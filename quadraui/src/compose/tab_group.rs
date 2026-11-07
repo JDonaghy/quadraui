@@ -1234,6 +1234,15 @@ impl TabGroupController {
 
         // ── Step 3: for each pane, draw tab strip + content ─────────
         let lh = backend.chrome_line_height();
+        // On a pixel backend (GUI), the tab strip is sized off
+        // `Style::tab_height` (VS Code's own tab bar height) rather than
+        // the raw chrome line height, which is usually shorter; TUI's
+        // cell grid (`lh <= 1.0`) keeps the one-row strip.
+        let strip_h = if lh > 1.0 {
+            lh.max(backend.style().tab_height)
+        } else {
+            lh
+        };
         let mut pane_bounds_out = Vec::with_capacity(n);
         let mut strip_bounds = Vec::with_capacity(n);
         let mut content_bounds = Vec::with_capacity(n);
@@ -1245,9 +1254,9 @@ impl TabGroupController {
         for (pane_idx, pane) in self.panes.iter_mut().enumerate() {
             let pb = pane_bounds_by_idx[pane_idx].unwrap_or(bounds);
 
-            let strip = Rect::new(pb.x, pb.y, pb.width, lh);
-            let content_h = (pb.height - lh).max(0.0);
-            let content = Rect::new(pb.x, pb.y + lh, pb.width, content_h);
+            let strip = Rect::new(pb.x, pb.y, pb.width, strip_h);
+            let content_h = (pb.height - strip_h).max(0.0);
+            let content = Rect::new(pb.x, pb.y + strip_h, pb.width, content_h);
 
             pane_bounds_out.push(pb);
             strip_bounds.push(strip);
@@ -3546,14 +3555,14 @@ mod tests {
         );
     }
 
-    // ── chrome_line_height governs the tab strip ───────────────────────────
+    // ── Style::tab_height governs the tab strip on a pixel backend ────────
 
     #[test]
-    fn strip_height_uses_chrome_line_height() {
+    fn strip_height_uses_style_tab_height_not_chrome_line_height() {
         let mut ctrl = make_group();
         let mut backend = crate::testing::RecordingBackend {
             line_height: 20.0,
-            chrome_line_height: Some(35.0),
+            chrome_line_height: Some(18.0),
             viewport: crate::Viewport {
                 width: 800.0,
                 height: 600.0,
@@ -3566,12 +3575,51 @@ mod tests {
         let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
         let layout = ctrl.render(&mut backend, bounds);
 
-        // The strip height must be chrome_line_height (35), not
-        // the editor line_height (20).
+        // The strip height is `Style::tab_height` (35, the default) — not
+        // the editor line_height (20) nor the chrome line height (18).
         assert_eq!(layout.strip_bounds.len(), 1);
         assert_eq!(layout.strip_bounds[0].height, 35.0);
         // Content area starts after the strip.
         assert_eq!(layout.content_bounds[0].y, 35.0);
         assert_eq!(layout.content_bounds[0].height, 600.0 - 35.0);
+    }
+
+    /// `Backend::set_style` overriding `tab_height` changes the painted
+    /// strip height — the acceptance bar for this chrome metric.
+    #[test]
+    fn strip_height_follows_a_set_style_override() {
+        let mut ctrl = make_group();
+        let mut backend = crate::testing::RecordingBackend {
+            line_height: 20.0,
+            chrome_line_height: Some(18.0),
+            viewport: crate::Viewport {
+                width: 800.0,
+                height: 600.0,
+                scale: 1.0,
+            },
+            char_width: 8.0,
+            ..Default::default()
+        };
+        backend.set_style(crate::Style::default().with_tab_height(50.0));
+
+        let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let layout = ctrl.render(&mut backend, bounds);
+
+        assert_eq!(layout.strip_bounds[0].height, 50.0);
+    }
+
+    /// On a cell grid (TUI), the strip stays exactly one row tall —
+    /// `Style::tab_height` is a documented no-op there, even with an
+    /// override set.
+    #[test]
+    fn strip_height_ignores_style_tab_height_on_a_cell_grid() {
+        let mut ctrl = make_group();
+        let mut backend = crate::testing::RecordingBackend::new();
+        backend.set_style(crate::Style::default().with_tab_height(50.0));
+
+        let bounds = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let layout = ctrl.render(&mut backend, bounds);
+
+        assert_eq!(layout.strip_bounds[0].height, 1.0);
     }
 }

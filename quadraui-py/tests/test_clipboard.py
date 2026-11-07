@@ -17,7 +17,9 @@ complete without raising, not that every environment has a working system
 clipboard.
 """
 
-from quadraui import QuiApp
+import pytest
+
+from quadraui import InternalError, InvalidDimensionsError, QuiApp
 
 
 def test_clipboard_bindings_are_present():
@@ -60,3 +62,64 @@ def test_clipboard_backend_persists_across_calls():
     app.clipboard_write_text("second")
     result = app.clipboard_read_text()
     assert result is None or isinstance(result, str)
+
+
+# ── Richer clipboard formats ─────────────────────────────────────────────
+#
+# `clipboard_backend` always wraps the headless `TuiBackend`'s
+# `TuiClipboard`, which only overrides `Clipboard::read_text`/`write_text`
+# (see `quadraui/src/tui/services.rs`). Every other `Clipboard` method —
+# `read_image`/`write_image`/`write_html`/`read_file_list`/
+# `read_primary_selection` — therefore takes its trait default here
+# (`Err(Unsupported)` or `None`), deterministically, regardless of the host
+# environment. These assertions are exact, not "or None" like the plain-text
+# tests above, for exactly that reason.
+
+
+def test_richer_clipboard_bindings_are_present():
+    app = QuiApp(40, 20)
+    assert hasattr(app, "clipboard_read_image")
+    assert hasattr(app, "clipboard_write_image")
+    assert hasattr(app, "clipboard_write_html")
+    assert hasattr(app, "clipboard_read_file_list")
+    assert hasattr(app, "clipboard_read_primary_selection")
+
+
+def test_clipboard_read_image_is_none_on_a_text_only_backend():
+    app = QuiApp(40, 20)
+    assert app.clipboard_read_image() is None
+
+
+def test_clipboard_write_image_raises_internal_error_on_unsupported_backend():
+    app = QuiApp(40, 20)
+    with pytest.raises(InternalError):
+        app.clipboard_write_image(1, 1, b"\xff\x00\x00\xff")
+
+
+def test_clipboard_write_image_rejects_a_mismatched_pixel_buffer():
+    app = QuiApp(40, 20)
+    with pytest.raises(InvalidDimensionsError):
+        # 2x2 RGBA8 needs 16 bytes; this is deliberately short.
+        app.clipboard_write_image(2, 2, b"\x00" * 4)
+
+
+def test_clipboard_write_html_raises_internal_error_on_unsupported_backend():
+    # `alt_text` exists so a text-only clipboard COULD degrade to writing
+    # it via `write_text` instead of failing outright -- quadraui's "TUI is
+    # a first-class backend" rule points that way. That degrade belongs in
+    # `quadraui::tui::services::TuiClipboard` itself, not here; this test
+    # locks in today's actual behavior (the trait's `Unsupported` default)
+    # and will need rewriting once TUI grows that fallback.
+    app = QuiApp(40, 20)
+    with pytest.raises(InternalError):
+        app.clipboard_write_html("<b>hi</b>", "hi")
+
+
+def test_clipboard_read_file_list_is_none_on_a_text_only_backend():
+    app = QuiApp(40, 20)
+    assert app.clipboard_read_file_list() is None
+
+
+def test_clipboard_read_primary_selection_is_none_on_a_text_only_backend():
+    app = QuiApp(40, 20)
+    assert app.clipboard_read_primary_selection() is None

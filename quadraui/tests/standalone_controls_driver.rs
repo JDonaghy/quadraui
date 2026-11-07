@@ -15,9 +15,10 @@
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, Button, ButtonEvent, Decoration, Key, Modifiers, MouseButton, NamedKey,
-    Point, RadioGroup, RadioGroupEvent, RadioOption, RadioOptionMeasure, Reaction, Rect,
-    StyledSpan, Switch, SwitchEvent, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
+    AppLogic, Backend, Button, ButtonEvent, ButtonVariant, Decoration, Icon, Key, Modifiers,
+    MouseButton, NamedKey, Point, RadioGroup, RadioGroupEvent, RadioOption, RadioOptionMeasure,
+    Reaction, Rect, StyledSpan, Switch, SwitchEvent, TextDisplay, TextDisplayLine, UiEvent,
+    WidgetId,
 };
 
 /// Which of the three standalone controls currently holds keyboard focus.
@@ -328,4 +329,61 @@ fn mouse_click_toggles_the_switch_without_requiring_focus() {
     });
     assert!(driver.app().switch.value);
     assert_eq!(driver.app().events, vec!["Toggled(demo:wrap, true)"]);
+}
+
+/// A single [`Button`] painted via `Backend::draw_button`, so a test can
+/// assert the actual TUI rasteriser's output for a [`ButtonVariant::Danger`]
+/// button carrying a leading [`Icon`] (`[ ⚠ Delete ]`), through the real
+/// `render` path rather than calling `crate::tui::draw_button` directly.
+struct DangerIconButtonApp {
+    button: Button,
+}
+
+impl DangerIconButtonApp {
+    fn new() -> Self {
+        let mut button = Button::new(WidgetId::new("demo:delete"), "Delete");
+        button.variant = ButtonVariant::Danger;
+        button.icon = Some(Icon::new("\u{f071}", "!"));
+        Self { button }
+    }
+}
+
+impl AppLogic for DangerIconButtonApp {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let _ = backend.draw_button(Rect::new(0.0, 0.0, 14.0, 1.0), &self.button);
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+#[test]
+fn danger_button_with_icon_paints_the_nerd_font_glyph_when_enabled() {
+    let mut driver = TuiDriver::new(DangerIconButtonApp::new(), 20, 2);
+    driver.parts_mut().0.set_nerd_fonts(true);
+    driver.render();
+
+    assert!(
+        driver.screen_contains("\u{f071}"),
+        "nerd_fonts_enabled: true should paint the icon's glyph half; screen was {:?}",
+        driver.screen()
+    );
+    assert!(driver.screen_contains("Delete"));
+}
+
+#[test]
+fn danger_button_with_icon_paints_the_fallback_when_nerd_fonts_disabled() {
+    let driver = TuiDriver::new(DangerIconButtonApp::new(), 20, 2);
+    // Nerd Fonts default to disabled — no `set_nerd_fonts` call here.
+
+    assert!(
+        driver.screen_contains("!"),
+        "nerd_fonts_enabled: false should paint the icon's fallback half; screen was {:?}",
+        driver.screen()
+    );
+    assert!(!driver.screen_contains("\u{f071}"));
+    assert!(driver.screen_contains("Delete"));
 }

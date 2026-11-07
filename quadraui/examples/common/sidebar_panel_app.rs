@@ -63,6 +63,7 @@ impl SidebarPanelApp {
         Toolbar::new(WidgetId::new("sb:toolbar")).with_buttons(vec![
             // Icon-only `[ + ]` — exercises Gap 4 icon-only width.
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("sb:add"),
                 label: "".into(),
                 icon: Some("+".into()),
@@ -73,6 +74,7 @@ impl SidebarPanelApp {
             },
             // Icon-only refresh.
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("sb:refresh"),
                 label: "".into(),
                 icon: Some("↻".into()),
@@ -84,6 +86,7 @@ impl SidebarPanelApp {
             ToolbarButton::Separator,
             // Icon + label + key hint — toggle.
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("sb:filter"),
                 label: "Filter".into(),
                 icon: Some("⚙".into()),
@@ -93,6 +96,7 @@ impl SidebarPanelApp {
                 tooltip: "Toggle filter".into(),
             },
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("sb:clear"),
                 label: "Clear".into(),
                 icon: None,

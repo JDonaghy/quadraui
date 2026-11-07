@@ -769,6 +769,38 @@ impl TuiBackend {
         self.core.cancel_text_selection_drag(&mut drag_state);
     }
 
+    /// Paints the focus ring directly onto `buf`, for the one caller
+    /// (`tui::run::paint_frame`) that needs it drawn AFTER
+    /// [`Self::apply_selection_highlight`] rather than before.
+    ///
+    /// [`Backend::draw_focus_ring`] (the trait method `AppLogic::render`'s
+    /// own `enter_frame_scope` closure calls) fetches the frame via
+    /// [`Self::current_frame_mut`], which only resolves inside that scope
+    /// — so it necessarily paints the ring immediately after `app.render`,
+    /// before the selection highlight overlay runs. When the focused
+    /// widget's tab-stop rect is the same rect as an active text
+    /// selection (true for any focused `TextDisplay`, whose tab stop is
+    /// its whole painted area — see `InteractionEngine::tab_stops`), that
+    /// ordering means the ring's border glyphs overwrite the selected
+    /// text in the live buffer BEFORE `apply_selection_highlight` reads
+    /// it, corrupting what Ctrl-C copies without changing anything
+    /// visible (the ring would have painted over those cells regardless
+    /// of ordering). This twin lets the caller paint the ring after
+    /// highlighting instead — same paint logic and the same
+    /// `"chrome:focus-ring"` zone registration as the trait method, just
+    /// reached via a buffer already in hand instead of the frame-scope
+    /// pointer.
+    pub(crate) fn draw_focus_ring_on_buffer(
+        &mut self,
+        buf: &mut ratatui::buffer::Buffer,
+        rect: QRect,
+    ) {
+        let theme = self.current_theme;
+        let area = q_rect_to_ratatui(rect);
+        crate::tui::draw_focus_ring(buf, area, &theme);
+        self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
+    }
+
     /// Invert (highlight) the cells in the ratatui buffer that fall
     /// within the active text selection range, and cache the extracted
     /// text in `self.cached_selection_text`.
@@ -2183,6 +2215,10 @@ impl Backend for TuiBackend {
         &self.focus
     }
 
+    fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
+        self.focus.set_focus(id)
+    }
+
     fn draw_focus_ring(&mut self, rect: QRect) {
         let theme = self.current_theme;
         let area = q_rect_to_ratatui(rect);
@@ -2380,6 +2416,38 @@ impl Backend for TuiBackend {
         crate::tui::draw_tree(frame.buffer_mut(), area, tree, &theme, nerd_fonts);
     }
 
+    /// Honours `state.scroll_px` via [`crate::tui::draw_tree_with_scroll_px`]
+    /// — TUI quantises it to a whole row (never a partial one); see that
+    /// function's doc. Hover/press tinting (`state.hovered_idx`/
+    /// `pressed_idx`) isn't painted on TUI today, the same gap
+    /// [`Self::draw_tree`] already has.
+    fn draw_tree_with_state(
+        &mut self,
+        rect: QRect,
+        tree: &TreeView,
+        state: &crate::primitives::tree::TreePaintState,
+        _focus_ring_visible: bool,
+    ) {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_tree_with_state called outside enter_frame_scope"
+            );
+            return;
+        };
+        crate::tui::draw_tree_with_scroll_px(
+            frame.buffer_mut(),
+            area,
+            tree,
+            &theme,
+            nerd_fonts,
+            state.scroll_px,
+        );
+    }
+
     fn draw_list(&mut self, rect: QRect, list: &ListView) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
@@ -2392,6 +2460,38 @@ impl Backend for TuiBackend {
             return;
         };
         crate::tui::draw_list(frame.buffer_mut(), area, list, &theme, nerd_fonts);
+    }
+
+    /// Honours `state.scroll_px` via [`crate::tui::draw_list_with_scroll_px`]
+    /// — TUI quantises it to a whole row (never a partial one); see that
+    /// function's doc. Hover/press tinting (`state.hovered_idx`/
+    /// `pressed_idx`) isn't painted on TUI today, the same gap
+    /// [`Self::draw_list`] already has.
+    fn draw_list_with_state(
+        &mut self,
+        rect: QRect,
+        list: &ListView,
+        state: &crate::primitives::list::ListPaintState,
+        _focus_ring_visible: bool,
+    ) {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_list_with_state called outside enter_frame_scope"
+            );
+            return;
+        };
+        crate::tui::draw_list_with_scroll_px(
+            frame.buffer_mut(),
+            area,
+            list,
+            &theme,
+            nerd_fonts,
+            state.scroll_px,
+        );
     }
 
     fn draw_data_table(
@@ -2438,6 +2538,29 @@ impl Backend for TuiBackend {
             glyphs,
             nerd_fonts,
         )
+    }
+
+    /// Honours `state.scroll_px` via
+    /// [`crate::tui::draw_data_table_with_state`] — TUI quantises it to
+    /// a whole row (never a partial one); see
+    /// [`DataTable::effective_scroll_offset`](crate::DataTable::effective_scroll_offset)'s
+    /// doc.
+    fn draw_data_table_with_state(
+        &mut self,
+        rect: QRect,
+        table: &crate::DataTable,
+        state: &crate::primitives::data_table::DataTablePaintState,
+    ) -> crate::DataTableLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_data_table_with_state called outside enter_frame_scope"
+            );
+            return self.data_table_layout(rect, table);
+        };
+        crate::tui::draw_data_table_with_state(frame.buffer_mut(), area, table, &theme, state)
     }
 
     fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
@@ -3465,12 +3588,24 @@ impl Backend for TuiBackend {
         // See draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&menu.id);
         let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
         // Issue #1117: the returned `Vec` is derived from `layout` (an
         // argument, not frame state) below regardless of whether painting
         // happens, so a missing frame only skips the paint, not the hit
         // data a host still needs to route clicks.
         if let Some(frame) = self.current_frame_mut() {
-            crate::tui::draw_context_menu(frame.buffer_mut(), menu, layout, &theme);
+            // No app-supplied glyph overrides on this path (that's
+            // `draw_context_menu_with_glyphs`'s job) — but an item's own
+            // `icon` still needs `nerd_fonts_enabled` to resolve its glyph
+            // instead of always falling back to ASCII.
+            crate::tui::draw_context_menu_with_glyphs(
+                frame.buffer_mut(),
+                menu,
+                layout,
+                &theme,
+                None,
+                nerd_fonts,
+            );
         } else {
             debug_assert!(
                 false,
@@ -3534,10 +3669,17 @@ impl Backend for TuiBackend {
         // See draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         // Issue #1117: same rationale as `draw_context_menu` just above —
         // the returned `Vec` comes from `layout`, not frame state.
         if let Some(frame) = self.current_frame_mut() {
-            crate::tui::draw_dialog(frame.buffer_mut(), dialog, layout, &theme);
+            crate::tui::draw_dialog_with_nerd_fonts(
+                frame.buffer_mut(),
+                dialog,
+                layout,
+                &theme,
+                nerd_fonts_enabled,
+            );
         } else {
             debug_assert!(
                 false,
@@ -4120,8 +4262,18 @@ impl Backend for TuiBackend {
         rect: QRect,
         button: &crate::primitives::button::Button,
     ) -> crate::primitives::button::ButtonLayout {
+        self.draw_button_with_state(rect, button, &crate::InteractionState::new())
+    }
+
+    fn draw_button_with_state(
+        &mut self,
+        rect: QRect,
+        button: &crate::primitives::button::Button,
+        interaction: &crate::InteractionState,
+    ) -> crate::primitives::button::ButtonLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
+        let nerd_fonts = self.nerd_fonts_enabled;
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
                 false,
@@ -4129,7 +4281,15 @@ impl Backend for TuiBackend {
             );
             return self.button_layout(rect, button);
         };
-        crate::tui::draw_button(frame.buffer_mut(), area, button, &theme)
+        crate::tui::draw_button_interactive(
+            frame.buffer_mut(),
+            area,
+            button,
+            &theme,
+            interaction.is_hovered(&button.id),
+            interaction.is_pressed(&button.id),
+            nerd_fonts,
+        )
     }
 
     fn button_layout(
@@ -4656,6 +4816,9 @@ mod tests {
         }
         fn focus_manager(&self) -> &crate::focus::FocusManager {
             &self.focus
+        }
+        fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
+            self.focus.set_focus(id)
         }
         fn draw_focus_ring(&mut self, _r: QRect) {}
         fn services(&self) -> &dyn PlatformServices {
@@ -5774,6 +5937,7 @@ mod tests {
             body: vec![crate::StyledText::plain("Really?")],
             table: None,
             buttons: vec![crate::DialogButton {
+                spec: None,
                 id: WidgetId::new("ok"),
                 label: "OK".into(),
                 is_default: true,
@@ -5874,7 +6038,7 @@ mod tests {
                 .iter()
                 .map(|t| crate::Column {
                     title: (*t).into(),
-                    width: crate::ColumnWidth::Fixed(30.0),
+                    width: crate::ColumnWidth::FixedCells(30.0),
                     align: crate::ColumnAlign::Left,
                 })
                 .collect(),
@@ -6018,6 +6182,92 @@ mod tests {
         match &events[0] {
             UiEvent::Accelerator(id, _) => assert_eq!(id.as_str(), "test.upper"),
             other => panic!("expected Accelerator, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn accelerator_distinguishes_ctrl_shift_from_ctrl_across_reporting_styles() {
+        // Starts from the crossterm events a terminal actually delivers,
+        // so the whole `KeyEvent` → `UiEvent` → accelerator path is under
+        // test. Ctrl+Shift+T is reported either as the resolved glyph `T`
+        // with `SHIFT` already cleared (CSI-u alternate-key-codes) or as
+        // the base key `t` with `SHIFT` set; both must resolve to
+        // `<C-S-T>`, and plain Ctrl+T to `<C-t>`.
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let cases: &[(char, KeyModifiers, &str)] = &[
+            ('T', KeyModifiers::CONTROL, "test.upper"),
+            (
+                't',
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                "test.upper",
+            ),
+            ('t', KeyModifiers::CONTROL, "test.lower"),
+        ];
+        for (c, ct_mods, want) in cases {
+            let mut backend = TuiBackend::new();
+            backend.register_accelerator(&make_acc("test.upper", "<C-S-T>"));
+            backend.register_accelerator(&make_acc("test.lower", "<C-t>"));
+
+            let event = crate::tui::events::crossterm_key_to_uievent(KeyEvent::new(
+                KeyCode::Char(*c),
+                *ct_mods,
+            ))
+            .expect("a press event translates");
+            let mut events = vec![event];
+            backend.apply_accelerators(&mut events);
+
+            match &events[0] {
+                UiEvent::Accelerator(id, _) => {
+                    assert_eq!(id.as_str(), *want, "for Char({c:?}) + {ct_mods:?}")
+                }
+                other => {
+                    panic!("expected Accelerator for Char({c:?}) + {ct_mods:?}, got {other:?}")
+                }
+            }
+        }
+    }
+
+    /// A shifted symbol bound as a bare key (`:`, the vim command-line
+    /// gesture) must reach an app the same way whichever keyboard protocol
+    /// the terminal negotiated: a stray `SHIFT` bit alongside the already
+    /// shifted glyph makes the press miss an unmodified binding, which is
+    /// how a kitty-capable terminal ends up swallowing the keystroke.
+    #[test]
+    fn accelerator_shifted_symbol_matches_unmodified_binding_across_reporting_styles() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let cases: &[(char, KeyModifiers, &str)] = &[
+            // Kitty/CSI-u: the glyph the user typed, plus the physical
+            // SHIFT bit the terminal also reports.
+            (':', KeyModifiers::SHIFT, "app.command_line"),
+            // Legacy decoding (and CSI-u once crossterm has resolved the
+            // glyph from `alternate-key-codes`): glyph, no SHIFT.
+            (':', KeyModifiers::NONE, "app.command_line"),
+            ('%', KeyModifiers::SHIFT, "app.percent"),
+            ('%', KeyModifiers::NONE, "app.percent"),
+        ];
+        for (c, ct_mods, want) in cases {
+            let mut backend = TuiBackend::new();
+            backend.register_accelerator(&make_acc("app.command_line", ":"));
+            backend.register_accelerator(&make_acc("app.percent", "%"));
+
+            let event = crate::tui::events::crossterm_key_to_uievent(KeyEvent::new(
+                KeyCode::Char(*c),
+                *ct_mods,
+            ))
+            .expect("a press event translates");
+            let mut events = vec![event];
+            backend.apply_accelerators(&mut events);
+
+            match &events[0] {
+                UiEvent::Accelerator(id, _) => {
+                    assert_eq!(id.as_str(), *want, "for Char({c:?}) + {ct_mods:?}")
+                }
+                other => {
+                    panic!("expected Accelerator for Char({c:?}) + {ct_mods:?}, got {other:?}")
+                }
+            }
         }
     }
 
@@ -7051,6 +7301,65 @@ mod tests {
             resolved.visible_tabs, painted_layout.visible_tabs,
             "the no-paint and paint `TabBarLayout` accessors must agree \
              on geometry for the same bar and rect"
+        );
+    }
+
+    /// `Backend::draw_tab_bar_with_chrome_layout`'s own doc says a `None`
+    /// [`TabChrome::focused_index`] with no [`TabFrame`] framing request
+    /// reproduces plain [`Backend::draw_tab_bar_layout`] — the property
+    /// `quadraui-binding-core`'s `render::paint_layout` leans on for its
+    /// `LayoutNode::Tabs` arm's `focused_index: None` common case. Unlike
+    /// `empty_icon_sidecar_paints_identically_to_draw_tab_bar` (which
+    /// compares the free paint functions directly), this drives the same
+    /// comparison through the actual `Backend` trait methods a caller like
+    /// `paint_layout` holds a `&mut dyn Backend` and calls.
+    #[test]
+    fn draw_tab_bar_with_chrome_layout_default_chrome_matches_draw_tab_bar_layout() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut backend = TuiBackend::new();
+        backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
+        let bar = audit_bar();
+        let rect = QRect::new(0.0, 0.0, 40.0, 1.0);
+
+        let mut plain_terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        let mut plain_layout = None;
+        plain_terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    plain_layout = Some(b.draw_tab_bar_layout(rect, &bar, None));
+                });
+            })
+            .expect("draw");
+        let plain_layout = plain_layout.expect("draw closure ran");
+        let plain_screen = screen_text(plain_terminal.backend().buffer());
+
+        let mut chrome_terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        let mut chrome_layout = None;
+        chrome_terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    chrome_layout = Some(b.draw_tab_bar_with_chrome_layout(
+                        rect,
+                        &bar,
+                        None,
+                        &TabChrome::default(),
+                    ));
+                });
+            })
+            .expect("draw");
+        let chrome_layout = chrome_layout.expect("draw closure ran");
+        let chrome_screen = screen_text(chrome_terminal.backend().buffer());
+
+        assert_eq!(
+            plain_layout, chrome_layout,
+            "draw_tab_bar_with_chrome_layout(TabChrome::default()) must \
+             report the same TabBarLayout as draw_tab_bar_layout"
+        );
+        assert_eq!(
+            plain_screen, chrome_screen,
+            "and must paint the identical screen too"
         );
     }
 

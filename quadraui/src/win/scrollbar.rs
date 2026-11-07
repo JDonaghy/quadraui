@@ -231,4 +231,155 @@ mod tests {
             );
         }
     }
+
+    // ── Scroll-driven idle fade ─────────────────────────────────────
+    //
+    // Unlike `paint` above (which exercises `native_surface_paint::paint`
+    // directly, always at full opacity), these tests go through
+    // `WinBackend::draw_scrollbar` itself, so they also exercise
+    // `WinBackend::scrollbar_fade_opacity` — the render-side half of the
+    // overlay idle-fade seam `super::run`'s `WM_MOUSEWHEEL`/
+    // `WM_MOUSEHWHEEL` handler drives via `note_scroll_activity`. Mirrors
+    // `macos::scrollbar`'s own "Scroll-driven idle fade" section.
+
+    fn paint_via_backend_raw(
+        sb: &Scrollbar,
+        configure: impl FnOnce(&mut crate::win::backend::WinBackend),
+    ) -> HeadlessSurface {
+        use crate::event::Viewport;
+        use crate::win::backend::WinBackend;
+        use crate::Backend;
+
+        let surface = HeadlessSurface::new(W, H).expect("create surface");
+        surface
+            .fill_rect(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                Theme::default().background,
+            )
+            .expect("fill bg");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+        configure(&mut backend);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.draw_scrollbar(sb.track, sb);
+        backend.end_frame();
+        surface
+    }
+
+    /// `WinBackend::new` seeds the fade clock with its own construction
+    /// instant, so a scrollbar painted right away — a live app's first
+    /// frame, a gallery capture, this test — still shows, rather than
+    /// starting pre-faded before anything has had a chance to interact
+    /// with it.
+    #[test]
+    fn scrollbar_visible_immediately_after_backend_construction() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let surface = paint_via_backend_raw(&sb, |_| {});
+        let c = surface.pixel_at(4, 5);
+        assert_ne!(
+            (c.r, c.g, c.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "scrollbar should be visible right after construction"
+        );
+    }
+
+    #[test]
+    fn scrollbar_absent_if_never_scrolled_once_idle_interval_elapses() {
+        use crate::primitives::scrollbar::{SCROLLBAR_FADE_HOLD, SCROLLBAR_FADE_OUT};
+
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let surface = paint_via_backend_raw(&sb, |b| {
+            let last = b
+                .scroll_last_interaction()
+                .expect("new() seeds a timestamp");
+            b.set_fade_clock_override(Some(last + SCROLLBAR_FADE_HOLD + SCROLLBAR_FADE_OUT));
+        });
+        let c = surface.pixel_at(4, 5);
+        assert_eq!(
+            (c.r, c.g, c.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "scrollbar should be fully faded once idle, even if never scrolled"
+        );
+    }
+
+    /// Test seam: `set_scroll_last_interaction(None)` simulates "never
+    /// interacted, already fully faded" directly, without needing to
+    /// fast-forward the clock.
+    #[test]
+    fn scrollbar_absent_when_explicitly_marked_never_interacted() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let surface = paint_via_backend_raw(&sb, |b| {
+            b.set_scroll_last_interaction(None);
+        });
+        let c = surface.pixel_at(4, 5);
+        assert_eq!(
+            (c.r, c.g, c.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "scrollbar should be fully faded when explicitly marked never-interacted"
+        );
+    }
+
+    #[test]
+    fn scrollbar_appears_at_full_opacity_right_after_a_scroll_event() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let now = std::time::Instant::now();
+        let surface = paint_via_backend_raw(&sb, |b| {
+            // Mirrors what `super::run`'s `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL`
+            // handler does on a real wheel delta: `note_scroll_activity`
+            // stamps "now". The clock override pins that "now" to a
+            // fixed instant so the probe below is deterministic.
+            b.set_fade_clock_override(Some(now));
+            b.note_scroll_activity();
+        });
+        let c = surface.pixel_at(4, 5);
+        assert_ne!(
+            (c.r, c.g, c.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "scrollbar should be visible right after a scroll event"
+        );
+    }
+
+    #[test]
+    fn scrollbar_fades_back_out_after_the_idle_interval() {
+        use crate::primitives::scrollbar::{SCROLLBAR_FADE_HOLD, SCROLLBAR_FADE_OUT};
+
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let last = std::time::Instant::now();
+        let surface = paint_via_backend_raw(&sb, |b| {
+            b.set_scroll_last_interaction(Some(last));
+            b.set_fade_clock_override(Some(last + SCROLLBAR_FADE_HOLD + SCROLLBAR_FADE_OUT));
+        });
+        let c = surface.pixel_at(4, 5);
+        assert_eq!(
+            (c.r, c.g, c.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "scrollbar should be fully faded after the idle interval"
+        );
+    }
+
+    #[test]
+    fn scrollbar_still_full_opacity_during_the_hold_window() {
+        use crate::primitives::scrollbar::SCROLLBAR_FADE_HOLD;
+
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let last = std::time::Instant::now();
+        let surface = paint_via_backend_raw(&sb, |b| {
+            b.set_scroll_last_interaction(Some(last));
+            b.set_fade_clock_override(Some(last + SCROLLBAR_FADE_HOLD));
+        });
+        let c = surface.pixel_at(4, 5);
+        assert_ne!(
+            (c.r, c.g, c.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "scrollbar should still be visible at the end of the hold window"
+        );
+    }
 }

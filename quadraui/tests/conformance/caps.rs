@@ -977,6 +977,49 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "TUI ignores set_editor_v_scrollbar_width, so the always-None default is the truthful \
          answer",
     ),
+    // ── wheel_delta_rows: TUI, GTK and Win32 all already report wheel
+    // deltas in row-notch units (crossterm's `±1.0` per notch, GTK's
+    // OS-scaled `EventControllerScroll::dy`, Win32's
+    // `raw_delta / WHEEL_DELTA`), so the identity default is the correct
+    // answer for all three, not unfinished work. macOS reports real
+    // points, so `MacBackend` overrides the method rather than appearing
+    // here (see Backend::wheel_delta_rows's own doc).
+    (
+        "tui",
+        "wheel_delta_rows",
+        "crossterm already reports wheel deltas in row-notch units, so the identity default is \
+         correct — see Backend::wheel_delta_rows's own doc",
+    ),
+    (
+        "gtk",
+        "wheel_delta_rows",
+        "EventControllerScroll::dy is already OS-scaled to row-notch units, so the identity \
+         default is correct — see Backend::wheel_delta_rows's own doc",
+    ),
+    (
+        "win",
+        "wheel_delta_rows",
+        "Win32's raw_delta / WHEEL_DELTA is already in row-notch units, so the identity default \
+         is correct — see Backend::wheel_delta_rows's own doc",
+    ),
+    // ── tree_scroll_row_height: the row-pitch basis
+    // `TreeController::scroll_by_wheel` converts wheel notches into the
+    // `scroll_px` currency with. A backend only needs to override it
+    // when its painted `TreeView` row pitch differs from
+    // `Self::line_height` — `GtkBackend`, `MacBackend` and `WinBackend`
+    // all do (they run `layout_metrics::tree_row_pitch` over a font
+    // metric of their own), so all three override it. TUI does not
+    // paint a sub-row `scroll_px` for `TreeView` at all, so the
+    // default's exact relationship to its own `tree_layout` row pitch is
+    // TUI's own pixel-smooth-tree-scroll issue's job to verify when it
+    // wires that up. See `Backend::tree_scroll_row_height`'s own doc.
+    (
+        "tui",
+        "tree_scroll_row_height",
+        "TUI's tree painter ignores the sub-row scroll_px, so this basis is unobservable there; \
+         verifying it against TUI's own tree row pitch is a TUI pixel-smooth-tree-scroll \
+         sibling issue's job",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.
@@ -1126,6 +1169,7 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
     ("reveal_in_file_manager", ServiceHonesty::AlwaysReal),
     ("open_path", ServiceHonesty::AlwaysReal),
     ("move_to_trash", ServiceHonesty::AlwaysReal),
+    ("restore_from_trash", ServiceHonesty::AlwaysReal),
     ("beep", ServiceHonesty::AlwaysReal),
     // `system_theme` returns `ServiceResult<SystemTheme>`
     // directly — same reasoning as `open_url_result` just above: the

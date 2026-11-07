@@ -44,7 +44,7 @@ use core_text::font::CTFont;
 
 use super::cg::*;
 
-use super::backend::ns_fill_rounded_rect;
+use super::backend::{ns_fill_rounded_rect, ns_stroke_rect};
 use super::text::{draw_text, measure_text};
 // `TabBarHits` is `#[deprecated]` — this module converts a computed
 // `TabBarLayout` into one per paint/no-paint call, so the import needs
@@ -55,10 +55,15 @@ use crate::primitives::tab_bar::{
 };
 #[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits};
+use crate::style::Style;
 use crate::theme::Theme;
 
-/// Per-tab horizontal padding (left + right) inside the tab background fill.
-const TAB_PAD: f64 = 14.0;
+/// Per-tab horizontal padding (left + right) inside the tab background
+/// fill, in `bar.compact` mode. A compact strip (used where vertical
+/// space is at a premium) keeps this fixed literal rather than scaling
+/// with [`Style::tab_padding_x`] — the non-compact case reads that style
+/// token instead, so a host-set value only ever widens the normal strip.
+const TAB_PAD_COMPACT: f64 = 2.0;
 /// Gap between the tab label and the close glyph.
 const TAB_INNER_GAP: f64 = 10.0;
 /// Gap between adjacent tabs.
@@ -74,6 +79,23 @@ const ACCENT_HEIGHT: f64 = 1.0;
 const CELL_WIDTH_SAMPLE: &str = "ABCDabcd0123.:_";
 /// Slack added either side of the close glyph when building its hit box.
 const CLOSE_PAD: f64 = 2.0;
+/// Tolerance (points) for comparing a tab's full, untruncated content width
+/// against its paint-time budget before reaching for
+/// [`crate::primitives::tab_bar::fit_tab_label`].
+///
+/// The paint loop's budget (`tab_content_w` in `draw_tab_bar_icons_with_glyphs`)
+/// comes from [`TabBarHits::slot_positions`], which stores `Rect { x: f32,
+/// width: f32 }` — so the `f64` geometry [`mac_tab_bar_native_layout_icons`]
+/// computed takes a lossy `f64 -> f32 -> f64` round trip before paint sees
+/// it. A label that fits its slot *exactly* can therefore measure a few f32
+/// ulps wider than the rounded budget, which would send it through
+/// `fit_tab_label` and drop a character it never needed to lose. This
+/// tolerance is many orders of magnitude larger than that rounding error
+/// (bounded by roughly `width * f32::EPSILON`, i.e. well under 1e-3 for any
+/// tab-bar-scale width) and many orders of magnitude smaller than the width
+/// of a single rendered character, so it absorbs the round trip without
+/// masking a genuine overflow.
+const LABEL_FIT_TOLERANCE: f64 = 1e-3;
 /// Gap between a tab's icon glyph (see [`TabIcon`]) and its label.
 /// Same value as [`crate::gtk::tab_bar`]'s `TAB_ICON_GAP`, so a decorated
 /// tab is the same shape on both pixel backends.
@@ -125,6 +147,31 @@ pub(crate) fn mac_tab_icon_extras(
         .collect()
 }
 
+/// `(leading, trailing)` space reserved around a tab's label, in the same
+/// units its slot geometry is computed in. `leading` is the tab's left
+/// padding plus any icon reservation; `trailing` is the close-button
+/// reservation (when present) plus the tab's right padding.
+///
+/// Shared by [`mac_tab_bar_native_layout_icons`]'s layout loop and
+/// [`draw_tab_bar_icons_with_glyphs`]'s paint loop, both of which call
+/// [`crate::primitives::tab_bar::fit_tab_label`] with these two numbers —
+/// going through one function keeps the two call sites from ever deriving
+/// different `leading`/`trailing` for the same tab.
+fn tab_label_budget(tab_pad: f64, icon_extra: f64, close_extra: f64) -> (f64, f64) {
+    (tab_pad + icon_extra, close_extra + tab_pad)
+}
+
+/// Whether a tab's full, untruncated content width already fits inside
+/// `tab_content_w` once [`LABEL_FIT_TOLERANCE`] absorbs the budget's
+/// `f64 -> f32 -> f64` round trip (see that constant's doc). When this
+/// returns `true` the paint loop paints the label unchanged instead of
+/// calling [`crate::primitives::tab_bar::fit_tab_label`], which keeps a
+/// fully-fitting label from losing a character to the round trip's
+/// one-ulp rounding noise.
+fn label_fits_without_truncation(full_content_w: f64, tab_content_w: f64) -> bool {
+    full_content_w <= tab_content_w + LABEL_FIT_TOLERANCE
+}
+
 /// Per-tab extra width (points) reserved for an icon glyph plus
 /// [`TAB_ICON_GAP`], indexed like `bar.tabs`. `0.0` for every tab without
 /// an icon, so an icon-less tab keeps byte-identical width and hit-test
@@ -149,8 +196,8 @@ pub(crate) fn mac_tab_icon_extras(
 /// ink. A caller whose font carries no icon codepoints gets tofu of the
 /// measured width, not misplaced hit boxes.
 #[allow(deprecated)]
-pub fn mac_tab_bar_layout(font: &CTFont, width: f64, bar: &TabBar) -> TabBarHits {
-    mac_tab_bar_layout_icons(font, width, bar, &[])
+pub fn mac_tab_bar_layout(font: &CTFont, width: f64, bar: &TabBar, style: &Style) -> TabBarHits {
+    mac_tab_bar_layout_icons(font, width, bar, &[], style)
 }
 
 /// Compute the [`TabBarHits`] [`draw_tab_bar`] would produce for `bar` at
@@ -187,8 +234,9 @@ pub fn mac_tab_bar_layout_icons(
     width: f64,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
+    style: &Style,
 ) -> TabBarHits {
-    let native = mac_tab_bar_native_layout_icons(font, width, 1.0, bar, icons);
+    let native = mac_tab_bar_native_layout_icons(font, width, 1.0, bar, icons, style);
     let mut hits = crate::backend::tab_bar_hits_from_layout(&native, bar);
     // `mac_tab_bar_native_layout_icons`'s `resolved_scroll_offset` is the
     // scroll-offset value this function reports back as engine feedback.
@@ -237,8 +285,9 @@ pub fn mac_tab_bar_native_layout(
     width: f64,
     height: f64,
     bar: &TabBar,
+    style: &Style,
 ) -> TabBarLayout {
-    mac_tab_bar_native_layout_icons(font, width, height, bar, &[])
+    mac_tab_bar_native_layout_icons(font, width, height, bar, &[], style)
 }
 
 /// [`mac_tab_bar_native_layout`] with a per-tab icon sidecar — the
@@ -256,8 +305,13 @@ pub fn mac_tab_bar_native_layout_icons(
     height: f64,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
+    style: &Style,
 ) -> TabBarLayout {
-    let tab_pad = if bar.compact { 2.0 } else { TAB_PAD };
+    let tab_pad = if bar.compact {
+        TAB_PAD_COMPACT
+    } else {
+        style.tab_padding_x as f64
+    };
     let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
     let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
 
@@ -328,15 +382,43 @@ pub fn mac_tab_bar_native_layout_icons(
     for (tab_idx, tab) in bar.tabs.iter().enumerate().skip(bar.scroll_offset) {
         let (tab_name_w, _) = measure_text(font, &tab.label);
         let icon_extra = icon_extras[tab_idx];
-        let tab_content_w = tab_pad + icon_extra + tab_name_w + close_extra_for(tab_idx) + tab_pad;
-        let slot_w = tab_content_w + tab_outer_gap;
-        if x + slot_w > effective_tab_area {
-            break;
-        }
+        let close_extra = close_extra_for(tab_idx);
+        let (leading, trailing) = tab_label_budget(tab_pad, icon_extra, close_extra);
+        let full_content_w = leading + tab_name_w + trailing;
+        let full_slot_w = full_content_w + tab_outer_gap;
+        let remaining = (effective_tab_area - x).max(0.0);
+
+        // A tab whose full (untruncated) width would overflow the strip
+        // gets its label ellipsis-fitted into whatever space is actually
+        // left, via the shared `crate::primitives::tab_bar::fit_tab_label`,
+        // instead of being dropped from the strip outright. `name_w` below
+        // is the possibly-truncated label's own measured width, and the
+        // close-button hit box is positioned off it, so the glyph always
+        // lands inside this tab's (possibly shrunk) slot.
+        let (name_w, content_w, truncated) = if full_slot_w <= remaining {
+            (tab_name_w, full_content_w, false)
+        } else {
+            let truncated_budget = (remaining - tab_outer_gap).max(0.0);
+            if leading + trailing > truncated_budget {
+                // Not even room for this tab's own padding/close slot —
+                // nothing left on the strip to show it in.
+                break;
+            }
+            let fitted = crate::primitives::tab_bar::fit_tab_label(
+                &tab.label,
+                truncated_budget as f32,
+                leading as f32,
+                trailing as f32,
+                |s| measure_text(font, s).0 as f32,
+            );
+            let (fitted_w, _) = measure_text(font, &fitted);
+            (fitted_w, leading + fitted_w + trailing, true)
+        };
+        let slot_w = content_w + tab_outer_gap;
         let bounds = Rect::new(x as f32, 0.0, slot_w as f32, height as f32);
 
         let close_bounds = if bar.show_tab_close && tab.is_closable {
-            let close_x = x + tab_pad + icon_extra + tab_name_w + tab_inner_gap;
+            let close_x = x + tab_pad + icon_extra + name_w + tab_inner_gap;
             let cb = Rect::new(
                 (close_x - CLOSE_PAD) as f32,
                 0.0,
@@ -357,6 +439,15 @@ pub fn mac_tab_bar_native_layout_icons(
         });
 
         x += slot_w;
+        if truncated {
+            // This tab already consumed every point of slack the strip had
+            // left (`truncated_budget` above), and the minimum width any
+            // further tab could claim is `2 * tab_pad` for its own padding
+            // alone — more than the at-most-one-glyph-plus-ellipsis slack a
+            // truncated fit can leave behind. So no tab after this one can
+            // fit either.
+            break;
+        }
     }
 
     // Close regions before body regions — matches `TabBar::layout`'s own
@@ -418,6 +509,7 @@ pub unsafe fn draw_tab_bar(
     row_height: f64,
     bar: &TabBar,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
 ) -> TabBarHits {
     draw_tab_bar_icons(
@@ -429,6 +521,7 @@ pub unsafe fn draw_tab_bar(
         row_height,
         bar,
         theme,
+        style,
         hovered_close_tab,
         &[],
     )
@@ -488,6 +581,7 @@ pub unsafe fn draw_tab_bar_icons(
     row_height: f64,
     bar: &TabBar,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
     icons: &[Option<TabIcon>],
 ) -> TabBarHits {
@@ -500,16 +594,26 @@ pub unsafe fn draw_tab_bar_icons(
         row_height,
         bar,
         theme,
+        style,
         hovered_close_tab,
         icons,
         None,
         false,
+        None,
+        None,
+        None,
     )
 }
 
 /// [`draw_tab_bar_icons`], but honouring an optional [`TabBarGlyphs`]
 /// override for the close/dirty mark — `glyphs: None` reproduces
-/// [`draw_tab_bar_icons`] exactly.
+/// [`draw_tab_bar_icons`] exactly. `hovered_tab`/`pressed_tab` name the
+/// whole tab (not its close glyph) the mouse is over/held down on —
+/// `None`/`None` paints every tab's resting background, same as
+/// [`draw_tab_bar_icons`]. `focused_index` names the tab the keyboard-focus
+/// ring paints on — see this function's own paint-loop comment for the
+/// geometry — with `None` painting no ring at all, same as
+/// [`draw_tab_bar_icons`].
 ///
 /// # Safety
 ///
@@ -527,19 +631,36 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
     row_height: f64,
     bar: &TabBar,
     theme: &Theme,
+    style: &Style,
     hovered_close_tab: Option<usize>,
     icons: &[Option<TabIcon>],
     glyphs: Option<&TabBarGlyphs>,
     nerd_fonts_enabled: bool,
+    hovered_tab: Option<usize>,
+    pressed_tab: Option<usize>,
+    focused_index: Option<usize>,
 ) -> TabBarHits {
     let text_y_offset = y_offset + (row_height - line_height) / 2.0;
-    let tab_pad = if bar.compact { 2.0 } else { TAB_PAD };
+    let tab_pad = if bar.compact {
+        TAB_PAD_COMPACT
+    } else {
+        style.tab_padding_x as f64
+    };
     let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
+    let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
+    // Measured the same way `mac_tab_bar_native_layout_icons` sizes the
+    // close-button reservation, so the label-fit budget below agrees with
+    // the slot geometry it's derived from.
+    let close_w = if bar.show_tab_close {
+        measure_text(font, &crate::codicon::CLOSE.to_string()).0
+    } else {
+        0.0
+    };
 
     // Single source of truth for geometry — `Backend::tab_bar_layout_icons`
     // calls the same function with the same sidecar, so the no-paint twin
     // can never drift from what this loop actually paints.
-    let hits = mac_tab_bar_layout_icons(font, width, bar, icons);
+    let hits = mac_tab_bar_layout_icons(font, width, bar, icons, style);
     // Re-derived rather than threaded out of `mac_tab_bar_layout_icons`:
     // the same pure function of (font, icons), so the label x below is
     // offset by exactly the width the hit boxes were built around.
@@ -584,6 +705,28 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
         let (slot_x, slot_end) = hits.slot_positions[tab_idx];
         let tab_content_w = slot_end - slot_x - tab_outer_gap;
 
+        // Whole-tab hover/pressed tint, independent of `is_close_hovered`
+        // below (which only tints the close glyph itself). Reuses
+        // `Theme::list_hover_bg`/`list_pressed_bg` — the same "blend the
+        // row's own resting background toward `foreground`" derivation
+        // `menu_item_hover_bg`/`menu_item_pressed_bg` already reuse for a
+        // popup-menu row — rather than growing a dedicated
+        // `tab_hover_bg`/`tab_pressed_bg` accessor, since a tab strip is
+        // the same flat "row under the cursor" shape. Pressed wins over
+        // hovered, matching every other `_with_state` painter in this
+        // module's sibling seams (toolbar, status bar, menu/context-menu).
+        let is_tab_pressed = pressed_tab == Some(tab_idx);
+        let is_tab_hovered = hovered_tab == Some(tab_idx);
+        let tint = |base: crate::types::Color| -> crate::types::Color {
+            if is_tab_pressed {
+                theme.list_pressed_bg(base)
+            } else if is_tab_hovered {
+                theme.list_hover_bg(base)
+            } else {
+                base
+            }
+        };
+
         // Tab background. The active tab paints the inset, rounded chip
         // computed above (VS Code's pill, matching `gtk::tab_bar`'s
         // `TAB_CHIP_INSET_Y` / `TAB_CHIP_RADIUS` — the same active-tab
@@ -604,7 +747,7 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
                         chip_h as f32,
                     ),
                     TAB_CHIP_RADIUS as f32,
-                    theme.tab_active_bg,
+                    tint(theme.tab_active_bg),
                 );
             }
         } else {
@@ -614,7 +757,7 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
                 y_offset,
                 tab_content_w,
                 row_height,
-                theme.tab_bar_bg,
+                tint(theme.tab_bar_bg),
             );
         }
 
@@ -642,7 +785,35 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
             );
         }
 
-        // Tab label.
+        // Tab label. A label wider than this tab's slot is ellipsis-fitted
+        // through the shared `crate::primitives::tab_bar::fit_tab_label`
+        // instead of being drawn past the slot's edge — `tab_content_w` is
+        // the budget `mac_tab_bar_native_layout_icons` sized this tab's
+        // close-button hit box around, after that budget's own
+        // `f64 -> f32 -> f64` round trip through `TabBarHits::slot_positions`
+        // (see [`LABEL_FIT_TOLERANCE`]'s doc). A truncated label can never
+        // paint over the close glyph; the tolerance check below only
+        // decides whether a *fully-fitting* label gets ellipsis-fitted at
+        // all, which the round trip could otherwise trigger spuriously.
+        let close_extra = if bar.show_tab_close && tab.is_closable {
+            tab_inner_gap + close_w
+        } else {
+            0.0
+        };
+        let (leading, trailing) = tab_label_budget(tab_pad, icon_extra, close_extra);
+        let (tab_name_w, _) = measure_text(font, &tab.label);
+        let full_content_w = leading + tab_name_w + trailing;
+        let fitted_label = if label_fits_without_truncation(full_content_w, tab_content_w) {
+            tab.label.clone()
+        } else {
+            crate::primitives::tab_bar::fit_tab_label(
+                &tab.label,
+                tab_content_w as f32,
+                leading as f32,
+                trailing as f32,
+                |s| measure_text(font, s).0 as f32,
+            )
+        };
         let fg_col = match (tab.is_active, tab.is_preview) {
             (true, true) => theme.tab_preview_active_fg,
             (true, false) => theme.tab_active_fg,
@@ -652,7 +823,7 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
         draw_text(
             ctx,
             font,
-            &tab.label,
+            &fitted_label,
             slot_x + tab_pad + icon_extra,
             text_y_offset,
             color_to_cg(fg_col),
@@ -698,6 +869,48 @@ pub unsafe fn draw_tab_bar_icons_with_glyphs(
                 text_y_offset,
                 color_to_cg(close_fg),
             );
+        }
+    }
+
+    // ── Keyboard-focus ring pass ─────────────────────────────────────
+    // Painted after every tab's own background/label/close glyph, not
+    // inside the loop above: slots are contiguous (only `TAB_OUTER_GAP`
+    // of bar background between them), so a ring stroked immediately
+    // after its own tab would have its trailing edge painted over by
+    // the next tab's opaque background fill. `focused_index` already
+    // carries the caller's own focus-visible suppression (see
+    // `TabChrome::focused_index`'s doc), so `None` here paints nothing.
+    //
+    // The stroked rect is inset by half of `style.focus_ring_width`
+    // from the slot's own bounds — not the outset gap `Button`'s/
+    // `TextInput`'s ring uses (`focus_ring_geometry`) — the same "flush
+    // with the item's own bounds" convention `primitives::list`'s
+    // selected-row ring and `primitives::toolbar`'s item ring use for a
+    // ring on an item inside a tightly-packed strip with no clip of its
+    // own: `ns_stroke_rect` centres its stroke on the rect edge, so an
+    // un-inset rect would ink half the line outside the row entirely on
+    // top/bottom and into the inter-tab gap on left/right. Strokes
+    // square (not the active tab's `TAB_CHIP_RADIUS`), since keyboard
+    // focus can land on an inactive tab with no chip to match.
+    if let Some(focus_idx) = focused_index {
+        let visible_lo = bar.scroll_offset;
+        let visible_hi = visible_lo + hits.slot_positions.len().saturating_sub(visible_lo);
+        if focus_idx >= visible_lo && focus_idx < visible_hi {
+            let (slot_x, slot_end) = hits.slot_positions[focus_idx];
+            let tab_content_w = slot_end - slot_x - tab_outer_gap;
+            let ring_width = style.focus_ring_width.max(1.0) as f64;
+            let inset = ring_width / 2.0;
+            let ring_rect = Rect::new(
+                (slot_x + inset) as f32,
+                (y_offset + inset) as f32,
+                (tab_content_w - ring_width).max(0.0) as f32,
+                (row_height - ring_width).max(0.0) as f32,
+            );
+            // SAFETY: `ctx` is a valid `CGContextRef` for the duration of
+            // this paint call — see this fn's own `# Safety` doc.
+            unsafe {
+                ns_stroke_rect(ctx, ring_rect, theme.focus_ring_color(), ring_width);
+            }
         }
     }
 
@@ -1123,6 +1336,124 @@ mod tests {
         assert!(hits.close_bounds.is_empty());
     }
 
+    /// Like [`paint_via_backend`], but through
+    /// `MacBackend::draw_tab_bar_with_state` so a test can probe the
+    /// whole-tab hover/pressed treatment.
+    #[allow(deprecated)]
+    fn paint_via_backend_with_state(
+        bar: &TabBar,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> (BitmapSurface, TabBarHits) {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+
+        let mut backend = backend_with_test_fonts();
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let hits = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let h = b.draw_tab_bar_with_state(
+                QRect::new(0.0, 0.0, W as f32, H as f32),
+                bar,
+                None,
+                hovered_tab,
+                pressed_tab,
+            );
+            *hits.borrow_mut() = Some(h);
+        });
+        backend.end_frame();
+        (surface, hits.into_inner().unwrap())
+    }
+
+    /// `MouseMoved` over an inactive tab (the issue's acceptance scenario)
+    /// tints its whole background, not only the close glyph —
+    /// `draw_tab_bar` (no `hovered_tab`) leaves it a flat `tab_bar_bg`.
+    #[test]
+    #[allow(deprecated)]
+    fn hovered_tab_tints_the_whole_background_not_just_the_close_glyph() {
+        let bar = sample_bar();
+        let theme = Theme::default();
+        // Tab 1 ("lib.rs") is inactive, so its resting fill is
+        // `tab_bar_bg` — the same colour as the surrounding strip, which
+        // is what makes a hover tint visible against it.
+        let (_, hits) = paint_via_backend(&bar, None);
+        let (start, end) = hits.slot_positions[1];
+        assert!(end > start, "second tab slot must have non-zero width");
+        let probe_x = (start + 2.0) as u32;
+        let probe_y = H / 2;
+
+        let (resting, _) = paint_via_backend_with_state(&bar, None, None);
+        let (r, g, b, _) = resting.pixel(probe_x, probe_y);
+        assert_eq!(
+            (r, g, b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "with no hovered_tab, tab 1's background must stay tab_bar_bg",
+        );
+
+        let (hovered, _) = paint_via_backend_with_state(&bar, Some(1), None);
+        let (r, g, b, _) = hovered.pixel(probe_x, probe_y);
+        let expected = theme.list_hover_bg(theme.tab_bar_bg);
+        assert_eq!(
+            (r, g, b),
+            (expected.r, expected.g, expected.b),
+            "hovered_tab == Some(1) must tint tab 1's background toward list_hover_bg",
+        );
+    }
+
+    /// `pressed_tab` tints deeper than `hovered_tab` — `Theme::list_pressed_bg`
+    /// is a higher-alpha blend than `list_hover_bg` — and wins when both
+    /// name the same tab (mirrors the precedence every sibling `_with_state`
+    /// painter in this crate already applies).
+    #[test]
+    #[allow(deprecated)]
+    fn pressed_tab_tints_deeper_than_hovered_tab() {
+        let bar = sample_bar();
+        let theme = Theme::default();
+        let (_, hits) = paint_via_backend(&bar, None);
+        let (start, _) = hits.slot_positions[1];
+        let probe_x = (start + 2.0) as u32;
+        let probe_y = H / 2;
+
+        let (pressed, _) = paint_via_backend_with_state(&bar, Some(1), Some(1));
+        let (r, g, b, _) = pressed.pixel(probe_x, probe_y);
+        let expected = theme.list_pressed_bg(theme.tab_bar_bg);
+        assert_eq!(
+            (r, g, b),
+            (expected.r, expected.g, expected.b),
+            "pressed_tab == Some(1) must tint tab 1's background toward list_pressed_bg, \
+             even though hovered_tab also names it",
+        );
+
+        let hover_expected = theme.list_hover_bg(theme.tab_bar_bg);
+        assert_ne!(
+            (expected.r, expected.g, expected.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "pressed and hover tints must read as visibly different colours",
+        );
+    }
+
+    /// Leaving the hovered tab clears the tint — a plain `draw_tab_bar`
+    /// (or `draw_tab_bar_with_state` with both indices `None`) paints
+    /// exactly the untinted resting colour.
+    #[test]
+    #[allow(deprecated)]
+    fn mouse_leaving_the_tab_clears_the_hover_tint() {
+        let bar = sample_bar();
+        let theme = Theme::default();
+        let (_, hits) = paint_via_backend(&bar, None);
+        let (start, _) = hits.slot_positions[1];
+        let probe_x = (start + 2.0) as u32;
+        let probe_y = H / 2;
+
+        let (after_leave, _) = paint_via_backend_with_state(&bar, None, None);
+        let (r, g, b, _) = after_leave.pixel(probe_x, probe_y);
+        assert_eq!(
+            (r, g, b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "hovered_tab: None must repaint tab 1 back to the untinted tab_bar_bg",
+        );
+    }
+
     /// `Backend::tab_bar_layout` must return exactly what
     /// `draw_tab_bar` painted — both route through `mac_tab_bar_layout`,
     /// and this pins that. See that function's docs for
@@ -1160,8 +1491,9 @@ mod tests {
         let bar = sample_bar();
         let f = font();
 
-        let hits = mac_tab_bar_layout(&f, W as f64, &bar);
-        let native = mac_tab_bar_native_layout(&f, W as f64, H as f64, &bar);
+        let style = Style::default();
+        let hits = mac_tab_bar_layout(&f, W as f64, &bar, &style);
+        let native = mac_tab_bar_native_layout(&f, W as f64, H as f64, &bar, &style);
         let native_as_hits = crate::backend::tab_bar_hits_from_layout(&native, &bar);
 
         assert_eq!(
@@ -1425,10 +1757,10 @@ mod tests {
 
         let (slot_lo, _) = hits.slot_positions[0];
         let icon_extra = mac_tab_icon_extras(&font(), bar.tabs.len(), &icons)[0];
-        // The glyph occupies `[slot_lo + TAB_PAD, slot_lo + TAB_PAD +
-        // icon_extra - TAB_ICON_GAP)`; the gap after it is bare
-        // background, which is what separates icon ink from label ink.
-        let glyph_lo = slot_lo + TAB_PAD;
+        // The glyph occupies `[slot_lo + tab_padding_x, slot_lo +
+        // tab_padding_x + icon_extra - TAB_ICON_GAP)`; the gap after it is
+        // bare background, which is what separates icon ink from label ink.
+        let glyph_lo = slot_lo + Style::default().tab_padding_x as f64;
         let glyph_hi = glyph_lo + icon_extra - TAB_ICON_GAP;
         assert!(glyph_hi > glyph_lo, "icon span must be non-empty");
 
@@ -1493,17 +1825,18 @@ mod tests {
     fn short_and_overlong_sidecars_are_tolerated() {
         let bar = sample_bar();
         let f = font();
+        let style = Style::default();
 
         // One entry for a two-tab bar: tab 1 behaves as `None`.
         let short = vec![Some(TabIcon {
             glyph: "R".into(),
             color: Color::rgb(220, 120, 60),
         })];
-        let hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &short);
+        let hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &short, &style);
         assert_eq!(hits.slot_positions.len(), bar.tabs.len());
         assert_eq!(
             hits.slot_positions[0],
-            mac_tab_bar_layout_icons(&f, W as f64, &bar, &sample_icons()).slot_positions[0],
+            mac_tab_bar_layout_icons(&f, W as f64, &bar, &sample_icons(), &style).slot_positions[0],
             "a short sidecar decorates the entries it does have",
         );
 
@@ -1516,8 +1849,8 @@ mod tests {
                 color: Color::rgb(220, 120, 60),
             }),
         ];
-        let long_hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &long);
-        let plain = mac_tab_bar_layout(&f, W as f64, &bar);
+        let long_hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &long, &style);
+        let plain = mac_tab_bar_layout(&f, W as f64, &bar, &style);
         assert_eq!(
             long_hits.slot_positions, plain.slot_positions,
             "an overlong sidecar whose in-range entries are all None must \
@@ -1562,9 +1895,10 @@ mod tests {
             })
             .collect();
         let f = font();
+        let style = Style::default();
 
-        let plain = mac_tab_bar_layout(&f, W as f64, &bar);
-        let decorated = mac_tab_bar_layout_icons(&f, W as f64, &bar, &icons);
+        let plain = mac_tab_bar_layout(&f, W as f64, &bar, &style);
+        let decorated = mac_tab_bar_layout_icons(&f, W as f64, &bar, &icons, &style);
         // Guard the premise: the reservation must actually have widened
         // the slots this correction is computed from, otherwise the
         // assertions below would hold vacuously.
@@ -1609,9 +1943,10 @@ mod tests {
         let bar = sample_bar();
         let icons = sample_icons();
         let f = font();
+        let style = Style::default();
 
-        let hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &icons);
-        let native = mac_tab_bar_native_layout_icons(&f, W as f64, H as f64, &bar, &icons);
+        let hits = mac_tab_bar_layout_icons(&f, W as f64, &bar, &icons, &style);
+        let native = mac_tab_bar_native_layout_icons(&f, W as f64, H as f64, &bar, &icons, &style);
         let native_as_hits = crate::backend::tab_bar_hits_from_layout(&native, &bar);
 
         assert_eq!(hits.slot_positions, native_as_hits.slot_positions);
@@ -1770,7 +2105,7 @@ mod tests {
 
         // Bar-relative geometry `draw_tab_bar_icons` computes internally,
         // before any `rect.x` shift — the pre-fix behaviour.
-        let bar_relative = mac_tab_bar_layout(&font(), W as f64, &bar);
+        let bar_relative = mac_tab_bar_layout(&font(), W as f64, &bar, &Style::default());
         assert_eq!(
             bar_relative.right_segment_bounds.len(),
             1,
@@ -2037,6 +2372,505 @@ mod tests {
                 .iter()
                 .map(|r| r.text.as_str())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// `TabChrome::focused_index` paints a focus-visible ring on the
+    /// named tab — present after keyboard navigation (`focused_index:
+    /// Some(i)`), absent after a click (`focused_index: None`, the
+    /// caller's own focus-visible suppression convention documented on
+    /// [`crate::primitives::tab_bar::TabChrome::focused_index`]).
+    ///
+    /// Targets tab 0 — the active tab and the default focus target —
+    /// with a non-default `focus_ring_width`, and probes the midpoint
+    /// of all four edges of the inset rect the paint-loop's comment
+    /// describes, so a regression that drops an edge (off-canvas
+    /// top/bottom, or clobbered by the next tab's background) fails
+    /// here rather than only in a geometry picked to dodge it. The
+    /// click-suppressed half asserts the *bar background* colour, not
+    /// just "not the ring colour", so a stray mark of any other colour
+    /// also fails.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits`
+    fn focused_index_paints_a_ring_after_keyboard_nav_and_none_after_a_click() {
+        use crate::primitives::tab_bar::TabChrome;
+
+        let bar = sample_bar();
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let style = Style::default().with_focus_ring_width(4.0);
+        let theme = Theme::default();
+        let ring_color = theme.focus_ring_color();
+        let bar_bg = theme.tab_bar_bg;
+
+        let paint = |focused_index: Option<usize>| -> (BitmapSurface, TabBarHits) {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = backend_with_test_fonts();
+            backend.set_style(style.clone());
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let hits = std::cell::RefCell::new(None);
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                let chrome = TabChrome::default().with_focused_index(focused_index);
+                let h = b.draw_tab_bar_with_chrome_and_glyphs(rect, &bar, None, &chrome, None);
+                *hits.borrow_mut() = Some(h);
+            });
+            backend.end_frame();
+            (surface, hits.into_inner().unwrap())
+        };
+
+        // Keyboard focus on tab 0 ("main.rs", the active tab): all four
+        // edges of the inset ring rect must carry
+        // `theme.focus_ring_color()`. Mirrors the paint loop's own
+        // geometry exactly (slot bounds inset by half the ring width),
+        // not the outset `focus_ring_geometry` `Button`'s ring uses.
+        let (focused_surface, focused_hits) = paint(Some(0));
+        let (slot_x, slot_end) = focused_hits.slot_positions[0];
+        let tab_content_w = slot_end - slot_x - TAB_OUTER_GAP;
+        let ring_width = style.focus_ring_width as f64;
+        let inset = ring_width / 2.0;
+        let left = (slot_x + inset).round() as u32;
+        let right = (slot_x + tab_content_w - inset).round() as u32;
+        let top = inset.round() as u32;
+        let bottom = (H as f64 - inset).round() as u32;
+        let mid_x = (slot_x + tab_content_w / 2.0).round() as u32;
+        let mid_y = H / 2;
+
+        // Without a ring, tab 0's *active-tab chip* (not the flat bar
+        // background) covers the left/right probes — they sit within
+        // the chip's straight vertical edge, well clear of its rounded
+        // corners — while the top/bottom probes sit above/below the
+        // chip's own `TAB_CHIP_INSET_Y` margin, where the flat bar
+        // background still shows through. Each probe's unfocused
+        // expectation reflects whichever of those two is actually
+        // painted there.
+        let active_bg = theme.tab_active_bg;
+        let probes = [
+            ("left", left, mid_y, active_bg),
+            ("right", right, mid_y, active_bg),
+            ("top", mid_x, top, bar_bg),
+            ("bottom", mid_x, bottom, bar_bg),
+        ];
+        for (name, px, py, _) in probes {
+            let (r, g, b, _) = focused_surface.pixel(px, py);
+            assert_eq!(
+                (r, g, b),
+                (ring_color.r, ring_color.g, ring_color.b),
+                "expected the focus ring colour at the {name} edge ({px}, {py}) \
+                 when TabChrome::focused_index names tab 0",
+            );
+        }
+
+        // Click suppresses focus-visible: `focused_index: None` must
+        // paint whatever sits under that edge absent a ring — the
+        // chip or the bar background, per `probes` above — not just
+        // "something other than the ring colour".
+        let (clicked_surface, _clicked_hits) = paint(None);
+        for (name, px, py, expected) in probes {
+            let (r0, g0, b0, _) = clicked_surface.pixel(px, py);
+            assert_eq!(
+                (r0, g0, b0),
+                (expected.r, expected.g, expected.b),
+                "expected no focus ring at the {name} edge ({px}, {py}) when \
+                 TabChrome::focused_index is None (click-suppressed)",
+            );
+        }
+    }
+
+    /// `Backend::draw_tab_bar_with_chrome`/`draw_tab_bar_with_chrome_layout`
+    /// are the entry points the gallery and `quadraui-binding-core`'s
+    /// render path actually call — never the deprecated `_and_glyphs`
+    /// spelling [`focused_index_paints_a_ring_after_keyboard_nav_and_none_after_a_click`]
+    /// exercises directly. Both must paint `chrome.focused_index`'s ring
+    /// too, not just the `_and_glyphs` call.
+    #[test]
+    fn draw_tab_bar_with_chrome_and_its_layout_twin_both_paint_the_focus_ring() {
+        use crate::primitives::tab_bar::TabChrome;
+
+        let bar = sample_bar();
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let theme = Theme::default();
+        let ring_color = theme.focus_ring_color();
+        let chrome = TabChrome::default().with_focused_index(Some(0));
+        // Left ring edge for tab 0 (`slot_x == 0`) at the default
+        // `Style::focus_ring_width` (2.0, inset by half): matches the
+        // paint loop's own `(slot_x + inset).round()` exactly.
+        let probe_x = 1;
+        let probe_y = H / 2;
+
+        let paint_via = |f: fn(&mut MacBackend, QRect, &TabBar, Option<usize>, &TabChrome)| {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = backend_with_test_fonts();
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                f(b, rect, &bar, None, &chrome);
+            });
+            backend.end_frame();
+            surface
+        };
+
+        #[allow(deprecated)] // `draw_tab_bar_with_chrome` returns the deprecated `TabBarHits`
+        let via_chrome = paint_via(|b, rect, bar, hovered, chrome| {
+            let _ = b.draw_tab_bar_with_chrome(rect, bar, hovered, chrome);
+        });
+        let (r, g, b) = {
+            let (r, g, b, _) = via_chrome.pixel(probe_x, probe_y);
+            (r, g, b)
+        };
+        assert_eq!(
+            (r, g, b),
+            (ring_color.r, ring_color.g, ring_color.b),
+            "draw_tab_bar_with_chrome must paint chrome.focused_index's ring",
+        );
+
+        let via_chrome_layout = paint_via(|b, rect, bar, hovered, chrome| {
+            let _ = b.draw_tab_bar_with_chrome_layout(rect, bar, hovered, chrome);
+        });
+        let (r2, g2, b2) = {
+            let (r, g, b, _) = via_chrome_layout.pixel(probe_x, probe_y);
+            (r, g, b)
+        };
+        assert_eq!(
+            (r2, g2, b2),
+            (ring_color.r, ring_color.g, ring_color.b),
+            "draw_tab_bar_with_chrome_layout must paint chrome.focused_index's ring",
+        );
+    }
+
+    /// `Style::tab_padding_x` sets the label's leading inset: with no icon
+    /// decorating the tab, the label text run's painted `x` origin is
+    /// exactly `slot_x + tab_padding_x`, not a fixed literal. Uses the
+    /// painted-text-run recorder (the same choke point
+    /// `close_dirty_glyph_override_paints_app_glyph_default_paints_codicon`
+    /// drives above) rather than scanning pixels, since `draw_text`
+    /// records the exact `x` this rasteriser paints at — a direct
+    /// assertion on the ink column, not an inference from colour.
+    #[test]
+    #[allow(deprecated)]
+    fn tab_padding_x_sets_the_labels_leading_inset() {
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: "main.rs".into(),
+                is_active: false,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: false,
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: false,
+            compact: false,
+        };
+
+        // Paint once per style and return the label's recorded run x
+        // alongside the tab's slot origin, so each call is self-contained
+        // about which inset produced it.
+        let label_x_for_style = |style: Style| -> (f64, f64) {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = backend_with_test_fonts();
+            backend.set_style(style);
+            backend.set_painted_text_recording(true);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let hits = std::cell::RefCell::new(None);
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                let h = b.draw_tab_bar(QRect::new(0.0, 0.0, W as f32, H as f32), &bar, None);
+                *hits.borrow_mut() = Some(h);
+            });
+            let slot_x = hits.into_inner().unwrap().slot_positions[0].0;
+            let runs = backend.text_runs().to_vec();
+            backend.end_frame();
+            let label_run = runs
+                .iter()
+                .find(|r| r.text == "main.rs")
+                .expect("label must have painted a text run");
+            (label_run.bounds.x as f64, slot_x)
+        };
+
+        let default_style = Style::default();
+        let (default_label_x, default_slot_x) = label_x_for_style(default_style);
+        assert!(
+            (default_label_x - (default_slot_x + default_style.tab_padding_x as f64)).abs()
+                < 0.01,
+            "label x {default_label_x} should sit tab_padding_x={} in from slot edge {default_slot_x}",
+            default_style.tab_padding_x,
+        );
+
+        // A distinctly different inset must move the label by exactly the
+        // difference — proving the token actually drives the paint rather
+        // than the assertion above holding by coincidence at the default.
+        let wide_style = Style::default().with_tab_padding_x(26.0);
+        let (wide_label_x, wide_slot_x) = label_x_for_style(wide_style);
+        assert!(
+            (wide_label_x - (wide_slot_x + wide_style.tab_padding_x as f64)).abs() < 0.01,
+            "label x {wide_label_x} should sit tab_padding_x={} in from slot edge {wide_slot_x}",
+            wide_style.tab_padding_x,
+        );
+        assert!(
+            (wide_label_x - default_label_x - 16.0).abs() < 0.01,
+            "widening tab_padding_x by 16.0 (10.0 -> 26.0) should shift the label \
+             by exactly 16.0 (default {default_label_x}, wide {wide_label_x})",
+        );
+    }
+
+    /// A label wider than the tab strip it has to fit in is ellipsis-fitted
+    /// through the shared `crate::primitives::tab_bar::fit_tab_label`
+    /// instead of being dropped from the strip. The close glyph's hit box
+    /// — and the glyph itself — must still land fully inside the narrow
+    /// strip.
+    #[test]
+    #[allow(deprecated)]
+    fn overlong_label_in_a_narrow_strip_ends_in_ellipsis_and_close_glyph_stays_fully_visible() {
+        const NARROW_W: f64 = 110.0;
+
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: "a_very_long_filename_for_this_single_tab.rs".into(),
+                is_active: true,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: true,
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+
+        let surface = BitmapSurface::new(NARROW_W as u32, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = backend_with_test_fonts();
+        backend.set_painted_text_recording(true);
+        backend.begin_frame(Viewport::new(NARROW_W as f32, H as f32, 1.0));
+        let hits = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let h = b.draw_tab_bar(QRect::new(0.0, 0.0, NARROW_W as f32, H as f32), &bar, None);
+            *hits.borrow_mut() = Some(h);
+        });
+        let hits = hits.into_inner().unwrap();
+        let runs = backend.text_runs().to_vec();
+        backend.end_frame();
+
+        assert_eq!(
+            hits.slot_positions.len(),
+            1,
+            "the narrow strip must still show the tab (ellipsis-fitted), not drop it"
+        );
+
+        let label_run = runs
+            .iter()
+            .find(|r| r.text != crate::codicon::CLOSE.to_string() && r.text.contains('…'))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected an ellipsis-truncated label run among painted runs, got {:?}",
+                    runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            label_run.text.ends_with('…'),
+            "label run {:?} must end in an ellipsis",
+            label_run.text
+        );
+        assert!(
+            (label_run.text.chars().count() as f64) < bar.tabs[0].label.chars().count() as f64,
+            "the painted label {:?} must be shorter than the original {:?}",
+            label_run.text,
+            bar.tabs[0].label,
+        );
+
+        let (close_lo, close_hi) =
+            hits.close_bounds[0].expect("a closable tab must still report a close-button hit box");
+        assert!(
+            close_hi <= NARROW_W,
+            "close hit box [{close_lo}, {close_hi}] must stay inside the {NARROW_W}-wide strip"
+        );
+
+        let close_run = runs
+            .iter()
+            .find(|r| r.text.contains(crate::codicon::CLOSE))
+            .expect("the close glyph must still be painted");
+        assert!(
+            (close_run.bounds.x as f64) >= 0.0
+                && (close_run.bounds.x + close_run.bounds.width) as f64 <= NARROW_W,
+            "close glyph run {close_run:?} must be fully visible inside the {NARROW_W}-wide strip"
+        );
+    }
+
+    /// Reproduces the review's reported numbers: a label whose true
+    /// content width is `21.6` points lands against a budget that took an
+    /// `f64 -> f32 -> f64` round trip through `TabBarHits::slot_positions`
+    /// and came back one ulp short, at `21.599998`. Without the tolerance
+    /// this would wrongly be judged an overflow and sent through
+    /// `fit_tab_label`, ellipsising a label that fits exactly.
+    #[test]
+    fn label_fits_without_truncation_absorbs_f32_round_trip_noise() {
+        assert!(label_fits_without_truncation(21.6, 21.599998));
+        assert!(label_fits_without_truncation(28.8, 28.799995));
+        assert!(label_fits_without_truncation(43.2, 43.199982));
+        assert!(label_fits_without_truncation(50.4, 50.399994));
+
+        // A genuine overflow — a budget meaningfully short of the content
+        // width — must still be reported as not fitting.
+        assert!(!label_fits_without_truncation(50.0, 10.0));
+        assert!(!label_fits_without_truncation(21.6, 20.0));
+    }
+
+    /// A label that genuinely fits its slot must paint unchanged — the
+    /// non-overflow path must never reach for `fit_tab_label`. Swept
+    /// across a range of label lengths (rather than one hand-picked width)
+    /// so a regression anywhere in that range — e.g. the f32 round-trip
+    /// noise `label_fits_without_truncation` exists to absorb — shows up
+    /// as a failure here.
+    #[test]
+    #[allow(deprecated)]
+    fn fully_fitting_labels_never_get_an_ellipsis() {
+        for len in 1..=30usize {
+            let label = "a".repeat(len);
+            let bar = TabBar {
+                id: WidgetId::new("tabs"),
+                tabs: vec![TabItem {
+                    label: label.clone(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                }],
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: true,
+                compact: false,
+            };
+
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = backend_with_test_fonts();
+            backend.set_painted_text_recording(true);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                b.draw_tab_bar(QRect::new(0.0, 0.0, W as f32, H as f32), &bar, None);
+            });
+            let runs = backend.text_runs().to_vec();
+            backend.end_frame();
+
+            let label_run = runs
+                .iter()
+                .find(|r| r.text != crate::codicon::CLOSE.to_string())
+                .unwrap_or_else(|| panic!("a {len}-char label must be painted, got {runs:?}"));
+            assert_eq!(
+                label_run.text, label,
+                "a {len}-char label fitting a {W}-wide strip must paint unchanged, got {:?}",
+                label_run.text
+            );
+        }
+    }
+
+    /// A label truncated by the overflow path, on a tab decorated with an
+    /// icon, must reserve the icon's width identically on the hit-box side
+    /// (`mac_tab_bar_native_layout_icons`'s close-button hit box, via
+    /// `tab_label_budget`'s `leading`) and the paint side
+    /// (`draw_tab_bar_icons_with_glyphs`'s `fit_tab_label` call, via the
+    /// same `tab_label_budget`) — the one place those two `leading`
+    /// derivations could silently diverge.
+    #[test]
+    #[allow(deprecated)]
+    fn overlong_label_with_icon_in_a_narrow_strip_reserves_icon_width_on_both_paint_and_hit_sides()
+    {
+        const NARROW_W: f64 = 150.0;
+
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: "a_very_long_filename_for_this_single_tab.rs".into(),
+                is_active: true,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: true,
+            }],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+        let icons = vec![Some(TabIcon {
+            glyph: "R".into(),
+            color: Color::rgb(220, 120, 60),
+        })];
+
+        let surface = BitmapSurface::new(NARROW_W as u32, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = backend_with_test_fonts();
+        backend.set_painted_text_recording(true);
+        backend.begin_frame(Viewport::new(NARROW_W as f32, H as f32, 1.0));
+        let hits = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let h = b.draw_tab_bar_icons(
+                QRect::new(0.0, 0.0, NARROW_W as f32, H as f32),
+                &bar,
+                &icons,
+                None,
+            );
+            *hits.borrow_mut() = Some(h);
+        });
+        let hits = hits.into_inner().unwrap();
+        let runs = backend.text_runs().to_vec();
+        backend.end_frame();
+
+        assert_eq!(
+            hits.slot_positions.len(),
+            1,
+            "the narrow strip must still show the decorated tab"
+        );
+
+        let icon_run = runs
+            .iter()
+            .find(|r| r.text == "R")
+            .expect("the icon glyph must be painted");
+        let label_run = runs
+            .iter()
+            .find(|r| {
+                r.text != "R" && r.text != crate::codicon::CLOSE.to_string() && r.text.contains('…')
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected an ellipsis-truncated label run among painted runs, got {:?}",
+                    runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            label_run.text.ends_with('…'),
+            "label run {:?} must end in an ellipsis",
+            label_run.text
+        );
+        // The label must start to the right of the icon, on both the
+        // painted glyph and the hit-box side — exactly `tab_label_budget`'s
+        // `leading`, shared by layout and paint.
+        assert!(
+            (label_run.bounds.x as f64) > (icon_run.bounds.x + icon_run.bounds.width) as f64,
+            "label run {:?} must start after the icon run {:?}",
+            label_run,
+            icon_run,
+        );
+
+        let (close_lo, close_hi) =
+            hits.close_bounds[0].expect("a closable tab must still report a close-button hit box");
+        assert!(
+            close_hi <= NARROW_W,
+            "close hit box [{close_lo}, {close_hi}] must stay inside the {NARROW_W}-wide strip"
+        );
+        let close_run = runs
+            .iter()
+            .find(|r| r.text.contains(crate::codicon::CLOSE))
+            .expect("the close glyph must still be painted");
+        assert!(
+            (close_run.bounds.x as f64) >= 0.0
+                && (close_run.bounds.x + close_run.bounds.width) as f64 <= NARROW_W,
+            "close glyph run {close_run:?} must be fully visible inside the {NARROW_W}-wide strip"
         );
     }
 }

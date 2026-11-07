@@ -42,7 +42,7 @@ use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a toast stack for one corner.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToastOverlay {
     pub id: WidgetId,
     /// Which corner of the viewport the stack occupies.
@@ -100,7 +100,7 @@ pub enum ToastCorner {
 /// assert_eq!(layout.visible_toasts.len(), 1);
 /// assert_eq!(layout.hit_test(60.0, 21.0), ToastHit::Body(toast.id));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Toast {
     pub id: WidgetId,
     pub title: String,
@@ -133,7 +133,10 @@ pub enum ToastSeverity {
 }
 
 /// Action button on a toast.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Eq`: [`Self::spec`] carries a [`crate::ButtonSpec`], which has an
+/// `f32` (`icon_gap`) with no total order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToastButton {
     pub id: WidgetId,
     pub label: String,
@@ -146,6 +149,30 @@ pub struct ToastButton {
     /// one accent-filled button.
     #[serde(default)]
     pub primary: bool,
+    /// Optional [`crate::ButtonSpec`] override, carrying the B3a
+    /// vocabulary (variant intent, icon, a tooltip) this button's own
+    /// legacy `primary` field can't express. `None` (the default) renders
+    /// the plain filled-chip/plain look; see [`Self::resolved_button_spec`].
+    #[serde(default)]
+    pub spec: Option<crate::primitives::button::ButtonSpec>,
+}
+
+impl ToastButton {
+    /// This button's explicit [`Self::spec`] override when set, otherwise
+    /// one derived from its legacy `primary` field (primary → `Primary`
+    /// variant, otherwise `Secondary`).
+    pub fn resolved_button_spec(&self) -> crate::primitives::button::ButtonSpec {
+        if let Some(spec) = &self.spec {
+            return spec.clone();
+        }
+        let mut derived = crate::primitives::button::ButtonSpec::new(self.label.clone());
+        derived.variant = if self.primary {
+            crate::primitives::button::ButtonVariant::Primary
+        } else {
+            crate::primitives::button::ButtonVariant::Secondary
+        };
+        derived
+    }
 }
 
 /// Keyboard-focus target within a [`ToastOverlay`] — set
@@ -699,8 +726,11 @@ impl ToastOverlay {
 // action-padding/box-width constants below match every pre-migration
 // per-backend constant's value exactly.
 //
-// `severity_bg`'s colour formula (the `Success`/`Warning` hardcoded RGB,
-// `Info`/`Error` theme fields) is unchanged.
+// `severity_bg` resolves every severity through a dedicated `Theme`
+// accessor (`success_bg`/`warning_bg`/`danger_bg`/`info_bg`) rather than a
+// mix of hardcoded RGB literals and raw foreground fields, so a themed
+// app's success/warning/danger/info colours stay consistent across every
+// primitive that needs one of these roles, not just toasts.
 //
 // # Divergences found — reported, not silently resolved
 //
@@ -764,13 +794,21 @@ pub(crate) mod native_surface_paint {
 
     /// Severity → fallback background tint, used when `Toast::accent` is
     /// `None`. Duplicated across `tui::toast` (out of scope for the
-    /// `PaintSurface` migration).
+    /// `PaintSurface` migration) — both read the same `Theme` fields/
+    /// accessors, so they stay in sync without a shared function.
+    ///
+    /// `Info` stays on the neutral `theme.surface_bg` panel colour
+    /// rather than `Theme::info_bg`'s accent tint: `Info` is
+    /// `ToastSeverity::default()`, so every toast shown without an
+    /// explicit severity goes through this arm, and VS Code's own info
+    /// notification background is the neutral notification surface, not
+    /// an accent-tinted one.
     fn severity_bg(severity: ToastSeverity, theme: &Theme) -> Color {
         match severity {
             ToastSeverity::Info => theme.surface_bg,
-            ToastSeverity::Success => Color::rgb(30, 80, 30),
-            ToastSeverity::Warning => Color::rgb(100, 80, 20),
-            ToastSeverity::Error => theme.error_fg,
+            ToastSeverity::Success => theme.success_bg(),
+            ToastSeverity::Warning => theme.warning_bg(),
+            ToastSeverity::Error => theme.danger_bg(),
         }
     }
 
@@ -1206,7 +1244,7 @@ pub(crate) mod native_surface_paint {
                 300.0,
                 16.0,
             );
-            assert_eq!(surface.fills[0].1, theme.error_fg);
+            assert_eq!(surface.fills[0].1, theme.danger_bg());
         }
 
         /// Regression: the dismiss glyph and action label must be painted
@@ -1214,6 +1252,7 @@ pub(crate) mod native_surface_paint {
         fn dismiss_and_action_are_centred_in_their_sub_region() {
             let mut t = toast("t1", "Build failed");
             t.actions = vec![ToastButton {
+                spec: None,
                 id: WidgetId::new("open_log"),
                 label: "Open log".into(),
                 primary: false,
@@ -1259,11 +1298,13 @@ pub(crate) mod native_surface_paint {
             let mut t = toast("t1", "Install Markdown Language Server?");
             t.actions = vec![
                 ToastButton {
+                    spec: None,
                     id: WidgetId::new("install"),
                     label: "Install".into(),
                     primary: true,
                 },
                 ToastButton {
+                    spec: None,
                     id: WidgetId::new("dont-ask"),
                     label: "Don't ask again".into(),
                     primary: false,
@@ -1311,11 +1352,13 @@ pub(crate) mod native_surface_paint {
             let mut t = toast("t1", "Install?");
             t.actions = vec![
                 ToastButton {
+                    spec: None,
                     id: WidgetId::new("install"),
                     label: "Install".into(),
                     primary: true,
                 },
                 ToastButton {
+                    spec: None,
                     id: WidgetId::new("skip"),
                     label: "Skip".into(),
                     primary: false,
@@ -1388,6 +1431,7 @@ pub(crate) mod native_surface_paint {
             let t1 = toast("t1", "Saved");
             let mut t2 = toast("t2", "Install?");
             t2.actions = vec![ToastButton {
+                spec: None,
                 id: WidgetId::new("install"),
                 label: "Install".into(),
                 primary: true,
@@ -1505,6 +1549,7 @@ pub(crate) mod native_surface_paint {
         fn long_title_and_body_stay_inside_bounds_and_dont_overlap_action() {
             let mut t = toast("t1", "Install Markdown Language Server?");
             t.actions = vec![ToastButton {
+                spec: None,
                 id: WidgetId::new("install"),
                 label: "Install".into(),
                 primary: true,
@@ -1676,6 +1721,7 @@ mod tests {
     fn toast_layout_action_and_dismiss_regions() {
         let mut toast = make_toast("t1", "Build failed");
         toast.actions = vec![ToastButton {
+            spec: None,
             id: WidgetId::new("open_log"),
             label: "Open log".to_string(),
             primary: false,
@@ -1722,11 +1768,13 @@ mod tests {
         let mut toast = make_toast("t1", "Install Markdown Language Server?");
         toast.actions = vec![
             ToastButton {
+                spec: None,
                 id: WidgetId::new("install"),
                 label: "Install".to_string(),
                 primary: true,
             },
             ToastButton {
+                spec: None,
                 id: WidgetId::new("dont-ask"),
                 label: "Don't ask again".to_string(),
                 primary: false,
@@ -1784,6 +1832,7 @@ mod tests {
     fn toast_layout_nonzero_origin_shifts_every_bound() {
         let mut toast = make_toast("t1", "Build failed");
         toast.actions = vec![ToastButton {
+            spec: None,
             id: WidgetId::new("open_log"),
             label: "Open log".to_string(),
             primary: false,
@@ -1816,5 +1865,50 @@ mod tests {
             shifted.hit_test(db.x + 5.0, db.y + 10.0),
             ToastHit::Dismiss(WidgetId::new("t1")),
         );
+    }
+
+    // ── B3b: ButtonSpec seam ─────────────────────────────────────────────
+
+    #[test]
+    fn primary_action_without_spec_derives_a_primary_spec() {
+        let action = ToastButton {
+            id: WidgetId::new("toast:install"),
+            label: "Install".to_string(),
+            primary: true,
+            spec: None,
+        };
+        let spec = action.resolved_button_spec();
+        assert_eq!(spec.label, "Install");
+        assert_eq!(
+            spec.variant,
+            crate::primitives::button::ButtonVariant::Primary
+        );
+    }
+
+    #[test]
+    fn non_primary_action_without_spec_derives_a_secondary_spec() {
+        let action = ToastButton {
+            id: WidgetId::new("toast:dismiss"),
+            label: "Don't ask again".to_string(),
+            primary: false,
+            spec: None,
+        };
+        assert_eq!(
+            action.resolved_button_spec().variant,
+            crate::primitives::button::ButtonVariant::Secondary
+        );
+    }
+
+    #[test]
+    fn action_with_explicit_spec_overrides_the_legacy_fields() {
+        let mut explicit = crate::primitives::button::ButtonSpec::new("Report issue");
+        explicit.variant = crate::primitives::button::ButtonVariant::Warning;
+        let action = ToastButton {
+            id: WidgetId::new("toast:report"),
+            label: "Report".to_string(),
+            primary: false,
+            spec: Some(explicit.clone()),
+        };
+        assert_eq!(action.resolved_button_spec(), explicit);
     }
 }

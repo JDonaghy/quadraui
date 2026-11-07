@@ -87,13 +87,64 @@ pub fn crossterm_key_to_uievent(event: KeyEvent) -> Option<UiEvent> {
         return None;
     }
     let key = crossterm_keycode_to_key(event.code)?;
-    let modifiers = crossterm_modifiers_to_quadraui(event.modifiers);
+    let mut modifiers = crossterm_modifiers_to_quadraui(event.modifiers);
+    if let Key::Char(c) = key {
+        normalise_char_shift(c, &mut modifiers);
+    }
     let repeat = event.kind == KeyEventKind::Repeat;
     Some(UiEvent::KeyPressed {
         key,
         modifiers,
         repeat,
     })
+}
+
+/// The printable ASCII glyphs a conventional layout only produces with
+/// shift held, excluding the uppercase letters.
+///
+/// Membership means "the shift is already recorded in the glyph": `%` is
+/// what shift turns `5` into, so a `shift` bit alongside `%` says nothing
+/// the glyph does not. The complementary base keys (`5`, `;`, `\`) are
+/// deliberately absent — a `shift` bit alongside *those* is the only
+/// record that shift was held at all.
+const SHIFTED_ASCII_SYMBOLS: &str = "~!@#$%^&*()_+{}|:\"<>?";
+
+/// Bring the `shift` bit of a printable `Key::Char` event to one shape,
+/// whichever keyboard protocol the terminal negotiated.
+///
+/// The target shape is crossterm's own legacy-escape-sequence decoding:
+/// `shift` is set for an uppercase letter and clear for a shifted symbol
+/// (`:`, `%`, `|`). Terminals disagree about what they report once the
+/// kitty keyboard protocol is in play — one sends the resolved glyph *and*
+/// a `SHIFT` modifier, another resolves the glyph from the CSI-u
+/// `alternate-key-codes` field and clears `SHIFT` as it does so (see
+/// [`super::run`], which asks for that field) — and a consumer that reads
+/// "printable char + modifier" as a chord rather than text, such as a
+/// vim-style normal-mode router, drops the keystroke when the spurious bit
+/// is there.
+///
+/// Two shapes are left exactly as they arrive:
+///
+/// - **An unshifted base key carrying `shift`** (`;` + `SHIFT`), which a
+///   terminal that honours `REPORT_ALL_KEYS_AS_ESCAPE_CODES` but not
+///   `REPORT_ALTERNATE_KEYS` produces. The glyph the user typed is not
+///   recoverable here without assuming a layout, so the bit stays: a
+///   caller may ignore the event, but it is never handed the wrong glyph.
+/// - **A shifted symbol inside a chord** (`Ctrl+Shift+5` → `%` +
+///   `CONTROL | SHIFT`), where dropping the bit would erase a modifier a
+///   caller may be matching on.
+///
+/// `shift` is re-derived for an uppercase letter in *both* cases, so
+/// `Ctrl+Shift+T` stays distinguishable from `Ctrl+T` — including when
+/// crossterm cleared `SHIFT` itself while resolving the `T`.
+fn normalise_char_shift(c: char, modifiers: &mut Modifiers) {
+    if c.is_uppercase() {
+        modifiers.shift = true;
+    } else if SHIFTED_ASCII_SYMBOLS.contains(c)
+        && !(modifiers.ctrl || modifiers.alt || modifiers.cmd)
+    {
+        modifiers.shift = false;
+    }
 }
 
 /// Translate one crossterm mouse event, treating `column`/`row` as whole
@@ -769,9 +820,16 @@ mod tests {
 
     #[test]
     fn key_roundtrips_through_synth() {
+        // Every `Char` here keeps its modifiers verbatim, so the
+        // round-trip is bit-for-bit: a letter records shift in its case,
+        // and an unshifted base key (`;`) has no recoverable shifted glyph
+        // to be rewritten into. The one `Char` shape that does *not*
+        // round-trip — a shifted symbol outside a chord — is covered by
+        // `char_shift_is_normalised_to_one_shape`.
         for code in &[
             KeyCode::Char('a'),
             KeyCode::Char('Z'),
+            KeyCode::Char(';'),
             KeyCode::Esc,
             KeyCode::Enter,
             KeyCode::Tab,
@@ -803,6 +861,119 @@ mod tests {
             assert_eq!(round.code, *code, "code mismatch for {:?}", code);
             assert_eq!(round.modifiers, original.modifiers);
             assert_eq!(round.kind, KeyEventKind::Press);
+        }
+    }
+
+    #[test]
+    fn char_shift_is_normalised_to_one_shape() {
+        // Both `Char` shapes a terminal can report for the same physical
+        // keystroke must come out identical, and they must come out as
+        // crossterm's own legacy-escape-sequence decoding: `shift` set for
+        // an uppercase letter, clear for a shifted symbol. `description`
+        // names the keystroke and the reporting style it stands for.
+        //
+        // `(code, crossterm modifiers)` → `(expected shift, expected ctrl)`.
+        let cases: &[(char, KeyModifiers, bool, bool, &str)] = &[
+            // The keystroke this normalisation exists for: a shifted
+            // symbol must reach the app as text, not as a chord a
+            // vim-style normal-mode router drops.
+            (
+                ':',
+                KeyModifiers::SHIFT,
+                false,
+                false,
+                "`:` reported as the resolved glyph plus a physical SHIFT bit",
+            ),
+            (
+                ':',
+                KeyModifiers::NONE,
+                false,
+                false,
+                "`:` resolved from CSI-u alternate-key-codes, SHIFT already cleared by crossterm",
+            ),
+            (
+                '%',
+                KeyModifiers::SHIFT,
+                false,
+                false,
+                "`%` reported as the resolved glyph plus a physical SHIFT bit",
+            ),
+            // An unshifted base key carrying SHIFT: the glyph the user
+            // typed is not recoverable without assuming a layout, so the
+            // bit stays rather than a wrong glyph being handed on.
+            (
+                ';',
+                KeyModifiers::SHIFT,
+                true,
+                false,
+                "`;` base key reported without alternate-key-codes",
+            ),
+            // A letter records its shift in its case, and the bit is
+            // re-derived from the case so it survives crossterm having
+            // cleared it while resolving the glyph.
+            (
+                'T',
+                KeyModifiers::NONE,
+                true,
+                false,
+                "Shift+T resolved from alternate-key-codes",
+            ),
+            (
+                'T',
+                KeyModifiers::SHIFT,
+                true,
+                false,
+                "Shift+T reported as glyph plus SHIFT",
+            ),
+            ('t', KeyModifiers::NONE, false, false, "plain t"),
+            // Chords: Ctrl+Shift+<key> must stay distinguishable from
+            // Ctrl+<key> in every reporting style.
+            (
+                'T',
+                KeyModifiers::CONTROL,
+                true,
+                true,
+                "Ctrl+Shift+T resolved from alternate-key-codes",
+            ),
+            (
+                't',
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                true,
+                true,
+                "Ctrl+Shift+T reported as base key plus SHIFT",
+            ),
+            ('t', KeyModifiers::CONTROL, false, true, "Ctrl+T"),
+            (
+                'Z',
+                KeyModifiers::CONTROL,
+                true,
+                true,
+                "Ctrl+Shift+Z resolved from alternate-key-codes",
+            ),
+            (
+                '%',
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                true,
+                true,
+                "Ctrl+Shift+5 reported as glyph plus SHIFT",
+            ),
+        ];
+        for (c, ct_mods, want_shift, want_ctrl, description) in cases {
+            let ev = crossterm_key_to_uievent(key(KeyCode::Char(*c), *ct_mods))
+                .unwrap_or_else(|| panic!("no event for {description}"));
+            let UiEvent::KeyPressed {
+                key: k, modifiers, ..
+            } = ev
+            else {
+                panic!("not a key press for {description}");
+            };
+            assert_eq!(
+                k,
+                Key::Char(*c),
+                "glyph must pass through untouched for {description}"
+            );
+            assert_eq!(modifiers.shift, *want_shift, "shift for {description}");
+            assert_eq!(modifiers.ctrl, *want_ctrl, "ctrl for {description}");
         }
     }
 

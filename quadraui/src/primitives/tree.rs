@@ -80,6 +80,19 @@ pub struct TreeView {
     #[serde(default)]
     pub scroll_offset: usize,
     pub style: TreeStyle,
+    /// Whether this tree currently holds keyboard focus. Gates the
+    /// focused row's highlight (`Theme::selected_bg` vs. the unfocused
+    /// `Theme::inactive_selected_bg`).
+    ///
+    /// Deliberately **not** the same "host pre-composes
+    /// `ring.is_focused(id) && ring.is_focus_visible()`" convention
+    /// [`crate::Button::focused`]/[`crate::TextInput::has_focus`]
+    /// follow — see [`crate::ListView::has_focus`]'s matching doc for
+    /// why a focus-visible ring can't ride on this field. The GUI
+    /// focus-visible ring instead reads
+    /// [`crate::Backend::draw_tree_with_state`]'s own
+    /// `focus_ring_visible` parameter — pass
+    /// `ring.is_focused(&tree.id) && ring.is_focus_visible()` there.
     #[serde(default)]
     pub has_focus: bool,
 }
@@ -201,7 +214,13 @@ pub enum TreeViewHit {
 
 /// Fully-resolved tree-view layout. Backends iterate `visible_rows` for
 /// painting and call [`Self::hit_test`] for clicks.
+///
+/// `#[non_exhaustive]`: a backend-returned value, never constructed by a
+/// consumer via struct literal (same convention as the sibling
+/// [`crate::DataTableLayout`]), so a future field add here is additive —
+/// no `cargo-semver-checks` `constructible_struct_adds_field` finding.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct TreeViewLayout {
     /// Viewport width in the measurer's unit.
     pub viewport_width: f32,
@@ -214,6 +233,16 @@ pub struct TreeViewLayout {
     /// Scroll offset actually used. Clamped to `[0, rows.len())` so the
     /// backend never iterates past the end of the row slice.
     pub resolved_scroll_offset: usize,
+    /// Sub-row pixel remainder when a non-`None` `scroll_px` (see
+    /// [`TreeView::layout_with_scroll_px`]) is in effect — see
+    /// [`crate::primitives::scrollbar::resolve_scroll_px`]. `0.0` from
+    /// plain [`TreeView::layout`], so a TUI rasteriser that never reads
+    /// this field keeps the pre-existing whole-row behaviour. A GUI
+    /// painter shifts the first visible row's top up by this many units
+    /// (relying on the surface's own clip to show only the portion still
+    /// inside the viewport), producing the "partial first row clipped"
+    /// look of pixel-smooth scrolling.
+    pub scroll_sub_px: f32,
 }
 
 /// The chevron glyph a pixel backend's shared paint path
@@ -301,39 +330,99 @@ impl TreeView {
     where
         F: Fn(usize) -> TreeRowMeasure,
     {
+        self.layout_with_scroll_px(viewport_width, viewport_height, None, measure_row)
+    }
+
+    /// Like [`Self::layout`], but with an explicit pixel-precise scroll
+    /// position (`scroll_px`) a GUI painter has accumulated in a
+    /// [`TreePaintState`], instead of only [`TreeView::scroll_offset`]'s
+    /// whole-row value.
+    ///
+    /// `scroll_px` wins over `scroll_offset` when it is `Some` and usable
+    /// — see [`crate::primitives::scrollbar::resolve_scroll_px`] — and
+    /// the sub-row remainder is reported back as
+    /// [`TreeViewLayout::scroll_sub_px`] for the painter to clip the
+    /// first visible row against. `None` (what [`Self::layout`] passes)
+    /// resolves to exactly the pre-existing whole-row behaviour.
+    pub fn layout_with_scroll_px<F>(
+        &self,
+        viewport_width: f32,
+        viewport_height: f32,
+        scroll_px: Option<f32>,
+        measure_row: F,
+    ) -> TreeViewLayout
+    where
+        F: Fn(usize) -> TreeRowMeasure,
+    {
         let mut visible_rows: Vec<VisibleTreeRow> = Vec::new();
         let mut hit_regions: Vec<(Rect, TreeViewHit)> = Vec::new();
 
-        // Clamp scroll_offset to a valid starting index; we still report
-        // the clamped value so the app can write it back and self-correct.
-        let resolved_scroll_offset =
-            crate::primitives::scrollbar::clamp_scroll_offset(self.scroll_offset, self.rows.len());
+        // Border insets: 1 cell/pixel on each side when `style.bordered`
+        // is set, reserving room for a decorative frame (e.g. a focus
+        // ring) so it never overwrites row content — mirrors
+        // `ListView::layout`'s `bordered` handling.
+        let (inset_x, inset_y, row_w, rows_h_max) = if self.style.bordered {
+            let iw = (viewport_width - 2.0).max(0.0);
+            let ih = (viewport_height - 2.0).max(0.0);
+            (1.0, 1.0, iw, ih)
+        } else {
+            (0.0, 0.0, viewport_width, viewport_height)
+        };
 
-        let mut y = 0.0_f32;
+        // Resolve `scroll_offset` vs. `scroll_px` (the latter wins when
+        // set); we still report the clamped row index so the app can
+        // write it back and self-correct. The first row's height is the
+        // uniform row-height basis for the pixel conversion — the same
+        // approximation `vscrollbar` already makes for thumb sizing on
+        // trees with per-row-varying heights (leaf vs. branch). Only
+        // measured when `scroll_px` is actually in play — `measure_row`
+        // can do real text-measurement work (Pango layout on GTK), and
+        // `None` never reads this value.
+        let row_height_basis = if scroll_px.is_none() || self.rows.is_empty() {
+            1.0
+        } else {
+            measure_row(0).height
+        };
+        let (resolved_scroll_offset, scroll_sub_px) =
+            crate::primitives::scrollbar::resolve_scroll_px(
+                self.scroll_offset,
+                scroll_px,
+                self.rows.len(),
+                row_height_basis,
+            );
+
+        let rows_y_end = inset_y + rows_h_max;
+        let mut y = inset_y - scroll_sub_px;
         for i in resolved_scroll_offset..self.rows.len() {
-            if y >= viewport_height {
+            if y >= rows_y_end {
                 break;
             }
             let m = measure_row(i);
             // Clip the last row's height to fit inside the viewport.
-            let remaining = viewport_height - y;
+            let remaining = rows_y_end - y;
             let height = m.height.min(remaining).max(0.0);
             if height <= 0.0 {
                 break;
             }
-            let bounds = Rect::new(0.0, y, viewport_width, height);
+            let bounds = Rect::new(inset_x, y, row_w, height);
             visible_rows.push(VisibleTreeRow { row_idx: i, bounds });
             // Split the hit region into Chevron + Row when the backend
             // supplied a chevron boundary for this branch row.
             let row = &self.rows[i];
             if let (Some(_), Some(chev_x)) = (row.is_expanded, m.chevron_end_x) {
-                let chev_x = chev_x.clamp(0.0, viewport_width);
+                let chev_x = chev_x.clamp(0.0, row_w);
                 if chev_x > 0.0 {
-                    hit_regions.push((Rect::new(0.0, y, chev_x, height), TreeViewHit::Chevron(i)));
+                    hit_regions.push((
+                        Rect::new(inset_x, y, chev_x, height),
+                        TreeViewHit::Chevron(i),
+                    ));
                 }
-                let body_w = (viewport_width - chev_x).max(0.0);
+                let body_w = (row_w - chev_x).max(0.0);
                 if body_w > 0.0 {
-                    hit_regions.push((Rect::new(chev_x, y, body_w, height), TreeViewHit::Row(i)));
+                    hit_regions.push((
+                        Rect::new(inset_x + chev_x, y, body_w, height),
+                        TreeViewHit::Row(i),
+                    ));
                 }
             } else {
                 hit_regions.push((bounds, TreeViewHit::Row(i)));
@@ -347,6 +436,7 @@ impl TreeView {
             visible_rows,
             hit_regions,
             resolved_scroll_offset,
+            scroll_sub_px,
         }
     }
 
@@ -392,15 +482,32 @@ impl TreeView {
     ///
     /// - `track_width` — width of the scrollbar column, occupying the
     ///   rightmost `track_width` of `area`: `1.0` on TUI (one cell), or
-    ///   [`crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`]
-    ///   on pixel backends. Deliberately independent of `row_height`:
-    ///   VS Code's list/tree scrollbar is a fixed 10px regardless of row
-    ///   pitch.
+    ///   [`crate::style::Style::scrollbar_width`] on pixel backends —
+    ///   [`native_surface_paint::paint`] passes `style.scrollbar_width`.
+    ///   Deliberately independent of `row_height`: VS Code's list/tree
+    ///   scrollbar is a fixed-width column regardless of row pitch.
     pub fn vscrollbar_with_track_width(
         &self,
         area: Rect,
         row_height: f32,
         track_width: f32,
+    ) -> Option<Scrollbar> {
+        self.vscrollbar_with_scroll_px(area, row_height, track_width, None)
+    }
+
+    /// Like [`Self::vscrollbar_with_track_width`], but with an explicit
+    /// pixel-precise scroll position (`scroll_px`) from a
+    /// [`TreePaintState`] so the thumb tracks the continuous pixel
+    /// position (whole row + sub-row fraction) instead of snapping to a
+    /// whole row — the scrollbar-geometry counterpart of
+    /// [`Self::layout_with_scroll_px`]. `None` resolves to exactly the
+    /// pre-existing whole-row behaviour.
+    pub fn vscrollbar_with_scroll_px(
+        &self,
+        area: Rect,
+        row_height: f32,
+        track_width: f32,
+        scroll_px: Option<f32>,
     ) -> Option<Scrollbar> {
         if row_height <= 0.0 || track_width <= 0.0 {
             return None;
@@ -419,14 +526,65 @@ impl TreeView {
             track_width,
             area.height,
         );
+        // `scroll_px` wins over `scroll_offset` when set, so the thumb
+        // moves smoothly alongside the sub-row paint shift
+        // `layout_with_scroll_px` applies.
+        let (resolved_scroll_offset, scroll_sub_px) =
+            crate::primitives::scrollbar::resolve_scroll_px(
+                self.scroll_offset,
+                scroll_px,
+                self.rows.len(),
+                row_height,
+            );
+        let scroll_rows = resolved_scroll_offset as f32 + scroll_sub_px / row_height;
         Some(Scrollbar::vertical(
             self.id,
             track,
-            self.scroll_offset as f32,
+            scroll_rows,
             total,
             visible,
             row_height,
         ))
+    }
+}
+
+/// Per-frame paint-time state for a `TreeView` — hover/press row
+/// tracking plus a pixel-precise scroll position, none of which live on
+/// the declarative [`TreeView`] descriptor itself (see
+/// [`crate::primitives::list::ListPaintState`]'s doc for why — the same
+/// rule applies here).
+///
+/// `#[non_exhaustive]`: construct via [`Default::default`] plus the
+/// `with_*` builders, so a future field here is additive.
+///
+/// `scroll_px: None` paints exactly as [`TreeView::layout`] /
+/// [`TreeView::vscrollbar`] already do (whole-row from
+/// `scroll_offset`); `Some(px)` wins and is resolved via
+/// [`crate::primitives::scrollbar::resolve_scroll_px`] into a
+/// `scroll_offset` plus a sub-row remainder — see
+/// [`TreeView::layout_with_scroll_px`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TreePaintState {
+    pub hovered_idx: Option<usize>,
+    pub pressed_idx: Option<usize>,
+    pub scroll_px: Option<f32>,
+}
+
+impl TreePaintState {
+    pub fn with_hovered_idx(mut self, idx: Option<usize>) -> Self {
+        self.hovered_idx = idx;
+        self
+    }
+
+    pub fn with_pressed_idx(mut self, idx: Option<usize>) -> Self {
+        self.pressed_idx = idx;
+        self
+    }
+
+    pub fn with_scroll_px(mut self, px: Option<f32>) -> Self {
+        self.scroll_px = px;
+        self
     }
 }
 
@@ -444,6 +602,7 @@ impl TreeView {
 pub(crate) mod native_surface_paint {
     use super::{TreeRowEditState, TreeView, TreeViewLayout};
     use crate::paint_surface::PaintSurface;
+    use crate::style::Style;
     use crate::text_util::{safe_prefix, snap_to_char_boundary};
     use crate::theme::Theme;
     use crate::types::Decoration;
@@ -460,7 +619,29 @@ pub(crate) mod native_surface_paint {
     /// native units; row pitch (header vs. leaf/branch) is derived from
     /// it via [`crate::primitives::layout_metrics::tree_row_pitch`], the
     /// same formula `tree_layout` itself used. `nerd_fonts_enabled`
-    /// selects `Icon::glyph` vs. `Icon::fallback`.
+    /// selects `Icon::glyph` vs. `Icon::fallback`. `style` supplies
+    /// [`Style::row_padding_x`], the horizontal inset a row's leading
+    /// chevron/icon/text starts at — GTK/macOS callers pass
+    /// `&self.current_style`; `win::tree::draw_tree` passes
+    /// `&self.current_style` the same way (see that fn's own doc).
+    ///
+    /// `hovered_idx` / `pressed_idx` — index into `tree.rows` to tint via
+    /// [`Theme::tree_hover_bg`] / [`Theme::tree_pressed_bg`]. `None`
+    /// paints byte-for-byte what this function painted before hover
+    /// support existed. See `primitives::list::native_surface_paint::paint`'s
+    /// matching doc for the priority rule (pressed over hover, applied
+    /// on top of whatever background the row already has).
+    ///
+    /// `focus_ring_visible` — when `true`, strokes a
+    /// `Theme::focus_ring_color` ring at `Style::focus_ring_width`,
+    /// flush with the row at [`TreeView::selected_path`]'s bounds, on
+    /// top of whatever background that row already has. Separate from
+    /// [`TreeView::has_focus`] (see that field's doc for why) — the
+    /// caller passes `ring.is_focused(&tree.id) &&
+    /// ring.is_focus_visible()` here, not `tree.has_focus`. `false`
+    /// paints byte-for-byte what this function painted before the ring
+    /// existed.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         tree: &TreeView,
         area: Rect,
@@ -469,6 +650,51 @@ pub(crate) mod native_surface_paint {
         nerd_fonts_enabled: bool,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        style: &Style,
+        hovered_idx: Option<usize>,
+        pressed_idx: Option<usize>,
+        focus_ring_visible: bool,
+    ) {
+        paint_with_scroll_px(
+            tree,
+            area,
+            tree_layout,
+            line_height,
+            nerd_fonts_enabled,
+            surface,
+            theme,
+            style,
+            hovered_idx,
+            pressed_idx,
+            focus_ring_visible,
+            None,
+        )
+    }
+
+    /// Like [`paint`], plus an explicit pixel-precise scroll position
+    /// (`scroll_px`) that wins over [`TreeView::scroll_offset`] for the
+    /// vertical scrollbar thumb painted here (via
+    /// [`TreeView::vscrollbar_with_scroll_px`]) — row positions come from
+    /// `tree_layout.visible_rows`, already resolved against `scroll_px`
+    /// by whichever of [`TreeView::layout_with_scroll_px`]/
+    /// `mac_tree_layout_with_scroll_px` built `tree_layout`.
+    ///
+    /// `scroll_px: None` (what [`paint`] passes) resolves the thumb
+    /// identically to `paint`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_scroll_px(
+        tree: &TreeView,
+        area: Rect,
+        tree_layout: &TreeViewLayout,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        hovered_idx: Option<usize>,
+        pressed_idx: Option<usize>,
+        focus_ring_visible: bool,
+        scroll_px: Option<f32>,
     ) {
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
@@ -491,19 +717,35 @@ pub(crate) mod native_surface_paint {
 
             // Skip rows the layout clipped to a partial height — painting
             // them produces a compressed background band at the section
-            // boundary (matches GTK/macOS's pre-migration behaviour; Win's
-            // pre-migration `draw_tree` did not skip these, an oversight
-            // fixed by this unification rather than a deliberate
-            // per-backend choice — nothing documented it as one).
+            // boundary (matches GTK/macOS's whole-row behaviour; Win's
+            // `draw_tree` paints these unconditionally, a difference this
+            // unification resolves in GTK/macOS's favor).
+            //
+            // When a sub-row `scroll_px` is in effect, `layout_with_scroll_px`
+            // always height-clips the last visible row by construction (it
+            // is the row the sub-row shift pushes partway below the
+            // viewport), so skipping it here would leave a bare
+            // `tab_bar_bg` band at the bottom whose height breathes as the
+            // scroll position changes. Paint it instead.
             let is_header = matches!(row.decoration, Decoration::Header);
             let full_h = if is_header {
                 header_height
             } else {
                 item_height
             };
-            if row_h < full_h - 0.5 {
+            if scroll_px.is_none() && row_h < full_h - 0.5 {
                 continue;
             }
+            // Paint at the row's full, unclipped height rather than the
+            // layout's possibly bottom-clipped `row_h` — the first row
+            // gets the same treatment for free via its negative `y` and
+            // full `height` from `layout_with_scroll_px`. Using the
+            // clipped height here would vertically compress the row's
+            // chevron/icon/badge/text toward the viewport edge as the
+            // scroll position changes; using the full height and letting
+            // the `area` clip pushed above trim the overflow keeps every
+            // row's content at its normal size, just partially hidden.
+            let row_h = full_h;
 
             let path_selected = tree.selected_path.as_ref().is_some_and(|p| p == &row.path);
             let is_selected = tree.has_focus && path_selected;
@@ -524,10 +766,35 @@ pub(crate) mod native_surface_paint {
                 }
             };
 
+            let row_bg = if Some(vis_row.row_idx) == pressed_idx {
+                theme.tree_pressed_bg(row_bg)
+            } else if Some(vis_row.row_idx) == hovered_idx {
+                theme.tree_hover_bg(row_bg)
+            } else {
+                row_bg
+            };
+
             let row_rect = Rect::new(row_x, row_y, row_w, row_h);
             surface.surface_fill_rect(row_rect, row_bg);
 
-            let mut cursor_x = row_x + 2.0 + row.indent as f32 * indent_px;
+            // Focus-visible ring: a square stroke flush with the
+            // focused row's own bounds, in `Theme::focus_ring_color` at
+            // `Style::focus_ring_width` — see
+            // `crate::primitives::list::native_surface_paint::paint`'s
+            // matching comment for why this one isn't outset like
+            // `Button`'s/`TextInput`'s. Gated on `focus_ring_visible`,
+            // not `tree.has_focus` — see this fn's own doc and
+            // `TreeView::has_focus`'s doc for why the two are kept
+            // separate.
+            if is_selected && focus_ring_visible {
+                surface.surface_stroke_rect(
+                    row_rect,
+                    theme.focus_ring_color(),
+                    style.focus_ring_width,
+                );
+            }
+
+            let mut cursor_x = row_x + style.row_padding_x + row.indent as f32 * indent_px;
 
             if let Some(expanded) = row.is_expanded {
                 if tree.style.show_chevrons {
@@ -668,14 +935,14 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        // Paint the vertical scrollbar when present. The track is a
-        // fixed pixel-backend width, independent of row pitch — see
-        // `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`'s doc.
-        if let Some(vsb) = tree.vscrollbar_with_track_width(
-            area,
-            item_height,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-        ) {
+        // Paint the vertical scrollbar when present. The track width is
+        // `Style::scrollbar_width`, independent of row pitch — see that
+        // field's own doc. `scroll_px` wins over `scroll_offset` when
+        // set, so the thumb tracks the same sub-row position the rows
+        // above were painted at.
+        if let Some(vsb) =
+            tree.vscrollbar_with_scroll_px(area, item_height, style.scrollbar_width, scroll_px)
+        {
             crate::primitives::scrollbar::native_surface_paint::paint(&vsb, surface, theme);
         }
 
@@ -760,13 +1027,14 @@ pub(crate) mod native_surface_paint {
         };
         use crate::Image;
 
-        /// Records every fill + text-run call — mirrors
+        /// Records every fill + stroke + text-run call — mirrors
         /// `primitives::list::native_surface_paint`'s `RecordingSurface`
         /// test double, scoped to the verbs this primitive uses, so this
         /// test runs on any host without Cairo/Core Graphics/Direct2D.
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color, f32)>,
             texts: Vec<(Rect, String, Color)>,
             clips: Vec<Rect>,
         }
@@ -792,14 +1060,17 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
                 self.fills.push((rect, color));
             }
-            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
             fn surface_stroke_rounded_rect(
                 &mut self,
-                _rect: Rect,
+                rect: Rect,
                 _radius: f32,
-                _color: Color,
-                _stroke_width: f32,
+                color: Color,
+                stroke_width: f32,
             ) {
+                self.strokes.push((rect, color, stroke_width));
             }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.texts.push((rect, text.to_string(), color));
@@ -851,8 +1122,12 @@ pub(crate) mod native_surface_paint {
         #[test]
         fn paints_vertical_scrollbar_track_when_overflowing() {
             let tree = make_tree((0..50).map(|i| leaf(i, &format!("row{i}"))).collect());
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -863,6 +1138,10 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
 
             let item_height =
@@ -888,16 +1167,33 @@ pub(crate) mod native_surface_paint {
             );
         }
 
-        /// A branch row's default-style chevron paints as the codicon
-        /// glyph on GUI, not the plain `▾`/`▸` `TreeStyle::default()`
-        /// carries — the "Done when" behaviour this swap exists for.
+        /// A `scroll_px` amount smaller than the row height
+        /// (`layout_with_scroll_px`'s uniform row pitch here) shifts
+        /// every painted row's `y` up by that exact remainder — the
+        /// "partial first row clipped" GUI look of pixel-smooth
+        /// scrolling. `RecordingSurface` doesn't actually clip (that's
+        /// `surface_push_clip(area)`, called right before painting rows,
+        /// which a live GUI surface honours), so the shifted row is
+        /// recorded with `y` above `area.y` directly.
         #[test]
-        fn default_style_chevron_paints_as_codicon_glyph() {
-            let mut rows = vec![leaf(0, "branch")];
-            rows[0].is_expanded = Some(true);
-            let tree = make_tree(rows);
+        fn scroll_px_shifts_rows_by_the_sub_row_remainder() {
+            let mut tree = make_tree((0..50).map(|i| leaf(i, &format!("row{i}"))).collect());
+            tree.selected_path = Some(vec![0]);
+            // `paint` below recomputes its own uniform row height via
+            // `tree_row_pitch` (independent of whatever `layout`'s own
+            // measurer reports) to decide whether a row was clipped to a
+            // partial height and should be skipped — match it here so
+            // the test's row 0 isn't spuriously treated as clipped.
+            let item_height =
+                crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT as f64) as f32;
+            let sub_row_px = 8.0; // < item_height row pitch, so row stays 0
             let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+                tree.layout_with_scroll_px(AREA.width, AREA.height, Some(sub_row_px), |_| {
+                    super::super::TreeRowMeasure::new(item_height)
+                });
+            assert_eq!(layout.resolved_scroll_offset, 0);
+            assert!((layout.scroll_sub_px - sub_row_px).abs() < 0.01);
+
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -908,6 +1204,89 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
+            );
+
+            let selected_fill = surface
+                .fills
+                .iter()
+                .find(|(_, c)| *c == theme.selected_bg)
+                .expect("row 0's selected background should still be painted, just shifted up");
+            assert!(
+                selected_fill.0.y < AREA.y,
+                "a sub-row scroll_px should shift row 0 above the viewport top, got y={}",
+                selected_fill.0.y
+            );
+        }
+
+        /// The painted track's width follows `Style::scrollbar_width`,
+        /// not the fixed `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`
+        /// constant — a host-set non-default width must actually reach
+        /// the paint surface.
+        #[test]
+        fn vertical_scrollbar_track_width_follows_style_token() {
+            let tree = make_tree((0..50).map(|i| leaf(i, &format!("row{i}"))).collect());
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
+            let style = Style::default().with_scrollbar_width(20.0);
+            let mut surface = RecordingSurface::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &Theme::default(),
+                &style,
+                None,
+                None,
+                false,
+            );
+
+            let track_fill = surface
+                .fills
+                .iter()
+                .find(|(r, _)| (r.width - 20.0).abs() < 0.01)
+                .expect("expected a fill at the 20px-wide scrollbar track");
+            assert_eq!(track_fill.0.x, AREA.x + AREA.width - 20.0);
+        }
+
+        /// A branch row's default-style chevron paints as the codicon
+        /// glyph on GUI, not the plain `▾`/`▸` `TreeStyle::default()`
+        /// carries — the "Done when" behaviour this swap exists for.
+        #[test]
+        fn default_style_chevron_paints_as_codicon_glyph() {
+            let mut rows = vec![leaf(0, "branch")];
+            rows[0].is_expanded = Some(true);
+            let tree = make_tree(rows);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
 
             assert!(
@@ -936,8 +1315,12 @@ pub(crate) mod native_surface_paint {
             let mut tree = make_tree(rows);
             tree.style.chevron_expanded = "+".into();
             tree.style.chevron_collapsed = "-".into();
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -948,6 +1331,10 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
 
             assert!(
@@ -982,8 +1369,12 @@ pub(crate) mod native_surface_paint {
                 placeholder: None,
             });
             let tree = make_tree(rows);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -994,6 +1385,10 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
 
             let row1 = &layout.visible_rows[1];
@@ -1023,8 +1418,12 @@ pub(crate) mod native_surface_paint {
                 placeholder: None,
             });
             let tree = make_tree(rows);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1035,6 +1434,10 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
 
             assert!(
@@ -1053,8 +1456,12 @@ pub(crate) mod native_surface_paint {
             let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
             tree.selected_path = Some(vec![1]);
             tree.has_focus = true;
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1065,6 +1472,10 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
 
             let row1 = &layout.visible_rows[1];
@@ -1079,6 +1490,142 @@ pub(crate) mod native_surface_paint {
             );
         }
 
+        /// The focused row's ring strokes exactly at the selected row's
+        /// own bounds, in `Theme::focus_ring_color` at
+        /// `Style::focus_ring_width` — and only there. Discriminated
+        /// from `selected_row_paints_selected_bg` above by checking
+        /// `surface.strokes` (a distinct call) rather than
+        /// `surface.fills`, so this test can't pass on the pre-existing
+        /// fill alone.
+        #[test]
+        fn focused_row_paints_a_ring_at_its_own_bounds() {
+            let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+            tree.selected_path = Some(vec![1]);
+            tree.has_focus = true;
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
+            let style = Style::default().with_focus_ring_width(3.0);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+                &style,
+                None,
+                None,
+                /* focus_ring_visible */ true,
+            );
+
+            let row1 = &layout.visible_rows[1];
+            assert!(
+                surface
+                    .strokes
+                    .iter()
+                    .any(|(r, c, w)| (r.x - row1.bounds.x).abs() < 0.01
+                        && (r.y - row1.bounds.y).abs() < 0.01
+                        && (r.width - row1.bounds.width).abs() < 0.01
+                        && (r.height - row1.bounds.height).abs() < 0.01
+                        && *c == theme.focus_ring_color()
+                        && (*w - 3.0).abs() < 0.01),
+                "focused row must stroke a ring at its own bounds with \
+                 Style::focus_ring_width, got strokes: {:?}",
+                surface.strokes
+            );
+            assert_eq!(
+                surface.strokes.len(),
+                1,
+                "only the focused row gets a ring, got strokes: {:?}",
+                surface.strokes
+            );
+        }
+
+        /// `focus_ring_visible: false` paints no ring even on a row
+        /// that is genuinely selected (`tree.has_focus: true` here) —
+        /// the default a call site gets unless it explicitly composes
+        /// `ring.is_focused(id) && ring.is_focus_visible()`. Paired
+        /// with `no_ring_without_a_selected_row_even_when_focus_ring_visible`
+        /// below: either gate alone must suppress the ring.
+        #[test]
+        fn no_ring_when_focus_ring_visible_is_false() {
+            let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+            tree.selected_path = Some(vec![1]);
+            tree.has_focus = true;
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
+            let mut surface = RecordingSurface::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                None,
+                /* focus_ring_visible */ false,
+            );
+            assert!(
+                surface.strokes.is_empty(),
+                "focus_ring_visible: false must paint no ring even on a \
+                 selected, has_focus: true row, got strokes: {:?}",
+                surface.strokes
+            );
+        }
+
+        /// `focus_ring_visible: true` alone doesn't paint a ring when
+        /// nothing is selected-and-focused (`tree.has_focus: false`
+        /// here) — the ring stays scoped to
+        /// [`TreeView::selected_path`]'s row via `is_selected`. The row
+        /// still shows the unfocused, muted `inactive_selected_bg`
+        /// fill — only the ring is gated this way.
+        #[test]
+        fn no_ring_without_a_selected_row_even_when_focus_ring_visible() {
+            let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+            tree.selected_path = Some(vec![1]);
+            tree.has_focus = false;
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
+            let mut surface = RecordingSurface::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                None,
+                None,
+                /* focus_ring_visible */ true,
+            );
+            assert!(
+                surface.strokes.is_empty(),
+                "an unfocused tree must paint no ring even when \
+                 focus_ring_visible: true, got strokes: {:?}",
+                surface.strokes
+            );
+        }
+
         /// Error/Warning decoration rows paint their dedicated fg colour
         /// (adopted from Win's pre-migration mapping — see this module's
         /// doc for why GTK/macOS's narrower `Muted`-only mapping wasn't
@@ -1090,8 +1637,12 @@ pub(crate) mod native_surface_paint {
             let mut warn_row = leaf(1, "careful");
             warn_row.decoration = Decoration::Warning;
             let tree = make_tree(vec![err_row, warn_row]);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1102,6 +1653,10 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
 
             assert!(surface
@@ -1124,8 +1679,12 @@ pub(crate) mod native_surface_paint {
             let mut row = leaf(0, "BACKEND_SPECULATIVE_EXECUTION_MODULE");
             row.badge = Some(Badge::plain("U"));
             let tree = make_tree(vec![row]);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1136,6 +1695,10 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
 
             let (badge_bw, _) = surface.surface_measure_text("U");
@@ -1181,8 +1744,12 @@ pub(crate) mod native_surface_paint {
                 spans: vec![StyledSpan::plain(""), StyledSpan::plain("ok")],
             };
             let tree = make_tree(vec![row]);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                8.0,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1193,12 +1760,69 @@ pub(crate) mod native_surface_paint {
                 false,
                 &mut surface,
                 &theme,
+                &Style::default(),
+                None,
+                None,
+                false,
             );
 
             assert!(
                 surface.texts.iter().any(|(_, t, _)| t == "ok"),
                 "a span after an empty, non-truncated span must still paint, got texts: {:?}",
                 surface.texts
+            );
+        }
+
+        /// The issue's first acceptance bullet: a row's text starts
+        /// `row_padding_x` in from its rect. `show_chevrons = false` on
+        /// an otherwise-branch row (`is_expanded: Some(_)`) isolates the
+        /// leading inset from the chevron glyph and the leaf-only
+        /// `line_height * 0.8` offset, so the only thing between the
+        /// row's edge and the label is `row_padding_x` itself. Painted
+        /// with a non-default value (15.0, not the 8.0 default) so
+        /// reverting the token back to the old hardcoded `2.0` literal
+        /// in `paint` would fail this test.
+        #[test]
+        fn row_text_starts_row_padding_x_in_from_the_row_rect() {
+            let mut row = leaf(0, "alpha");
+            row.is_expanded = Some(true);
+            let mut tree = make_tree(vec![row]);
+            tree.style.show_chevrons = false;
+
+            let style = Style::default().with_row_padding_x(15.0);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                style.row_padding_x,
+            );
+            let row_bounds = layout.visible_rows[0].bounds;
+
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+                &style,
+                None,
+                None,
+                false,
+            );
+
+            let (text_rect, _, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t, _)| t == "alpha")
+                .expect("row text painted");
+            assert_eq!(
+                text_rect.x,
+                AREA.x + row_bounds.x + style.row_padding_x,
+                "row text must start row_padding_x in from the row's left edge"
             );
         }
     }
@@ -1229,6 +1853,28 @@ pub enum TreeEvent {
     /// selection as flattened-row indices; use [`selected_paths_for_indices`]
     /// to map those indices back to `TreePath`s before emitting this event.
     SelectionSet { paths: Vec<TreePath> },
+    /// A keystroke was applied to the row at `path`'s [`TreeRow::edit`] —
+    /// a character typed/deleted, or the cursor/selection moved. `text`,
+    /// `cursor`, and `selection_anchor` are the new [`TreeRowEditState`]
+    /// fields; an app's handler writes them back onto that row's `edit` so
+    /// the next render paints the caret where this keystroke left it,
+    /// mirroring `FormEvent::TextInputChanged`'s "fires every keystroke"
+    /// shape but — unlike that event — carrying the cursor/selection too,
+    /// since there is no separate per-widget cursor cache for a tree
+    /// rename to fall back on.
+    RowRenameChanged {
+        path: TreePath,
+        text: String,
+        cursor: usize,
+        selection_anchor: Option<usize>,
+    },
+    /// Enter was pressed while renaming the row at `path`: the app should
+    /// apply `text` as the row's new name and clear `edit` back to `None`.
+    RowRenameCommitted { path: TreePath, text: String },
+    /// Escape was pressed while renaming the row at `path`: the app should
+    /// discard the in-progress text and clear `edit` back to `None`
+    /// without renaming anything.
+    RowRenameCancelled { path: TreePath },
 }
 
 /// Maps flattened-row indices (as produced by
@@ -1632,6 +2278,41 @@ mod tests {
                 .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
                 .expect("overflow should yield a scrollbar");
             assert_eq!(sb.track.width, 1.0);
+        }
+
+        #[test]
+        fn scroll_px_moves_the_thumb_smoothly_between_whole_rows() {
+            let row0 = vtree(30, 0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0), 22.0, 1.0)
+                .unwrap();
+            let row1 = vtree(30, 1)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0), 22.0, 1.0)
+                .unwrap();
+            let half_sb = vtree(30, 0)
+                .vscrollbar_with_scroll_px(
+                    Rect::new(0.0, 0.0, 20.0, 10.0 * 22.0),
+                    22.0,
+                    1.0,
+                    Some(11.0),
+                )
+                .unwrap();
+            assert!(
+                half_sb.thumb_start > row0.thumb_start && half_sb.thumb_start < row1.thumb_start,
+                "half-row scroll_px should land the thumb strictly between rows 0 and 1"
+            );
+        }
+
+        #[test]
+        fn scroll_px_wins_over_scroll_offset_for_the_thumb() {
+            let mut t = vtree(30, 0);
+            t.scroll_offset = 5; // stale, overridden by scroll_px
+            let sb = t
+                .vscrollbar_with_scroll_px(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0, Some(0.0))
+                .unwrap();
+            let at_zero = vtree(30, 0)
+                .vscrollbar_with_track_width(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0, 1.0)
+                .unwrap();
+            assert_eq!(sb.thumb_start, at_zero.thumb_start);
         }
     }
 }

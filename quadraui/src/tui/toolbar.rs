@@ -191,12 +191,28 @@ pub fn draw_toolbar_with_options(
                 key_hint,
                 enabled,
                 is_active,
+                spec,
                 ..
             } => {
                 let is_hovered = *enabled && hovered_id == Some(id);
                 let is_pressed = *enabled && pressed_id == Some(id);
                 let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
-                // Priority: pressed > hovered > focused > is_active > enabled.
+                // An explicit `spec` override's `variant` tints the
+                // resting foreground the same way `crate::tui::button`
+                // paints a standalone `Danger`/`Warning` `Button` — see
+                // that module's doc. Lowest priority: pressed/hovered/
+                // focused/is_active all still win, same as a focused
+                // `Button` wins over its own intent colour. Only
+                // `variant` is honoured here today — `icon`/
+                // `icon_position`/`icon_gap`/`tooltip`/`disabled` on the
+                // spec have no TUI toolbar effect yet; this button keeps
+                // painting through its own legacy `icon`/`enabled` fields.
+                let intent_fg = spec.as_ref().and_then(|s| match s.variant {
+                    crate::primitives::button::ButtonVariant::Danger => Some(theme.error_fg),
+                    crate::primitives::button::ButtonVariant::Warning => Some(theme.warning_fg),
+                    _ => None,
+                });
+                // Priority: pressed > hovered > focused > is_active > enabled > intent.
                 let (cell_fg, cell_bg) = if !*enabled {
                     (muted, bar_bg)
                 } else if is_pressed || *is_active {
@@ -205,6 +221,8 @@ pub fn draw_toolbar_with_options(
                     (hover_fg, hover_bg)
                 } else if is_focused {
                     (fg, focus_bg)
+                } else if let Some(intent) = intent_fg {
+                    (qc(intent), bar_bg)
                 } else {
                     (fg, bar_bg)
                 };
@@ -302,6 +320,7 @@ mod tests {
 
     fn mk_action(id: &str, label: &str, enabled: bool) -> ToolbarButton {
         ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new(id),
             label: label.to_string(),
             icon: None,
@@ -668,6 +687,7 @@ mod tests {
         let bar = Toolbar {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("a"),
                 label: "".into(),
                 icon: Some("X".into()),
@@ -699,6 +719,7 @@ mod tests {
         let bar = Toolbar {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("a"),
                 label: "Go".into(),
                 icon: Some("一".into()),
@@ -713,5 +734,64 @@ mod tests {
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // "[ " (2) + icon (2 cells) + " " (1) + "Go" (2) + " ]" (2) = 9
         assert_eq!(layout.visible_items[0].bounds.width, 9.0);
+    }
+
+    fn cell_fg(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
+        buf[(x, y)]
+            .style()
+            .fg
+            .unwrap_or(ratatui::style::Color::Reset)
+    }
+
+    /// An `Action` with an explicit `Danger` spec paints its resting
+    /// foreground in `theme.error_fg` instead of the plain
+    /// `theme.foreground` — same intent-colour convention
+    /// `crate::tui::button` uses for a standalone `Button`.
+    #[test]
+    fn action_with_danger_spec_paints_error_fg_at_rest() {
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let mut spec = crate::primitives::button::ButtonSpec::new("Delete");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                spec: Some(spec),
+                id: WidgetId::new("a"),
+                label: "Delete".into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+            focused_index: None,
+        };
+
+        draw_toolbar(&mut buf, area, &bar, &theme, None, None);
+
+        assert_eq!(cell_fg(&buf, 2, 0), qc(theme.error_fg));
+    }
+
+    /// A legacy-only `Action` (`spec: None`, every pre-existing
+    /// construction site) keeps painting `theme.foreground` at rest,
+    /// unaffected by the intent-colour path above.
+    #[test]
+    fn action_without_spec_paints_plain_foreground_at_rest() {
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_action("a", "Delete", true)],
+            bg: None,
+            focused_index: None,
+        };
+
+        draw_toolbar(&mut buf, area, &bar, &theme, None, None);
+
+        assert_eq!(cell_fg(&buf, 2, 0), qc(theme.foreground));
     }
 }

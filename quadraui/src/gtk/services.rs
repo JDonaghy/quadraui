@@ -625,6 +625,14 @@ impl PlatformServices for GtkPlatformServices {
         crate::desktop::move_to_trash(path)
     }
 
+    /// [`crate::desktop::restore_from_trash`] — see that function's doc:
+    /// full support on Linux (or any other freedesktop.org trash-spec
+    /// host GTK runs on), backed by the `trash` crate's `os_limited`
+    /// module rather than hand-rolled D-Bus trash-spec calls.
+    fn restore_from_trash(&self, path: &Path) -> ServiceResult<()> {
+        crate::desktop::restore_from_trash(path)
+    }
+
     /// `gdk::Display::beep` — the parented window's own
     /// display when one is attached (mirrors
     /// [`Self::show_file_open_dialog`]'s parenting), falling back to
@@ -1522,6 +1530,7 @@ mod tests {
             label: id.to_string(),
             is_default,
             is_cancel,
+            spec: None,
         }
     }
 

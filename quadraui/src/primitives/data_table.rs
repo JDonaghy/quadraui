@@ -10,9 +10,16 @@
 //! set), then `rows[scroll_offset..]` until the viewport fills. Each
 //! cell is a `StyledText` positioned within its column bounds.
 //! Click on header → `DataTableEvent::HeaderClicked { col }`.
-//! Click on row → `DataTableEvent::RowActivated { idx }`.
-//! The app updates `selected_idx`, `scroll_offset`, and sort state
-//! for the next frame.
+//! A single click on a row → `DataTableEvent::RowSelected { idx }` (select);
+//! a double-click → the distinct `DataTableEvent::RowDoubleClicked { idx }`
+//! (open), so an app can tell "select" from "open" apart — see
+//! `RowActivated`'s own doc. Up/Down move the selection the same way
+//! `RowSelected` does; Enter activates the current selection as
+//! `RowActivated`, mirroring the mouse's double-click rather than its
+//! single click. An app that wants "open this row" from mouse and
+//! keyboard alike listens for both `RowActivated` and `RowDoubleClicked`.
+//! The app updates `selected_idx`, `scroll_offset`, and sort state for the
+//! next frame.
 //!
 //! When `footer` is `Some`, render it pinned below the (possibly
 //! shorter) visible body — laid out against the same resolved
@@ -74,6 +81,7 @@
 //! whose resolved boundaries aren't integers (`Flex`/`Content` widths that
 //! don't divide evenly) the two can disagree by up to one cell.
 
+use crate::primitives::layout_metrics;
 use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -90,11 +98,40 @@ pub struct Column {
 }
 
 /// Column width strategy.
+///
+/// `#[non_exhaustive]` so a future unit variant (or anything else) can land
+/// without breaking an external exhaustive `match` — see
+/// `CLAUDE.md`'s *Downstream consumers* section.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ColumnWidth {
-    /// Fixed width in surface-native units (cells for TUI, pixels for
-    /// GTK). Not affected by flex distribution.
+    /// Fixed width in surface-native units: cells on TUI, pixels on
+    /// GTK/macOS/Win. Not affected by flex distribution.
+    ///
+    /// Ambiguous across backends: a column tuned at `Fixed(10.0)` reads as
+    /// 10 cells on TUI but 10 *pixels* on a pixel backend — about one
+    /// average glyph wide instead of ten. Use [`ColumnWidth::FixedCells`]
+    /// (always reads as the same cell count) or [`ColumnWidth::FixedPx`]
+    /// (always reads as the same pixel count) instead, each of which
+    /// converts to the other backend family's native unit rather than
+    /// reinterpreting the number outright.
+    #[deprecated(
+        since = "0.9.0",
+        note = "ambiguous unit (cells on TUI, pixels on GTK/macOS/Win); use FixedCells or FixedPx instead"
+    )]
     Fixed(f32),
+    /// Fixed width in **cells**: exactly `n` cells on TUI, and `n` times
+    /// the pixel backend's own average glyph width on GTK/macOS/Win — so
+    /// the same declared width reads as roughly the same number of
+    /// average-width characters on every backend. Not affected by flex
+    /// distribution.
+    FixedCells(f32),
+    /// Fixed width in **pixels**: exactly `n` pixels/DIPs on a pixel
+    /// backend (GTK/macOS/Win), and `n` divided by a nominal 8px terminal
+    /// cell on TUI — so a pixel-tuned width degrades to a proportionate
+    /// cell count on a terminal rather than being read as cells outright.
+    /// Not affected by flex distribution.
+    FixedPx(f32),
     /// Flex weight — columns share remaining space proportionally.
     /// `Flex(1.0)` and `Flex(2.0)` in the same table give a 1:2 split.
     Flex(f32),
@@ -264,7 +301,8 @@ pub struct DataTable {
     #[serde(default)]
     pub h_scroll: f32,
     /// Per-column width overrides from user drag. When set, an override
-    /// replaces the column's `ColumnWidth` strategy with `Fixed(w)`.
+    /// replaces the column's `ColumnWidth` strategy with a literal
+    /// native-unit width, honored as-is with no unit conversion.
     /// `None` entries mean the column uses its original strategy.
     /// Must be the same length as `columns` or empty.
     #[serde(default)]
@@ -283,10 +321,19 @@ pub struct DataTable {
 pub enum DataTableEvent {
     /// User clicked a column header — app should toggle sort.
     HeaderClicked { col: usize },
-    /// User activated a row (click or Enter).
+    /// User pressed Enter while the table had focus and a row was selected
+    /// — the keyboard equivalent of [`Self::RowDoubleClicked`]'s mouse
+    /// gesture. An app wiring up "open this row" listens for both this and
+    /// `RowDoubleClicked`, since a single click or arrow-key move never
+    /// emits either — only `RowSelected`.
     RowActivated { idx: usize },
-    /// User selected a row (arrow key navigation).
+    /// User selected a row — arrow-key navigation or a plain single click.
     RowSelected { idx: usize },
+    /// User double-clicked a row — distinct from `RowSelected` (a plain
+    /// click) so an app can tell "select" apart from "open" without both
+    /// folding into `RowActivated`. See `RowActivated`'s own doc for the
+    /// keyboard/screen-reader side of the same "open" meaning.
+    RowDoubleClicked { idx: usize },
     /// User scrolled the table.
     Scroll { delta: i32, modifiers: Modifiers },
     /// User dragged a column divider to resize. `col` is the column to
@@ -625,8 +672,10 @@ impl DataTable {
     /// `row_height * 1.2`.
     ///
     /// The measurer receives each `Column` and returns a `ColumnMeasure`
-    /// with the content width. Only used for `ColumnWidth::Content`
-    /// columns; `Fixed` and `Flex` columns ignore the measure.
+    /// with the content width. Used for `ColumnWidth::Content` columns,
+    /// and for `ColumnWidth::FixedCells` on a pixel backend (to measure an
+    /// average glyph width) — `Fixed`, `FixedPx` and `Flex` columns ignore
+    /// the measure, and `FixedCells` ignores it too on a cell-grid backend.
     pub fn layout<F>(
         &self,
         viewport_width: f32,
@@ -652,6 +701,7 @@ impl DataTable {
         let resolved = resolve_columns(
             &self.columns,
             layout_width,
+            row_height,
             &measure,
             &self.column_overrides,
         );
@@ -691,13 +741,107 @@ impl DataTable {
             h_scroll: self.h_scroll,
         }
     }
+
+    /// Resolve `scroll_offset` against an optional pixel-precise
+    /// [`DataTablePaintState::scroll_px`] into the whole starting row
+    /// index a caller slices `self.rows[..]` from and passes to
+    /// [`DataTableLayout::hit_test`] — `scroll_px` wins when `Some` and
+    /// usable. `row_height` is [`DataTableLayout::row_height`] from the
+    /// same `layout()` call.
+    ///
+    /// See [`crate::primitives::scrollbar::resolve_scroll_px`] for the
+    /// underlying arithmetic and [`Self::scroll_sub_row_px`] for the
+    /// paired sub-row remainder a GUI painter uses to clip the first
+    /// visible row. `scroll_px: None` resolves to exactly the
+    /// pre-existing whole-row behaviour of reading `self.scroll_offset`
+    /// directly.
+    pub fn effective_scroll_offset(&self, row_height: f32, scroll_px: Option<f32>) -> usize {
+        match scroll_px {
+            // `scroll_px: None` reads `self.scroll_offset` raw, unclamped
+            // — bit-for-bit the pre-existing behaviour a stale
+            // out-of-range offset relied on (an empty visible window
+            // rather than snapping to the last row). Only the `Some`
+            // path goes through `resolve_scroll_px`'s clamp, since
+            // that's the new behaviour this type introduces.
+            None => self.scroll_offset,
+            Some(_) => {
+                crate::primitives::scrollbar::resolve_scroll_px(
+                    self.scroll_offset,
+                    scroll_px,
+                    self.rows.len(),
+                    row_height,
+                )
+                .0
+            }
+        }
+    }
+
+    /// Sub-row pixel remainder paired with [`Self::effective_scroll_offset`]
+    /// — `0.0` whenever `scroll_px` is `None`, so a TUI rasteriser that
+    /// never reads this gets exactly the pre-existing whole-row
+    /// behaviour.
+    pub fn scroll_sub_row_px(&self, row_height: f32, scroll_px: Option<f32>) -> f32 {
+        match scroll_px {
+            None => 0.0,
+            Some(_) => {
+                crate::primitives::scrollbar::resolve_scroll_px(
+                    self.scroll_offset,
+                    scroll_px,
+                    self.rows.len(),
+                    row_height,
+                )
+                .1
+            }
+        }
+    }
+}
+
+/// Per-frame paint-time state for a `DataTable` — hovered row tracking
+/// plus a pixel-precise scroll position, neither of which lives on the
+/// declarative [`DataTable`] descriptor itself (see
+/// [`crate::primitives::list::ListPaintState`]'s doc for why — the same
+/// rule applies here).
+///
+/// `#[non_exhaustive]`: construct via [`Default::default`] plus the
+/// `with_*` builders, so a future field here is additive.
+///
+/// `scroll_px: None` paints exactly as reading
+/// [`DataTable::scroll_offset`] directly already does; `Some(px)` wins
+/// and is resolved via [`DataTable::effective_scroll_offset`] /
+/// [`DataTable::scroll_sub_row_px`] into a row index plus a sub-row
+/// remainder.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DataTablePaintState {
+    pub hovered_idx: Option<usize>,
+    pub scroll_px: Option<f32>,
+}
+
+impl DataTablePaintState {
+    pub fn with_hovered_idx(mut self, idx: Option<usize>) -> Self {
+        self.hovered_idx = idx;
+        self
+    }
+
+    pub fn with_scroll_px(mut self, px: Option<f32>) -> Self {
+        self.scroll_px = px;
+        self
+    }
 }
 
 /// Resolve column widths from definitions + viewport width.
 /// Shared logic that TreeTable will also use.
+///
+/// `row_height` is the same backend-native row height [`DataTable::layout`]
+/// takes — `> 1.5` on a pixel backend (GTK/macOS/Win), `<= 1.5` on a
+/// cell-grid one (TUI; architecturally always exactly `1.0`), matching the
+/// threshold [`DataTable::layout`] already uses to pick `h_sb_h`'s unit.
+/// Used only to resolve [`ColumnWidth::FixedCells`]/[`ColumnWidth::FixedPx`]
+/// into the *other* backend family's native unit.
 fn resolve_columns<F>(
     columns: &[Column],
     viewport_width: f32,
+    row_height: f32,
     measure: &F,
     overrides: &[Option<f32>],
 ) -> Vec<ResolvedColumn>
@@ -708,17 +852,29 @@ where
         return Vec::new();
     }
 
+    let is_cell_grid = row_height <= 1.5;
+    // Lazily measured average glyph width, in native (pixel) units, for a
+    // `FixedCells` column on a pixel backend — computed at most once per
+    // call by measuring `pixel::TAB_CELL_WIDTH_SAMPLE` (the same sample
+    // string `pixel_tab_bar_layout` already measures for an analogous
+    // "average glyph advance" estimate) through the caller's own `measure`
+    // closure, so it uses whatever real font metrics that backend has
+    // rather than a nominal constant. `None` until first needed so a table
+    // with no `FixedCells` column never pays for the extra `measure` call.
+    let mut avg_char_width_px: Option<f32> = None;
+
     let mut widths: Vec<f32> = Vec::with_capacity(columns.len());
     let mut remaining = viewport_width;
     let mut total_flex = 0.0_f32;
 
-    // Pass 1: resolve Fixed and Content columns, accumulate flex weight.
-    // Column overrides replace the original strategy with Fixed(w).
+    // Pass 1: resolve Fixed/FixedCells/FixedPx and Content columns,
+    // accumulate flex weight. Column overrides replace the original
+    // strategy with a literal native-unit width.
     //
     // Overrides are honored at face value — NOT clamped to `remaining`.
-    // Fixed/Content columns are still clamped: they come from the table's
-    // own declared shape, which is expected to fit the budget it was
-    // resolved against. An override, by contrast, is a deliberate
+    // Fixed/FixedCells/FixedPx/Content columns are still clamped: they
+    // come from the table's own declared shape, which is expected to fit
+    // the budget it was resolved against. An override, by contrast, is a deliberate
     // divider-drag request that may legitimately ask for more than
     // `viewport_width` has to give — that's exactly how the "rightmost
     // column absorbs the slack, then the table overflows and h-scrolls"
@@ -737,7 +893,41 @@ where
             continue;
         }
         match col.width {
+            #[allow(deprecated)] // `ColumnWidth::Fixed` is `#[deprecated]`.
             ColumnWidth::Fixed(w) => {
+                let w = w.min(remaining).max(0.0);
+                widths.push(w);
+                remaining -= w;
+            }
+            ColumnWidth::FixedCells(n) => {
+                let w = if is_cell_grid {
+                    n
+                } else {
+                    let cw = *avg_char_width_px.get_or_insert_with(|| {
+                        let sample = Column {
+                            title: layout_metrics::pixel::TAB_CELL_WIDTH_SAMPLE.to_string(),
+                            width: ColumnWidth::default(),
+                            align: ColumnAlign::default(),
+                        };
+                        let measured = measure(&sample).content_width;
+                        let len = layout_metrics::pixel::TAB_CELL_WIDTH_SAMPLE
+                            .chars()
+                            .count()
+                            .max(1) as f32;
+                        (measured / len).max(0.0)
+                    });
+                    n * cw
+                };
+                let w = w.min(remaining).max(0.0);
+                widths.push(w);
+                remaining -= w;
+            }
+            ColumnWidth::FixedPx(n) => {
+                let w = if is_cell_grid {
+                    n / layout_metrics::pixel::NOMINAL_CELL_PX_WIDTH
+                } else {
+                    n
+                };
                 let w = w.min(remaining).max(0.0);
                 widths.push(w);
                 remaining -= w;
@@ -850,7 +1040,10 @@ where
 #[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{ColumnAlign, DataTable, DataTableGlyphs, DataTableLayout, SortDirection};
+    use super::{
+        ColumnAlign, DataTable, DataTableGlyphs, DataTableLayout, DataTablePaintState,
+        SortDirection,
+    };
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::primitives::layout_metrics::{pixel_data_table_layout, TextMeasure};
@@ -928,6 +1121,65 @@ pub(crate) mod native_surface_paint {
         glyphs: Option<&DataTableGlyphs>,
         nerd_fonts_enabled: bool,
     ) -> DataTableLayout {
+        paint_inner(
+            table,
+            surface,
+            theme,
+            rect,
+            line_height,
+            hovered_idx,
+            glyphs,
+            nerd_fonts_enabled,
+            None,
+        )
+    }
+
+    /// [`paint_with_glyphs`], plus an explicit pixel-precise scroll
+    /// position (`scroll_px`) resolved via
+    /// [`DataTable::effective_scroll_offset`] /
+    /// [`DataTable::scroll_sub_row_px`] instead of only
+    /// [`DataTable::scroll_offset`]'s whole-row value — both the body
+    /// rows (shifted up by the sub-row remainder, clipped to the body
+    /// band below the fixed header) and the vertical scrollbar thumb
+    /// track it. `state.scroll_px: None` (the default a `state` built
+    /// with [`DataTablePaintState::default`] carries) paints
+    /// pixel-identically to [`paint_with_glyphs`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_with_state(
+        table: &DataTable,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        line_height: f32,
+        state: &DataTablePaintState,
+        glyphs: Option<&DataTableGlyphs>,
+        nerd_fonts_enabled: bool,
+    ) -> DataTableLayout {
+        paint_inner(
+            table,
+            surface,
+            theme,
+            rect,
+            line_height,
+            state.hovered_idx,
+            glyphs,
+            nerd_fonts_enabled,
+            state.scroll_px,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_inner(
+        table: &DataTable,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        line_height: f32,
+        hovered_idx: Option<usize>,
+        glyphs: Option<&DataTableGlyphs>,
+        nerd_fonts_enabled: bool,
+        scroll_px: Option<f32>,
+    ) -> DataTableLayout {
         let layout = {
             let measure = SurfaceTextMeasure(&*surface);
             pixel_data_table_layout(table, rect.width, rect.height, line_height, &measure)
@@ -986,10 +1238,23 @@ pub(crate) mod native_surface_paint {
             let col_w = rc.width;
 
             surface.surface_push_clip(Rect::new(col_x, rect.y, col_w, header_height));
-            let (tw, th) = surface.surface_measure_text_styled(&title, true);
+            let (raw_tw, _) = surface.surface_measure_text_styled(&title, true);
+            // An overflowing column header is ellipsis-truncated via the
+            // shared `fit_text_prefix` rather than clipped mid-glyph.
+            let (title, tw) = if raw_tw <= col_w {
+                (title, raw_tw)
+            } else {
+                crate::paint_surface::fit_text_prefix(surface, &title, true, col_w)
+            };
+            let (_, th) = surface.surface_measure_text_styled(&title, true);
             let text_x = align_text_x(col_x, col_w, tw, col.align);
+            // Centred within `header_height`, which can be much taller than
+            // the title's own measured height on a pixel backend whose
+            // header slot is sized off `Style::row_height` rather than the
+            // chrome font's line height.
+            let text_y = rect.y + (header_height - th).max(0.0) / 2.0;
             surface.surface_draw_text_run_styled(
-                Rect::new(text_x, rect.y, tw.max(1.0), th.max(1.0)),
+                Rect::new(text_x, text_y, tw.max(1.0), th.max(1.0)),
                 &title,
                 theme.foreground,
                 true,
@@ -1012,13 +1277,41 @@ pub(crate) mod native_surface_paint {
         }
 
         // ── Body ─────────────────────────────────────────────────────────
-        let body_y = rect.y + header_height;
-        let visible = layout
-            .visible_rows
-            .min(table.rows.len().saturating_sub(table.scroll_offset));
+        // `scroll_px` wins over `scroll_offset` when set (see
+        // `DataTable::effective_scroll_offset`); `scroll_sub_row_px`
+        // pairs with it to shift the body up by the sub-row remainder,
+        // revealing one more partially clipped row at the bottom —
+        // `scroll_px: None` always resolves `sub_px` to `0.0`, so
+        // `body_y`/`visible` collapse back to the pre-existing values.
+        let scroll_offset = table.effective_scroll_offset(line_height, scroll_px);
+        let sub_px = table.scroll_sub_row_px(line_height, scroll_px);
+        let body_y = rect.y + header_height - sub_px;
+        let body_h = (rect.height - header_height - footer_h - layout.h_scrollbar_height).max(0.0);
+        let extra_row = usize::from(sub_px > 0.0);
+        let visible =
+            (layout.visible_rows + extra_row).min(table.rows.len().saturating_sub(scroll_offset));
+
+        // Clip body rows to the band below the fixed header — `sub_px`
+        // can shift the first row's top above `header_height`, and
+        // without this clip its background would paint over the
+        // header's bottom edge instead of appearing to scroll in from
+        // underneath it. Gated on `sub_px > 0.0` so the `scroll_px: None`
+        // path never pushes a clip a pre-existing caller wouldn't expect
+        // — every row background/separator is already exactly
+        // `line_height` tall and `visible` already keeps the last row
+        // inside the body band, so the clip is a no-op there anyway.
+        let body_clip_active = sub_px > 0.0;
+        if body_clip_active {
+            surface.surface_push_clip(Rect::new(
+                rect.x,
+                rect.y + header_height,
+                rect.width,
+                body_h,
+            ));
+        }
 
         for row_idx in 0..visible {
-            let abs_idx = table.scroll_offset + row_idx;
+            let abs_idx = scroll_offset + row_idx;
             let row = &table.rows[abs_idx];
             let row_y = body_y + row_idx as f32 * line_height;
             let is_selected = table.selected_idx == Some(abs_idx);
@@ -1052,32 +1345,69 @@ pub(crate) mod native_surface_paint {
                 surface.surface_push_clip(Rect::new(col_x, row_y, col_w, line_height));
 
                 let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
-                let (tw, th) = surface.surface_measure_text(&full_text);
+                let (raw_tw, th) = surface.surface_measure_text(&full_text);
                 let align = table
                     .columns
                     .get(col_idx)
                     .map(|c| c.align)
                     .unwrap_or(ColumnAlign::Left);
-                let text_x = align_text_x(col_x, col_w, tw, align);
+                // An over-long cell is ellipsis-truncated to its own
+                // column width via the shared `fit_text_prefix` rather
+                // than clipped mid-glyph. Truncation always renders
+                // left-aligned from `col_x` — an overflowing cell has no
+                // good right/centre anchor for its ellipsis, so it uses
+                // the same left edge every other overflowing primitive
+                // ellipsizes from.
+                let needs_ellipsis = raw_tw > col_w;
+                let text_x = if needs_ellipsis {
+                    col_x
+                } else {
+                    align_text_x(col_x, col_w, raw_tw, align)
+                };
                 let text_y = row_y + (line_height - th) / 2.0;
+                let budget = if needs_ellipsis { col_w } else { raw_tw };
 
                 if is_muted {
+                    let (paint_text, paint_w) = if needs_ellipsis {
+                        crate::paint_surface::fit_text_prefix(surface, &full_text, false, col_w)
+                    } else {
+                        (full_text, raw_tw)
+                    };
                     surface.surface_draw_text_run(
-                        Rect::new(text_x, text_y, tw.max(1.0), th.max(1.0)),
-                        &full_text,
+                        Rect::new(text_x, text_y, paint_w.max(1.0), th.max(1.0)),
+                        &paint_text,
                         theme.muted_fg,
                     );
                 } else {
                     let mut run_x = text_x;
+                    let mut remaining = budget;
                     for span in &styled.spans {
+                        if remaining <= 0.0 {
+                            break;
+                        }
                         let (sw, sh) = surface.surface_measure_text(&span.text);
                         let span_fg = span.fg.unwrap_or(theme.foreground);
+                        let (paint_text, paint_w, truncated) = if sw <= remaining {
+                            (span.text.clone(), sw, false)
+                        } else {
+                            let (t, w) = crate::paint_surface::fit_text_prefix(
+                                surface, &span.text, false, remaining,
+                            );
+                            (t, w, true)
+                        };
+                        if paint_w <= 0.0 {
+                            break;
+                        }
                         surface.surface_draw_text_run(
-                            Rect::new(run_x, text_y, sw.max(1.0), sh.max(1.0)),
-                            &span.text,
+                            Rect::new(run_x, text_y, paint_w.max(1.0), sh.max(1.0)),
+                            &paint_text,
                             span_fg,
                         );
-                        run_x += sw;
+                        run_x += paint_w;
+                        remaining -= paint_w;
+                        if truncated {
+                            break;
+                        }
                     }
                 }
                 surface.surface_pop_clip();
@@ -1095,6 +1425,10 @@ pub(crate) mod native_surface_paint {
             }
         }
 
+        if body_clip_active {
+            surface.surface_pop_clip();
+        }
+
         // ── Scrollbars ───────────────────────────────────────────────────
         if table.show_scrollbar
             && table.rows.len() > layout.visible_rows
@@ -1107,10 +1441,26 @@ pub(crate) mod native_surface_paint {
                 layout.scrollbar_width,
                 (rect.height - header_height - footer_h).max(0.0),
             );
+            // `scroll_offset` + the sub-row fraction (`sub_px` as a
+            // fraction of `line_height`) — the thumb tracks the same
+            // pixel-precise position the body rows above were painted
+            // at, matching `TreeView`/`ListView`'s
+            // `vscrollbar_with_scroll_px` convention.
+            //
+            // Guarded against `line_height <= 0.0`: `sub_px` is always
+            // `0.0` on the `scroll_px: None` path, but `0.0 / 0.0` is
+            // still `NaN`, which would corrupt `Scrollbar::vertical`'s
+            // thumb math even though that path must stay provably
+            // unchanged from the pre-existing `scroll_offset as f32`.
+            let scroll_rows = if line_height > 0.0 {
+                scroll_offset as f32 + sub_px / line_height
+            } else {
+                scroll_offset as f32
+            };
             let sb = Scrollbar::vertical(
                 table.id,
                 track,
-                table.scroll_offset as f32,
+                scroll_rows,
                 table.rows.len() as f32,
                 layout.visible_rows as f32,
                 line_height,
@@ -1543,6 +1893,30 @@ pub(crate) mod native_surface_paint {
             assert_eq!(alpha_run.2, theme.muted_fg);
         }
 
+        /// A body cell too wide for its own column is ellipsis-truncated
+        /// via the shared `fit_text_prefix` rather than clipped
+        /// mid-glyph.
+        #[test]
+        fn overlong_body_cell_ellipsizes_instead_of_clipping_mid_glyph() {
+            let mut table = two_col_table();
+            table.rows[0].cells[0] = StyledText::plain("x".repeat(80));
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+            paint(&table, &mut surface, &theme, rect, 16.0, None);
+
+            let cell_text = surface
+                .text_runs
+                .iter()
+                .find(|r| r.1.starts_with('x'))
+                .map(|r| r.1.clone())
+                .expect("overlong cell text must still paint");
+            assert!(
+                cell_text.ends_with('…') && cell_text.len() < 80,
+                "overlong body cell must end in an ellipsis, got {cell_text:?}"
+            );
+        }
+
         #[test]
         fn zero_size_rect_paints_nothing() {
             let table = two_col_table();
@@ -1620,6 +1994,31 @@ mod tests {
     }
 
     #[test]
+    fn effective_scroll_offset_falls_back_to_scroll_offset_when_scroll_px_is_none() {
+        let mut table = make_table(2, 50);
+        table.scroll_offset = 7;
+        assert_eq!(table.effective_scroll_offset(22.0, None), 7);
+        assert_eq!(table.scroll_sub_row_px(22.0, None), 0.0);
+    }
+
+    #[test]
+    fn effective_scroll_offset_prefers_scroll_px_and_exposes_the_sub_row_remainder() {
+        let mut table = make_table(2, 50);
+        table.scroll_offset = 7; // stale, overridden by scroll_px
+        let scroll_px = Some(33.0); // 1.5 rows deep at a 22px row height
+        assert_eq!(table.effective_scroll_offset(22.0, scroll_px), 1);
+        assert!((table.scroll_sub_row_px(22.0, scroll_px) - 11.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn effective_scroll_offset_quantises_to_whole_rows_on_a_cell_grid() {
+        // TUI's row_height is 1.0 cell: a fractional scroll_px still
+        // resolves to a whole row, with no sub-row remainder read.
+        let table = make_table(2, 50);
+        assert_eq!(table.effective_scroll_offset(1.0, Some(3.7)), 3);
+    }
+
+    #[test]
     fn flex_columns_share_space_equally() {
         let table = make_table(4, 0);
         let layout = table.layout(80.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(10.0));
@@ -1640,12 +2039,73 @@ mod tests {
     #[test]
     fn fixed_column_takes_exact_width() {
         let mut table = make_table(3, 0);
-        table.columns[0].width = ColumnWidth::Fixed(10.0);
+        table.columns[0].width = ColumnWidth::FixedCells(10.0);
         let layout = table.layout(80.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
         assert!((layout.columns[0].width - 10.0).abs() < 0.01);
         // Remaining 70 split between 2 flex columns
         assert!((layout.columns[1].width - 35.0).abs() < 0.01);
         assert!((layout.columns[2].width - 35.0).abs() < 0.01);
+    }
+
+    /// `FixedCells(10.0)` on a cell-grid backend (`row_height <= 1.5`) is
+    /// exactly 10 native units — unaffected by the measurer, which a
+    /// cell-grid backend always drives with a character-count closure
+    /// anyway (see `tui::data_table::data_table_layout`). Column 0 is not
+    /// the last column, so pass 4's "stretch the last column to fill the
+    /// viewport" never masks its declared width with the leftover space.
+    #[test]
+    fn fixed_cells_resolves_to_exact_cell_count_on_a_cell_grid_backend() {
+        let mut table = make_table(3, 0);
+        table.columns[0].width = ColumnWidth::FixedCells(10.0);
+        let layout = table.layout(80.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        assert!((layout.columns[0].width - 10.0).abs() < 0.01);
+    }
+
+    /// `FixedCells(10.0)` on a pixel backend (`row_height > 1.5`) scales up
+    /// by the measurer's own average glyph width — measured once via the
+    /// `TAB_CELL_WIDTH_SAMPLE` sample string — instead of being read as 10
+    /// raw pixels. Here every glyph measures 4.0 wide, so the column comes
+    /// out to 40.0: the same ~10-glyph-wide column a cell-grid backend
+    /// paints at `FixedCells(10.0) == 10.0` native units, not a 10-pixel
+    /// sliver.
+    #[test]
+    fn fixed_cells_scales_by_measured_glyph_width_on_a_pixel_backend() {
+        let mut table = make_table(3, 0);
+        table.columns[0].width = ColumnWidth::FixedCells(10.0);
+        let layout = table.layout(800.0, 20.0, 18.0, 18.0, 0.0, |col| {
+            ColumnMeasure::new(col.title.chars().count() as f32 * 4.0)
+        });
+        assert!(
+            (layout.columns[0].width - 40.0).abs() < 0.01,
+            "expected 40.0 (10 cells * 4.0 px/glyph), got {}",
+            layout.columns[0].width
+        );
+    }
+
+    /// `FixedPx(80.0)` on a pixel backend is exactly 80.0 native units
+    /// (already pixels) — the measurer is never consulted.
+    #[test]
+    fn fixed_px_passes_through_unchanged_on_a_pixel_backend() {
+        let mut table = make_table(3, 0);
+        table.columns[0].width = ColumnWidth::FixedPx(80.0);
+        let layout = table.layout(800.0, 20.0, 18.0, 18.0, 0.0, |_| {
+            panic!("FixedPx must never consult the measurer")
+        });
+        assert!((layout.columns[0].width - 80.0).abs() < 0.01);
+    }
+
+    /// `FixedPx(80.0)` on a cell-grid backend degrades to cells via the
+    /// nominal 8px-per-cell estimate: `80.0 / 8.0 == 10.0` cells — the same
+    /// nominal cell count [`fixed_cells_resolves_to_exact_cell_count_on_a_cell_grid_backend`]
+    /// declares directly.
+    #[test]
+    fn fixed_px_degrades_to_nominal_cells_on_a_cell_grid_backend() {
+        let mut table = make_table(3, 0);
+        table.columns[0].width = ColumnWidth::FixedPx(80.0);
+        let layout = table.layout(80.0, 20.0, 1.0, 1.0, 0.0, |_| {
+            panic!("FixedPx must never consult the measurer")
+        });
+        assert!((layout.columns[0].width - 10.0).abs() < 0.01);
     }
 
     #[test]
@@ -1799,13 +2259,13 @@ mod tests {
     // ── Divider drag: the rightmost column absorbs slack, then overflow ──
 
     /// Builds a table with 3 `Flex` columns (weights 3.0, 1.5, 0.5) then one
-    /// `Fixed(10.0)` — the shape used in divider-drag tests below.
+    /// `FixedCells(10.0)` — the shape used in divider-drag tests below.
     fn make_sample_shaped_table() -> DataTable {
         let mut table = make_table(4, 0);
         table.columns[0].width = ColumnWidth::Flex(3.0);
         table.columns[1].width = ColumnWidth::Flex(1.5);
         table.columns[2].width = ColumnWidth::Flex(0.5);
-        table.columns[3].width = ColumnWidth::Fixed(10.0);
+        table.columns[3].width = ColumnWidth::FixedCells(10.0);
         table
     }
 
@@ -2220,7 +2680,7 @@ mod tests {
 
     #[test]
     fn fill_never_shrinks_content_that_legitimately_overflows_the_viewport() {
-        // All columns Fixed and their sum (150) exceeds the visible
+        // All columns FixedCells and their sum (150) exceeds the visible
         // area (40) — the `min_total_width` h-scroll case (see
         // `DataTable::layout`: when `min_total_width` exceeds the
         // visible column area, columns are laid out at
@@ -2230,9 +2690,9 @@ mod tests {
         // laid out against, never shrinks it back down to the smaller
         // visible area.
         let mut table = make_table(3, 0);
-        table.columns[0].width = ColumnWidth::Fixed(50.0);
-        table.columns[1].width = ColumnWidth::Fixed(50.0);
-        table.columns[2].width = ColumnWidth::Fixed(50.0);
+        table.columns[0].width = ColumnWidth::FixedCells(50.0);
+        table.columns[1].width = ColumnWidth::FixedCells(50.0);
+        table.columns[2].width = ColumnWidth::FixedCells(50.0);
         table.min_total_width = Some(150.0);
         let layout = table.layout(40.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
         assert!(
@@ -2371,7 +2831,7 @@ mod tests {
 
     // ── Hit-testing with horizontal scroll offset ──────────────────────
     //
-    // Geometry: 4 × `Fixed(30.0)` columns laid out at `min_total_width = 120`
+    // Geometry: 4 × `FixedCells(30.0)` columns laid out at `min_total_width = 120`
     // inside a 60-wide viewport, so content space is exactly twice the
     // viewport and every column boundary lands on a round number.
     //
@@ -2384,7 +2844,7 @@ mod tests {
     fn make_wide_table(nrows: usize) -> DataTable {
         let mut table = make_table(4, nrows);
         for c in &mut table.columns {
-            c.width = ColumnWidth::Fixed(30.0);
+            c.width = ColumnWidth::FixedCells(30.0);
         }
         table.min_total_width = Some(120.0);
         table

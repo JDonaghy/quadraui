@@ -100,7 +100,7 @@
 //!
 //! ## Status
 //!
-//! `0.8.x` — pre-1.0, published on crates.io. Breaking changes are
+//! `0.9.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
 //! `quadraui/docs/decisions/DECISIONS.md`. 49 primitives shipped. The TUI
@@ -309,6 +309,13 @@ pub(crate) mod image_cache;
 ))]
 pub(crate) mod codicon;
 
+// Codicon name → codepoint table backing `Icon::codicon`. Unlike
+// `codicon` above (the font bytes + chrome-glyph constants, needed only
+// by GUI rasterisers), this is plain data `Icon::codicon` resolves on
+// every build — including a TUI-only or zero-backend-feature one — so
+// it carries no feature gate. See `codicon_names.rs`'s module doc.
+pub(crate) mod codicon_names;
+
 // ── Per-backend rasterisers ─────────────────────────────────────────────────
 // Public `draw_*` rasterisers, gated behind feature flags so apps that only
 // consume the data layer don't pull in ratatui / gtk4. Lifted out of vimcode
@@ -489,7 +496,10 @@ pub use primitives::board::{
     board_layout, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardLayout,
     BoardMeasure, BoardModel, CardBadge, CardId, CardLayout, ColumnLayout, MoveDir,
 };
-pub use primitives::button::{Button, ButtonEvent, ButtonHit, ButtonLayout, ButtonVariant};
+pub use primitives::button::{
+    Button, ButtonEvent, ButtonHit, ButtonIconPosition, ButtonLayout, ButtonMetrics, ButtonSpec,
+    ButtonVariant,
+};
 pub use primitives::canvas::{Canvas, CanvasHit, CanvasLayout, DrawOp};
 pub use primitives::chart::{
     Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,
@@ -509,7 +519,8 @@ pub use primitives::context_menu::{
 };
 pub use primitives::data_table::{
     Column, ColumnAlign, ColumnMeasure, ColumnWidth, DataRow, DataTable, DataTableEvent,
-    DataTableGlyphs, DataTableHit, DataTableLayout, ResolvedColumn, SortDirection,
+    DataTableGlyphs, DataTableHit, DataTableLayout, DataTablePaintState, ResolvedColumn,
+    SortDirection,
 };
 pub use primitives::date_picker::{
     CalendarDate, DateFormat, DateLocale, DatePicker, DatePickerEvent, DatePickerHit,
@@ -541,14 +552,14 @@ pub use primitives::find_replace::{
 };
 pub use primitives::float::{Float, FloatHit, FloatLayout, FloatMeasure};
 pub use primitives::form::{
-    ButtonRowItem, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
+    ButtonRowItem, ControlWidth, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
     FormItemMeasure, FormLayout, LabelAlign, LabelPosition, ToggleGroupItem, ValidationState,
     VisibleFormField,
 };
 pub use primitives::image::{Image, ImageFit, ImageHit, ImageLayout, ImageSource};
 pub use primitives::list::{
-    ListItem, ListItemMeasure, ListView, ListViewEvent, ListViewHit, ListViewLayout,
-    VisibleListItem,
+    ListItem, ListItemMeasure, ListPaintState, ListView, ListViewEvent, ListViewHit,
+    ListViewLayout, VisibleListItem,
 };
 pub use primitives::menu_bar::{
     MenuBar, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout, VisibleMenuBarItem,
@@ -635,16 +646,16 @@ pub use primitives::toast::{
     ToastOverlay, ToastSeverity, ToastStackLayout, VisibleToast,
 };
 pub use primitives::toolbar::{
-    Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarItemKind, ToolbarItemMeasure,
-    ToolbarLayout, ToolbarPaintOptions, ToolbarVAlign, VisibleToolbarItem,
+    Toolbar, ToolbarButton, ToolbarEvent, ToolbarHit, ToolbarIcons, ToolbarItemKind,
+    ToolbarItemMeasure, ToolbarLayout, ToolbarPaintOptions, ToolbarVAlign, VisibleToolbarItem,
 };
 pub use primitives::tooltip::{
     ResolvedPlacement, Tooltip, TooltipBorder, TooltipChrome, TooltipHit, TooltipLayout,
     TooltipMeasure, TooltipPlacement,
 };
 pub use primitives::tree::{
-    selected_paths_for_indices, TreeEvent, TreeRow, TreeRowEditState, TreeRowMeasure, TreeView,
-    TreeViewHit, TreeViewLayout, VisibleTreeRow,
+    selected_paths_for_indices, TreeEvent, TreePaintState, TreeRow, TreeRowEditState,
+    TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout, VisibleTreeRow,
 };
 pub use style::Style;
 pub use text_util::{
@@ -732,13 +743,13 @@ pub use compose::{
     DualModePaletteEvent, FilePickerController, FilePickerEvent, FilePickerMode, FocusGroup,
     FocusRing, FolderPickerController, FolderPickerEvent, FormController, FormControllerEvent,
     GroupLayout, HelpAction, HelpNote, HelpOverlayController, HelpOverlayEvent, HelpRegistry,
-    MenuDef, MenuEvent, MenuSystem, MessageDialogController, MessageDialogEvent, NavigationMode,
-    Pane, PaneDragRect, PaneTab, PanelDefinition, SectionKind, ShellPosition, SidebarEvent,
-    SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef, SidebarSystem,
-    StatusBarAction, StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout,
-    ToastStackController, ToastStackEvent, ToolbarHoverTracker, TreeController,
-    TreeControllerEvent, ViewHelp, WorkspaceController, WorkspaceDoc, WorkspaceEvent,
-    WorkspaceLayout, PALETTE_CHROME_ROWS,
+    ListHoverTracker, MenuDef, MenuEvent, MenuSystem, MessageDialogController, MessageDialogEvent,
+    NavigationMode, Pane, PaneDragRect, PaneTab, PanelDefinition, SectionKind, ShellPosition,
+    SidebarEvent, SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef,
+    SidebarSystem, StatusBarAction, StatusBarInteraction, TabGroupController, TabGroupEvent,
+    TabGroupLayout, ToastStackController, ToastStackEvent, ToolbarHoverTracker, TreeController,
+    TreeControllerEvent, TreeHoverTracker, ViewHelp, WorkspaceController, WorkspaceDoc,
+    WorkspaceEvent, WorkspaceLayout, PALETTE_CHROME_ROWS,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,

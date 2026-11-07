@@ -549,6 +549,7 @@ pub(crate) mod native_surface_paint {
 
         fn mk_action(id: &str, label: &str, enabled: bool) -> ToolbarButton {
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new(id),
                 label: label.into(),
                 icon: None,
@@ -825,6 +826,7 @@ mod tests {
 
     fn mk_action(id: &str, label: &str) -> ToolbarButton {
         ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new(id),
             label: label.to_string(),
             icon: None,

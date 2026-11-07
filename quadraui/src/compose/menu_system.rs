@@ -17,6 +17,7 @@
 
 use crate::backend::{Backend, ResolvedMenuStyle};
 use crate::event::{Rect, UiEvent};
+use crate::interaction::InteractionState;
 use crate::primitives::context_menu::{
     ContextMenu, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure, ContextMenuLayout,
     ContextMenuPlacement,
@@ -31,9 +32,10 @@ use crate::{FontRole, Key, Modifiers, MouseButton, NamedKey};
 /// (whose `char_width` isn't meaningful for chrome text — see
 /// `Backend::measure_text`'s own doc). Mirrors [`ContextMenu::
 /// measure_generic_width`]'s per-item accounting (a leading `✓ ` slot
-/// when [`ContextMenuItem::checked`] is `Some(_)`, a trailing gap plus
-/// either a `▶` submenu arrow or [`ContextMenuItem::detail`]'s text) but
-/// measures the real chrome-font advance instead of counting characters.
+/// when [`ContextMenuItem::checked`] is `Some(_)`, or the same slot for
+/// [`ContextMenuItem::icon`] when `checked` is unset, plus a trailing gap
+/// plus either a `▶` submenu arrow or [`ContextMenuItem::detail`]'s text)
+/// but measures the real chrome-font advance instead of counting characters.
 /// [`ContextMenuItem::key_equivalent`]-rendered shortcuts aren't counted,
 /// same omission `measure_generic_width` documents for itself.
 fn dropdown_width(backend: &dyn Backend, items: &[ContextMenuItem], lh: f32) -> f32 {
@@ -68,7 +70,7 @@ fn dropdown_width(backend: &dyn Backend, items: &[ContextMenuItem], lh: f32) -> 
         .map(|item| {
             let label: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
             let mut w = backend.measure_text(&label, role).0;
-            if item.checked.is_some() {
+            if item.checked.is_some() || item.icon.is_some() {
                 w += checked_w;
             }
             if item.submenu.is_some() {
@@ -125,6 +127,16 @@ pub struct MenuSystem {
     submenu_selected: Vec<usize>,
 }
 
+/// An empty menu bar with nothing registered — equivalent to `MenuSystem::new(Vec::new())`.
+/// Lets a host struct derive `Default` for a field that only grows real
+/// menus once a `MenuBar` descriptor shows up (see `quadraui-py`'s
+/// `PyAppLogic::menu_system`).
+impl Default for MenuSystem {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
 impl MenuSystem {
     pub fn new(menus: Vec<MenuDef>) -> Self {
         Self {
@@ -142,8 +154,49 @@ impl MenuSystem {
         self.open_item.is_some()
     }
 
+    /// Replace the menu definitions. If a dropdown (or nested submenu) is
+    /// currently open, any level whose index no longer resolves against
+    /// `menus` is dropped so every direct `self.menus[idx]` index elsewhere
+    /// in this type stays panic-free — e.g. a host rebuilding `menus` from
+    /// per-frame application data (`quadraui-py`'s `sync_menu_bar`) may
+    /// hand this a shorter list while the previous frame's dropdown is
+    /// still open.
     pub fn set_menus(&mut self, menus: Vec<MenuDef>) {
         self.menus = menus;
+        self.clamp_open_state();
+    }
+
+    /// Drop `open_item`/`submenu_path` levels that no longer have a
+    /// corresponding entry in `self.menus`, leaving the rest of the open
+    /// state (what's left of `submenu_path`, `dropdown_selected`,
+    /// `submenu_selected`) untouched — those are display-only selection
+    /// hints compared by equality, not used to index, so a stale value is
+    /// harmless. Does not touch the modal stack; callers that need the
+    /// `dropdown_id` entry popped too should call [`Self::close`].
+    fn clamp_open_state(&mut self) {
+        let Some(open_idx) = self.open_item else {
+            return;
+        };
+        if open_idx >= self.menus.len() {
+            self.open_item = None;
+            self.focused_item = None;
+            self.submenu_path.clear();
+            self.submenu_selected.clear();
+            return;
+        }
+        let mut items = &self.menus[open_idx].items;
+        let mut valid_depth = self.submenu_path.len();
+        for (depth, &path_idx) in self.submenu_path.iter().enumerate() {
+            match items.get(path_idx).and_then(|item| item.submenu.as_ref()) {
+                Some(sub) => items = sub,
+                None => {
+                    valid_depth = depth;
+                    break;
+                }
+            }
+        }
+        self.submenu_path.truncate(valid_depth);
+        self.submenu_selected.truncate(valid_depth);
     }
 
     pub fn close(&mut self, backend: &mut dyn Backend) {
@@ -163,14 +216,46 @@ impl MenuSystem {
     }
 
     /// Draw the menu bar and any open dropdown (including nested submenus).
+    ///
+    /// The dropdown/submenu levels paint through the plain
+    /// [`Backend::draw_context_menu`], not
+    /// [`Backend::draw_context_menu_with_state`]: a dropdown row's hover
+    /// already drives [`Self::dropdown_selected`] /
+    /// [`Self::submenu_selected`] (keyboard and mouse both move the same
+    /// selection cursor, which the submenu machinery below keys off of),
+    /// so `draw_context_menu`'s `is_selected` highlight already is the
+    /// hover cue there — a second, independent `InteractionState` feed
+    /// would just double the bookkeeping for the same visual signal.
     pub fn render(&self, backend: &mut dyn Backend, bar_rect: Rect) {
         let bar = self.build_menu_bar();
-        let _ = backend.draw_menu_bar(bar_rect, &bar);
+        let _ = backend.draw_menu_bar_with_state(bar_rect, &bar, &self.bar_interaction());
 
         let stack = self.dropdown_stack(backend, bar_rect);
         for (ctx_menu, layout) in &stack {
             let _ = backend.draw_context_menu(ctx_menu, layout);
         }
+    }
+
+    /// The top-level bar's own hover state, derived from
+    /// [`Self::focused_item`] rather than tracked separately — no
+    /// caller feeds this by hand, so a py/node app gets the hover tint
+    /// for free the moment it registers a `MenuBar` wire extra.
+    ///
+    /// Empty (nothing hovered) while a dropdown is open: `focused_item`
+    /// only updates in [`Self::handle_mouse_moved`]'s closed-bar branch,
+    /// and the open item already gets [`crate::Theme::tab_active_bg`]'s
+    /// stronger treatment in `primitives::menu_bar::native_surface_paint`
+    /// — layering the plain hover tint on top of it there would read as
+    /// a *lighter* highlight than "active", the wrong direction.
+    fn bar_interaction(&self) -> InteractionState {
+        if self.open_item.is_some() {
+            return InteractionState::new();
+        }
+        let hovered = self
+            .focused_item
+            .and_then(|i| self.menus.get(i))
+            .map(|m| m.id);
+        InteractionState::from_parts(hovered, None)
     }
 
     /// Process an event. Call from `handle()` before other UI routing.
@@ -943,6 +1028,9 @@ mod tests {
         fn focus_manager(&self) -> &crate::focus::FocusManager {
             &self.focus
         }
+        fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
+            self.focus.set_focus(id)
+        }
         fn draw_focus_ring(&mut self, _r: Rect) {}
         fn services(&self) -> &dyn crate::backend::PlatformServices {
             unimplemented!()
@@ -1517,6 +1605,32 @@ mod tests {
         assert!(submenu_w > plain_w, "submenu={submenu_w}, plain={plain_w}");
     }
 
+    /// An `icon`-only item (no `checked` state) reserves the same leading
+    /// gutter width a `checked` item does — menu-bar dropdowns paint
+    /// through this same `native_surface_paint` path, which prefixes an
+    /// icon'd item's label with the same two-space gutter a checked
+    /// item's `✓ ` uses, so a dropdown that doesn't reserve for `icon`
+    /// would let that shifted label clip at the right edge.
+    #[test]
+    fn dropdown_width_reserves_space_for_icon_same_as_checked() {
+        let backend = MockBackend::new();
+        let plain = [action("a", "Reveal in Explorer")];
+        let mut with_icon = plain.clone();
+        with_icon[0].icon = Some(crate::types::Icon::new("G", "F"));
+        let mut checked = plain.clone();
+        checked[0].checked = Some(true);
+
+        let plain_w = dropdown_width(&backend, &plain, 1.0);
+        let icon_w = dropdown_width(&backend, &with_icon, 1.0);
+        let checked_w = dropdown_width(&backend, &checked, 1.0);
+
+        assert!(icon_w > plain_w, "icon={icon_w}, plain={plain_w}");
+        assert_eq!(
+            icon_w, checked_w,
+            "icon and checked reserve the same shared gutter width"
+        );
+    }
+
     /// Separators never gate the width computation on their own (empty)
     /// label — a menu that is otherwise all separators plus one real item
     /// must size off that one item, not panic or report `0.0`.
@@ -1664,6 +1778,31 @@ mod tests {
     }
 
     #[test]
+    fn bar_interaction_is_empty_with_nothing_focused() {
+        let ms = MenuSystem::new(sample_menus());
+        assert_eq!(ms.bar_interaction().hovered(), None);
+    }
+
+    #[test]
+    fn bar_interaction_hovers_the_focused_item_s_id() {
+        let mut ms = MenuSystem::new(sample_menus());
+        ms.focused_item = Some(0);
+        assert_eq!(ms.bar_interaction().hovered(), Some(&ms.menus[0].id));
+    }
+
+    #[test]
+    fn bar_interaction_clears_once_a_dropdown_is_open() {
+        // `focused_item` is stale ("whatever it was before the dropdown
+        // opened"), but `bar_interaction` must not paint a hover tint
+        // over the stronger "active" treatment the open item already
+        // gets — see `bar_interaction`'s own doc.
+        let mut ms = MenuSystem::new(sample_menus());
+        ms.focused_item = Some(0);
+        ms.open_item = Some(0);
+        assert_eq!(ms.bar_interaction().hovered(), None);
+    }
+
+    #[test]
     fn set_menus_replaces_definitions() {
         let mut ms = MenuSystem::new(sample_menus());
         assert_eq!(ms.menus.len(), 3);
@@ -1674,6 +1813,65 @@ mod tests {
             items: vec![action("a", "A")],
         }]);
         assert_eq!(ms.menus.len(), 1);
+    }
+
+    /// A shorter `set_menus` call while a top-level dropdown is open must
+    /// close it rather than leave `open_item` pointing past the end of the
+    /// new list — `dropdown_layout`/`build_dropdown` index `self.menus`
+    /// directly, so a stale out-of-range `open_item` would panic.
+    #[test]
+    fn set_menus_closes_dropdown_left_pointing_past_the_new_list() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let backend = MockBackend::new();
+        ms.open_item = Some(2); // "Help" — the last menu, dropped below
+        ms.focused_item = Some(2);
+
+        ms.set_menus(vec![MenuDef {
+            id: WidgetId::new("file"),
+            label: "&File".into(),
+            disabled: false,
+            items: vec![action("new", "New File")],
+        }]);
+
+        assert_eq!(ms.open_item, None);
+        assert_eq!(ms.focused_item, None);
+        assert!(ms.dropdown_layout(&backend, bar_rect()).is_none());
+    }
+
+    /// Shrinking the open menu's own item list so a deeper submenu's
+    /// `submenu_path` entry no longer resolves must drop that entry (and
+    /// anything nested under it) rather than leave it dangling —
+    /// `items_at_depth`/`dropdown_stack` walk `submenu_path` against the
+    /// new items and would otherwise be handed a stale index.
+    #[test]
+    fn set_menus_truncates_submenu_path_left_pointing_past_new_items() {
+        let mut ms = MenuSystem::new(vec![MenuDef {
+            id: WidgetId::new("file"),
+            label: "&File".into(),
+            disabled: false,
+            items: vec![{
+                let mut item = action("export", "Export");
+                item.submenu = Some(vec![action("png", "PNG"), action("svg", "SVG")]);
+                item
+            }],
+        }]);
+        let backend = MockBackend::new();
+        ms.open_item = Some(0);
+        ms.submenu_path = vec![0]; // "Export"'s submenu is open
+
+        // New "File" menu's one item has no submenu at all, so depth-0 of
+        // the old `submenu_path` no longer resolves.
+        ms.set_menus(vec![MenuDef {
+            id: WidgetId::new("file"),
+            label: "&File".into(),
+            disabled: false,
+            items: vec![action("new", "New File")],
+        }]);
+
+        assert_eq!(ms.open_item, Some(0));
+        assert!(ms.submenu_path.is_empty());
+        assert!(ms.dropdown_layout(&backend, bar_rect()).is_some());
+        assert!(ms.dropdown_stack(&backend, bar_rect()).len() <= 1);
     }
 
     #[test]

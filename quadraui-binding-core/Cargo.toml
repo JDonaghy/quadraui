@@ -1,0 +1,47 @@
+[package]
+name = "quadraui-binding-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# Every binding leaf (quadraui-py, quadraui-ffi, quadraui-node) lives in this
+# workspace and reaches this crate via a path dependency, so no registry
+# publish is needed. If a leaf is ever extracted into its own repo, see
+# `quadraui/docs/decisions/BINDING_CORE_PUBLISH_POLICY.md` for the two
+# options (crates.io publish vs. a pinned git dependency) and flip this then.
+publish = false
+description = """\
+Language-neutral interaction wiring (hit testing, semantic event synthesis, \
+text-input/drag controllers, the retained descriptor model, the event -> \
+hit -> semantic -> render engine, and render->frame assembly) shared by \
+every native quadraui binding. Carries no language-specific dependency -- a \
+binding crate (quadraui-py today, quadraui-node next) supplies only \
+descriptor decode and a callback boundary around this engine.\
+"""
+
+[features]
+# Gate `host::NativeExitPolicy`'s own `run_native`-style exit-policy
+# downgrade, which needs to know which native runner a binding is wrapping
+# (see that type's own doc). Forward to `quadraui`'s own same-named feature
+# for the same reason `quadraui-py`'s own `gtk`/`macos`/`win` features do —
+# this crate never calls GTK/AppKit/Win32 APIs directly.
+gtk = ["quadraui/gtk"]
+macos = ["quadraui/macos"]
+win = ["quadraui/win"]
+
+[dependencies]
+# `tui` is unconditional for the same reason `quadraui-py` pulls it in
+# unconditionally: this crate's render/paint path drives `quadraui::Backend`
+# directly and has no language-specific feature of its own to gate it behind.
+quadraui = { path = "../quadraui", features = ["tui"] }
+serde = { version = "1.0", features = ["derive"] }
+# The decode medium for every entry point in `wire.rs` (via `wire::materialize`,
+# a `serde_json::Value`-producing `Visitor` with two deltas from `Value`'s own
+# -- see that function's doc) and the merge medium for `host::merge_overrides`:
+# a binding serializes its backend's current `Theme`/`Style` to a
+# `serde_json::Value`, splices in just the override keys the caller named,
+# then deserializes the merged value back -- letting a caller override one
+# field without restating every one of `Theme`'s ~70 colour fields. `serde`
+# alone can't do a partial merge; it only converts a whole value in one
+# direction at a time.
+serde_json = "1.0"

@@ -308,6 +308,8 @@ fn field(id: &str, label: &str, kind: FieldKind) -> FormField {
         label_align: None,
         label_width: None,
         tab_index: None,
+        control_width: None,
+        min_control_width: None,
     }
 }
 
@@ -336,6 +338,8 @@ fn form_fields_carry_role_state_and_a_live_validation_alert() {
         label_position: Default::default(),
         label_align: Default::default(),
         label_width: None,
+        control_width: Default::default(),
+        min_control_width: None,
     };
     let snapshot = A11yScenario::new()
         .with_surface(Surface::Form {
@@ -396,6 +400,8 @@ fn a_field_that_owns_its_own_set_size_does_not_borrow_the_forms_position() {
         label_position: Default::default(),
         label_align: Default::default(),
         label_width: None,
+        control_width: Default::default(),
+        min_control_width: None,
     };
     let snapshot = A11yScenario::new()
         .with_surface(Surface::Form {
@@ -429,6 +435,7 @@ fn an_open_dialog_is_modal_and_hides_the_rest_of_the_tree() {
                 is_default: true,
                 is_cancel: false,
                 tint: None,
+                spec: None,
             },
             DialogButton {
                 id: WidgetId::new("dialog:cancel"),
@@ -436,6 +443,7 @@ fn an_open_dialog_is_modal_and_hides_the_rest_of_the_tree() {
                 is_default: false,
                 is_cancel: true,
                 tint: None,
+                spec: None,
             },
         ],
         severity: None,

@@ -84,7 +84,7 @@ The full version is `quadraui/examples/hello.rs`:
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
   silently doing nothing.
-- **Heavily tested.** Around 6,300 tests, including headless
+- **Heavily tested.** Around 6,800 tests, including headless
   paint-then-click round trips on all four backends, an end-to-end
   `TuiDriver` that drives real example apps through the event loop, and
   benchmarks for 100k-row tables and trees and a 4k-line editor.
@@ -113,7 +113,7 @@ comfortable with a pre-1.0 API.
 
 ## Status
 
-`0.8.x` — pre-1.0, published on crates.io. Breaking changes are grouped
+`0.9.x` — pre-1.0, published on crates.io. Breaking changes are grouped
 into scheduled minor releases and recorded in `CHANGELOG.md`. What a `0.x`
 release may change is D-019 in
 [`quadraui/docs/decisions/DECISIONS.md`](quadraui/docs/decisions/DECISIONS.md);
@@ -155,7 +155,7 @@ tracker.
 
 ```toml
 [dependencies]
-quadraui = { version = "0.8", features = ["tui", "gtk"] }
+quadraui = { version = "0.9", features = ["tui", "gtk"] }
 ```
 
 Feature flags, the system packages each backend needs, and every
@@ -250,6 +250,7 @@ machines, so an app matches on semantic events (`MenuEvent::Activated`,
 | `FocusRing` / `FocusGroup` | Tab / Shift+Tab focus cycling. |
 | `HelpOverlayController` | A context-sensitive key-binding help overlay. |
 | `StatusBarInteraction` / `ToolbarHoverTracker` | Hover and press state for status-bar segments and toolbar buttons. |
+| `HoverTooltipTracker` | When a hover tooltip shows: hover delay, dismiss and auto-dismiss. |
 
 Also in `compose`: a Markdown-to-`StyledText` adapter, and
 `notify_or_toast`, which sends a system notification where the platform
@@ -314,7 +315,7 @@ for how to regenerate it.
 | Crate | Purpose |
 |---|---|
 | `quadraui` | The library. |
-| `quadraui-gallery` | Interactive catalogue of quadraui primitives — one `Demo` trait, one shell, Demo/Code/Data tabs and an event log, running unmodified on every backend. Also runnable headless via `--capture <dir>`, which writes one image per (demo, variant, backend) plus a `manifest.json`. Unpublished. |
+| `quadraui-gallery` | Interactive catalogue of quadraui primitives — one `Demo` trait, one shell, Demo/Code/Data tabs and an event log, running unmodified on every backend. Also runnable headless via `--capture <dir> [--theme light|dark]`, which opens each demo's own overlay (dialog, menu, cheatsheet, ...) before writing one image per (demo, variant, backend) plus a `manifest.json`. Unpublished. |
 | `kubeui-core`, `kubeui`, `kubeui-gtk` | A small Kubernetes dashboard demo: TUI and GTK front ends over shared domain logic. A demo, not a production consumer. |
 | `tools/lint` | Repository lints run in CI. |
 

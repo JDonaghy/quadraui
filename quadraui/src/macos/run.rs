@@ -75,12 +75,14 @@ use core_graphics::sys::CGContextRef;
 use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{define_class, msg_send, sel, ClassType, DefinedClass, MainThreadOnly, Message};
+use objc2::{
+    define_class, msg_send, sel, AnyThread, ClassType, DefinedClass, MainThreadOnly, Message,
+};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationTerminateReply, NSBackingStoreType, NSDragOperation, NSDraggingInfo, NSEvent,
-    NSEventMask, NSGraphicsContext, NSPasteboardTypeFileURL, NSView,
-    NSViewFrameDidChangeNotification, NSWindow, NSWindowDelegate,
+    NSEventMask, NSGraphicsContext, NSPasteboardTypeFileURL, NSTrackingArea, NSTrackingAreaOptions,
+    NSView, NSViewFrameDidChangeNotification, NSWindow, NSWindowDelegate,
     NSWindowDidChangeBackingPropertiesNotification, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{
@@ -88,7 +90,7 @@ use objc2_foundation::{
     NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSTimer, NSURL,
 };
 
-use super::backend::MacBackend;
+use super::backend::{mac_cursor_for_shape, MacBackend};
 use super::events::{
     ease_out_cubic, fold_wheel_momentum_remaining, ns_files_dropped, ns_key_to_uievent,
     ns_mouse_down, ns_mouse_moved, ns_mouse_up, route_wheel_event, wheel_momentum_quantized_target,
@@ -146,10 +148,10 @@ extern "C" {
     fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
-/// Fill `rect` with `bg` — the whole-frame backdrop [`QuadraView::draw_rect`]
-/// paints before delegating to the app's own render closure.
-/// Extracted so it's exercised by a headless [`super::headless::BitmapSurface`]
-/// test with no live `NSView`/`NSWindow`.
+/// Fill `rect` with `bg` — the whole-frame backdrop [`render_frame`] paints
+/// at the start of each frame, before the app's own `render`. Extracted so
+/// it's exercised by a headless [`super::headless::BitmapSurface`] test
+/// with no live `NSView`/`NSWindow`.
 ///
 /// # Safety
 ///
@@ -407,6 +409,26 @@ pub(crate) fn render_frame<A: AppLogic>(
     let focus_ring_rect =
         runtime::focused_stop_rect(backend, app, <A as AppLogic>::AreaId::default());
     backend.enter_frame_scope(ctx, |b| {
+        // Background fill so the area between rasterised chrome
+        // (e.g. tab_bar at the top + status_bar at the bottom) has a
+        // consistent backdrop until all content is rasterised, and so
+        // this frame's unpainted regions don't composite with whatever
+        // the *previous* frame (possibly a different `AppLogic`, in a
+        // test driver that swaps apps between `render` calls) left
+        // behind. Uses the current theme's background instead of a
+        // fixed shade so unpainted areas match the theme. Lives inside
+        // this shared `render_frame` — rather than the live
+        // `QuadraView::draw_rect` caller alone — so [`super::testing::MacDriver`]
+        // gets the same per-frame clear the live runner does.
+        let rect = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(viewport.width as f64, viewport.height as f64),
+        );
+        // SAFETY: `ctx` is a non-null `CGContextRef` borrowed for the
+        // duration of this `enter_frame_scope` call.
+        unsafe {
+            fill_frame_background(ctx, rect, b.current_theme().background);
+        }
         let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             app.render(&mut *b, <A as AppLogic>::AreaId::default());
         }));
@@ -561,6 +583,21 @@ pub(crate) struct QuadraViewIvars {
     /// running across folded notches — see
     /// `start_or_extend_wheel_momentum`'s doc.
     momentum_timer: RefCell<Option<Retained<NSTimer>>>,
+    /// `false` until `viewDidChangeEffectiveAppearance` has fired once.
+    /// AppKit calls that hook once during [`run_with`]'s
+    /// `window.setContentView(Some(&view))` — before the window is even
+    /// key — when the view's effective appearance first resolves
+    /// against its window; that call carries no real OS change. See
+    /// the hook's own doc for why the first call is swallowed rather
+    /// than dispatched.
+    appearance_change_seen: Cell<bool>,
+    /// The `NSTrackingArea` installed by `update_tracking_areas` the
+    /// first time AppKit calls it, kept alive here so it isn't
+    /// deallocated out from under AppKit's tracking-area list. `None`
+    /// until that first call — see that method's doc for why one
+    /// `NSTrackingAreaOptions::InVisibleRect` area, installed once,
+    /// never needs replacing on resize.
+    cursor_tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
 }
 
 define_class!(
@@ -616,25 +653,10 @@ define_class!(
             }
             let cg_ref: CGContextRef = cg_opaque.cast();
 
-            // Convert NSRect → core_graphics::CGRect (layout-compatible
-            // but distinct Rust types).
-            let rect = CGRect::new(
-                &CGPoint::new(bounds.origin.x, bounds.origin.y),
-                &CGSize::new(bounds.size.width, bounds.size.height),
-            );
-
-            // Background fill so the area between rasterised chrome
-            // (e.g. tab_bar at the top + status_bar at the bottom) has
-            // a consistent backdrop until all content is rasterised.
-            // Use the current theme's background instead of a fixed shade
-            // so unpainted areas match the theme.
-            let bg = self.ivars().backend.borrow().current_theme().background;
-            // SAFETY: `cg_ref` is a non-null `CGContextRef` borrowed
-            // for the duration of this call.
-            unsafe {
-                fill_frame_background(cg_ref, rect, bg);
-            }
-
+            // Background fill happens inside `render_frame` (shared by
+            // this live path and `super::testing::MacDriver`), not here —
+            // see that function's doc for why.
+            //
             // Now run the app's render via the stored closure.
             // `paint` is responsible for `begin_frame` / frame-scope /
             // `end_frame` orchestration so this method doesn't need
@@ -672,6 +694,117 @@ define_class!(
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             true
+        }
+
+        // ── Pointer cursor ────────────────────────────────────────
+        //
+        // `Backend::set_cursor` (see `MacBackend::set_cursor`'s doc)
+        // applies the requested shape immediately via a one-shot
+        // `NSCursor::set()`, which only lasts until AppKit's own
+        // cursor machinery next decides what the pointer should show.
+        // These three overrides are what makes that machinery agree
+        // with the shape the app asked for instead of silently
+        // reverting to the arrow on the next mouse move:
+        //
+        // - `updateTrackingAreas` installs one `NSTrackingArea`
+        //   covering the view (`InVisibleRect`, so it never needs
+        //   recreating on resize) with the `CursorUpdate` option —
+        //   this is what makes AppKit call `cursorUpdate:` on every
+        //   subsequent mouse move.
+        //   `EnabledDuringMouseDrag` keeps those calls coming while a
+        //   mouse button is held, so a divider drag that calls
+        //   `set_cursor` on `MouseDown` keeps its resize cursor for
+        //   the whole drag instead of only the first frame.
+        //   `ActiveAlways` (rather than the conventional
+        //   `ActiveInKeyWindow`) keeps this view re-asserting its own
+        //   cursor even while another app is frontmost — matching
+        //   `NSCursor::set()`'s own global, not-key-window-scoped
+        //   behavior, which the rest of this mechanism exists to keep
+        //   current.
+        // - `cursorUpdate:` re-applies `MacBackend::requested_cursor()`
+        //   every time AppKit invokes it.
+        // - `resetCursorRects` is AppKit's older, rect-based cursor
+        //   mechanism — invoked independently of the tracking area
+        //   above (e.g. when the window becomes key). Registering the
+        //   same shape there too means a code path that only
+        //   triggers *that* mechanism still shows the right cursor.
+
+        /// See the "Pointer cursor" section doc above.
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            unsafe {
+                let _: () = msg_send![super(self), updateTrackingAreas];
+            }
+            if self.ivars().cursor_tracking_area.borrow().is_some() {
+                return;
+            }
+            // SAFETY: `owner` points at this live `QuadraView`, which
+            // implements `cursorUpdate:` below — the selector
+            // `NSTrackingArea` sends it. The cast is a no-op upcast
+            // through the Obj-C class chain (`QuadraView` → `NSView` →
+            // `NSResponder` → `NSObject`), the same one [`run_with`]'s
+            // `view_obj` performs for its own notification-observer
+            // registrations.
+            let owner: &AnyObject = unsafe { &*(self as *const Self as *const AnyObject) };
+            // `InVisibleRect` makes the `rect` argument itself
+            // irrelevant — AppKit recomputes the tracked region from
+            // the view's own visible rect on every geometry change —
+            // so the view's current bounds are just a reasonable
+            // initial value.
+            let area = unsafe {
+                NSTrackingArea::initWithRect_options_owner_userInfo(
+                    NSTrackingArea::alloc(),
+                    self.bounds(),
+                    NSTrackingAreaOptions::CursorUpdate
+                        | NSTrackingAreaOptions::ActiveAlways
+                        | NSTrackingAreaOptions::InVisibleRect
+                        | NSTrackingAreaOptions::EnabledDuringMouseDrag,
+                    Some(owner),
+                    None,
+                )
+            };
+            self.addTrackingArea(&area);
+            *self.ivars().cursor_tracking_area.borrow_mut() = Some(area);
+        }
+
+        /// See the "Pointer cursor" section doc above. `try_borrow`, not
+        /// `borrow`: AppKit can dispatch this selector while
+        /// `AppLogic::handle` is still holding `backend.borrow_mut()`
+        /// further up this exact call stack — `MacBackend::show_context_menu`
+        /// blocks in `popUpMenuPositioningItem:atLocation:inView:` and
+        /// `services.rs`'s `NSOpenPanel`/`NSSavePanel`/`NSAlert` all block in
+        /// `runModal()`, each spinning a *nested* AppKit run loop that keeps
+        /// delivering `cursorUpdate:` (the tracking area above is
+        /// `ActiveAlways` + `EnabledDuringMouseDrag`) while the mouse moves
+        /// over the view. A plain `.borrow()` here would hit
+        /// `BorrowMutError` and panic straight across this `define_class!`
+        /// trampoline's C ABI boundary — no `catch_unwind` sits between here
+        /// and the nested run loop's caller, so that panic aborts the
+        /// process instead of unwinding — the same hazard
+        /// `viewDidChangeEffectiveAppearance` documents and guards against
+        /// above. Dropping one cursor re-apply under contention is
+        /// invisible; aborting the host process is not.
+        #[unsafe(method(cursorUpdate:))]
+        fn objc_cursor_update(&self, _event: &NSEvent) {
+            let Ok(backend) = self.ivars().backend.try_borrow() else {
+                return;
+            };
+            let shape = backend.requested_cursor();
+            drop(backend);
+            mac_cursor_for_shape(shape).set();
+        }
+
+        /// See the "Pointer cursor" section doc above, and
+        /// `cursorUpdate:`'s doc for why this borrows with `try_borrow`
+        /// rather than `borrow`.
+        #[unsafe(method(resetCursorRects))]
+        fn objc_reset_cursor_rects(&self) {
+            let Ok(backend) = self.ivars().backend.try_borrow() else {
+                return;
+            };
+            let shape = backend.requested_cursor();
+            drop(backend);
+            self.addCursorRect_cursor(self.bounds(), &mac_cursor_for_shape(shape));
         }
 
         // ── Mouse press / release ────────────────────────────────
@@ -800,7 +933,18 @@ define_class!(
             let dx = event.scrollingDeltaX();
             let dy = event.scrollingDeltaY();
             let precise = event.hasPreciseScrollingDeltas();
-            match route_wheel_event(precise, dx, dy, x, y) {
+            // Reset the overlay scrollbar idle-fade clock on every
+            // delta — precise trackpad and discrete wheel notch alike —
+            // so the bar snaps to full opacity for the hold window
+            // regardless of which `WheelRouting` arm handles delivery.
+            // `line_height` is also what `route_wheel_event` scales an
+            // imprecise (discrete wheel) delta by to land it in points.
+            let mut line_height = 1.0_f32;
+            if let Ok(mut backend) = self.ivars().backend.try_borrow_mut() {
+                backend.note_scroll_activity();
+                line_height = backend.line_height();
+            }
+            match route_wheel_event(precise, dx, dy, x, y, line_height) {
                 WheelRouting::Immediate(ev) => {
                     self.cancel_wheel_momentum();
                     self.dispatch(ev);
@@ -976,6 +1120,96 @@ define_class!(
             self.dispatch(UiEvent::DpiChanged(scale as f32));
         }
 
+        // ── System theme change ──────────────────────────────────────
+        //
+        // `NSView`'s own override point for "the effective appearance of
+        // the receiver changing" — AppKit invokes this directly (no
+        // `NSNotificationCenter` registration needed, unlike
+        // `viewFrameDidChange:`/`windowDidChangeBackingProperties:`
+        // above) whenever the OS Light/Dark setting flips or the app's
+        // own `NSApplication.appearance` override changes, and (per
+        // `NSControlTintDidChangeNotification`'s own deprecation note,
+        // which points here as the replacement) is asserted to fire on
+        // an accent-colour change too — unconfirmed in-repo; drop that
+        // claim if a hardware smoke test shows otherwise. Loosely
+        // mirrors `win::run::dispatch_event`'s `WM_SETTINGCHANGE` arm,
+        // which folds the same light/dark + accent signal (plus
+        // high-contrast) into one `SystemThemeChanged` — "loosely"
+        // because that Win arm filters on `is_theme_setting_change` and
+        // explicitly covers `SPI_SETHIGHCONTRAST`, where this arm needs
+        // no filter and has no producer at all yet for reduce-motion
+        // (`NSWorkspace.accessibilityDisplayOptionsDidChangeNotification`
+        // would be the hook). Re-reads the full `SystemTheme` through
+        // `PlatformServices::system_theme` rather than caching a stale
+        // copy, the same way that `WM_SETTINGCHANGE` arm does via
+        // `backend.services().system_theme()`. That read goes through
+        // `NSApp.effectiveAppearance`, not this view's own
+        // `effectiveAppearance` (see `MacPlatformServices::system_theme`'s
+        // doc) — an ordering assumption that the app's appearance has
+        // already resolved by the time AppKit reaches this view's
+        // callback; true in every observed case, since the view's
+        // effective appearance derives from the app's, but the one
+        // place in this method that could silently report the *old*
+        // theme for a single notification if a future AppKit ever
+        // reorders it.
+        //
+        // No AppKit documentation states `NSView`'s default
+        // implementation of this hook does anything, but forwarding to
+        // it first — the way `init`/`retain`/`release` overrides
+        // elsewhere in this crate do — costs nothing and survives a
+        // future AppKit release giving it one.
+        #[unsafe(method(viewDidChangeEffectiveAppearance))]
+        fn view_did_change_effective_appearance(&self) {
+            unsafe {
+                let _: () = msg_send![super(self), viewDidChangeEffectiveAppearance];
+            }
+
+            // AppKit fires this once during `run_with`'s
+            // `window.setContentView(Some(&view))` — before the window
+            // is even key, let alone visible — when the view's
+            // effective appearance first resolves against its window.
+            // That call is a startup artifact, not an OS change;
+            // Win-GUI never emits a `SystemThemeChanged` at launch, so
+            // swallow this one call to keep the two backends' event
+            // streams aligned.
+            if !self.ivars().appearance_change_seen.replace(true) {
+                return;
+            }
+
+            // `backend` may already be mutably borrowed further up
+            // this exact call stack: a file/folder picker's
+            // `NSOpenPanel`/`NSSavePanel` `runModal` (see
+            // `services.rs`'s module doc) spins a *nested* AppKit run
+            // loop while `dispatch` → `AppLogic::handle` still holds
+            // `backend.borrow_mut()` (see `dispatch`'s doc), and AppKit
+            // propagates an appearance flip to every view behind that
+            // modal panel during the nested loop. A plain `.borrow()`
+            // here would hit `BorrowMutError` and panic straight across
+            // this `define_class!` trampoline's C ABI boundary — before
+            // `dispatch`'s own `catch_unwind` ever gets a chance to run
+            // — aborting the process. `try_borrow` instead drops the
+            // notification under contention, the same trade the GTK
+            // runner makes for its own re-entrant
+            // `MainContext::iteration` case (`gtk::run`'s `pump_depth` +
+            // `try_borrow_mut`/`try_borrow_both` guards): a best-effort
+            // live update beats a guaranteed abort, and the theme is
+            // still available on the next real callback or the next
+            // on-demand `system_theme()` poll. The borrowed `Ref` is a
+            // temporary that drops at this statement's `;`, before
+            // `dispatch` (→ `handle` → `backend.borrow_mut()`) ever
+            // runs — collapsing this into a single `if let` would hold
+            // the `Ref` across that call and panic instead.
+            let theme = self
+                .ivars()
+                .backend
+                .try_borrow()
+                .ok()
+                .and_then(|b| b.services().system_theme().ok());
+            if let Some(theme) = theme {
+                self.dispatch(UiEvent::SystemThemeChanged(theme));
+            }
+        }
+
         // ── OS file drop ─────────────────────────────────────────────
         //
         // `NSDraggingDestination`'s methods are informal/optional
@@ -1112,6 +1346,8 @@ impl QuadraView {
             window_closed,
             wheel_momentum: RefCell::new(None),
             momentum_timer: RefCell::new(None),
+            appearance_change_seen: Cell::new(false),
+            cursor_tracking_area: RefCell::new(None),
         });
         unsafe { msg_send![super(this), init] }
     }

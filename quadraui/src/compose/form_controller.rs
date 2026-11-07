@@ -514,6 +514,8 @@ impl FormController {
                 label_position: Default::default(),
                 label_align: Default::default(),
                 label_width: None,
+                control_width: Default::default(),
+                min_control_width: None,
             },
         }
     }
@@ -1576,6 +1578,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             })
             .collect()
     }
@@ -1590,6 +1594,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -1702,6 +1708,8 @@ mod tests {
                         label_align: None,
                         label_width: None,
                         tab_index: None,
+                        control_width: None,
+                        min_control_width: None,
                     },
                     text_field("email", "", None),
                 ],
@@ -1711,6 +1719,8 @@ mod tests {
                 label_position: Default::default(),
                 label_align: Default::default(),
                 label_width: None,
+                control_width: Default::default(),
+                min_control_width: None,
             }
         }
 
@@ -1983,6 +1993,7 @@ mod tests {
             id: WidgetId::new("tb"),
             buttons: vec![
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("reset"),
                     label: "Reset".into(),
                     icon: None,
@@ -1992,6 +2003,7 @@ mod tests {
                     tooltip: String::new(),
                 },
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("export"),
                     label: "Export".into(),
                     icon: None,
@@ -2040,6 +2052,7 @@ mod tests {
         form.fields[0].kind = FieldKind::Toolbar(Toolbar {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("noop"),
                 label: "Noop".into(),
                 icon: None,
@@ -2155,6 +2168,7 @@ mod tests {
                 id: WidgetId::new("tb"),
                 buttons: vec![
                     ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("btn-a"),
                         label: "A".into(),
                         icon: None,
@@ -2164,6 +2178,7 @@ mod tests {
                         tooltip: String::new(),
                     },
                     ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("btn-b"),
                         label: "BB".into(),
                         icon: None,
@@ -2240,6 +2255,7 @@ mod tests {
                 id: WidgetId::new("tb"),
                 buttons: vec![
                     ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("btn-a"),
                         label: "A".into(),
                         icon: None,
@@ -2250,6 +2266,7 @@ mod tests {
                     },
                     ToolbarButton::Separator,
                     ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("btn-b"),
                         label: "B".into(),
                         icon: None,
@@ -2304,6 +2321,7 @@ mod tests {
             form.fields[0].kind = FieldKind::Toolbar(Toolbar {
                 id: WidgetId::new("tb"),
                 buttons: vec![ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("btn-a"),
                     label: "A".into(),
                     icon: None,
@@ -2424,6 +2442,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -2439,6 +2459,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -2454,6 +2476,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -2472,6 +2496,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -2513,6 +2539,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -2536,6 +2564,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -2550,6 +2580,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         });
         // The controller's own `has_focus` gates `KeyPressed`/`CharTyped`/
         // `ClipboardPaste` (not `Form.has_focus` above, which only
@@ -2719,6 +2751,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         });
 
         let ev2 = fc.handle_cached(&key_event(Key::Char('d'), Modifiers::default()), RECT);
@@ -2797,6 +2831,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             Some("name"),
         );
@@ -2853,6 +2889,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         });
 
         let rendered = fc.build_form(RECT, None);
@@ -2891,6 +2929,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let mut fc = controller_with(vec![field], Some("notes"));
         let ev = fc.handle_cached(&key_event(Key::Char('X'), Modifiers::default()), RECT);
@@ -2968,6 +3008,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let mut fc = controller_with(vec![field], Some("name"));
         // Must not panic. `EditOp::MoveRight` with `extend: false` drops
@@ -3026,6 +3068,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         });
 
         let ev2 = fc.handle_cached(
@@ -3143,6 +3187,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         });
 
         let ev = fc.handle_cached(
@@ -3265,6 +3311,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         });
 
         let form = fc.build_form(RECT, None);

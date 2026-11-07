@@ -150,6 +150,7 @@ mod tests {
 
     fn mk_action(id: &str, label: &str, enabled: bool) -> ToolbarButton {
         ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new(id),
             label: label.into(),
             icon: None,
@@ -343,6 +344,7 @@ mod tests {
         let bar = Toolbar {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("tb:on"),
                 label: "On".into(),
                 icon: None,
@@ -408,6 +410,7 @@ mod tests {
         let bar = Toolbar {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("tb:go"),
                 label: "Go".into(),
                 icon: None,

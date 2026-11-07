@@ -92,6 +92,7 @@ fn default_true() -> bool {
 ///         enabled: true,
 ///         is_active: false,
 ///         tooltip: String::new(),
+///         spec: None,
 ///     },
 /// ]);
 ///
@@ -102,7 +103,7 @@ fn default_true() -> bool {
 /// );
 /// ```
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Toolbar {
     pub id: WidgetId,
     pub buttons: Vec<ToolbarButton>,
@@ -161,7 +162,10 @@ pub struct ToolbarPaintOptions {
 }
 
 /// One item in a [`Toolbar`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Eq`: [`ToolbarButton::Action::spec`] carries a [`crate::ButtonSpec`],
+/// which has an `f32` (`icon_gap`) with no total order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ToolbarButton {
     /// A clickable action button.
     Action {
@@ -197,6 +201,16 @@ pub enum ToolbarButton {
         /// Optional hover tooltip.
         #[serde(default)]
         tooltip: String,
+        /// Optional [`crate::ButtonSpec`] override, carrying the B3a
+        /// vocabulary (variant intent, icon placement/gap, a richer
+        /// tooltip) this variant's own legacy fields above can't
+        /// express. `None` (the default) keeps the plain rendering and
+        /// semantics those legacy fields already describe;
+        /// `Self::resolved_button_spec` is the single place that decides
+        /// between this override and a spec derived from the legacy
+        /// fields.
+        #[serde(default)]
+        spec: Option<crate::primitives::button::ButtonSpec>,
     },
     /// Visual separator between button groups. No interaction, no id.
     Separator,
@@ -208,6 +222,66 @@ pub enum ToolbarButton {
         #[serde(default)]
         fg: Option<Color>,
     },
+}
+
+impl ToolbarButton {
+    /// Resolve this button's [`crate::ButtonSpec`] for painting: `Self::Action`'s
+    /// explicit `spec` override when set, otherwise one derived from its
+    /// legacy `icon`/`tooltip`/`enabled` fields; `None` for `Self::Separator`/
+    /// `Self::Label`, neither of which is a button.
+    ///
+    /// The derived spec (the `spec: None` branch) intentionally carries
+    /// no variant/icon-position opinion beyond [`crate::ButtonSpec::new`]'s
+    /// own defaults — a rasteriser that reads this method is expected to
+    /// keep painting an `Action` with no explicit `spec` through its
+    /// existing legacy-field path, not this derived spec, so its plain
+    /// rendering stays unaffected. The derivation lets a host inspect
+    /// "what would this button look like as a `ButtonSpec`" uniformly,
+    /// regardless of whether an override is set.
+    pub fn resolved_button_spec(&self) -> Option<crate::primitives::button::ButtonSpec> {
+        match self {
+            ToolbarButton::Action {
+                spec: Some(spec), ..
+            } => Some(spec.clone()),
+            ToolbarButton::Action {
+                label,
+                icon,
+                enabled,
+                tooltip,
+                ..
+            } => {
+                let mut derived = crate::primitives::button::ButtonSpec::new(label.clone());
+                derived.icon = icon
+                    .as_ref()
+                    .map(|glyph| crate::types::Icon::new(glyph.clone(), glyph.clone()));
+                derived.tooltip = if tooltip.is_empty() {
+                    None
+                } else {
+                    Some(tooltip.clone())
+                };
+                derived.disabled = !enabled;
+                Some(derived)
+            }
+            ToolbarButton::Separator | ToolbarButton::Label { .. } => None,
+        }
+    }
+}
+
+/// Semantic event a [`Toolbar`] click or Enter/Space activation stands for.
+///
+/// Built by [`Toolbar::click`] (mouse) and [`Toolbar::activate_focused`]
+/// (keyboard) — both the TUI/GTK click routers (via `UiEvent::Toolbar`) and
+/// `quadraui-binding-core`'s `semantic_event_for_hit`/`focus_scoped_key_event`
+/// (for the `quadraui-py`/`quadraui-node` bindings) go through one of those
+/// two constructors rather than building this variant by hand, so a click
+/// and the matching keyboard activation always carry the identical shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolbarEvent {
+    /// An [`ToolbarButton::Action`] button was activated. `is_active`
+    /// carries the button's *new* active state (its pre-click `is_active`
+    /// flipped) — see [`Toolbar::click`]'s doc for why every action click
+    /// reports this, not just a toggle's.
+    ButtonClicked { id: WidgetId, is_active: bool },
 }
 
 // ── Nerd-Font icon overrides ─────────────────────────────────────────────────
@@ -232,6 +306,7 @@ pub enum ToolbarButton {
 ///         enabled: true,
 ///         is_active: false,
 ///         tooltip: String::new(),
+///         spec: None,
 ///     },
 /// ]);
 /// let icons = ToolbarIcons::new()
@@ -576,6 +651,47 @@ impl Toolbar {
         self
     }
 
+    /// The semantic event a click on the `Action` button `id` stands for.
+    ///
+    /// `None` when `id` doesn't name an enabled [`ToolbarButton::Action`] in
+    /// [`Self::buttons`] — a `Separator`/`Label`, a disabled action, or an id
+    /// this toolbar doesn't contain — mirroring [`crate::Switch::click`]'s
+    /// "disabled means inert" contract. `is_active` carries the matched
+    /// button's *pre-click* `is_active` flipped, the same convention
+    /// `Switch::click`'s `value` uses, so a toggle button's handler can
+    /// apply the reported state directly; a plain (non-toggle) action
+    /// button's handler simply ignores the field.
+    pub fn click(&self, id: WidgetId) -> Option<ToolbarEvent> {
+        self.buttons.iter().find_map(|button| match button {
+            ToolbarButton::Action {
+                id: button_id,
+                enabled,
+                is_active,
+                ..
+            } if *button_id == id && *enabled => Some(ToolbarEvent::ButtonClicked {
+                id,
+                is_active: !is_active,
+            }),
+            _ => None,
+        })
+    }
+
+    /// The semantic event Enter/Space on the keyboard-focused button
+    /// ([`Self::focused_index`]) stands for.
+    ///
+    /// `None` when nothing is focused, the index is out of range, or the
+    /// item at that index isn't an enabled `Action` (same gate [`Self::click`]
+    /// applies) — a `Separator`/`Label`/disabled item never becomes
+    /// [`Self::focused_index`] in a well-behaved host, but this stays
+    /// defensive rather than panicking on a stale index.
+    pub fn activate_focused(&self) -> Option<ToolbarEvent> {
+        let idx = self.focused_index?;
+        match self.buttons.get(idx)? {
+            ToolbarButton::Action { id, .. } => self.click(*id),
+            ToolbarButton::Separator | ToolbarButton::Label { .. } => None,
+        }
+    }
+
     /// Compute the full rendering + hit-test layout for this toolbar.
     ///
     /// Items lay out left-to-right starting at `(origin_x, origin_y)`,
@@ -827,6 +943,7 @@ mod tests {
 
     fn mk_action(id: &str, label: &str, enabled: bool) -> ToolbarButton {
         ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new(id),
             label: label.to_string(),
             icon: None,
@@ -957,6 +1074,7 @@ mod tests {
         // clipped (width 5), still emitted in visible_items so apps see
         // the truncation, not silent drop.
         let mk_wide = |id: &str| ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new(id),
             label: "xxxxxxxx".into(), // 8 chars + "[  ]" wrapper = 12 cells via measurer
             icon: None,
@@ -1022,6 +1140,7 @@ mod tests {
             id: WidgetId::new("debug-toolbar"),
             buttons: vec![
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("debug:continue"),
                     label: "Continue".into(),
                     icon: Some("▶".into()),
@@ -1032,6 +1151,7 @@ mod tests {
                 },
                 ToolbarButton::Separator,
                 ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("debug:stop"),
                     label: "Stop".into(),
                     icon: None,
@@ -1155,6 +1275,7 @@ mod tests {
         }"#;
         let _ = json; // serde tagging is internal; verify via a real round-trip
         let btn = ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new("x"),
             label: "X".into(),
             icon: None,
@@ -1172,6 +1293,7 @@ mod tests {
 
     fn mk_icon_action(id: &str, label: &str, icon: Option<&str>) -> ToolbarButton {
         ToolbarButton::Action {
+            spec: None,
             id: WidgetId::new(id),
             label: label.to_string(),
             icon: icon.map(|s| s.to_string()),
@@ -1357,5 +1479,170 @@ mod tests {
         let bar = Toolbar::new(WidgetId::new("bar")).with_focused_index(Some(2));
         assert_eq!(bar.focused_index, Some(2));
         assert_eq!(bar.with_focused_index(None).focused_index, None);
+    }
+
+    /// `click` on an enabled `Action` reports the matched id with
+    /// `is_active` flipped from `false` to `true` — the "new state" half of
+    /// the contract every click (toggle or not) carries.
+    #[test]
+    fn click_on_enabled_action_flips_is_active_to_true() {
+        let bar = Toolbar::new(WidgetId::new("bar"))
+            .with_buttons(vec![mk_action("filter", "Filter", true)]);
+        assert_eq!(
+            bar.click(WidgetId::new("filter")),
+            Some(ToolbarEvent::ButtonClicked {
+                id: WidgetId::new("filter"),
+                is_active: true,
+            })
+        );
+    }
+
+    /// A second click on an already-active toggle flips `is_active` back to
+    /// `false` — proves the reported state tracks the descriptor's current
+    /// value, not a hardcoded `true`.
+    #[test]
+    fn click_on_an_already_active_button_flips_is_active_to_false() {
+        let bar = Toolbar::new(WidgetId::new("bar")).with_buttons(vec![ToolbarButton::Action {
+            spec: None,
+            id: WidgetId::new("filter"),
+            label: "Filter".to_string(),
+            icon: None,
+            key_hint: None,
+            enabled: true,
+            is_active: true,
+            tooltip: String::new(),
+        }]);
+        assert_eq!(
+            bar.click(WidgetId::new("filter")),
+            Some(ToolbarEvent::ButtonClicked {
+                id: WidgetId::new("filter"),
+                is_active: false,
+            })
+        );
+    }
+
+    /// `click` on a disabled action, a `Separator`/`Label`'s own
+    /// (non-existent) id, or an id this toolbar doesn't contain at all —
+    /// every one of those is inert, mirroring `Switch::click`'s "disabled
+    /// means inert" contract.
+    #[test]
+    fn click_is_none_for_disabled_or_unknown_or_non_action_ids() {
+        let bar = Toolbar::new(WidgetId::new("bar")).with_buttons(vec![
+            mk_action("disabled", "Disabled", false),
+            ToolbarButton::Separator,
+            ToolbarButton::Label {
+                text: "2 of 5".to_string(),
+                fg: None,
+            },
+        ]);
+        assert_eq!(bar.click(WidgetId::new("disabled")), None);
+        assert_eq!(bar.click(WidgetId::new("does-not-exist")), None);
+    }
+
+    /// `activate_focused` with no [`Toolbar::focused_index`] set is a
+    /// no-op — nothing for Enter/Space to activate.
+    #[test]
+    fn activate_focused_is_none_when_nothing_is_focused() {
+        let bar = Toolbar::new(WidgetId::new("bar"))
+            .with_buttons(vec![mk_action("filter", "Filter", true)]);
+        assert_eq!(bar.activate_focused(), None);
+    }
+
+    /// `activate_focused` resolves [`Toolbar::focused_index`] to the same
+    /// event a mouse click on that same button would produce — Enter/Space
+    /// and a click converge on one shape.
+    #[test]
+    fn activate_focused_matches_a_click_on_the_same_button() {
+        let bar = Toolbar::new(WidgetId::new("bar"))
+            .with_buttons(vec![
+                mk_action("filter", "Filter", true),
+                mk_action("reset", "Reset", true),
+            ])
+            .with_focused_index(Some(1));
+        assert_eq!(bar.activate_focused(), bar.click(WidgetId::new("reset")));
+    }
+
+    /// A stale or out-of-range `focused_index` (e.g. a button just removed
+    /// or disabled out from under it) doesn't panic — `activate_focused`
+    /// stays defensive rather than trusting the index unconditionally.
+    #[test]
+    fn activate_focused_is_none_for_an_out_of_range_index() {
+        let bar = Toolbar::new(WidgetId::new("bar"))
+            .with_buttons(vec![mk_action("filter", "Filter", true)])
+            .with_focused_index(Some(5));
+        assert_eq!(bar.activate_focused(), None);
+    }
+
+    /// `focused_index` pointing at a `Separator`/`Label` (never a
+    /// well-behaved host's own state, but not guaranteed either) is also a
+    /// no-op, not a panic.
+    #[test]
+    fn activate_focused_is_none_for_a_non_action_item() {
+        let bar = Toolbar::new(WidgetId::new("bar"))
+            .with_buttons(vec![ToolbarButton::Separator])
+            .with_focused_index(Some(0));
+        assert_eq!(bar.activate_focused(), None);
+    }
+
+    // ── B3b: ButtonSpec seam ─────────────────────────────────────────────
+
+    #[test]
+    fn action_without_spec_derives_one_from_its_legacy_fields() {
+        let btn = ToolbarButton::Action {
+            spec: None,
+            id: WidgetId::new("toolbar:refresh"),
+            label: "Refresh".to_string(),
+            icon: Some("\u{f021}".to_string()),
+            key_hint: None,
+            enabled: false,
+            is_active: false,
+            tooltip: "Reload the tree".to_string(),
+        };
+
+        let spec = btn.resolved_button_spec().expect("Action has a spec");
+        assert_eq!(spec.label, "Refresh");
+        assert_eq!(
+            spec.icon,
+            Some(crate::types::Icon::new("\u{f021}", "\u{f021}"))
+        );
+        assert_eq!(spec.tooltip, Some("Reload the tree".to_string()));
+        assert!(spec.disabled, "disabled when the legacy enabled is false");
+    }
+
+    #[test]
+    fn action_with_explicit_spec_overrides_the_legacy_fields() {
+        let mut explicit = crate::primitives::button::ButtonSpec::new("Move to Trash");
+        explicit.variant = crate::primitives::button::ButtonVariant::Danger;
+        let btn = ToolbarButton::Action {
+            spec: Some(explicit.clone()),
+            id: WidgetId::new("toolbar:delete"),
+            label: "Delete".to_string(),
+            icon: None,
+            key_hint: None,
+            enabled: true,
+            is_active: false,
+            tooltip: String::new(),
+        };
+
+        let resolved = btn.resolved_button_spec().expect("Action has a spec");
+        assert_eq!(resolved, explicit);
+        assert_eq!(resolved.label, "Move to Trash");
+        assert_eq!(
+            resolved.variant,
+            crate::primitives::button::ButtonVariant::Danger
+        );
+    }
+
+    #[test]
+    fn separator_and_label_have_no_button_spec() {
+        assert_eq!(ToolbarButton::Separator.resolved_button_spec(), None);
+        assert_eq!(
+            ToolbarButton::Label {
+                text: "2 of 5".to_string(),
+                fg: None,
+            }
+            .resolved_button_spec(),
+            None
+        );
     }
 }

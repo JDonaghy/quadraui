@@ -691,6 +691,11 @@ pub struct RecordingBackend {
     /// Set to `Some(h)` to simulate a backend whose chrome font has a
     /// different line height than the editor font.
     pub chrome_line_height: Option<f32>,
+    /// Backs [`Backend::style`]/[`Backend::set_style`] — `Style::default()`
+    /// until a test calls `set_style` (via `&mut dyn Backend`) or sets this
+    /// field directly, the same two ways a real backend's own
+    /// `current_style` field is written.
+    pub current_style: crate::Style,
     /// Backs [`Backend::focus_manager`] — unlike `modal_stack_handle`/
     /// `drag_state_handle`, this one *is* real state a headless mock can
     /// honestly fabricate, so it's included rather than
@@ -700,6 +705,11 @@ pub struct RecordingBackend {
     /// pure bookkeeping, same shape every real backend's `BackendCore`
     /// delegates to.
     pub invalidation_log: crate::backend::InvalidationLog,
+    /// Every shape passed to [`Backend::set_cursor`], in call order —
+    /// lets a test assert *which* shape a controller requested and in
+    /// what sequence, the same "record, don't rasterise" trade `calls`
+    /// makes for `draw_*`.
+    pub cursor_calls: Vec<crate::PointerShape>,
 }
 
 impl Default for RecordingBackend {
@@ -714,8 +724,10 @@ impl Default for RecordingBackend {
             line_height: 1.0,
             char_width: 1.0,
             chrome_line_height: None,
+            current_style: crate::Style::default(),
             focus: crate::focus::FocusManager::new(),
             invalidation_log: crate::backend::InvalidationLog::new(),
+            cursor_calls: Vec::new(),
         }
     }
 }
@@ -801,8 +813,15 @@ impl crate::Backend for RecordingBackend {
     fn focus_manager(&self) -> &crate::focus::FocusManager {
         &self.focus
     }
+    fn set_focus(&mut self, id: Option<WidgetId>) -> bool {
+        self.focus.set_focus(id)
+    }
     fn draw_focus_ring(&mut self, _r: Rect) {
         self.record("draw_focus_ring");
+    }
+    fn set_cursor(&mut self, shape: crate::PointerShape) -> bool {
+        self.cursor_calls.push(shape);
+        true
     }
     fn drag_state_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::DragState>> {
         unimplemented!(
@@ -827,6 +846,12 @@ impl crate::Backend for RecordingBackend {
     }
     fn char_width(&self) -> f32 {
         self.char_width
+    }
+    fn style(&self) -> crate::Style {
+        self.current_style
+    }
+    fn set_style(&mut self, style: crate::Style) {
+        self.current_style = style;
     }
     fn list_char_width(&self) -> f32 {
         // `RecordingBackend` only records call shape, not real font

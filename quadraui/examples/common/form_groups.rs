@@ -69,6 +69,8 @@ impl FormGroupsApp {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("toggles"),
@@ -99,6 +101,8 @@ impl FormGroupsApp {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("replace"),
@@ -116,6 +120,8 @@ impl FormGroupsApp {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("buttons"),
@@ -123,18 +129,21 @@ impl FormGroupsApp {
                     kind: FieldKind::ButtonRow {
                         buttons: vec![
                             ButtonRowItem {
+                                spec: None,
                                 id: WidgetId::new("find-next"),
                                 label: "Find Next".into(),
                                 disabled: false,
                                 icon: None,
                             },
                             ButtonRowItem {
+                                spec: None,
                                 id: WidgetId::new("replace-one"),
                                 label: "Replace".into(),
                                 disabled: false,
                                 icon: None,
                             },
                             ButtonRowItem {
+                                spec: None,
                                 id: WidgetId::new("replace-all"),
                                 label: "Replace All".into(),
                                 disabled: self.search_query.is_empty(),
@@ -149,6 +158,8 @@ impl FormGroupsApp {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 // ── Gap B demo: embedded toolbar inside a form field ──────
                 FormField {
@@ -157,6 +168,7 @@ impl FormGroupsApp {
                     kind: FieldKind::Toolbar(
                         Toolbar::new(WidgetId::new("scope-toolbar")).with_buttons(vec![
                             ToolbarButton::Action {
+                                spec: None,
                                 id: WidgetId::new("scope-ws"),
                                 label: "Workspace".into(),
                                 icon: None,
@@ -166,6 +178,7 @@ impl FormGroupsApp {
                                 tooltip: "Search entire workspace".into(),
                             },
                             ToolbarButton::Action {
+                                spec: None,
                                 id: WidgetId::new("scope-file"),
                                 label: "File".into(),
                                 icon: None,
@@ -175,6 +188,7 @@ impl FormGroupsApp {
                                 tooltip: "Search current file only".into(),
                             },
                             ToolbarButton::Action {
+                                spec: None,
                                 id: WidgetId::new("scope-sel"),
                                 label: "Selection".into(),
                                 icon: None,
@@ -192,6 +206,8 @@ impl FormGroupsApp {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
             ],
             focused_field: self.focus.current().cloned(),
@@ -200,6 +216,8 @@ impl FormGroupsApp {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 

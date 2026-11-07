@@ -1,6 +1,6 @@
 [package]
 name = "quadraui"
-version = "0.8.0"
+version = "0.9.0"
 edition.workspace = true
 description = "Cross-platform Rust UI toolkit: write one AppLogic and run it unmodified on TUI, GTK4 (Linux), macOS, and Windows backends"
 license.workspace = true
@@ -103,36 +103,52 @@ rust-version = "1.92.0"
 # - `docs/TESTING.md` — this repo's own quality-gate commands.
 # - `docs/UI_CRATE_DESIGN.md` — pre-implementation design sketch, kept as
 #   a decision record.
+# - `docs/decisions/BINDING_STRATEGY.md` — which language bindings this
+#   repo invests in next and over which bridge. Written for this repo's
+#   own maintainers planning that work: it is framed in in-repo epic and
+#   milestone numbers, and its subject is the `publish = false` in-tree
+#   `quadraui-ffi` spike crate (plus that crate's `SPIKE_FINDINGS.md`,
+#   which lives outside this crate dir and so cannot ship here at all).
+#   A consumer of the published crate reaches `quadraui-py` from the root
+#   `README.md`; nothing here is needed to use it.
+# - `docs/decisions/BINDING_CORE_PUBLISH_POLICY.md` — whether the
+#   `publish = false` in-workspace `quadraui-binding-core` crate ever needs
+#   a crates.io release. Same audience as `BINDING_STRATEGY.md` above: it
+#   reasons about this workspace's own path dependencies and a hypothetical
+#   future repo split, and the crate it is about is not published at all, so
+#   a consumer of `quadraui` can neither depend on it nor act on the note.
 #
-# `docs/decisions/` (`DECISIONS.md`, `BACKEND_TRAIT_PROPOSAL.md`) is
-# *not* in the list above and keeps shipping. Both files are also read at
-# agent session start, but that doesn't make them maintainer-only:
-# `DECISIONS.md`'s own D-019 entry ("Stability policy before 1.0: what a
-# `0.x` release may change") says explicitly that it is written for "an
-# outside developer deciding whether to depend on the crate" — the most
-# consumer-facing paragraph in the repo, and the one `docs/INSTALL.md`
-# (also shipping) links to as exactly that.
+# `docs/decisions/` is therefore classified per file, not wholesale.
+# `DECISIONS.md` and `BACKEND_TRAIT_PROPOSAL.md` are *not* in the list
+# above and keep shipping. Both files are also read at agent session
+# start, but that doesn't make them maintainer-only: `DECISIONS.md`'s own
+# D-019 entry ("Stability policy before 1.0: what a `0.x` release may
+# change") says explicitly that it is written for "an outside developer
+# deciding whether to depend on the crate" — the most consumer-facing
+# paragraph in the repo, and the one `docs/INSTALL.md` (also shipping)
+# links to as exactly that.
 #
 # Everything else under `docs/` (`GUIDE.md`, `APP_ARCHITECTURE.md`,
 # `CONSUMER_PATTERNS.md`, `TUI_CONSUMER_TOUR.md`, `CLIPBOARD.md`,
 # `COMPOSE.md`, `EVENT_ROUTING_TOUR.md`, `INSTALL.md`,
-# `KITTY_KEYBOARD_PROTOCOL.md`, `decisions/`) is written for app authors
-# consuming this crate and keeps shipping — confirmed with
-# `cargo package --list -p quadraui`: 586 files, 11.9MiB (3.0MiB
-# compressed) with this exclude list in place, vs. 584 files with
-# `docs/decisions/` also excluded, vs. 599 files, 12.3MiB (3.1MiB
-# compressed) with only `tests/`/`benches/` excluded and `docs/` left
-# untouched. None of the excluded files above are reached by a rustdoc
+# `KITTY_KEYBOARD_PROTOCOL.md`) is written for app authors
+# consuming this crate and keeps shipping — exactly those nine files
+# plus `docs/decisions/DECISIONS.md` and
+# `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` are the `docs/` entries
+# `cargo package --list -p quadraui` prints with this exclude list in
+# place, and `tests/package_hygiene.rs`'s `--ignored` layer runs that
+# exact command and asserts it. None of the excluded files above are
+# reached by a rustdoc
 # `#[doc = include_str!(...)]` — confirmed by grepping `src/` for
 # `include_str!` — so excluding them cannot break the docs.rs build.
 # `src/lib.rs`'s own crate rustdoc (the docs.rs front page) names only
 # files that ship with this exclude list in place.
 #
 # Known, accepted dead relative-markdown-links in the packaged tarball:
-# shipping `docs/decisions/` resolves most markdown links from shipping
-# docs into other `docs/` files, but three links remain into files that
-# really are internal-only and are not worth shipping just to keep a
-# link alive. These only affect someone browsing the packaged source on
+# shipping the two `docs/decisions/` files above resolves most markdown
+# links from shipping docs into other `docs/` files, but three links
+# remain into files that really are internal-only and are not worth
+# shipping just to keep a link alive. These only affect someone browsing the packaged source on
 # crates.io/docs.rs's source tab — nothing executable, and nothing a
 # rustdoc `#[doc = include_str!(...)]` reaches (see above), so none of
 # these can break the docs.rs build:
@@ -165,6 +181,8 @@ exclude = [
     "docs/UI_CRATE_DESIGN.md",
     "docs/WEB_BACKEND_PROPOSAL.md",
     "docs/audits/",
+    "docs/decisions/BINDING_CORE_PUBLISH_POLICY.md",
+    "docs/decisions/BINDING_STRATEGY.md",
 ]
 
 # docs.rs builds every optional feature (`tui`/`gtk`/`macos`/`win`/`terminal`/
@@ -575,6 +593,13 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     # `target_os = "macos"` in `lib.rs`, so only the `macOS` workflow's
     # `macos-latest` runner ever compiles the import.
     "NSCursor",
+    # `QuadraView`'s `updateTrackingAreas` installs one `NSTrackingArea`
+    # with the `CursorUpdate` option so AppKit keeps calling
+    # `cursorUpdate:` — the hook that re-applies the shape
+    # `Backend::set_cursor` asked for instead of reverting to the arrow
+    # on the next mouse move. Gates `NSTrackingArea`,
+    # `NSTrackingAreaOptions` and `NSView::addTrackingArea:`.
+    "NSTrackingArea",
     "NSCell",
     "NSMenu",
     "NSMenuItem",
@@ -1224,6 +1249,16 @@ required-features = ["tui"]
 [[example]]
 name = "gtk_form_scroll"
 path = "examples/gtk_form_scroll.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_form_control_width"
+path = "examples/tui_form_control_width.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_form_control_width"
+path = "examples/gtk_form_control_width.rs"
 required-features = ["gtk"]
 
 [[example]]
@@ -1990,6 +2025,15 @@ name = "win_controls"
 path = "examples/win_controls.rs"
 required-features = ["win"]
 
+# macOS leg of the Button/RadioGroup/Switch controls demo — same
+# `ControlsApp` `tui_controls`/`gtk_controls`/`win_controls` already run,
+# real CoreGraphics/CoreText chrome instead of the TUI/GTK/Direct2D
+# painters.
+[[example]]
+name = "macos_controls"
+path = "examples/macos_controls.rs"
+required-features = ["macos"]
+
 # Declarative `visible_when`/`enabled_when` field conditions demo. Both
 # entries are mandatory (see the note above): without an explicit
 # `[[example]]`, `gtk_form_visibility.rs` gets autodiscovered with no
@@ -2005,11 +2049,42 @@ name = "gtk_form_visibility"
 path = "examples/gtk_form_visibility.rs"
 required-features = ["gtk"]
 
-# Label placement/alignment/width demo. TUI-only for now (see the module
-# doc in examples/common/form_label_placement.rs for the GTK/macOS/Win
-# follow-up); the explicit `required-features` keeps this file out of
-# non-`tui` example builds the way the note above describes.
+# Label placement/alignment/width demo, one leg per backend. Each entry's
+# explicit `required-features` keeps it out of other backends' example
+# builds the way the note above describes.
 [[example]]
 name = "tui_form_label_placement"
 path = "examples/tui_form_label_placement.rs"
 required-features = ["tui"]
+
+[[example]]
+name = "gtk_form_label_placement"
+path = "examples/gtk_form_label_placement.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "macos_form_label_placement"
+path = "examples/macos_form_label_placement.rs"
+required-features = ["macos"]
+
+[[example]]
+name = "win_form_label_placement"
+path = "examples/win_form_label_placement.rs"
+required-features = ["win"]
+
+# `Icon::codicon(name)` demo — a `TreeView` whose rows carry codicon
+# icons. Both entries are mandatory, same reasoning as the
+# `tui_sidebar_panel_body`/`gtk_sidebar_panel_body` pair above: without
+# an explicit `[[example]]`, autodiscovery picks each file up with no
+# `required-features`, and `gtk_codicon_tree.rs` then gets compiled by
+# `cargo test --features tui` and fails on `quadraui::gtk` being
+# configured out.
+[[example]]
+name = "tui_codicon_tree"
+path = "examples/tui_codicon_tree.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_codicon_tree"
+path = "examples/gtk_codicon_tree.rs"
+required-features = ["gtk"]

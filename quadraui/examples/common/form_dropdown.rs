@@ -64,6 +64,8 @@ impl FormDropdownApp {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: Some(WidgetId::new("theme")),
             scroll_offset: 0,
@@ -71,6 +73,8 @@ impl FormDropdownApp {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 

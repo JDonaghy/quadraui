@@ -122,7 +122,7 @@ use crate::power::PowerEventKind;
 use crate::types::{Modifiers, WidgetId};
 use crate::{
     ActivityBarEvent, ChartEvent, DataTableEvent, FormEvent, ListViewEvent, PaletteEvent,
-    StatusBarEvent, TabBarEvent, TerminalEvent, TextDisplayEvent, TreeEvent,
+    StatusBarEvent, TabBarEvent, TerminalEvent, TextDisplayEvent, ToolbarEvent, TreeEvent,
 };
 
 // ─── Supporting types ───────────────────────────────────────────────────────
@@ -738,15 +738,15 @@ pub enum UiEvent {
     ///
     /// Win wires this off `WM_SETTINGCHANGE`, filtered to the
     /// `ImmersiveColorSet` setting name so it doesn't fire on every other
-    /// unrelated settings change Windows bundles into that message. GTK
-    /// and macOS have no producer yet — same "declare the gap, don't fake
-    /// it" posture as [`Self::WindowStateChanged`]: the variant exists so
-    /// app code and the event vocabulary are ready before each backend
-    /// wires its own native change notification (GTK's
-    /// `Settings::connect_gtk_application_prefer_dark_theme_notify`, macOS
-    /// KVO on `effectiveAppearance`). TUI has no equivalent OS notification
-    /// at all — a terminal can't push, only answer a query — so it will
-    /// never emit this variant.
+    /// unrelated settings change Windows bundles into that message. macOS
+    /// wires it off `NSView`'s `viewDidChangeEffectiveAppearance` override
+    /// point, which needs no notification-centre registration. GTK has no
+    /// producer yet — same "declare the gap, don't fake it" posture as
+    /// [`Self::WindowStateChanged`]: the variant exists so app code and
+    /// the event vocabulary are ready before GTK wires its own native
+    /// change notification (`Settings::connect_gtk_application_prefer_dark_theme_notify`).
+    /// TUI has no equivalent OS notification at all — a terminal can't
+    /// push, only answer a query — so it will never emit this variant.
     ///
     /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
     ///
@@ -982,6 +982,61 @@ pub enum UiEvent {
     /// open-menu state can ignore this variant.
     ContextMenuDismissed,
 
+    // ── In-canvas modal overlays ─────────────────────────────────────────
+    /// An in-canvas message/alert/confirm [`crate::Dialog`] opened via
+    /// [`crate::compose::MessageDialogController`] was resolved — the user
+    /// activated one of its buttons by click, Enter, or Escape resolving to
+    /// the cancel/default button. Carries that button's own `WidgetId`
+    /// ([`crate::backend::MessageDialogChoice`]) — the same shape
+    /// [`Self::ContextMenuItemActivated`] carries for a context-menu
+    /// selection.
+    MessageDialogResolved(WidgetId),
+
+    /// An action button on an in-canvas [`crate::Toast`] (painted via a
+    /// binding's `show_toast`-style surface, on the same anchored-overlay
+    /// slot `MessageDialogResolved` uses) was clicked. Carries the
+    /// action's own `WidgetId` ([`crate::ToastButton::id`]) — the same
+    /// shape [`Self::ContextMenuItemActivated`] carries for a context-menu
+    /// selection. The dismiss `×` affordance does **not** route through
+    /// this event: it closes the toast directly in the engine that owns
+    /// it, since there is no app-side choice to report the way an action
+    /// click has.
+    ToastActionClicked(WidgetId),
+
+    /// An item in an in-canvas [`crate::Completions`] popup was activated
+    /// by a click or Enter. `.0` is the popup's own `WidgetId`
+    /// ([`crate::Completions::id`]); `.1` is the index into
+    /// [`crate::Completions::items`] that was chosen. Escape, or a click
+    /// outside the popup, dismisses it without dispatching any event —
+    /// mirroring [`Self::ContextMenuDismissed`]'s "no event on plain
+    /// cancel" shape, except even the cancel notification is skipped here
+    /// since a completions popup is reopened fresh on every keystroke
+    /// anyway.
+    CompletionItemActivated(WidgetId, usize),
+
+    /// A clickable link inside an in-canvas [`crate::RichTextPopup`] was
+    /// clicked. `.0` is the popup's own `WidgetId`
+    /// ([`crate::RichTextPopup::id`]); `.1` is the activated
+    /// [`crate::RichTextLink::url`]. Escape, or a click outside the
+    /// popup, dismisses it without dispatching any event, same as
+    /// [`Self::CompletionItemActivated`]'s dismissal shape.
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is **not** `#[non_exhaustive]`; [`Self::ToastActionClicked`],
+    /// [`Self::CompletionItemActivated`] and this variant are new, so an
+    /// exhaustively-matched consumer fails to compile until it adds an
+    /// arm (or a wildcard). Blast-radius grep:
+    ///
+    /// ```text
+    /// $ grep -rn 'ToastActionClicked\|CompletionItemActivated\|RichTextLinkClicked' \
+    ///     ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both; neither consumer names any of
+    /// these three variants, so this lands as a non-breaking addition in
+    /// practice)
+    /// ```
+    RichTextLinkClicked(WidgetId, String),
+
     // ── Tray / status-bar icon ──────────────────────────────────────────
     /// The user clicked the app's tray/status-bar icon
     /// ([`crate::backend::TrayService::set_icon`]) with no menu currently
@@ -1089,6 +1144,28 @@ pub enum UiEvent {
     TextDisplay(WidgetId, TextDisplayEvent),
     Chart(WidgetId, ChartEvent),
     DataTable(WidgetId, DataTableEvent),
+    /// A [`crate::Toolbar`] button was clicked (mouse) or activated via
+    /// Enter/Space while keyboard-focused — the id is the toolbar's own,
+    /// matching every other chrome-bar variant above (`StatusBar`,
+    /// `ActivityBar`); the clicked/activated button's own id and new
+    /// `is_active` state are carried in the [`ToolbarEvent`] payload. Built
+    /// by [`crate::Toolbar::click`]/[`crate::Toolbar::activate_focused`].
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is not `#[non_exhaustive]`, so this is a new variant any
+    /// exhaustive consumer match would need a wildcard arm to survive.
+    /// Blast-radius grep:
+    ///
+    /// ```text
+    /// $ grep -rn 'UiEvent::Toolbar\b' ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both)
+    /// ```
+    /// Both consumers' top-level `UiEvent` dispatch is a large match ending
+    /// in a wildcard `_ =>` arm (same precedent `NotificationActivated`'s
+    /// own doc above records), so this compiles clean with no consumer
+    /// changes required.
+    Toolbar(WidgetId, ToolbarEvent),
 
     // ── Escape hatch ───────────────────────────────────────────────────
     /// Backend-specific event the crate couldn't normalise. Apps ignore

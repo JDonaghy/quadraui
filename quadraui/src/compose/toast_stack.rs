@@ -293,6 +293,7 @@ mod tests {
             actions: action_ids
                 .iter()
                 .map(|a| ToastButton {
+                    spec: None,
                     id: WidgetId::new(*a),
                     label: (*a).to_string(),
                     primary: false,

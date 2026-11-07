@@ -146,7 +146,9 @@ pub fn draw_tab_bar_icons(
 /// [`draw_tab_bar`] with an explicit [`TabChrome`] request.
 ///
 /// `&[]` icons + [`TabChrome::default`] reproduces [`draw_tab_bar`] cell
-/// for cell. See [`TabChrome::active_frame`] for what each frame paints.
+/// for cell. See [`TabChrome::active_frame`] for what each frame paints
+/// and [`TabChrome::focused_index`] for the keyboard-focus reverse-video
+/// treatment.
 #[allow(deprecated)] // returns the deprecated `TabBarHits`
 pub fn draw_tab_bar_with_chrome(
     buf: &mut Buffer,
@@ -290,6 +292,30 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
             (false, false) => (inactive_fg, bar_bg),
         };
 
+        // Keyboard-focus treatment: swap fg/bg — reverse video — across
+        // this tab's whole slot (icon, label, close/dirty glyph, bracket
+        // framing, and the trailing separator/blank cell) when
+        // `chrome.focused_index` names it. The caller composes this with
+        // its own focus-visible state (see [`TabChrome::focused_index`]'s
+        // doc): a click-suppressed focus passes `None` here, so no swap
+        // happens and the tab paints exactly as it would unfocused.
+        // `base_bg` keeps the tab's own pre-swap background available so
+        // a glyph painted in a colour other than `fg` (the close/dirty
+        // mark, the icon) can swap against it the same way the label
+        // does, rather than keeping its own hue unswapped on an
+        // already-inverted background.
+        let is_focused = chrome.focused_index == Some(vt.tab_idx);
+        let base_bg = bg;
+        let (fg, bg) = if is_focused { (bg, fg) } else { (fg, bg) };
+        let swap_against = |glyph_fg: ratatui::style::Color, base: ratatui::style::Color| {
+            if is_focused {
+                (base, glyph_fg)
+            } else {
+                (glyph_fg, base)
+            }
+        };
+        let swap_against_base = |glyph_fg: ratatui::style::Color| swap_against(glyph_fg, base_bg);
+
         // When chrome requests bracket framing, the active tab's
         // full content — icon, label, close glyph — is enclosed in `[` /
         // `]`. `lead` shifts every subsequent paint position right by one
@@ -311,7 +337,7 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         // reservation.
         let icon_cols = crate::primitives::tab_bar::tab_icon_cols(icons, vt.tab_idx);
         if let Some(icon) = crate::primitives::tab_bar::tab_icon_at(icons, vt.tab_idx) {
-            let icon_fg = ratatui_color(icon.color);
+            let (icon_fg, icon_bg) = swap_against_base(ratatui_color(icon.color));
             let icon_end = tab_x + lead + icon_cols;
             let mut cx = tab_x + lead;
             for ch in icon.glyph.chars() {
@@ -320,10 +346,10 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
                 }
                 let w = char_cell_width(ch);
                 if w == 2 {
-                    set_cell_wide(buf, cx, area.y, ch, icon_fg, bg);
+                    set_cell_wide(buf, cx, area.y, ch, icon_fg, icon_bg);
                     cx += 2;
                 } else {
-                    set_cell(buf, cx, area.y, ch, icon_fg, bg);
+                    set_cell(buf, cx, area.y, ch, icon_fg, icon_bg);
                     cx += 1;
                 }
             }
@@ -363,8 +389,29 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         };
         let tab_end = tab_x + tab_width;
 
+        // The label's cell budget is whatever sits between the leading
+        // bracket/icon slot and `label_end` (the close glyph, trailing
+        // bracket, or tab edge). A label that doesn't fit is
+        // ellipsis-truncated through the shared
+        // `primitives::tab_bar::fit_tab_label` rather than hard-clipped
+        // mid-glyph — the same `…`-costs-one-cell convention
+        // `truncate_with_ellipsis` uses everywhere else in the crate.
+        let leading_slot = (lead + icon_cols) as f32;
+        let trailing_slot = (tab_end.saturating_sub(label_end)) as f32;
+        let fitted_label = crate::primitives::tab_bar::fit_tab_label(
+            &tab.label,
+            tab_width as f32,
+            leading_slot,
+            trailing_slot,
+            |s| crate::text_util::display_width(s) as f32,
+        );
+
         // Filename (after the last ": ") carries the underline accent.
-        let prefix_len = tab.label.rfind(": ").map(|p| p + 2).unwrap_or(0);
+        // Computed off the fitted label so an ellipsis-truncated cut
+        // before the ": " boundary falls back to treating the whole
+        // visible text as "filename" rather than indexing stale offsets
+        // from the untruncated original.
+        let prefix_len = fitted_label.rfind(": ").map(|p| p + 2).unwrap_or(0);
 
         // Stride by display width, not by `char`: a double-width
         // glyph (CJK, many emoji) must land in two columns, mirroring the
@@ -372,7 +419,7 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
         // `tab_bar_layout` (backend.rs) measure `label_end`'s budget with
         // the same `display_width` function, so the two sides agree.
         let mut x = tab_x + lead + icon_cols;
-        for (ci, ch) in tab.label.chars().enumerate() {
+        for (ci, ch) in fitted_label.chars().enumerate() {
             if x >= label_end {
                 break;
             }
@@ -418,7 +465,8 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
                 let fg = if tab.is_active { active_fg } else { separator };
                 (ch, fg)
             };
-            set_cell(buf, x, area.y, close_ch, close_fg, bg);
+            let (close_fg, close_bg) = swap_against_base(close_fg);
+            set_cell(buf, x, area.y, close_ch, close_fg, close_bg);
             x += 1;
         }
         // The closing bracket lands right after the close glyph
@@ -437,10 +485,15 @@ pub fn draw_tab_bar_icons_with_chrome_and_glyphs(
                 // instead, so paint a visible rule rather than blank
                 // space; otherwise adjacent labels read as one run of
                 // text with only bold-vs-not telling them apart.
-                set_cell(buf, x, area.y, TAB_SEPARATOR_CHAR, separator, bar_bg);
+                let (sep_fg, sep_bg) = swap_against(separator, bar_bg);
+                set_cell(buf, x, area.y, TAB_SEPARATOR_CHAR, sep_fg, sep_bg);
             } else {
-                // Trailing separator space (within tab bounds, uses bar bg).
-                set_cell(buf, x, area.y, ' ', bar_bg, bar_bg);
+                // Trailing separator space (within tab bounds, normally
+                // bar bg; tracks the already-swapped `bg` instead when
+                // focused, so a focused tab's reverse-video band reaches
+                // its right edge rather than stopping one column short).
+                let trailing_bg = if is_focused { bg } else { bar_bg };
+                set_cell(buf, x, area.y, ' ', trailing_bg, trailing_bg);
             }
         }
     }
@@ -939,6 +992,127 @@ mod tests {
         }
     }
 
+    /// [`TabChrome::focused_index`] swaps fg/bg — reverse video — across
+    /// exactly the named tab's whole slot (label through its trailing
+    /// separator cell), and leaves every other tab (and a bar with no
+    /// chrome at all) byte-for-byte unchanged.
+    #[test]
+    fn tui_focused_index_paints_reverse_video_on_only_that_tab() {
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![
+                TabItem {
+                    label: "main.rs".into(),
+                    is_active: true,
+                    ..Default::default()
+                },
+                TabItem {
+                    label: "lib.rs".into(),
+                    is_active: false,
+                    ..Default::default()
+                },
+            ],
+            right_segments: vec![],
+            active_accent: None,
+            scroll_offset: 0,
+            show_tab_close: false,
+            compact: false,
+        };
+        let layout = bar.layout(
+            40.0,
+            1.0,
+            0.0,
+            |i| {
+                let label_w = crate::tui::display_width(&bar.tabs[i].label) as f32;
+                TabMeasure::new(label_w + TAB_SEPARATOR_COLS as f32, 0.0)
+            },
+            |_| SegmentMeasure::new(0.0),
+        );
+        let theme = Theme::default();
+
+        // No chrome at all: baseline paint.
+        let mut plain = Buffer::empty(Rect::new(0, 0, 40, 1));
+        draw_tab_bar(&mut plain, Rect::new(0, 0, 40, 1), &bar, &layout, &theme);
+
+        // Tab 1 (inactive) keyboard-focused.
+        let chrome = TabChrome::default().with_focused_index(Some(1));
+        let mut focused = Buffer::empty(Rect::new(0, 0, 40, 1));
+        draw_tab_bar_with_chrome(
+            &mut focused,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &chrome,
+            &layout,
+            &theme,
+        );
+
+        // Tab 0 ("main.rs", cols 0..8) is untouched by the focus swap.
+        for x in 0..8 {
+            assert_eq!(
+                plain[(x, 0)],
+                focused[(x, 0)],
+                "tab 0 (not focused) must paint identically with or without chrome, col {x}"
+            );
+        }
+        // Tab 1 ("lib.rs", cols 8..15 — 6 label cells plus its trailing
+        // `TAB_SEPARATOR_CHAR` at col 14) has its fg/bg swapped relative
+        // to the unfocused paint across the whole slot, not just the
+        // label.
+        let inactive_fg = ratatui_color(theme.tab_inactive_fg);
+        let bar_bg = ratatui_color(theme.tab_bar_bg);
+        for x in 8..14 {
+            let cell = &focused[(x, 0)];
+            assert_eq!(
+                cell.fg, bar_bg,
+                "focused tab 1's fg should be the unfocused bg (col {x})"
+            );
+            assert_eq!(
+                cell.bg, inactive_fg,
+                "focused tab 1's bg should be the unfocused fg (col {x})"
+            );
+        }
+        assert_eq!(
+            cell_char(&focused, 8, 0),
+            'l',
+            "focused tab's label still paints its own glyphs, just reversed"
+        );
+        // Col 14 is the trailing `TAB_SEPARATOR_CHAR` cell, painted in
+        // `theme.separator` rather than `tab_inactive_fg`, so its swap
+        // target differs from the label's — but it swaps too, extending
+        // the reverse-video band to the whole slot's right edge.
+        let separator = ratatui_color(theme.separator);
+        let trailing = &focused[(14, 0)];
+        assert_eq!(
+            trailing.fg, bar_bg,
+            "the trailing separator cell's fg should be the unfocused bg"
+        );
+        assert_eq!(
+            trailing.bg, separator,
+            "the trailing separator cell's bg should be the unfocused fg"
+        );
+        assert_eq!(
+            cell_char(&focused, 14, 0),
+            TAB_SEPARATOR_CHAR,
+            "the trailing separator cell still paints its own glyph too"
+        );
+
+        // `TabChrome::default()` (no focused_index) must reproduce the
+        // plain paint exactly.
+        let mut default_chrome = Buffer::empty(Rect::new(0, 0, 40, 1));
+        draw_tab_bar_with_chrome(
+            &mut default_chrome,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &TabChrome::default(),
+            &layout,
+            &theme,
+        );
+        assert_eq!(
+            plain, default_chrome,
+            "TabChrome::default() (focused_index: None) must not change any cell"
+        );
+    }
+
     /// A compact bar with `show_tab_close: false` reserves one trailing
     /// column per tab for [`TAB_SEPARATOR_CHAR`], so adjacent labels read
     /// as distinct items instead of running together.
@@ -1013,6 +1187,81 @@ mod tests {
             layout.hit_test(8.5, 0.0),
             TabBarHit::Tab(0),
             "the separator column must stay part of the tab it follows, not a dead zone"
+        );
+    }
+
+    /// A narrow, fixed-width tab strip — the shape a caller builds when it
+    /// caps every tab to the same width regardless of label length (VS
+    /// Code's fixed-width tab convention), rather than TUI's own default
+    /// measurer which sizes a tab to its label's exact need. An overlong
+    /// label is ellipsis-truncated via the shared
+    /// `primitives::tab_bar::fit_tab_label` instead of hard-clipped
+    /// mid-glyph, and the truncated run never reaches into the close
+    /// glyph's cell.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return
+    fn overlong_label_in_a_narrow_fixed_width_tab_ends_in_ellipsis_and_never_overlaps_close_glyph()
+    {
+        let label = "a_very_long_filename_for_this_single_tab.rs";
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![TabItem {
+                label: label.into(),
+                is_active: true,
+                ..Default::default()
+            }],
+            right_segments: vec![],
+            active_accent: None,
+            scroll_offset: 0,
+            show_tab_close: true,
+            compact: false,
+        };
+        // Every tab is pinned to 14 cells total (12-cell label budget + a
+        // 2-cell close button) no matter how long its label is — unlike
+        // `measure_tab` above, this does NOT derive from `display_width(label)`.
+        let layout = bar.layout(
+            40.0,
+            1.0,
+            0.0,
+            |_| TabMeasure::new(14.0, 2.0),
+            |_| SegmentMeasure::new(0.0),
+        );
+        assert_eq!(
+            layout.visible_tabs.len(),
+            1,
+            "the 14-cell-wide tab must still fit inside the 40-cell bar"
+        );
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
+        let hits = draw_tab_bar(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+        );
+
+        let (close_start, _close_end) =
+            hits.close_bounds[0].expect("a closable tab reports close_bounds");
+        let close_start = close_start as u16;
+
+        // Collect every cell painted before the close button — this is
+        // exactly the budget `fit_tab_label` had to fit the label into.
+        let label_run: String = (0..close_start).map(|x| cell_char(&buf, x, 0)).collect();
+
+        assert!(
+            label_run.ends_with('…'),
+            "overlong label must end in an ellipsis, got {label_run:?}"
+        );
+        assert_eq!(
+            crate::text_util::display_width(&label_run),
+            12,
+            "the ellipsis-truncated run must fill its 12-cell label budget, got {label_run:?}"
+        );
+        assert_eq!(
+            cell_char(&buf, close_start, 0),
+            TAB_CLOSE_CHAR,
+            "the close glyph must land right after the truncated label, not be overwritten by it"
         );
     }
 }

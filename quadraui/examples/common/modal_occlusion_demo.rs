@@ -69,6 +69,7 @@ impl ModalOcclusionDemo {
             table: None,
             buttons: vec![
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("ok"),
                     label: "OK".into(),
                     is_default: true,
@@ -76,6 +77,7 @@ impl ModalOcclusionDemo {
                     tint: None,
                 },
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("cancel"),
                     label: "Cancel".into(),
                     is_default: false,

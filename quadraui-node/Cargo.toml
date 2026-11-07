@@ -1,0 +1,82 @@
+[package]
+name = "quadraui-node"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "napi-rs bindings: insert quadraui descriptors from JavaScript/TypeScript and render them headlessly or in a real terminal."
+
+[lib]
+name = "quadraui_node"
+# `cdylib` is what napi-rs loads as the Node addon (the `.node` file
+# `napi build`, driven by `package.json`'s `build` script, produces). `rlib`
+# lets the in-crate `#[cfg(test)]` harness link this crate as a normal Rust
+# test dependency -- a pure `cdylib` can't be used that way, the same reason
+# `quadraui-py/Cargo.toml` keeps both crate types. Black-box behaviour
+# through the JS surface stays in `quadraui-node/tests/` (run via `node
+# --test`); the Rust harness covers paths that need no live Node runtime,
+# such as a caught panic poisoning the app before any JS frame exists.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Mirrors `quadraui-py/Cargo.toml`'s own `gtk`/`macos`/`win` feature table
+# verbatim -- each forwards to `quadraui`'s and `quadraui-binding-core`'s
+# same-named feature rather than duplicating either crate's dependency list.
+# All three feed `QuiApp::startNative` (see `lib.rs`'s module doc's "Live
+# run loop" section); `gtk` type-checks on every host where GTK4 dev libs
+# are discoverable via `pkg-config` (building/running it for real still
+# needs a display), while `macos`/`win` only produce a real runner when
+# also built for that feature's own native `target_os` -- enabling either
+# on a different host still type-checks the
+# forwarded dependency graph (same as `quadraui-ffi` today) but
+# `startNative` itself raises `InternalError` there instead of opening a
+# window.
+gtk = ["quadraui/gtk", "quadraui-binding-core/gtk"]
+macos = ["quadraui/macos", "quadraui-binding-core/macos", "dep:objc2"]
+win = ["quadraui/win", "quadraui-binding-core/win"]
+
+[dependencies]
+# `tui` is unconditional (not under `[features]`) because it already gates
+# the headless `testing::TuiDriver` this crate's `QuiApp` wraps -- one
+# dependency feature, no JS-visible flag, mirrors `quadraui-py/Cargo.toml`'s
+# own reasoning for the same line.
+quadraui = { path = "../quadraui", features = ["tui"] }
+# The language-neutral interaction engine (hit testing, semantic event
+# synthesis, text-input/drag controllers, the retained descriptor model,
+# render -> frame assembly) this binding is a thin napi-rs leaf over. See
+# `quadraui-binding-core/src/lib.rs`'s module doc.
+quadraui-binding-core = { path = "../quadraui-binding-core" }
+# `napi4` is the lowest N-API version with `ThreadsafeFunction` support.
+# `QuiApp.waker` deliberately does not use one -- its `SharedWaker` payload
+# only ever needs to cross into a plain queue a later `step()` drains, not
+# call back into JS from an arbitrary thread -- see `lib.rs`'s module doc's
+# "Live run loop" section for why. Kept for forward compatibility with a
+# future callback surface that does need one (mirrors `quadraui-py`'s own
+# forward-looking choice of pyo3 features). `serde-json` enables
+# `Env::from_js_value`, the napi-rs analog of `pythonize::depythonize` this
+# crate's own descriptor decode adapter is built on -- see `lib.rs`'s
+# module doc.
+napi = { version = "3", features = ["napi4", "serde-json"] }
+napi-derive = "3"
+# The decode medium every `quadraui_binding_core::wire`/`extra_paint` entry
+# point is generic over (`serde::Deserializer`) -- `Env::from_js_value`
+# decodes straight into a derived `Deserialize` type (the six fixed slots,
+# `pushEvent`); `to_descriptor_value` below decodes into a `serde_json::Value`
+# first for the kind-dispatched decoders, the same medium
+# `quadraui-binding-core`'s own tests pass them.
+serde = "1.0"
+serde_json = "1.0"
+
+# macOS-only optional dep. Gated on `target_os = "macos"`, mirroring
+# `quadraui-py/Cargo.toml`'s own table for the same crate, so enabling the
+# `macos` feature is a no-op on other platforms instead of failing on
+# objc2's own `compile_error!` for a non-Apple target.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+
+[build-dependencies]
+# Sets the linker flags a Node addon `cdylib` needs on each platform
+# (notably `-undefined dynamic_lookup` on macOS, so the addon resolves
+# Node's own symbols at `require()` time instead of link time).
+napi-build = "2"

@@ -788,10 +788,10 @@ jobs:
       # from this leg entirely.
       - name: Build (win feature)
         if: matrix.os == 'windows-latest'
-        run: cargo build -p quadraui --example win_demo --example win_platform_services --example win_app --example win_multi_tree --example win_split --example win_panel --example win_toast --example win_indicators --example win_search_panel --example win_sidebar_search --example win_menu_bar --example win_data_table --example win_chart --example win_form_groups --example win_hscroll --example win_appshell_demo --features win
+        run: cargo build -p quadraui --example win_demo --example win_platform_services --example win_app --example win_multi_tree --example win_split --example win_panel --example win_toast --example win_indicators --example win_search_panel --example win_sidebar_search --example win_menu_bar --example win_data_table --example win_chart --example win_form_groups --example win_hscroll --example win_appshell_demo --example win_form_label_placement --features win
       - name: Clippy (win feature)
         if: matrix.os == 'windows-latest'
-        run: cargo clippy -p quadraui --example win_demo --example win_platform_services --example win_app --example win_multi_tree --example win_split --example win_panel --example win_toast --example win_indicators --example win_search_panel --example win_sidebar_search --example win_menu_bar --example win_data_table --example win_chart --example win_form_groups --example win_hscroll --example win_appshell_demo --features win -- -D warnings
+        run: cargo clippy -p quadraui --example win_demo --example win_platform_services --example win_app --example win_multi_tree --example win_split --example win_panel --example win_toast --example win_indicators --example win_search_panel --example win_sidebar_search --example win_menu_bar --example win_data_table --example win_chart --example win_form_groups --example win_hscroll --example win_appshell_demo --example win_form_label_placement --features win -- -D warnings
       # Headless Direct2D test surface (#24, `src/win/testing.rs`'s
       # `HeadlessSurface`: an `ID2D1DCRenderTarget` bound to an in-memory
       # DIB section — no `HWND`, display, or GPU). The two steps above
@@ -1996,17 +1996,34 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Capture every registered demo (tui backend)
+      - name: Capture every registered demo (tui backend, dark theme)
         run: |
           mkdir -p target/gallery-capture
           cargo run -p quadraui-gallery --features tui --bin quadraui-gallery -- \
             --capture target/gallery-capture
-      - name: Upload gallery capture (tui)
+      - name: Upload gallery capture (tui, dark)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gallery-capture-tui
           path: target/gallery-capture
+          if-no-files-found: warn
+      # `--theme light` leg: same binary, same registry, run a
+      # second time into its own directory so a light-theme regression
+      # (D-020 overlay tokens especially) is visible in the uploaded
+      # artifact instead of only reachable by a developer who happens to
+      # run `--capture --theme light` locally.
+      - name: Capture every registered demo (tui backend, light theme)
+        run: |
+          mkdir -p target/gallery-capture-light
+          cargo run -p quadraui-gallery --features tui --bin quadraui-gallery -- \
+            --capture target/gallery-capture-light --theme light
+      - name: Upload gallery capture (tui, light)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gallery-capture-tui-light
+          path: target/gallery-capture-light
           if-no-files-found: warn
 
   gallery-capture-gtk:
@@ -2038,17 +2055,33 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
       - uses: Swatinem/rust-cache@v2
-      - name: Capture every registered demo (gtk backend)
+      - name: Capture every registered demo (gtk backend, dark theme)
         run: |
           mkdir -p target/gallery-capture
           cargo run -p quadraui-gallery --features gtk --bin quadraui-gallery -- \
             --capture target/gallery-capture
-      - name: Upload gallery capture (gtk)
+      - name: Upload gallery capture (gtk, dark)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gallery-capture-gtk
           path: target/gallery-capture
+          if-no-files-found: warn
+      # `--theme light` leg — see `gallery-capture-tui`'s own
+      # light-theme step above for why this reruns the same binary a
+      # second time rather than varying the theme row-by-row within one
+      # manifest.
+      - name: Capture every registered demo (gtk backend, light theme)
+        run: |
+          mkdir -p target/gallery-capture-light
+          cargo run -p quadraui-gallery --features gtk --bin quadraui-gallery -- \
+            --capture target/gallery-capture-light --theme light
+      - name: Upload gallery capture (gtk, light)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gallery-capture-gtk-light
+          path: target/gallery-capture-light
           if-no-files-found: warn
 
   gallery-capture-windows:
@@ -2095,16 +2128,33 @@ jobs:
       # the exact same script the `gallery-capture-tui`/`-gtk` steps above
       # already use, rather than a parallel pwsh-flavoured copy to keep in
       # sync.
-      - name: Capture every registered demo (win backend)
+      - name: Capture every registered demo (win backend, dark theme)
         shell: bash
         run: |
           mkdir -p target/gallery-capture
           cargo run -p quadraui-gallery --features win --bin quadraui-gallery -- \
             --capture target/gallery-capture
-      - name: Upload gallery capture (windows)
+      - name: Upload gallery capture (windows, dark)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gallery-capture-windows
           path: target/gallery-capture
+          if-no-files-found: warn
+      # `--theme light` leg — see `gallery-capture-tui`'s own
+      # light-theme step for why this reruns the same binary a second
+      # time rather than varying the theme row-by-row within one
+      # manifest.
+      - name: Capture every registered demo (win backend, light theme)
+        shell: bash
+        run: |
+          mkdir -p target/gallery-capture-light
+          cargo run -p quadraui-gallery --features win --bin quadraui-gallery -- \
+            --capture target/gallery-capture-light --theme light
+      - name: Upload gallery capture (windows, light)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gallery-capture-windows-light
+          path: target/gallery-capture-light
           if-no-files-found: warn

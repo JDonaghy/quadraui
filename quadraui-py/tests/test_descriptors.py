@@ -26,6 +26,22 @@ def test_insert_button():
     assert app.screen_contains("OK")
 
 
+def test_insert_button_accepts_an_optional_tooltip():
+    app = QuiApp(40, 20)
+    app.insert_button({"id": "demo:ok", "label": "OK", "tooltip": "Confirm the action"})
+    assert app.screen_contains("OK")
+
+
+def test_insert_button_rejects_a_non_string_tooltip():
+    # `Button::tooltip` is typed `Option<String>`, not merely ignored the
+    # way an unrecognized key would be -- a non-string value must fail to
+    # decode, proving the field is actually wired into `Button`'s own
+    # `Deserialize` rather than silently dropped.
+    app = QuiApp(40, 20)
+    with pytest.raises(InvalidDescriptorError):
+        app.insert_button({"id": "demo:ok", "label": "OK", "tooltip": 123})
+
+
 def test_insert_text_display():
     app = QuiApp(40, 20)
     app.insert_text_display(
@@ -35,6 +51,85 @@ def test_insert_text_display():
         }
     )
     assert app.screen_contains("Hello")
+
+
+def test_text_display_wheel_scroll_emits_scrolled():
+    # `insert_text_display`'s own render already populated the hit map, so
+    # the display is hit-testable the moment it's inserted. Five lines into
+    # a 3-line viewport (the fixed-slot band height every `QuiApp` default
+    # render reserves) leaves two lines of scroll room; a wheel notch
+    # forward (`delta.y < 0`, per `wheel_row_delta`'s convention) must move
+    # `scroll_offset` from 0 to 1, landing on `TextDisplayEvent::Scrolled`
+    # rather than a raw `Scroll` with `widget: None`.
+    app = QuiApp(40, 20)
+    app.insert_text_display(
+        {
+            "id": "text:1",
+            "lines": [
+                {"spans": [{"text": f"Line {i}", "fg": None, "bg": None}]}
+                for i in range(5)
+            ],
+            "auto_scroll": False,
+        }
+    )
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {
+            "Scroll": {
+                "delta": {"x": 0.0, "y": -1.0},
+                "position": {"x": 1.0, "y": 1.0},
+            }
+        }
+    )
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, text_display_event = received[0]["TextDisplay"]
+    assert widget_id == "text:1"
+    assert text_display_event == {"Scrolled": {"new_offset": 1}}
+
+
+def test_text_display_with_title_wheel_scroll_emits_scrolled():
+    # Every backend's text-display layout lays the body out from `0.0` and
+    # leaves the title row to be painted separately above it, so a hit on
+    # the *last* visible body row (one row lower than an untitled display's
+    # own last row) is the regression shape: before the hit-test accounted
+    # for the title's body offset, a wheel notch there missed the layout
+    # entirely and no `Scrolled` event was emitted at all.
+    app = QuiApp(40, 20)
+    app.insert_text_display(
+        {
+            "id": "text:1",
+            "title": {"spans": [{"text": "Logs", "fg": None, "bg": None}]},
+            "lines": [
+                {"spans": [{"text": f"Line {i}", "fg": None, "bg": None}]}
+                for i in range(5)
+            ],
+            "auto_scroll": False,
+        }
+    )
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {
+            "Scroll": {
+                "delta": {"x": 0.0, "y": -1.0},
+                # y=2.0: one row for the title, one more for the first body
+                # line, landing on the last body row the 3-line band leaves
+                # room for once the title has taken its own row.
+                "position": {"x": 1.0, "y": 2.0},
+            }
+        }
+    )
+    app.run(1)
+
+    assert len(received) == 1
+    widget_id, text_display_event = received[0]["TextDisplay"]
+    assert widget_id == "text:1"
+    assert text_display_event == {"Scrolled": {"new_offset": 1}}
 
 
 def test_insert_list():
@@ -77,6 +172,69 @@ def test_insert_tree():
         }
     )
     assert app.screen_contains("Alpha")
+
+
+def test_insert_tree_with_codicon_icon():
+    """A tree row's `icon` accepts `{"codicon": "...", "fallback": "..."}`
+    in place of `{"glyph": "...", "fallback": "..."}` — the wire shape
+    `Icon`'s `Deserialize` impl resolves through the bundled codicon name
+    table. `QuiApp`'s headless driver defaults to nerd fonts off, so the
+    rendered row shows the icon's plain-text fallback.
+    """
+    app = QuiApp(40, 20)
+    app.insert_tree(
+        {
+            "id": "tree:1",
+            "rows": [
+                {
+                    "path": [0],
+                    "indent": 0,
+                    "icon": {"codicon": "folder", "fallback": "DIR"},
+                    "text": {"spans": [{"text": "src", "fg": None, "bg": None}]},
+                    "badge": None,
+                    "is_expanded": None,
+                }
+            ],
+            "selection_mode": "Single",
+            "selected_path": None,
+            "style": {
+                "indent": 2,
+                "show_chevrons": True,
+                "chevron_expanded": "v",
+                "chevron_collapsed": ">",
+            },
+        }
+    )
+    assert app.screen_contains("DIR")
+    assert app.screen_contains("src")
+
+
+def test_insert_tree_with_unknown_codicon_name_raises():
+    app = QuiApp(40, 20)
+    with pytest.raises(InvalidDescriptorError):
+        app.insert_tree(
+            {
+                "id": "tree:1",
+                "rows": [
+                    {
+                        "path": [0],
+                        "indent": 0,
+                        "icon": {"codicon": "not-a-real-codicon-name", "fallback": "?"},
+                        "text": {"spans": [{"text": "src", "fg": None, "bg": None}]},
+                        "badge": None,
+                        "is_expanded": None,
+                    }
+                ],
+                "selection_mode": "Single",
+                "selected_path": None,
+                "style": {
+                    "indent": 2,
+                    "show_chevrons": True,
+                    "chevron_expanded": "v",
+                    "chevron_collapsed": ">",
+                },
+            }
+        )
 
 
 def test_insert_data_table():

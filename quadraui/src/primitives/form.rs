@@ -88,6 +88,8 @@ use serde::{Deserialize, Serialize};
 ///         label_align: None,
 ///         label_width: None,
 ///         tab_index: None,
+///         control_width: None,
+///         min_control_width: None,
 ///     }],
 ///     focused_field: None,
 ///     scroll_offset: 0,
@@ -95,6 +97,8 @@ use serde::{Deserialize, Serialize};
 ///     label_position: Default::default(),
 ///     label_align: Default::default(),
 ///     label_width: None,
+///     control_width: Default::default(),
+///     min_control_width: None,
 /// };
 ///
 /// let layout = form.layout(40.0, 10.0, |_| FormFieldMeasure::new(1.0));
@@ -141,6 +145,68 @@ pub struct Form {
     /// directly.
     #[serde(default)]
     pub label_width: Option<f32>,
+    /// Form-wide default for how a field's control column is sized.
+    /// A [`FormField::control_width`] override, when set, wins over
+    /// this. `Fill` (the default) stretches every field's control to
+    /// the row's right edge, giving every field kind one shared,
+    /// aligned column starting right after the label — use
+    /// [`Form::resolved_control_width`] rather than reading this field
+    /// directly so a per-field override is honored.
+    #[serde(default)]
+    pub control_width: ControlWidth,
+    /// Form-wide floor (cells for TUI, device pixels for GTK / macOS /
+    /// Win) under which a field's resolved control column never
+    /// shrinks, regardless of [`ControlWidth`] mode — guards against a
+    /// `Content`-sized or explicit `Fixed` column too narrow to show
+    /// its value. `None` applies no floor. A
+    /// [`FormField::min_control_width`] override, when set, wins over
+    /// this. Use [`Form::resolved_min_control_width`] rather than
+    /// reading this field directly.
+    #[serde(default)]
+    pub min_control_width: Option<f32>,
+}
+
+/// How a [`FormField`]'s control column (the checkbox / input / slider
+/// / dropdown etc., as opposed to its label) is sized. Set on
+/// [`Form::control_width`] as the form-wide default, or on
+/// [`FormField::control_width`] to override a single field. Every
+/// non-item-based field kind (`Toggle`, `TextInput`, `PasswordInput`,
+/// `TextArea`, `ReadOnly`, `Slider`, `ColorPicker`, `Dropdown`,
+/// `ComboBox`, `DatePicker`, `Button`) starts its control at the same
+/// column, right after the shared label column, regardless of mode —
+/// only the column's *width* changes between modes.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum ControlWidth {
+    /// Stretch the control to fill the row's remaining width after the
+    /// label column — every field's control ends at the same right
+    /// edge. The GUI default.
+    #[default]
+    Fill,
+    /// An exact width: cells for TUI, device pixels for GTK / macOS /
+    /// Win (the same dual-unit convention as
+    /// [`Form::label_width`]/[`FormField::label_width`]).
+    Fixed(f32),
+    /// Size the control to its own natural content — the pre-D1
+    /// behaviour, just repositioned to start right after the label
+    /// instead of hugging the row's right edge.
+    Content,
+}
+
+impl ControlWidth {
+    /// Resolve this mode to a concrete width given the control's
+    /// natural `content_width` (used only by `Content`), the
+    /// `available_width` remaining after the label column (used only
+    /// by `Fill`), and an optional `min_width` floor applied
+    /// regardless of mode. Units are whatever the caller measures in
+    /// (cells for TUI, pixels for GTK / macOS / Win).
+    pub fn resolve(self, content_width: f32, available_width: f32, min_width: Option<f32>) -> f32 {
+        let raw = match self {
+            ControlWidth::Fill => available_width,
+            ControlWidth::Fixed(w) => w,
+            ControlWidth::Content => content_width,
+        };
+        raw.max(min_width.unwrap_or(0.0))
+    }
 }
 
 /// Where a field's label renders relative to its input. Set on
@@ -230,6 +296,16 @@ pub struct FormField {
     /// traversal; the plain `Form` primitive does not use it itself.
     #[serde(default)]
     pub tab_index: Option<i32>,
+    /// Overrides the form-wide [`Form::control_width`] for this field
+    /// only. `None` defers to the form's default — read through
+    /// [`Form::resolved_control_width`], never this field directly.
+    #[serde(default)]
+    pub control_width: Option<ControlWidth>,
+    /// Overrides the form-wide [`Form::min_control_width`] for this
+    /// field. `None` defers to the form's default — read through
+    /// [`Form::resolved_min_control_width`].
+    #[serde(default)]
+    pub min_control_width: Option<f32>,
 }
 
 /// The input variant carried by a `FormField`.
@@ -433,6 +509,27 @@ pub struct ButtonRowItem {
     /// rows (commit, push, pull, fetch) in source-control panels.
     #[serde(default)]
     pub icon: Option<crate::types::Icon>,
+    /// Optional [`crate::ButtonSpec`] override, carrying the B3a
+    /// vocabulary (variant intent, icon placement/gap, a tooltip) this
+    /// item's own legacy fields above can't express. `None` (the
+    /// default) renders the plain bracket-chrome look; see
+    /// [`Self::resolved_button_spec`].
+    #[serde(default)]
+    pub spec: Option<crate::primitives::button::ButtonSpec>,
+}
+
+impl ButtonRowItem {
+    /// This item's explicit [`Self::spec`] override when set, otherwise
+    /// one derived from its legacy `label`/`icon`/`disabled` fields.
+    pub fn resolved_button_spec(&self) -> crate::primitives::button::ButtonSpec {
+        if let Some(spec) = &self.spec {
+            return spec.clone();
+        }
+        let mut derived = crate::primitives::button::ButtonSpec::new(self.label.clone());
+        derived.icon = self.icon.clone();
+        derived.disabled = self.disabled;
+        derived
+    }
 }
 
 fn slider_default_step() -> f32 {
@@ -578,6 +675,21 @@ impl Form {
     /// column to the widest label).
     pub fn resolved_label_width(&self, field: &FormField) -> Option<f32> {
         field.label_width.or(self.label_width)
+    }
+
+    /// The effective control-column sizing mode for `field`: its own
+    /// [`FormField::control_width`] override if set, else this form's
+    /// [`Form::control_width`] default.
+    pub fn resolved_control_width(&self, field: &FormField) -> ControlWidth {
+        field.control_width.unwrap_or(self.control_width)
+    }
+
+    /// The effective control-column minimum width for `field`: its own
+    /// [`FormField::min_control_width`] override if set, else this
+    /// form's [`Form::min_control_width`] default, else `None` (no
+    /// floor).
+    pub fn resolved_min_control_width(&self, field: &FormField) -> Option<f32> {
+        field.min_control_width.or(self.min_control_width)
     }
 
     /// Compute the full rendering + hit-test layout for this form.
@@ -811,6 +923,12 @@ mod native_surface_paint {
         t.spans.iter().map(|s| s.text.as_str()).collect()
     }
 
+    /// Gap (in pixels) between the reserved label column's right edge
+    /// and the x every field's control column starts at. One constant
+    /// shared by [`paint`] and [`left_control_column_start`] so a
+    /// backend test can't drift from the painter it checks.
+    const CONTROL_GAP: f32 = 8.0;
+
     /// Shared label-column width (in pixels) for every `Left`-resolved
     /// field in `form`, mirroring `tui::form::left_label_column_width`'s
     /// semantics so the two renderers agree. An explicit
@@ -867,6 +985,37 @@ mod native_surface_paint {
             row_rect.y + (row_h - label_h) / 2.0,
             row_rect.x + 6.0 + col_width,
         )
+    }
+
+    /// The x within `row_rect` at which `field`'s control column
+    /// starts, for a field whose label resolves to
+    /// [`LabelPosition::Left`] and is non-empty — the single column
+    /// every non-`Button` [`FieldKind`] begins painting at.
+    ///
+    /// Built from the same [`left_label_column_width`] +
+    /// [`left_label_geometry`] + [`CONTROL_GAP`] chain [`paint`] uses,
+    /// so a backend test asserting "this field painted something past
+    /// its label column" reads the painter's own column instead of
+    /// re-deriving it from a copy of the arithmetic.
+    pub(crate) fn left_control_column_start(
+        form: &Form,
+        field: &FormField,
+        row_rect: Rect,
+        surface: &dyn PaintSurface,
+    ) -> f32 {
+        let left_label_width = left_label_column_width(form, surface);
+        let label_text = plain_text(&field.label);
+        let (label_w, label_h) = surface.surface_measure_text(&label_text);
+        let (_label_x, _label_y, label_right) = left_label_geometry(
+            form,
+            field,
+            row_rect,
+            row_rect.height,
+            label_w,
+            label_h,
+            left_label_width,
+        );
+        label_right + CONTROL_GAP
     }
 
     /// Resolved label geometry for one field row — decoded from the
@@ -943,6 +1092,16 @@ mod native_surface_paint {
             flayout.viewport_width,
             flayout.viewport_height,
         );
+        // Clip every row paint to `form_rect`: a row's own geometry is
+        // already height-clamped by `Form::layout` (see its "Row
+        // clipping" doc), but a control that draws at its *unclamped*
+        // glyph/box height (e.g. a checkbox's fixed box size, or a
+        // validation message's own line) can still paint a few pixels
+        // past the clamped row — and past the form's own bottom edge —
+        // into whatever the host paints below it (a status bar, another
+        // section). The clip is the backstop that keeps that bleed from
+        // reaching the screen regardless of backend.
+        surface.surface_push_clip(form_rect);
         surface.surface_fill_rect(form_rect, theme.tab_bar_bg);
         let left_label_width = left_label_column_width(form, surface);
 
@@ -959,18 +1118,20 @@ mod native_surface_paint {
             // strip below it, instead of painting the message on top of
             // the label at the same vertical centre.
             let validation_info = field.validation.as_ref().and_then(|vs| {
-                let (color, msg) = match vs {
-                    ValidationState::Error(m) => (theme.error_fg, m.as_str()),
-                    ValidationState::Warning(m) => (theme.warning_fg, m.as_str()),
+                let (color, strip_bg, msg) = match vs {
+                    ValidationState::Error(m) => (theme.error_fg, theme.danger_bg(), m.as_str()),
+                    ValidationState::Warning(m) => {
+                        (theme.warning_fg, theme.warning_bg(), m.as_str())
+                    }
                 };
                 if msg.is_empty() {
                     None
                 } else {
-                    Some((color, msg))
+                    Some((color, strip_bg, msg))
                 }
             });
             let message_h = validation_info
-                .map(|(_, msg)| surface.surface_measure_text(msg).1)
+                .map(|(_, _, msg)| surface.surface_measure_text(msg).1)
                 .unwrap_or(0.0);
             let row_h = (row_h_full - message_h).max(row_h_full * 0.5);
 
@@ -1149,6 +1310,21 @@ mod native_surface_paint {
                 let row_rect = content_rect;
                 let row_h = row_rect.height;
                 let input_right = row_rect.x + row_rect.width - 8.0;
+                // Every control starts at the same column, right after
+                // the shared label column (or at the label's own `x`
+                // when there's no label to reserve one), so every
+                // `FieldKind` lines up in one control column instead of
+                // each sitting at its own position. `available` is what
+                // `ControlWidth::Fill` stretches a control's box/track
+                // to.
+                let control_start = if no_label {
+                    label_x
+                } else {
+                    label_right + CONTROL_GAP
+                };
+                let available = (input_right - control_start).max(0.0);
+                let min_control_width = form.resolved_min_control_width(field);
+                let resolved_control_width = form.resolved_control_width(field);
 
                 match &field.kind {
                     FieldKind::Label => {}
@@ -1161,12 +1337,8 @@ mod native_surface_paint {
                             field_fg
                         };
                         let box_size = (row_h - 8.0).clamp(10.0, 16.0);
-                        let ix = if no_label {
-                            label_x
-                        } else {
-                            input_right - box_size
-                        };
-                        if no_label || ix > label_right + 8.0 {
+                        let ix = control_start;
+                        if available > 0.0 {
                             let iy = row_rect.y + (row_h - box_size) / 2.0;
                             let box_rect = Rect::new(ix, iy, box_size, box_size);
                             if *value {
@@ -1207,23 +1379,30 @@ mod native_surface_paint {
                         cursor,
                         selection_anchor,
                     } => {
-                        paint_text_input_box(
-                            surface,
-                            row_rect,
-                            label_right,
-                            no_label,
-                            input_right,
-                            value,
-                            placeholder,
-                            *cursor,
-                            *selection_anchor,
-                            field_fg,
-                            theme.muted_fg,
-                            theme.selection_bg,
-                            theme.accent_fg,
-                            false,
-                            '\0',
-                        );
+                        if available > 0.0 {
+                            let shown = if value.is_empty() { placeholder } else { value };
+                            let control_w = resolved_control_width.resolve(
+                                surface.surface_measure_text(shown).0 + TEXT_BOX_PADDING * 2.0,
+                                available,
+                                min_control_width,
+                            );
+                            paint_text_input_box(
+                                surface,
+                                row_rect,
+                                control_start,
+                                control_w,
+                                value,
+                                placeholder,
+                                *cursor,
+                                *selection_anchor,
+                                field_fg,
+                                theme.muted_fg,
+                                theme.selection_bg,
+                                theme.accent_fg,
+                                false,
+                                '\0',
+                            );
+                        }
                     }
                     FieldKind::PasswordInput {
                         value,
@@ -1231,23 +1410,30 @@ mod native_surface_paint {
                         cursor,
                         mask_char,
                     } => {
-                        paint_text_input_box(
-                            surface,
-                            row_rect,
-                            label_right,
-                            no_label,
-                            input_right,
-                            value,
-                            placeholder,
-                            *cursor,
-                            None,
-                            field_fg,
-                            theme.muted_fg,
-                            theme.selection_bg,
-                            theme.accent_fg,
-                            true,
-                            *mask_char,
-                        );
+                        if available > 0.0 {
+                            let shown = if value.is_empty() { placeholder } else { value };
+                            let control_w = resolved_control_width.resolve(
+                                surface.surface_measure_text(shown).0 + TEXT_BOX_PADDING * 2.0,
+                                available,
+                                min_control_width,
+                            );
+                            paint_text_input_box(
+                                surface,
+                                row_rect,
+                                control_start,
+                                control_w,
+                                value,
+                                placeholder,
+                                *cursor,
+                                None,
+                                field_fg,
+                                theme.muted_fg,
+                                theme.selection_bg,
+                                theme.accent_fg,
+                                true,
+                                *mask_char,
+                            );
+                        }
                     }
                     FieldKind::TextArea {
                         value,
@@ -1256,27 +1442,45 @@ mod native_surface_paint {
                         ..
                     } => {
                         let first_line = value.lines().next().unwrap_or("");
-                        paint_text_input_box(
-                            surface,
-                            row_rect,
-                            label_right,
-                            no_label,
-                            input_right,
-                            first_line,
-                            placeholder,
-                            *cursor,
-                            None,
-                            field_fg,
-                            theme.muted_fg,
-                            theme.selection_bg,
-                            theme.accent_fg,
-                            false,
-                            '\0',
-                        );
+                        let shown = if first_line.is_empty() {
+                            placeholder.as_str()
+                        } else {
+                            first_line
+                        };
+                        if available > 0.0 {
+                            let control_w = resolved_control_width.resolve(
+                                surface.surface_measure_text(shown).0 + TEXT_BOX_PADDING * 2.0,
+                                available,
+                                min_control_width,
+                            );
+                            paint_text_input_box(
+                                surface,
+                                row_rect,
+                                control_start,
+                                control_w,
+                                first_line,
+                                placeholder,
+                                *cursor,
+                                None,
+                                field_fg,
+                                theme.muted_fg,
+                                theme.selection_bg,
+                                theme.accent_fg,
+                                false,
+                                '\0',
+                            );
+                        }
                     }
                     FieldKind::Button => {
                         let cap = label_text.clone();
                         let total_w = label_w + 24.0;
+                        // A standalone `Button`'s caption *is*
+                        // `field.label` — unlike every other kind,
+                        // there's no separate column-label/value split,
+                        // so it doesn't participate in the shared
+                        // control column: it keeps its own
+                        // content-sized `<label>` box, right-anchored
+                        // against the row's edge.
                         let ix = if no_label {
                             label_x
                         } else {
@@ -1311,8 +1515,8 @@ mod native_surface_paint {
                     FieldKind::ReadOnly { value } => {
                         let text = plain_text(value);
                         let (w, h) = surface.surface_measure_text(&text);
-                        let ix = if no_label { label_x } else { input_right - w };
-                        if no_label || ix > label_right + 8.0 {
+                        let ix = control_start;
+                        if available > 0.0 {
                             let iy = row_rect.y + (row_h - h) / 2.0;
                             // Was unconditionally `theme.muted_fg`,
                             // so a focused (`selected_bg`) `ReadOnly` row painted
@@ -1326,14 +1530,23 @@ mod native_surface_paint {
                     FieldKind::Slider {
                         value, min, max, ..
                     } => {
-                        let track_w = 80.0_f32;
                         let range = (max - min).max(f32::EPSILON);
                         let frac = ((value - min) / range).clamp(0.0, 1.0);
                         let value_str = format!("{value:.2}");
                         let (value_w, value_h) = surface.surface_measure_text(&value_str);
-                        let total = track_w + 8.0 + value_w;
-                        let ix = input_right - total;
-                        if ix > label_right + 8.0 {
+                        // `natural_content_width` for `Content` is the
+                        // same `80 (track) + 8 (gap) + value_w` budget
+                        // the track reclaims after resolving — `Fill`/
+                        // `Fixed` grow or shrink the track instead of
+                        // the value text, mirroring the TUI painter.
+                        let control_w = resolved_control_width.resolve(
+                            80.0 + 8.0 + value_w,
+                            available,
+                            min_control_width,
+                        );
+                        let track_w = (control_w - 8.0 - value_w).max(16.0);
+                        let ix = control_start;
+                        if available > 0.0 {
                             let track_y = row_rect.y + row_h / 2.0 - 2.0;
                             surface.surface_fill_rect(
                                 Rect::new(ix, track_y, track_w, 4.0),
@@ -1355,9 +1568,8 @@ mod native_surface_paint {
                         let hex = format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b);
                         let (hw, hh) = surface.surface_measure_text(&hex);
                         let swatch = 12.0_f32;
-                        let total = swatch + 6.0 + hw;
-                        let ix = input_right - total;
-                        if ix > label_right + 8.0 {
+                        let ix = control_start;
+                        if available > 0.0 {
                             let sy = row_rect.y + (row_h - swatch) / 2.0;
                             surface.surface_fill_rect(Rect::new(ix, sy, swatch, swatch), *value);
                             let ty = row_rect.y + (row_h - hh) / 2.0;
@@ -1378,9 +1590,8 @@ mod native_surface_paint {
                             .unwrap_or_default();
                         let (cw, ch) = surface.surface_measure_text(&chosen);
                         let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
-                        let total = cw + 4.0 + chev_w;
-                        let ix = input_right - total;
-                        if ix > label_right + 8.0 {
+                        let ix = control_start;
+                        if available > 0.0 {
                             let ty = row_rect.y + (row_h - ch) / 2.0;
                             surface.surface_draw_text_run(
                                 Rect::new(ix, ty, cw, ch),
@@ -1481,8 +1692,8 @@ mod native_surface_paint {
                         };
                         let text = date.format(picker.locale.format);
                         let (tw, th) = surface.surface_measure_text(&text);
-                        let ix = if no_label { label_x } else { input_right - tw };
-                        if no_label || ix > label_right + 8.0 {
+                        let ix = control_start;
+                        if available > 0.0 {
                             let ty = row_rect.y + (row_h - th) / 2.0;
                             surface.surface_draw_text_run(
                                 Rect::new(ix, ty, tw, th),
@@ -1498,9 +1709,8 @@ mod native_surface_paint {
                         // field's doc.
                         let (tw, th) = surface.surface_measure_text(&combo.text);
                         let (chev_w, _) = surface.surface_measure_text("\u{25BE}");
-                        let total = tw + 4.0 + chev_w;
-                        let ix = input_right - total;
-                        if ix > label_right + 8.0 {
+                        let ix = control_start;
+                        if available > 0.0 {
                             let ty = row_rect.y + (row_h - th) / 2.0;
                             surface.surface_draw_text_run(
                                 Rect::new(ix, ty, tw, th),
@@ -1517,14 +1727,31 @@ mod native_surface_paint {
                 }
             }
 
-            if let Some((color, msg)) = validation_info {
+            if let Some((color, strip_bg, msg)) = validation_info {
                 // Message strip: below the content strip computed
-                // above, not overlapping the label.
+                // above, not overlapping the label. Tinted with the
+                // severity's own `Theme::danger_bg`/`warning_bg` so the
+                // strip reads as a small banner (VS Code's own
+                // validation-message styling), not just coloured text on
+                // the plain row background. The fill spans only the
+                // control column — the same `label_right + CONTROL_GAP`
+                // .. `content_rect`'s right edge span the control body
+                // itself paints into above — not the label column, so
+                // the banner sits under the input the way VS Code's
+                // does, rather than under the label too.
                 let strip_y = row_rect.y + row_h;
                 let strip_h = (row_h_full - row_h).max(0.0);
+                let strip_x = if no_label {
+                    label_x
+                } else {
+                    label_right + CONTROL_GAP
+                };
+                let strip_right = content_rect.x + content_rect.width - 8.0;
+                let strip_w = (strip_right - strip_x).max(0.0);
+                surface.surface_fill_rect(Rect::new(strip_x, strip_y, strip_w, strip_h), strip_bg);
                 surface.surface_fill_rect(
                     Rect::new(
-                        row_rect.x + 2.0,
+                        strip_x + 2.0,
                         strip_y + (strip_h - 3.0).max(0.0) / 2.0,
                         3.0,
                         3.0,
@@ -1533,9 +1760,64 @@ mod native_surface_paint {
                 );
                 let (mw, mh) = surface.surface_measure_text(msg);
                 let my = strip_y + (strip_h - mh).max(0.0) / 2.0;
-                surface.surface_draw_text_run(Rect::new(row_rect.x + 8.0, my, mw, mh), msg, color);
+                surface.surface_draw_text_run(Rect::new(strip_x + 8.0, my, mw, mh), msg, color);
             }
         }
+        surface.surface_pop_clip();
+    }
+
+    /// Horizontal inset (in pixels) between a text input box's stroked
+    /// edge and the value/placeholder run drawn inside it, on each
+    /// side. [`ControlWidth::Content`] callers fold `TEXT_BOX_PADDING *
+    /// 2.0` into the content width they resolve so the box this
+    /// constant sizes always has room for the full run — the painted
+    /// run itself is never clipped.
+    const TEXT_BOX_PADDING: f32 = 8.0;
+
+    /// Sub-pixel slack when deciding whether a run fits its box. A
+    /// [`ControlWidth::Content`] box is sized *from* a measured width,
+    /// so `measured + 2 * TEXT_BOX_PADDING - 2 * TEXT_BOX_PADDING`
+    /// can land a rounding step below `measured`; without this slack
+    /// that alone would drop the value's last character.
+    const TEXT_FIT_EPSILON: f32 = 0.5;
+
+    /// Longest leading run of `text` that measures no wider than
+    /// `budget`, as a byte length plus that prefix's `(width, height)`.
+    /// The height is always the full run's, so a clipped value still
+    /// centres on the same baseline as an unclipped one.
+    ///
+    /// `PaintSurface::surface_draw_text_run` ignores its rect's width
+    /// on every pixel backend (cairo, Core Text and Direct2D all just
+    /// lay the string out at the rect's origin), so a text input box
+    /// narrower than its value has to clip the *string* rather than
+    /// rely on the drawing verb. The common case — the whole run
+    /// already fits — costs one measurement; a too-long run
+    /// binary-searches its char boundaries.
+    fn clip_run_to_width(surface: &dyn PaintSurface, text: &str, budget: f32) -> (usize, f32, f32) {
+        let (w, h) = surface.surface_measure_text(text);
+        if text.is_empty() || w <= budget + TEXT_FIT_EPSILON {
+            return (text.len(), w, h);
+        }
+        let boundaries: Vec<usize> = text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(text.len()))
+            .collect();
+        // Invariant: the prefix ending at `boundaries[lo]` fits (the
+        // empty prefix always does) and the one at `boundaries[hi]`
+        // does not (the full run, checked above, does not).
+        let (mut lo, mut hi) = (0usize, boundaries.len() - 1);
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2;
+            if surface.surface_measure_text(&text[..boundaries[mid]]).0 <= budget + TEXT_FIT_EPSILON
+            {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let end = boundaries[lo];
+        (end, surface.surface_measure_text(&text[..end]).0, h)
     }
 
     /// Shared text-input box painter for `TextInput` / `PasswordInput` /
@@ -1551,9 +1833,8 @@ mod native_surface_paint {
     fn paint_text_input_box(
         surface: &mut dyn PaintSurface,
         row_rect: Rect,
-        label_right: f32,
-        no_label: bool,
-        input_right: f32,
+        control_start: f32,
+        control_width: f32,
         value: &str,
         placeholder: &str,
         cursor: Option<usize>,
@@ -1576,28 +1857,35 @@ mod native_surface_paint {
         };
         let input_fg = if value.is_empty() { dim_fg } else { field_fg };
         let row_h = row_rect.height;
-        let (shown_w, shown_h) = surface.surface_measure_text(shown);
 
-        let (ix, _dw, box_right) = if no_label {
-            let ix = row_rect.x + 6.0;
-            let box_r = input_right - 4.0;
-            let avail = (box_r - ix - 8.0).max(0.0);
-            (ix, shown_w.min(avail), box_r)
-        } else {
-            let max_width = (row_rect.width * 0.6).max(80.0);
-            let dw = shown_w.min(max_width);
-            let ix = input_right - dw - 14.0;
-            (ix, dw, ix + 8.0 + dw + 2.0)
-        };
-        if !(no_label || ix > label_right + 8.0) {
-            return;
-        }
+        // The box spans exactly `[control_start, control_start +
+        // control_width)` — the caller already resolved `control_width`
+        // from this field's `ControlWidth` mode, so every field's box
+        // starts at the same column and `Fill` stretches it to the
+        // row's right edge instead of hugging the content. For
+        // `Content`, the caller already folded `TEXT_BOX_PADDING * 2.0`
+        // into the resolved width, so the run drawn at `ix +
+        // TEXT_BOX_PADDING` below always has room before this box's
+        // right edge.
+        let ix = control_start;
+        let box_w = control_width.max(TEXT_BOX_PADDING * 2.0);
+        let box_right = control_start + box_w;
 
         surface.surface_stroke_rect(
             Rect::new(ix, row_rect.y + 2.0, (box_right - ix).max(1.0), row_h - 4.0),
             dim_fg,
             1.0,
         );
+
+        // A `Fixed` column narrower than its value — or a `Fill` one in
+        // a narrow row — has to clip rather than spill the value past
+        // the stroked edge, which is what makes `Fixed`'s exact width
+        // and `min_control_width`'s floor observable here. The budget
+        // comes from `box_w` rather than `box_right - ix` so it stays
+        // independent of how far right the control column sits.
+        let text_budget = (box_w - TEXT_BOX_PADDING * 2.0).max(0.0);
+        let (drawn_len, shown_w, shown_h) = clip_run_to_width(surface, shown, text_budget);
+        let shown = &shown[..drawn_len];
 
         let y = row_rect.y + (row_h - shown_h) / 2.0;
 
@@ -1614,23 +1902,37 @@ mod native_surface_paint {
             let (pw, _) = surface.surface_measure_text(prefix);
             let (sw, _) = surface.surface_measure_text(sel_text);
             surface.surface_fill_rect(
-                Rect::new(ix + 8.0 + pw, row_rect.y + 2.0, sw, row_h - 4.0),
+                Rect::new(
+                    ix + TEXT_BOX_PADDING + pw,
+                    row_rect.y + 2.0,
+                    sw,
+                    row_h - 4.0,
+                ),
                 sel_bg,
             );
-            surface.surface_draw_text_run(Rect::new(ix + 8.0, y, pw, shown_h), prefix, input_fg);
             surface.surface_draw_text_run(
-                Rect::new(ix + 8.0 + pw, y, sw, shown_h),
+                Rect::new(ix + TEXT_BOX_PADDING, y, pw, shown_h),
+                prefix,
+                input_fg,
+            );
+            surface.surface_draw_text_run(
+                Rect::new(ix + TEXT_BOX_PADDING + pw, y, sw, shown_h),
                 sel_text,
                 field_fg,
             );
             surface.surface_draw_text_run(
-                Rect::new(ix + 8.0 + pw + sw, y, shown_w - pw - sw, shown_h),
+                Rect::new(
+                    ix + TEXT_BOX_PADDING + pw + sw,
+                    y,
+                    shown_w - pw - sw,
+                    shown_h,
+                ),
                 suffix,
                 input_fg,
             );
         } else {
             surface.surface_draw_text_run(
-                Rect::new(ix + 8.0, y, shown_w, shown_h),
+                Rect::new(ix + TEXT_BOX_PADDING, y, shown_w, shown_h),
                 shown,
                 input_fg,
             );
@@ -1641,7 +1943,7 @@ mod native_surface_paint {
                 if !value.is_empty() {
                     let prefix = &shown[..snap_to_char_boundary(shown, cur)];
                     let (pw, _) = surface.surface_measure_text(prefix);
-                    let cx = ix + 8.0 + pw;
+                    let cx = ix + TEXT_BOX_PADDING + pw;
                     surface.surface_fill_rect(
                         Rect::new(cx, row_rect.y + 3.0, 1.5, row_h - 6.0),
                         accent_fg,
@@ -1653,7 +1955,7 @@ mod native_surface_paint {
                 let char_pos = value[..snap_to_char_boundary(value, cur)].chars().count();
                 let prefix: String = shown.chars().take(char_pos).collect();
                 let (pw, _) = surface.surface_measure_text(&prefix);
-                let cx = ix + 8.0 + pw;
+                let cx = ix + TEXT_BOX_PADDING + pw;
                 surface.surface_fill_rect(
                     Rect::new(cx, row_rect.y + 3.0, 1.5, row_h - 6.0),
                     accent_fg,
@@ -1667,10 +1969,10 @@ mod native_surface_paint {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::Viewport;
-        use crate::primitives::form::{FormField, ToggleGroupItem};
+        use crate::primitives::form::{ControlWidth, FormField, ToggleGroupItem};
         use crate::primitives::layout_metrics::{form_field_measure, form_row_height, TextMeasure};
         use crate::types::{StyledSpan, WidgetId};
-        use crate::Image;
+        use crate::{FormFieldMeasure, Image};
 
         /// Records every drawing verb `paint` issues, so a paint
         /// assertion can run on any host — no cairo, Core Graphics or
@@ -1690,6 +1992,13 @@ mod native_surface_paint {
             /// `surface_stroke_rect` call, so tests can assert the drawn
             /// checkbox / text-input-box borders.
             strokes: Vec<(Rect, Color, f32)>,
+            /// Every rect passed to `surface_push_clip`, in push order —
+            /// so a regression test can assert `paint` clips to the
+            /// form's own bounds exactly once.
+            clip_pushes: Vec<Rect>,
+            /// Count of `surface_pop_clip` calls, so a test can assert
+            /// every push is balanced.
+            clip_pops: usize,
         }
 
         /// 6 units per character — same fixed-width stand-in the
@@ -1748,8 +2057,12 @@ mod native_surface_paint {
                 _stroke_width: f32,
             ) {
             }
-            fn surface_push_clip(&mut self, _rect: Rect) {}
-            fn surface_pop_clip(&mut self) {}
+            fn surface_push_clip(&mut self, rect: Rect) {
+                self.clip_pushes.push(rect);
+            }
+            fn surface_pop_clip(&mut self) {
+                self.clip_pops += 1;
+            }
             fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
                 ImagePaintResult::Unsupported
             }
@@ -1788,6 +2101,8 @@ mod native_surface_paint {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 }],
                 focused_field: None,
                 scroll_offset: 0,
@@ -1795,13 +2110,369 @@ mod native_surface_paint {
                 label_position: Default::default(),
                 label_align: Default::default(),
                 label_width: None,
+                control_width: Default::default(),
+                min_control_width: None,
             }
+        }
+
+        /// Two toggle rows at `row_h = 20.0` in a viewport only 23px
+        /// tall: the second (last) row's layout-clamped height is 3px —
+        /// far below `Toggle`'s own checkbox-size floor of 10px (see
+        /// the `box_size` clamp in `paint`'s `FieldKind::Toggle` arm).
+        /// Without a pixel clip, that floor pushes the checkbox's fill
+        /// rect below the row *and* past the form's own bottom edge —
+        /// the exact "last row paints under the status bar" shape.
+        fn two_toggle_form_overflowing_its_viewport() -> (Form, f32) {
+            let row_h = 20.0_f32;
+            let viewport_height = row_h + 3.0;
+            let form = Form {
+                id: WidgetId::new("settings"),
+                fields: vec![
+                    FormField {
+                        id: WidgetId::new("toggle-0"),
+                        label: StyledText::plain("Setting 1"),
+                        kind: FieldKind::Toggle { value: false },
+                        hint: StyledText::default(),
+                        disabled: false,
+                        validation: None,
+                        label_position: None,
+                        label_align: None,
+                        label_width: None,
+                        tab_index: None,
+                        control_width: None,
+                        min_control_width: None,
+                    },
+                    FormField {
+                        id: WidgetId::new("toggle-1"),
+                        label: StyledText::plain("Setting 2"),
+                        kind: FieldKind::Toggle { value: true },
+                        hint: StyledText::default(),
+                        disabled: false,
+                        validation: None,
+                        label_position: None,
+                        label_align: None,
+                        label_width: None,
+                        tab_index: None,
+                        control_width: None,
+                        min_control_width: None,
+                    },
+                ],
+                focused_field: None,
+                scroll_offset: 0,
+                has_focus: false,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
+                control_width: Default::default(),
+                min_control_width: None,
+            };
+            (form, viewport_height)
+        }
+
+        /// Regression: `paint` must clip to the form's own bounds on
+        /// every backend, so a row whose content overflows a
+        /// layout-clamped height (the `Toggle` checkbox floor above)
+        /// never bleeds past the form into whatever a host paints below
+        /// it (a status bar, another section).
+        #[test]
+        fn paint_clips_to_the_forms_own_bounds_when_scrolled() {
+            let (form, viewport_height) = two_toggle_form_overflowing_its_viewport();
+            let row_h = 20.0_f32;
+            let flayout = form.layout(320.0, viewport_height, |_| FormFieldMeasure::new(row_h));
+            let mut surface = RecordingSurface::default();
+            paint(
+                &form,
+                &flayout,
+                &mut surface,
+                &Theme::default(),
+                crate::Point::new(0.0, 0.0),
+            );
+
+            let form_rect = Rect::new(0.0, 0.0, 320.0, viewport_height);
+            assert_eq!(
+                surface.clip_pushes,
+                vec![form_rect],
+                "paint must push exactly one clip, at the form's own bounds"
+            );
+            assert_eq!(
+                surface.clip_pops, 1,
+                "every surface_push_clip must be balanced by surface_pop_clip"
+            );
+
+            // Prove the clip is load-bearing, not vacuous: the second
+            // toggle's checked checkbox fill (`surface_fill_rounded_rect`,
+            // recorded into the same `fills` list) geometrically
+            // overflows past the form's clipped bottom edge — exactly
+            // what a backend's `surface_push_clip` must cut off.
+            let bottom = form_rect.y + form_rect.height;
+            let overflowing = surface
+                .fills
+                .iter()
+                .any(|(rect, _)| rect.y + rect.height > bottom);
+            assert!(
+                overflowing,
+                "expected the last row's checkbox fill to extend past the \
+                 form's clipped bottom edge ({bottom}) — otherwise this \
+                 test doesn't exercise the bleed the clip guards against"
+            );
         }
 
         /// The pill a selected item paints: full item width, inset 2 at
         /// top and bottom.
         fn expected_pill(item: &Rect) -> Rect {
             Rect::new(item.x, item.y + 2.0, item.width, item.height - 4.0)
+        }
+
+        /// [`left_control_column_start`] has to report the exact x the
+        /// painter starts a control at, for every `Left`-labelled field
+        /// in the form — it's the seam a backend's pixel probe uses to
+        /// say "this field painted something past its label column", so
+        /// a drift between the two would make that probe silently check
+        /// the wrong band.
+        ///
+        /// `ColorPicker` is the probe kind: its swatch is a fixed
+        /// 12x12 fill in the picker's own colour, so the fill is
+        /// unambiguous in the recording and its `x` is the control
+        /// column's start with no width-resolution arithmetic in
+        /// between. Two fields with different label lengths pin that
+        /// both share one column (the wider label's) rather than each
+        /// sitting after its own label.
+        #[test]
+        fn left_control_column_start_matches_the_painted_control_x() {
+            let swatch_a = Color::rgb(0x11, 0x22, 0x33);
+            let swatch_b = Color::rgb(0x44, 0x55, 0x66);
+            let color_field = |id: &str, label: &str, value: Color| FormField {
+                id: WidgetId::new(id),
+                label: StyledText::plain(label),
+                kind: FieldKind::ColorPicker { value },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+            };
+            let form = Form {
+                id: WidgetId::new("control-column"),
+                fields: vec![
+                    color_field("accent", "A much longer label", swatch_a),
+                    color_field("border", "Hi", swatch_b),
+                ],
+                focused_field: None,
+                scroll_offset: 0,
+                has_focus: false,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
+                control_width: Default::default(),
+                min_control_width: None,
+            };
+
+            let (surface, flayout) = paint_recorded(&form);
+            let probe = RecordingSurface::default();
+
+            let mut starts = Vec::new();
+            for vf in &flayout.visible_fields {
+                let field = &form.fields[vf.field_idx];
+                let expected = left_control_column_start(&form, field, vf.bounds, &probe);
+                let swatch = surface
+                    .fills
+                    .iter()
+                    .find(|(r, c)| {
+                        *c == *match field.kind {
+                            FieldKind::ColorPicker { ref value } => value,
+                            _ => unreachable!("every field here is a ColorPicker"),
+                        } && r.width == 12.0
+                            && r.height == 12.0
+                    })
+                    .map(|(r, _)| *r)
+                    .unwrap_or_else(|| {
+                        panic!("field {:?} painted no 12x12 colour swatch", field.id)
+                    });
+                assert_eq!(
+                    swatch.x, expected,
+                    "field {:?}: painter started its control at x={}, but \
+                     left_control_column_start reports x={expected}",
+                    field.id, swatch.x,
+                );
+                starts.push(swatch.x);
+            }
+
+            assert_eq!(starts.len(), 2, "both fields must be visible");
+            assert_eq!(
+                starts[0], starts[1],
+                "a short-labelled field must start its control at the same \
+                 shared column as the long-labelled one, not right after its \
+                 own label",
+            );
+        }
+
+        fn text_input_field(
+            id: &str,
+            value: &str,
+            control_width: Option<ControlWidth>,
+        ) -> FormField {
+            FormField {
+                id: WidgetId::new(id),
+                label: StyledText::plain("Name"),
+                kind: FieldKind::TextInput {
+                    value: value.to_string(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width,
+                min_control_width: None,
+            }
+        }
+
+        fn form_with_one_field(field: FormField) -> Form {
+            Form {
+                id: WidgetId::new("form"),
+                fields: vec![field],
+                focused_field: None,
+                scroll_offset: 0,
+                has_focus: false,
+                label_position: Default::default(),
+                label_align: Default::default(),
+                label_width: None,
+                control_width: Default::default(),
+                min_control_width: None,
+            }
+        }
+
+        /// `ControlWidth::Fixed(20.0)` must stroke an exact 20px box,
+        /// starting at the field's shared control column — the "exact
+        /// width regardless of content" promise `ControlWidth::Fixed`'s
+        /// own doc makes.
+        #[test]
+        fn fixed_control_width_strokes_the_box_at_its_configured_width() {
+            let field = text_input_field("name", "hi", Some(ControlWidth::Fixed(20.0)));
+            let form = form_with_one_field(field);
+
+            let (surface, flayout) = paint_recorded(&form);
+            let vf = &flayout.visible_fields[0];
+            let probe = RecordingSurface::default();
+            let expected_start =
+                left_control_column_start(&form, &form.fields[0], vf.bounds, &probe);
+
+            let stroke = surface
+                .strokes
+                .first()
+                .expect("TextInput paints a stroked box");
+            assert_eq!(
+                stroke.0.x, expected_start,
+                "box starts at the control column"
+            );
+            assert_eq!(
+                stroke.0.width, 20.0,
+                "Fixed(20.0) should stroke an exact 20px box, not {}",
+                stroke.0.width
+            );
+        }
+
+        /// `ControlWidth::Content`'s stroked box must be wide enough to
+        /// hold the full value run inside it: the caller folds
+        /// `TEXT_BOX_PADDING * 2.0` into the content width it resolves,
+        /// so the box always has room for the run drawn at `ix +
+        /// TEXT_BOX_PADDING` — the box's right edge never cuts through
+        /// the value.
+        #[test]
+        fn content_control_width_box_fits_the_full_value_run() {
+            let field = text_input_field("name", "a longer value", Some(ControlWidth::Content));
+            let form = form_with_one_field(field);
+
+            let (surface, _flayout) = paint_recorded(&form);
+
+            let stroke = surface
+                .strokes
+                .first()
+                .expect("TextInput paints a stroked box");
+            let box_right = stroke.0.x + stroke.0.width;
+
+            let run = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "a longer value")
+                .expect("the value is drawn as a text run");
+            let run_right = run.0.x + run.0.width;
+
+            assert!(
+                run_right <= box_right,
+                "value run (right edge {run_right}) must fit inside the stroked \
+                 box (right edge {box_right}), not spill past it"
+            );
+        }
+
+        /// A `ControlWidth::Fixed` column narrower than its value must
+        /// clip the drawn run at the box's inner edge rather than let it
+        /// spill past the stroked border — the pixel backends'
+        /// `surface_draw_text_run` ignores the rect's width, so the
+        /// painter has to shorten the string itself.
+        #[test]
+        fn fixed_control_width_narrower_than_its_value_clips_the_run() {
+            // `FixedMeasure` is 6 units per character, so a 32-unit box
+            // leaves `32 - 2 * TEXT_BOX_PADDING = 16` units of text —
+            // room for two characters, not six.
+            let field = text_input_field("name", "abcdef", Some(ControlWidth::Fixed(32.0)));
+            let form = form_with_one_field(field);
+
+            let (surface, _flayout) = paint_recorded(&form);
+
+            let stroke = surface
+                .strokes
+                .first()
+                .expect("TextInput paints a stroked box");
+            let box_right = stroke.0.x + stroke.0.width;
+
+            let run = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text.starts_with('a'))
+                .expect("the value is drawn as a text run");
+            assert_eq!(
+                run.1, "ab",
+                "the value should be clipped to what the box can hold"
+            );
+            assert!(
+                run.0.x + run.0.width <= box_right,
+                "clipped run (right edge {}) must stay inside the stroked box \
+                 (right edge {box_right})",
+                run.0.x + run.0.width,
+            );
+        }
+
+        /// `min_control_width` floors the resolved column, so a `Fixed`
+        /// column too narrow for its value stops clipping once the floor
+        /// is wide enough to hold it.
+        #[test]
+        fn min_control_width_floors_a_narrow_fixed_column_back_to_the_full_value() {
+            let mut field = text_input_field("name", "abcdef", Some(ControlWidth::Fixed(32.0)));
+            // 6 characters * 6 units + 2 * TEXT_BOX_PADDING.
+            field.min_control_width = Some(52.0);
+            let form = form_with_one_field(field);
+
+            let (surface, _flayout) = paint_recorded(&form);
+
+            assert!(
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, text, _)| text == "abcdef"),
+                "min_control_width should widen the box enough to draw the whole \
+                 value; runs were {:?}",
+                surface.text_runs,
+            );
         }
 
         /// The shared painter must paint an on-toggle background, matching
@@ -2073,6 +2744,71 @@ mod native_surface_paint {
                 label_bottom,
                 label_rect,
                 msg_rect,
+            );
+        }
+
+        /// The validation-message strip is painted with the severity's
+        /// `Theme::danger_bg`/`warning_bg` tint, and only under the
+        /// control column (not the label column) — so a later refactor
+        /// can't silently drop the fill or widen it back under the
+        /// label.
+        #[test]
+        fn validation_strip_fills_danger_bg_under_the_control_only() {
+            let mut form = one_field_form(
+                "name",
+                FieldKind::TextInput {
+                    value: String::new(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            );
+            form.fields[0].label = StyledText::plain("Name");
+            form.fields[0].validation = Some(ValidationState::Error("Required".to_string()));
+
+            let row_h = form_row_height(14.0);
+            let measure = form_field_measure(&form.fields[0], row_h, &FixedMeasure);
+            let flayout = form.layout(320.0, 160.0, |_| measure.clone());
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &form,
+                &flayout,
+                &mut surface,
+                &theme,
+                crate::Point::new(0.0, 0.0),
+            );
+
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Name")
+                .expect("label text run recorded");
+            let (msg_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Required")
+                .expect("validation message text run recorded");
+
+            let strip_fill = surface
+                .fills
+                .iter()
+                .find(|(r, c)| *c == theme.danger_bg() && (r.y - msg_rect.y).abs() < r.height)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "expected a danger_bg fill behind the validation \
+                         message; fills were {:?}",
+                        surface.fills,
+                    )
+                });
+            assert!(
+                strip_fill.0.x >= label_rect.x + label_rect.width,
+                "the validation strip (x={}) must start at or after the \
+                 label's right edge (x={}), not span under the label \
+                 column too; label was {:?}",
+                strip_fill.0.x,
+                label_rect.x + label_rect.width,
+                label_rect,
             );
         }
 
@@ -2543,6 +3279,8 @@ mod native_surface_paint {
                 label_align: Some(LabelAlign::End),
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             });
 
             let (surface, _) = paint_recorded(&form);
@@ -2585,7 +3323,7 @@ mod native_surface_paint {
     all(feature = "macos", target_os = "macos")
 ))]
 #[allow(unused_imports)]
-pub(crate) use native_surface_paint::paint;
+pub(crate) use native_surface_paint::{left_control_column_start, paint};
 
 /// Events a `Form` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2685,6 +3423,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("line-numbers"),
@@ -2697,6 +3437,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("tabstop"),
@@ -2714,6 +3456,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("save"),
@@ -2726,6 +3470,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("language"),
@@ -2741,6 +3487,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
             ],
             focused_field: Some(WidgetId::new("line-numbers")),
@@ -2749,6 +3497,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let json = serde_json::to_string(&form).unwrap();
         let back: Form = serde_json::from_str(&json).unwrap();
@@ -2821,6 +3571,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -2876,6 +3628,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -2902,6 +3656,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -2950,6 +3706,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -2964,12 +3722,14 @@ mod tests {
             kind: FieldKind::ButtonRow {
                 buttons: vec![
                     ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("next"),
                         label: "Find Next".into(),
                         disabled: false,
                         icon: None,
                     },
                     ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("all"),
                         label: "Replace All".into(),
                         disabled: true,
@@ -2984,6 +3744,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -3004,6 +3766,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -3017,6 +3781,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -3132,6 +3898,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -3158,5 +3926,118 @@ mod tests {
             }
             other => panic!("unexpected kind: {:?}", other),
         }
+    }
+
+    #[test]
+    fn control_width_resolve_picks_the_mode_specific_width() {
+        assert_eq!(ControlWidth::Fill.resolve(10.0, 42.0, None), 42.0);
+        assert_eq!(ControlWidth::Fixed(15.0).resolve(10.0, 42.0, None), 15.0);
+        assert_eq!(ControlWidth::Content.resolve(10.0, 42.0, None), 10.0);
+    }
+
+    #[test]
+    fn control_width_resolve_floors_every_mode_at_min_width() {
+        assert_eq!(ControlWidth::Fill.resolve(10.0, 2.0, Some(30.0)), 30.0);
+        assert_eq!(
+            ControlWidth::Fixed(5.0).resolve(10.0, 42.0, Some(30.0)),
+            30.0
+        );
+        assert_eq!(ControlWidth::Content.resolve(5.0, 42.0, Some(30.0)), 30.0);
+        // A min_width below the mode's own raw value leaves it untouched.
+        assert_eq!(
+            ControlWidth::Fixed(40.0).resolve(10.0, 42.0, Some(30.0)),
+            40.0
+        );
+    }
+
+    fn control_width_test_field(control_width: Option<ControlWidth>) -> FormField {
+        FormField {
+            id: WidgetId::new("f"),
+            label: StyledText::default(),
+            kind: FieldKind::Toggle { value: false },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width,
+            min_control_width: None,
+        }
+    }
+
+    fn control_width_test_form(form_control_width: ControlWidth) -> Form {
+        Form {
+            id: WidgetId::new("form"),
+            fields: vec![],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: form_control_width,
+            min_control_width: None,
+        }
+    }
+
+    #[test]
+    fn resolved_control_width_prefers_the_field_override_over_the_form_default() {
+        let form = control_width_test_form(ControlWidth::Fill);
+        let overridden = control_width_test_field(Some(ControlWidth::Fixed(20.0)));
+        assert_eq!(
+            form.resolved_control_width(&overridden),
+            ControlWidth::Fixed(20.0)
+        );
+
+        let unset = control_width_test_field(None);
+        assert_eq!(form.resolved_control_width(&unset), ControlWidth::Fill);
+    }
+
+    #[test]
+    fn resolved_min_control_width_prefers_the_field_override_over_the_form_default() {
+        let mut form = control_width_test_form(ControlWidth::Fill);
+        form.min_control_width = Some(40.0);
+
+        let mut overridden = control_width_test_field(None);
+        overridden.min_control_width = Some(60.0);
+        assert_eq!(form.resolved_min_control_width(&overridden), Some(60.0));
+
+        let unset = control_width_test_field(None);
+        assert_eq!(form.resolved_min_control_width(&unset), Some(40.0));
+    }
+
+    // ── B3b: ButtonSpec seam ─────────────────────────────────────────────
+
+    #[test]
+    fn button_row_item_without_spec_derives_one_from_its_legacy_fields() {
+        let item = ButtonRowItem {
+            id: WidgetId::new("row:commit"),
+            label: "Commit".to_string(),
+            disabled: true,
+            icon: Some(crate::types::Icon::new("\u{f00c}", "+")),
+            spec: None,
+        };
+
+        let spec = item.resolved_button_spec();
+        assert_eq!(spec.label, "Commit");
+        assert_eq!(spec.icon, item.icon);
+        assert!(spec.disabled);
+    }
+
+    #[test]
+    fn button_row_item_with_explicit_spec_overrides_the_legacy_fields() {
+        let mut explicit = crate::primitives::button::ButtonSpec::new("Discard");
+        explicit.variant = crate::primitives::button::ButtonVariant::Danger;
+        let item = ButtonRowItem {
+            id: WidgetId::new("row:discard"),
+            label: "Discard changes".to_string(),
+            disabled: false,
+            icon: None,
+            spec: Some(explicit.clone()),
+        };
+
+        assert_eq!(item.resolved_button_spec(), explicit);
     }
 }

@@ -1937,6 +1937,7 @@ mod tests {
     fn toolbar(id: &str) -> Toolbar {
         Toolbar::new(WidgetId::new(id)).with_buttons(vec![
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("run"),
                 label: "Run".to_string(),
                 icon: None,
@@ -1947,6 +1948,7 @@ mod tests {
             },
             ToolbarButton::Separator,
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("stop"),
                 label: "Stop".to_string(),
                 icon: None,
@@ -2782,6 +2784,8 @@ mod tests {
                         label_position: Default::default(),
                         label_align: Default::default(),
                         label_width: None,
+                        control_width: Default::default(),
+                        min_control_width: None,
                     }),
                     aux: None,
                     size: SectionSize::Weight(1.0),

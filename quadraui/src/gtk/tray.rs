@@ -1051,6 +1051,7 @@ mod linux {
                 disabled: false,
                 key_equivalent: None,
                 checked: None,
+                icon: None,
                 submenu: None,
             }
         }
@@ -1244,6 +1245,7 @@ pub(crate) mod tests {
             disabled: false,
             key_equivalent: None,
             checked: None,
+            icon: None,
             submenu: None,
         }
     }

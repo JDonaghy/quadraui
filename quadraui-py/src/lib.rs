@@ -1,14 +1,25 @@
 //! PyO3 bindings over `quadraui`'s headless TUI driver, plus the real
 //! terminal and native-window runners that take it over.
 //!
+//! The language-neutral hit testing, semantic event synthesis, text-input/
+//! focus/drag controllers, retained descriptor model, render -> frame
+//! assembly, and descriptor wire decode (layout trees, render frames,
+//! additive-primitive descriptors, `run_shell`'s `ShellConfig`) this
+//! binding drives all live in `quadraui_binding_core` (see that crate's
+//! module doc) — this file is the PyO3 leaf around it: `depythonize` a
+//! Python `dict` into a `pythonize::Depythonizer`, hand that to the core
+//! decoder, and map its `DecodeError` to `InvalidDescriptorError`, plus
+//! [`PyAppLogic`]'s callback bridge and the `QuiApp` surface below.
+//!
 //! [`QuiApp`] wraps a `quadraui::tui::testing::TuiDriver` running an
 //! in-crate [`AppLogic`] that holds one optional descriptor per core
 //! primitive (button, text display, list, tree, data table, tab bar), plus
 //! any number of additive primitives (`insert_extra`/`insert_progress`/
-//! `insert_spinner`/`insert_image`) registered in [`EXTRA_PRIMITIVES`] —
-//! see that constant's doc for why registering a further additive
-//! primitive never touches the six fixed slots. Each `insert_*` method
-//! takes a Python `dict`, decodes it into the matching descriptor type via
+//! `insert_spinner`/`insert_image`) registered in
+//! `quadraui_binding_core::extra_paint`'s `extra_primitives!` table — see
+//! that macro's doc for why registering a further additive primitive never
+//! touches the six fixed slots. Each `insert_*` method takes a Python
+//! `dict`, decodes it into the matching descriptor type via
 //! [`pythonize::depythonize`], stores it in that primitive's slot, and
 //! re-renders immediately so `screen()`/`screen_contains()` reflect it
 //! without a separate step.
@@ -76,14 +87,55 @@
 //! (which already compiles in both `testing::TuiDriver` and the real
 //! `TuiRunner`) is unconditionally on for this whole crate; the headless
 //! driver `QuiApp` otherwise wraps needs it too.
-use std::any::Any;
+//!
+//! [`QuiApp::waker`] returns a [`QuiAppWaker`] — unlike `QuiApp` itself
+//! (`unsendable`, pinned to its creating thread), this handle is safe to
+//! hand to a background thread (a worker thread, an asyncio loop running
+//! elsewhere, a subprocess-watcher thread, a timer), which calls its
+//! `post`/`wake` methods to deliver a value back into the app's event
+//! stream as a `{"User": value}` event and wake whichever loop currently
+//! owns it, without exiting — see that type's doc for the per-call-path
+//! coverage (`step`/`run`, and `run_tui` for its own duration).
+//!
+//! [`QuiApp::actions`] returns a [`QuiAppActions`] — the handler-side
+//! escape hatch for the overlay/OS-call/window-control methods this
+//! module doc's "cannot call back into `QuiApp`" note above otherwise
+//! rules out from inside a handler: `show_message_dialog`,
+//! `show_context_menu`, `show_toast`, `show_tooltip`, `send_notification`,
+//! `open_path`, `reveal_in_file_manager`, `move_to_trash`,
+//! `restore_from_trash`, `set_title`, `set_document_edited`,
+//! `set_represented_filename`, `set_tray_icon`, `set_tray_tooltip`,
+//! `set_tray_menu`, `set_cursor`, `set_theme`. Each method on it decodes and
+//! queues the same
+//! action its `QuiApp` namesake would apply immediately;
+//! [`PyAppLogic::handle`]/[`PyAppLogic::tick`] drain that queue via
+//! [`flush_deferred_actions`] right after the dispatch that queued it
+//! finishes, applying each action as a direct Rust call instead of a
+//! second PyO3 borrow of `QuiApp` itself, against whichever live
+//! [`Backend`] that `handle`/`tick` call was itself given — the headless
+//! driver for `step`/`run`, the live terminal for `run_tui`, and the live
+//! window for `run_native` (`gtk`/`macos`/`win`) alike, since all four
+//! paths call through the same [`AppLogic`] trait methods.
+// Only spelled in this crate's own code inside `run_native`'s real
+// `target_os = "macos"` arm and in `#[cfg(test)]` coverage for the
+// downgrade `NativeExitPolicy` (aliased below as `NativeAppLogic`)
+// performs on this feature -- genuinely unused on a `macos`-feature,
+// non-Apple-`target_os` build (e.g. `cargo check --features macos` on
+// Linux), which `run_native`'s own non-Apple arm exists to keep buildable
+// without ever opening a real window.
 #[cfg(all(feature = "macos", not(feature = "gtk")))]
+#[allow(unused_imports)]
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use pyo3::create_exception;
@@ -93,19 +145,88 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use pyo3::types::{PyDict, PyList};
 
-use quadraui::tui::testing::TuiDriver;
+#[cfg(test)]
+use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
+use quadraui::tui::testing::{driver_with_shell, TuiDriver};
 use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
+#[cfg(test)]
+use quadraui::wheel_row_delta;
+#[cfg(test)]
+use quadraui::AcceleratorScope;
+#[cfg(test)]
+use quadraui::Key;
+#[cfg(test)]
+use quadraui::KeyBinding;
+#[cfg(test)]
+use quadraui::Modifiers;
+#[cfg(test)]
+use quadraui::MouseButton;
+#[cfg(test)]
+use quadraui::NamedKey;
+#[cfg(test)]
+use quadraui::Scrollbar;
 use quadraui::{
-    ActivityBar, AppLogic, Backend, BoardModel, Button, ButtonHit, ButtonLayout, Chart, ComboBox,
-    CommandCenter, CommandLine, CompletionItemMeasure, DataTable, DataTableEvent, DataTableHit,
-    DataTableLayout, DatePicker, DiffView, Form, Image, InteractionState, Key, ListView,
-    ListViewEvent, ListViewHit, ListViewLayout, MenuBar, MessageList, Minimap, Modifiers,
-    MultiSectionView, NamedKey, NumberInput, Palette, Panel, PipelineView, Point, ProgressBar,
-    RadioGroup, Reaction, Rect, Scrollbar, SidebarPanel, Spinner, Split, SplitDirection, SplitHit,
-    SplitLayout, SplitTree, StatusBar, Switch, TabBar, TabBarEvent, TabBarHit, TabBarLayout,
-    TabItem, TextDisplay, TextInput, Toolbar, TreeEvent, TreePath, TreeView, TreeViewHit,
-    TreeViewLayout, UiEvent, WidgetId,
+    Accelerator, AcceleratorId, AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps,
+    BottomPanelEvent, Completions, ContextMenu, ContextMenuItem, DialogButton, DialogSeverity,
+    FileDialogOptions, Float, FloatMeasure, GlobalShortcutId, ImageSource, MessageDialogOptions,
+    Notification, Point, PointerShape, Reaction, Rect, RgbaImage, RichTextPopup, ServiceResult,
+    ShellApp, ShellConfig, ShellContext, Theme, Toast, ToastCorner, Tooltip, UiEvent, UserPayload,
+    WidgetId,
 };
+
+// The language-neutral `event -> hit -> semantic -> render` engine this
+// binding is a thin PyO3 leaf over -- see
+// `quadraui-binding-core/src/lib.rs`'s module doc. Imported under their
+// bare names (rather than a `qbc::` path prefix) so this file's own call
+// sites, most of which predate the crate split, need no further change.
+#[cfg(test)]
+use quadraui_binding_core::tree_scroll_state;
+#[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
+use quadraui_binding_core::NativeExitPolicy;
+use quadraui_binding_core::{
+    add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction, caret_shape,
+    clear_recent_documents, click_down_up_events, color_depth_name, decode_extra_primitive,
+    dialog_severity, draw_bands, end_power_save_block, font_role, is_default_protocol_client,
+    key_pressed_event, login_item_enabled, menu_for_surface, merge_overrides,
+    message_dialog_options_from_buttons, paint_layout, panic_message, pointer_shape,
+    remove_as_default_protocol_client, render_overlays, resolve_app_path,
+    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
+    text_display_from_lines, theme_color_value, toast_corner, update_apply_on_quit,
+    update_check_for_update, update_download_and_stage, window_close_reaction, with_tray,
+    with_window, BindingHost, ErasedShellDriver, EventSink, HitDetail, InteractionEngine,
+    OverrideError, RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling,
+};
+
+/// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`)
+/// between a [`QuiApp`] and every [`QuiAppWaker`] handed out by
+/// [`QuiApp::waker`]. Factored into a named alias rather than spelled out
+/// inline on both of those — `clippy::type_complexity` rejects the bare
+/// nested `Arc<Mutex<Arc<dyn Fn(...) + Send + Sync>>>` spelling under
+/// `-D warnings`.
+type SharedWaker = Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>;
+
+/// Restores a [`SharedWaker`] cell to its previous value when dropped —
+/// used by [`QuiApp::run_tui`] around its `current_waker` swap so the
+/// restore runs whether `py.detach`'s pump loop returns normally *or*
+/// panics and unwinds through this scope. Without it, a panic there would
+/// poison the app (via [`QuiApp::guarded`]'s `catch_unwind`) but leave
+/// `current_waker` pointing at this dropped `TuiRunner`'s backend; most
+/// `QuiApp` methods then immediately raise `PoisonedError` and never touch
+/// it again, but [`QuiApp::waker`] bypasses `guarded` by design (see its
+/// own poisoned check) and would otherwise still hand out a handle whose
+/// `post`/`wake` silently post into a queue nothing drains anymore.
+struct RestoreWakerOnDrop<'a> {
+    current_waker: &'a SharedWaker,
+    previous: Option<Arc<dyn Fn(UserPayload) + Send + Sync>>,
+}
+
+impl Drop for RestoreWakerOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            *self.current_waker.lock().unwrap_or_else(|e| e.into_inner()) = previous;
+        }
+    }
+}
 
 create_exception!(
     _quadraui,
@@ -227,41 +348,120 @@ create_exception!(
     `Application::builder()`."
 );
 
-/// Slot id of the app's `Button` descriptor.
-const SLOT_BUTTON: i64 = 0;
-/// Slot id of the app's `TextDisplay` descriptor.
-const SLOT_TEXT_DISPLAY: i64 = 1;
-/// Slot id of the app's `ListView` descriptor.
-const SLOT_LIST: i64 = 2;
-/// Slot id of the app's `TreeView` descriptor.
-const SLOT_TREE: i64 = 3;
-/// Slot id of the app's `DataTable` descriptor.
-const SLOT_DATA_TABLE: i64 = 4;
-/// Slot id of the app's `TabBar` descriptor.
-const SLOT_TAB_BAR: i64 = 5;
+create_exception!(
+    _quadraui,
+    InvalidFontRoleError,
+    QuadrauiError,
+    "`measure_text`'s `role` argument was neither \"chrome\" nor \
+    \"editor\" -- the only two `FontRole` variants a caller can name."
+);
 
-/// The [`AppLogic`] a [`QuiApp`] drives: a bag of optional descriptors, one
-/// per core primitive, painted top-to-bottom in fixed-height bands — unless
-/// `render_callback` is registered, in which case each frame asks it for a
-/// fresh set of descriptors instead of reading these static fields. Beyond
-/// the six fixed slots below, `extra_slots` holds any number of additional,
-/// additive primitives keyed by kind name (see [`EXTRA_PRIMITIVES`]);
-/// adding a new one there never touches the six fixed fields or their
-/// `SLOT_*`/`is_known_slot`/`slot_clear` machinery.
+create_exception!(
+    _quadraui,
+    UnsupportedError,
+    QuadrauiError,
+    "A platform-services call (auto-update, the power-save blocker, launch- \
+    at-login, protocol registration, drag-out, recent documents/dock menu/ \
+    jump list, ...) has no implementation on this app's current backend -- \
+    `quadraui_binding_core::services::ServiceError::Unsupported` (mirrors \
+    `QUI_ERR_UNSUPPORTED`). Raised instead of silently no-opping or \
+    panicking, so a caller can tell \"this backend doesn't do that\" apart \
+    from a genuine failure (`InternalError`) or a bad argument \
+    (`InvalidDescriptorError`)."
+);
+
+/// Slot id of the app's `Button` descriptor.
+const SLOT_BUTTON: i64 = quadraui_binding_core::SLOT_BUTTON;
+/// Slot id of the app's `TextDisplay` descriptor.
+const SLOT_TEXT_DISPLAY: i64 = quadraui_binding_core::SLOT_TEXT_DISPLAY;
+/// Slot id of the app's `ListView` descriptor.
+const SLOT_LIST: i64 = quadraui_binding_core::SLOT_LIST;
+/// Slot id of the app's `TreeView` descriptor.
+const SLOT_TREE: i64 = quadraui_binding_core::SLOT_TREE;
+/// Slot id of the app's `DataTable` descriptor.
+const SLOT_DATA_TABLE: i64 = quadraui_binding_core::SLOT_DATA_TABLE;
+/// Slot id of the app's `TabBar` descriptor.
+const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
+
+/// One action a [`QuiAppActions`] method recorded, already decoded and
+/// validated, waiting for [`flush_deferred_actions`] to apply it. Each
+/// variant mirrors one of the `QuiApp` methods [`QuiAppActions`]'s own
+/// doc names (`show_message_dialog`, `show_context_menu`, `show_toast`,
+/// `show_tooltip`, `send_notification`, `open_path`,
+/// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
+/// `set_title`, `set_document_edited`, `set_represented_filename`,
+/// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
+/// `set_theme`) — carrying exactly the already-decoded arguments the
+/// matching `QuiApp` method passes to the same underlying
+/// `quadraui`/`quadraui_binding_core` call, so applying one is a direct call
+/// with no further decoding or validation left to do.
+///
+/// `Theme`'s overrides are one exception: unlike `QuiApp::set_theme`,
+/// [`QuiAppActions::set_theme`] has no live backend to merge onto at queue
+/// time (that's the whole problem this type exists to solve), so each
+/// override is decoded and validated against [`Theme::default`]'s field set
+/// only — [`flush_deferred_actions`] re-merges the stored `(field, value)`
+/// pairs onto the real live backend's current theme right before applying
+/// it.
+///
+/// The ten platform-services variants below (`ApplyUpdateOnQuit` through
+/// `SetJumpList`) are a second exception, for the same underlying reason:
+/// every one of them is applied via a `quadraui_binding_core::services`
+/// function that itself takes the `&dyn PlatformServices` this type has no
+/// access to until [`flush_deferred_actions`] runs. Rather than decode (or
+/// call) twice, each stores its plain/wire argument unchanged and
+/// [`flush_deferred_actions`] calls the exact same core function
+/// `QuiApp`'s own matching method calls — so, like `Theme`, validation
+/// happens at flush time, surfaced via `pending_error` the same way a
+/// failing `OpenPath`/`MoveToTrash` already is.
+enum DeferredAction {
+    MessageDialog(MessageDialogOptions),
+    ContextMenu(Vec<ContextMenuItem>, Point),
+    Toast(Toast, ToastCorner),
+    Tooltip(Tooltip, Rect),
+    Notification(Notification),
+    OpenPath(PathBuf),
+    RevealInFileManager(PathBuf),
+    MoveToTrash(PathBuf),
+    RestoreFromTrash(PathBuf),
+    Title(String),
+    DocumentEdited(bool),
+    RepresentedFilename(Option<PathBuf>),
+    TrayIcon(ImageSource),
+    TrayTooltip(String),
+    TrayMenu(Vec<ContextMenuItem>),
+    Cursor(PointerShape),
+    Theme(Vec<(String, serde_json::Value)>),
+    ApplyUpdateOnQuit(u64),
+    EndPowerSaveBlock(u64),
+    SetLoginItem {
+        enabled: bool,
+        open_hidden: bool,
+        args: Vec<String>,
+    },
+    SetAsDefaultProtocolClient(String),
+    RemoveAsDefaultProtocolClient(String),
+    BeginDragOut {
+        files: Vec<String>,
+        text: Option<String>,
+    },
+    AddRecentDocument(PathBuf),
+    ClearRecentDocuments,
+    SetDockMenu(serde_json::Value),
+    SetJumpList(serde_json::Value),
+}
+
+/// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
+/// [`BindingHost`] (the six fixed primitive slots, any additive slots, and
+/// the backend-settings replay store — see that type's own doc) plus the
+/// Python-specific callback fields below. `render_callback`, when
+/// registered, overrides [`BindingHost`]'s static slots for every render —
+/// each frame asks it for a fresh set of descriptors instead.
 #[derive(Default)]
 struct PyAppLogic {
-    button: Option<Button>,
-    text_display: Option<TextDisplay>,
-    list: Option<ListView>,
-    tree: Option<TreeView>,
-    data_table: Option<DataTable>,
-    tab_bar: Option<TabBar>,
-    /// Additive primitive slots, keyed by kind name (`"progress"`,
-    /// `"spinner"`, `"image"`, ...). Painted after the six fixed bands in
-    /// [`EXTRA_PRIMITIVES`] order. A new kind here is a self-contained add —
-    /// unlike the six fields above, it needs no new field on this struct and
-    /// no new arm on `slot_occupied`/`is_known_slot`/`clear_slot`.
-    extra_slots: HashMap<String, Box<dyn ExtraPaint>>,
+    /// The host-side slot/replay state this binding is a thin PyO3 leaf
+    /// over — see [`BindingHost`]'s own doc.
+    host: BindingHost,
     /// Registered via `QuiApp::set_handler` / the `on_event` constructor
     /// argument; called with the pythonized event payload for every
     /// dispatched `UiEvent`.
@@ -273,11 +473,10 @@ struct PyAppLogic {
     /// argument; called with no arguments once per frame and expected to
     /// return a `dict` mapping slot names to a descriptor `dict` (or
     /// `None`/omitted to draw nothing in that slot). When set, this
-    /// overrides the static `button`/`text_display`/.../`tab_bar` fields
-    /// above for every render — it is the one way an app's displayed state
-    /// can change after the runner has taken over the event loop, since the
-    /// event handler that mutates that state cannot itself re-borrow this
-    /// `QuiApp` to call `insert_*`.
+    /// overrides [`Self::host`]'s static slots for every render — it is the
+    /// one way an app's displayed state can change after the runner has
+    /// taken over the event loop, since the event handler that mutates that
+    /// state cannot itself re-borrow this `QuiApp` to call `insert_*`.
     render_callback: Option<Py<PyAny>>,
     /// Set by `handle`/`tick` when the Python callback they invoke raises.
     /// `step_once` takes this and re-raises it out of `step`/`run` instead
@@ -289,119 +488,118 @@ struct PyAppLogic {
     /// clone keeps observing writes `handle`/`tick` make to the moved
     /// original for as long as the native loop runs.
     pending_error: Rc<RefCell<Option<PyErr>>>,
-    /// Every primitive this app painted this frame, in paint order, as a
-    /// [`PaintedHit`] carrying its id and the hit-testable layout its
-    /// backend `draw_*` call returned. Rebuilt from scratch at the start of
-    /// every [`AppLogic::render`] call and read by [`handle`] to translate
-    /// an incoming pointer event's screen coordinates into the `WidgetId`
-    /// (and finer [`HitDetail`]) it landed on, before forwarding it to the
-    /// registered Python handler.
-    ///
-    /// `RefCell` rather than a plain field because `render` takes `&self`
-    /// (every backend's `AppLogic::render` is called through a shared
-    /// reference — see `AppLogic::AreaId`/`render`'s signature below), so
-    /// mutating this during paint needs interior mutability even though
-    /// `handle`/`tick` otherwise only ever need `&mut self`.
-    hit_map: RefCell<Vec<PaintedHit>>,
-    /// Armed by a `MouseDown` landing on a split divider (per [`hit_map`]'s
-    /// [`PaintedHit::Split`] hit-testing) and cleared on the matching
-    /// `MouseUp`. While armed, [`handle`] turns every `MouseMoved` into a
-    /// synthesized `UiEvent::SplitDividerDragged` instead of forwarding the
-    /// raw move, so a Python handler never has to recompute split geometry
-    /// itself to support divider dragging.
-    active_drag: RefCell<Option<ActiveDrag>>,
+    /// The language-neutral `event -> hit -> semantic` orchestration engine
+    /// (hit map, divider/scrollbar drag state, text-input cursor cache,
+    /// menu-bar/context-menu controllers) this binding is a thin PyO3 leaf
+    /// over — see `quadraui_binding_core::engine`'s module doc.
+    /// [`AppLogic::render`] feeds it this frame's painted hits via
+    /// [`InteractionEngine::set_hits`]; [`handle`] forwards to
+    /// [`InteractionEngine::handle`] with a [`PyEventSink`] that bridges
+    /// back into the registered Python handler.
+    engine: InteractionEngine,
+    /// Actions a [`QuiAppActions`] method queued (typically called from
+    /// inside the registered event handler, mid-dispatch) and not yet
+    /// applied. Drained by [`flush_deferred_actions`] right after the
+    /// dispatch that queued them finishes — see that function's doc for why
+    /// a queued action must be applied as a direct Rust call rather than
+    /// through another `QuiApp` method call.
+    deferred_actions: Rc<RefCell<VecDeque<DeferredAction>>>,
 }
 
 impl PyAppLogic {
     fn slot_occupied(&self, slot: i64) -> bool {
-        match slot {
-            SLOT_BUTTON => self.button.is_some(),
-            SLOT_TEXT_DISPLAY => self.text_display.is_some(),
-            SLOT_LIST => self.list.is_some(),
-            SLOT_TREE => self.tree.is_some(),
-            SLOT_DATA_TABLE => self.data_table.is_some(),
-            SLOT_TAB_BAR => self.tab_bar.is_some(),
-            _ => false,
-        }
+        self.host.slot_occupied(slot)
     }
 
     /// Whether `slot` names one of this app's fixed primitive slots.
     fn is_known_slot(slot: i64) -> bool {
-        matches!(
-            slot,
-            SLOT_BUTTON
-                | SLOT_TEXT_DISPLAY
-                | SLOT_LIST
-                | SLOT_TREE
-                | SLOT_DATA_TABLE
-                | SLOT_TAB_BAR
-        )
+        BindingHost::is_known_slot(slot)
     }
 
     /// Empties one slot, returning whether it held anything.
     fn clear_slot(&mut self, slot: i64) -> bool {
-        match slot {
-            SLOT_BUTTON => self.button.take().is_some(),
-            SLOT_TEXT_DISPLAY => self.text_display.take().is_some(),
-            SLOT_LIST => self.list.take().is_some(),
-            SLOT_TREE => self.tree.take().is_some(),
-            SLOT_DATA_TABLE => self.data_table.take().is_some(),
-            SLOT_TAB_BAR => self.tab_bar.take().is_some(),
-            _ => false,
-        }
+        self.host.clear_slot(slot)
     }
-}
 
-impl PyAppLogic {
     /// Whether `kind` names a currently-occupied additive primitive slot.
     fn extra_occupied(&self, kind: &str) -> bool {
-        self.extra_slots.contains_key(kind)
+        self.host.extra_occupied(kind)
     }
 
     /// Empties one additive primitive slot, returning whether it held
     /// anything.
     fn clear_extra_slot(&mut self, kind: &str) -> bool {
-        self.extra_slots.remove(kind).is_some()
+        self.host.clear_extra_slot(kind)
+    }
+
+    /// Drives [`Self::host`]'s hover-tooltip tracker for this dispatch —
+    /// [`BindingHost::drive_hover_tooltip`] fed [`BindingHost::now_ms`]'s
+    /// own real wall clock (there is no fake one to inject from Python; a
+    /// test instead uses a short real [`Self::host`]-level
+    /// `tooltip_delay_ms` override, same as this crate's existing
+    /// `QuiAppWaker::post_after`/`wake_after` timer tests) and
+    /// [`Self::host`]'s own `style.tooltip_delay_ms` (or the
+    /// behaviour-preserving default when no style has been set). Called
+    /// from both [`AppLogic::handle`] (so a hover change is noticed the
+    /// same frame) and [`AppLogic::tick`] (so the delay still elapses
+    /// with the pointer held still and no further event arriving).
+    fn drive_hover_tooltip(&mut self) -> Reaction {
+        let now_ms = self.host.now_ms();
+        let delay_ms = self.host.style.unwrap_or_default().tooltip_delay_ms;
+        self.host
+            .drive_hover_tooltip(&mut self.engine, now_ms, delay_ms)
     }
 }
 
-/// Maps a registered handler/tick callback's return value to a [`Reaction`]:
-/// returning `False` requests the same exit a raised exception would, with
-/// no exception needed; returning anything else (including the common case
-/// of no explicit `return`, i.e. `None`) continues. Checked with
-/// `extract::<bool>`, which only matches an actual Python `bool` — an int
-/// `0`, an empty string, or any other "falsy" value keeps running rather
-/// than exiting, so only an explicit `return False` opts in.
-fn reaction_from_return(value: &Bound<'_, PyAny>) -> Reaction {
-    match value.extract::<bool>() {
-        Ok(false) => Reaction::Exit,
-        _ => Reaction::Continue,
+impl WindowCloseHandling for PyAppLogic {
+    fn has_window_close_handler(&self) -> bool {
+        self.handler.is_some()
     }
+}
+
+/// Maps a registered handler/tick callback's return value to a [`Reaction`]
+/// via [`callback_reaction`]: returning `False` requests the same exit a
+/// raised exception would, with no exception needed; returning anything
+/// else (including the common case of no explicit `return`, i.e. `None`)
+/// continues. Checked with `extract::<bool>`, which only matches an actual
+/// Python `bool` — an int `0`, an empty string, or any other "falsy" value
+/// keeps running rather than exiting, so only an explicit `return False`
+/// opts in.
+fn reaction_from_return(value: &Bound<'_, PyAny>) -> Reaction {
+    callback_reaction(value.extract::<bool>().ok())
 }
 
 /// Wraps [`reaction_from_return`], promoting an ordinary `Continue` to
 /// `Redraw` whenever `render_callback_present` — i.e. a render callback is
-/// registered on this app.
-///
-/// A render callback only runs when the runner decides a frame needs
-/// repainting (`AppLogic::render` is reached only after an
-/// `EventOutcome::Redraw`/`RedrawAfter`-driven repaint — see
-/// `quadraui::tui::run::TuiRunner::pump` and the GTK/macOS/Windows
-/// equivalents). `PyAppLogic::handle`/`tick` have no way to tell whether a
-/// Python handler's mutation of its own plain-Python state changed
-/// anything visible, so once a render callback is registered every
-/// non-exit dispatch is treated as one that might have — the same
-/// "redraw every frame, let the render callback decide what that looks
-/// like" contract a React/Electron-style `render(state)` callback expects.
-/// Without this, a handler returning `None` (the common case: no explicit
-/// `return`) maps to `Reaction::Continue`, the runner never calls
-/// `AppLogic::render` again, and the render callback never re-runs — the
-/// screen stays frozen at whatever the last repaint drew.
+/// registered on this app. Mirrors [`callback_reaction_for_render`]'s
+/// policy: see that function's doc for why. In short, a Python handler's
+/// mutation of its own plain-Python state can't be observed by
+/// `PyAppLogic::handle`/`tick`, so once a render callback is registered
+/// every non-exit dispatch must be treated as one that might have changed
+/// something visible.
 fn reaction_for_callback(value: &Bound<'_, PyAny>, render_callback_present: bool) -> Reaction {
     match reaction_from_return(value) {
         Reaction::Continue if render_callback_present => Reaction::Redraw,
         other => other,
     }
+}
+
+/// Maps a registered handler's return value to a [`Reaction`] for a
+/// `WindowClose` dispatch specifically, via [`window_close_reaction`] — the
+/// opposite default from [`reaction_from_return`]. A `WindowClose` handler's
+/// job is to decide whether the window may close, so the no-opinion case (no
+/// explicit `return`, i.e. `None` — by far the common case for a handler
+/// that just logs or ignores the event, like `examples/file_manager.py`'s
+/// quit wrapper) must let the close proceed, exactly like having no handler
+/// registered at all; only an explicit `return True` vetoes it and leaves
+/// the window open. Checked with `extract::<bool>`, so a non-`bool` return
+/// (an int, a string, any other "truthy" value) does not accidentally veto
+/// a close the author never meant to block.
+fn reaction_from_window_close_return(
+    value: &Bound<'_, PyAny>,
+    render_callback_present: bool,
+) -> Reaction {
+    window_close_reaction(value.extract::<bool>().ok(), render_callback_present)
 }
 
 /// Records `err` into `pending_error`, but only if no earlier error in the
@@ -417,2173 +615,805 @@ fn record_error(pending_error: &Rc<RefCell<Option<PyErr>>>, err: PyErr) {
     }
 }
 
+/// Decodes `QuiApp::show_message_dialog`'s `severity` string into a
+/// [`DialogSeverity`] via [`quadraui_binding_core::dialog_severity`],
+/// mapping its `Err` into this binding's own `InvalidDescriptorError`
+/// (prefixed with `what`, the calling method's own name).
+fn parse_dialog_severity(what: &str, value: &str) -> PyResult<DialogSeverity> {
+    dialog_severity(value).map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
+}
+
+/// Decodes `QuiApp::show_toast`'s `corner` string into a [`ToastCorner`]
+/// via [`quadraui_binding_core::toast_corner`], the same
+/// [`parse_dialog_severity`] error-mapping shape.
+fn parse_toast_corner(what: &str, value: &str) -> PyResult<ToastCorner> {
+    toast_corner(value).map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
+}
+
+/// Decodes `QuiApp::set_cursor`'s `shape`/`edge` strings into a
+/// [`PointerShape`] via [`quadraui_binding_core::pointer_shape`], the same
+/// [`parse_dialog_severity`] error-mapping shape.
+fn parse_pointer_shape(what: &str, shape: &str, edge: Option<&str>) -> PyResult<PointerShape> {
+    pointer_shape(shape, edge)
+        .map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
+}
+
+/// Maps a [`ServiceResult`] failure to `InternalError`, prefixed with
+/// `what` -- the same shape `open_path`/`move_to_trash`/... already use
+/// for `PlatformServices`' own `ServiceResult`-returning methods.
+fn service_result(what: &str, result: ServiceResult<()>) -> PyResult<()> {
+    result.map_err(|err| InternalError::new_err(format!("{what}: {err:?}")))
+}
+
+/// Maps a [`quadraui_binding_core::services`] call's [`ServiceError`] to
+/// this binding's own exception taxonomy, prefixed with `what` -- the one
+/// place every `quadraui-py` platform-services method (update, power-save
+/// blocker, launch-at-login, protocol registration, drag-out, recent
+/// documents/dock menu/jump list, `app_path`, `install_crash_handler`)
+/// routes its `Err` through, so a new method added there never needs its
+/// own ad hoc mapping. [`ServiceError::Unsupported`] becomes
+/// [`UnsupportedError`] (this backend has no implementation at all --
+/// distinct from a genuine failure); [`ServiceError::Failure`] becomes
+/// [`InternalError`] (the backend tried and it broke);
+/// [`ServiceError::InvalidArgument`] becomes [`InvalidDescriptorError`] (a
+/// wire argument -- an enum-name string, a descriptor dict -- never even
+/// reached a service call).
+fn service_error_to_py(what: &str, err: ServiceError) -> PyErr {
+    match err {
+        ServiceError::Unsupported => {
+            UnsupportedError::new_err(format!("{what}: unsupported on this backend"))
+        }
+        ServiceError::Failure(context) => InternalError::new_err(format!("{what}: {context}")),
+        ServiceError::InvalidArgument(message) => {
+            InvalidDescriptorError::new_err(format!("{what}: {message}"))
+        }
+        // `ServiceError` is `#[non_exhaustive]`: a future core variant this
+        // leaf doesn't know about yet still raises a typed exception
+        // rather than failing to compile.
+        other => InternalError::new_err(format!("{what}: {other}")),
+    }
+}
+
+/// Builds a [`ContextMenu`] for [`quadraui::backend::TrayService::set_menu`], which takes a
+/// `&ContextMenu` rather than a bare item list -- thin wrapper over
+/// [`quadraui_binding_core::menu_for_surface`], named `"qui-tray-menu"`.
+fn tray_menu(items: Vec<ContextMenuItem>) -> ContextMenu {
+    menu_for_surface(WidgetId::new("qui-tray-menu"), items)
+}
+
 impl AppLogic for PyAppLogic {
     type AreaId = ();
 
+    /// Replays [`Self::host`]'s accelerators and backend-settings fields
+    /// onto `backend` -- [`BindingHost::setup`] -- so a chord/theme/style/
+    /// font set before `run_tui`/`run_native` moved this `PyAppLogic` into
+    /// a freshly constructed `TuiBackend`/`GtkBackend`/`MacBackend`/
+    /// `WinBackend` still applies to that live backend, not just the
+    /// dormant headless one `QuiApp::step`/`run` drive directly. Every real
+    /// runner (`TuiRunner::new_with`, `GtkRunner`'s `activate`,
+    /// `MacRunner::new`, `WinRunner::new_with`) calls
+    /// `app.setup(&mut backend)` right after building its backend and
+    /// before the first frame, so this hook reaches all four.
+    fn setup(&mut self, backend: &mut dyn Backend) {
+        self.host.setup(backend);
+    }
+
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut hits = Vec::new();
+        let chrome_interaction = |id: WidgetId| self.engine.chrome_interaction(id);
         let Some(callback) = self.render_callback.as_ref() else {
             draw_bands(
                 backend,
-                RenderRefs {
-                    button: self.button.as_ref(),
-                    text_display: self.text_display.as_ref(),
-                    list: self.list.as_ref(),
-                    tree: self.tree.as_ref(),
-                    data_table: self.data_table.as_ref(),
-                    tab_bar: self.tab_bar.as_ref(),
-                    extra: &self.extra_slots,
-                },
+                self.host.render_refs(),
                 &mut hits,
+                &chrome_interaction,
             );
-            *self.hit_map.borrow_mut() = hits;
+            render_overlays(&self.engine, backend, hits);
             return;
         };
         match render_output_from_callback(callback, &self.pending_error) {
-            Some(RenderOutput::Flat(frame)) => draw_bands(backend, frame.as_refs(), &mut hits),
+            Some(RenderOutput::Flat(frame)) => {
+                draw_bands(backend, frame.as_refs(), &mut hits, &chrome_interaction)
+            }
             Some(RenderOutput::Tree(node)) => {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                paint_layout(backend, area, &node, &mut hits);
+                paint_layout(backend, area, &node, &mut hits, &chrome_interaction);
             }
             None => {}
         }
-        *self.hit_map.borrow_mut() = hits;
+        render_overlays(&self.engine, backend, hits);
     }
 
-    /// Derives this frame's tab stops directly from the hit map `render`
-    /// just painted, in paint order. `Split` carries no `WidgetId` and is
-    /// not a focusable leaf, so it is skipped; every other variant yields
-    /// its id and bounding `Rect`.
+    /// Delegates to [`InteractionEngine::tab_stops`], which derives this
+    /// frame's tab stops directly from the hit map `render` just fed it via
+    /// [`InteractionEngine::set_hits`].
     fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
-        self.hit_map
-            .borrow()
-            .iter()
-            .filter_map(|hit| match hit {
-                PaintedHit::Button { id, layout } => Some((*id, layout.bounds)),
-                PaintedHit::Tree { id, area, .. }
-                | PaintedHit::List { id, area, .. }
-                | PaintedHit::DataTable { id, area, .. }
-                | PaintedHit::TabBar { id, area, .. } => Some((*id, *area)),
-                PaintedHit::Split { .. } => None,
-            })
-            .collect()
+        self.engine.tab_stops()
     }
 
-    fn handle(&mut self, mut event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        let Some(handler) = self.handler.as_ref() else {
-            return Reaction::Continue;
-        };
-        let render_callback_present = self.render_callback.is_some();
-
-        // A move while a divider drag is armed becomes the drag itself —
-        // checked before the hit-test below, since `MouseMoved` has no
-        // `widget` field for `event_position`/`set_event_widget` to touch.
-        if let UiEvent::MouseMoved { position, .. } = &event {
-            if let Some(drag) = self.active_drag.borrow().as_ref() {
-                let new_ratio = drag.ratio_at(*position);
-                event = UiEvent::SplitDividerDragged {
-                    tree: drag.tree,
-                    split_index: 0,
-                    new_ratio,
+    /// The thin PyO3 leaf around [`InteractionEngine::handle`]: an app with
+    /// no registered handler skips the engine entirely (so an app that
+    /// never calls `set_handler` never pays for any of this engine's
+    /// state), otherwise this wraps the registered Python handler in a
+    /// [`PyEventSink`] and forwards everything else to the engine, which
+    /// owns the full `event -> hit -> semantic` orchestration (menu-bar/
+    /// context-menu routing, divider/scrollbar drag, click-to-focus,
+    /// focus-scoped key/paste routing, and semantic event substitution).
+    ///
+    /// Drains [`QuiAppActions`]'s deferred queue via
+    /// [`flush_deferred_actions`] right after dispatch, against this same
+    /// `backend` — whichever live [`Backend`] the caller (headless driver,
+    /// `run_tui`'s terminal, or `run_native`'s window) is driving — and
+    /// folds the result into the returned [`Reaction`] via [`Reaction::merge`]
+    /// so a queued action that actually applied something still gets its
+    /// repaint even when the handler itself returned `Continue`.
+    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+        let reaction = match self.handler.as_ref() {
+            None => Reaction::Continue,
+            Some(handler) => {
+                let mut sink = PyEventSink {
+                    handler,
+                    pending_error: &self.pending_error,
+                    render_callback_present: self.render_callback.is_some(),
                 };
+                self.engine.handle(event, backend, &mut sink)
             }
-        }
-        if matches!(event, UiEvent::MouseUp { .. }) {
-            *self.active_drag.borrow_mut() = None;
-        }
+        };
+        let reaction = reaction.merge(self.drive_hover_tooltip());
+        let applied = flush_deferred_actions(backend, self);
+        reaction.merge(if applied {
+            Reaction::Redraw
+        } else {
+            Reaction::Continue
+        })
+    }
 
-        // A plain `KeyPressed` (Tab/Shift+Tab already claimed upstream by
-        // `preprocess_event` once `tab_stops` is non-empty) is routed to
-        // whichever leaf currently holds focus, wrapped into that leaf's
-        // own `KeyPressed` variant so Python sees a focus-scoped event
-        // instead of a backend-global one.
-        if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
-            if let Some(focused) = backend.focus_manager().focused().copied() {
-                event = focus_scoped_key_event(focused, key, *modifiers, &self.hit_map.borrow());
-            }
-        }
-
-        let hit = event_position(&event)
-            .and_then(|position| hit_test_painted(&self.hit_map.borrow(), position));
-        if let Some((id, _)) = hit {
-            set_event_widget(&mut event, id);
-        }
-
-        // A `MouseDown` either arms a divider drag or, for a tab/tree-row/
-        // data-table-row hit, is replaced outright by the semantic event it
-        // stands for — in which case the raw `MouseDown` (and its `"hit"`
-        // dict) never reaches Python at all.
-        let mut attach_hit = hit.is_some();
-        if let Some((id, detail)) = &hit {
-            if let UiEvent::MouseDown {
-                position,
-                modifiers,
-                ..
-            } = &event
-            {
-                let position = *position;
-                let modifiers = *modifiers;
-                if matches!(detail, HitDetail::SplitDivider) {
-                    if let Some(layout) = find_split_layout(&self.hit_map.borrow(), position, *id) {
-                        *self.active_drag.borrow_mut() = Some(ActiveDrag { tree: *id, layout });
+    /// Same [`flush_deferred_actions`] drain as [`Self::handle`] — a
+    /// deferred action can be queued from a `tick` callback too, since
+    /// `QuiApp::actions()` is obtained once and shared with whatever
+    /// callback the app registers, not just the event handler.
+    fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
+        let reaction = match self.on_tick.as_ref() {
+            None => Reaction::Continue,
+            Some(on_tick) => {
+                let render_callback_present = self.render_callback.is_some();
+                Python::attach(|py| match on_tick.call0(py) {
+                    Ok(result) => reaction_for_callback(result.bind(py), render_callback_present),
+                    Err(err) => {
+                        record_error(&self.pending_error, err);
+                        Reaction::Exit
                     }
-                } else if let Some(semantic) =
-                    semantic_event_for_hit(*id, detail, modifiers, &self.hit_map.borrow())
-                {
-                    event = semantic;
-                    attach_hit = false;
-                }
+                })
             }
-        }
+        };
+        let reaction = reaction.merge(self.drive_hover_tooltip());
+        let applied = flush_deferred_actions(backend, self);
+        reaction.merge(if applied {
+            Reaction::Redraw
+        } else {
+            Reaction::Continue
+        })
+    }
+}
 
+/// Bridges [`quadraui_binding_core::EventSink`] to this binding's
+/// registered Python event handler: pythonizes `event` (attaching
+/// `hit_detail` under the `"hit"` key when present), calls the handler, and
+/// translates its return value into a [`Reaction`]. [`InteractionEngine::handle`]
+/// calls this once per dispatched event (twice for a `MouseDown`/
+/// `DoubleClick` that also changes focus: once for the synthetic
+/// `FocusChanged`, once for the click itself), so every call site goes
+/// through identical error handling.
+struct PyEventSink<'a> {
+    handler: &'a Py<PyAny>,
+    pending_error: &'a Rc<RefCell<Option<PyErr>>>,
+    render_callback_present: bool,
+}
+
+impl EventSink for PyEventSink<'_> {
+    fn dispatch(&mut self, event: &UiEvent, hit_detail: Option<&HitDetail>) -> Reaction {
+        // `UiEvent::User`'s `Serialize` deliberately errors (its payload is
+        // an opaque `Arc<dyn Any>` with no wire representation to invent —
+        // see `UserPayload`'s own doc) — matched here, before the
+        // `pythonize` call below ever sees it, so a wake delivered through
+        // `QuiAppWaker::post`/`::wake` (or a native tray/timer wake with no
+        // Python-side payload at all) reaches the handler as a plain
+        // `{"User": value}` dict instead of pythonize's error turning into
+        // a recorded `InternalError` and `Reaction::Exit` that silently
+        // kills the app the first time anything wakes it this way.
+        // `UserPayload::downcast_ref` recovers the original `Py<PyAny>`
+        // this binding's own `QuiAppWaker` wrapped it in; a payload from a
+        // non-Python producer (a GTK tray wake, a future JS binding
+        // sharing this same engine) downcasts to `None` and surfaces as
+        // `{"User": None}` rather than crashing. No `hit_detail` ever
+        // accompanies a `User` event (it carries no screen position), so
+        // the "hit" dict key below never applies here.
+        if let UiEvent::User(payload) = event {
+            return Python::attach(|py| {
+                let user_value = payload
+                    .downcast_ref::<Py<PyAny>>()
+                    .map_or_else(|| py.None(), |py_obj| py_obj.clone_ref(py));
+                let dict = PyDict::new(py);
+                if let Err(err) = dict.set_item("User", user_value) {
+                    record_error(self.pending_error, err);
+                    return Reaction::Exit;
+                }
+                match self.handler.call1(py, (dict,)) {
+                    Ok(result) => {
+                        reaction_for_callback(result.bind(py), self.render_callback_present)
+                    }
+                    Err(err) => {
+                        record_error(self.pending_error, err);
+                        Reaction::Exit
+                    }
+                }
+            });
+        }
         Python::attach(|py| {
-            let payload = match pythonize::pythonize(py, &event) {
+            let payload = match pythonize::pythonize(py, event) {
                 Ok(value) => value,
                 Err(err) => {
                     record_error(
-                        &self.pending_error,
+                        self.pending_error,
                         InternalError::new_err(format!("failed to pythonize event: {err}")),
                     );
                     return Reaction::Exit;
                 }
             };
-            if attach_hit {
-                if let Some((_, detail)) = &hit {
-                    match payload.cast::<PyDict>() {
-                        Ok(dict) => match pythonize::pythonize(py, detail) {
-                            Ok(detail_value) => {
-                                if let Err(err) = dict.set_item("hit", detail_value) {
-                                    record_error(&self.pending_error, err);
-                                    return Reaction::Exit;
-                                }
-                            }
-                            Err(err) => {
-                                record_error(
-                                    &self.pending_error,
-                                    InternalError::new_err(format!(
-                                        "failed to pythonize hit detail: {err}"
-                                    )),
-                                );
+            if let Some(detail) = hit_detail {
+                match payload.cast::<PyDict>() {
+                    Ok(dict) => match pythonize::pythonize(py, detail) {
+                        Ok(detail_value) => {
+                            if let Err(err) = dict.set_item("hit", detail_value) {
+                                record_error(self.pending_error, err);
                                 return Reaction::Exit;
                             }
-                        },
-                        Err(_) => {
+                        }
+                        Err(err) => {
                             record_error(
-                                &self.pending_error,
-                                InternalError::new_err(
-                                    "failed to attach hit detail: pythonized event payload was not a dict"
-                                        .to_string(),
-                                ),
+                                self.pending_error,
+                                InternalError::new_err(format!(
+                                    "failed to pythonize hit detail: {err}"
+                                )),
                             );
                             return Reaction::Exit;
                         }
+                    },
+                    Err(_) => {
+                        record_error(
+                            self.pending_error,
+                            InternalError::new_err(
+                                "failed to attach hit detail: pythonized event payload was not a dict"
+                                    .to_string(),
+                            ),
+                        );
+                        return Reaction::Exit;
                     }
                 }
             }
-            match handler.call1(py, (payload,)) {
-                Ok(result) => reaction_for_callback(result.bind(py), render_callback_present),
+            match self.handler.call1(py, (payload,)) {
+                // `WindowClose` is the one event whose no-opinion default
+                // (no explicit `return`, i.e. `None`) must let the close
+                // proceed rather than continue — see
+                // `reaction_from_window_close_return`'s doc.
+                Ok(result) if matches!(event, UiEvent::WindowClose) => {
+                    reaction_from_window_close_return(result.bind(py), self.render_callback_present)
+                }
+                Ok(result) => reaction_for_callback(result.bind(py), self.render_callback_present),
                 Err(err) => {
-                    record_error(&self.pending_error, err);
+                    record_error(self.pending_error, err);
+                    Reaction::Exit
+                }
+            }
+        })
+    }
+}
+
+// ── ShellApp / `QuiApp.run_shell` ──────────────────────────────────────────
+//
+// `ShellApp`/`ShellConfig` (`quadraui::shell`) and the tabbed
+// `BottomPanelConfig` (`quadraui::compose::bottom_panel`) give an app a
+// VS Code-style frame — activity bar, sidebar, optional bottom-panel tab
+// strip — around its own content, with the chrome interaction (panel
+// switching, sidebar show/hide/resize, bottom-panel tab clicks) handled
+// entirely inside `quadraui::shell_adapter::ShellAdapter` before anything
+// reaches this binding. `run_shell` below is this binding's counterpart to
+// `QuiApp::new`: it decodes a `ShellConfig` from a Python `dict` (there is
+// no `Deserialize` impl on `ShellConfig`/`PanelDefinition`/
+// `BottomPanelConfig` upstream — `shell_config_from_dict` below reads the
+// handful of fields this binding supports field-by-field instead, the same
+// style every other `*_from_dict` helper in this file already uses),
+// builds a [`PyShellApp`] around the registered Python callbacks, and
+// drives it headlessly via `quadraui::tui::testing::driver_with_shell` —
+// the exact stack `quadraui::tui::shell_runner::run_with_shell` uses for a
+// real terminal, minus the live event loop.
+//
+// `driver_with_shell` returns `TuiDriver<impl AppLogic>`: an opaque,
+// per-call-site type with no name this file could give a struct field.
+// [`QuiShellApp`] stores a `Box<dyn ErasedShellDriver>` instead — the
+// blanket impl just below type-erases any `TuiDriver<A>` behind the narrow
+// surface `QuiShellApp` actually needs, so `Box::new(driver) as Box<dyn
+// ErasedShellDriver>` type-checks at the one call site that knows the
+// concrete (opaque) type, with nothing to name anywhere else.
+//
+// `ShellAdapter`'s own `app: A` field is `pub(crate)` to `quadraui` — not
+// reachable from this crate even through `TuiDriver::app_mut()` — so
+// `PyShellApp` cannot be reached back out through the driver the way
+// `QuiApp::set_handler` reaches `PyAppLogic` via `self.driver.app_mut()`.
+// `ShellState` is the side-channel around that: `QuiShellApp` and the
+// `PyShellApp` moved into the driver each hold their own `Rc` clone of the
+// same `RefCell<ShellState>`, so `QuiShellApp::set_handler` et al. mutate
+// it directly, independent of the driver.
+
+/// Registered Python callbacks + the last callback-raised error for one
+/// [`QuiShellApp`] session. Shared (via `Rc<RefCell<_>>`) between the
+/// [`QuiShellApp`] a caller holds and the [`PyShellApp`] moved into its
+/// driver — see this module's "ShellApp / `QuiApp.run_shell`" doc for why
+/// a side channel is needed at all.
+#[derive(Default)]
+struct ShellState {
+    /// Invoked with the pythonized event for every event [`PyShellApp::handle`]
+    /// receives — i.e. every event the shell chrome itself didn't consume
+    /// (see [`crate::ShellApp::handle`]'s doc). `None` leaves such events
+    /// unhandled, same as a plain `QuiApp` with no `set_handler` call.
+    handler: Option<Py<PyAny>>,
+    /// Invoked with no arguments whenever [`PyShellApp::tick`] fires with no
+    /// event queued, mirroring [`QuiApp::set_tick_handler`].
+    on_tick: Option<Py<PyAny>>,
+    /// Invoked with no arguments once per frame; its return value, if a
+    /// `list[str]`, becomes the lines of a single-line-per-entry
+    /// `TextDisplay` painted into [`crate::AppShellLayout::main_content_bounds`].
+    /// `None` paints nothing into the main content area — the shell chrome
+    /// (activity bar, sidebar, bottom-panel tab strip) still renders either
+    /// way, since that is `AppShell`'s own unconditional chrome paint, not
+    /// part of [`crate::ShellApp::render_content`].
+    render_content: Option<Py<PyAny>>,
+    /// Invoked with one pythonized `AppShellEvent` dict (see
+    /// [`app_shell_event_to_py`]) whenever [`crate::ShellApp::on_shell_event_ctx`]
+    /// fires — a panel switch, the sidebar being hidden/resized, the bottom
+    /// panel being resized/hidden, or a bottom-item (no-panel) activity-bar
+    /// click.
+    on_shell_event: Option<Py<PyAny>>,
+    /// Invoked with one pythonized `BottomPanelEvent` dict (see
+    /// [`bottom_panel_event_to_py`]) whenever [`crate::ShellApp::on_bottom_panel_event`]
+    /// fires — a tab activated, a tab closed, maximise toggled, or a
+    /// drag-resize. Only ever fires when `run_shell`'s `config` included a
+    /// `"bottom_panel"` entry.
+    on_bottom_panel_event: Option<Py<PyAny>>,
+    /// Set by any of the callbacks above when the Python callable they
+    /// invoke raises. [`QuiShellApp::step_once`] takes this and re-raises it
+    /// out of `step`/`run`, mirroring [`PyAppLogic::pending_error`].
+    pending_error: Option<PyErr>,
+}
+
+impl ShellState {
+    /// Records `err` as this session's pending error, but only if no
+    /// earlier error already claimed the slot — mirrors [`record_error`]'s
+    /// "first error wins" contract for [`PyAppLogic::pending_error`].
+    fn record_error(&mut self, err: PyErr) {
+        if self.pending_error.is_none() {
+            self.pending_error = Some(err);
+        }
+    }
+}
+
+/// Pythonizes one [`AppShellEvent`] as an externally-tagged `dict`, e.g.
+/// `{"PanelChanged": {"panel_id": "panel:explorer"}}` or
+/// `{"SidebarHidden": None}` — the same shape `pythonize::pythonize` would
+/// give a `#[derive(Serialize)]` enum, hand-built here since `AppShellEvent`
+/// has no such derive upstream (see this module's "ShellApp /
+/// `QuiApp.run_shell`" doc for why this binding doesn't add one).
+fn app_shell_event_to_py<'py>(
+    py: Python<'py>,
+    event: &AppShellEvent,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    match event {
+        AppShellEvent::PanelChanged { panel_id } => {
+            let inner = PyDict::new(py);
+            inner.set_item("panel_id", panel_id.as_str())?;
+            dict.set_item("PanelChanged", inner)?;
+        }
+        AppShellEvent::SidebarHidden => dict.set_item("SidebarHidden", py.None())?,
+        AppShellEvent::SidebarResized { new_width } => {
+            let inner = PyDict::new(py);
+            inner.set_item("new_width", new_width)?;
+            dict.set_item("SidebarResized", inner)?;
+        }
+        AppShellEvent::BottomPanelResized { new_height } => {
+            let inner = PyDict::new(py);
+            inner.set_item("new_height", new_height)?;
+            dict.set_item("BottomPanelResized", inner)?;
+        }
+        AppShellEvent::BottomPanelHidden => dict.set_item("BottomPanelHidden", py.None())?,
+        AppShellEvent::BottomItemClicked { id } => {
+            let inner = PyDict::new(py);
+            inner.set_item("id", id.as_str())?;
+            dict.set_item("BottomItemClicked", inner)?;
+        }
+        AppShellEvent::Consumed => dict.set_item("Consumed", py.None())?,
+        AppShellEvent::Ignored => dict.set_item("Ignored", py.None())?,
+    }
+    Ok(dict)
+}
+
+/// Pythonizes one [`BottomPanelEvent`] as an externally-tagged `dict`, e.g.
+/// `{"TabActivated": "bp:terminal"}` or `{"MaximiseToggled": None}` — see
+/// [`app_shell_event_to_py`]'s doc for why this is hand-built rather than
+/// derived.
+fn bottom_panel_event_to_py<'py>(
+    py: Python<'py>,
+    event: &BottomPanelEvent,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    match event {
+        BottomPanelEvent::TabActivated(id) => dict.set_item("TabActivated", id)?,
+        BottomPanelEvent::TabClosed(id) => dict.set_item("TabClosed", id)?,
+        BottomPanelEvent::MaximiseToggled => dict.set_item("MaximiseToggled", py.None())?,
+        BottomPanelEvent::Resized(height) => dict.set_item("Resized", height)?,
+    }
+    Ok(dict)
+}
+
+/// `WidgetId` string `quadraui::compose::bottom_panel::BottomPanelController::build_tab_bar`
+/// gives the `TabBar` it paints — fixed, not per-config, so
+/// [`QuiShellApp::bottom_panel_tab_center`] can name it directly.
+const BOTTOM_PANEL_TABS_WIDGET_ID: &str = "bottom-panel:tabs";
+
+/// The [`ShellApp`] [`QuiApp::run_shell`] drives: a thin bridge from its
+/// four hooks to the Python callables held in a shared [`ShellState`] —
+/// see this module's "ShellApp / `QuiApp.run_shell`" doc for why the state
+/// is held this way rather than reachable back out through the driver.
+struct PyShellApp {
+    state: Rc<RefCell<ShellState>>,
+}
+
+impl PyShellApp {
+    /// Clones out the registered callback named by `pick`, if any, without
+    /// holding the `RefCell` borrow across the call into Python that
+    /// follows. `pick` is a plain field-accessor closure (`|s| &s.handler`,
+    /// ...) rather than a method name, since `ShellState`'s callback fields
+    /// aren't behind a common accessor trait.
+    fn callback(&self, pick: impl FnOnce(&ShellState) -> &Option<Py<PyAny>>) -> Option<Py<PyAny>> {
+        Python::attach(|py| {
+            pick(&self.state.borrow())
+                .as_ref()
+                .map(|cb| cb.clone_ref(py))
+        })
+    }
+}
+
+impl ShellApp for PyShellApp {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+        let Some(callback) = self.callback(|s| &s.render_content) else {
+            return;
+        };
+        let bounds = layout.main_content_bounds;
+        Python::attach(|py| match callback.call0(py) {
+            Ok(result) => {
+                if let Ok(lines) = result.extract::<Vec<String>>(py) {
+                    let td = text_display_from_lines(WidgetId::new("shell:content"), lines);
+                    backend.draw_text_display(bounds, &td);
+                }
+            }
+            Err(err) => self.state.borrow_mut().record_error(err),
+        });
+    }
+
+    fn handle(
+        &mut self,
+        event: UiEvent,
+        _backend: &mut dyn Backend,
+        _ctx: &ShellContext,
+    ) -> Reaction {
+        let Some(callback) = self.callback(|s| &s.handler) else {
+            return Reaction::Continue;
+        };
+        let render_content_present = self.state.borrow().render_content.is_some();
+        Python::attach(|py| {
+            let payload = match pythonize::pythonize(py, &event) {
+                Ok(value) => value,
+                Err(err) => {
+                    self.state
+                        .borrow_mut()
+                        .record_error(InternalError::new_err(format!(
+                            "failed to pythonize event: {err}"
+                        )));
+                    return Reaction::Exit;
+                }
+            };
+            match callback.call1(py, (payload,)) {
+                Ok(result) if matches!(event, UiEvent::WindowClose) => {
+                    reaction_from_window_close_return(result.bind(py), render_content_present)
+                }
+                Ok(result) => reaction_for_callback(result.bind(py), render_content_present),
+                Err(err) => {
+                    self.state.borrow_mut().record_error(err);
                     Reaction::Exit
                 }
             }
         })
     }
 
+    fn on_shell_event_ctx(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
+        let Some(callback) = self.callback(|s| &s.on_shell_event) else {
+            return;
+        };
+        Python::attach(|py| {
+            let payload = match app_shell_event_to_py(py, event) {
+                Ok(value) => value,
+                Err(err) => {
+                    self.state.borrow_mut().record_error(err);
+                    return;
+                }
+            };
+            if let Err(err) = callback.call1(py, (payload,)) {
+                self.state.borrow_mut().record_error(err);
+            }
+        });
+    }
+
+    fn on_bottom_panel_event(&mut self, event: &BottomPanelEvent) {
+        let Some(callback) = self.callback(|s| &s.on_bottom_panel_event) else {
+            return;
+        };
+        Python::attach(|py| {
+            let payload = match bottom_panel_event_to_py(py, event) {
+                Ok(value) => value,
+                Err(err) => {
+                    self.state.borrow_mut().record_error(err);
+                    return;
+                }
+            };
+            if let Err(err) = callback.call1(py, (payload,)) {
+                self.state.borrow_mut().record_error(err);
+            }
+        });
+    }
+
     fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
-        let Some(on_tick) = self.on_tick.as_ref() else {
+        let Some(callback) = self.callback(|s| &s.on_tick) else {
             return Reaction::Continue;
         };
-        let render_callback_present = self.render_callback.is_some();
-        Python::attach(|py| match on_tick.call0(py) {
-            Ok(result) => reaction_for_callback(result.bind(py), render_callback_present),
+        let render_content_present = self.state.borrow().render_content.is_some();
+        Python::attach(|py| match callback.call0(py) {
+            Ok(result) => reaction_for_callback(result.bind(py), render_content_present),
             Err(err) => {
-                record_error(&self.pending_error, err);
+                self.state.borrow_mut().record_error(err);
                 Reaction::Exit
             }
         })
     }
 }
 
-/// One primitive this app painted during the current frame: its id and the
-/// hit-testable layout its backend `draw_*` call returned (or, for
-/// `Backend::draw_tree`/`draw_list`, which paint without returning one, the
-/// layout its no-paint twin `tree_layout`/`list_layout` produced for the
-/// same `area`). Recorded into [`PyAppLogic::hit_map`] by `draw_bands` /
-/// `paint_layout` / `paint_leaf`, in paint order, and consulted by
-/// [`hit_test_painted`] to translate an incoming pointer event's screen
-/// position into the primitive (and sub-region) under it.
-enum PaintedHit {
-    /// `Button`'s layout is in the backend's ABSOLUTE coordinate frame, so
-    /// no `area` is stored alongside it — same as [`Self::Split`].
-    Button { id: WidgetId, layout: ButtonLayout },
-    /// `area` is the absolute rect this tree was painted into. `Tree`'s
-    /// layout (like `List`/`DataTable`/`TabBar`'s) is in the LOCAL
-    /// coordinate frame, relative to `area`'s origin, so a hit-test
-    /// against it must first translate the click into that frame.
-    /// `row_paths[i]` is the `TreePath` of the row at visual index `i`
-    /// (i.e. `TreeView::rows[i].path`), kept alongside the layout so a
-    /// `TreeViewHit::Row(i)` can be turned into a semantic
-    /// `UiEvent::Tree(RowClicked)` without re-borrowing the `TreeView`
-    /// itself.
-    Tree {
-        id: WidgetId,
-        area: Rect,
-        layout: TreeViewLayout,
-        row_paths: Vec<TreePath>,
-    },
-    List {
-        id: WidgetId,
-        area: Rect,
-        layout: ListViewLayout,
-    },
-    DataTable {
-        id: WidgetId,
-        area: Rect,
-        layout: DataTableLayout,
-        scroll_offset: usize,
-        total_rows: usize,
-    },
-    TabBar {
-        id: WidgetId,
-        area: Rect,
-        layout: TabBarLayout,
-    },
-    /// `Split`'s layout is already in the ABSOLUTE frame, and its own
-    /// `WidgetId` only matters once a hit is found — carried by
-    /// `SplitHit`'s own variants, not stored here.
-    Split { layout: SplitLayout },
+/// Decodes `run_shell`'s `config` dict into a [`ShellConfig`] via the
+/// language-neutral decoder in `quadraui_binding_core`, mapping its
+/// `DecodeError` to `InvalidDescriptorError`. There is no `Deserialize`
+/// impl on `ShellConfig`/`PanelDefinition`/`BottomPanelConfig` upstream, so
+/// that decoder reads the subset of `ShellConfig`'s builder surface this
+/// binding supports field-by-field instead of depending on one — see its
+/// own doc for the recognized key vocabulary.
+fn shell_config_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<ShellConfig> {
+    let mut de = pythonize::Depythonizer::from_object(dict.as_any());
+    quadraui_binding_core::decode_shell_config(&mut de)
+        .map_err(|err| InvalidDescriptorError::new_err(err.0))
 }
 
-/// The sub-region of a primitive an incoming pointer event landed on,
-/// attached to the enriched event's `"hit"` key (alongside `widget`, the
-/// primitive's own id) so a Python handler can react to "row 3" or "the
-/// divider" without re-deriving hit geometry itself.
-#[derive(serde::Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum HitDetail {
-    ButtonBody,
-    TreeRow { row: usize },
-    TreeChevron { row: usize },
-    ListTitle,
-    ListItem { index: usize },
-    DataTableHeader { col: usize },
-    DataTableHeaderDivider { col: usize },
-    DataTableRow { row: usize },
-    DataTableFooter,
-    TabBarTab { tab: usize },
-    TabBarTabClose { tab: usize },
-    TabBarScrollLeft,
-    TabBarScrollRight,
-    TabBarRightSegment,
-    SplitFirstPane,
-    SplitSecondPane,
-    SplitDivider,
+/// Takes and returns this session's pending callback-raised error, if any
+/// — the `ShellState` counterpart to [`take_pending_error`].
+fn take_pending_shell_error(state: &Rc<RefCell<ShellState>>) -> PyResult<()> {
+    if let Some(err) = state.borrow_mut().pending_error.take() {
+        return Err(err);
+    }
+    Ok(())
 }
 
-/// Hit-tests `point` (in the backend's native absolute coordinate space,
-/// same as `UiEvent::MouseDown`'s `position`) against every primitive
-/// painted this frame, returning the id and fine-grained detail of
-/// whichever one claims it.
+/// Headless [`ShellApp`]-backed app: an AppShell (activity bar + sidebar +
+/// optional bottom-panel tab strip) around Python-registered content and
+/// event handlers. Built by [`QuiApp::run_shell`] — there is no public
+/// constructor on this type itself, mirroring how `QuiApp::run_native`'s
+/// `NativeAppLogic` is only ever reached through `run_native`.
 ///
-/// Checked in reverse paint order — later-painted primitives sit on top of
-/// earlier ones — and a miss against one candidate (e.g. outside its own
-/// paint `area`, or `TreeViewHit::Empty` inside it) falls through to the
-/// next rather than stopping, so a click that misses the topmost primitive
-/// can still land on one painted earlier.
-fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetId, HitDetail)> {
-    for hit in hit_map.iter().rev() {
-        match hit {
-            PaintedHit::Button { id, layout } => {
-                if matches!(layout.hit_test(point), ButtonHit::Body) {
-                    return Some((*id, HitDetail::ButtonBody));
-                }
-            }
-            PaintedHit::Tree {
-                id, area, layout, ..
-            } => {
-                if !area.contains(point) {
-                    continue;
-                }
-                match layout.hit_test(point.x - area.x, point.y - area.y) {
-                    TreeViewHit::Row(row) => return Some((*id, HitDetail::TreeRow { row })),
-                    TreeViewHit::Chevron(row) => {
-                        return Some((*id, HitDetail::TreeChevron { row }))
-                    }
-                    TreeViewHit::Empty => {}
-                }
-            }
-            PaintedHit::List { id, area, layout } => {
-                if !area.contains(point) {
-                    continue;
-                }
-                match layout.hit_test(point.x - area.x, point.y - area.y) {
-                    ListViewHit::Title => return Some((*id, HitDetail::ListTitle)),
-                    ListViewHit::Item(index) => return Some((*id, HitDetail::ListItem { index })),
-                    ListViewHit::Empty => {}
-                }
-            }
-            PaintedHit::DataTable {
-                id,
-                area,
-                layout,
-                scroll_offset,
-                total_rows,
-            } => {
-                if !area.contains(point) {
-                    continue;
-                }
-                match layout.hit_test(
-                    point.x - area.x,
-                    point.y - area.y,
-                    *scroll_offset,
-                    *total_rows,
-                ) {
-                    DataTableHit::Header { col } => {
-                        return Some((*id, HitDetail::DataTableHeader { col }))
-                    }
-                    DataTableHit::HeaderDivider { col } => {
-                        return Some((*id, HitDetail::DataTableHeaderDivider { col }))
-                    }
-                    DataTableHit::Row { idx } => {
-                        return Some((*id, HitDetail::DataTableRow { row: idx }))
-                    }
-                    DataTableHit::Footer => return Some((*id, HitDetail::DataTableFooter)),
-                    DataTableHit::Empty => {}
-                }
-            }
-            PaintedHit::TabBar { id, area, layout } => {
-                if !area.contains(point) {
-                    continue;
-                }
-                match layout.hit_test(point.x - area.x, point.y - area.y) {
-                    TabBarHit::Tab(tab) => return Some((*id, HitDetail::TabBarTab { tab })),
-                    TabBarHit::TabClose(tab) => {
-                        return Some((*id, HitDetail::TabBarTabClose { tab }))
-                    }
-                    TabBarHit::ScrollLeft => return Some((*id, HitDetail::TabBarScrollLeft)),
-                    TabBarHit::ScrollRight => return Some((*id, HitDetail::TabBarScrollRight)),
-                    TabBarHit::RightSegment(right_id) => {
-                        return Some((right_id, HitDetail::TabBarRightSegment))
-                    }
-                    TabBarHit::Empty => {}
-                }
-            }
-            PaintedHit::Split { layout } => match layout.hit_test(point.x, point.y) {
-                SplitHit::FirstPane(id) => return Some((id, HitDetail::SplitFirstPane)),
-                SplitHit::SecondPane(id) => return Some((id, HitDetail::SplitSecondPane)),
-                SplitHit::Divider(id) => return Some((id, HitDetail::SplitDivider)),
-                SplitHit::Outside => {}
-            },
-        }
-    }
-    None
+/// `unsendable` for the same reason as [`QuiApp`]: it wraps a `TuiDriver`,
+/// whose TUI backend handle is `Rc`/`RefCell`-based and not `Send`.
+#[pyclass(module = "quadraui", unsendable)]
+struct QuiShellApp {
+    driver: Box<dyn ErasedShellDriver>,
+    state: Rc<RefCell<ShellState>>,
+    /// Mirrors [`QuiApp::pending_events`] — queued by `push_event`/
+    /// `push_key_event`, drained one per `step_once` call.
+    pending_events: VecDeque<UiEvent>,
+    /// Mirrors [`QuiApp::poisoned`].
+    poisoned: bool,
 }
 
-/// The screen position to hit-test against [`PaintedHit`]s, for the one
-/// `event` variants whose own `widget` field this module enriches. `None`
-/// for every other variant (e.g. `MouseMoved`, `MouseEntered`, key events),
-/// which [`PyAppLogic::handle`] forwards to Python exactly as received.
-fn event_position(event: &UiEvent) -> Option<Point> {
-    match event {
-        UiEvent::MouseDown { position, .. }
-        | UiEvent::MouseUp { position, .. }
-        | UiEvent::DoubleClick { position, .. }
-        | UiEvent::Scroll { position, .. } => Some(*position),
-        _ => None,
-    }
-}
-
-/// Sets `event`'s own `widget` field to `id`, for whichever of the four
-/// variants [`event_position`] matched. A no-op for every other variant.
-fn set_event_widget(event: &mut UiEvent, id: WidgetId) {
-    match event {
-        UiEvent::MouseDown { widget, .. }
-        | UiEvent::MouseUp { widget, .. }
-        | UiEvent::DoubleClick { widget, .. }
-        | UiEvent::Scroll { widget, .. } => *widget = Some(id),
-        _ => {}
-    }
-}
-
-/// A divider drag in progress: armed by [`PyAppLogic::handle`] on a
-/// `MouseDown` landing on `HitDetail::SplitDivider`, and cleared on the
-/// matching `MouseUp`. `layout` is the `Split`'s own layout as painted the
-/// frame the drag started, snapshotted rather than re-read each move so a
-/// drag stays anchored to the geometry the user actually grabbed even if a
-/// handler-driven re-render shifts the divider under the cursor mid-drag.
-struct ActiveDrag {
-    tree: WidgetId,
-    layout: SplitLayout,
-}
-
-impl ActiveDrag {
-    /// The ratio `point` (in the same absolute frame as `layout`) implies
-    /// along this split's axis, clamped to `[0.0, 1.0]`. Falls back to the
-    /// layout's own already-resolved ratio when the split has no room to
-    /// drag in (e.g. a pane collapsed to zero by its own `first_min`/
-    /// `second_min`), rather than dividing by zero.
-    fn ratio_at(&self, point: Point) -> f32 {
-        let divider = self.layout.divider_bounds;
-        let bounds = self.layout.bounds;
-        let vertical_divider = divider.width < divider.height;
-        let (total, offset, divider_thickness) = if vertical_divider {
-            (bounds.width, point.x - bounds.x, divider.width)
-        } else {
-            (bounds.height, point.y - bounds.y, divider.height)
-        };
-        let available = (total - divider_thickness).max(0.0);
-        if available <= 0.0 {
-            return self.layout.resolved_ratio;
-        }
-        (offset / available).clamp(0.0, 1.0)
-    }
-}
-
-/// Re-finds the [`SplitLayout`] whose divider `id` claims at `point`, so a
-/// `MouseDown` landing on `HitDetail::SplitDivider` can snapshot it into an
-/// [`ActiveDrag`]. Re-runs the hit-test (rather than trusting
-/// [`hit_test_painted`]'s already-discarded match) because `PaintedHit::Split`
-/// never stores its own id — only `SplitHit`'s variants carry one — so the id
-/// has to be recovered the same way `hit_test_painted` found it the first time.
-fn find_split_layout(hit_map: &[PaintedHit], point: Point, id: WidgetId) -> Option<SplitLayout> {
-    hit_map.iter().rev().find_map(|hit| match hit {
-        PaintedHit::Split { layout } => {
-            matches!(layout.hit_test(point.x, point.y), SplitHit::Divider(hit_id) if hit_id == id)
-                .then(|| layout.clone())
-        }
-        _ => None,
-    })
-}
-
-/// The [`TreePath`] of the row at visual index `row` within the `Tree` hit
-/// painted under id `id` this frame, or `None` if that tree isn't in the
-/// current hit map (e.g. the frame that produced this hit test is stale).
-fn tree_row_path(hit_map: &[PaintedHit], id: WidgetId, row: usize) -> Option<TreePath> {
-    hit_map.iter().find_map(|hit| match hit {
-        PaintedHit::Tree {
-            id: hit_id,
-            row_paths,
-            ..
-        } if *hit_id == id => row_paths.get(row).cloned(),
-        _ => None,
-    })
-}
-
-/// The semantic [`UiEvent`] a click on `detail` (within primitive `id`)
-/// stands for, if any — the minimum set [`PyAppLogic::handle`] synthesizes so
-/// a tab click, tab close-button click, tree-row click, or data-table-row
-/// click reaches a Python handler as the same shape it would get by pushing
-/// that event directly
-/// (`UiEvent::TabBar`/`UiEvent::Tree`/`UiEvent::DataTable`), rather than only
-/// as a raw `MouseDown` plus a `"hit"` dict the handler would have to
-/// re-interpret itself. `None` for every other `HitDetail` (e.g. a chevron,
-/// a header, a divider — the divider is handled separately, via
-/// [`ActiveDrag`], since it spans a drag rather than a single click).
-fn semantic_event_for_hit(
-    id: WidgetId,
-    detail: &HitDetail,
-    modifiers: Modifiers,
-    hit_map: &[PaintedHit],
-) -> Option<UiEvent> {
-    match detail {
-        HitDetail::TabBarTab { tab } => Some(UiEvent::TabBar(
-            id,
-            TabBarEvent::TabActivated { index: *tab },
-        )),
-        HitDetail::TabBarTabClose { tab } => {
-            Some(UiEvent::TabBar(id, TabBarEvent::TabClosed { index: *tab }))
-        }
-        HitDetail::TreeRow { row } => {
-            let path = tree_row_path(hit_map, id, *row)?;
-            Some(UiEvent::Tree(id, TreeEvent::RowClicked { path, modifiers }))
-        }
-        HitDetail::DataTableRow { row } => Some(UiEvent::DataTable(
-            id,
-            DataTableEvent::RowActivated { idx: *row },
-        )),
-        _ => None,
-    }
-}
-
-/// Stringifies a raw key the same way every quadraui backend does, so a
-/// `*Event::KeyPressed` variant built here carries the identical `key`
-/// string an app would see from the TUI, GTK or macOS backend directly.
-fn key_to_focus_string(key: &Key) -> String {
-    match key {
-        Key::Char(c) => c.to_string(),
-        Key::Named(named) => {
-            let s = match named {
-                NamedKey::Escape => "Escape".to_string(),
-                NamedKey::Tab => "Tab".to_string(),
-                NamedKey::BackTab => "BackTab".to_string(),
-                NamedKey::Enter => "Enter".to_string(),
-                NamedKey::Backspace => "Backspace".to_string(),
-                NamedKey::Delete => "Delete".to_string(),
-                NamedKey::Insert => "Insert".to_string(),
-                NamedKey::Home => "Home".to_string(),
-                NamedKey::End => "End".to_string(),
-                NamedKey::PageUp => "PageUp".to_string(),
-                NamedKey::PageDown => "PageDown".to_string(),
-                NamedKey::Up => "Up".to_string(),
-                NamedKey::Down => "Down".to_string(),
-                NamedKey::Left => "Left".to_string(),
-                NamedKey::Right => "Right".to_string(),
-                NamedKey::F(n) => format!("F{n}"),
-                NamedKey::CapsLock => "CapsLock".to_string(),
-                NamedKey::NumLock => "NumLock".to_string(),
-                NamedKey::ScrollLock => "ScrollLock".to_string(),
-                NamedKey::Menu => "Menu".to_string(),
-            };
-            s
-        }
-    }
-}
-
-/// Routes a raw `KeyPressed` to whichever leaf the `FocusManager` names as
-/// focused, wrapping it into that leaf's own semantic `KeyPressed` variant.
-/// `DataTable` and `Button` have no such variant, so a key focused on one
-/// of them passes through as the original `UiEvent::KeyPressed` unchanged;
-/// the same happens when `focused` names a leaf no longer present in this
-/// frame's hit map (for example a tree that scrolled out of the render).
-fn focus_scoped_key_event(
-    focused: WidgetId,
-    key: &Key,
-    modifiers: Modifiers,
-    hit_map: &[PaintedHit],
-) -> UiEvent {
-    let fallback = UiEvent::KeyPressed {
-        key: key.clone(),
-        modifiers,
-        repeat: false,
-    };
-    let key = key_to_focus_string(key);
-    hit_map
-        .iter()
-        .find_map(|hit| match hit {
-            PaintedHit::Tree { id, .. } if *id == focused => Some(UiEvent::Tree(
-                *id,
-                TreeEvent::KeyPressed {
-                    key: key.clone(),
-                    modifiers,
-                },
-            )),
-            PaintedHit::List { id, .. } if *id == focused => Some(UiEvent::List(
-                *id,
-                ListViewEvent::KeyPressed {
-                    key: key.clone(),
-                    modifiers,
-                },
-            )),
-            PaintedHit::TabBar { id, .. } if *id == focused => Some(UiEvent::TabBar(
-                *id,
-                TabBarEvent::KeyPressed {
-                    key: key.clone(),
-                    modifiers,
-                },
-            )),
-            _ => None,
-        })
-        .unwrap_or(fallback)
-}
-
-/// One descriptor reference per slot, borrowed either from `PyAppLogic`'s
-/// static fields or from a [`RenderFrame`] just decoded from a render
-/// callback's return value — the one shape [`draw_bands`] paints from,
-/// regardless of which path produced it.
-struct RenderRefs<'a> {
-    button: Option<&'a Button>,
-    text_display: Option<&'a TextDisplay>,
-    list: Option<&'a ListView>,
-    tree: Option<&'a TreeView>,
-    data_table: Option<&'a DataTable>,
-    tab_bar: Option<&'a TabBar>,
-    /// Additive primitive slots, keyed by kind name. Painted after the six
-    /// fixed bands above, in [`EXTRA_PRIMITIVES`] order.
-    extra: &'a HashMap<String, Box<dyn ExtraPaint>>,
-}
-
-/// Paints each present slot top-to-bottom in a fixed-height band, skipping
-/// any slot once the viewport runs out of room. Appends a [`PaintedHit`] to
-/// `hits` for every slot painted, so a later pointer event can be routed to
-/// it.
-fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Vec<PaintedHit>) {
-    let viewport = backend.viewport();
-    // Band heights below are given in text LINES, not raw viewport units: a
-    // button is 3 lines tall, a tree 4. `viewport` and `line_height` share
-    // the backend's own unit (cells on TUI, where `line_height` is 1.0;
-    // device pixels on the native backends, where it is the font's pixel line
-    // height), so scaling the line count by `line_height` lays the bands out
-    // correctly on every backend instead of collapsing them to a few pixels
-    // tall on native.
-    let line_height = backend.line_height();
-    let mut y = 0.0_f32;
-    let mut next_band = |lines: f32| -> Option<Rect> {
-        let remaining = viewport.height - y;
-        if remaining <= 0.0 {
-            return None;
-        }
-        let band_height = (lines * line_height).min(remaining);
-        let rect = Rect::new(0.0, y, viewport.width, band_height);
-        y += band_height;
-        Some(rect)
-    };
-
-    if let Some(button) = refs.button {
-        if let Some(rect) = next_band(3.0) {
-            let layout = backend.draw_button(rect, button);
-            hits.push(PaintedHit::Button {
-                id: button.id,
-                layout,
-            });
-        }
-    }
-    if let Some(text_display) = refs.text_display {
-        if let Some(rect) = next_band(3.0) {
-            backend.draw_text_display(rect, text_display);
-        }
-    }
-    if let Some(list) = refs.list {
-        if let Some(rect) = next_band(4.0) {
-            backend.draw_list(rect, list);
-            let layout = backend.list_layout(rect, list);
-            hits.push(PaintedHit::List {
-                id: list.id,
-                area: rect,
-                layout,
-            });
-        }
-    }
-    if let Some(tree) = refs.tree {
-        if let Some(rect) = next_band(4.0) {
-            backend.draw_tree(rect, tree);
-            let layout = backend.tree_layout(rect, tree);
-            hits.push(PaintedHit::Tree {
-                id: tree.id,
-                area: rect,
-                layout,
-                row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
-            });
-        }
-    }
-    if let Some(data_table) = refs.data_table {
-        if let Some(rect) = next_band(4.0) {
-            let layout = backend.draw_data_table(rect, data_table, None);
-            hits.push(PaintedHit::DataTable {
-                id: data_table.id,
-                area: rect,
-                layout,
-                scroll_offset: data_table.scroll_offset,
-                total_rows: data_table.rows.len(),
-            });
-        }
-    }
-    if let Some(tab_bar) = refs.tab_bar {
-        if let Some(rect) = next_band(3.0) {
-            let layout = backend.draw_tab_bar_layout(rect, tab_bar, None);
-            hits.push(PaintedHit::TabBar {
-                id: tab_bar.id,
-                area: rect,
-                layout,
-            });
-        }
-    }
-    // Additive primitives, painted in canonical `EXTRA_PRIMITIVES` order so
-    // the output is deterministic regardless of `HashMap` iteration order.
-    for (kind, _) in EXTRA_PRIMITIVES {
-        if let Some(extra) = refs.extra.get(*kind) {
-            if let Some(rect) = next_band(3.0) {
-                extra.paint(backend, rect);
-            }
-        }
-    }
-}
-
-/// Paints a layout tree into `area`. A `Row`/`Column` divides its area into
-/// equal shares — one per child, side by side or stacked — and recurses;
-/// equal shares (rather than `draw_bands`'s fixed line-count bands) fill
-/// the whole area regardless of viewport size. A `Leaf` paints its one
-/// descriptor into the whole area its container gave it. A `Split` divides
-/// its area into two unequal panes at `ratio` via `Backend::draw_split`
-/// (the same divider paint/hit-test every backend already shares for the
-/// Rust-side `Split` primitive) and recurses into each with its resolved
-/// bounds. A `Tabs` reserves a top band for its tab strip (painted via
-/// `Backend::draw_tab_bar_layout`, the same strip every backend already
-/// shares for the Rust-side `TabBar` primitive) and recurses into the
-/// remaining area with the selected tab's content, so a tab group is just a
-/// `Split` whose panes are each a `Tabs`. Per-child flex weights on
-/// `Row`/`Column` are a follow-up; every `Row`/`Column` child gets the same
-/// share for now.
-fn paint_layout(
-    backend: &mut dyn Backend,
-    area: Rect,
-    node: &LayoutNode,
-    hits: &mut Vec<PaintedHit>,
-) {
-    match node {
-        LayoutNode::Row(children) => {
-            for (child, rect) in children.iter().zip(split_rects(area, children.len(), true)) {
-                paint_layout(backend, rect, child, hits);
-            }
-        }
-        LayoutNode::Column(children) => {
-            for (child, rect) in children
-                .iter()
-                .zip(split_rects(area, children.len(), false))
-            {
-                paint_layout(backend, rect, child, hits);
-            }
-        }
-        LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf, hits),
-        LayoutNode::Split(split) => {
-            // `split.split.first_min`/`second_min` are decoded as portable
-            // line counts (see `layout_split_from_dict`); scale them into
-            // the backend's native unit here, right before painting, so
-            // every backend gets a minimum pane size of the same visual
-            // weight from the same Python-supplied number.
-            let line_height = backend.line_height();
-            let native_split = Split {
-                first_min: split.split.first_min * line_height,
-                second_min: split.split.second_min * line_height,
-                ..split.split.clone()
-            };
-            let layout = backend.draw_split(area, &native_split);
-            // Pushed before recursing so the divider/pane hit only wins
-            // over a descendant primitive's own, more specific hit when
-            // nothing painted inside either pane claims the point first —
-            // `hit_test_painted` checks in reverse paint order.
-            hits.push(PaintedHit::Split {
-                layout: layout.clone(),
-            });
-            paint_layout(backend, layout.first_bounds, &split.first, hits);
-            paint_layout(backend, layout.second_bounds, &split.second, hits);
-        }
-        LayoutNode::Tabs(tabs) => {
-            let strip_height = (3.0 * backend.line_height()).min(area.height);
-            let strip_rect = Rect::new(area.x, area.y, area.width, strip_height);
-            let layout = backend.draw_tab_bar_layout(strip_rect, &tabs.tab_bar, None);
-            hits.push(PaintedHit::TabBar {
-                id: tabs.tab_bar.id,
-                area: strip_rect,
-                layout,
-            });
-            let content_rect = Rect::new(
-                area.x,
-                area.y + strip_height,
-                area.width,
-                (area.height - strip_height).max(0.0),
-            );
-            if let Some(selected) = tabs.entries.get(tabs.selected) {
-                paint_layout(backend, content_rect, &selected.content, hits);
-            }
-        }
-        LayoutNode::Panel(panel_node) => {
-            let layout = backend.draw_panel(area, &panel_node.panel);
-            paint_layout(backend, layout.content_bounds, &panel_node.content, hits);
-        }
-        LayoutNode::SidebarPanel(sidebar_node) => {
-            let layout = backend.draw_sidebar_panel_interactive(
-                area,
-                &sidebar_node.sidebar_panel,
-                &InteractionState::default(),
-            );
-            paint_layout(backend, layout.content_bounds, &sidebar_node.content, hits);
-        }
-        LayoutNode::SplitTree(split_tree) => {
-            let layout = backend.draw_split_tree(area, &split_tree.tree);
-            for ((_, rect), content) in layout.leaves.iter().zip(split_tree.leaves.iter()) {
-                paint_layout(backend, *rect, content, hits);
-            }
-        }
-    }
-}
-
-/// Divides `area` into `n` equal shares, side by side when `horizontal` or
-/// stacked top-to-bottom otherwise. Returns an empty `Vec` for `n == 0`.
-fn split_rects(area: Rect, n: usize, horizontal: bool) -> Vec<Rect> {
-    if n == 0 {
-        return Vec::new();
-    }
-    let n_f = n as f32;
-    (0..n)
-        .map(|i| {
-            let i_f = i as f32;
-            if horizontal {
-                let share = area.width / n_f;
-                Rect::new(area.x + share * i_f, area.y, share, area.height)
-            } else {
-                let share = area.height / n_f;
-                Rect::new(area.x, area.y + share * i_f, area.width, share)
-            }
-        })
-        .collect()
-}
-
-/// Paints one leaf's descriptor into the whole `area` its container gave
-/// it. Appends a [`PaintedHit`] for it, keyed by the leaf's own tree-address
-/// `id` (not the descriptor's embedded `id`, which a render callback may
-/// leave at its default and reuse across leaves) so a later pointer event
-/// can be routed back to this exact slot in the layout tree.
-fn paint_leaf(
-    backend: &mut dyn Backend,
-    area: Rect,
-    leaf: &LayoutLeaf,
-    hits: &mut Vec<PaintedHit>,
-) {
-    let id = WidgetId::new(leaf.id.clone());
-    match &leaf.descriptor {
-        LeafDescriptor::Button(button) => {
-            let layout = backend.draw_button(area, button);
-            hits.push(PaintedHit::Button { id, layout });
-        }
-        LeafDescriptor::TextDisplay(text_display) => {
-            backend.draw_text_display(area, text_display);
-        }
-        LeafDescriptor::List(list) => {
-            backend.draw_list(area, list);
-            let layout = backend.list_layout(area, list);
-            hits.push(PaintedHit::List { id, area, layout });
-        }
-        LeafDescriptor::Tree(tree) => {
-            backend.draw_tree(area, tree);
-            let layout = backend.tree_layout(area, tree);
-            hits.push(PaintedHit::Tree {
-                id,
-                area,
-                layout,
-                row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
-            });
-        }
-        LeafDescriptor::DataTable(data_table) => {
-            let layout = backend.draw_data_table(area, data_table, None);
-            hits.push(PaintedHit::DataTable {
-                id,
-                area,
-                layout,
-                scroll_offset: data_table.scroll_offset,
-                total_rows: data_table.rows.len(),
-            });
-        }
-        LeafDescriptor::TabBar(tab_bar) => {
-            let layout = backend.draw_tab_bar_layout(area, tab_bar, None);
-            hits.push(PaintedHit::TabBar { id, area, layout });
-        }
-        LeafDescriptor::Extra(extra) => extra.paint(backend, area),
-    }
-}
-
-/// Owned decode of a render callback's returned `dict` — one optional
-/// descriptor per slot, keyed by `"button"`, `"text_display"`, `"list"`,
-/// `"tree"`, `"data_table"`, and `"tab_bar"`.
-#[derive(Default)]
-struct RenderFrame {
-    button: Option<Button>,
-    text_display: Option<TextDisplay>,
-    list: Option<ListView>,
-    tree: Option<TreeView>,
-    data_table: Option<DataTable>,
-    tab_bar: Option<TabBar>,
-    /// Additive primitive slots present in this frame, keyed by kind name
-    /// (one registered in [`EXTRA_PRIMITIVES`]).
-    extra: HashMap<String, Box<dyn ExtraPaint>>,
-}
-
-impl RenderFrame {
-    fn as_refs(&self) -> RenderRefs<'_> {
-        RenderRefs {
-            button: self.button.as_ref(),
-            text_display: self.text_display.as_ref(),
-            list: self.list.as_ref(),
-            tree: self.tree.as_ref(),
-            data_table: self.data_table.as_ref(),
-            tab_bar: self.tab_bar.as_ref(),
-            extra: &self.extra,
-        }
+#[pymethods]
+impl QuiShellApp {
+    /// Registers `handler` as the callable invoked (with the pythonized
+    /// event payload) for every event the shell chrome itself didn't
+    /// consume. Replaces any previously registered handler.
+    fn set_handler(&mut self, handler: Py<PyAny>) {
+        self.state.borrow_mut().handler = Some(handler);
     }
 
-    /// Decodes a render callback's returned `dict`, raising
-    /// `InvalidDescriptorError` if it isn't a `dict`, if an entry isn't a
-    /// `dict`/`None`, or if an entry's shape doesn't match its slot's
-    /// descriptor type. The exact recognized key set is `"button"`,
-    /// `"text_display"`, `"list"`, `"tree"`, `"data_table"`, `"tab_bar"` —
-    /// one per fixed slot, same names `insert_*`'s Rust-side `what` argument
-    /// uses — plus any kind registered in [`EXTRA_PRIMITIVES`] for an
-    /// additive primitive. Any other key (including a near-miss typo like
-    /// `"tabbar"`) is ignored rather than rejected, so a render callback
-    /// built against a future slot set stays forward-compatible with this
-    /// one.
-    fn from_dict(dict: &Bound<'_, PyDict>) -> PyResult<Self> {
-        let mut extra = HashMap::new();
-        for (kind, _) in EXTRA_PRIMITIVES {
-            if let Some(value) = decode_extra_slot_entry(RENDER_CALLBACK_WHAT, dict, kind)? {
-                extra.insert(kind.to_string(), value);
-            }
+    /// Registers `handler` as the no-argument callable invoked by
+    /// `step`/`run` whenever it advances with no event queued. Replaces any
+    /// previously registered tick handler.
+    fn set_tick_handler(&mut self, handler: Py<PyAny>) {
+        self.state.borrow_mut().on_tick = Some(handler);
+    }
+
+    /// Registers `callback` as the no-argument render callback invoked once
+    /// per frame; its return value, if a `list[str]`, becomes the lines of
+    /// a `TextDisplay` painted into the shell's main content area. Replaces
+    /// any previously registered content callback.
+    fn set_render_content(&mut self, callback: Py<PyAny>) {
+        self.state.borrow_mut().render_content = Some(callback);
+    }
+
+    /// Registers `callback` as the callable invoked with one pythonized
+    /// `AppShellEvent` dict (see [`app_shell_event_to_py`]) whenever a
+    /// panel switch, sidebar show/hide/resize, or bottom-panel resize/hide
+    /// occurs.
+    fn set_on_shell_event(&mut self, callback: Py<PyAny>) {
+        self.state.borrow_mut().on_shell_event = Some(callback);
+    }
+
+    /// Registers `callback` as the callable invoked with one pythonized
+    /// `BottomPanelEvent` dict (see [`bottom_panel_event_to_py`]) whenever
+    /// the bottom-panel tab strip is interacted with. Only ever fires when
+    /// this app's `config` included a `"bottom_panel"` entry.
+    fn set_on_bottom_panel_event(&mut self, callback: Py<PyAny>) {
+        self.state.borrow_mut().on_bottom_panel_event = Some(callback);
+    }
+
+    /// Decodes `descriptor` into a `UiEvent` and queues it for the next
+    /// `step`/`run` call. Raises `InvalidDescriptorError` on a shape
+    /// mismatch.
+    fn push_event(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<()> {
+        let event: UiEvent = decode("push_event", descriptor)?;
+        self.pending_events.push_back(event);
+        Ok(())
+    }
+
+    /// Queues a synthetic `KeyPressed` event for the character with
+    /// Unicode code point `ch`, no modifiers held, not a repeat. Raises
+    /// `InvalidCharError` if `ch` isn't a valid Unicode scalar value.
+    fn push_key_event(&mut self, ch: u32) -> PyResult<()> {
+        let ch = char::from_u32(ch).ok_or_else(|| {
+            InvalidCharError::new_err(format!("invalid Unicode code point: {ch}"))
+        })?;
+        self.pending_events.push_back(key_pressed_event(ch));
+        Ok(())
+    }
+
+    /// Queues a synthetic `MouseDown` + `MouseUp` left-click at `(x, y)`,
+    /// in the backend's native (cell) units — the same coordinates
+    /// `AppShellLayout`'s bounds (as pythonized by `set_on_shell_event`'s
+    /// payloads and this binding's own `find`) are expressed in. Use this
+    /// to drive sidebar-toggle / panel-switch / bottom-panel-tab clicks
+    /// from Python without hand-building two raw `push_event` dicts.
+    fn push_click(&mut self, x: f32, y: f32) {
+        self.pending_events.extend(click_down_up_events(x, y));
+    }
+
+    /// Resizes the underlying cell grid to `width`x`height`. Raises
+    /// `InvalidDimensionsError` if either is zero.
+    fn resize(&mut self, width: u16, height: u16) -> PyResult<()> {
+        if width == 0 || height == 0 {
+            return Err(InvalidDimensionsError::new_err(
+                "width and height must both be non-zero",
+            ));
         }
-        Ok(RenderFrame {
-            button: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "button")?,
-            text_display: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "text_display")?,
-            list: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "list")?,
-            tree: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "tree")?,
-            data_table: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "data_table")?,
-            tab_bar: decode_slot_entry(RENDER_CALLBACK_WHAT, dict, "tab_bar")?,
-            extra,
+        self.guarded(|app| {
+            app.driver.resize(width, height);
+            Ok(())
         })
     }
+
+    /// Advances the runner by one step, mirroring [`QuiApp::step`]'s
+    /// queued-event / tick order (`run_shell` apps have no waker/`User`
+    /// event path, so there is no posted-value step to interleave).
+    /// Returns `True` if still running, `False` once exited. Re-raises
+    /// whatever exception a registered callback raised while handling this
+    /// step.
+    fn step(&mut self) -> PyResult<bool> {
+        self.guarded(|app| app.step_once())
+    }
+
+    /// Runs up to `max_steps` steps (default 1), releasing the GIL for the
+    /// duration of the Rust loop and re-acquiring it only for each
+    /// individual callback — mirrors [`QuiApp::run`].
+    #[pyo3(signature = (max_steps=1))]
+    fn run(&mut self, py: Python<'_>, max_steps: u32) -> PyResult<bool> {
+        let steps = max_steps.max(1);
+        let wrapped = AssertUngil(self);
+        py.detach(move || {
+            let app = wrapped;
+            let mut running = true;
+            for _ in 0..steps {
+                running = app.0.guarded(|app| app.step_once())?;
+                if !running {
+                    break;
+                }
+            }
+            Ok(running)
+        })
+    }
+
+    /// Returns the currently rendered screen as plain text, one line per
+    /// row, mirroring `TuiDriver::screen`.
+    fn screen(&self) -> String {
+        self.driver.screen()
+    }
+
+    /// Whether `needle` appears anywhere in the currently rendered screen.
+    fn screen_contains(&self, needle: &str) -> bool {
+        self.driver.screen_contains(needle)
+    }
+
+    /// The `(x, y)` cell position of the first occurrence of `needle` in
+    /// the currently rendered screen, or `None` if it isn't present.
+    fn find(&self, needle: &str) -> Option<(f32, f32)> {
+        self.driver.find(needle)
+    }
+
+    /// The `(x, y)` cell position of the center of bottom-panel tab
+    /// `tab_idx` (`0` = first tab, in `config["bottom_panel"]["tabs"]`
+    /// order), or `None` if this app's `config` had no `"bottom_panel"`, or
+    /// `tab_idx` is out of range or scrolled out of view. A tab's label can
+    /// repeat elsewhere on screen (or coincide with another tab's), so this
+    /// resolves against the tab bar's own cached layout — the same
+    /// disambiguation [`Self::find`]'s doc warns a text needle can't give —
+    /// rather than `find(label)`.
+    fn bottom_panel_tab_center(&self, tab_idx: usize) -> Option<(f32, f32)> {
+        self.driver
+            .tab_center(&WidgetId::new(BOTTOM_PANEL_TABS_WIDGET_ID), tab_idx)
+    }
 }
 
-/// The `what` label passed to [`decode_slot_entry`] for every slot of a
-/// render callback's returned `dict` — identifies the source of a decode
-/// error as "render" (vs. an `insert_*` call) in the raised
-/// `InvalidDescriptorError`'s message.
+impl QuiShellApp {
+    /// Mirrors [`QuiApp::guarded`]: catches a Rust panic instead of letting
+    /// it unwind across the PyO3 boundary, poisoning this app on one.
+    fn guarded<T>(&mut self, body: impl FnOnce(&mut Self) -> PyResult<T>) -> PyResult<T> {
+        if self.poisoned {
+            return Err(PoisonedError::new_err(
+                "this QuiShellApp is poisoned by an earlier caught panic and can no longer be used",
+            ));
+        }
+        match panic::catch_unwind(AssertUnwindSafe(|| body(self))) {
+            Ok(result) => result,
+            Err(payload) => {
+                self.poisoned = true;
+                Err(PanicError::new_err(panic_message(&*payload)))
+            }
+        }
+    }
+
+    /// Mirrors [`QuiApp::step_once`], minus the `User`/waker path `run_shell`
+    /// apps don't have.
+    fn step_once(&mut self) -> PyResult<bool> {
+        let running = step_driver(&mut *self.driver, &mut self.pending_events);
+        take_pending_shell_error(&self.state)?;
+        Ok(running)
+    }
+}
+
+/// The `what` label [`render_output_from_callback`] passes to
+/// [`quadraui_binding_core::decode_render_output`], naming the render
+/// callback in any `InvalidDescriptorError` it raises.
 const RENDER_CALLBACK_WHAT: &str = "render";
 
-/// Reads and decodes one optional slot entry from a render callback's
-/// returned `dict`: a missing key or a `None` value both mean "draw nothing
-/// in this slot this frame"; anything else must be a `dict` decodable into
-/// `T`.
-fn decode_slot_entry<T: serde::de::DeserializeOwned>(
-    what: &str,
-    dict: &Bound<'_, PyDict>,
-    key: &str,
-) -> PyResult<Option<T>> {
-    match dict.get_item(key)? {
-        Some(value) if !value.is_none() => {
-            let value_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: {key:?} must be a dict or None"))
-            })?;
-            Ok(Some(decode(what, value_dict)?))
-        }
-        _ => Ok(None),
-    }
-}
-
-/// Reads and decodes one optional additive primitive slot entry, keyed by
-/// `kind` (one registered in [`EXTRA_PRIMITIVES`]), from a render
-/// callback's returned `dict`. Mirrors [`decode_slot_entry`]'s
-/// missing/`None`/dict-or-error shape, dispatching the decode through
-/// [`decode_extra_primitive`] instead of a single fixed type.
-fn decode_extra_slot_entry(
-    what: &str,
-    dict: &Bound<'_, PyDict>,
-    kind: &str,
-) -> PyResult<Option<Box<dyn ExtraPaint>>> {
-    match dict.get_item(kind)? {
-        Some(value) if !value.is_none() => {
-            let value_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: {kind:?} must be a dict or None"))
-            })?;
-            Ok(Some(decode_extra_primitive(what, kind, value_dict)?))
-        }
-        _ => Ok(None),
-    }
-}
-
-/// One node of a render callback's layout tree: a `Row`/`Column` container
-/// holding child nodes, a `Leaf` wrapping one id-addressable primitive
-/// descriptor, a `Split` holding exactly two named child nodes divided by a
-/// draggable ratio, a `Tabs` holding a tab strip plus one content subtree
-/// per tab (of which only the selected one paints), a `Panel` or
-/// `SidebarPanel` holding one chrome descriptor plus a single content
-/// subtree, or a `SplitTree` holding an arbitrarily nested divider tree of
-/// content subtrees.
-enum LayoutNode {
-    Row(Vec<LayoutNode>),
-    Column(Vec<LayoutNode>),
-    Leaf(LayoutLeaf),
-    Split(LayoutSplit),
-    Tabs(LayoutTabs),
-    Panel(LayoutPanel),
-    SidebarPanel(LayoutSidebarPanel),
-    SplitTree(LayoutSplitTree),
-}
-
-/// A [`LayoutNode::Split`]'s decoded shape: the `quadraui::Split` descriptor
-/// (its own `id`, `direction`, `ratio`, pane minimums) paired with the two
-/// named child nodes it divides. `first`/`second` are full [`LayoutNode`]s,
-/// not leaf-only slots, so a pane may itself hold a nested row/column/split.
-struct LayoutSplit {
-    split: Split,
-    first: Box<LayoutNode>,
-    second: Box<LayoutNode>,
-}
-
-/// A [`LayoutNode::Tabs`]'s decoded shape: a `quadraui::TabBar` descriptor
-/// built from each tab's title (with `selected`'s item marked active) for
-/// painting the strip, paired with `entries` holding the full content
-/// subtree behind each tab. A tab group is a `Split` whose `first`/`second`
-/// are each a `Tabs` — no separate "group" concept.
-struct LayoutTabs {
-    tab_bar: TabBar,
-    entries: Vec<LayoutTabEntry>,
-    selected: usize,
-}
-
-/// One tab inside a [`LayoutTabs`]: the id that addresses it, and the full
-/// [`LayoutNode`] subtree painted beneath the strip while it is selected.
-struct LayoutTabEntry {
-    id: String,
-    content: Box<LayoutNode>,
-}
-
-/// A [`LayoutNode::Panel`]'s decoded shape: the `quadraui::Panel` chrome
-/// descriptor (title/actions/accent/collapsed) paired with the single
-/// content subtree it frames. `content` is a full [`LayoutNode`], not a
-/// leaf-only slot, so a panel may itself hold a nested row/column/split.
-struct LayoutPanel {
-    panel: Panel,
-    content: Box<LayoutNode>,
-}
-
-/// A [`LayoutNode::SidebarPanel`]'s decoded shape: the `quadraui::SidebarPanel`
-/// chrome descriptor (optional toolbar) paired with the single content
-/// subtree painted beneath the toolbar slot.
-struct LayoutSidebarPanel {
-    sidebar_panel: SidebarPanel,
-    content: Box<LayoutNode>,
-}
-
-/// A [`LayoutNode::SplitTree`]'s decoded shape: the `quadraui::SplitTree`
-/// geometry tree (every leaf position holding a synthetic, internal-only
-/// `WidgetId`) paired with `leaves`, the matching content subtree for each
-/// leaf position in the same pre-order [`SplitTree::leaf_ids`] would
-/// produce. [`paint_layout`]'s `LayoutNode::SplitTree` arm zips
-/// `SplitTreeLayout::leaves`' resolved rects back against `leaves` by
-/// position — the synthetic ids in `tree` are never user-facing and never
-/// checked for uniqueness; `id` is the node's own user-supplied id instead.
-struct LayoutSplitTree {
-    id: String,
-    tree: SplitTree,
-    leaves: Vec<LayoutNode>,
-}
-
-/// One id-addressable primitive inside a layout tree, decoded from a
-/// `{"id": ..., "<kind>": <descriptor>}` dict. `id` is unique across the
-/// whole tree ([`validate_unique_leaf_ids`]), so a kind may appear more
-/// than once (e.g. two `data_table`s side by side) with each instance
-/// still addressable on its own.
-struct LayoutLeaf {
-    id: String,
-    descriptor: LeafDescriptor,
-}
-
-/// The decoded descriptor carried by a [`LayoutLeaf`] — one variant per
-/// primitive kind a layout tree leaf may wrap.
-enum LeafDescriptor {
-    Button(Button),
-    TextDisplay(TextDisplay),
-    List(ListView),
-    Tree(TreeView),
-    DataTable(DataTable),
-    TabBar(TabBar),
-    /// Any additive primitive kind registered in [`EXTRA_PRIMITIVES`].
-    /// Unlike the six variants above, a new additive kind never adds a new
-    /// `LeafDescriptor` variant — it routes through this one.
-    Extra(Box<dyn ExtraPaint>),
-}
-
-/// The descriptor keys a layout tree leaf dict may carry, one per
-/// [`LeafDescriptor`] variant — the same names [`RenderFrame::from_dict`]
-/// uses for its flat slots.
-const LEAF_KIND_KEYS: [&str; 6] = [
-    "button",
-    "text_display",
-    "list",
-    "tree",
-    "data_table",
-    "tab_bar",
-];
-
-/// Paints one additive primitive descriptor painted outside the six fixed
-/// slots above. Implemented once per primitive type (see the `impl`s just
-/// below) so that registering a kind in [`EXTRA_PRIMITIVES`] never needs a
-/// central match arm. These primitives are currently pure-display: no hit
-/// entry is pushed when painting one, matching `TextDisplay`'s precedent in
-/// [`paint_leaf`] — that is a deliberate choice to not wire hit-routing for
-/// them yet, not a structural limitation (`ProgressBar::cancellable`,
-/// `SpinnerHit` and `ImageHit` already exist on the Rust side).
-trait ExtraPaint {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect);
-}
-
-impl ExtraPaint for ProgressBar {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_progress(area, self);
-    }
-}
-
-impl ExtraPaint for Spinner {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_spinner(area, self);
-    }
-}
-
-impl ExtraPaint for Image {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_image(area, self);
-    }
-}
-
-impl ExtraPaint for Form {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_form(area, self);
-    }
-}
-
-impl ExtraPaint for TextInput {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_text_input(area, self);
-    }
-}
-
-impl ExtraPaint for RadioGroup {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_radio_group(area, self);
-    }
-}
-
-impl ExtraPaint for Switch {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_switch(area, self);
-    }
-}
-
-impl ExtraPaint for NumberInput {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let layout = self.layout(area);
-        backend.draw_number_input(self, &layout);
-    }
-}
-
-impl ExtraPaint for ComboBox {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        // Standalone (non-`Form`-embedded) display: the field itself only
-        // ever needs its own row, so `field_bounds` is the top row of
-        // `area` while the full `area` is passed as the dropdown's
-        // viewport -- otherwise `Completions::layout`'s placement math has
-        // no room above or below the field to open the dropdown into and
-        // always clips it to zero height. A single-row item height is
-        // assumed since no measurement pass runs outside a real UI loop.
-        // The dropdown itself only paints when `self.open` is true with a
-        // non-empty filtered list, so a closed/default combo box renders
-        // just its field regardless of these choices. "Row" is one line
-        // scaled by `line_height`, the backend-native unit (cells on TUI,
-        // pixels on native), so the field and its popup rows size correctly
-        // on every backend instead of collapsing to one pixel on native.
-        let line_height = backend.line_height();
-        let field_bounds = Rect::new(area.x, area.y, area.width.max(line_height), line_height);
-        let max_popup_height = (area.height - line_height).max(line_height);
-        let layout = self.layout(
-            field_bounds,
-            area,
-            area.width.max(line_height),
-            max_popup_height,
-            |_| CompletionItemMeasure::new(line_height),
-        );
-        backend.draw_combo_box(self, &layout);
-    }
-}
-
-impl ExtraPaint for DatePicker {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        // Standalone (non-`Form`-embedded) display: derive a 7-column,
-        // 6-row month grid plus a one-row header (and a one-row time field
-        // when `self.time` is set), clipped to the given area. The header
-        // and time rows are one line each, scaled by `line_height` (the
-        // backend-native unit: cells on TUI, pixels on native) so they size
-        // correctly on every backend instead of collapsing to one pixel on
-        // native; the grid rows are then whatever is left over divided by
-        // six, floored at one line, so a date picker painted into a band
-        // shorter than 7 lines deliberately overflows the band rather than
-        // shrinking its cells below a usable size.
-        let line_height = backend.line_height();
-        let header_height = line_height;
-        let time_height = if self.time.is_some() {
-            line_height
-        } else {
-            0.0
-        };
-        let cell_width = (area.width / 7.0).max(line_height);
-        let cell_height = ((area.height - header_height - time_height) / 6.0).max(line_height);
-        let layout = self.layout(
-            area.x,
-            area.y,
-            cell_width,
-            cell_height,
-            header_height,
-            time_height,
-        );
-        backend.draw_date_picker(self, &layout);
-    }
-}
-
-impl ExtraPaint for Chart {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        // Display-only: no hover/crosshair state is tracked by this
-        // binding, so both are `None` and the returned `ChartLayout` (for
-        // click/nearest-point routing) is discarded.
-        backend.draw_chart(area, self, None, None);
-    }
-}
-
-impl ExtraPaint for MessageList {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_message_list(area, self);
-    }
-}
-
-impl ExtraPaint for BoardModel {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_board(area, self);
-    }
-}
-
-impl ExtraPaint for PipelineView {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_pipeline_view(area, self);
-    }
-}
-
-impl ExtraPaint for Minimap {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_minimap(area, self);
-    }
-}
-
-impl ExtraPaint for MultiSectionView {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_multi_section_view(area, self);
-    }
-}
-
-impl ExtraPaint for DiffView {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_diff_view(area, self);
-    }
-}
-
-impl ExtraPaint for ActivityBar {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_activity_bar(area, self, None);
-    }
-}
-
-impl ExtraPaint for Toolbar {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_toolbar_interactive(area, self, &InteractionState::default());
-    }
-}
-
-impl ExtraPaint for MenuBar {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_menu_bar(area, self);
-    }
-}
-
-impl ExtraPaint for StatusBar {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_status_bar_interactive(area, self, &InteractionState::default());
-    }
-}
-
-impl ExtraPaint for CommandLine {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_command_line(area, self);
-    }
-}
-
-impl ExtraPaint for CommandCenter {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_command_center(area, self);
-    }
-}
-
-impl ExtraPaint for Palette {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_palette(area, self);
-    }
-}
-
-impl ExtraPaint for Scrollbar {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_scrollbar(area, self);
-    }
-}
-
-/// Decodes one additive primitive descriptor from a Python `dict` into its
-/// boxed [`ExtraPaint`] value. Registered per kind in [`EXTRA_PRIMITIVES`].
-type ExtraDecoder = fn(&str, &Bound<'_, PyDict>) -> PyResult<Box<dyn ExtraPaint>>;
-
-/// The additive primitive registry: one `(kind name, decoder)` entry per
-/// primitive painted outside the six fixed slots above (see
-/// [`LeafDescriptor::Extra`], [`PyAppLogic::extra_slots`] and
-/// [`QuiApp::insert_extra`]). Registering a further additive primitive is
-/// exactly one appended line here plus that type's [`ExtraPaint`] impl
-/// above — one line for a whole-area primitive, a little layout derivation
-/// for one that needs a measure pass (`NumberInput`, `ComboBox`,
-/// `DatePicker`) — no enum variant, no central match arm, and no length
-/// literal to bump, unlike the six fixed slots' `SLOT_*`/`LeafDescriptor`
-/// machinery.
-const EXTRA_PRIMITIVES: &[(&str, ExtraDecoder)] = &[
-    ("progress", |what, dict| {
-        Ok(Box::new(decode::<ProgressBar>(what, dict)?))
-    }),
-    ("spinner", |what, dict| {
-        Ok(Box::new(decode::<Spinner>(what, dict)?))
-    }),
-    ("image", |what, dict| {
-        Ok(Box::new(decode::<Image>(what, dict)?))
-    }),
-    ("form", |what, dict| {
-        Ok(Box::new(decode::<Form>(what, dict)?))
-    }),
-    ("text_input", |what, dict| {
-        Ok(Box::new(decode::<TextInput>(what, dict)?))
-    }),
-    ("number_input", |what, dict| {
-        Ok(Box::new(decode::<NumberInput>(what, dict)?))
-    }),
-    ("combo_box", |what, dict| {
-        Ok(Box::new(decode::<ComboBox>(what, dict)?))
-    }),
-    ("date_picker", |what, dict| {
-        Ok(Box::new(decode::<DatePicker>(what, dict)?))
-    }),
-    ("radio_group", |what, dict| {
-        Ok(Box::new(decode::<RadioGroup>(what, dict)?))
-    }),
-    ("switch", |what, dict| {
-        Ok(Box::new(decode::<Switch>(what, dict)?))
-    }),
-    ("chart", |what, dict| {
-        Ok(Box::new(decode::<Chart>(what, dict)?))
-    }),
-    ("message_list", |what, dict| {
-        Ok(Box::new(decode::<MessageList>(what, dict)?))
-    }),
-    ("board", |what, dict| {
-        Ok(Box::new(decode::<BoardModel>(what, dict)?))
-    }),
-    ("pipeline_view", |what, dict| {
-        Ok(Box::new(decode::<PipelineView>(what, dict)?))
-    }),
-    ("minimap", |what, dict| {
-        Ok(Box::new(decode::<Minimap>(what, dict)?))
-    }),
-    ("multi_section_view", |what, dict| {
-        Ok(Box::new(decode::<MultiSectionView>(what, dict)?))
-    }),
-    ("diff_view", |what, dict| {
-        Ok(Box::new(decode::<DiffView>(what, dict)?))
-    }),
-    ("activity_bar", |what, dict| {
-        Ok(Box::new(decode::<ActivityBar>(what, dict)?))
-    }),
-    ("toolbar", |what, dict| {
-        Ok(Box::new(decode::<Toolbar>(what, dict)?))
-    }),
-    ("menu_bar", |what, dict| {
-        Ok(Box::new(decode::<MenuBar>(what, dict)?))
-    }),
-    ("status_bar", |what, dict| {
-        Ok(Box::new(decode::<StatusBar>(what, dict)?))
-    }),
-    ("command_line", |what, dict| {
-        Ok(Box::new(decode::<CommandLine>(what, dict)?))
-    }),
-    ("command_center", |what, dict| {
-        Ok(Box::new(decode::<CommandCenter>(what, dict)?))
-    }),
-    ("palette", |what, dict| {
-        Ok(Box::new(decode::<Palette>(what, dict)?))
-    }),
-    ("scrollbar", |what, dict| {
-        Ok(Box::new(decode::<Scrollbar>(what, dict)?))
-    }),
-];
-
-/// The registered additive primitive kind names, in registration order —
-/// used to spell out "or one of these" in error messages alongside
-/// [`LEAF_KIND_KEYS`].
-fn extra_kind_names() -> Vec<&'static str> {
-    EXTRA_PRIMITIVES.iter().map(|(kind, _)| *kind).collect()
-}
-
-/// Decodes one additive primitive descriptor from a Python dict, dispatched
-/// by `kind` through [`EXTRA_PRIMITIVES`]. Raises `InvalidDescriptorError`
-/// if `kind` isn't registered.
-fn decode_extra_primitive(
-    what: &str,
-    kind: &str,
-    dict: &Bound<'_, PyDict>,
-) -> PyResult<Box<dyn ExtraPaint>> {
-    let decoder = EXTRA_PRIMITIVES
-        .iter()
-        .find(|(registered, _)| *registered == kind)
-        .map(|(_, decoder)| *decoder)
-        .ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: unknown additive primitive kind {kind:?} (expected one of {:?})",
-                extra_kind_names()
-            ))
-        })?;
-    decoder(what, dict)
-}
-
-/// Decodes one layout tree node from a render callback's returned `dict`:
-/// a `"row"` or `"column"` key holds the container's children, a `"split"`
-/// key holds a two-pane divider ([`layout_split_from_dict`]), a `"tabs"`
-/// key holds a tab strip plus per-tab content ([`layout_tabs_from_dict`]);
-/// any other shape is decoded as a leaf via [`layout_leaf_from_dict`].
-fn layout_node_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutNode> {
-    if let Some(value) = dict.get_item("row")? {
-        if !value.is_none() {
-            return Ok(LayoutNode::Row(layout_children_from_value(what, &value)?));
-        }
-    }
-    if let Some(value) = dict.get_item("column")? {
-        if !value.is_none() {
-            return Ok(LayoutNode::Column(layout_children_from_value(
-                what, &value,
-            )?));
-        }
-    }
-    if let Some(value) = dict.get_item("split")? {
-        if !value.is_none() {
-            let split_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: \"split\" must be a dict"))
-            })?;
-            return Ok(LayoutNode::Split(layout_split_from_dict(what, split_dict)?));
-        }
-    }
-    if let Some(value) = dict.get_item("tabs")? {
-        if !value.is_none() {
-            let tabs_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: \"tabs\" must be a dict"))
-            })?;
-            return Ok(LayoutNode::Tabs(layout_tabs_from_dict(what, tabs_dict)?));
-        }
-    }
-    if let Some(value) = dict.get_item("panel")? {
-        if !value.is_none() {
-            let panel_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: \"panel\" must be a dict"))
-            })?;
-            return Ok(LayoutNode::Panel(layout_panel_from_dict(what, panel_dict)?));
-        }
-    }
-    if let Some(value) = dict.get_item("sidebar_panel")? {
-        if !value.is_none() {
-            let sidebar_panel_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: \"sidebar_panel\" must be a dict"))
-            })?;
-            return Ok(LayoutNode::SidebarPanel(layout_sidebar_panel_from_dict(
-                what,
-                sidebar_panel_dict,
-            )?));
-        }
-    }
-    if let Some(value) = dict.get_item("split_tree")? {
-        if !value.is_none() {
-            let split_tree_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!("{what}: \"split_tree\" must be a dict"))
-            })?;
-            return Ok(LayoutNode::SplitTree(layout_split_tree_from_dict(
-                what,
-                split_tree_dict,
-            )?));
-        }
-    }
-    Ok(LayoutNode::Leaf(layout_leaf_from_dict(what, dict)?))
-}
-
-/// The orientation strings a `"split"` node's `"orientation"` field accepts
-/// — lowercase, Python-idiomatic spellings, independent of
-/// `quadraui::SplitDirection`'s own (PascalCase, serde-default) wire form.
-const SPLIT_ORIENTATIONS: [&str; 2] = ["horizontal", "vertical"];
-
-/// Decodes a `"split"` node: `{"id", "orientation", "ratio", "first",
-/// "second"}`, with `"first_min"`/`"second_min"` optional (defaulting to
-/// `0.0`). Unlike `quadraui::Split::first_min`/`second_min`, which are in
-/// the backend's native unit, these two fields are portable line counts —
-/// [`paint_layout`]'s `LayoutNode::Split` arm scales them by
-/// `Backend::line_height()` before constructing the `Split` it paints, so a
-/// Python caller names a minimum pane size the same way on every backend.
-/// `"first"`/`"second"` are full child node dicts, recursively decoded by
-/// [`layout_node_from_dict`].
-fn layout_split_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutSplit> {
-    let id: String = match dict.get_item("id")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: split \"id\" must be a string"))
-        })?,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: split is missing required \"id\""
-            )));
-        }
-    };
-
-    let orientation: String = match dict.get_item("orientation")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} \"orientation\" must be a string"
-            ))
-        })?,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} is missing required \"orientation\""
-            )));
-        }
-    };
-    let direction = match orientation.as_str() {
-        "horizontal" => SplitDirection::Horizontal,
-        "vertical" => SplitDirection::Vertical,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} \"orientation\" must be one of {SPLIT_ORIENTATIONS:?}, \
-                 got {orientation:?}"
-            )));
-        }
-    };
-
-    let ratio: f32 = match dict.get_item("ratio")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} \"ratio\" must be a number"
-            ))
-        })?,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} is missing required \"ratio\""
-            )));
-        }
-    };
-
-    let first_min: f32 = match dict.get_item("first_min")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} \"first_min\" must be a number"
-            ))
-        })?,
-        _ => 0.0,
-    };
-    let second_min: f32 = match dict.get_item("second_min")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: split {id:?} \"second_min\" must be a number"
-            ))
-        })?,
-        _ => 0.0,
-    };
-
-    let first = layout_child_node_from_value(what, &id, "first", dict)?;
-    let second = layout_child_node_from_value(what, &id, "second", dict)?;
-
-    Ok(LayoutSplit {
-        split: Split {
-            id: WidgetId::new(id),
-            direction,
-            ratio,
-            first_min,
-            second_min,
-        },
-        first: Box::new(first),
-        second: Box::new(second),
-    })
-}
-
-/// Reads a `"split"` node's required `"first"`/`"second"` child dict and
-/// recursively decodes it via [`layout_node_from_dict`].
-fn layout_child_node_from_value(
-    what: &str,
-    split_id: &str,
-    key: &str,
-    dict: &Bound<'_, PyDict>,
-) -> PyResult<LayoutNode> {
-    let value = dict
-        .get_item(key)?
-        .filter(|v| !v.is_none())
-        .ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: split {split_id:?} is missing required {key:?}"
-            ))
-        })?;
-    let child_dict = value.cast::<PyDict>().map_err(|_| {
-        InvalidDescriptorError::new_err(format!(
-            "{what}: split {split_id:?} {key:?} must be a dict"
-        ))
-    })?;
-    layout_node_from_dict(what, child_dict)
-}
-
-/// Decodes a `"row"`/`"column"` container's children: a `list` of child
-/// dicts, each recursively decoded by [`layout_node_from_dict`].
-fn layout_children_from_value(what: &str, value: &Bound<'_, PyAny>) -> PyResult<Vec<LayoutNode>> {
-    let list = value.cast::<PyList>().map_err(|_| {
-        InvalidDescriptorError::new_err(format!("{what}: row/column children must be a list"))
-    })?;
-    list.iter()
-        .map(|child| {
-            let child_dict = child.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: each row/column child must be a dict"
-                ))
-            })?;
-            layout_node_from_dict(what, child_dict)
-        })
-        .collect()
-}
-
-/// Reads a container node's required single `"content"` child dict and
-/// recursively decodes it via [`layout_node_from_dict`]. Shared by
-/// `"panel"` and `"sidebar_panel"` nodes, which each hold exactly one child
-/// subtree — unlike `"split"`'s two named panes or `"row"`/`"column"`'s list.
-fn layout_required_child_node(
-    what: &str,
-    node_label: &str,
-    node_id: &str,
-    key: &str,
-    dict: &Bound<'_, PyDict>,
-) -> PyResult<LayoutNode> {
-    let value = dict
-        .get_item(key)?
-        .filter(|v| !v.is_none())
-        .ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: {node_label} {node_id:?} is missing required {key:?}"
-            ))
-        })?;
-    let child_dict = value.cast::<PyDict>().map_err(|_| {
-        InvalidDescriptorError::new_err(format!(
-            "{what}: {node_label} {node_id:?} {key:?} must be a dict"
-        ))
-    })?;
-    layout_node_from_dict(what, child_dict)
-}
-
-/// Decodes a `"panel"` node: the chrome dict decoded generically via
-/// `decode::<Panel>` (`title`/`actions`/`accent`/`collapsed`, each
-/// `#[serde(default)]`, so a minimal `{"id": ...}` is enough) plus a
-/// required `"content"` child node, recursively decoded by
-/// [`layout_node_from_dict`]. The `"content"` key is harmless noise to
-/// `decode::<Panel>` itself — `Panel` has no `deny_unknown_fields`.
-fn layout_panel_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutPanel> {
-    let panel: Panel = decode(what, dict)?;
-    let id = panel.id.as_str().to_owned();
-    let content = layout_required_child_node(what, "panel", &id, "content", dict)?;
-    Ok(LayoutPanel {
-        panel,
-        content: Box::new(content),
-    })
-}
-
-/// Decodes a `"sidebar_panel"` node: the chrome dict decoded generically via
-/// `decode::<SidebarPanel>` (optional `toolbar`/`toolbar_height`) plus a
-/// required `"content"` child node, recursively decoded by
-/// [`layout_node_from_dict`].
-fn layout_sidebar_panel_from_dict(
-    what: &str,
-    dict: &Bound<'_, PyDict>,
-) -> PyResult<LayoutSidebarPanel> {
-    let sidebar_panel: SidebarPanel = decode(what, dict)?;
-    let id = sidebar_panel.id.as_str().to_owned();
-    let content = layout_required_child_node(what, "sidebar_panel", &id, "content", dict)?;
-    Ok(LayoutSidebarPanel {
-        sidebar_panel,
-        content: Box::new(content),
-    })
-}
-
-/// Decodes a `"split_tree"` node: `{"id", "root"}`, where `"root"` is
-/// recursively either `{"leaf": <child node dict>}` or `{"split":
-/// {"orientation", "ratio", "first", "second"}}` (the same `"orientation"`
-/// spelling and values as a top-level `"split"` node — see
-/// [`SPLIT_ORIENTATIONS`]). Each `"leaf"` becomes one position in the
-/// `quadraui::SplitTree` geometry built alongside it, addressed by a
-/// synthetic, internal-only id; its decoded content node is pushed onto the
-/// matching [`LayoutSplitTree::leaves`] in the same pre-order, for
-/// [`paint_layout`] to zip back against [`SplitTreeLayout::leaves`]' resolved
-/// rects at paint time.
-fn layout_split_tree_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutSplitTree> {
-    let id: String = match dict.get_item("id")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: split_tree \"id\" must be a string"))
-        })?,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: split_tree is missing required \"id\""
-            )));
-        }
-    };
-
-    let root_value = dict
-        .get_item("root")?
-        .filter(|v| !v.is_none())
-        .ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: split_tree {id:?} is missing required \"root\""
-            ))
-        })?;
-    let root_dict = root_value.cast::<PyDict>().map_err(|_| {
-        InvalidDescriptorError::new_err(format!(
-            "{what}: split_tree {id:?} \"root\" must be a dict"
-        ))
-    })?;
-
-    let mut leaves = Vec::new();
-    let tree = split_tree_node_from_dict(what, &id, root_dict, &mut leaves)?;
-    Ok(LayoutSplitTree { id, tree, leaves })
-}
-
-/// Recursively decodes one node of a `"split_tree"`'s `"root"` tree. A
-/// `{"leaf": <node dict>}` decodes its content via [`layout_node_from_dict`],
-/// pushes it onto `leaves`, and returns a `SplitTree::Leaf` carrying a
-/// synthetic id addressing its position (`"{tree_id}::leaf::{index}"`,
-/// never user-facing, never checked by [`validate_unique_leaf_ids`]). A
-/// `{"split": {...}}` recurses into `"first"`/`"second"` in pre-order,
-/// matching the order [`SplitTreeLayout::leaves`] resolves rects in.
-fn split_tree_node_from_dict(
-    what: &str,
-    tree_id: &str,
-    dict: &Bound<'_, PyDict>,
-    leaves: &mut Vec<LayoutNode>,
-) -> PyResult<SplitTree> {
-    if let Some(value) = dict.get_item("leaf")? {
-        if !value.is_none() {
-            let leaf_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: split_tree {tree_id:?} \"leaf\" must be a dict"
-                ))
-            })?;
-            let content = layout_node_from_dict(what, leaf_dict)?;
-            let placeholder = WidgetId::new(format!("{tree_id}::leaf::{}", leaves.len()));
-            leaves.push(content);
-            return Ok(SplitTree::leaf(placeholder));
-        }
-    }
-    if let Some(value) = dict.get_item("split")? {
-        if !value.is_none() {
-            let split_dict = value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: split_tree {tree_id:?} \"split\" must be a dict"
-                ))
-            })?;
-
-            let orientation: String = match split_dict.get_item("orientation")? {
-                Some(v) if !v.is_none() => v.extract().map_err(|_| {
-                    InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split \"orientation\" must be a string"
-                    ))
-                })?,
-                _ => {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split is missing required \"orientation\""
-                    )));
-                }
-            };
-            let direction = match orientation.as_str() {
-                "horizontal" => SplitDirection::Horizontal,
-                "vertical" => SplitDirection::Vertical,
-                _ => {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split \"orientation\" must be one of \
-                         {SPLIT_ORIENTATIONS:?}, got {orientation:?}"
-                    )));
-                }
-            };
-
-            let ratio: f32 = match split_dict.get_item("ratio")? {
-                Some(v) if !v.is_none() => v.extract().map_err(|_| {
-                    InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split \"ratio\" must be a number"
-                    ))
-                })?,
-                _ => {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split is missing required \"ratio\""
-                    )));
-                }
-            };
-
-            let first_value = split_dict
-                .get_item("first")?
-                .filter(|v| !v.is_none())
-                .ok_or_else(|| {
-                    InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split is missing required \"first\""
-                    ))
-                })?;
-            let first_dict = first_value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: split_tree {tree_id:?} split \"first\" must be a dict"
-                ))
-            })?;
-            let first = split_tree_node_from_dict(what, tree_id, first_dict, leaves)?;
-
-            let second_value = split_dict
-                .get_item("second")?
-                .filter(|v| !v.is_none())
-                .ok_or_else(|| {
-                    InvalidDescriptorError::new_err(format!(
-                        "{what}: split_tree {tree_id:?} split is missing required \"second\""
-                    ))
-                })?;
-            let second_dict = second_value.cast::<PyDict>().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: split_tree {tree_id:?} split \"second\" must be a dict"
-                ))
-            })?;
-            let second = split_tree_node_from_dict(what, tree_id, second_dict, leaves)?;
-
-            return Ok(SplitTree::split(direction, ratio, first, second));
-        }
-    }
-    Err(InvalidDescriptorError::new_err(format!(
-        "{what}: split_tree {tree_id:?} node must have a \"leaf\" or \"split\" key"
-    )))
-}
-
-/// Decodes a `"tabs"` node: `{"id", "tabs", "selected", "closable"}`, where
-/// `"tabs"` is a non-empty `list` of `{"id", "title", "content", "closable"}`
-/// entries and `"selected"` is the index of the entry whose `"content"`
-/// paints beneath the strip this frame. `"content"` is a full child node
-/// dict, recursively decoded by [`layout_node_from_dict`], so a tab may hold
-/// any primitive or nested row/column/split — giving a per-tab instance by
-/// construction rather than a single shared slot.
-///
-/// The strip-level `"closable"` (default `true`) gates whether *any* tab in
-/// this strip draws a close `×` at all — maps to [`TabBar::show_tab_close`].
-/// A per-tab `"closable"` (default `true`) then opts that one tab out even
-/// when the strip allows it — maps to [`TabItem::is_closable`]. Clicking a
-/// drawn close button reaches the handler as
-/// `UiEvent::TabBar(id, TabBarEvent::TabClosed { index })`, synthesized by
-/// [`semantic_event_for_hit`] the same way a tab click becomes
-/// `TabActivated`.
-fn layout_tabs_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutTabs> {
-    let id: String = match dict.get_item("id")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: tabs \"id\" must be a string"))
-        })?,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: tabs is missing required \"id\""
-            )));
-        }
-    };
-
-    let tabs_value = dict
-        .get_item("tabs")?
-        .filter(|v| !v.is_none())
-        .ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: tabs {id:?} is missing required \"tabs\""
-            ))
-        })?;
-    let tabs_list = tabs_value.cast::<PyList>().map_err(|_| {
-        InvalidDescriptorError::new_err(format!("{what}: tabs {id:?} \"tabs\" must be a list"))
-    })?;
-    // An empty `"tabs"` list is a valid empty state (no tab strip entries,
-    // no selected content) rather than an error -- a render callback that
-    // starts with zero tabs (e.g. before any file is open) can still return
-    // a `tabs` node instead of special-casing the empty case itself.
-
-    let mut items = Vec::with_capacity(tabs_list.len());
-    let mut entries = Vec::with_capacity(tabs_list.len());
-    for entry in tabs_list.iter() {
-        let entry_dict = entry.cast::<PyDict>().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: tabs {id:?} each tab must be a dict"))
-        })?;
-
-        let tab_id: String = match entry_dict.get_item("id")? {
-            Some(value) if !value.is_none() => value.extract().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab \"id\" must be a string"
-                ))
-            })?,
-            _ => {
-                return Err(InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab is missing required \"id\""
-                )));
-            }
-        };
-        let title: String = match entry_dict.get_item("title")? {
-            Some(value) if !value.is_none() => value.extract().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab {tab_id:?} \"title\" must be a string"
-                ))
-            })?,
-            _ => {
-                return Err(InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab {tab_id:?} is missing required \"title\""
-                )));
-            }
-        };
-        let content_value = entry_dict
-            .get_item("content")?
-            .filter(|v| !v.is_none())
-            .ok_or_else(|| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab {tab_id:?} is missing required \"content\""
-                ))
-            })?;
-        let content_dict = content_value.cast::<PyDict>().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: tabs {id:?} tab {tab_id:?} \"content\" must be a dict"
-            ))
-        })?;
-        let content = layout_node_from_dict(what, content_dict)?;
-
-        let is_closable: bool = match entry_dict.get_item("closable")? {
-            Some(value) if !value.is_none() => value.extract().map_err(|_| {
-                InvalidDescriptorError::new_err(format!(
-                    "{what}: tabs {id:?} tab {tab_id:?} \"closable\" must be a bool"
-                ))
-            })?,
-            _ => true,
-        };
-
-        items.push(TabItem {
-            label: title,
-            is_closable,
-            ..Default::default()
-        });
-        entries.push(LayoutTabEntry {
-            id: tab_id,
-            content: Box::new(content),
-        });
-    }
-
-    let selected: usize = match dict.get_item("selected")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: tabs {id:?} \"selected\" must be an integer"
-            ))
-        })?,
-        _ => 0,
-    };
-    // An explicit "selected" is still validated against the tab count when
-    // there are tabs to select; with zero tabs there is nothing to select
-    // and `selected` is ignored (`LayoutNode::Tabs`'s paint arm already
-    // treats an out-of-range/empty `entries.get(selected)` as "no content").
-    if !items.is_empty() && selected >= items.len() {
-        return Err(InvalidDescriptorError::new_err(format!(
-            "{what}: tabs {id:?} \"selected\" index {selected} is out of range for \
-             {len} tab(s)",
-            len = items.len()
-        )));
-    }
-    if let Some(item) = items.get_mut(selected) {
-        item.is_active = true;
-    }
-
-    let show_tab_close: bool = match dict.get_item("closable")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!(
-                "{what}: tabs {id:?} \"closable\" must be a bool"
-            ))
-        })?,
-        _ => true,
-    };
-
-    Ok(LayoutTabs {
-        tab_bar: TabBar {
-            id: WidgetId::new(id),
-            tabs: items,
-            scroll_offset: 0,
-            right_segments: Vec::new(),
-            active_accent: None,
-            show_tab_close,
-            compact: false,
-        },
-        entries,
-        selected,
-    })
-}
-
-/// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
-/// must be present and a string; exactly one of [`LEAF_KIND_KEYS`] or an
-/// [`EXTRA_PRIMITIVES`] kind must be present and hold a `dict` — a leaf
-/// with two keys from either set (fixed+fixed, fixed+extra, or
-/// extra+extra) is rejected by the single `found` duplicate check shared
-/// across both loops below.
-fn layout_leaf_from_dict(what: &str, dict: &Bound<'_, PyDict>) -> PyResult<LayoutLeaf> {
-    let id: String = match dict.get_item("id")? {
-        Some(value) if !value.is_none() => value.extract().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: leaf \"id\" must be a string"))
-        })?,
-        _ => {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: leaf is missing required \"id\""
-            )));
-        }
-    };
-
-    let mut found: Option<LeafDescriptor> = None;
-    for key in LEAF_KIND_KEYS {
-        let Some(value) = dict.get_item(key)? else {
-            continue;
-        };
-        if value.is_none() {
-            continue;
-        }
-        let value_dict = value.cast::<PyDict>().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: leaf {id:?} {key:?} must be a dict"))
-        })?;
-        if found.is_some() {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: leaf {id:?} has more than one descriptor kind"
-            )));
-        }
-        found = Some(match key {
-            "button" => LeafDescriptor::Button(decode(what, value_dict)?),
-            "text_display" => LeafDescriptor::TextDisplay(decode(what, value_dict)?),
-            "list" => LeafDescriptor::List(decode(what, value_dict)?),
-            "tree" => LeafDescriptor::Tree(decode(what, value_dict)?),
-            "data_table" => LeafDescriptor::DataTable(decode(what, value_dict)?),
-            "tab_bar" => LeafDescriptor::TabBar(decode(what, value_dict)?),
-            _ => unreachable!("LEAF_KIND_KEYS is exhaustive"),
-        });
-    }
-    // Additive primitive kinds share the same leaf dict shape and the same
-    // `found` duplicate-detection as the six fixed kinds above; a new
-    // additive primitive only ever adds a line to `EXTRA_PRIMITIVES`, never
-    // a new loop here.
-    for (kind, _) in EXTRA_PRIMITIVES {
-        let Some(value) = dict.get_item(*kind)? else {
-            continue;
-        };
-        if value.is_none() {
-            continue;
-        }
-        let value_dict = value.cast::<PyDict>().map_err(|_| {
-            InvalidDescriptorError::new_err(format!("{what}: leaf {id:?} {kind:?} must be a dict"))
-        })?;
-        if found.is_some() {
-            return Err(InvalidDescriptorError::new_err(format!(
-                "{what}: leaf {id:?} has more than one descriptor kind"
-            )));
-        }
-        found = Some(LeafDescriptor::Extra(decode_extra_primitive(
-            what, kind, value_dict,
-        )?));
-    }
-
-    let descriptor = found.ok_or_else(|| {
-        InvalidDescriptorError::new_err(format!(
-            "{what}: leaf {id:?} is missing a descriptor (one of {LEAF_KIND_KEYS:?} or {:?})",
-            extra_kind_names()
-        ))
-    })?;
-
-    Ok(LayoutLeaf { id, descriptor })
-}
-
-/// Walks `node` collecting every leaf and split `id` into one namespace,
-/// raising `InvalidDescriptorError` on the first repeat. A unique id per
-/// leaf/split lets host code address one instance unambiguously even when a
-/// kind appears more than once, and keeps a split's id from silently
-/// shadowing a leaf's.
-fn validate_unique_leaf_ids(node: &LayoutNode) -> PyResult<()> {
-    fn walk(node: &LayoutNode, seen: &mut HashSet<String>) -> PyResult<()> {
-        match node {
-            LayoutNode::Row(children) | LayoutNode::Column(children) => {
-                for child in children {
-                    walk(child, seen)?;
-                }
-                Ok(())
-            }
-            LayoutNode::Leaf(leaf) => {
-                if !seen.insert(leaf.id.clone()) {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "render: duplicate leaf id {:?}",
-                        leaf.id
-                    )));
-                }
-                Ok(())
-            }
-            LayoutNode::Split(split) => {
-                let id = split.split.id.as_str().to_owned();
-                if !seen.insert(id.clone()) {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "render: duplicate leaf id {id:?}"
-                    )));
-                }
-                walk(&split.first, seen)?;
-                walk(&split.second, seen)
-            }
-            LayoutNode::Tabs(tabs) => {
-                let id = tabs.tab_bar.id.as_str().to_owned();
-                if !seen.insert(id.clone()) {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "render: duplicate leaf id {id:?}"
-                    )));
-                }
-                for entry in &tabs.entries {
-                    if !seen.insert(entry.id.clone()) {
-                        return Err(InvalidDescriptorError::new_err(format!(
-                            "render: duplicate leaf id {:?}",
-                            entry.id
-                        )));
-                    }
-                    walk(&entry.content, seen)?;
-                }
-                Ok(())
-            }
-            LayoutNode::Panel(panel_node) => {
-                let id = panel_node.panel.id.as_str().to_owned();
-                if !seen.insert(id.clone()) {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "render: duplicate leaf id {id:?}"
-                    )));
-                }
-                walk(&panel_node.content, seen)
-            }
-            LayoutNode::SidebarPanel(sidebar_node) => {
-                let id = sidebar_node.sidebar_panel.id.as_str().to_owned();
-                if !seen.insert(id.clone()) {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "render: duplicate leaf id {id:?}"
-                    )));
-                }
-                walk(&sidebar_node.content, seen)
-            }
-            LayoutNode::SplitTree(split_tree) => {
-                if !seen.insert(split_tree.id.clone()) {
-                    return Err(InvalidDescriptorError::new_err(format!(
-                        "render: duplicate leaf id {:?}",
-                        split_tree.id
-                    )));
-                }
-                for leaf in &split_tree.leaves {
-                    walk(leaf, seen)?;
-                }
-                Ok(())
-            }
-        }
-    }
-    let mut seen = HashSet::new();
-    walk(node, &mut seen)
-}
-
-/// The decoded shape of a render callback's return value: either the flat
-/// per-slot `dict` ([`RenderFrame`], the pre-layout-tree shape) or a
-/// layout tree ([`LayoutNode`]).
-enum RenderOutput {
-    Flat(Box<RenderFrame>),
-    Tree(LayoutNode),
-}
-
 /// Invokes a registered render callback with no arguments and decodes its
-/// returned `dict` into a [`RenderOutput`]. A `dict` carrying a `"row"`,
-/// `"column"`, `"split"`, `"tabs"`, `"panel"`, `"sidebar_panel"`, or
-/// `"split_tree"` key is parsed as a layout tree; any other `dict` is
-/// parsed as the flat per-slot shape, so a render callback written against
-/// the flat shape keeps working unchanged. On any failure
-/// — the callback raising,
-/// returning something other than a `dict`, or an entry with the wrong
-/// shape — records the error in `pending_error` and returns `None`, leaving
-/// the caller to skip drawing this frame rather than paint a half-decoded
-/// one.
+/// returned `dict` into a [`RenderOutput`] via
+/// [`quadraui_binding_core::decode_render_output`] — see that function's
+/// doc for the flat-vs-tree sniff this binding's [`RenderOutput`] import
+/// shares with every other binding. On any failure — the callback
+/// raising, returning something other than a `dict`, or an entry with the
+/// wrong shape — records the error in `pending_error` and returns `None`,
+/// leaving the caller to skip drawing this frame rather than paint a
+/// half-decoded one.
 ///
 /// Every call site that can trigger a render — `step`/`run`, `screen`,
 /// `screen_contains`, `insert_*`, and `slot_clear` — drains `pending_error`
@@ -2616,29 +1446,11 @@ fn render_output_from_callback(
             }
         };
 
-        let is_tree = matches!(dict.get_item("row"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("column"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("split"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("tabs"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("panel"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("sidebar_panel"), Ok(Some(ref value)) if !value.is_none())
-            || matches!(dict.get_item("split_tree"), Ok(Some(ref value)) if !value.is_none());
-        if is_tree {
-            let parsed = layout_node_from_dict(RENDER_CALLBACK_WHAT, dict)
-                .and_then(|node| validate_unique_leaf_ids(&node).map(|()| node));
-            return match parsed {
-                Ok(node) => Some(RenderOutput::Tree(node)),
-                Err(err) => {
-                    record_error(pending_error, err);
-                    None
-                }
-            };
-        }
-
-        match RenderFrame::from_dict(dict) {
-            Ok(frame) => Some(RenderOutput::Flat(Box::new(frame))),
+        let mut de = pythonize::Depythonizer::from_object(dict.as_any());
+        match quadraui_binding_core::decode_render_output(RENDER_CALLBACK_WHAT, &mut de) {
+            Ok(output) => Some(output),
             Err(err) => {
-                record_error(pending_error, err);
+                record_error(pending_error, InvalidDescriptorError::new_err(err.0));
                 None
             }
         }
@@ -2647,63 +1459,24 @@ fn render_output_from_callback(
 
 /// Wraps [`PyAppLogic`] for `run_native`'s native runner loop (`GtkRunner`
 /// on the `gtk` feature, `MacRunner` on the `macos` feature, `WinRunner` on
-/// the `win` feature), forcing a `WindowClose` event to exit the loop
-/// regardless of what the registered handler (if any) returns.
+/// the `win` feature) -- [`quadraui_binding_core::NativeExitPolicy`], whose
+/// own doc covers the two corrections it makes to generic `Reaction`
+/// handling: a handler-less `WindowClose` must actually exit (via
+/// [`PyAppLogic`]'s [`WindowCloseHandling`] impl above, which answers
+/// `self.handler.is_some()`), and -- on the `macos` feature without `gtk`
+/// also enabled -- every *other* `Reaction::Exit` downgrades to `Continue`
+/// plus a sticky `exit_requested` flag the `run_native` pump loop below
+/// checks after every `pump` call, so `[NSApp terminate:]` never fires out
+/// from underneath `run_native` and ends the whole OS process before it
+/// could return control (and any caught exception with it) to its caller.
 ///
-/// All three backends' own window-close wiring vetoes the OS close request
-/// ("×"/Alt-F4/window-manager close on GTK, the red traffic-light button on
-/// macOS, the "×"/Alt-F4 close on Windows) unless the dispatched handler
-/// returns `Reaction::Exit` — the right default for an app that wants to
-/// confirm/veto a close, but
-/// `PyAppLogic::handle` returns `Reaction::Continue` whenever no handler is
-/// registered at all, which would otherwise leave a bare `run_native()`
-/// call with no way to close its own window. This wrapper still calls
-/// through to the inner `PyAppLogic::handle` first (so a registered
-/// handler keeps seeing `WindowClose` and can still ask to exit itself,
-/// either by raising or by returning `False`, same as every other event —
-/// see [`reaction_from_return`]), then overrides only the `WindowClose`
-/// case to always return `Reaction::Exit` afterwards regardless of what the
-/// handler returned.
-///
-/// On macOS this `Reaction::Exit` is evaluated by
-/// `QuadraView::evaluate_window_should_close`, which hands AppKit a `bool`
-/// instead of routing through `apply_reaction`'s `Reaction::Exit` branch —
-/// so the window closes on its own without calling `[NSApp terminate:]`,
-/// the same "closes cleanly, returns control to the caller" outcome GTK's
-/// `request_exit()` gives for its own window-close path. That outcome also
-/// depends on a timing property of `MacRunner`: closing the last window
-/// makes AppKit ask `applicationShouldTerminateAfterLastWindowClosed:`,
-/// which answers `true` and would route on to `applicationShouldTerminate:`
-/// and end the process — but `MacRunner::run_one` reads its
-/// `windowWillClose:` latch and reports `StepOutcome::Exited`
-/// *synchronously*, so `run_native`'s pump loop breaks (and `run_native`
-/// returns) before that deferred last-window check ever runs.
-///
-/// On the `macos` feature (with `gtk` not also enabled), this wrapper also
-/// intercepts any *other* `Reaction::Exit` — a registered handler raising,
-/// or explicitly returning `False` (see [`reaction_from_return`]) — before
-/// it reaches `MacRunner`. `apply_reaction`'s own `Reaction::Exit` branch
-/// calls `[NSApp terminate:]`, which ends the whole OS process; `run_native`
-/// would never return and the caller's `except`/`finally` would never run.
-/// Instead, `handle`/`tick` swap that `Reaction::Exit` for `Reaction::Continue`
-/// and set `exit_requested`, which the `run_native` pump loop checks after
-/// every `pump` call and breaks on — so the loop stops, `run_native` returns,
-/// and any pending exception set on [`PyAppLogic::pending_error`] is
-/// re-raised normally, exactly like GTK. The window itself is left open
-/// (not torn down) until the process exits, the same outcome already
-/// documented for a Ctrl-C on this backend.
-///
-/// None of that interception touches AppKit — it is a `Cell<bool>` and a
-/// `matches!` — so the type is compiled (and unit-tested) on a `macos`-feature
-/// build for any `target_os`, not just an Apple one. Only the
-/// `run_native` branch that constructs it is Apple-only, which is why the
-/// non-Apple configuration needs the `dead_code` allowance below.
-///
-/// `win` needs no `exit_requested` field either, for the same reason `gtk`
-/// doesn't: `win::run::dispatch_with`/`tick` already call `DestroyWindow`
-/// directly for *any* `Reaction::Exit`, not just one reached through
-/// `WindowClose` — there is no AppKit-style `[NSApp terminate:]` for this
-/// wrapper to head off.
+/// A registered Python handler's own `WindowClose` opinion (see
+/// [`reaction_from_window_close_return`]: an explicit `True` vetoes the
+/// close and leaves the window open; `None`/`False`/raising confirms it)
+/// reaches the caller untouched either way -- this wrapper only overrides
+/// the no-handler-at-all case, which [`PyAppLogic::handle`] alone would
+/// otherwise map to `Reaction::Continue`, leaving a bare `run_native()`
+/// call with no way to close its own window.
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 #[cfg_attr(
     any(
@@ -2717,54 +1490,7 @@ fn render_output_from_callback(
     ),
     allow(dead_code)
 )]
-struct NativeAppLogic {
-    inner: PyAppLogic,
-    /// Set by `handle`/`tick` when a non-`WindowClose` `Reaction::Exit`
-    /// is intercepted; `run_native`'s pump loop breaks once this is set.
-    /// Only present on the `macos` feature without `gtk` also enabled —
-    /// GTK's own `apply_reaction` and `win`'s `dispatch_with`/`tick`
-    /// already handle `Reaction::Exit` from any event without this
-    /// wrapper's help.
-    #[cfg(all(feature = "macos", not(feature = "gtk")))]
-    exit_requested: Rc<Cell<bool>>,
-}
-
-#[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
-impl AppLogic for NativeAppLogic {
-    type AreaId = ();
-
-    fn render(&self, backend: &mut dyn Backend, area: ()) {
-        self.inner.render(backend, area);
-    }
-
-    fn tab_stops(&self, area: ()) -> Vec<(WidgetId, Rect)> {
-        self.inner.tab_stops(area)
-    }
-
-    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        let is_window_close = matches!(event, UiEvent::WindowClose);
-        let reaction = self.inner.handle(event, backend);
-        if is_window_close {
-            return Reaction::Exit;
-        }
-        #[cfg(all(feature = "macos", not(feature = "gtk")))]
-        if matches!(reaction, Reaction::Exit) {
-            self.exit_requested.set(true);
-            return Reaction::Continue;
-        }
-        reaction
-    }
-
-    fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
-        let reaction = self.inner.tick(backend);
-        #[cfg(all(feature = "macos", not(feature = "gtk")))]
-        if matches!(reaction, Reaction::Exit) {
-            self.exit_requested.set(true);
-            return Reaction::Continue;
-        }
-        reaction
-    }
-}
+type NativeAppLogic = NativeExitPolicy<PyAppLogic>;
 
 /// A headless quadraui app, driven entirely from Python.
 ///
@@ -2804,6 +1530,737 @@ struct QuiApp {
     /// by the empty `PyAppLogic` the first call left behind.
     #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
     native_consumed: bool,
+    /// The [`Backend::waker`] closure for whichever backend currently owns
+    /// event delivery, cloned out into every [`QuiAppWaker`] handed out by
+    /// [`QuiApp::waker`]. Starts out (and, once `run_tui` returns, goes
+    /// back to) `self.driver.backend().waker()` — the headless driver's own
+    /// `TuiBackend`, drained by [`QuiApp::step_once`]'s `pump_user_events`
+    /// call; `run_tui` swaps this to the live `TuiRunner`'s own backend's
+    /// waker for the duration of its pump loop, so a `QuiAppWaker` obtained
+    /// before that call keeps delivering to the live terminal loop once it
+    /// starts, rather than only to the dormant headless driver (`run_tui`
+    /// blocks the Python thread that calls it and `QuiApp` is `unsendable`,
+    /// so there is no reachable way to call `waker()` *during* the call —
+    /// only before it). `run_native` does not swap this: a window
+    /// opened via `run_native` has no `Backend::waker`-reachable accessor
+    /// on `GtkRunner`/`MacRunner`/`WinRunner` today, so a `QuiAppWaker`
+    /// obtained while a native window is open still points at the dormant
+    /// headless backend — a post made then queues rather than being lost,
+    /// and is only delivered once the window closes and `step`/`run`
+    /// resumes driving the headless driver again. That queue
+    /// (`UserEventQueue`, an unbounded `VecDeque`) is not actually free to
+    /// leave filling, though: each queued post holds a strong `Py<PyAny>`
+    /// reference, so a background thread posting periodically for a long
+    /// `run_native` session accumulates Python objects for the window's
+    /// whole lifetime and delivers the entire backlog in one burst on the
+    /// first `step`/`run` call after it closes. An app that posts during a
+    /// native window's lifetime and cares about that backlog should drain
+    /// it with repeated `step()` calls right after `run_native` returns,
+    /// or avoid posting while the window is open.
+    ///
+    /// A `Mutex` rather than a bare field: [`QuiAppWaker`] must be
+    /// `Send + Sync` so a background thread can hold and call it, which
+    /// rules out `Rc<RefCell<_>>`; the lock is only ever held for the
+    /// instant of a clone or a swap, never across a call into the wrapped
+    /// closure itself.
+    current_waker: SharedWaker,
+}
+
+/// A thread-safe handle, returned by [`QuiApp::waker`], that a background
+/// thread calls `post`/`wake` on to deliver a value into its `QuiApp`'s
+/// event stream as a `{"User": value}` event and wake whichever loop
+/// currently owns that app. See [`QuiApp::waker`]'s doc for why this needs
+/// to be a separate object rather than a method on `QuiApp` itself.
+///
+/// Not `unsendable` — ordinary `Send + Sync` Rust state
+/// (`Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>`, and `Py<PyAny>`
+/// is itself always `Send + Sync`) — so PyO3 lets Python pass it to another
+/// thread freely, unlike `QuiApp`.
+#[pyclass(module = "quadraui")]
+struct QuiAppWaker(SharedWaker);
+
+#[pymethods]
+impl QuiAppWaker {
+    /// Delivers `value` to the owning `QuiApp` as a `{"User": value}` event
+    /// and wakes whichever loop currently owns it — `step`/`run`'s drain of
+    /// `pump_user_events` on the next call for the headless path, or
+    /// promptly (not waiting for the next native/terminal event) while
+    /// `run_tui` is live. Safe to call from any thread, at any time,
+    /// including before the owning `QuiApp` has run a single step or after
+    /// it has exited (a post after exit is simply never observed — there is
+    /// no receiver left to drain it).
+    fn post(&self, value: Py<PyAny>) {
+        let waker = self.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        waker(UserPayload::new(value));
+    }
+
+    /// Equivalent to `post(None)`: wakes the owning `QuiApp`'s loop with no
+    /// payload of its own, just to make sure a pending tick-driven state
+    /// change (e.g. one a background thread just finished mutating through
+    /// some other, already-synchronized channel) is noticed promptly
+    /// rather than only on the next poll-interval timeout or unrelated
+    /// event.
+    fn wake(&self, py: Python<'_>) {
+        self.post(py.None());
+    }
+
+    /// Schedules `post(value)` to run `delay_ms` milliseconds from now, on a
+    /// spawned background thread that sleeps for that long and then
+    /// delivers — the Python-level equivalent of
+    /// [`Backend::request_frame_in`]'s "the app itself knows it
+    /// wants to be woken again in `delay`" timer contract. `Backend`'s own
+    /// `request_frame_in` isn't reachable from Python at all: it lives on
+    /// the live `Backend` passed to [`AppLogic::handle`]/`tick`, and this
+    /// binding has no object to hand that reference to Python through (and
+    /// no way to reach it from a background thread, since it is `&self`/
+    /// `&mut self`-shaped, not `Send`) — see [`QuiApp::waker`]'s doc for the
+    /// same "no reachable handle" story for `run_tui`/`run_native`. This
+    /// method reuses the already-`Send + Sync` waker machinery instead: it
+    /// re-locks the current waker only once `delay_ms` has elapsed, so a
+    /// call made before `run_tui` starts still lands in the live terminal
+    /// loop if the delay elapses after it starts, exactly like an immediate
+    /// `post` would mid-run. Returns immediately; does not block the
+    /// calling thread. Equivalent in effect to pairing `threading.Timer` (or
+    /// `asyncio`'s `call_later`) with `post` from plain Python — provided
+    /// here directly so the common "run_tick again in N ms" case needs no
+    /// import beyond `quadraui` itself.
+    fn post_after(&self, delay_ms: u64, value: Py<PyAny>) {
+        let shared = Arc::clone(&self.0);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(delay_ms));
+            let waker = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            waker(UserPayload::new(value));
+        });
+    }
+
+    /// Equivalent to `post_after(delay_ms, None)` — see [`Self::wake`]'s doc
+    /// for why a payload-free wake is useful on its own.
+    fn wake_after(&self, py: Python<'_>, delay_ms: u64) {
+        self.post_after(delay_ms, py.None());
+    }
+}
+
+/// A handle, returned by [`QuiApp::actions`], that queues exactly the
+/// overlay/OS-call/window-control methods `QuiApp` itself restricts to
+/// top-level script code — `show_message_dialog`, `show_context_menu`,
+/// `show_toast`, `show_tooltip`, `send_notification`, `open_path`,
+/// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
+/// `set_title`, `set_document_edited`, `set_represented_filename`,
+/// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
+/// `set_theme` — so a registered event handler can request one of them
+/// without re-entering `QuiApp`'s own PyO3 cell.
+///
+/// A handler already holds `QuiApp`'s one mutable borrow for the whole
+/// dispatch that invoked it (the same wall `show_message_dialog`'s own doc
+/// describes), so calling `app.show_message_dialog(...)` straight from
+/// inside a handler raises "already borrowed" — PyO3 refuses a second
+/// borrow of the same cell while the first is still outstanding. Calling
+/// the matching method here instead touches none of that: each method
+/// below decodes and validates its arguments immediately (so a malformed
+/// descriptor still raises synchronously, from the handler's own call) and
+/// records the already-decoded action on a queue shared with the owning
+/// `QuiApp`, rather than applying it right away. `QuiApp::step`/`run` and
+/// the `run_tui` pump loop each drain that queue via
+/// [`flush_deferred_actions`] right after the dispatch that queued an
+/// action finishes, applying it as a direct Rust call rather than another
+/// PyO3 method call — see that function's doc for why that distinction is
+/// what makes this sound.
+///
+/// Call [`QuiApp::actions`] once up front, from top-level script code, and
+/// share the result with whatever closure is registered as the event
+/// handler — the same "obtain once, use from wherever" shape
+/// [`QuiApp::waker`] already has for background-thread delivery.
+///
+/// Drained by [`flush_deferred_actions`] from inside
+/// [`PyAppLogic::handle`]/[`PyAppLogic::tick`] themselves, so this applies
+/// equally under `step`/`run`, `run_tui`, and `run_native` (`gtk`/`macos`/
+/// `win`): whichever live [`Backend`] that dispatch was given is the one
+/// each queued action lands on.
+#[pyclass(module = "quadraui", unsendable)]
+struct QuiAppActions {
+    queue: Rc<RefCell<VecDeque<DeferredAction>>>,
+}
+
+#[pymethods]
+impl QuiAppActions {
+    /// Queues a [`DeferredAction::MessageDialog`] — same arguments, same
+    /// decoding, as `QuiApp::show_message_dialog`.
+    #[pyo3(signature = (title, body, buttons, severity=None))]
+    fn show_message_dialog(
+        &self,
+        title: String,
+        body: String,
+        buttons: &Bound<'_, PyList>,
+        severity: Option<String>,
+    ) -> PyResult<()> {
+        let buttons: Vec<DialogButton> =
+            pythonize::depythonize(buttons.as_any()).map_err(|err| {
+                InvalidDescriptorError::new_err(format!(
+                    "show_message_dialog: invalid buttons: {err}"
+                ))
+            })?;
+        let severity = severity
+            .map(|s| parse_dialog_severity("show_message_dialog", &s))
+            .transpose()?;
+        let opts =
+            message_dialog_options_from_buttons(title, body, buttons, severity).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("show_message_dialog: {err}"))
+            })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::MessageDialog(opts));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::ContextMenu`] — same arguments, same
+    /// decoding, as `QuiApp::show_context_menu`.
+    fn show_context_menu(&self, items: &Bound<'_, PyList>, position: (f32, f32)) -> PyResult<()> {
+        let items: Vec<ContextMenuItem> =
+            pythonize::depythonize(items.as_any()).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("show_context_menu: invalid items: {err}"))
+            })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ContextMenu(
+                items,
+                Point::new(position.0, position.1),
+            ));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::Toast`] — same arguments, same decoding,
+    /// as `QuiApp::show_toast`.
+    #[pyo3(signature = (toast, corner=None))]
+    fn show_toast(&self, toast: &Bound<'_, PyDict>, corner: Option<String>) -> PyResult<()> {
+        let toast: Toast = decode("show_toast", toast)?;
+        let corner = corner
+            .map(|c| parse_toast_corner("show_toast", &c))
+            .transpose()?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Toast(toast, corner.unwrap_or_default()));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::Tooltip`] — same arguments, same
+    /// decoding, as `QuiApp::show_tooltip`.
+    fn show_tooltip(
+        &self,
+        tooltip: &Bound<'_, PyDict>,
+        anchor: (f32, f32, f32, f32),
+    ) -> PyResult<()> {
+        let tooltip: Tooltip = decode("show_tooltip", tooltip)?;
+        let anchor = Rect::new(anchor.0, anchor.1, anchor.2, anchor.3);
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Tooltip(tooltip, anchor));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::Notification`] — same arguments, same
+    /// decoding, as `QuiApp::send_notification`.
+    #[pyo3(signature = (title, body, urgent=false, silent=false, tag=None))]
+    fn send_notification(
+        &self,
+        title: String,
+        body: String,
+        urgent: bool,
+        silent: bool,
+        tag: Option<String>,
+    ) -> PyResult<()> {
+        let mut n = Notification::new(title, body).with_silent(silent);
+        if let Some(tag) = tag {
+            n = n.with_tag(tag);
+        }
+        n.urgent = urgent;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Notification(n));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::OpenPath`] — same argument as
+    /// `QuiApp::open_path`.
+    fn open_path(&self, path: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::OpenPath(PathBuf::from(path)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::RevealInFileManager`] — same argument as
+    /// `QuiApp::reveal_in_file_manager`.
+    fn reveal_in_file_manager(&self, path: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::RevealInFileManager(PathBuf::from(path)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::MoveToTrash`] — same argument as
+    /// `QuiApp::move_to_trash`.
+    fn move_to_trash(&self, path: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::MoveToTrash(PathBuf::from(path)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::RestoreFromTrash`] — same argument as
+    /// `QuiApp::restore_from_trash`.
+    fn restore_from_trash(&self, path: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::RestoreFromTrash(PathBuf::from(path)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::Title`] — same argument as
+    /// `QuiApp::set_title`.
+    fn set_title(&self, title: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Title(title.to_string()));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::DocumentEdited`] — same argument as
+    /// `QuiApp::set_document_edited`.
+    fn set_document_edited(&self, edited: bool) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::DocumentEdited(edited));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::RepresentedFilename`] — same argument as
+    /// `QuiApp::set_represented_filename`.
+    #[pyo3(signature = (path=None))]
+    fn set_represented_filename(&self, path: Option<&str>) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::RepresentedFilename(path.map(PathBuf::from)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::TrayIcon`] — same argument, same
+    /// decoding, as `QuiApp::set_tray_icon`.
+    fn set_tray_icon(&self, icon: &Bound<'_, PyAny>) -> PyResult<()> {
+        let icon: ImageSource = pythonize::depythonize(icon).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_tray_icon: invalid icon: {err}"))
+        })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::TrayIcon(icon));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::TrayTooltip`] — same argument as
+    /// `QuiApp::set_tray_tooltip`.
+    fn set_tray_tooltip(&self, tooltip: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::TrayTooltip(tooltip.to_string()));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::TrayMenu`] — same argument, same
+    /// decoding, as `QuiApp::set_tray_menu`.
+    fn set_tray_menu(&self, items: &Bound<'_, PyList>) -> PyResult<()> {
+        let items: Vec<ContextMenuItem> =
+            pythonize::depythonize(items.as_any()).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("set_tray_menu: invalid items: {err}"))
+            })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::TrayMenu(items));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::Cursor`] — same arguments, same
+    /// decoding, as `QuiApp::set_cursor`. Unlike `QuiApp::set_cursor`,
+    /// this has no return value: whether the glyph was actually applied
+    /// is only observable synchronously, and a deferred action by
+    /// definition isn't applied until after this call returns.
+    #[pyo3(signature = (shape, edge=None))]
+    fn set_cursor(&self, shape: &str, edge: Option<&str>) -> PyResult<()> {
+        let shape = parse_pointer_shape("set_cursor", shape, edge)?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Cursor(shape));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::Theme`] — same `overrides` argument, same
+    /// per-field decoding (hex string/list/dict colours via
+    /// [`theme_color_value`]), as `QuiApp::set_theme`. Unlike
+    /// `QuiApp::set_theme`, there is no live backend here to merge each
+    /// override onto, so this validates `overrides`' keys/values against
+    /// [`Theme::default`]'s own field set instead (an `UnknownField`/
+    /// `Invalid` [`OverrideError`] still raises synchronously from this
+    /// call) and stores the decoded `(field, value)` pairs for
+    /// [`flush_deferred_actions`] to merge onto the real current theme and
+    /// apply via [`Backend::set_theme`] right after this dispatch finishes.
+    fn set_theme(&self, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+        let keys = dict_keys(overrides)?;
+        let mut decoded = Vec::with_capacity(keys.len());
+        merge_overrides(Theme::default(), keys, |key| {
+            let val = overrides
+                .get_item(key)
+                .map_err(|err| err.to_string())?
+                .expect("key was read from overrides.keys() above");
+            let json = theme_color_value(key, pyany_to_json(&val)?)?;
+            decoded.push((key.to_string(), json.clone()));
+            Ok(json)
+        })
+        .map_err(|err| override_error_to_py("set_theme", err))?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Theme(decoded));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::ApplyUpdateOnQuit`] — same argument as
+    /// `QuiApp::apply_on_quit`.
+    fn apply_on_quit(&self, handle: u64) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ApplyUpdateOnQuit(handle));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::EndPowerSaveBlock`] — same argument as
+    /// `QuiApp::end_power_save_block`.
+    fn end_power_save_block(&self, handle: u64) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::EndPowerSaveBlock(handle));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetLoginItem`] — same arguments as
+    /// `QuiApp::set_login_item`.
+    #[pyo3(signature = (enabled, open_hidden=false, args=Vec::new()))]
+    fn set_login_item(&self, enabled: bool, open_hidden: bool, args: Vec<String>) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetLoginItem {
+                enabled,
+                open_hidden,
+                args,
+            });
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetAsDefaultProtocolClient`] — same
+    /// argument as `QuiApp::set_as_default_protocol_client`.
+    fn set_as_default_protocol_client(&self, scheme: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetAsDefaultProtocolClient(
+                scheme.to_string(),
+            ));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::RemoveAsDefaultProtocolClient`] — same
+    /// argument as `QuiApp::remove_as_default_protocol_client`.
+    fn remove_as_default_protocol_client(&self, scheme: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::RemoveAsDefaultProtocolClient(
+                scheme.to_string(),
+            ));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::BeginDragOut`] — same arguments as
+    /// `QuiApp::begin_drag_out`.
+    #[pyo3(signature = (files=Vec::new(), text=None))]
+    fn begin_drag_out(&self, files: Vec<String>, text: Option<String>) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::BeginDragOut { files, text });
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::AddRecentDocument`] — same argument as
+    /// `QuiApp::add_recent_document`.
+    fn add_recent_document(&self, path: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::AddRecentDocument(PathBuf::from(path)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::ClearRecentDocuments`] — no arguments,
+    /// same as `QuiApp::clear_recent_documents`.
+    fn clear_recent_documents(&self) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ClearRecentDocuments);
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetDockMenu`] — same argument as
+    /// `QuiApp::set_dock_menu`, converted to JSON here (the only work this
+    /// method does before queueing); the item list itself is decoded by
+    /// [`quadraui_binding_core::set_dock_menu`] when
+    /// [`flush_deferred_actions`] applies it, same as `QuiApp::set_dock_menu`.
+    fn set_dock_menu(&self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let items = pyany_to_json(items).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_dock_menu: invalid items: {err}"))
+        })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetDockMenu(items));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetJumpList`] — same argument as
+    /// `QuiApp::set_jump_list`, the same JSON-conversion-only shape as
+    /// [`Self::set_dock_menu`].
+    fn set_jump_list(&self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let items = pyany_to_json(items).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_jump_list: invalid items: {err}"))
+        })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetJumpList(items));
+        Ok(())
+    }
+}
+
+/// Applies every action queued on `app_logic.deferred_actions` directly
+/// against `backend`/`app_logic`, then drops them — called from
+/// [`PyAppLogic::handle`]/[`PyAppLogic::tick`] themselves, right after each
+/// dispatch, while the caller already holds a plain Rust `&mut` to both
+/// (never through another PyO3 method call on `QuiApp` itself, which is
+/// exactly the re-entrant call a [`QuiAppActions`] method queued this
+/// action to avoid). `backend` is `&mut dyn Backend` rather than the
+/// concrete `TuiBackend` precisely so this one function applies equally
+/// whether `handle`/`tick` was called by the headless driver, `run_tui`'s
+/// live terminal, or `run_native`'s live `GtkBackend`/`MacBackend`/
+/// `WinBackend` window — every action this applies
+/// (`InteractionEngine::open_message_dialog`/`open_context_menu`,
+/// `Backend::services()`) is already defined generically over `&mut dyn
+/// Backend`. A failing `open_path`/`reveal_in_file_manager`/
+/// `move_to_trash`/`restore_from_trash` records its error on
+/// `app_logic.pending_error`, the same cell `handle`/`tick`/a render
+/// callback already use to report a failure back out of
+/// `step`/`run`/`run_tui`/`run_native`, rather than being dropped silently
+/// or panicking a loop with no caller around to catch it.
+///
+/// Returns whether anything was applied, so the caller can fold that into
+/// the [`Reaction`] it returns and only pay for an extra repaint when a
+/// queued action actually changed something visible.
+fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic) -> bool {
+    let mut applied = false;
+    loop {
+        let action = app_logic.deferred_actions.borrow_mut().pop_front();
+        let Some(action) = action else { break };
+        applied = true;
+        match action {
+            DeferredAction::MessageDialog(opts) => {
+                app_logic.engine.open_message_dialog(opts, backend);
+            }
+            DeferredAction::ContextMenu(items, position) => {
+                app_logic.engine.open_context_menu(items, position, backend);
+            }
+            DeferredAction::Toast(toast, corner) => {
+                app_logic.engine.show_toast(toast, corner);
+            }
+            DeferredAction::Tooltip(tooltip, anchor) => {
+                app_logic.engine.show_tooltip(tooltip, anchor);
+            }
+            DeferredAction::Notification(notification) => {
+                backend.services().send_notification(notification);
+            }
+            DeferredAction::OpenPath(path) => {
+                if let Err(err) = backend.services().open_path(&path) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("open_path: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::RevealInFileManager(path) => {
+                if let Err(err) = backend.services().reveal_in_file_manager(&path) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("reveal_in_file_manager: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::MoveToTrash(path) => {
+                if let Err(err) = backend.services().move_to_trash(&path) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("move_to_trash: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::RestoreFromTrash(path) => {
+                if let Err(err) = backend.services().restore_from_trash(&path) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("restore_from_trash: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::Title(title) => {
+                if let Err(err) = with_window(backend, |w| w.set_title(&title)) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("set_title: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::DocumentEdited(edited) => {
+                if let Err(err) = with_window(backend, |w| w.set_document_edited(edited)) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("set_document_edited: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::RepresentedFilename(path) => {
+                if let Err(err) =
+                    with_window(backend, |w| w.set_represented_filename(path.as_deref()))
+                {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("set_represented_filename: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::TrayIcon(icon) => {
+                if let Err(err) = with_tray(backend, |t| t.set_icon(icon)) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("set_tray_icon: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::TrayTooltip(tooltip) => {
+                if let Err(err) = with_tray(backend, |t| t.set_tooltip(&tooltip)) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("set_tray_tooltip: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::TrayMenu(items) => {
+                if let Err(err) = with_tray(backend, |t| t.set_menu(&tray_menu(items))) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("set_tray_menu: {err:?}")),
+                    );
+                }
+            }
+            DeferredAction::Cursor(shape) => {
+                backend.set_cursor(shape);
+            }
+            DeferredAction::Theme(overrides) => {
+                let mut value = serde_json::to_value(backend.theme())
+                    .expect("Theme serializes to a JSON object");
+                let obj = value
+                    .as_object_mut()
+                    .expect("Theme serializes to a JSON object");
+                for (key, json) in overrides {
+                    obj.insert(key, json);
+                }
+                let theme: Theme = serde_json::from_value(value)
+                    .expect("fields were already validated by QuiAppActions::set_theme");
+                backend.set_theme(theme);
+            }
+            DeferredAction::ApplyUpdateOnQuit(handle) => {
+                if let Err(err) = update_apply_on_quit(backend.services(), handle) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("apply_on_quit", err),
+                    );
+                }
+            }
+            DeferredAction::EndPowerSaveBlock(handle) => {
+                if let Err(err) = end_power_save_block(backend.services(), handle) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("end_power_save_block", err),
+                    );
+                }
+            }
+            DeferredAction::SetLoginItem {
+                enabled,
+                open_hidden,
+                args,
+            } => {
+                if let Err(err) = set_login_item(backend.services(), enabled, open_hidden, args) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("set_login_item", err),
+                    );
+                }
+            }
+            DeferredAction::SetAsDefaultProtocolClient(scheme) => {
+                if let Err(err) = set_as_default_protocol_client(backend.services(), &scheme) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("set_as_default_protocol_client", err),
+                    );
+                }
+            }
+            DeferredAction::RemoveAsDefaultProtocolClient(scheme) => {
+                if let Err(err) = remove_as_default_protocol_client(backend.services(), &scheme) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("remove_as_default_protocol_client", err),
+                    );
+                }
+            }
+            DeferredAction::BeginDragOut { files, text } => {
+                if let Err(err) = begin_drag_out(backend.services(), files, text) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("begin_drag_out", err),
+                    );
+                }
+            }
+            DeferredAction::AddRecentDocument(path) => {
+                if let Err(err) = add_recent_document(backend.services(), &path.to_string_lossy()) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("add_recent_document", err),
+                    );
+                }
+            }
+            DeferredAction::ClearRecentDocuments => {
+                if let Err(err) = clear_recent_documents(backend.services()) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("clear_recent_documents", err),
+                    );
+                }
+            }
+            DeferredAction::SetDockMenu(items) => {
+                if let Err(err) = set_dock_menu(backend.services(), items) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("set_dock_menu", err),
+                    );
+                }
+            }
+            DeferredAction::SetJumpList(items) => {
+                if let Err(err) = set_jump_list(backend.services(), items) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("set_jump_list", err),
+                    );
+                }
+            }
+        }
+    }
+    applied
 }
 
 /// Wraps a value that is provably safe to move across [`Python::detach`]'s
@@ -2836,18 +2293,6 @@ fn decode<T: serde::de::DeserializeOwned>(what: &str, dict: &Bound<'_, PyDict>) 
     })
 }
 
-/// Downcasts a caught panic payload to a human-readable message, mirroring
-/// `quadraui-ffi`'s `record_panic`.
-fn panic_message(payload: &(dyn Any + Send)) -> String {
-    if let Some(text) = payload.downcast_ref::<&'static str>() {
-        (*text).to_owned()
-    } else if let Some(text) = payload.downcast_ref::<String>() {
-        text.clone()
-    } else {
-        "<non-string panic payload>".to_owned()
-    }
-}
-
 #[pymethods]
 impl QuiApp {
     /// Creates a new headless app on a `width`x`height` cell grid.
@@ -2873,13 +2318,88 @@ impl QuiApp {
             render_callback: render,
             ..PyAppLogic::default()
         };
+        let driver = TuiDriver::new(app_logic, width, height);
+        let current_waker = Arc::new(Mutex::new(driver.backend().waker()));
         Ok(QuiApp {
-            driver: TuiDriver::new(app_logic, width, height),
+            driver,
             pending_events: VecDeque::new(),
             poisoned: false,
             clipboard: None,
             #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
             native_consumed: false,
+            current_waker,
+        })
+    }
+
+    /// Builds a [`QuiShellApp`]: a headless VS Code-style app frame
+    /// (activity bar + sidebar + optional bottom-panel tab strip) around
+    /// Python-registered content and event handlers, on a `width`x`height`
+    /// cell grid.
+    ///
+    /// `config` is a `dict` decoded into a `quadraui::ShellConfig` by
+    /// [`shell_config_from_dict`] — see that function's doc for the
+    /// recognized keys. `on_event`, `render_content`, `on_shell_event`,
+    /// `on_bottom_panel_event`, and `on_tick`, if given, are registered
+    /// exactly as the matching `QuiShellApp.set_*` method would right
+    /// after construction.
+    ///
+    /// This is a separate class ([`QuiShellApp`], not a mode switch on this
+    /// `QuiApp`) rather than an instance method: a plain `QuiApp` wraps a
+    /// fixed `TuiDriver<PyAppLogic>`, and `run_shell` drives a different
+    /// `AppLogic` (`quadraui::shell_adapter::ShellAdapter<PyShellApp>`,
+    /// erased behind `Box<dyn ErasedShellDriver>` since
+    /// `driver_with_shell` returns an unnameable `TuiDriver<impl AppLogic>`)
+    /// — there is no shared driver field a mode switch could flip between
+    /// the two without turning every existing `QuiApp` method into a
+    /// mode-dispatching wrapper.
+    ///
+    /// Raises `InvalidDimensionsError` if `width`/`height` is zero, or
+    /// `InvalidDescriptorError` if `config` doesn't decode.
+    #[staticmethod]
+    #[pyo3(signature = (
+        width,
+        height,
+        config,
+        on_event=None,
+        render_content=None,
+        on_shell_event=None,
+        on_bottom_panel_event=None,
+        on_tick=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn run_shell(
+        width: u16,
+        height: u16,
+        config: &Bound<'_, PyDict>,
+        on_event: Option<Py<PyAny>>,
+        render_content: Option<Py<PyAny>>,
+        on_shell_event: Option<Py<PyAny>>,
+        on_bottom_panel_event: Option<Py<PyAny>>,
+        on_tick: Option<Py<PyAny>>,
+    ) -> PyResult<QuiShellApp> {
+        if width == 0 || height == 0 {
+            return Err(InvalidDimensionsError::new_err(
+                "width and height must both be non-zero",
+            ));
+        }
+        let shell_config = shell_config_from_dict(config)?;
+        let state = Rc::new(RefCell::new(ShellState {
+            handler: on_event,
+            on_tick,
+            render_content,
+            on_shell_event,
+            on_bottom_panel_event,
+            pending_error: None,
+        }));
+        let app = PyShellApp {
+            state: state.clone(),
+        };
+        let driver = driver_with_shell(app, shell_config, width, height);
+        Ok(QuiShellApp {
+            driver: Box::new(driver),
+            state,
+            pending_events: VecDeque::new(),
+            poisoned: false,
         })
     }
 
@@ -2925,12 +2445,72 @@ impl QuiApp {
         let ch = char::from_u32(ch).ok_or_else(|| {
             InvalidCharError::new_err(format!("invalid Unicode code point: {ch}"))
         })?;
-        self.pending_events.push_back(UiEvent::KeyPressed {
-            key: Key::Char(ch),
-            modifiers: Modifiers::default(),
-            repeat: false,
-        });
+        self.pending_events.push_back(key_pressed_event(ch));
         Ok(())
+    }
+
+    /// Returns a [`QuiAppWaker`] handle: a thread-safe, `Send + Sync`
+    /// object a **background thread** (a worker thread, an asyncio event
+    /// loop running elsewhere, a subprocess-watcher thread, a timer) can
+    /// call `post`/`wake` on to deliver a value back into this app's event
+    /// stream, waking whichever loop currently owns it so the value is
+    /// observed promptly rather than only on the next unrelated event or
+    /// tick.
+    ///
+    /// Unlike `QuiApp` itself (`#[pyclass(unsendable)]`, pinned to the
+    /// thread that created it), the returned handle is safe to hand to
+    /// another Python thread — that is the entire point of this method:
+    /// `QuiApp`'s own methods can't be called cross-thread at all, so
+    /// event injection from off-thread has to go through a separate,
+    /// `Send`-safe object instead. Call this once up front and share the
+    /// result with the background thread (e.g. pass it as a `threading.Thread`
+    /// constructor argument) rather than trying to call it from that
+    /// thread, which would hit the same cross-thread restriction `QuiApp`
+    /// itself has.
+    ///
+    /// Raises `PoisonedError` on a poisoned app (an earlier caught panic —
+    /// see [`QuiApp::guarded`]) rather than handing out a handle anyway:
+    /// every other `QuiApp` method routes through `guarded`, which already
+    /// refuses a poisoned app, and this is the one direct `&self` read of
+    /// `current_waker` that would otherwise skip that check — a handle
+    /// obtained from it would silently post into whatever queue
+    /// `current_waker` last pointed at, with nothing left running to drain
+    /// it.
+    fn waker(&self) -> PyResult<QuiAppWaker> {
+        if self.poisoned {
+            return Err(PoisonedError::new_err(
+                "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
+            ));
+        }
+        Ok(QuiAppWaker(self.current_waker.clone()))
+    }
+
+    /// Returns a [`QuiAppActions`] handle: an object a registered event
+    /// handler can call `show_message_dialog`/`show_context_menu`/
+    /// `show_toast`/`show_tooltip`/`send_notification`/`open_path`/
+    /// `reveal_in_file_manager`/`move_to_trash`/`restore_from_trash` on
+    /// instead of this `QuiApp` itself, since the handler already holds
+    /// this app's one mutable borrow for the whole dispatch that invoked
+    /// it and a direct call on `self` from there raises "already
+    /// borrowed" — see [`QuiAppActions`]'s own doc for the full story and
+    /// [`flush_deferred_actions`] for when and how a queued action is
+    /// actually applied.
+    ///
+    /// Call this once up front, same restriction [`Self::waker`]'s own doc
+    /// gives for the same reason: `QuiApp` is `unsendable` and blocks the
+    /// calling thread for the whole of `run_tui`/`run_native`, so there is
+    /// no reachable way to call this *during* either — only before.
+    ///
+    /// Raises `PoisonedError` on a poisoned app, mirroring [`Self::waker`].
+    fn actions(&self) -> PyResult<QuiAppActions> {
+        if self.poisoned {
+            return Err(PoisonedError::new_err(
+                "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
+            ));
+        }
+        Ok(QuiAppActions {
+            queue: self.driver.app().deferred_actions.clone(),
+        })
     }
 
     /// Resizes the underlying cell grid to `width`x`height`.
@@ -2946,21 +2526,27 @@ impl QuiApp {
         })
     }
 
-    /// Advances the runner by one step: dispatches the oldest queued event,
-    /// or ticks the app if none is queued. Returns `True` if the app is
-    /// still running afterwards, `False` once it has exited. Re-raises
-    /// whatever exception a registered handler/tick callback raised while
-    /// handling this step.
+    /// Advances the runner by one step: dispatches the oldest event queued
+    /// by `push_event`/`push_key_event`, or — if none is queued — drains and
+    /// dispatches every value a [`QuiAppWaker::post`]/`::wake` call delivered
+    /// since the last step as a `{"User": value}` event, then ticks if
+    /// still nothing was dispatched. A `push_event`/`push_key_event` call
+    /// always takes priority over a pending `post`/`wake`, so a steady
+    /// stream of pushed events can delay (but never drop) a posted value.
+    /// Returns `True` if the app is still running afterwards, `False` once
+    /// it has exited. Re-raises whatever exception a registered
+    /// handler/tick callback raised while handling this step.
     fn step(&mut self) -> PyResult<bool> {
         self.guarded(|app| app.step_once())
     }
 
     /// Runs up to `max_steps` steps (default 1), releasing the GIL for the
     /// duration of the Rust loop and re-acquiring it only for each
-    /// individual handler/tick callback. Stops early once the app exits.
-    /// Returns `True` if still running afterwards, `False` once exited.
-    /// Re-raises whatever exception a registered handler/tick callback
-    /// raised during any step.
+    /// individual handler/tick callback. Each step follows the same
+    /// queued-event / posted-`User`-event / tick order as [`QuiApp::step`].
+    /// Stops early once the app exits. Returns `True` if still running
+    /// afterwards, `False` once exited. Re-raises whatever exception a
+    /// registered handler/tick callback raised during any step.
     #[pyo3(signature = (max_steps=1))]
     fn run(&mut self, py: Python<'_>, max_steps: u32) -> PyResult<bool> {
         let steps = max_steps.max(1);
@@ -3106,11 +2692,14 @@ impl QuiApp {
     /// GTK's own `apply_reaction` does, so the window closes and
     /// `WinRunner::pump` reports `StepOutcome::Exited` on the very next call,
     /// breaking the loop below with no extra flag required. `WindowClose`
-    /// itself always closes the window on every backend, since
-    /// [`NativeAppLogic`] forces that one case through
-    /// `evaluate_window_should_close`/`request_exit`/`DestroyWindow` rather
-    /// than leaving it to the general `Reaction::Exit` path (which the
-    /// registered handler could otherwise veto by returning anything else).
+    /// closes the window on every backend by default — with no handler
+    /// registered at all, or with one registered that returns `None`
+    /// (no explicit `return`, the common case for a handler with no
+    /// opinion about closing) or `False`. Only an explicit `return True`
+    /// vetoes the close and leaves the window open, e.g. to show an
+    /// "unsaved changes?" prompt and let the user decide — see
+    /// [`NativeAppLogic`]'s own doc and
+    /// [`reaction_from_window_close_return`].
     ///
     /// That `WindowClose` case returning control to Python (rather than
     /// AppKit terminating the interpreter) is a *timing* property worth
@@ -3494,6 +3083,16 @@ impl QuiApp {
     /// app's whole run; an app that never reads mouse events itself should
     /// pass `mouse=False` so a user can select and copy text with the
     /// terminal's own mouse handling instead.
+    ///
+    /// Constructs the real `TuiRunner` (and its `TuiBackend`) before
+    /// releasing the GIL, rather than inside the detached pump loop below,
+    /// specifically so this call can swap [`QuiApp::waker`]'s shared cell
+    /// to that backend's own `Backend::waker` for the loop's whole
+    /// duration — a `QuiAppWaker` obtained before or during this call then
+    /// wakes the real terminal loop promptly instead of queuing into the
+    /// dormant headless driver's backend. Swapped back once the loop
+    /// returns control here, whether it exited cleanly, failed to set up,
+    /// or a callback raised.
     #[pyo3(signature = (mouse=true))]
     fn run_tui(&mut self, py: Python<'_>, mouse: bool) -> PyResult<()> {
         self.guarded(|app| {
@@ -3504,21 +3103,37 @@ impl QuiApp {
             // `check_signals()` failure into.
             let tui_error = app_logic.pending_error.clone();
             let loop_error = app_logic.pending_error.clone();
-            let wrapped = AssertUngil((app_logic, loop_error));
             let config = if mouse {
                 RunConfig::default()
             } else {
                 RunConfig::no_mouse()
             };
+            let runner = TuiRunner::new_with(app_logic, config)
+                .map_err(|err| InternalError::new_err(format!("run_tui: {err}")))?;
+            let previous_waker = std::mem::replace(
+                &mut *app.current_waker.lock().unwrap_or_else(|e| e.into_inner()),
+                runner.backend().waker(),
+            );
+            let _restore_waker = RestoreWakerOnDrop {
+                current_waker: &app.current_waker,
+                previous: Some(previous_waker),
+            };
+            let wrapped = AssertUngil((runner, loop_error));
             let setup_result: io::Result<()> = py.detach(move || {
                 let wrapped = wrapped;
-                let (app_logic, loop_error) = wrapped.0;
-                let mut runner = TuiRunner::new_with(app_logic, config)?;
+                let (mut runner, loop_error) = wrapped.0;
                 let poll_interval = Duration::from_millis(50);
                 loop {
                     if runner.pump(poll_interval)? == StepOutcome::Exited {
                         break;
                     }
+                    // `PyAppLogic::handle`/`tick` already drained whatever
+                    // a `QuiAppActions` method queued during this `pump`
+                    // (against this same live terminal backend) and folded
+                    // the result into the `Reaction` it returned, so
+                    // `pump` above already repainted it if needed — no
+                    // separate flush call is needed here.
+                    //
                     // A render callback invoked by this `pump` may have
                     // recorded an unrecoverable error; stop pumping now
                     // rather than looping on a broken app.
@@ -3538,6 +3153,7 @@ impl QuiApp {
                 }
                 Ok(())
             });
+            drop(_restore_waker);
             if let Some(err) = tui_error.borrow_mut().take() {
                 return Err(err);
             }
@@ -3570,6 +3186,128 @@ impl QuiApp {
         self.guarded(|app| Ok(app.clipboard_backend().services().clipboard().read_text()))
     }
 
+    /// Reads the X11/Wayland PRIMARY selection — the platform convention
+    /// behind middle-click paste, distinct from `clipboard_read_text`'s
+    /// CLIPBOARD selection (populated by an explicit copy). `None` on
+    /// every backend but GTK on Linux/BSD, the only one with a PRIMARY
+    /// selection concept — including here, since `clipboard_backend`
+    /// always wraps the headless `TuiBackend` regardless of which
+    /// `run_native` backend (if any) is active.
+    fn clipboard_read_primary_selection(&mut self) -> PyResult<Option<String>> {
+        self.guarded(|app| {
+            Ok(app
+                .clipboard_backend()
+                .services()
+                .clipboard()
+                .read_primary_selection())
+        })
+    }
+
+    /// Reads the current clipboard contents as `(width, height, pixels)`,
+    /// where `pixels` is a straight (non-premultiplied) RGBA8 buffer,
+    /// row-major top-to-bottom left-to-right, exactly `width * height * 4`
+    /// bytes.
+    ///
+    /// `None` collapses three different [`quadraui::BackendError`]s this binding
+    /// cannot tell apart from here: an empty / non-image clipboard
+    /// (`PlatformFailure`, since `arboard` reports "nothing to read" the
+    /// same way it reports a real platform error), and a backend with no
+    /// image clipboard channel at all (`Unsupported` — always true on
+    /// TUI, whose only remote-reachable channel, OSC 52, has no image
+    /// form). Unlike [`QuiApp::clipboard_write_image`], this is a plain
+    /// probe ("is there an image to read") rather than a demand ("put
+    /// this image there"), so a caller checking before falling back to
+    /// `clipboard_read_text` sees one uniform "nothing" result instead of
+    /// having to catch an exception just to tell `Unsupported` apart from
+    /// "clipboard happens to be empty".
+    fn clipboard_read_image(&mut self) -> PyResult<Option<(u32, u32, Vec<u8>)>> {
+        self.guarded(|app| {
+            Ok(app
+                .clipboard_backend()
+                .services()
+                .clipboard()
+                .read_image()
+                .ok()
+                .map(|img| (img.width, img.height, img.pixels)))
+        })
+    }
+
+    /// Writes `pixels` (straight RGBA8, row-major top-to-bottom
+    /// left-to-right) to the system clipboard as an image. Raises
+    /// `InvalidDimensionsError` if `pixels` isn't exactly
+    /// `width * height * 4` bytes long, and `InternalError` if the backend
+    /// itself rejects the write — including `Unsupported` on TUI, which
+    /// has no image clipboard channel.
+    fn clipboard_write_image(&mut self, width: u32, height: u32, pixels: Vec<u8>) -> PyResult<()> {
+        self.guarded(|app| {
+            // `checked_mul` rather than a plain `*`: an adversarial
+            // `width`/`height` (e.g. `2**31`) overflows `usize` on a 32-bit
+            // target and wraps silently in a release build, which would let
+            // a zero-length `pixels` buffer slip past the length check
+            // below instead of being rejected here.
+            let expected = (width as usize)
+                .checked_mul(height as usize)
+                .and_then(|n| n.checked_mul(4))
+                .ok_or_else(|| {
+                    InvalidDimensionsError::new_err(format!(
+                        "width * height * 4 overflows (width={width}, height={height})"
+                    ))
+                })?;
+            if pixels.len() != expected {
+                return Err(InvalidDimensionsError::new_err(format!(
+                    "pixels must be exactly width * height * 4 bytes ({expected}), got {}",
+                    pixels.len()
+                )));
+            }
+            app.clipboard_backend()
+                .services()
+                .clipboard()
+                .write_image(&RgbaImage {
+                    width,
+                    height,
+                    pixels,
+                })
+                .map_err(|err| InternalError::new_err(format!("clipboard_write_image: {err:?}")))
+        })
+    }
+
+    /// Writes `html` to the system clipboard, with `alt_text` as the
+    /// plain-text fallback a paste target that only understands text falls
+    /// back to. Raises `InternalError` on failure, including
+    /// `Unsupported` on TUI, which has no HTML clipboard channel.
+    fn clipboard_write_html(&mut self, html: &str, alt_text: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            app.clipboard_backend()
+                .services()
+                .clipboard()
+                .write_html(html, alt_text)
+                .map_err(|err| InternalError::new_err(format!("clipboard_write_html: {err:?}")))
+        })
+    }
+
+    /// Reads the list of file paths currently on the clipboard (a
+    /// Finder/Explorer copy), as a list of their string representations.
+    ///
+    /// `None` collapses an empty list and a backend with no file-list
+    /// clipboard channel at all (TUI) into one result, for the same
+    /// reason [`QuiApp::clipboard_read_image`] does — see its doc.
+    fn clipboard_read_file_list(&mut self) -> PyResult<Option<Vec<String>>> {
+        self.guarded(|app| {
+            Ok(app
+                .clipboard_backend()
+                .services()
+                .clipboard()
+                .read_file_list()
+                .ok()
+                .map(|paths| {
+                    paths
+                        .into_iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect()
+                }))
+        })
+    }
+
     /// Inserts a `Button` descriptor from a Python dict, returning its slot
     /// handle. Raises `RuntimeError` if the button slot is already
     /// occupied — call `slot_clear` first.
@@ -3578,7 +3316,7 @@ impl QuiApp {
             SLOT_BUTTON,
             "insert_button",
             |app, value| {
-                app.button = Some(value);
+                app.host.button = Some(value);
             },
             descriptor,
         )
@@ -3592,7 +3330,7 @@ impl QuiApp {
             SLOT_TEXT_DISPLAY,
             "insert_text_display",
             |app, value| {
-                app.text_display = Some(value);
+                app.host.text_display = Some(value);
             },
             descriptor,
         )
@@ -3606,7 +3344,7 @@ impl QuiApp {
             SLOT_LIST,
             "insert_list",
             |app, value| {
-                app.list = Some(value);
+                app.host.list = Some(value);
             },
             descriptor,
         )
@@ -3620,7 +3358,7 @@ impl QuiApp {
             SLOT_TREE,
             "insert_tree",
             |app, value| {
-                app.tree = Some(value);
+                app.host.tree = Some(value);
             },
             descriptor,
         )
@@ -3634,7 +3372,7 @@ impl QuiApp {
             SLOT_DATA_TABLE,
             "insert_data_table",
             |app, value| {
-                app.data_table = Some(value);
+                app.host.data_table = Some(value);
             },
             descriptor,
         )
@@ -3648,7 +3386,7 @@ impl QuiApp {
             SLOT_TAB_BAR,
             "insert_tab_bar",
             |app, value| {
-                app.tab_bar = Some(value);
+                app.host.tab_bar = Some(value);
             },
             descriptor,
         )
@@ -3679,18 +3417,19 @@ impl QuiApp {
     }
 
     /// Inserts a descriptor for any additive primitive `kind` registered in
-    /// `EXTRA_PRIMITIVES` (see [`extra_kind_names`] for the current list),
-    /// returning `kind` back. Raises `RuntimeError` if `kind` is already
-    /// occupied — call `clear_extra(kind)` first — and
-    /// `InvalidDescriptorError` if `kind` isn't registered. Lets a consumer
-    /// insert a future additive primitive by name alone, with no new
-    /// pymethod needed on this class.
+    /// `quadraui_binding_core::extra_paint`'s `extra_primitives!` table
+    /// (an `InvalidDescriptorError` raised for an unknown `kind` names
+    /// every registered one), returning `kind` back. Raises `RuntimeError`
+    /// if `kind` is already occupied — call `clear_extra(kind)` first.
+    /// Lets a consumer insert a future additive primitive by name alone,
+    /// with no new pymethod needed on this class.
     fn insert_extra(&mut self, kind: &str, descriptor: &Bound<'_, PyDict>) -> PyResult<String> {
         self.store_extra(kind, "insert_extra", descriptor)
     }
 
     /// Empties an additive primitive slot (one registered in
-    /// `EXTRA_PRIMITIVES`), re-rendering so `screen()` no longer shows it.
+    /// `quadraui_binding_core::extra_paint`'s `extra_primitives!` table),
+    /// re-rendering so `screen()` no longer shows it.
     /// Returns whether the slot held anything; an unrecognized `kind`
     /// simply has nothing to clear (unlike `slot_clear`, this never raises
     /// for an unknown key).
@@ -3702,6 +3441,387 @@ impl QuiApp {
                 take_pending_error(app.driver.app_mut())?;
             }
             Ok(cleared)
+        })
+    }
+
+    /// Opens a right-click-style popup menu at `position` (view-local
+    /// coordinates) built from `items` — a list of dicts, each matching
+    /// `ContextMenuItem`'s shape (`id`, `label`, `detail`, `disabled`,
+    /// `checked`, `icon`, `key_equivalent`, `submenu`; see
+    /// `quadraui::ContextMenuItem`'s own doc). The
+    /// popup is routed through the same `compose::ContextMenuController`
+    /// every in-window backend shares, so a click on an item, an Up/Down +
+    /// Enter, or Escape/click-outside all resolve the same way regardless
+    /// of platform (`TuiBackend::effective_menu_style` always resolves
+    /// `Custom`, so this never opens a native popup under `QuiApp`).
+    /// Re-renders immediately so `screen()`/`screen_contains()` reflect the
+    /// open popup without a separate step.
+    ///
+    /// Selecting an item surfaces as `UiEvent::ContextMenuItemActivated`
+    /// to the registered handler on a later dispatched event; dismissing
+    /// with Escape or a click outside surfaces as
+    /// `UiEvent::ContextMenuDismissed`. Both arrive through the normal
+    /// `handle` pipeline exactly like any other `UiEvent` — there is no
+    /// separate callback for them. Calling this again while a popup from
+    /// an earlier call is still open replaces it with the new one
+    /// silently — `ContextMenuDismissed` does not fire for the one it
+    /// replaced.
+    ///
+    /// Call this from top-level script code (e.g. after `step`/`step_once`
+    /// returns, having seen a raw `MouseDown { button: Right, .. }` land
+    /// where a menu should open), never from inside the registered event
+    /// handler or render callback: both already hold this `QuiApp`'s one
+    /// mutable borrow for the whole dispatch, so a reentrant call here hits
+    /// the same PyO3 runtime-borrow wall `QuiApp.insert_*`/`slot_clear` do —
+    /// see the module doc's "cannot call back into `QuiApp`" note. From
+    /// inside a handler, call [`QuiAppActions::show_context_menu`] (via
+    /// [`QuiApp::actions`]) instead — see that type's doc for why it can
+    /// succeed where this can't.
+    fn show_context_menu(
+        &mut self,
+        items: &Bound<'_, PyList>,
+        position: (f32, f32),
+    ) -> PyResult<()> {
+        let items: Vec<ContextMenuItem> =
+            pythonize::depythonize(items.as_any()).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("show_context_menu: invalid items: {err}"))
+            })?;
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            app_logic
+                .engine
+                .open_context_menu(items, Point::new(position.0, position.1), backend);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Opens an in-canvas confirm/alert/prompt dialog built from `title`/
+    /// `body`/`buttons`/`severity`, painting it immediately so
+    /// `screen()`/`screen_contains()` reflect it without a separate render
+    /// step — the "one call" shape `show_context_menu` already has, reusing
+    /// the same `InteractionEngine`-owned anchored-overlay routing the
+    /// context menu uses: `handle` checks the open dialog before the
+    /// menu-bar dropdown and context-menu popup, so it intercepts every
+    /// `KeyPressed`/`MouseDown` while open — opening a dialog also closes
+    /// an already-open dropdown/popup, so there is nothing left underneath
+    /// to contend for those two event kinds. `MouseUp`, `MouseMoved`,
+    /// wheel and `CharTyped` still fall through to the widgets behind the
+    /// dialog, since [`quadraui::compose::MessageDialogController::handle`]
+    /// only looks at `KeyPressed`/`MouseDown`.
+    ///
+    /// `buttons` is a non-empty list of dicts shaped like the in-canvas
+    /// `Dialog` primitive's own `buttons` field: `{"id": str, "label": str,
+    /// "is_default": bool, "is_cancel": bool}` (`is_default`/`is_cancel`
+    /// default to `False`). `tint` is accepted for shape compatibility with
+    /// `Dialog.buttons` but not yet honored by this surface — passing a
+    /// non-`None` `tint` raises `InvalidDescriptorError` rather than
+    /// silently dropping it. `severity` is one of `"info"`, `"question"`,
+    /// `"warning"`, `"error"`, or `None` for no severity tint.
+    ///
+    /// Left/Right cycle keyboard focus among the buttons; Enter activates
+    /// the focused one (seeded on the first `is_default` button, or the
+    /// first button); Escape resolves to the first `is_cancel` button,
+    /// falling back to the first `is_default` one. Either way — and a
+    /// click on any button — dispatches `UiEvent::MessageDialogResolved(id)`
+    /// to the registered handler and closes the dialog, the same round
+    /// trip `show_context_menu_then_clicking_an_item_emits_context_menu_item_activated`
+    /// exercises for a context menu. A click anywhere else on the dialog
+    /// (or outside it) is swallowed rather than falling through to
+    /// whatever is behind it — [`Dialog`][quadraui::Dialog]'s own "modal
+    /// overlay — intercept all clicks" contract. Tab/Shift+Tab do **not**
+    /// reach the dialog's own focus cycling under `QuiApp`: both are
+    /// claimed upstream, before `handle` ever runs, by the generic
+    /// tab-stop intercept whenever any widget behind the dialog is
+    /// focusable (`tab_stops()` reflects those widgets, never the dialog's
+    /// buttons) — use Left/Right instead.
+    ///
+    /// Calling this again while a dialog from an earlier call is still
+    /// open replaces it with the new one silently — `MessageDialogResolved`
+    /// does not fire for the one it replaced. Call `dismiss_message_dialog`
+    /// to close the open dialog without resolving it at all.
+    ///
+    /// Call from top-level script code only, never from inside the
+    /// registered event handler or render callback — see
+    /// `show_context_menu`'s own doc for why (the same PyO3 runtime-borrow
+    /// wall applies here). From inside a handler, call
+    /// [`QuiAppActions::show_message_dialog`] (via [`QuiApp::actions`])
+    /// instead.
+    ///
+    /// This is the modal `Dialog` corner of the in-canvas overlay family
+    /// only. Tooltip/Completions/Float/RichTextPopup have no binding
+    /// surface yet, and the non-modal `Toast` overlay (app-owned toast
+    /// list, keyboard-focus cursor rather than a blocking popup) needs a
+    /// differently-shaped surface than this "one call, blocks input
+    /// until resolved" method and isn't wired here either.
+    #[pyo3(signature = (title, body, buttons, severity=None))]
+    fn show_message_dialog(
+        &mut self,
+        title: String,
+        body: String,
+        buttons: &Bound<'_, PyList>,
+        severity: Option<String>,
+    ) -> PyResult<()> {
+        let buttons: Vec<DialogButton> =
+            pythonize::depythonize(buttons.as_any()).map_err(|err| {
+                InvalidDescriptorError::new_err(format!(
+                    "show_message_dialog: invalid buttons: {err}"
+                ))
+            })?;
+        let severity = severity
+            .map(|s| parse_dialog_severity("show_message_dialog", &s))
+            .transpose()?;
+        let opts =
+            message_dialog_options_from_buttons(title, body, buttons, severity).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("show_message_dialog: {err}"))
+            })?;
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            app_logic.engine.open_message_dialog(opts, backend);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Closes the open message dialog (if any) without resolving it —
+    /// `UiEvent::MessageDialogResolved` does not fire. Returns whether a
+    /// dialog was open to close. The only way to clear a dialog from
+    /// top-level script code without driving it through input; mirrors
+    /// `show_message_dialog`'s own "call from top-level script code only"
+    /// restriction and re-renders so `screen()` reflects the dismissal
+    /// immediately.
+    fn dismiss_message_dialog(&mut self) -> PyResult<bool> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            let closed = app_logic.engine.close_message_dialog(backend);
+            if closed {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(closed)
+        })
+    }
+
+    // ── Remaining in-canvas overlays: Toast / Tooltip / Completions /
+    // Float / RichTextPopup ────────────────────────────────────────────
+    //
+    // Every surface below follows `show_message_dialog`'s own shape: a
+    // plain dict decoded straight into the matching `quadraui` primitive
+    // (`decode::<Toast>`, etc. — see each primitive's own `Deserialize`
+    // derive), routed onto `InteractionEngine`'s own anchored-overlay
+    // slot, re-rendered immediately so `screen()`/`screen_contains()`
+    // reflect the open overlay without a separate step. Call each from
+    // top-level script code only, never from inside the registered event
+    // handler or render callback — same PyO3 runtime-borrow wall
+    // `show_message_dialog`'s own doc explains.
+
+    /// Shows `toast` (a dict matching [`quadraui::Toast`]'s shape — `id`,
+    /// `title`, `body`, `severity`, `actions`, `accent`) stacked in
+    /// `corner` (one of `"bottom_right"` (default), `"bottom_left"`,
+    /// `"top_right"`, `"top_left"`) among whatever toasts are already
+    /// showing. Replaces any existing toast with the same `id`.
+    ///
+    /// A click on an action button dispatches
+    /// `UiEvent::ToastActionClicked(id)` (that action's own id) to the
+    /// registered handler; a click on the dismiss `×` closes the toast
+    /// directly with no event. Toasts are non-modal — unlike
+    /// `show_message_dialog`, they never block input to whatever is
+    /// painted behind them.
+    ///
+    /// Same "top-level script code only" restriction as
+    /// `show_message_dialog`; from inside a handler, call
+    /// [`QuiAppActions::show_toast`] (via [`QuiApp::actions`]) instead.
+    #[pyo3(signature = (toast, corner=None))]
+    fn show_toast(&mut self, toast: &Bound<'_, PyDict>, corner: Option<String>) -> PyResult<()> {
+        let toast: Toast = decode("show_toast", toast)?;
+        let corner = corner
+            .map(|c| parse_toast_corner("show_toast", &c))
+            .transpose()?;
+        self.guarded(|app| {
+            app.driver
+                .app_mut()
+                .engine
+                .show_toast(toast, corner.unwrap_or_default());
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Closes the toast with this id, if showing. Returns whether one was
+    /// closed. No event is dispatched — mirrors `dismiss_message_dialog`'s
+    /// "close without resolving" shape.
+    fn dismiss_toast(&mut self, id: String) -> PyResult<bool> {
+        self.guarded(|app| {
+            let closed = app.driver.app_mut().engine.dismiss_toast(WidgetId::new(id));
+            if closed {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(closed)
+        })
+    }
+
+    /// Shows `tooltip` (a dict matching [`quadraui::Tooltip`]'s shape —
+    /// `id`, `text`, `styled_lines`, `placement`, `bg`, `fg`) anchored
+    /// against `anchor`, an `(x, y, width, height)` rect in this app's
+    /// own cell grid. Replaces any tooltip already showing.
+    ///
+    /// Tooltips are non-interactive — see
+    /// [`quadraui::Backend::draw_tooltip`]'s own doc — so there is no
+    /// click/selection event to report. The next `MouseDown` or
+    /// `KeyPressed` this app handles (through `step`/`step_once`/`run`)
+    /// auto-dismisses it; call `hide_tooltip` to dismiss it sooner (e.g.
+    /// the hovered widget itself changed).
+    fn show_tooltip(
+        &mut self,
+        tooltip: &Bound<'_, PyDict>,
+        anchor: (f32, f32, f32, f32),
+    ) -> PyResult<()> {
+        let tooltip: Tooltip = decode("show_tooltip", tooltip)?;
+        let anchor = Rect::new(anchor.0, anchor.1, anchor.2, anchor.3);
+        self.guarded(|app| {
+            app.driver.app_mut().engine.show_tooltip(tooltip, anchor);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Hides the open tooltip (if any). Returns whether one was open.
+    fn hide_tooltip(&mut self) -> PyResult<bool> {
+        self.guarded(|app| {
+            let hidden = app.driver.app_mut().engine.hide_tooltip();
+            if hidden {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(hidden)
+        })
+    }
+
+    /// Shows `completions` (a dict matching [`quadraui::Completions`]'s
+    /// shape — `id`, `items`, `selected_idx`, `scroll_offset`,
+    /// `has_focus`) anchored at `cursor`, an `(x, y)` caret position in
+    /// this app's own cell grid. Replaces any popup already open.
+    ///
+    /// A click on an item dispatches
+    /// `UiEvent::CompletionItemActivated(id, index)` (the popup's own id
+    /// + the chosen item's index into `items`) and closes the popup;
+    /// Escape, or a click outside it, closes it with no event.
+    fn show_completions(
+        &mut self,
+        completions: &Bound<'_, PyDict>,
+        cursor: (f32, f32),
+    ) -> PyResult<()> {
+        let completions: Completions = decode("show_completions", completions)?;
+        let cursor = Point::new(cursor.0, cursor.1);
+        self.guarded(|app| {
+            app.driver
+                .app_mut()
+                .engine
+                .show_completions(completions, cursor);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Closes the open completions popup (if any) without reporting a
+    /// selection. Returns whether one was open.
+    fn dismiss_completions(&mut self) -> PyResult<bool> {
+        self.guarded(|app| {
+            let closed = app.driver.app_mut().engine.dismiss_completions();
+            if closed {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(closed)
+        })
+    }
+
+    /// Opens `float` (a dict matching [`quadraui::Float`]'s shape — `id`,
+    /// `anchor`, `focusable`, `border`, `bg`; see that type's own doc for
+    /// `anchor`'s shape) at `width`x`height` cells.
+    ///
+    /// **Chrome only** — same contract as
+    /// [`quadraui::Backend::draw_float`] itself: this paints the float's
+    /// background/border, nothing else. There is no content surface on
+    /// this binding yet for a host to paint into the resolved
+    /// `content_bounds` — a future issue's concern, not this one's; see
+    /// `quadraui::Float`'s own module doc for the primitive's full
+    /// content contract.
+    ///
+    /// Escape closes a focusable float (`float.focusable`, `true` by
+    /// default) with no event; a non-focusable hint float never claims
+    /// Escape, matching [`quadraui::ModalStack::top_focusable`]'s own
+    /// "never steals keys" doc.
+    fn show_float(&mut self, float: &Bound<'_, PyDict>, width: f32, height: f32) -> PyResult<()> {
+        let float: Float = decode("show_float", float)?;
+        let measure = FloatMeasure::new(width, height);
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            app_logic.engine.show_float(float, measure, backend);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Closes the open float (if any) with no event. Returns whether one
+    /// was open.
+    fn dismiss_float(&mut self) -> PyResult<bool> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            let closed = app_logic.engine.dismiss_float(backend);
+            if closed {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(closed)
+        })
+    }
+
+    /// Shows `popup` (a dict matching [`quadraui::RichTextPopup`]'s shape
+    /// — `id`, `lines`, `line_text`, `max_visible_rows`, `links`, …)
+    /// anchored at `anchor`, an `(x, y)` position in this app's own cell
+    /// grid — typically the top-left of the cell the popup describes.
+    /// Replaces any popup already open.
+    ///
+    /// A click on a link dispatches
+    /// `UiEvent::RichTextLinkClicked(id, url)` (the popup's own id + the
+    /// clicked [`quadraui::RichTextLink::url`]); Escape, or a click
+    /// outside the popup, closes it with no event.
+    fn show_rich_text_popup(
+        &mut self,
+        popup: &Bound<'_, PyDict>,
+        anchor: (f32, f32),
+    ) -> PyResult<()> {
+        let popup: RichTextPopup = decode("show_rich_text_popup", popup)?;
+        let anchor = Point::new(anchor.0, anchor.1);
+        self.guarded(|app| {
+            app.driver
+                .app_mut()
+                .engine
+                .show_rich_text_popup(popup, anchor);
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            Ok(())
+        })
+    }
+
+    /// Closes the open rich-text popup (if any) without reporting a link
+    /// click. Returns whether one was open.
+    fn dismiss_rich_text_popup(&mut self) -> PyResult<bool> {
+        self.guarded(|app| {
+            let closed = app.driver.app_mut().engine.dismiss_rich_text_popup();
+            if closed {
+                app.driver.render();
+                take_pending_error(app.driver.app_mut())?;
+            }
+            Ok(closed)
         })
     }
 
@@ -3742,6 +3862,1157 @@ impl QuiApp {
             take_pending_error(app.driver.app_mut())?;
             Ok(app.driver.screen_contains(needle))
         })
+    }
+
+    // ─── Metrics & capabilities ─────────────────────────────────────────
+    //
+    // Every method below reads this `QuiApp`'s own headless `TuiBackend` --
+    // the same one `step`/`run`/`screen` always render against, regardless
+    // of whether `run_native` currently has a native window open (see the
+    // `driver` field's doc on `run_tui`/`run_native` not sharing a driver).
+    // A layout computation that calls these alongside `insert_*`/the
+    // render callback -- both of which only ever run against this same
+    // headless backend too -- gets numbers that agree with what `screen`/
+    // `screen_contains` actually show, on every platform this binding
+    // builds for.
+
+    /// This app's current viewport as `(width, height, scale)`, in cells
+    /// -- [`Backend::viewport`]. `scale` is always `1.0` on the headless
+    /// `TuiBackend`. Matches the `width`/`height` this app was constructed
+    /// (or last `resize`d) with.
+    fn viewport(&mut self) -> PyResult<(f32, f32, f32)> {
+        self.guarded(|app| {
+            let vp = app.driver.backend().viewport();
+            Ok((vp.width, vp.height, vp.scale))
+        })
+    }
+
+    /// Height of one standard text row, in the headless backend's native
+    /// units -- [`Backend::line_height`]. Always `1.0` (one terminal
+    /// cell); a layout computation multiplies this instead of hardcoding
+    /// a row height, so the same arithmetic reads correctly against any
+    /// backend's real metrics.
+    fn line_height(&mut self) -> PyResult<f32> {
+        self.guarded(|app| Ok(app.driver.backend().line_height()))
+    }
+
+    /// Approximate monospace character width, in the headless backend's
+    /// native units -- [`Backend::char_width`]. Always `1.0` (one
+    /// terminal cell).
+    fn char_width(&mut self) -> PyResult<f32> {
+        self.guarded(|app| Ok(app.driver.backend().char_width()))
+    }
+
+    /// The advance `draw_list` actually paints `ListView` row text with --
+    /// [`Backend::list_char_width`]. Not always the same as `char_width`
+    /// on a pixel backend, whose chrome font can differ from its editor
+    /// font; use this instead of `char_width` when budgeting text for a
+    /// list row.
+    fn list_char_width(&mut self) -> PyResult<f32> {
+        self.guarded(|app| Ok(app.driver.backend().list_char_width()))
+    }
+
+    /// Line height of the chrome / UI font -- [`Backend::chrome_line_height`].
+    /// Equal to `line_height` on the headless backend (one font for the
+    /// whole cell grid); use this instead of `line_height` when sizing
+    /// chrome rows (toolbars, status bars, tab strips) on a backend with
+    /// a separate chrome font.
+    fn chrome_line_height(&mut self) -> PyResult<f32> {
+        self.guarded(|app| Ok(app.driver.backend().chrome_line_height()))
+    }
+
+    /// Width this backend reserves for its own native scrollbar overlay
+    /// alongside scrollable content -- [`Backend::scrollbar_reserve`].
+    /// Always `0.0` on the headless backend, which has no overlay
+    /// scrollbar chrome.
+    fn scrollbar_reserve(&mut self) -> PyResult<f32> {
+        self.guarded(|app| Ok(app.driver.backend().scrollbar_reserve()))
+    }
+
+    /// Whether this backend can render individual text rows at a larger
+    /// font size -- [`Backend::scales_text_rows`]. Always `False` on the
+    /// headless backend, a fixed-cell grid where a terminal cell can't
+    /// grow.
+    fn scales_text_rows(&mut self) -> PyResult<bool> {
+        self.guarded(|app| Ok(app.driver.backend().scales_text_rows()))
+    }
+
+    /// Snaps a proposed height, in the same units as `line_height`, to
+    /// what this backend will actually paint -- [`Backend::snap_height`].
+    /// Identity on the headless backend, whose cell grid has no sub-row
+    /// resolution to snap away.
+    fn snap_height(&mut self, h: f32) -> PyResult<f32> {
+        self.guarded(|app| Ok(app.driver.backend().snap_height(h)))
+    }
+
+    /// Real `(width, height)`, in the headless backend's native units, of
+    /// `text` rendered in `role`'s font -- [`Backend::measure_text`].
+    /// `role` is `"chrome"` (the default) or `"editor"`; the headless
+    /// backend returns the same cell-count width (height always `1.0`)
+    /// for either, since a terminal has one font by definition -- see
+    /// [`FontRole`]'s doc. Raises `InvalidFontRoleError` for any other
+    /// `role` value.
+    #[pyo3(signature = (text, role="chrome"))]
+    fn measure_text(&mut self, text: &str, role: &str) -> PyResult<(f32, f32)> {
+        let role = font_role(role)
+            .map_err(|err| InvalidFontRoleError::new_err(format!("measure_text: {err}")))?;
+        self.guarded(|app| Ok(app.driver.backend().measure_text(text, role)))
+    }
+
+    /// This backend's declared capabilities -- [`Backend::backend_caps`]
+    /// -- as a `dict` of capability name to whether it's declared. Covers
+    /// every name in [`BackendCaps::vocabulary`] (`"mouse"`, `"scroll"`,
+    /// `"drag"`, `"text_selection"`, `"native_menu"`, `"window_chrome"`,
+    /// `"pointer_cursor"`, `"ime"`, `"file_dialogs"`, `"folder_dialogs"`,
+    /// `"native_dialogs"`, `"notifications"`, `"app_font_registration"`,
+    /// `"window_control"`, `"tray"`, `"generic_font_families"`) plus three
+    /// fields that vocabulary excludes because they aren't plain
+    /// capability-presence booleans: `"kitty_keyboard"` and
+    /// `"sgr_pixel_mouse"` (bools, terminal input-protocol support) and
+    /// `"color_depth"` (one of `"ansi16"`, `"indexed256"`, `"true_color"`).
+    fn backend_caps(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        self.guarded(|app| {
+            let caps = app.driver.backend().backend_caps();
+            let dict = PyDict::new(py);
+            for name in BackendCaps::vocabulary() {
+                dict.set_item(name, caps.has(name))?;
+            }
+            dict.set_item("kitty_keyboard", caps.kitty_keyboard)?;
+            dict.set_item("sgr_pixel_mouse", caps.sgr_pixel_mouse)?;
+            dict.set_item("color_depth", color_depth_name(caps.color_depth))?;
+            Ok(dict.unbind())
+        })
+    }
+
+    // ─── Accelerators & global shortcuts ─────────────────────────────────
+
+    /// Registers `descriptor` (decoded as an [`Accelerator`]) so a
+    /// matching native key event fires `UiEvent::Accelerator(id,
+    /// modifiers)` (see `push_event`'s `{"Accelerator": [id, modifiers]}`
+    /// shape) instead of a plain `KeyPressed`. Re-registering the same
+    /// `descriptor["id"]` replaces its previous binding/scope/label
+    /// wholesale.
+    ///
+    /// `descriptor` requires all four keys -- `"id"`, `"binding"`,
+    /// `"scope"`, and `"label"` (pass `None` for no display label; it is
+    /// not defaulted, so omitting the key raises `InvalidDescriptorError`
+    /// rather than falling back to `None`).
+    ///
+    /// Only `{"scope": "Global"}` actually fires today --
+    /// [`Backend::register_accelerator`]'s matcher
+    /// (`BackendCore::match_keypress`) skips any accelerator whose scope
+    /// is `Widget`/`Mode`, since the backend has no focus/mode context of
+    /// its own to resolve those against. A descriptor with a non-`Global`
+    /// scope is accepted without error and then silently never fires.
+    ///
+    /// Takes effect immediately on this app's own live backend -- a
+    /// chord pushed via `push_event` right after this call (not
+    /// `push_key_event`, which hardcodes no modifiers and so can only
+    /// ever match an unmodified binding) fires on the very next
+    /// `step`/`run` -- and is also replayed onto whichever real backend
+    /// `run_tui`/`run_native` goes on to construct, via this app's
+    /// [`AppLogic::setup`] impl, so a chord registered before either
+    /// call still fires once the terminal/window is live.
+    fn register_accelerator(&mut self, descriptor: &Bound<'_, PyDict>) -> PyResult<()> {
+        self.guarded(|app| {
+            let acc: Accelerator = decode("register_accelerator", descriptor)?;
+            let (backend, app_logic) = app.driver.parts_mut();
+            backend.register_accelerator(&acc);
+            app_logic.host.accelerators.insert(acc.id.clone(), acc);
+            Ok(())
+        })
+    }
+
+    /// Removes a previously registered accelerator --
+    /// [`Backend::unregister_accelerator`]. A no-op if `id` was never
+    /// registered, or was already unregistered.
+    fn unregister_accelerator(&mut self, id: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            let id = AcceleratorId::new(id);
+            let (backend, app_logic) = app.driver.parts_mut();
+            backend.unregister_accelerator(&id);
+            app_logic.host.accelerators.remove(&id);
+            Ok(())
+        })
+    }
+
+    /// Registers `descriptor` (decoded as an [`Accelerator`]) as an
+    /// OS-wide global shortcut --
+    /// [`quadraui::PlatformServices::register_global_shortcut`] -- fired
+    /// as `UiEvent::GlobalShortcut(id)` even while this app isn't
+    /// focused. `descriptor["scope"]` is ignored: a global shortcut is
+    /// OS-wide by construction, see
+    /// `quadraui::accelerator::GlobalShortcutRegistry::register`'s doc.
+    /// Returns an opaque handle (a plain Python `int`) to pass back to
+    /// [`Self::unregister_global_shortcut`].
+    ///
+    /// Resolves [`quadraui::PlatformServices`] off this `QuiApp`'s own
+    /// headless `TuiBackend` -- the one `step`/`run` drive directly --
+    /// never off whatever backend a `run_native` call opened; `run_native`
+    /// moves this app's `PyAppLogic` into a brand-new GTK/macOS/Win
+    /// backend by value and has no handle back to it for this method to
+    /// resolve services against. This is headless-only, independent of
+    /// whether `run_native`'s window is currently open. It makes no
+    /// practical difference today, since every in-tree
+    /// `PlatformServices` override inherits
+    /// [`quadraui::PlatformServices::register_global_shortcut`]'s
+    /// `Unsupported` default regardless of which backend resolves it --
+    /// but the day a backend (GTK's `org.freedesktop.portal.
+    /// GlobalShortcuts`, Win32 `RegisterHotKey`, Cocoa
+    /// `RegisterEventHotKey`) implements a real OS hotkey call, this
+    /// method still won't reach it while a native window is open. This is
+    /// a seam a Python app can already call against; the success path has
+    /// no automated coverage here and needs manual verification once a
+    /// backend implements one for real.
+    fn register_global_shortcut(
+        &mut self,
+        py: Python<'_>,
+        descriptor: &Bound<'_, PyDict>,
+    ) -> PyResult<Py<PyAny>> {
+        self.guarded(|app| {
+            let acc: Accelerator = decode("register_global_shortcut", descriptor)?;
+            let id = app
+                .driver
+                .backend()
+                .services()
+                .register_global_shortcut(acc)
+                .map_err(|err| {
+                    InternalError::new_err(format!("register_global_shortcut: {err:?}"))
+                })?;
+            pythonize::pythonize(py, &id)
+                .map(|v| v.unbind())
+                .map_err(|err| InternalError::new_err(format!("register_global_shortcut: {err}")))
+        })
+    }
+
+    /// Releases a shortcut returned by [`Self::register_global_shortcut`]
+    /// -- [`quadraui::PlatformServices::unregister_global_shortcut`]. See
+    /// that method's doc for why this is headless-only and raises
+    /// `InternalError` on every in-tree backend.
+    fn unregister_global_shortcut(&mut self, py: Python<'_>, id: Py<PyAny>) -> PyResult<()> {
+        self.guarded(|app| {
+            let id: GlobalShortcutId = pythonize::depythonize(id.bind(py)).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("unregister_global_shortcut: {err}"))
+            })?;
+            app.driver
+                .backend()
+                .services()
+                .unregister_global_shortcut(id)
+                .map_err(|err| {
+                    InternalError::new_err(format!("unregister_global_shortcut: {err:?}"))
+                })
+        })
+    }
+
+    /// Releases every currently registered global shortcut --
+    /// [`quadraui::PlatformServices::unregister_all_global_shortcuts`].
+    /// See [`Self::register_global_shortcut`]'s doc for why this is
+    /// headless-only and raises `InternalError` on every in-tree backend.
+    fn unregister_all_global_shortcuts(&mut self) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .unregister_all_global_shortcuts()
+                .map_err(|err| {
+                    InternalError::new_err(format!("unregister_all_global_shortcuts: {err:?}"))
+                })
+        })
+    }
+
+    // ─── Window control, tray & pointer cursor ───────────────────────────
+    //
+    // Every method below resolves `WindowControl`/`TrayService` off this
+    // `QuiApp`'s own headless `TuiBackend` -- never a `run_native` window --
+    // via `with_window`/`with_tray`'s `Backend::window`/`Backend::tray`
+    // fold. `TuiBackend` genuinely implements `set_title` (OSC 0/2) and
+    // reports `Err(BackendError::Unsupported)` -- surfaced here as
+    // `InternalError` -- for every other `WindowControl` method, for
+    // `tray()` itself (always `None` on a terminal), and `set_cursor`
+    // (always returns `False`, no native pointer concept) -- see
+    // `quadraui::backend`'s `WindowControl`/`TrayService`/
+    // `Backend::set_cursor` docs for why those specific gaps are
+    // structural, not "not implemented yet". A `run_native` window built
+    // with the `gtk`/`macos`/`win` feature backs every one of these for
+    // real; call the matching method on [`QuiAppActions`] (via
+    // [`Self::actions`]) from inside a registered handler/tick/render
+    // callback instead of these, for the same re-entrant-borrow reason
+    // `show_message_dialog`'s own doc describes.
+
+    /// Sets the window title -- [`quadraui::WindowControl::set_title`]. On the
+    /// headless `TuiBackend` this emits the OSC 0/2 terminal escape
+    /// sequence (crossterm's `SetTitle`) to retitle the terminal
+    /// emulator's tab/window -- genuinely applied, not a no-op.
+    fn set_title(&mut self, title: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            service_result(
+                "set_title",
+                with_window(app.driver.parts_mut().0, |w| w.set_title(title)),
+            )
+        })
+    }
+
+    /// Marks the window's document as having unsaved changes (`True`) or
+    /// clean (`False`) -- [`quadraui::WindowControl::set_document_edited`]. Raises
+    /// `InternalError` on every in-tree backend except a macOS
+    /// `run_native` window, which has no reachable equivalent from this
+    /// headless app.
+    fn set_document_edited(&mut self, edited: bool) -> PyResult<()> {
+        self.guarded(|app| {
+            service_result(
+                "set_document_edited",
+                with_window(app.driver.parts_mut().0, |w| w.set_document_edited(edited)),
+            )
+        })
+    }
+
+    /// Associates the window with the file at `path` (or clears the
+    /// association when `None`) -- [`quadraui::WindowControl::set_represented_filename`].
+    /// Same macOS-only story as [`Self::set_document_edited`].
+    #[pyo3(signature = (path=None))]
+    fn set_represented_filename(&mut self, path: Option<&str>) -> PyResult<()> {
+        self.guarded(|app| {
+            service_result(
+                "set_represented_filename",
+                with_window(app.driver.parts_mut().0, |w| {
+                    w.set_represented_filename(path.map(Path::new))
+                }),
+            )
+        })
+    }
+
+    /// Sets (or replaces) the tray icon's image -- [`quadraui::backend::TrayService::set_icon`].
+    /// `icon` is an [`ImageSource`] dict, e.g. `{"Path": "/path/to.png"}` or
+    /// `{"Bytes": b"..."}` -- the same externally-tagged shape
+    /// `quadraui::ImageSource`'s derived `Deserialize` accepts. Raises
+    /// `InternalError` on every in-tree backend except a `gtk`/`macos`/
+    /// `win` `run_native` window: TUI has no tray/status-bar concept at all
+    /// ([`Backend::tray`] stays `None` there permanently).
+    fn set_tray_icon(&mut self, icon: &Bound<'_, PyAny>) -> PyResult<()> {
+        let icon: ImageSource = pythonize::depythonize(icon).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_tray_icon: invalid icon: {err}"))
+        })?;
+        self.guarded(|app| {
+            service_result(
+                "set_tray_icon",
+                with_tray(app.driver.parts_mut().0, |t| t.set_icon(icon)),
+            )
+        })
+    }
+
+    /// Sets the tray icon's hover tooltip text -- [`quadraui::backend::TrayService::set_tooltip`].
+    /// Same tray-less-on-TUI story as [`Self::set_tray_icon`].
+    fn set_tray_tooltip(&mut self, tooltip: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            service_result(
+                "set_tray_tooltip",
+                with_tray(app.driver.parts_mut().0, |t| t.set_tooltip(tooltip)),
+            )
+        })
+    }
+
+    /// Attaches (or replaces) the tray icon's right-click/click menu --
+    /// [`quadraui::backend::TrayService::set_menu`]. `items` decodes the same way
+    /// `show_context_menu`'s own `items` argument does -- a list of
+    /// [`ContextMenuItem`] dicts; an activated entry fires
+    /// `UiEvent::ContextMenuItemActivated` the same way a right-click
+    /// context menu's does. Same tray-less-on-TUI story as
+    /// [`Self::set_tray_icon`].
+    fn set_tray_menu(&mut self, items: &Bound<'_, PyList>) -> PyResult<()> {
+        let items: Vec<ContextMenuItem> =
+            pythonize::depythonize(items.as_any()).map_err(|err| {
+                InvalidDescriptorError::new_err(format!("set_tray_menu: invalid items: {err}"))
+            })?;
+        self.guarded(|app| {
+            service_result(
+                "set_tray_menu",
+                with_tray(app.driver.parts_mut().0, |t| t.set_menu(&tray_menu(items))),
+            )
+        })
+    }
+
+    /// Hints the OS mouse-pointer glyph -- [`Backend::set_cursor`]. `shape`
+    /// is one of `"default"`, `"resize"` (requires `edge`), `"text"`,
+    /// `"pointer"`, `"grab"`, `"grabbing"`, `"crosshair"`, `"wait"`,
+    /// `"not_allowed"`, `"col_resize"`, `"row_resize"`; `edge` (only
+    /// meaningful for `"resize"`) is one of `"north"`, `"south"`,
+    /// `"east"`, `"west"`, `"north_east"`, `"north_west"`, `"south_east"`,
+    /// `"south_west"`. Returns whether the pointer glyph was actually
+    /// applied -- `False` on the headless `TuiBackend`, which has no
+    /// native pointer concept at all, same as [`Backend::set_cursor`]'s
+    /// own "no window yet" case on a windowed backend.
+    #[pyo3(signature = (shape, edge=None))]
+    fn set_cursor(&mut self, shape: &str, edge: Option<&str>) -> PyResult<bool> {
+        let shape = parse_pointer_shape("set_cursor", shape, edge)?;
+        self.guarded(|app| Ok(app.driver.parts_mut().0.set_cursor(shape)))
+    }
+
+    // ─── Theme, style & fonts ────────────────────────────────────────────
+
+    /// This app's active [`quadraui::Theme`] -- [`Backend::theme`] -- as a
+    /// `dict` with one entry per `Theme` field, each colour itself a
+    /// `{"r":.., "g":.., "b":.., "a":..}` dict. Pair with [`Self::set_theme`]
+    /// to read a field back after overriding only some of its neighbours.
+    fn theme(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.guarded(|app| {
+            let theme = app.driver.backend().theme();
+            pythonize::pythonize(py, &theme)
+                .map(|v| v.unbind())
+                .map_err(|err| InternalError::new_err(format!("theme: {err}")))
+        })
+    }
+
+    /// Overrides one or more [`quadraui::Theme`] fields on this app's
+    /// backend -- [`Backend::set_theme`] -- merged onto whatever the
+    /// backend's current theme already has, so a caller only needs to name
+    /// the fields it actually wants to change rather than restating all
+    /// ~70. `overrides` keys must be real `Theme` field names (raises
+    /// `InvalidDescriptorError` otherwise); each value is a
+    /// `"#rrggbb"`/`"#rrggbbaa"` hex string, an `[r, g, b[, a]]` list/tuple,
+    /// or a `{"r":.., "g":.., "b":.. [, "a":..]}` dict.
+    ///
+    /// Takes effect immediately on this app's own live backend, and is
+    /// also replayed onto whichever real backend `run_tui`/`run_native`
+    /// goes on to construct, via [`AppLogic::setup`] -- mirrors
+    /// [`Self::register_accelerator`]'s replay contract.
+    fn set_theme(&mut self, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+        let keys = dict_keys(overrides)?;
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            let theme = merge_overrides(backend.theme(), keys, |key| {
+                let val = overrides
+                    .get_item(key)
+                    .map_err(|err| err.to_string())?
+                    .expect("key was read from overrides.keys() above");
+                theme_color_value(key, pyany_to_json(&val)?)
+            })
+            .map_err(|err| override_error_to_py("set_theme", err))?;
+            backend.set_theme(theme);
+            app_logic.host.theme = Some(theme);
+            Ok(())
+        })
+    }
+
+    /// This app's active [`quadraui::Style`] -- [`Backend::style`] -- as a
+    /// `dict` with one entry per token (`focus_ring_width`, `padding`,
+    /// `corner_radius`, `border_width`, `shadow_elevation`,
+    /// `control_height`, `backdrop_opacity`).
+    fn style(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.guarded(|app| {
+            let style = app.driver.backend().style();
+            pythonize::pythonize(py, &style)
+                .map(|v| v.unbind())
+                .map_err(|err| InternalError::new_err(format!("style: {err}")))
+        })
+    }
+
+    /// Overrides one or more [`quadraui::Style`] tokens --
+    /// [`Backend::set_style`] -- merged onto the backend's current style
+    /// the same way [`Self::set_theme`] merges `Theme` fields. `overrides`
+    /// keys must be real `Style` field names. Replayed onto a later
+    /// `run_tui`/`run_native` backend the same way `set_theme` is.
+    fn set_style(&mut self, overrides: &Bound<'_, PyDict>) -> PyResult<()> {
+        let keys = dict_keys(overrides)?;
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            let style = merge_overrides(backend.style(), keys, |key| {
+                let val = overrides
+                    .get_item(key)
+                    .map_err(|err| err.to_string())?
+                    .expect("key was read from overrides.keys() above");
+                pyany_to_json(&val)
+            })
+            .map_err(|err| override_error_to_py("set_style", err))?;
+            backend.set_style(style);
+            app_logic.host.style = Some(style);
+            Ok(())
+        })
+    }
+
+    /// Syncs the nerd-fonts flag -- [`Backend::set_nerd_fonts`] -- so
+    /// icon-bearing surfaces render `Icon::glyph` when `enabled` rather
+    /// than `Icon::fallback`. Replayed onto a later `run_tui`/`run_native`
+    /// backend the same way `set_theme` is.
+    fn set_nerd_fonts(&mut self, enabled: bool) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            backend.set_nerd_fonts(enabled);
+            app_logic.host.nerd_fonts = Some(enabled);
+            Ok(())
+        })
+    }
+
+    /// Whatever was last handed to [`Self::set_nerd_fonts`] --
+    /// [`Backend::nerd_fonts_enabled`].
+    fn nerd_fonts_enabled(&mut self) -> PyResult<bool> {
+        self.guarded(|app| Ok(app.driver.backend().nerd_fonts_enabled()))
+    }
+
+    /// Overrides the font that paints editor content --
+    /// [`Backend::set_editor_font`]. No-op on the headless `TuiBackend`
+    /// (a fixed-cell backend has no font concept), but still recorded and
+    /// replayed onto a later `run_tui`/`run_native` backend the same way
+    /// `set_theme` is -- so a GTK/macOS/Win-GUI window opened afterwards
+    /// picks it up.
+    fn set_editor_font(&mut self, family: &str, size_pt: f32) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            backend.set_editor_font(family, size_pt);
+            app_logic.host.editor_font = Some((family.to_string(), size_pt));
+            Ok(())
+        })
+    }
+
+    /// Overrides the font that paints chrome -- [`Backend::set_ui_font`].
+    /// Same no-op-on-TUI-but-still-replayed contract as
+    /// [`Self::set_editor_font`].
+    fn set_ui_font(&mut self, font_desc: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            backend.set_ui_font(font_desc);
+            app_logic.host.ui_font = Some(font_desc.to_string());
+            Ok(())
+        })
+    }
+
+    /// Registers `bytes` (raw TTF/OTF data) with the platform font manager
+    /// -- [`Backend::register_font_from_memory`]. Returns the family
+    /// name(s) it registered under, or `None` on the headless `TuiBackend`
+    /// (a fixed-cell backend has no font concept) or if `bytes` isn't a
+    /// font this backend's platform font manager can parse. Recorded and
+    /// re-registered onto a later `run_tui`/`run_native` backend the same
+    /// way `set_theme` is.
+    fn register_font_from_memory(&mut self, bytes: Vec<u8>) -> PyResult<Option<Vec<String>>> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            let families = backend.register_font_from_memory(&bytes);
+            app_logic.host.registered_fonts.push(bytes);
+            Ok(families)
+        })
+    }
+
+    /// Sets the fallback font family consulted when the primary font can't
+    /// cover a character -- [`Backend::set_nerd_font_fallback`]. Same
+    /// no-op-on-TUI-but-still-replayed contract as
+    /// [`Self::set_editor_font`].
+    fn set_nerd_font_fallback(&mut self, family: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            let (backend, app_logic) = app.driver.parts_mut();
+            backend.set_nerd_font_fallback(family);
+            app_logic.host.nerd_font_fallback = Some(family.to_string());
+            Ok(())
+        })
+    }
+
+    /// Whether `family` is already installed on this platform as a system
+    /// font -- [`Backend::has_font_family`]. Always `None` on the headless
+    /// `TuiBackend` -- see that method's own doc for why `None` means
+    /// "don't know", never "false".
+    fn has_font_family(&mut self, family: &str) -> PyResult<Option<bool>> {
+        self.guarded(|app| Ok(app.driver.backend().has_font_family(family)))
+    }
+
+    /// Steers the hardware caret to `shape` (`"block"`, `"bar"`, or
+    /// `"underline"`) -- [`Backend::set_caret_shape`]. On the headless
+    /// `TuiBackend` this always writes a DECSCUSR escape sequence to real
+    /// stdout regardless of whether a real terminal is attached (see that
+    /// method's own doc) -- harmless under `pytest`'s captured stdout, but
+    /// not something a driver test can observe landing anywhere.
+    fn set_caret_shape(&mut self, shape: &str) -> PyResult<()> {
+        let shape = caret_shape(shape)
+            .map_err(|err| InvalidDescriptorError::new_err(format!("set_caret_shape: {err}")))?;
+        self.guarded(|app| {
+            app.driver.parts_mut().0.set_caret_shape(shape);
+            Ok(())
+        })
+    }
+
+    /// RGB colour painted at one headless-backend cell, read back as
+    /// `((fg_r, fg_g, fg_b), (bg_r, bg_g, bg_b))` --
+    /// [`quadraui::tui::testing::TuiDriver::style_at`]. `None` if `(x, y)`
+    /// is outside the current viewport. Exists so a test can prove
+    /// `set_theme`/`set_style` actually changed what gets painted, not
+    /// just what `theme()`/`style()` read back -- every in-tree rasteriser
+    /// paints an RGB colour via `quadraui::tui::ratatui_color`, so the
+    /// `(0, 0, 0)` fallback below is purely defensive.
+    fn cell_colors(&mut self, x: u16, y: u16) -> PyResult<Option<CellColors>> {
+        self.guarded(|app| {
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            let Some(style) = app.driver.style_at(x, y) else {
+                return Ok(None);
+            };
+            Ok(Some((ratatui_rgb(style.fg), ratatui_rgb(style.bg))))
+        })
+    }
+
+    // ─── Platform services ───────────────────────────────────────────────
+    //
+    // Every method below resolves `quadraui::PlatformServices` off this
+    // `QuiApp`'s own headless `TuiBackend` -- the same "never off whatever
+    // backend a `run_native` call opened" restriction
+    // `register_global_shortcut`'s doc above explains, for the same reason:
+    // `run_native` moves this app's `PyAppLogic` into a brand-new GTK/macOS/
+    // Win backend by value and leaves this `QuiApp` no handle back to it.
+    // `TuiPlatformServices` (`quadraui::tui::services`) is a genuine,
+    // non-stub implementation for every method here -- see that module's
+    // doc for exactly what each one does on a terminal (a real opener
+    // shell-out, a real BEL, a nested draw-and-read loop over a `compose`
+    // controller for the three dialogs/picker).
+
+    /// Queues scripted input for the next nested dialog/picker loop a
+    /// `show_file_open_dialog`/`show_file_save_dialog`/`show_folder_dialog`
+    /// call drives -- [`quadraui::tui::testing::TuiDriver::queue_dialog_events`].
+    /// `events` decodes the same way `push_event`'s single dict does, one
+    /// [`UiEvent`] per list entry. With nothing queued, the very first
+    /// event the nested loop synthesizes is Escape, so an un-driven dialog
+    /// call resolves to `None` (cancelled) rather than hanging -- queue a
+    /// script here first when a test wants a real confirmed path/choice
+    /// instead.
+    fn queue_dialog_events(&mut self, events: &Bound<'_, PyList>) -> PyResult<()> {
+        let events: Vec<UiEvent> = pythonize::depythonize(events.as_any()).map_err(|err| {
+            InvalidDescriptorError::new_err(format!(
+                "queue_dialog_events: invalid descriptor: {err}"
+            ))
+        })?;
+        self.guarded(|app| {
+            app.driver.queue_dialog_events(events);
+            Ok(())
+        })
+    }
+
+    /// Opens a file-open picker -- [`quadraui::PlatformServices::show_file_open_dialog`].
+    /// On the headless `TuiBackend` this drives
+    /// [`quadraui::compose::FilePickerController`] through a nested
+    /// draw-and-read loop fed by [`Self::queue_dialog_events`] (or Escape
+    /// immediately, with nothing queued). Returns the confirmed path, or
+    /// `None` on cancel. `filters` is a list of `(label, [ext, ...])`
+    /// pairs, e.g. `[("Rust", ["rs"])]`.
+    #[pyo3(signature = (title=None, initial_dir=None, filters=None))]
+    fn show_file_open_dialog(
+        &mut self,
+        title: Option<String>,
+        initial_dir: Option<String>,
+        filters: Option<Vec<(String, Vec<String>)>>,
+    ) -> PyResult<Option<String>> {
+        self.guarded(|app| {
+            let opts = FileDialogOptions {
+                title,
+                initial_dir: initial_dir.map(PathBuf::from),
+                initial_filename: None,
+                filters: filters.unwrap_or_default(),
+            };
+            Ok(app
+                .driver
+                .backend()
+                .services()
+                .show_file_open_dialog(opts)
+                .map(|p| p.display().to_string()))
+        })
+    }
+
+    /// Opens a file-save picker -- [`quadraui::PlatformServices::show_file_save_dialog`].
+    /// Same nested-loop/`queue_dialog_events` story as
+    /// [`Self::show_file_open_dialog`]; `initial_filename` seeds the
+    /// picker's query field.
+    #[pyo3(signature = (title=None, initial_dir=None, initial_filename=None, filters=None))]
+    fn show_file_save_dialog(
+        &mut self,
+        title: Option<String>,
+        initial_dir: Option<String>,
+        initial_filename: Option<String>,
+        filters: Option<Vec<(String, Vec<String>)>>,
+    ) -> PyResult<Option<String>> {
+        self.guarded(|app| {
+            let opts = FileDialogOptions {
+                title,
+                initial_dir: initial_dir.map(PathBuf::from),
+                initial_filename,
+                filters: filters.unwrap_or_default(),
+            };
+            Ok(app
+                .driver
+                .backend()
+                .services()
+                .show_file_save_dialog(opts)
+                .map(|p| p.display().to_string()))
+        })
+    }
+
+    /// Opens a directory picker -- [`quadraui::PlatformServices::show_folder_open_dialog`].
+    /// Same nested-loop/`queue_dialog_events` story as
+    /// [`Self::show_file_open_dialog`], but drives
+    /// [`quadraui::compose::FolderPickerController`] instead of
+    /// `FilePickerController`.
+    #[pyo3(signature = (title=None, initial_dir=None))]
+    fn show_folder_dialog(
+        &mut self,
+        title: Option<String>,
+        initial_dir: Option<String>,
+    ) -> PyResult<Option<String>> {
+        self.guarded(|app| {
+            let opts = FileDialogOptions {
+                title,
+                initial_dir: initial_dir.map(PathBuf::from),
+                initial_filename: None,
+                filters: Vec::new(),
+            };
+            Ok(app
+                .driver
+                .backend()
+                .services()
+                .show_folder_open_dialog(opts)
+                .map(|p| p.display().to_string()))
+        })
+    }
+
+    /// Dispatches a system notification --
+    /// [`quadraui::PlatformServices::send_notification`]. On the headless
+    /// `TuiBackend` this is a genuine best-effort degrade (an OSC 9/777
+    /// escape sequence plus a native `osascript`/`notify-send` spawn where
+    /// available), not a no-op -- see `quadraui::tui::services`'s module
+    /// doc's "Notifications" section. Fire-and-forget: there is no return
+    /// value to assert on, and no error this binding can observe.
+    #[pyo3(signature = (title, body, urgent=false, silent=false, tag=None))]
+    fn send_notification(
+        &mut self,
+        title: String,
+        body: String,
+        urgent: bool,
+        silent: bool,
+        tag: Option<String>,
+    ) -> PyResult<()> {
+        self.guarded(|app| {
+            let mut n = Notification::new(title, body).with_silent(silent);
+            if let Some(tag) = tag {
+                n = n.with_tag(tag);
+            }
+            n.urgent = urgent;
+            app.driver.backend().services().send_notification(n);
+            Ok(())
+        })
+    }
+
+    /// Opens `url` in the platform's default browser --
+    /// [`quadraui::PlatformServices::open_url_result`] (the fallible twin
+    /// of `open_url`, used here so a genuine failure raises instead of
+    /// being silently swallowed). On the headless `TuiBackend` this shells
+    /// out to `xdg-open`/`open`/`cmd /c start`, falling back to an OSC 8
+    /// hyperlink -- see `quadraui::tui::services`'s module doc's "URL
+    /// opening" section. Raises `InternalError` only when neither leg
+    /// reached anything.
+    fn open_url(&mut self, url: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .open_url_result(url)
+                .map_err(|err| InternalError::new_err(format!("open_url: {err:?}")))
+        })
+    }
+
+    /// Reveals `path` in the platform's file manager with it selected --
+    /// [`quadraui::PlatformServices::reveal_in_file_manager`]. On the
+    /// headless `TuiBackend` this reaches the desktop session underneath
+    /// the terminal (`open -R` / Explorer `/select,` / D-Bus `ShowItems`,
+    /// falling back to opening the parent directory) -- a terminal itself
+    /// has no file-manager window, but the session running it usually
+    /// does. Raises `InternalError` when no such session is reachable.
+    ///
+    /// Like every other `&mut self` method here, calling this from inside
+    /// the registered event handler or render callback hits the same PyO3
+    /// runtime-borrow wall `show_message_dialog`'s own doc describes —
+    /// call [`QuiAppActions::reveal_in_file_manager`] (via
+    /// [`QuiApp::actions`]) from a handler instead.
+    fn reveal_in_file_manager(&mut self, path: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .reveal_in_file_manager(Path::new(path))
+                .map_err(|err| InternalError::new_err(format!("reveal_in_file_manager: {err:?}")))
+        })
+    }
+
+    /// Opens `path` with the platform's default handler for its type --
+    /// [`quadraui::PlatformServices::open_path`]. Distinct from
+    /// [`Self::open_url`]: this takes a filesystem path, not a URL. Same
+    /// shell-out story as `open_url` on the headless `TuiBackend`. Raises
+    /// `InternalError` when no opener is reachable.
+    ///
+    /// Same handler restriction as `reveal_in_file_manager` — call
+    /// [`QuiAppActions::open_path`] (via [`QuiApp::actions`]) from a
+    /// handler instead.
+    fn open_path(&mut self, path: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .open_path(Path::new(path))
+                .map_err(|err| InternalError::new_err(format!("open_path: {err:?}")))
+        })
+    }
+
+    /// Moves `path` to the platform trash/recycle bin --
+    /// [`quadraui::PlatformServices::move_to_trash`]. Genuinely full
+    /// support on the headless `TuiBackend`, not a degrade -- the
+    /// cross-platform `trash` crate needs only a filesystem, no live
+    /// desktop session. Raises `InternalError` on a real filesystem
+    /// failure.
+    ///
+    /// Same handler restriction as `reveal_in_file_manager` — call
+    /// [`QuiAppActions::move_to_trash`] (via [`QuiApp::actions`]) from a
+    /// handler instead.
+    fn move_to_trash(&mut self, path: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .move_to_trash(Path::new(path))
+                .map_err(|err| InternalError::new_err(format!("move_to_trash: {err:?}")))
+        })
+    }
+
+    /// Restores `path` from the platform trash/recycle bin back to its
+    /// original location -- [`quadraui::PlatformServices::restore_from_trash`],
+    /// the inverse of [`Self::move_to_trash`]. Full support on the headless
+    /// `TuiBackend` built for Windows or Linux (any freedesktop.org
+    /// trash-spec host) -- same filesystem-only story as `move_to_trash`
+    /// there. Raises `InternalError` both on a real filesystem failure and
+    /// when no trashed item matches `path` (nothing to restore), or when
+    /// built for macOS, where no programmatic trash listing/restore API
+    /// exists to delegate to.
+    ///
+    /// Same handler restriction as `reveal_in_file_manager` — call
+    /// [`QuiAppActions::restore_from_trash`] (via [`QuiApp::actions`]) from
+    /// a handler instead.
+    fn restore_from_trash(&mut self, path: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .restore_from_trash(Path::new(path))
+                .map_err(|err| InternalError::new_err(format!("restore_from_trash: {err:?}")))
+        })
+    }
+
+    /// Rings the terminal bell -- [`quadraui::PlatformServices::beep`].
+    /// Writes BEL (`\x07`) to both stdout and (Unix) `/dev/tty`; harmless
+    /// under `pytest`'s captured stdout, but not itself observable from a
+    /// driver test -- a terminal bell is this method's own "manual
+    /// verification" story.
+    fn beep(&mut self) -> PyResult<()> {
+        self.guarded(|app| {
+            app.driver
+                .backend()
+                .services()
+                .beep()
+                .map_err(|err| InternalError::new_err(format!("beep: {err:?}")))
+        })
+    }
+
+    /// The OS-level light/dark preference, accent colour, and
+    /// high-contrast setting, as a `{"dark": bool, "accent": ... or None,
+    /// "high_contrast": bool, "reduce_motion": bool}` dict --
+    /// [`quadraui::PlatformServices::system_theme`]. On the headless
+    /// `TuiBackend` this is an environment-only heuristic
+    /// (`$COLORFGBG`, parsed the same way `quadraui::tui::caps::detect_system_theme`
+    /// does) -- `accent` is always `None` and `high_contrast`/
+    /// `reduce_motion` are always `False` there, since no terminal exposes
+    /// either signal. Raises `InternalError` when `$COLORFGBG` is unset or
+    /// unparseable -- a terminal that never sets it genuinely gives no
+    /// signal to report.
+    fn system_theme(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.guarded(|app| {
+            let theme = app
+                .driver
+                .backend()
+                .services()
+                .system_theme()
+                .map_err(|err| InternalError::new_err(format!("system_theme: {err:?}")))?;
+            pythonize::pythonize(py, &theme)
+                .map(|v| v.unbind())
+                .map_err(|err| InternalError::new_err(format!("system_theme: {err}")))
+        })
+    }
+
+    /// This app's platform identifier -- [`quadraui::PlatformServices::platform_name`].
+    /// Always `"tui"` here: every method on this page resolves services
+    /// off this `QuiApp`'s own headless `TuiBackend`, never a native
+    /// `run_native` window (see this section's own header doc).
+    fn platform_name(&mut self) -> PyResult<&'static str> {
+        self.guarded(|app| Ok(app.driver.backend().services().platform_name()))
+    }
+
+    // ─── Platform services: update, power-save, login item, protocol,
+    // crash reporter, drag-out, recent docs/dock menu/jump list ──────────
+    //
+    // Every method below is argument conversion + one
+    // `quadraui_binding_core::services` call + `service_error_to_py` --
+    // see that module's own doc for why the actual service-building logic
+    // (parsing `kind` strings, collapsing `BackendError`, minting an opaque
+    // handle) lives there rather than here. Every one of these raises
+    // `UnsupportedError` on the headless `TuiBackend`, which implements
+    // none of them -- see `quadraui::tui::services`'s module doc for which
+    // `PlatformServices` methods it does implement. `apply_on_quit`,
+    // `end_power_save_block`, `set_login_item`,
+    // `set_as_default_protocol_client`, `remove_as_default_protocol_client`,
+    // `begin_drag_out`, `add_recent_document`, `clear_recent_documents`,
+    // `set_dock_menu`, and `set_jump_list` have no return value a caller
+    // needs synchronously, so each has a [`QuiAppActions`] mirror (via
+    // [`Self::actions`]) for use from inside a registered handler, the same
+    // handler restriction `show_message_dialog`'s own doc describes.
+    // `check_for_update`, `download_and_stage`, `begin_power_save_block`,
+    // `login_item_enabled`, and `is_default_protocol_client` each return a
+    // value a caller needs right away, so they have no `QuiAppActions`
+    // mirror -- same reason `QuiAppActions::set_theme`'s doc gives for why
+    // it can't just forward to a live backend at queue time.
+
+    /// Queries `feed_url` for a newer version, as a `{"version": str,
+    /// "notes": str, "url": str, "signature": str}` dict (or `None` when
+    /// nothing newer is published) --
+    /// [`quadraui_binding_core::update_check_for_update`].
+    fn check_for_update(&mut self, py: Python<'_>, feed_url: &str) -> PyResult<Py<PyAny>> {
+        self.guarded(|app| {
+            let info = update_check_for_update(app.driver.backend().services(), feed_url)
+                .map_err(|err| service_error_to_py("check_for_update", err))?;
+            pythonize::pythonize(py, &info)
+                .map(|v| v.unbind())
+                .map_err(|err| InternalError::new_err(format!("check_for_update: {err}")))
+        })
+    }
+
+    /// Downloads and stages `info` (the dict [`Self::check_for_update`]
+    /// returned), returning an opaque handle for a later
+    /// [`Self::apply_on_quit`] call -- [`quadraui_binding_core::update_download_and_stage`].
+    fn download_and_stage(&mut self, info: &Bound<'_, PyDict>) -> PyResult<u64> {
+        let info: UpdateInfoWire = pythonize::depythonize(info.as_any()).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("download_and_stage: invalid info: {err}"))
+        })?;
+        self.guarded(|app| {
+            update_download_and_stage(app.driver.backend().services(), info)
+                .map_err(|err| service_error_to_py("download_and_stage", err))
+        })
+    }
+
+    /// Installs the update staged under `handle` --
+    /// [`quadraui_binding_core::update_apply_on_quit`]. `handle` is
+    /// consumed: a second call with the same value raises
+    /// `InvalidDescriptorError`.
+    ///
+    /// Call [`QuiAppActions::apply_on_quit`] (via [`Self::actions`]) from a
+    /// handler instead.
+    fn apply_on_quit(&mut self, handle: u64) -> PyResult<()> {
+        self.guarded(|app| {
+            update_apply_on_quit(app.driver.backend().services(), handle)
+                .map_err(|err| service_error_to_py("apply_on_quit", err))
+        })
+    }
+
+    /// Starts a sleep/suspend inhibitor of the kind named by `kind`
+    /// (`"prevent_display_sleep"` or `"prevent_app_suspension"`), returning
+    /// an opaque handle for a later [`Self::end_power_save_block`] call --
+    /// [`quadraui_binding_core::begin_power_save_block`].
+    fn begin_power_save_block(&mut self, kind: &str) -> PyResult<u64> {
+        self.guarded(|app| {
+            begin_power_save_block(app.driver.backend().services(), kind)
+                .map_err(|err| service_error_to_py("begin_power_save_block", err))
+        })
+    }
+
+    /// Ends the sleep/suspend inhibitor started under `handle` --
+    /// [`quadraui_binding_core::end_power_save_block`]. `handle` is
+    /// consumed, the same one-shot story [`Self::apply_on_quit`]'s doc
+    /// describes.
+    ///
+    /// Call [`QuiAppActions::end_power_save_block`] (via [`Self::actions`])
+    /// from a handler instead.
+    fn end_power_save_block(&mut self, handle: u64) -> PyResult<()> {
+        self.guarded(|app| {
+            end_power_save_block(app.driver.backend().services(), handle)
+                .map_err(|err| service_error_to_py("end_power_save_block", err))
+        })
+    }
+
+    /// Registers (`enabled=True`) or unregisters (`enabled=False`) this app
+    /// to launch at login -- [`quadraui_binding_core::set_login_item`].
+    /// `open_hidden`/`args` are ignored when `enabled` is `False`.
+    ///
+    /// Call [`QuiAppActions::set_login_item`] (via [`Self::actions`]) from
+    /// a handler instead.
+    #[pyo3(signature = (enabled, open_hidden=false, args=Vec::new()))]
+    fn set_login_item(
+        &mut self,
+        enabled: bool,
+        open_hidden: bool,
+        args: Vec<String>,
+    ) -> PyResult<()> {
+        self.guarded(|app| {
+            set_login_item(app.driver.backend().services(), enabled, open_hidden, args)
+                .map_err(|err| service_error_to_py("set_login_item", err))
+        })
+    }
+
+    /// Whether this app is currently registered to launch at login --
+    /// [`quadraui_binding_core::login_item_enabled`].
+    fn login_item_enabled(&mut self) -> PyResult<bool> {
+        self.guarded(|app| {
+            login_item_enabled(app.driver.backend().services())
+                .map_err(|err| service_error_to_py("login_item_enabled", err))
+        })
+    }
+
+    /// Registers this app as the OS-level default handler for `scheme` --
+    /// [`quadraui_binding_core::set_as_default_protocol_client`].
+    ///
+    /// Call [`QuiAppActions::set_as_default_protocol_client`] (via
+    /// [`Self::actions`]) from a handler instead.
+    fn set_as_default_protocol_client(&mut self, scheme: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            set_as_default_protocol_client(app.driver.backend().services(), scheme)
+                .map_err(|err| service_error_to_py("set_as_default_protocol_client", err))
+        })
+    }
+
+    /// Whether this app is currently the OS-level default handler for
+    /// `scheme` -- [`quadraui_binding_core::is_default_protocol_client`].
+    fn is_default_protocol_client(&mut self, scheme: &str) -> PyResult<bool> {
+        self.guarded(|app| {
+            is_default_protocol_client(app.driver.backend().services(), scheme)
+                .map_err(|err| service_error_to_py("is_default_protocol_client", err))
+        })
+    }
+
+    /// Unregisters this app as the OS-level default handler for `scheme` --
+    /// [`quadraui_binding_core::remove_as_default_protocol_client`].
+    ///
+    /// Call [`QuiAppActions::remove_as_default_protocol_client`] (via
+    /// [`Self::actions`]) from a handler instead.
+    fn remove_as_default_protocol_client(&mut self, scheme: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            remove_as_default_protocol_client(app.driver.backend().services(), scheme)
+                .map_err(|err| service_error_to_py("remove_as_default_protocol_client", err))
+        })
+    }
+
+    /// Starts an OS-level drag of `files`/`text` out of this app's window
+    /// -- [`quadraui_binding_core::begin_drag_out`]. At least one of
+    /// `files`/`text` must be given.
+    ///
+    /// Call [`QuiAppActions::begin_drag_out`] (via [`Self::actions`]) from
+    /// a handler instead.
+    #[pyo3(signature = (files=Vec::new(), text=None))]
+    fn begin_drag_out(&mut self, files: Vec<String>, text: Option<String>) -> PyResult<()> {
+        self.guarded(|app| {
+            begin_drag_out(app.driver.backend().services(), files, text)
+                .map_err(|err| service_error_to_py("begin_drag_out", err))
+        })
+    }
+
+    /// Adds `path` to the OS "recent documents" list --
+    /// [`quadraui_binding_core::add_recent_document`].
+    ///
+    /// Call [`QuiAppActions::add_recent_document`] (via [`Self::actions`])
+    /// from a handler instead.
+    fn add_recent_document(&mut self, path: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            add_recent_document(app.driver.backend().services(), path)
+                .map_err(|err| service_error_to_py("add_recent_document", err))
+        })
+    }
+
+    /// Clears the OS "recent documents" list --
+    /// [`quadraui_binding_core::clear_recent_documents`].
+    ///
+    /// Call [`QuiAppActions::clear_recent_documents`] (via
+    /// [`Self::actions`]) from a handler instead.
+    fn clear_recent_documents(&mut self) -> PyResult<()> {
+        self.guarded(|app| {
+            clear_recent_documents(app.driver.backend().services())
+                .map_err(|err| service_error_to_py("clear_recent_documents", err))
+        })
+    }
+
+    /// Attaches (or replaces) this app's Dock icon menu from `items` (a
+    /// list of context-menu-item dicts, the same shape `set_tray_menu`
+    /// takes) -- [`quadraui_binding_core::set_dock_menu`].
+    ///
+    /// Call [`QuiAppActions::set_dock_menu`] (via [`Self::actions`]) from a
+    /// handler instead.
+    fn set_dock_menu(&mut self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let items = pyany_to_json(items).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_dock_menu: invalid items: {err}"))
+        })?;
+        self.guarded(|app| {
+            set_dock_menu(app.driver.backend().services(), items)
+                .map_err(|err| service_error_to_py("set_dock_menu", err))
+        })
+    }
+
+    /// Sets this app's Windows taskbar jump list from `items` (a list of
+    /// `{"title": str, "program": str, "args": [str, ...], "description":
+    /// str}` dicts) -- [`quadraui_binding_core::set_jump_list`].
+    ///
+    /// Call [`QuiAppActions::set_jump_list`] (via [`Self::actions`]) from a
+    /// handler instead.
+    fn set_jump_list(&mut self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let items = pyany_to_json(items).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_jump_list: invalid items: {err}"))
+        })?;
+        self.guarded(|app| {
+            set_jump_list(app.driver.backend().services(), items)
+                .map_err(|err| service_error_to_py("set_jump_list", err))
+        })
+    }
+}
+
+/// Converts an arbitrary Python value into a [`serde_json::Value`] via
+/// `pythonize::depythonize`. Not itself a validation of any particular
+/// target type — [`merge_overrides`]'s caller runs the merged value through
+/// `serde_json::from_value::<T>` afterwards, which is where a type mismatch
+/// (e.g. a string where `Style::padding` wants a number) actually surfaces.
+/// The `Err` message carries no `what`/field context of its own —
+/// [`override_error_to_py`] adds that once, uniformly, for every
+/// [`OverrideError`] variant [`merge_overrides`] can produce.
+fn pyany_to_json(value: &Bound<'_, PyAny>) -> Result<serde_json::Value, String> {
+    pythonize::depythonize(value).map_err(|err| format!("invalid value: {err}"))
+}
+
+/// Maps a [`merge_overrides`] failure to this binding's own exception
+/// taxonomy, prefixed with `what` (the calling method's own name) exactly
+/// once — every [`OverrideError`] variant's `Display` already omits that
+/// context so it is never doubled up.
+fn override_error_to_py(what: &str, err: OverrideError) -> PyErr {
+    match err {
+        OverrideError::Internal(_) => InternalError::new_err(format!("{what}: {err}")),
+        OverrideError::UnknownField(_)
+        | OverrideError::InvalidValue(_)
+        | OverrideError::Invalid(_) => InvalidDescriptorError::new_err(format!("{what}: {err}")),
+    }
+}
+
+/// `overrides`' own keys, as `String`s, in iteration order —
+/// [`merge_overrides`]'s `keys` argument, decoded once so its per-key
+/// `value_for` closure can look each one's value back up in `overrides`
+/// only after [`merge_overrides`] has confirmed that key actually names a
+/// field of `T`.
+fn dict_keys(overrides: &Bound<'_, PyDict>) -> PyResult<Vec<String>> {
+    overrides.keys().iter().map(|k| k.extract()).collect()
+}
+
+/// `((fg_r, fg_g, fg_b), (bg_r, bg_g, bg_b))` -- [`QuiApp::cell_colors`]'s
+/// return shape, named so the signature doesn't trip clippy's
+/// `type_complexity` lint.
+type CellColors = ((u8, u8, u8), (u8, u8, u8));
+
+/// Extracts `(r, g, b)` from a [`quadraui::tui::testing::Color`] --
+/// `(0, 0, 0)` for any non-`Rgb` variant, which no in-tree rasteriser ever
+/// paints (every one goes through `quadraui::tui::ratatui_color`, which
+/// only ever constructs `Rgb`).
+fn ratatui_rgb(color: quadraui::tui::testing::Color) -> (u8, u8, u8) {
+    match color {
+        quadraui::tui::testing::Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0, 0, 0),
     }
 }
 
@@ -3816,8 +5087,9 @@ impl QuiApp {
     /// then re-render, returning `kind` back for symmetry with the fixed
     /// `insert_*` methods' slot-handle return value. The additive
     /// counterpart to [`Self::insert`] — `kind` is a string (one registered
-    /// in [`EXTRA_PRIMITIVES`]) rather than a fixed `SLOT_*` integer, so a
-    /// new additive primitive never needs a new slot constant.
+    /// in `quadraui_binding_core::extra_paint`'s `extra_primitives!` table)
+    /// rather than a fixed `SLOT_*` integer, so a new additive primitive
+    /// never needs a new slot constant.
     fn store_extra(
         &mut self,
         kind: &str,
@@ -3829,10 +5101,13 @@ impl QuiApp {
                 "{what}: {kind:?} already occupied; call clear_extra({kind:?}) first"
             )));
         }
-        let value = decode_extra_primitive(what, kind, descriptor)?;
+        let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
+        let value = decode_extra_primitive(what, kind, &mut de)
+            .map_err(|err| InvalidDescriptorError::new_err(err.0))?;
         self.guarded(|app| {
             app.driver
                 .app_mut()
+                .host
                 .extra_slots
                 .insert(kind.to_string(), value);
             app.driver.render();
@@ -3841,24 +5116,65 @@ impl QuiApp {
         })
     }
 
-    /// Dispatches the oldest queued event (or ticks, if none is queued),
-    /// then surfaces any exception a Python callback raised while handling
-    /// it. Returns whether the app is still running.
+    /// Dispatches the oldest queued event (or, if none is queued, drains
+    /// and dispatches every event a [`QuiAppWaker::post`]/`::wake` call
+    /// queued since the last step as a `UiEvent::User` via
+    /// `TuiDriver::pump_user_events`, then ticks), then surfaces any
+    /// exception a Python callback raised while handling any of that.
+    /// Returns whether the app is still running. `pump_user_events` itself
+    /// already applies whichever `Reaction` each drained `User` event
+    /// produced (repainting on `Redraw`, marking the app exited on `Exit`)
+    /// and is a safe no-op when nothing was posted, so it costs nothing to
+    /// call unconditionally ahead of the tick every plain-event-free step
+    /// already took. [`PyAppLogic::handle`]/[`PyAppLogic::tick`] already
+    /// drain whatever a [`QuiAppActions`] method queued during dispatch
+    /// (via [`flush_deferred_actions`]) and fold that into the `Reaction`
+    /// they return, so `step_driver` above already repainted it if needed.
     fn step_once(&mut self) -> PyResult<bool> {
-        if self.driver.exited() {
-            return Ok(false);
-        }
-        match self.pending_events.pop_front() {
-            Some(event) => {
-                self.driver.dispatch(event);
-            }
-            None => {
-                self.driver.tick();
-            }
-        }
+        let running = step_driver(&mut self.driver, &mut self.pending_events);
         take_pending_error(self.driver.app_mut())?;
-        Ok(!self.driver.exited())
+        Ok(running)
     }
+}
+
+/// The standard, per-app filesystem location named by `kind` (one of
+/// `"user_data"`, `"app_config"`, `"app_cache"`, `"logs"`, `"temp"`,
+/// `"downloads"`, `"documents"`, `"home"`), as a path string --
+/// [`quadraui_binding_core::resolve_app_path`]. A module-level function,
+/// like that one: no live [`QuiApp`] is needed. Every app-scoped kind
+/// (everything but `"temp"`/`"downloads"`/`"documents"`/`"home"`) is
+/// resolved relative to whatever identifier
+/// [`set_app_identifier`] last set, and raises `UnsupportedError` until one
+/// has been.
+#[pyfunction]
+fn app_path(kind: &str) -> PyResult<String> {
+    resolve_app_path(kind)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|err| service_error_to_py("app_path", err))
+}
+
+/// Sets the app identifier scoping [`app_path`]'s app-scoped kinds --
+/// [`quadraui_binding_core::set_app_identifier`]. A module-level function:
+/// the identifier is process-global, not per-`QuiApp`.
+#[pyfunction]
+fn set_app_identifier(identifier: &str) {
+    quadraui_binding_core::set_app_identifier(identifier);
+}
+
+/// Installs a crash handler that writes a [`quadraui::crash::CrashRecord`]
+/// on an uncaught panic, decoding `cfg` (a `{"app_version": str,
+/// "upload_endpoint": str, "metadata": {str: str}, "log_dir": str}` dict,
+/// every key optional) into a [`quadraui::crash::CrashReporterConfig`] --
+/// [`quadraui_binding_core::install_crash_handler`]. A module-level
+/// function, like that one: no live [`QuiApp`] is needed, since this
+/// installs a process-global Rust panic hook.
+#[pyfunction]
+fn install_crash_handler(cfg: &Bound<'_, PyAny>) -> PyResult<()> {
+    let cfg = pyany_to_json(cfg).map_err(|err| {
+        InvalidDescriptorError::new_err(format!("install_crash_handler: invalid cfg: {err}"))
+    })?;
+    quadraui_binding_core::install_crash_handler(cfg)
+        .map_err(|err| service_error_to_py("install_crash_handler", err))
 }
 
 /// The compiled extension module (`_quadraui`) that `python/quadraui/__init__.py`
@@ -3866,6 +5182,12 @@ impl QuiApp {
 #[pymodule]
 fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QuiApp>()?;
+    m.add_class::<QuiAppWaker>()?;
+    m.add_class::<QuiAppActions>()?;
+    m.add_class::<QuiShellApp>()?;
+    m.add_function(wrap_pyfunction!(app_path, m)?)?;
+    m.add_function(wrap_pyfunction!(set_app_identifier, m)?)?;
+    m.add_function(wrap_pyfunction!(install_crash_handler, m)?)?;
     let py = m.py();
     m.add("QuadrauiError", py.get_type::<QuadrauiError>())?;
     m.add(
@@ -3892,6 +5214,11 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<NotOnMainThreadError>(),
     )?;
     m.add("InvalidAppIdError", py.get_type::<InvalidAppIdError>())?;
+    m.add(
+        "InvalidFontRoleError",
+        py.get_type::<InvalidFontRoleError>(),
+    )?;
+    m.add("UnsupportedError", py.get_type::<UnsupportedError>())?;
     // Which native *feature* (if any) this build was compiled with — `gtk`
     // wins over `macos`, and both win over `win`, when more than one is
     // enabled (see `run_native`'s doc). This is a build configuration
@@ -3917,7 +5244,7 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quadraui::MouseButton;
+    use quadraui::{ButtonMask, ScrollDelta};
 
     /// A Rust panic raised from inside `guarded`'s body is caught and
     /// re-raised as `PanicError`, and poisons the app so a later call
@@ -3940,6 +5267,138 @@ mod tests {
             assert!(!body_ran, "a poisoned app must not run the guarded body");
             let err = after_poison.expect_err("a poisoned app must keep erroring");
             assert!(err.is_instance_of::<PoisonedError>(py));
+        });
+    }
+
+    /// `waker()` raises `PoisonedError` on a poisoned app rather than
+    /// handing out a handle anyway: unlike every other `QuiApp` method, it
+    /// doesn't route through `guarded`, so it needs its own explicit
+    /// poisoned check (see its doc).
+    #[test]
+    fn waker_raises_poisoned_error_on_a_poisoned_app() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(10, 10, None, None).expect("valid dimensions");
+
+            let panicked: PyResult<()> = app.guarded(|_| panic!("boom"));
+            panicked.expect_err("a caught panic must surface as an error");
+            assert!(app.poisoned);
+
+            let err = match app.waker() {
+                Ok(_) => panic!("a poisoned app must not hand out a waker"),
+                Err(err) => err,
+            };
+            assert!(err.is_instance_of::<PoisonedError>(py));
+        });
+    }
+
+    /// A `QuiAppWaker::post` call from a genuine background OS thread
+    /// delivers its value as a `{"User": value}` event the next time
+    /// `step` drains `pump_user_events`, without crashing or exiting the
+    /// app. This exercises `PyEventSink::dispatch`'s `UiEvent::User` arm
+    /// end to end: `pythonize::pythonize` always errors on `UserPayload`'s
+    /// opaque `Arc<dyn Any>`, so delivery here only succeeds because that
+    /// arm matches `User` ahead of the `pythonize` call and builds the
+    /// `{"User": value}` dict itself instead.
+    #[test]
+    fn waker_post_from_a_background_thread_delivers_a_user_event() {
+        let (handler, locals) = Python::attach(|py| {
+            let locals = PyDict::new(py);
+            locals
+                .set_item("received", PyList::empty(py))
+                .expect("set received");
+            let handler = py
+                .eval(
+                    c"lambda event: received.append(event)",
+                    Some(&locals),
+                    Some(&locals),
+                )
+                .expect("lambda literal")
+                .unbind();
+            (handler, locals.unbind())
+        });
+        let mut app = QuiApp::new(10, 10, Some(handler), None).expect("valid width/height/handler");
+        let waker = app.waker().expect("app is not poisoned");
+
+        let value = Python::attach(|py| 42_i32.into_pyobject(py).expect("int").into_any().unbind());
+        std::thread::spawn(move || {
+            waker.post(value);
+        })
+        .join()
+        .expect("a background thread calling post() must not panic");
+
+        let running = app.step().expect("step must not raise");
+        assert!(running, "delivering a User event must not exit the app");
+
+        Python::attach(|py| {
+            let locals = locals.bind(py);
+            let received: Bound<'_, PyList> = locals
+                .get_item("received")
+                .expect("received key lookup")
+                .expect("received must be set")
+                .extract()
+                .expect("received must be a list");
+            assert_eq!(received.len(), 1, "exactly one event must be delivered");
+            let event = received.get_item(0).expect("one item");
+            let dict: Bound<'_, PyDict> = event.extract().expect("event must be a dict");
+            let user_value = dict
+                .get_item("User")
+                .expect("\"User\" key lookup")
+                .expect("\"User\" value must be present");
+            let n: i32 = user_value.extract().expect("the posted int round-trips");
+            assert_eq!(n, 42);
+        });
+    }
+
+    /// A `User` event with no Python-side payload at all (the shape a
+    /// native tray/timer wake would produce, with nothing this binding's
+    /// own `UserPayload::downcast_ref::<Py<PyAny>>()` can recover) still
+    /// reaches the handler, as `{"User": None}`, instead of crashing.
+    #[test]
+    fn user_event_with_a_foreign_payload_surfaces_as_user_none() {
+        let (handler, locals) = Python::attach(|py| {
+            let locals = PyDict::new(py);
+            locals
+                .set_item("received", PyList::empty(py))
+                .expect("set received");
+            let handler = py
+                .eval(
+                    c"lambda event: received.append(event)",
+                    Some(&locals),
+                    Some(&locals),
+                )
+                .expect("lambda literal")
+                .unbind();
+            (handler, locals.unbind())
+        });
+        let inner = PyAppLogic {
+            handler: Some(handler),
+            ..Default::default()
+        };
+        let mut driver = TuiDriver::new(inner, 10, 10);
+
+        let reaction = driver.dispatch(UiEvent::User(UserPayload::new(7_i32)));
+
+        assert_ne!(
+            reaction,
+            Reaction::Exit,
+            "a foreign User payload must not crash the dispatch"
+        );
+        Python::attach(|py| {
+            let locals = locals.bind(py);
+            let received: Bound<'_, PyList> = locals
+                .get_item("received")
+                .expect("received key lookup")
+                .expect("received must be set")
+                .extract()
+                .expect("received must be a list");
+            assert_eq!(received.len(), 1);
+            let event = received.get_item(0).expect("one item");
+            let dict: Bound<'_, PyDict> = event.extract().expect("event must be a dict");
+            let user_value = dict
+                .get_item("User")
+                .expect("\"User\" key lookup")
+                .expect("\"User\" value must be present");
+            assert!(user_value.is_none(), "a foreign payload surfaces as None");
         });
     }
 
@@ -4039,6 +5498,91 @@ mod tests {
         });
     }
 
+    /// A `PyAppLogic` carrying a `QuiApp::register_accelerator`-populated
+    /// `accelerators` map still fires `UiEvent::Accelerator` once moved,
+    /// by value, into a brand-new `TuiDriver`/backend -- exactly the
+    /// `std::mem::take(app.driver.app_mut())` + fresh-backend-construction
+    /// sequence `run_tui`/`run_native` perform. Regression test for the
+    /// gap where `register_accelerator` only ever touched the live
+    /// headless backend directly, so a chord registered before either
+    /// real run path silently never fired once that path built its own
+    /// backend. `TuiDriver::new` calls `AppLogic::setup` exactly like
+    /// `TuiRunner::new_with`/`GtkRunner`/`MacRunner`/`WinRunner` do, so
+    /// exercising it here covers the hook all four real runners share.
+    #[test]
+    fn accelerator_registered_before_setup_fires_on_a_freshly_built_backend() {
+        let (handler, locals) = Python::attach(|py| {
+            let locals = PyDict::new(py);
+            locals
+                .set_item("received", PyList::empty(py))
+                .expect("set received");
+            let handler = py
+                .eval(
+                    c"lambda event: received.append(event)",
+                    Some(&locals),
+                    Some(&locals),
+                )
+                .expect("lambda literal")
+                .unbind();
+            (handler, locals.unbind())
+        });
+
+        let mut accelerators = HashMap::new();
+        let acc = Accelerator {
+            id: AcceleratorId::new("app.save"),
+            binding: KeyBinding::Save,
+            scope: AcceleratorScope::Global,
+            label: None,
+        };
+        accelerators.insert(acc.id.clone(), acc);
+        let inner = PyAppLogic {
+            handler: Some(handler),
+            host: BindingHost {
+                accelerators,
+                ..BindingHost::default()
+            },
+            ..Default::default()
+        };
+
+        // Stands in for `run_tui`/`run_native`'s fresh backend
+        // construction: `TuiDriver::new` calls `app.setup(&mut backend)`
+        // on this *just-moved* `PyAppLogic`, against a backend that has
+        // never seen `register_accelerator` called on it directly.
+        let mut driver = TuiDriver::new(inner, 10, 10);
+
+        let reaction = driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Char('s'),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            repeat: false,
+        });
+        assert_ne!(
+            reaction,
+            Reaction::Exit,
+            "dispatching the registered chord must not exit the app"
+        );
+
+        Python::attach(|py| {
+            let locals = locals.bind(py);
+            let received: Bound<'_, PyList> = locals
+                .get_item("received")
+                .expect("received key lookup")
+                .expect("received must be set")
+                .extract()
+                .expect("received must be a list");
+            assert_eq!(received.len(), 1, "exactly one event must be delivered");
+            let event = received.get_item(0).expect("one item");
+            let dict: Bound<'_, PyDict> = event.extract().expect("event must be a dict");
+            assert!(
+                dict.contains("Accelerator").expect("contains check"),
+                "the chord must surface as an Accelerator event, not a plain \
+                KeyPressed: got {dict:?}"
+            );
+        });
+    }
+
     /// `_NATIVE_BACKEND` reports exactly one native-feature name per build,
     /// picking `gtk` over `macos` over `win` when more than one is enabled
     /// (the same precedence `run_native`'s own `#[cfg]` branches use).
@@ -4067,6 +5611,68 @@ mod tests {
             assert_eq!(backend, Some("win".to_string()));
             #[cfg(not(any(feature = "gtk", feature = "macos", feature = "win")))]
             assert_eq!(backend, None);
+        });
+    }
+
+    /// `PyAppLogic::handle` flushes a `QuiAppActions`-queued action against
+    /// whatever live `Backend` it was given, not just the headless
+    /// `TuiBackend` `step`/`run` drive — `run_native`'s `GtkRunner` calls
+    /// `NativeAppLogic::handle` (which forwards straight to this) with a
+    /// real `GtkBackend`, so a dialog queued mid-dispatch must open on it
+    /// by the time `handle` returns, and the returned `Reaction` must
+    /// upgrade to `Redraw` so the window actually repaints to show it.
+    /// Builds a `GtkBackend` directly rather than opening a real window
+    /// through `GtkRunner`/`run_native` (which needs a display this test
+    /// suite can't assume) — `GtkBackend::new` needs no display itself, the
+    /// same no-window pattern `gtk::backend`'s own tests already use.
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn handle_flushes_a_deferred_action_against_a_real_gtk_backend() {
+        Python::attach(|py| {
+            let mut app_logic = PyAppLogic::default();
+            let actions = QuiAppActions {
+                queue: app_logic.deferred_actions.clone(),
+            };
+            let locals = PyDict::new(py);
+            locals
+                .set_item("actions", Py::new(py, actions).expect("wrap QuiAppActions"))
+                .expect("set actions");
+            py.run(
+                c"def handle(event):\n    actions.show_message_dialog(\
+                  'Title', 'Body', [{'id': 'ok', 'label': 'OK'}], None)\n",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+            app_logic.handler = Some(handle);
+
+            let mut backend = quadraui::gtk::GtkBackend::new();
+            let reaction = app_logic.handle(
+                UiEvent::KeyPressed {
+                    key: Key::Char('a'),
+                    modifiers: Modifiers::default(),
+                    repeat: false,
+                },
+                &mut backend,
+            );
+
+            assert!(
+                app_logic.engine.dialog_open(),
+                "the dialog queued mid-dispatch must be applied against the \
+                live GtkBackend by the time handle returns, not left \
+                pending until some headless driver resumes stepping"
+            );
+            assert_eq!(
+                reaction,
+                Reaction::Redraw,
+                "applying a deferred action must still force a repaint even \
+                though the handler itself returned no explicit reaction"
+            );
         });
     }
 
@@ -4153,13 +5759,27 @@ mod tests {
         });
     }
 
-    /// `WindowClose` always forces `Reaction::Exit` regardless of what the
-    /// inner handler returns, and does *not* go through the downgrade --
-    /// `exit_requested` stays unset because `run_native`'s native runner
-    /// (not this flag) tears the window down for that case.
-    #[cfg(all(feature = "macos", not(feature = "gtk")))]
+    /// Builds a [`NativeAppLogic`] wrapping `inner`, on whichever native
+    /// feature is enabled — a thin helper so the `WindowClose`-only tests
+    /// below (none of which exercise the macOS-only non-`WindowClose`
+    /// downgrade) can run on `gtk`/`win` too, not just `macos`.
+    #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
+    fn native_app_logic_for_window_close(inner: PyAppLogic) -> NativeAppLogic {
+        NativeAppLogic {
+            inner,
+            #[cfg(all(feature = "macos", not(feature = "gtk")))]
+            exit_requested: Rc::new(Cell::new(false)),
+        }
+    }
+
+    /// A registered handler returning `True` (the "stay" answer — see
+    /// [`reaction_from_window_close_return`]) vetoes a `WindowClose`:
+    /// `NativeAppLogic` must return exactly what the handler produced, not
+    /// force `Reaction::Exit`. This branch of `NativeAppLogic::handle` has
+    /// nothing macOS-specific about it, so this runs on `gtk`/`win` too.
+    #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
     #[test]
-    fn native_app_logic_window_close_still_exits_without_flag() {
+    fn native_app_logic_window_close_handler_veto_stays_open() {
         Python::attach(|py| {
             let handler = py
                 .eval(c"lambda event: True", None, None)
@@ -4169,21 +5789,88 @@ mod tests {
                 handler: Some(handler),
                 ..Default::default()
             };
-            let exit_requested = Rc::new(Cell::new(false));
-            let logic = NativeAppLogic {
-                inner,
-                exit_requested: exit_requested.clone(),
+            let logic = native_app_logic_for_window_close(inner);
+            let mut driver = TuiDriver::new(logic, 10, 10);
+
+            let reaction = driver.dispatch(UiEvent::WindowClose);
+
+            assert_eq!(
+                reaction,
+                Reaction::Continue,
+                "a handler returning True must veto the close"
+            );
+        });
+    }
+
+    /// A registered handler returning `False` (the "confirm" answer)
+    /// confirms a `WindowClose`: `NativeAppLogic` returns the handler's own
+    /// `Reaction::Exit` unchanged.
+    #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
+    #[test]
+    fn native_app_logic_window_close_handler_confirm_exits() {
+        Python::attach(|py| {
+            let handler = py
+                .eval(c"lambda event: False", None, None)
+                .expect("lambda literal")
+                .unbind();
+            let inner = PyAppLogic {
+                handler: Some(handler),
+                ..Default::default()
             };
+            let logic = native_app_logic_for_window_close(inner);
             let mut driver = TuiDriver::new(logic, 10, 10);
 
             let reaction = driver.dispatch(UiEvent::WindowClose);
 
             assert_eq!(reaction, Reaction::Exit);
-            assert!(
-                !exit_requested.get(),
-                "WindowClose exits through the normal path, not the flag"
+        });
+    }
+
+    /// A registered handler that returns `None` (no explicit `return` —
+    /// the common case for a handler with no opinion about closing, the
+    /// same shape `examples/file_manager.py`'s quit wrapper uses) must
+    /// *not* veto the close: the window stays closable by the window
+    /// manager's own ×/Alt-F4/close button even though a handler is
+    /// registered, exactly as if no handler had been registered at all.
+    /// See [`reaction_from_window_close_return`]'s doc for why this is the
+    /// opposite default from every other event.
+    #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
+    #[test]
+    fn native_app_logic_window_close_handler_no_opinion_exits_by_default() {
+        Python::attach(|py| {
+            let handler = py
+                .eval(c"lambda event: None", None, None)
+                .expect("lambda literal")
+                .unbind();
+            let inner = PyAppLogic {
+                handler: Some(handler),
+                ..Default::default()
+            };
+            let logic = native_app_logic_for_window_close(inner);
+            let mut driver = TuiDriver::new(logic, 10, 10);
+
+            let reaction = driver.dispatch(UiEvent::WindowClose);
+
+            assert_eq!(
+                reaction,
+                Reaction::Exit,
+                "a handler with no opinion about closing must not veto it"
             );
         });
+    }
+
+    /// With no handler registered at all, `WindowClose` still forces
+    /// `Reaction::Exit` — the default for an app that never opted into
+    /// vetoing a close.
+    #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
+    #[test]
+    fn native_app_logic_window_close_with_no_handler_exits_by_default() {
+        let logic = native_app_logic_for_window_close(PyAppLogic::default());
+        let mut driver = TuiDriver::new(logic, 10, 10);
+
+        let reaction = driver.dispatch(UiEvent::WindowClose);
+
+        assert_eq!(reaction, Reaction::Exit);
     }
 
     /// A render callback returning `{"row": [...]}` lays its children out
@@ -4523,6 +6210,8 @@ def render():
     }}
 
 def handle(event):
+    if 'FocusChanged' in event:
+        return
     index = event['TabBar'][1]['TabClosed']['index']
     del state['open'][index]
     if state['selected'] >= len(state['open']):
@@ -4658,6 +6347,71 @@ def handle(event):
         });
     }
 
+    /// A `tabs` node's per-tab `"is_dirty"` and strip-level
+    /// `"right_segments"` reach the painted `TabBar` the same way they
+    /// already do for the standalone `tab_bar` leaf: a dirty tab's close
+    /// glyph becomes the unsaved-changes dot, and a right segment's own
+    /// text paints in the strip even though it carries no tab content of
+    /// its own.
+    #[test]
+    fn tabs_node_renders_a_dirty_marker_and_right_segments_supplied_from_python() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+def render():
+    return {'tabs': {
+        'id': 'tabs:main',
+        'selected': 0,
+        'right_segments': [
+            {'text': 'SEGTXT', 'width_cells': 6, 'id': None, 'is_active': False},
+        ],
+        'tabs': [
+            {
+                'id': 'tab:a', 'title': 'Alpha', 'is_dirty': True,
+                'content': {'id': 'text:a', 'text_display': {
+                    'id': 'text:a',
+                    'lines': [{'spans': [{'text': 'AlphaBody', 'fg': None, 'bg': None}]}],
+                }},
+            },
+            {
+                'id': 'tab:b', 'title': 'Beta',
+                'content': {'id': 'text:b', 'text_display': {
+                    'id': 'text:b',
+                    'lines': [{'spans': [{'text': 'BetaBody', 'fg': None, 'bg': None}]}],
+                }},
+            },
+        ],
+    }}
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+
+            let mut app = QuiApp::new(60, 20, None, Some(render)).expect("valid dimensions");
+
+            assert!(
+                app.screen_contains("Alpha").expect("render must not raise"),
+                "the dirty tab's title must still render"
+            );
+            assert!(
+                app.screen_contains("●").expect("render must not raise"),
+                "a dirty tab's close glyph must be the unsaved-changes dot, not '×'"
+            );
+            assert!(
+                app.screen_contains("SEGTXT")
+                    .expect("render must not raise"),
+                "the strip-level right segment's own text must be painted"
+            );
+        });
+    }
+
     /// `MouseDown`'s own `widget` field arrives `None` on the wire; once a
     /// frame has painted a `button` leaf, dispatching a `MouseDown` at that
     /// button's painted position fills `widget` in with the button's id and
@@ -4722,10 +6476,27 @@ def handle(event):
                 .expect("dict lookup")
                 .expect("received must be defined");
             let received_list = received.cast::<PyList>().expect("received must be a list");
-            assert_eq!(received_list.len(), 1, "handle must run exactly once");
-            let event_dict = received_list
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the click must emit both a FocusChanged (nothing was focused yet) and \
+                 the MouseDown itself"
+            );
+            let focus_dict = received_list
                 .get_item(0)
                 .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let focused: String = focus_dict
+                .get_item("FocusChanged")
+                .expect("dict lookup")
+                .expect("the click must focus the button before the click event itself")
+                .extract()
+                .expect("FocusChanged must carry the newly focused widget's id as a string");
+            assert_eq!(focused, "btn:ok", "the clicked button must receive focus");
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
             let mouse_down = event_dict
@@ -4760,6 +6531,150 @@ def handle(event):
                 kind, "button_body",
                 "a click on the body must report button_body"
             );
+        });
+    }
+
+    /// A `MouseMoved` landing on a painted button's bounds dispatches a
+    /// hit-tested `MouseEntered` ahead of the raw move itself, each key
+    /// the handler sees carrying the button's own id and `button_body`
+    /// `hit` -- the real hover signal a Python-side toolbar/tree/details
+    /// hover tooltip needs instead of re-deriving hit-testing from the raw
+    /// position. A later move off the button dispatches the matching
+    /// `MouseLeft` the same way.
+    #[test]
+    fn mouse_moved_over_a_painted_button_dispatches_mouse_entered_then_mouse_left() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'button': {'id': 'btn:ok', 'label': 'OK'}}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("OK").expect("render must not raise"),
+                "the button's label must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("OK")
+                .expect("button label must be on screen");
+            let inside = Point::new(bounds.x + 0.5, bounds.y + 0.5);
+            let outside = Point::new(1_000.0, 1_000.0);
+
+            let dispatch_move = |app: &mut QuiApp, position: Point| {
+                let mv = UiEvent::MouseMoved {
+                    position,
+                    buttons: quadraui::ButtonMask::default(),
+                };
+                let mv_any = pythonize::pythonize(py, &mv).expect("UiEvent must pythonize");
+                let mv_dict = mv_any
+                    .cast::<PyDict>()
+                    .expect("MouseMoved must pythonize to a dict");
+                app.push_event(mv_dict).expect("valid event shape");
+                app.step().expect("no handler/render error");
+            };
+
+            dispatch_move(&mut app, inside);
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received.len(),
+                2,
+                "entering the button must dispatch MouseEntered ahead of the raw MouseMoved"
+            );
+            let entered_dict = received
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let entered_widget: String = entered_dict
+                .get_item("MouseEntered")
+                .expect("dict lookup")
+                .expect("payload must carry a MouseEntered key")
+                .cast_into::<PyDict>()
+                .expect("MouseEntered payload must be a dict")
+                .get_item("widget")
+                .expect("dict lookup")
+                .expect("widget key must be present")
+                .extract()
+                .expect("widget must be a string");
+            assert_eq!(entered_widget, "btn:ok");
+            let entered_hit_kind: String = entered_dict
+                .get_item("hit")
+                .expect("dict lookup")
+                .expect("hit key must be attached alongside the MouseEntered key")
+                .cast_into::<PyDict>()
+                .expect("hit must be a dict")
+                .get_item("kind")
+                .expect("dict lookup")
+                .expect("kind key must be present")
+                .extract()
+                .expect("kind must be a string");
+            assert_eq!(entered_hit_kind, "button_body");
+            assert!(
+                received
+                    .get_item(1)
+                    .expect("second item")
+                    .cast_into::<PyDict>()
+                    .expect("event payload must be a dict")
+                    .contains("MouseMoved")
+                    .expect("dict lookup"),
+                "the raw move must still follow the synthesized MouseEntered"
+            );
+
+            let before_leave = received.len();
+
+            dispatch_move(&mut app, outside);
+
+            assert_eq!(
+                received.len(),
+                before_leave + 2,
+                "leaving the button must dispatch MouseLeft ahead of the raw MouseMoved"
+            );
+            let left_dict = received
+                .get_item(before_leave)
+                .expect("first new item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let left_widget: String = left_dict
+                .get_item("MouseLeft")
+                .expect("dict lookup")
+                .expect("payload must carry a MouseLeft key")
+                .cast_into::<PyDict>()
+                .expect("MouseLeft payload must be a dict")
+                .get_item("widget")
+                .expect("dict lookup")
+                .expect("widget key must be present")
+                .extract()
+                .expect("widget must be a string");
+            assert_eq!(left_widget, "btn:ok");
         });
     }
 
@@ -4838,10 +6753,27 @@ def handle(event):
                 .expect("dict lookup")
                 .expect("received must be defined");
             let received_list = received.cast::<PyList>().expect("received must be a list");
-            assert_eq!(received_list.len(), 1, "handle must run exactly once");
-            let event_dict = received_list
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the click must emit both a FocusChanged (nothing was focused yet) and \
+                 the MouseDown itself"
+            );
+            let focus_dict = received_list
                 .get_item(0)
                 .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let focused: String = focus_dict
+                .get_item("FocusChanged")
+                .expect("dict lookup")
+                .expect("the click must focus the button before the click event itself")
+                .extract()
+                .expect("FocusChanged must carry the newly focused widget's id as a string");
+            assert_eq!(focused, "btn:left", "the clicked button must receive focus");
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
             let mouse_down = event_dict
@@ -4991,10 +6923,27 @@ def handle(event):
                 .expect("dict lookup")
                 .expect("received must be defined");
             let received_list = received.cast::<PyList>().expect("received must be a list");
-            assert_eq!(received_list.len(), 1, "handle must run exactly once");
-            let event_dict = received_list
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the click must emit both a FocusChanged (nothing was focused yet) and the \
+                 semantic Tree event"
+            );
+            let focus_dict = received_list
                 .get_item(0)
                 .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let focused: String = focus_dict
+                .get_item("FocusChanged")
+                .expect("dict lookup")
+                .expect("the click must focus the tree before the click event itself")
+                .extract()
+                .expect("FocusChanged must carry the newly focused widget's id as a string");
+            assert_eq!(focused, "tree:main", "the clicked tree must receive focus");
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
             let tree_payload = event_dict
@@ -5131,10 +7080,30 @@ def handle(event):
                 .expect("dict lookup")
                 .expect("received must be defined");
             let received_list = received.cast::<PyList>().expect("received must be a list");
-            assert_eq!(received_list.len(), 1, "handle must run exactly once");
-            let event_dict = received_list
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the click must emit both a FocusChanged (nothing was focused yet) and the \
+                 semantic TabBar event"
+            );
+            let focus_dict = received_list
                 .get_item(0)
                 .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let focused: String = focus_dict
+                .get_item("FocusChanged")
+                .expect("dict lookup")
+                .expect("the click must focus the tab bar before the click event itself")
+                .extract()
+                .expect("FocusChanged must carry the newly focused widget's id as a string");
+            assert_eq!(
+                focused, "tabs:main",
+                "the clicked tab bar must receive focus"
+            );
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
             let tab_bar_payload = event_dict
@@ -5173,6 +7142,139 @@ def handle(event):
             assert_eq!(
                 index, 1,
                 "the clicked tab's own index (the second tab) must be reported, not tab 0's"
+            );
+        });
+    }
+
+    /// A standalone `toolbar` leaf: a click on its (enabled) `Action`
+    /// button must be replaced by the semantic `UiEvent::Toolbar` it
+    /// stands for — the clicked button's own id, and `is_active` flipped
+    /// from its starting `False` to `True` — rather than staying a raw
+    /// `MouseDown`.
+    #[test]
+    fn mouse_down_over_a_toolbar_button_emits_a_semantic_toolbar_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'id': 'toolbar:main', 'toolbar': {
+        'id': 'toolbar:main',
+        'buttons': [
+            {'Action': {
+                'id': 'filter', 'label': 'Filter', 'icon': None,
+                'key_hint': None, 'enabled': True, 'is_active': False,
+                'tooltip': '',
+            }},
+        ],
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app = QuiApp::new(40, 5, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Filter")
+                    .expect("render must not raise"),
+                "the toolbar's button label must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Filter")
+                .expect("the button's label must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "a toolbar button click carries no leading FocusChanged -- only the bar's own \
+                 id (not the clicked button's) is a tab stop"
+            );
+            let event_dict = received_list
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let toolbar_payload = event_dict
+                .get_item("Toolbar")
+                .expect("dict lookup")
+                .expect("a toolbar click must dispatch a Toolbar key, not a raw MouseDown")
+                .cast_into::<PyTuple>()
+                .expect("Toolbar must pythonize to a (id, event) tuple");
+            assert_eq!(toolbar_payload.len(), 2, "Toolbar must carry (id, event)");
+            let bar_id: String = toolbar_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the toolbar's own id must be a string");
+            assert_eq!(
+                bar_id, "toolbar:main",
+                "the widget id must be the toolbar's own"
+            );
+            let inner = toolbar_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner ToolbarEvent must pythonize to a dict");
+            let clicked = inner
+                .get_item("ButtonClicked")
+                .expect("dict lookup")
+                .expect("a button click must carry a ButtonClicked key")
+                .cast_into::<PyDict>()
+                .expect("ButtonClicked payload must be a dict");
+            let button_id: String = clicked
+                .get_item("id")
+                .expect("dict lookup")
+                .expect("id key must be present")
+                .extract()
+                .expect("id must be a string");
+            assert_eq!(
+                button_id, "filter",
+                "the clicked button's own id must be reported"
+            );
+            let is_active: bool = clicked
+                .get_item("is_active")
+                .expect("dict lookup")
+                .expect("is_active key must be present")
+                .extract()
+                .expect("is_active must be a bool");
+            assert!(
+                is_active,
+                "the pre-click is_active (False) must be reported flipped (True)"
             );
         });
     }
@@ -5368,6 +7470,2245 @@ def handle(event):
                 tree_key_event(&event_dict),
                 ("tree:2".to_string(), "k".to_string()),
                 "the key must dispatch as the newly focused leaf's own semantic Tree(KeyPressed)"
+            );
+        });
+    }
+
+    /// A branch row's chevron is a distinct hit region from the row body
+    /// (`TreeViewLayout::hit_test` carves `[area.x, area.x + chevron_w)` off
+    /// as `TreeViewHit::Chevron`, `chevron_w` wide, before the row text
+    /// starts). A click there must be replaced by the semantic
+    /// `UiEvent::Tree(RowToggleExpand)`, not the row's own `RowClicked`.
+    #[test]
+    fn mouse_down_over_a_tree_chevron_emits_a_semantic_row_toggle_expand_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'tree': {
+        'id': 'tree:main',
+        'rows': [
+            {
+                'path': [0], 'indent': 0, 'icon': None,
+                'text': {'spans': [{'text': 'AlphaRow', 'fg': None, 'bg': None}]},
+                'badge': None, 'is_expanded': True,
+            },
+            {
+                'path': [1], 'indent': 0, 'icon': None,
+                'text': {'spans': [{'text': 'BetaRow', 'fg': None, 'bg': None}]},
+                'badge': None, 'is_expanded': None,
+            },
+        ],
+        'selection_mode': 'Single', 'selected_path': [0],
+        'scroll_offset': 0, 'has_focus': True,
+        'style': {
+            'indent': 2, 'show_chevrons': True,
+            'chevron_expanded': '▾', 'chevron_collapsed': '▸',
+            'row_height': 22,
+        },
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("AlphaRow")
+                    .expect("render must not raise"),
+                "the first (branch) row must be painted"
+            );
+            // The row's own label starts two cells past the chevron glyph +
+            // gap (`draw_tree` leaves `col == 2` once the chevron block is
+            // painted), so a click 1.5 cells to the left of the label lands
+            // inside the chevron's own hit region without assuming the
+            // tree's `area.x` is any particular value.
+            let bounds = app
+                .driver
+                .find_bounds("AlphaRow")
+                .expect("first row's label must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x - 1.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the click must emit both a FocusChanged (nothing was focused yet) and the \
+                 semantic Tree event"
+            );
+            let focus_dict = received_list
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let focused: String = focus_dict
+                .get_item("FocusChanged")
+                .expect("dict lookup")
+                .expect("the click must focus the tree before the click event itself")
+                .extract()
+                .expect("FocusChanged must carry the newly focused widget's id as a string");
+            assert_eq!(focused, "tree:main", "the clicked tree must receive focus");
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let tree_payload = event_dict
+                .get_item("Tree")
+                .expect("dict lookup")
+                .expect("a chevron click must dispatch a Tree key, not a raw MouseDown")
+                .cast_into::<PyTuple>()
+                .expect("Tree must pythonize to a (id, event) tuple");
+            assert_eq!(tree_payload.len(), 2, "Tree must carry (id, event)");
+            let widget: String = tree_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the tree's own id must be a string");
+            assert_eq!(widget, "tree:main", "the widget id must be the tree's own");
+            let inner = tree_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner TreeEvent must pythonize to a dict");
+            let toggle = inner
+                .get_item("RowToggleExpand")
+                .expect("dict lookup")
+                .expect("a chevron click must carry a RowToggleExpand key, not RowClicked")
+                .cast_into::<PyDict>()
+                .expect("RowToggleExpand payload must be a dict");
+            let path: Vec<u16> = toggle
+                .get_item("path")
+                .expect("dict lookup")
+                .expect("path key must be present")
+                .extract()
+                .expect("path must be a list of ints");
+            assert_eq!(
+                path,
+                vec![0],
+                "the toggled row's own path (the first, branch row) must be reported"
+            );
+        });
+    }
+
+    /// A key pressed while the focused tree's row is mid-rename
+    /// (`TreeRow::edit` is `Some`) is replaced by the semantic
+    /// `UiEvent::Tree(RowRenameChanged/Committed/Cancelled)` it stands for,
+    /// not the tree's raw `KeyPressed` — so a Python handler can write the
+    /// reported `text`/`cursor`/`selection_anchor` straight back onto the
+    /// row's `edit` without reimplementing cursor math itself.
+    #[test]
+    fn key_pressed_during_a_tree_row_rename_emits_semantic_rename_events() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'tree': {
+        'id': 'tree:main',
+        'rows': [{
+            'path': [0], 'indent': 0, 'icon': None,
+            'text': {'spans': [{'text': 'file.txt', 'fg': None, 'bg': None}]},
+            'badge': None, 'is_expanded': None,
+            'edit': {'text': 'fi', 'cursor': 2, 'selection_anchor': None, 'placeholder': None},
+        }],
+        'selection_mode': 'Single', 'selected_path': [0],
+        'style': {
+            'indent': 2, 'show_chevrons': True,
+            'chevron_expanded': 'v', 'chevron_collapsed': '>',
+        },
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 20, Some(handle), Some(render)).expect("valid dimensions");
+            let screen = app.screen().expect("render must not raise");
+            assert!(
+                screen.contains("fi"),
+                "the in-progress rename text must be painted"
+            );
+
+            fn extract_received<'py>(locals: &Bound<'py, PyDict>) -> Bound<'py, PyList> {
+                locals
+                    .get_item("received")
+                    .expect("dict lookup")
+                    .expect("received must be defined")
+                    .cast_into::<PyList>()
+                    .expect("received must be a list")
+            }
+
+            fn tree_event<'py>(event_dict: &Bound<'py, PyDict>) -> (String, Bound<'py, PyDict>) {
+                let payload = event_dict
+                    .get_item("Tree")
+                    .expect("dict lookup")
+                    .expect("a rename key must dispatch a Tree event")
+                    .cast_into::<PyTuple>()
+                    .expect("Tree must pythonize to a (id, event) tuple");
+                let widget: String = payload
+                    .get_item(0)
+                    .expect("first element")
+                    .extract()
+                    .expect("the tree's own id must be a string");
+                let inner = payload
+                    .get_item(1)
+                    .expect("second element")
+                    .cast_into::<PyDict>()
+                    .expect("the inner TreeEvent must pythonize to a dict");
+                (widget, inner)
+            }
+
+            // Tab focuses the tree (its only tab stop).
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Tab),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            assert_eq!(
+                extract_received(&locals).len(),
+                1,
+                "Tab must emit exactly one event"
+            );
+
+            // Typing 'x' at cursor 2 of \"fi\" must insert it there, not
+            // reimplement the insert in Python -- the reported `text` is
+            // already \"fix\" with `cursor` advanced to 3.
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Char('x'),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            let received_list = extract_received(&locals);
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the rename keystroke must emit one more event"
+            );
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let (widget, inner) = tree_event(&event_dict);
+            assert_eq!(widget, "tree:main");
+            let changed = inner
+                .get_item("RowRenameChanged")
+                .expect("dict lookup")
+                .expect("a rename keystroke must carry RowRenameChanged, not raw KeyPressed")
+                .cast_into::<PyDict>()
+                .expect("RowRenameChanged payload must be a dict");
+            let text: String = changed
+                .get_item("text")
+                .expect("dict lookup")
+                .expect("text key must be present")
+                .extract()
+                .expect("text must be a string");
+            assert_eq!(
+                text, "fix",
+                "the typed char must land at the cursor, not corrupt the text"
+            );
+            let cursor: usize = changed
+                .get_item("cursor")
+                .expect("dict lookup")
+                .expect("cursor key must be present")
+                .extract()
+                .expect("cursor must be an int");
+            assert_eq!(cursor, 3, "the cursor must advance past the inserted char");
+
+            // Enter commits the rename with the (unchanged by this event)
+            // current text.
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            let received_list = extract_received(&locals);
+            assert_eq!(received_list.len(), 3, "Enter must emit one more event");
+            let event_dict = received_list
+                .get_item(2)
+                .expect("third item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let (_, inner) = tree_event(&event_dict);
+            let committed = inner
+                .get_item("RowRenameCommitted")
+                .expect("dict lookup")
+                .expect("Enter during a rename must carry RowRenameCommitted")
+                .cast_into::<PyDict>()
+                .expect("RowRenameCommitted payload must be a dict");
+            let text: String = committed
+                .get_item("text")
+                .expect("dict lookup")
+                .expect("text key must be present")
+                .extract()
+                .expect("text must be a string");
+            assert_eq!(
+                text, "fi",
+                "Enter commits the text the row's edit state still holds"
+            );
+        });
+    }
+
+    /// Double-clicking a tree row must be replaced by the semantic
+    /// `UiEvent::Tree(RowDoubleClicked)` it stands for -- the
+    /// semantic-substitution block in `PyAppLogic::handle` runs for
+    /// `UiEvent::DoubleClick` the same way it runs for `MouseDown`. The tree
+    /// is also a tab stop and nothing is focused yet, so click-to-focus fires
+    /// a `FocusChanged` ahead of it, exactly as it would for a `MouseDown`
+    /// landing in the same spot.
+    #[test]
+    fn double_click_over_a_tree_row_emits_a_semantic_row_double_clicked_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'tree': {
+        'id': 'tree:main',
+        'rows': [
+            {
+                'path': [0], 'indent': 0, 'icon': None,
+                'text': {'spans': [{'text': 'AlphaRow', 'fg': None, 'bg': None}]},
+                'badge': None, 'is_expanded': None,
+            },
+            {
+                'path': [1], 'indent': 0, 'icon': None,
+                'text': {'spans': [{'text': 'BetaRow', 'fg': None, 'bg': None}]},
+                'badge': None, 'is_expanded': None,
+            },
+        ],
+        'selection_mode': 'Single', 'selected_path': [0],
+        'scroll_offset': 0, 'has_focus': True,
+        'style': {
+            'indent': 2, 'show_chevrons': True,
+            'chevron_expanded': '▾', 'chevron_collapsed': '▸',
+            'row_height': 22,
+        },
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("BetaRow")
+                    .expect("render must not raise"),
+                "the second row must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("BetaRow")
+                .expect("second row's label must be on screen");
+
+            let click = UiEvent::DoubleClick {
+                widget: None,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("DoubleClick must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                2,
+                "click-to-focus must fire a FocusChanged ahead of the double-click"
+            );
+            let focus_dict = received_list
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let focused: String = focus_dict
+                .get_item("FocusChanged")
+                .expect("dict lookup")
+                .expect("the first event must be a FocusChanged")
+                .extract()
+                .expect("FocusChanged must carry the tree's own id");
+            assert_eq!(
+                focused, "tree:main",
+                "the double-clicked tree must be focused"
+            );
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let tree_payload = event_dict
+                .get_item("Tree")
+                .expect("dict lookup")
+                .expect("a row double-click must dispatch a Tree key, not a raw DoubleClick")
+                .cast_into::<PyTuple>()
+                .expect("Tree must pythonize to a (id, event) tuple");
+            assert_eq!(tree_payload.len(), 2, "Tree must carry (id, event)");
+            let widget: String = tree_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the tree's own id must be a string");
+            assert_eq!(widget, "tree:main", "the widget id must be the tree's own");
+            let inner = tree_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner TreeEvent must pythonize to a dict");
+            let double_clicked = inner
+                .get_item("RowDoubleClicked")
+                .expect("dict lookup")
+                .expect("a double-click must carry a RowDoubleClicked key, not RowClicked")
+                .cast_into::<PyDict>()
+                .expect("RowDoubleClicked payload must be a dict");
+            let path: Vec<u16> = double_clicked
+                .get_item("path")
+                .expect("dict lookup")
+                .expect("path key must be present")
+                .extract()
+                .expect("path must be a list of ints");
+            assert_eq!(
+                path,
+                vec![1],
+                "the double-clicked row's own path (the second row) must be reported"
+            );
+        });
+    }
+
+    /// Clicking an item in a `list` leaf must both focus that leaf (emitting
+    /// `FocusChanged`, via `PyAppLogic::handle`'s click-to-focus step) and
+    /// dispatch the semantic `List(SelectionChanged)` the click stands for.
+    /// A plain key dispatched afterwards must then route to that same,
+    /// now-focused leaf as its own `List(KeyPressed)` -- proving
+    /// click-to-focus actually redirects subsequent key routing, not just
+    /// that a `FocusChanged` event fired once.
+    #[test]
+    fn mouse_down_over_a_list_item_focuses_it_and_a_later_key_routes_to_it() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    def leaf(id, labels):
+        return {'id': id, 'list': {
+            'id': id,
+            'items': [
+                {'text': {'spans': [{'text': label, 'fg': None, 'bg': None}]}}
+                for label in labels
+            ],
+            'selected_idx': 0,
+        }}
+    return {'row': [leaf('list:1', ['Alpha1', 'Alpha2']), leaf('list:2', ['Beta1', 'Beta2'])]}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 20, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Beta1").expect("render must not raise"),
+                "the second leaf's first item must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Beta1")
+                .expect("second leaf's first item must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the click must emit both a FocusChanged and the semantic List event"
+            );
+
+            let focus_dict = received_list
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let focused: String = focus_dict
+                .get_item("FocusChanged")
+                .expect("dict lookup")
+                .expect("the click must focus the clicked leaf before the click event itself")
+                .extract()
+                .expect("FocusChanged must carry the newly focused widget's id as a string");
+            assert_eq!(
+                focused, "list:2",
+                "the clicked leaf, not the other one, must receive focus"
+            );
+
+            let click_event_dict = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let list_payload = click_event_dict
+                .get_item("List")
+                .expect("dict lookup")
+                .expect("an item click must dispatch a List key, not a raw MouseDown")
+                .cast_into::<PyTuple>()
+                .expect("List must pythonize to a (id, event) tuple");
+            let widget: String = list_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the list's own id must be a string");
+            assert_eq!(
+                widget, "list:2",
+                "the widget id must be the clicked leaf's own"
+            );
+            let inner = list_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner ListViewEvent must pythonize to a dict");
+            let changed = inner
+                .get_item("SelectionChanged")
+                .expect("dict lookup")
+                .expect("an item click must carry a SelectionChanged key")
+                .cast_into::<PyDict>()
+                .expect("SelectionChanged payload must be a dict");
+            let idx: usize = changed
+                .get_item("idx")
+                .expect("dict lookup")
+                .expect("idx key must be present")
+                .extract()
+                .expect("idx must be an int");
+            assert_eq!(idx, 0, "the clicked item's own index must be reported");
+
+            // A plain key now routes to "list:2" -- the leaf the click just
+            // focused -- as that leaf's own semantic List(KeyPressed), not
+            // "list:1" and not a raw global KeyPressed.
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            let received_list = received
+                .cast::<PyList>()
+                .expect("received must still be a list");
+            assert_eq!(
+                received_list.len(),
+                3,
+                "the focus-scoped key must emit exactly one more event"
+            );
+            let key_event_dict = received_list
+                .get_item(2)
+                .expect("third item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let key_payload = key_event_dict
+                .get_item("List")
+                .expect("dict lookup")
+                .expect("the key must dispatch as the focused leaf's own semantic List key")
+                .cast_into::<PyTuple>()
+                .expect("List must pythonize to a (id, event) tuple");
+            let key_widget: String = key_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the list's own id must be a string");
+            assert_eq!(
+                key_widget, "list:2",
+                "the key must route to the leaf the click focused, not the other leaf"
+            );
+            let key_inner = key_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner ListViewEvent must pythonize to a dict");
+            let key_pressed = key_inner
+                .get_item("KeyPressed")
+                .expect("dict lookup")
+                .expect("the key must carry a KeyPressed key")
+                .cast_into::<PyDict>()
+                .expect("KeyPressed payload must be a dict");
+            let key: String = key_pressed
+                .get_item("key")
+                .expect("dict lookup")
+                .expect("key field must be present")
+                .extract()
+                .expect("key must be a string");
+            assert_eq!(
+                key, "Down",
+                "the raw key must be mapped to its focus-string name"
+            );
+        });
+    }
+
+    /// Double-clicking a list item must emit the distinct
+    /// `ListViewEvent::ItemDoubleClicked`, not `SelectionChanged` -- the
+    /// "open" event an app should listen for instead of treating every
+    /// single click as an open.
+    #[test]
+    fn double_click_over_a_list_item_emits_a_semantic_item_double_clicked_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'list': {
+        'id': 'list:main',
+        'items': [
+            {'text': {'spans': [{'text': 'Alpha', 'fg': None, 'bg': None}]}},
+            {'text': {'spans': [{'text': 'Beta', 'fg': None, 'bg': None}]}},
+        ],
+        'selected_idx': 0,
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Beta").expect("render must not raise"),
+                "the second item must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Beta")
+                .expect("second item's label must be on screen");
+
+            let click = UiEvent::DoubleClick {
+                widget: None,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("DoubleClick must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                2,
+                "click-to-focus must fire a FocusChanged ahead of the double-click"
+            );
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let list_payload = event_dict
+                .get_item("List")
+                .expect("dict lookup")
+                .expect("a double-click must dispatch a List key, not a raw DoubleClick")
+                .cast_into::<PyTuple>()
+                .expect("List must pythonize to a (id, event) tuple");
+            let widget: String = list_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the list's own id must be a string");
+            assert_eq!(widget, "list:main", "the widget id must be the list's own");
+            let inner = list_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner ListViewEvent must pythonize to a dict");
+            let double_clicked = inner
+                .get_item("ItemDoubleClicked")
+                .expect("dict lookup")
+                .expect("a double-click must carry an ItemDoubleClicked key, not SelectionChanged")
+                .cast_into::<PyDict>()
+                .expect("ItemDoubleClicked payload must be a dict");
+            let idx: usize = double_clicked
+                .get_item("idx")
+                .expect("dict lookup")
+                .expect("idx key must be present")
+                .extract()
+                .expect("idx must be an int");
+            assert_eq!(
+                idx, 1,
+                "the double-clicked item's own index must be reported"
+            );
+        });
+    }
+
+    /// Enter on a focused list item must emit the semantic
+    /// `ListViewEvent::ItemActivated` -- the keyboard equivalent of
+    /// [`double_click_over_a_list_item_emits_a_semantic_item_double_clicked_event`]'s
+    /// mouse gesture, so a Python app wired to `ItemActivated` for "open"
+    /// also works from the keyboard, not just a mouse or a screen reader's
+    /// default action.
+    #[test]
+    fn enter_on_a_focused_list_item_emits_a_semantic_item_activated_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'list': {
+        'id': 'list:main',
+        'items': [
+            {'text': {'spans': [{'text': 'Alpha', 'fg': None, 'bg': None}]}},
+            {'text': {'spans': [{'text': 'Beta', 'fg': None, 'bg': None}]}},
+        ],
+        'selected_idx': 0,
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Alpha").expect("render must not raise"),
+                "the first item must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Alpha")
+                .expect("first item's label must be on screen");
+
+            // `render()` is a static Python function that always reports
+            // `selected_idx: 0` — a click on "Alpha" (already row 0) only
+            // needs to focus the list (click-to-focus), the same
+            // click-then-key sequence
+            // `test_down_arrow_on_a_focused_table_selects_the_next_row`
+            // relies on for `DataTable`.
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            let event_dict = received_list
+                .get_item(received_list.len() - 1)
+                .expect("last item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let list_payload = event_dict
+                .get_item("List")
+                .expect("dict lookup")
+                .expect("Enter on a focused list must dispatch a List key, not a raw KeyPressed")
+                .cast_into::<PyTuple>()
+                .expect("List must pythonize to a (id, event) tuple");
+            let widget: String = list_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the list's own id must be a string");
+            assert_eq!(widget, "list:main", "the widget id must be the list's own");
+            let inner = list_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner ListViewEvent must pythonize to a dict");
+            let activated = inner
+                .get_item("ItemActivated")
+                .expect("dict lookup")
+                .expect("Enter on a focused list with a selection must carry an ItemActivated key")
+                .cast_into::<PyDict>()
+                .expect("ItemActivated payload must be a dict");
+            let idx: usize = activated
+                .get_item("idx")
+                .expect("dict lookup")
+                .expect("idx key must be present")
+                .extract()
+                .expect("idx must be an int");
+            assert_eq!(idx, 0, "the activated item's own index must be reported");
+        });
+    }
+
+    /// A Ctrl-click on a list item is a multi-select gesture
+    /// `ListViewEvent::SelectionChanged` can't represent (it carries no
+    /// modifiers), so `semantic_event_for_hit` leaves it unmapped: the raw
+    /// `MouseDown` reaches Python with its own `modifiers` and its `"hit"`
+    /// dict still attached, letting the handler compute the selection
+    /// itself. Click-to-focus still runs ahead of it, the same as a plain
+    /// click.
+    #[test]
+    fn ctrl_click_over_a_list_item_leaves_the_raw_mouse_down_and_hit_attached() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'list': {
+        'id': 'list:main',
+        'items': [
+            {'text': {'spans': [{'text': label, 'fg': None, 'bg': None}]}}
+            for label in ['Alpha', 'Beta']
+        ],
+        'selected_idx': 0,
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Beta").expect("render must not raise"),
+                "the second item must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Beta")
+                .expect("second item's label must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the click must still emit a FocusChanged ahead of the raw MouseDown"
+            );
+
+            let click_event_dict = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let mouse_down = click_event_dict
+                .get_item("MouseDown")
+                .expect("dict lookup")
+                .expect("a Ctrl-click must dispatch the raw MouseDown, not a List key")
+                .cast_into::<PyDict>()
+                .expect("MouseDown payload must be a dict");
+            let widget: String = mouse_down
+                .get_item("widget")
+                .expect("dict lookup")
+                .expect("widget key must be present")
+                .extract()
+                .expect("widget must be the clicked list's own id");
+            assert_eq!(widget, "list:main");
+            let modifiers = mouse_down
+                .get_item("modifiers")
+                .expect("dict lookup")
+                .expect("modifiers key must be present")
+                .cast_into::<PyDict>()
+                .expect("modifiers payload must be a dict");
+            let ctrl: bool = modifiers
+                .get_item("ctrl")
+                .expect("dict lookup")
+                .expect("ctrl key must be present")
+                .extract()
+                .expect("ctrl must be a bool");
+            assert!(
+                ctrl,
+                "the Ctrl modifier must survive onto the raw MouseDown"
+            );
+            let hit = click_event_dict
+                .get_item("hit")
+                .expect("dict lookup")
+                .expect("the hit dict must still be attached since no semantic event replaced it")
+                .cast_into::<PyDict>()
+                .expect("hit payload must be a dict");
+            let index: usize = hit
+                .get_item("index")
+                .expect("dict lookup")
+                .expect("index key must be present")
+                .extract()
+                .expect("index must be an int");
+            assert_eq!(index, 1, "the clicked item's own index must be reported");
+        });
+    }
+
+    /// Builds a 30-row tree (`QuiApp::new(40, 10, ...)` can't fit all of
+    /// them in its viewport, so a scrollbar is always painted) whose
+    /// `handle` tracks the live `scroll_offset` in a Python global so a
+    /// later `render()` reflects whatever `ScrollOffsetChanged` the drag
+    /// produced. Returns `(app, received-list accessor via `locals`)`.
+    fn tree_with_scrollbar_app(py: Python<'_>, locals: &Bound<'_, PyDict>) -> QuiApp {
+        py.run(
+            c"
+received = []
+scroll = 0
+
+def render():
+    rows = []
+    for i in range(30):
+        rows.append({
+            'path': [i], 'indent': 0, 'icon': None,
+            'text': {'spans': [{'text': 'Row%02d' % i, 'fg': None, 'bg': None}]},
+            'badge': None, 'is_expanded': None,
+        })
+    return {'tree': {
+        'id': 'tree:main',
+        'rows': rows,
+        'selection_mode': 'Single', 'selected_path': [0],
+        'scroll_offset': scroll, 'has_focus': True,
+        'style': {
+            'indent': 2, 'show_chevrons': True,
+            'chevron_expanded': '▾', 'chevron_collapsed': '▸',
+            'row_height': 22,
+        },
+    }}
+
+def handle(event):
+    global scroll
+    received.append(event)
+    if isinstance(event, dict) and 'ScrollOffsetChanged' in event:
+        scroll = event['ScrollOffsetChanged']['new_offset']
+",
+            Some(locals),
+            Some(locals),
+        )
+        .expect("python source must execute");
+        let render: Py<PyAny> = locals
+            .get_item("render")
+            .expect("dict lookup")
+            .expect("render must be defined")
+            .unbind();
+        let handle: Py<PyAny> = locals
+            .get_item("handle")
+            .expect("dict lookup")
+            .expect("handle must be defined")
+            .unbind();
+        QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions")
+    }
+
+    /// Reads back the real painted `(Scrollbar, total_rows, viewport_rows,
+    /// scroll_offset)` for `tree:main`, forcing the first render first
+    /// (`QuiApp::new` leaves `hit_map` empty until something actually
+    /// paints) and asserting that 30 rows in a 10-row viewport really did
+    /// paint a scrollbar.
+    fn painted_tree_scrollbar_state(app: &mut QuiApp) -> (Scrollbar, usize, usize, usize) {
+        assert!(
+            app.screen_contains("Row00").expect("render must not raise"),
+            "the top row must be painted before any scroll"
+        );
+        let hit_map = app.driver.app().engine.hit_map();
+        tree_scroll_state(&hit_map, WidgetId::new("tree:main"))
+            .expect("a 30-row tree in a 10-row viewport must paint a scrollbar")
+    }
+
+    /// Dragging a tree's scrollbar thumb must move the painted window by
+    /// translating the drag's absolute motion through
+    /// [`ThumbDrag::offset_at`] into a semantic `ScrollOffsetChanged`,
+    /// mirroring `compose::TreeController`'s own thumb-drag handling. The
+    /// initial press only arms the drag — the raw `MouseDown` still
+    /// reaches Python (the thumb-press arm never replaces `event`, it only
+    /// strips the `"hit"` payload) — and the window only actually moves
+    /// once the drag-translated `MouseMoved` lands.
+    #[test]
+    fn dragging_a_tree_scrollbar_thumb_moves_the_painted_window() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            let mut app = tree_with_scrollbar_app(py, &locals);
+            let (scrollbar, total_rows, viewport_rows, scroll_offset) =
+                painted_tree_scrollbar_state(&mut app);
+            assert_eq!(total_rows, 30);
+            assert_eq!(scroll_offset, 0);
+            let max_offset = total_rows.saturating_sub(viewport_rows);
+            assert!(
+                max_offset > 0,
+                "the tree must actually overflow its viewport"
+            );
+
+            let track = scrollbar.track;
+            let thumb_center_y = track.y + scrollbar.thumb_start + scrollbar.thumb_len / 2.0;
+            let press_x = track.x + track.width / 2.0;
+
+            let press = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(press_x, thumb_center_y),
+                modifiers: Modifiers::default(),
+            };
+            let press_any = pythonize::pythonize(py, &press).expect("UiEvent must pythonize");
+            let press_dict = press_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(press_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the first click must emit FocusChanged plus the raw MouseDown — the \
+                 thumb-press arm only arms the drag, it never replaces the event"
+            );
+            let raw_down = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                raw_down
+                    .get_item("MouseDown")
+                    .expect("dict lookup")
+                    .is_some(),
+                "a thumb press must still dispatch the raw MouseDown, not a semantic substitute"
+            );
+            assert!(
+                raw_down.get_item("hit").expect("dict lookup").is_none(),
+                "the thumb-press arm strips the hit payload even though it keeps the raw event"
+            );
+
+            let travel = scrollbar.travel();
+            let target_y = thumb_center_y + travel;
+            let drag = ThumbDrag::begin(
+                thumb_center_y,
+                scroll_offset as f32,
+                travel,
+                max_offset as f32,
+            );
+            let expected_offset = drag
+                .offset_at(target_y)
+                .expect("travel and max_offset are both positive")
+                .round() as usize;
+            assert_eq!(
+                expected_offset, max_offset,
+                "dragging the full travel distance must reach the last valid offset"
+            );
+
+            let drag_move = UiEvent::MouseMoved {
+                position: Point::new(press_x, target_y),
+                buttons: ButtonMask::default(),
+            };
+            let move_any = pythonize::pythonize(py, &drag_move).expect("UiEvent must pythonize");
+            let move_dict = move_any
+                .cast::<PyDict>()
+                .expect("MouseMoved must pythonize to a dict");
+            app.push_event(move_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                3,
+                "the drag-translated MouseMoved must emit exactly one new event"
+            );
+            let scroll_event = received_list
+                .get_item(2)
+                .expect("third item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                scroll_event.get_item("hit").expect("dict lookup").is_none(),
+                "a drag-translated ScrollOffsetChanged never carries a hit payload"
+            );
+            let payload = scroll_event
+                .get_item("ScrollOffsetChanged")
+                .expect("dict lookup")
+                .expect(
+                    "the drag-translated MouseMoved must dispatch a semantic ScrollOffsetChanged",
+                )
+                .cast_into::<PyDict>()
+                .expect("ScrollOffsetChanged payload must be a dict");
+            let new_offset: usize = payload
+                .get_item("new_offset")
+                .expect("dict lookup")
+                .expect("new_offset key must be present")
+                .extract()
+                .expect("new_offset must be an int");
+            assert_eq!(
+                new_offset, expected_offset,
+                "the reported offset must match ThumbDrag's own math"
+            );
+
+            assert!(
+                !app.screen_contains("Row00").expect("render must not raise"),
+                "the drag must have scrolled the top row out of view"
+            );
+            // The drag's own MouseDown focuses the tree, so the focus ring
+            // now overlays the band's top and bottom rows with border
+            // glyphs; check a row strictly inside the new window instead of
+            // `new_offset` itself.
+            let expected_row = format!("Row{:02}", new_offset + 1);
+            assert!(
+                app.screen_contains(&expected_row)
+                    .expect("render must not raise"),
+                "a row from the new scroll offset's window must be painted"
+            );
+        });
+    }
+
+    /// Clicking the scrollbar track below the thumb must page the tree
+    /// forward by one viewport — `click_scrollbar`'s `PressZone::After` arm
+    /// — replacing the raw `MouseDown` outright with a semantic
+    /// `ScrollOffsetChanged` (never dispatching the raw click, never
+    /// attaching a `"hit"` payload), so the painted window actually moves.
+    #[test]
+    fn clicking_the_tree_scrollbar_track_pages_the_painted_window() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            let mut app = tree_with_scrollbar_app(py, &locals);
+            let (scrollbar, total_rows, viewport_rows, scroll_offset) =
+                painted_tree_scrollbar_state(&mut app);
+            assert_eq!(scroll_offset, 0);
+            let max_offset = total_rows.saturating_sub(viewport_rows);
+            assert!(
+                max_offset > 0,
+                "the tree must actually overflow its viewport"
+            );
+
+            let track = scrollbar.track;
+            // Just past the thumb's own bottom edge, strictly inside the
+            // track so `Rect::contains`'s half-open bound doesn't miss it.
+            let after_y = (track.y + scrollbar.thumb_start + scrollbar.thumb_len + 0.5)
+                .min(track.y + track.height - 0.5);
+            let press_x = track.x + track.width / 2.0;
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(press_x, after_y),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                2,
+                "a track click must emit FocusChanged plus the semantic ScrollOffsetChanged, \
+                 never the raw MouseDown"
+            );
+            let scroll_event = received_list
+                .get_item(1)
+                .expect("second item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                scroll_event
+                    .get_item("MouseDown")
+                    .expect("dict lookup")
+                    .is_none(),
+                "a track click must never dispatch the raw MouseDown"
+            );
+            assert!(
+                scroll_event.get_item("hit").expect("dict lookup").is_none(),
+                "a track-click ScrollOffsetChanged never carries a hit payload"
+            );
+            let payload = scroll_event
+                .get_item("ScrollOffsetChanged")
+                .expect("dict lookup")
+                .expect("a track click must dispatch a semantic ScrollOffsetChanged")
+                .cast_into::<PyDict>()
+                .expect("ScrollOffsetChanged payload must be a dict");
+            let new_offset: usize = payload
+                .get_item("new_offset")
+                .expect("dict lookup")
+                .expect("new_offset key must be present")
+                .extract()
+                .expect("new_offset must be an int");
+            let expected_offset = scroll_by_clamped(0, viewport_rows as isize, max_offset);
+            assert_eq!(
+                new_offset, expected_offset,
+                "a track-after click must page forward by exactly one viewport"
+            );
+            assert!(
+                expected_offset > 0,
+                "paging forward must actually move the offset"
+            );
+
+            // The click's own MouseDown focuses the tree, so the focus ring
+            // now overlays the band's top and bottom rows with border
+            // glyphs; check a row strictly inside the new window instead of
+            // `new_offset` itself.
+            let expected_row = format!("Row{:02}", new_offset + 1);
+            assert!(
+                app.screen_contains(&expected_row)
+                    .expect("render must not raise"),
+                "a row from the page-click's new scroll offset window must be painted"
+            );
+        });
+    }
+
+    /// A wheel notch landing anywhere over the tree — rows, chevrons, or
+    /// the scrollbar itself — must translate straight into a semantic
+    /// `ScrollOffsetChanged` via `wheel_row_delta` + `scroll_by_clamped`,
+    /// replacing the raw `Scroll` outright rather than dispatching both.
+    #[test]
+    fn wheel_over_the_tree_scrolls_the_painted_window() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            let mut app = tree_with_scrollbar_app(py, &locals);
+            let (_, total_rows, viewport_rows, scroll_offset) =
+                painted_tree_scrollbar_state(&mut app);
+            assert_eq!(scroll_offset, 0);
+            let max_offset = total_rows.saturating_sub(viewport_rows);
+            assert!(
+                max_offset > 0,
+                "the tree must actually overflow its viewport"
+            );
+
+            let bounds = app
+                .driver
+                .find_bounds("Row00")
+                .expect("the top row's label must be on screen");
+            let wheel = UiEvent::Scroll {
+                widget: None,
+                delta: ScrollDelta::new(0.0, -3.0),
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+            };
+            let wheel_any = pythonize::pythonize(py, &wheel).expect("UiEvent must pythonize");
+            let wheel_dict = wheel_any
+                .cast::<PyDict>()
+                .expect("Scroll must pythonize to a dict");
+            app.push_event(wheel_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "a wheel notch over the tree must dispatch exactly one event — no FocusChanged \
+                 (a wheel notch doesn't move focus) and no raw Scroll alongside it"
+            );
+            let scroll_event = received_list
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                scroll_event
+                    .get_item("Scroll")
+                    .expect("dict lookup")
+                    .is_none(),
+                "the raw Scroll must never reach Python once it's translated"
+            );
+            let payload = scroll_event
+                .get_item("ScrollOffsetChanged")
+                .expect("dict lookup")
+                .expect("a wheel notch over the tree must dispatch a semantic ScrollOffsetChanged")
+                .cast_into::<PyDict>()
+                .expect("ScrollOffsetChanged payload must be a dict");
+            let new_offset: usize = payload
+                .get_item("new_offset")
+                .expect("dict lookup")
+                .expect("new_offset key must be present")
+                .extract()
+                .expect("new_offset must be an int");
+            let rows = wheel_row_delta(-3.0, 1.0);
+            let expected_offset = scroll_by_clamped(0, rows, max_offset);
+            assert_eq!(
+                new_offset, expected_offset,
+                "the reported offset must match wheel_row_delta + scroll_by_clamped"
+            );
+            assert!(
+                expected_offset > 0,
+                "the wheel notch must actually move the offset"
+            );
+
+            let expected_row = format!("Row{:02}", new_offset);
+            assert!(
+                app.screen_contains(&expected_row)
+                    .expect("render must not raise"),
+                "the wheel notch must scroll the row now at the new offset into view"
+            );
+        });
+    }
+
+    /// A click landing in the scrollbar's own gutter — track or thumb —
+    /// must never fall through to tree-row selection: `hit_test_painted`
+    /// resolves a scrollbar hit to a `TreeScrollbarThumb`/
+    /// `TreeScrollbarTrackBefore`/`TreeScrollbarTrackAfter` detail, and
+    /// `handle` never routes any of those through `semantic_event_for_hit`
+    /// (the row-selection path), so no `Tree` event is ever dispatched for
+    /// a gutter click.
+    #[test]
+    fn a_click_in_the_tree_scrollbar_gutter_does_not_select_a_row() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            let mut app = tree_with_scrollbar_app(py, &locals);
+            let (scrollbar, total_rows, viewport_rows, _) = painted_tree_scrollbar_state(&mut app);
+            let max_offset = total_rows.saturating_sub(viewport_rows);
+            assert!(
+                max_offset > 0,
+                "the tree must actually overflow its viewport"
+            );
+
+            let track = scrollbar.track;
+            let thumb_center_y = track.y + scrollbar.thumb_start + scrollbar.thumb_len / 2.0;
+            let press_x = track.x + track.width / 2.0;
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(press_x, thumb_center_y),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            for i in 0..received_list.len() {
+                let event_dict = received_list
+                    .get_item(i)
+                    .expect("item must exist")
+                    .cast_into::<PyDict>()
+                    .expect("event payload must be a dict");
+                assert!(
+                    event_dict.get_item("Tree").expect("dict lookup").is_none(),
+                    "a gutter click must never dispatch a Tree (row-selection) event"
+                );
+            }
+        });
+    }
+
+    /// Clicking a `"menu_bar"` extra's top-level item opens its dropdown
+    /// (no event reaches Python — a bare open/close is navigation, not an
+    /// app-level action) and a later click on one of its items closes the
+    /// dropdown and dispatches exactly one `UiEvent::MenuActivated` to the
+    /// registered handler, carrying the activated item's id.
+    #[test]
+    fn clicking_a_menu_bar_item_opens_its_dropdown_and_selecting_emits_menu_activated() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'menu_bar': {
+        'id': 'bar:main',
+        'items': [
+            {'id': 'menu:file', 'label': '&File', 'disabled': False, 'submenu': [
+                {'id': 'item:open', 'label': {'spans': [{'text': 'Open', 'fg': None, 'bg': None}]}},
+                {'id': 'item:quit', 'label': {'spans': [{'text': 'Quit', 'fg': None, 'bg': None}]}},
+            ]},
+        ],
+        'open_item': None,
+        'focused_item': None,
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("File").expect("render must not raise"),
+                "the menu bar's top-level item must be painted"
+            );
+
+            let bar_bounds = app
+                .driver
+                .find_bounds("File")
+                .expect("the File label must be on screen");
+
+            let open_click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bar_bounds.x + 0.5, bar_bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let open_click_any =
+                pythonize::pythonize(py, &open_click).expect("UiEvent must pythonize");
+            app.push_event(
+                open_click_any
+                    .cast::<PyDict>()
+                    .expect("MouseDown must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                0,
+                "opening the dropdown is pure navigation: nothing reaches Python yet"
+            );
+
+            let item_bounds = app
+                .driver
+                .find_bounds("Open")
+                .expect("the open dropdown must paint its 'Open' item");
+
+            let select_click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(item_bounds.x + 0.5, item_bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let select_click_any =
+                pythonize::pythonize(py, &select_click).expect("UiEvent must pythonize");
+            app.push_event(
+                select_click_any
+                    .cast::<PyDict>()
+                    .expect("MouseDown must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            assert_eq!(
+                received_list.len(),
+                1,
+                "selecting the item must dispatch exactly one event"
+            );
+            let activated = received_list
+                .get_item(0)
+                .expect("item must exist")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let activated_id: String = activated
+                .get_item("MenuActivated")
+                .expect("dict lookup")
+                .expect("a MenuActivated event must be dispatched")
+                .extract()
+                .expect("MenuActivated carries the activated item's id as a string");
+            assert_eq!(activated_id, "item:open");
+        });
+    }
+
+    /// `QuiApp::show_context_menu` opens a painted popup at the given
+    /// position; a click on one of its items closes it and dispatches
+    /// `UiEvent::ContextMenuItemActivated` to the registered handler —
+    /// the same round trip a native right-click context menu produces.
+    #[test]
+    fn show_context_menu_then_clicking_an_item_emits_context_menu_item_activated() {
+        Python::attach(|py| {
+            let (mut app, locals) = app_recording_events(py);
+
+            let items_any = py
+                .eval(
+                    c"[
+                        {'id': 'copy', 'label': {'spans': [{'text': 'Copy', 'fg': None, 'bg': None}]}},
+                        {'id': 'paste', 'label': {'spans': [{'text': 'Paste', 'fg': None, 'bg': None}]}},
+                    ]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let items = items_any.cast::<PyList>().expect("literal must be a list");
+
+            app.show_context_menu(items, (2.0, 2.0))
+                .expect("show_context_menu must open the popup");
+            assert!(
+                app.screen_contains("Copy").expect("render must not raise"),
+                "the popup's first item must be painted"
+            );
+
+            let item_bounds = app
+                .driver
+                .find_bounds("Copy")
+                .expect("the 'Copy' item must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(item_bounds.x + 0.5, item_bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            app.push_event(
+                click_any
+                    .cast::<PyDict>()
+                    .expect("MouseDown must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "selecting a context menu item must dispatch exactly one event"
+            );
+            let activated = received_list
+                .get_item(0)
+                .expect("item must exist")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let activated_id: String = activated
+                .get_item("ContextMenuItemActivated")
+                .expect("dict lookup")
+                .expect("a ContextMenuItemActivated event must be dispatched")
+                .extract()
+                .expect("ContextMenuItemActivated carries the activated item's id as a string");
+            assert_eq!(activated_id, "copy");
+        });
+    }
+
+    /// Builds the `(app, locals)` pair a `show_context_menu`/
+    /// `show_message_dialog` test drives: a fresh `QuiApp` with a Python
+    /// handler that appends every event it receives into
+    /// `locals["received"]`.
+    fn app_recording_events(py: Python<'_>) -> (QuiApp, Bound<'_, PyDict>) {
+        let locals = PyDict::new(py);
+        py.run(
+            c"received = []\ndef handle(event):\n    received.append(event)\n",
+            Some(&locals),
+            Some(&locals),
+        )
+        .expect("python source must execute");
+        let handle: Py<PyAny> = locals
+            .get_item("handle")
+            .expect("dict lookup")
+            .expect("handle must be defined")
+            .unbind();
+        let app = QuiApp::new(40, 20, Some(handle), None).expect("valid dimensions");
+        (app, locals)
+    }
+
+    /// `QuiApp::show_message_dialog` opens a painted dialog; a click on one
+    /// of its buttons closes it and dispatches
+    /// `UiEvent::MessageDialogResolved` to the registered handler — the
+    /// same round trip `show_context_menu`'s own test exercises for a
+    /// context menu.
+    #[test]
+    fn show_message_dialog_then_clicking_a_button_emits_message_dialog_resolved() {
+        Python::attach(|py| {
+            let (mut app, locals) = app_recording_events(py);
+
+            let buttons_any = py
+                .eval(
+                    c"[
+                        {'id': 'save', 'label': 'Save', 'is_default': True},
+                        {'id': 'cancel', 'label': 'Cancel', 'is_cancel': True},
+                    ]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+
+            app.show_message_dialog(
+                "Unsaved changes".to_string(),
+                "Do you want to save?".to_string(),
+                buttons,
+                Some("warning".to_string()),
+            )
+            .expect("show_message_dialog must open the dialog");
+            assert!(
+                app.screen_contains("Save").expect("render must not raise"),
+                "the dialog's buttons must be painted"
+            );
+
+            let button_bounds = app
+                .driver
+                .find_bounds("Save")
+                .expect("the 'Save' button must be on screen");
+
+            // Only `x` gets a fractional nudge: the dialog box is
+            // vertically centered in the (even-height) viewport against an
+            // (odd-height) box, so every row's continuous-coordinate
+            // button rect sits a half-cell above the integer row
+            // `find_bounds` reports — `button_bounds.y` itself (the rect's
+            // own top edge) is already inside it, but `+ 0.5` would land
+            // exactly on that rect's exclusive bottom edge and miss.
+            // `button_bounds.height` is always `1.0` here regardless (one
+            // text row), not the continuous `DialogLayout` rect's own
+            // height, so `+ height * 0.5` lands on that same excluded
+            // boundary instead of fixing it.
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(button_bounds.x + 0.5, button_bounds.y),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            app.push_event(
+                click_any
+                    .cast::<PyDict>()
+                    .expect("MouseDown must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "clicking a dialog button must dispatch exactly one event"
+            );
+            let resolved = received_list
+                .get_item(0)
+                .expect("item must exist")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let resolved_id: String = resolved
+                .get_item("MessageDialogResolved")
+                .expect("dict lookup")
+                .expect("a MessageDialogResolved event must be dispatched")
+                .extract()
+                .expect("MessageDialogResolved carries the chosen button's id as a string");
+            assert_eq!(resolved_id, "save");
+
+            assert!(
+                !app.screen_contains("Save").expect("render must not raise"),
+                "resolving the dialog must dismiss it"
+            );
+        });
+    }
+
+    /// A button dict's `spec` (the `ButtonSpec` override —
+    /// variant/icon/tooltip) decodes through to the painted dialog: a
+    /// `Danger`-variant "Delete" button reads tinted in `theme.error_fg`,
+    /// proving `spec` survives `show_message_dialog`'s whole
+    /// decode → `message_dialog_options_from_buttons` → `MessageDialogButton`
+    /// → `MessageDialogController` round trip rather than being silently
+    /// dropped along the way.
+    #[test]
+    fn show_message_dialog_button_spec_variant_paints_the_danger_tint() {
+        Python::attach(|py| {
+            let (mut app, _locals) = app_recording_events(py);
+
+            let buttons_any = py
+                .eval(
+                    c"[
+                        {'id': 'delete', 'label': 'Delete', 'is_default': True, \
+                         'spec': {'label': 'Delete', 'variant': 'Danger'}},
+                        {'id': 'cancel', 'label': 'Cancel', 'is_cancel': True},
+                    ]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+
+            // Title/body deliberately avoid the word "Delete" so
+            // `find_bounds("Delete")` below can only match the button's
+            // own label, not an earlier occurrence painted above it.
+            app.show_message_dialog(
+                "Confirm".to_string(),
+                "This cannot be undone.".to_string(),
+                buttons,
+                None,
+            )
+            .expect("show_message_dialog must open the dialog");
+
+            let button_bounds = app
+                .driver
+                .find_bounds("Delete")
+                .expect("the 'Delete' button must be on screen");
+            let style = app
+                .driver
+                .style_at(button_bounds.x as u16, button_bounds.y as u16)
+                .expect("Delete button label cell must be styled");
+            let theme = app.driver.backend().theme();
+            assert_eq!(
+                style.fg,
+                quadraui::tui::ratatui_color(theme.error_fg),
+                "a 'Danger' spec on the 'Delete' button must tint its label in theme.error_fg"
+            );
+        });
+    }
+
+    /// Enter activates the keyboard-focused button — seeded on the first
+    /// `is_default` button — closing the dialog the same way a click on it
+    /// does.
+    #[test]
+    fn show_message_dialog_then_pressing_enter_resolves_the_default_button() {
+        Python::attach(|py| {
+            let (mut app, locals) = app_recording_events(py);
+
+            let buttons_any = py
+                .eval(
+                    c"[
+                        {'id': 'save', 'label': 'Save', 'is_default': True},
+                        {'id': 'cancel', 'label': 'Cancel', 'is_cancel': True},
+                    ]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+
+            app.show_message_dialog(
+                "Unsaved changes".to_string(),
+                "Do you want to save?".to_string(),
+                buttons,
+                None,
+            )
+            .expect("show_message_dialog must open the dialog");
+
+            let enter = UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            };
+            let enter_any = pythonize::pythonize(py, &enter).expect("UiEvent must pythonize");
+            app.push_event(
+                enter_any
+                    .cast::<PyDict>()
+                    .expect("KeyPressed must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "Enter on the default button must dispatch exactly one event"
+            );
+            let resolved = received_list
+                .get_item(0)
+                .expect("item must exist")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let resolved_id: String = resolved
+                .get_item("MessageDialogResolved")
+                .expect("dict lookup")
+                .expect("a MessageDialogResolved event must be dispatched")
+                .extract()
+                .expect("MessageDialogResolved carries the chosen button's id as a string");
+            assert_eq!(resolved_id, "save");
+        });
+    }
+
+    /// Opening a message dialog while a `"menu_bar"` extra's dropdown is
+    /// open closes the dropdown first: paint order puts the dialog on top
+    /// of the bar (`render_dialog` runs after `sync_menu_bar`), so without
+    /// this, the dropdown would be stuck open but invisible underneath,
+    /// and `handle` would route a click/Enter to it (`MenuActivated`)
+    /// instead of to the dialog it paints on top of, since `handle`
+    /// previously checked the dropdown before the dialog. Pins the fix:
+    /// the dropdown's "Open" item vanishes the moment the dialog opens,
+    /// and Enter resolves the dialog rather than activating the hidden
+    /// menu item.
+    #[test]
+    fn show_message_dialog_closes_an_open_menu_bar_dropdown_and_claims_input() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'menu_bar': {
+        'id': 'bar:main',
+        'items': [
+            {'id': 'menu:file', 'label': '&File', 'disabled': False, 'submenu': [
+                {'id': 'item:open', 'label': {'spans': [{'text': 'Open', 'fg': None, 'bg': None}]}},
+            ]},
+        ],
+        'open_item': None,
+        'focused_item': None,
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(60, 20, Some(handle), Some(render)).expect("valid dimensions");
+
+            let bar_bounds = app
+                .driver
+                .find_bounds("File")
+                .expect("the File label must be on screen");
+            let open_click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bar_bounds.x + 0.5, bar_bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let open_click_any =
+                pythonize::pythonize(py, &open_click).expect("UiEvent must pythonize");
+            app.push_event(
+                open_click_any
+                    .cast::<PyDict>()
+                    .expect("MouseDown must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+            assert!(
+                app.screen_contains("Open").expect("render must not raise"),
+                "the dropdown must be open before the dialog opens"
+            );
+
+            let buttons_any = py
+                .eval(
+                    c"[{'id': 'ok', 'label': 'OK', 'is_default': True}]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+            app.show_message_dialog(
+                "Heads up".to_string(),
+                "Something happened.".to_string(),
+                buttons,
+                None,
+            )
+            .expect("show_message_dialog must open the dialog");
+
+            assert!(
+                !app.screen_contains("Open").expect("render must not raise"),
+                "opening the dialog must close the dropdown painted underneath it"
+            );
+            assert!(
+                app.screen_contains("OK").expect("render must not raise"),
+                "the dialog's own button must be painted"
+            );
+
+            let enter = UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            };
+            let enter_any = pythonize::pythonize(py, &enter).expect("UiEvent must pythonize");
+            app.push_event(
+                enter_any
+                    .cast::<PyDict>()
+                    .expect("KeyPressed must pythonize to a dict"),
+            )
+            .expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "Enter must resolve the dialog, not reach the already-closed dropdown"
+            );
+            let resolved = received_list
+                .get_item(0)
+                .expect("item must exist")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                resolved
+                    .get_item("MessageDialogResolved")
+                    .is_ok_and(|v| v.is_some()),
+                "Enter must dispatch MessageDialogResolved, not MenuActivated"
+            );
+        });
+    }
+
+    /// `show_message_dialog` rejects an empty `buttons` list: a dialog
+    /// with nothing to activate can never be resolved by Enter or Escape,
+    /// and would otherwise swallow every `MouseDown` forever with no way
+    /// to dismiss it.
+    #[test]
+    fn show_message_dialog_rejects_empty_buttons() {
+        Python::attach(|py| {
+            let (mut app, _locals) = app_recording_events(py);
+            let empty = PyList::empty(py);
+            let err = app
+                .show_message_dialog("Title".to_string(), "Body".to_string(), &empty, None)
+                .expect_err("an empty buttons list must be rejected");
+            assert!(err.is_instance_of::<InvalidDescriptorError>(py));
+        });
+    }
+
+    /// `show_message_dialog` rejects a button with a non-`None` `tint`
+    /// rather than silently dropping it: this surface shares
+    /// `MessageDialogButton`'s id/label/default/cancel shape with native
+    /// alerts, which have no tint concept at all, so a caller relying on
+    /// tint being honored must find out immediately.
+    #[test]
+    fn show_message_dialog_rejects_button_tint() {
+        Python::attach(|py| {
+            let (mut app, _locals) = app_recording_events(py);
+            let buttons_any = py
+                .eval(
+                    c"[{'id': 'delete', 'label': 'Delete', 'is_default': True, \
+                       'tint': {'r': 255, 'g': 0, 'b': 0, 'a': 255}}]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+            let err = app
+                .show_message_dialog("Title".to_string(), "Body".to_string(), buttons, None)
+                .expect_err("a tinted button must be rejected");
+            assert!(err.is_instance_of::<InvalidDescriptorError>(py));
+        });
+    }
+
+    /// A handler cannot call `app.show_message_dialog(...)` directly — it
+    /// already holds this `QuiApp`'s one mutable borrow for the whole
+    /// dispatch that invoked it, so a reentrant call there raises — but it
+    /// can queue the same request through the `QuiAppActions` handle
+    /// `QuiApp::actions` returns, which touches no borrow of `QuiApp`
+    /// itself. `step` applies the queued dialog via
+    /// `flush_deferred_actions` right after the dispatch that queued it
+    /// finishes, so it is painted by the time `step` returns, with no
+    /// exception raised along the way.
+    #[test]
+    fn handler_queues_show_message_dialog_via_actions_handle_without_reentrant_borrow() {
+        Python::attach(|py| {
+            let mut app = QuiApp::new(40, 20, None, None).expect("valid dimensions");
+            let actions = app.actions().expect("app is not poisoned");
+
+            let locals = PyDict::new(py);
+            locals
+                .set_item("actions", Py::new(py, actions).expect("wrap QuiAppActions"))
+                .expect("set actions");
+            py.run(
+                c"def handle(event):\n    actions.show_message_dialog(\
+                  'Title', 'Body', [{'id': 'ok', 'label': 'OK'}], None)\n",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+            app.set_handler(handle);
+
+            app.push_key_event('a' as u32).expect("valid code point");
+            app.step()
+                .expect("queuing via the `actions` handle from inside the handler must not raise");
+
+            assert!(
+                app.screen_contains("Title").expect("render must not raise"),
+                "the deferred dialog must be painted once `step` has applied the queue"
+            );
+        });
+
+        // `handle`'s own `__globals__` is `locals`, and `locals["handle"]` is
+        // `handle` — a reference cycle only Python's cyclic GC (not plain
+        // refcounting) ever breaks, and only once `app`/`locals` above have
+        // already dropped (still inside the `Python::attach` call above) so
+        // neither holds an external reference of its own. Left to run on
+        // its own schedule, that collection could land on a different
+        // test's thread while it holds the GIL and trip the `unsendable`
+        // `QuiAppActions` instance's cross-thread-drop guard even though
+        // nothing here ever truly sent it across threads. Collecting
+        // explicitly, on this thread, right after, avoids that.
+        Python::attach(|py| {
+            py.import("gc")
+                .and_then(|gc| gc.call_method0("collect"))
+                .expect("gc.collect must not raise");
+        });
+    }
+
+    /// `dismiss_message_dialog` closes an open dialog without resolving
+    /// it — no `MessageDialogResolved` is dispatched — and returns `False`
+    /// when nothing was open to close.
+    #[test]
+    fn dismiss_message_dialog_closes_without_resolving() {
+        Python::attach(|py| {
+            let (mut app, locals) = app_recording_events(py);
+
+            assert!(
+                !app.dismiss_message_dialog().expect("must not raise"),
+                "nothing is open yet"
+            );
+
+            let buttons_any = py
+                .eval(
+                    c"[{'id': 'ok', 'label': 'OK', 'is_default': True}]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+            app.show_message_dialog("Title".to_string(), "Body".to_string(), buttons, None)
+                .expect("show_message_dialog must open the dialog");
+            assert!(app.screen_contains("OK").expect("render must not raise"));
+
+            assert!(
+                app.dismiss_message_dialog().expect("must not raise"),
+                "a dialog was open to close"
+            );
+            assert!(!app.screen_contains("OK").expect("render must not raise"));
+
+            let received_list = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                0,
+                "dismiss_message_dialog must not dispatch MessageDialogResolved"
             );
         });
     }

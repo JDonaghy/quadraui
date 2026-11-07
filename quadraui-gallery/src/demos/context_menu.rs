@@ -15,12 +15,12 @@
 
 use quadraui::{
     Accelerator, AcceleratorId, AcceleratorScope, Backend, BackendCaps, Color, ContextMenu,
-    ContextMenuController, ContextMenuItem, ContextMenuOutcome, ContextMenuPlacement,
+    ContextMenuController, ContextMenuItem, ContextMenuOutcome, ContextMenuPlacement, Icon,
     InteractionState, KeyBinding, MenuStyle, Reaction, Rect, ResolvedMenuStyle, StatusBar,
     StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
-use crate::demo::{extract_region, Demo};
+use crate::demo::{extract_region, CaptureAction, Demo};
 
 const SOURCE: &str = include_str!("context_menu.rs");
 
@@ -51,8 +51,19 @@ impl ContextMenuDemo {
         ContextMenu {
             id: WidgetId::new("gallery:context-menu"),
             items: vec![
-                action_item("gallery:ctx:cut", "Cut", Some(KeyBinding::Cut)),
-                action_item("gallery:ctx:copy", "Copy", Some(KeyBinding::Copy)),
+                // `C3`: a leading icon on "Cut"/"Copy" — the bundled
+                // `edit`/`files` codicons on GUI, their `X`/`C`
+                // fallbacks on TUI (or on GUI with
+                // `set_nerd_fonts(false)`); only the fallback string's
+                // first `char` renders in the TUI gutter's single cell.
+                ContextMenuItem {
+                    icon: Icon::codicon("edit", "X"),
+                    ..action_item("gallery:ctx:cut", "Cut", Some(KeyBinding::Cut))
+                },
+                ContextMenuItem {
+                    icon: Icon::codicon("files", "C"),
+                    ..action_item("gallery:ctx:copy", "Copy", Some(KeyBinding::Copy))
+                },
                 action_item("gallery:ctx:paste", "Paste", Some(KeyBinding::Paste)),
                 ContextMenuItem::default(), // separator
                 action_item(
@@ -235,6 +246,13 @@ impl Demo for ContextMenuDemo {
             )
         }
     }
+
+    fn capture_action(&self, _variant: usize) -> CaptureAction {
+        // The status bar's own idle hint — painted until a right-click
+        // sets `last_action`, which a freshly-built capture `GalleryApp`
+        // never has yet.
+        CaptureAction::RightClickText("Right-click anywhere")
+    }
 }
 // gallery:end
 
@@ -270,5 +288,10 @@ mod tests {
                 Some("gallery:ctx:about".to_string()),
             ]
         );
+        // Pins that "Cut"/"Copy" actually resolved an `Icon` — a typo'd
+        // codicon name in `Icon::codicon` silently yields `None` with no
+        // other test failure, dropping the icon unnoticed.
+        assert!(menu.items[0].icon.is_some(), "Cut should carry an icon");
+        assert!(menu.items[1].icon.is_some(), "Copy should carry an icon");
     }
 }

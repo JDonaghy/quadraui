@@ -21,8 +21,8 @@
 //!     title: "Unsaved Changes".to_string(),
 //!     body: "Do you want to save?".to_string(),
 //!     buttons: vec![
-//!         MessageDialogButton { id: WidgetId::new("save"), label: "Save".into(), is_default: true, is_cancel: false },
-//!         MessageDialogButton { id: WidgetId::new("cancel"), label: "Cancel".into(), is_default: false, is_cancel: true },
+//!         MessageDialogButton { id: WidgetId::new("save"), label: "Save".into(), is_default: true, is_cancel: false, spec: None },
+//!         MessageDialogButton { id: WidgetId::new("cancel"), label: "Cancel".into(), is_default: false, is_cancel: true, spec: None },
 //!     ],
 //!     severity: Some(DialogSeverity::Warning),
 //! });
@@ -115,6 +115,7 @@ impl MessageDialogController {
                 is_default: b.is_default,
                 is_cancel: b.is_cancel,
                 tint: None,
+                spec: b.spec.clone(),
             })
             .collect();
         let focused = buttons.iter().position(|b| b.is_default).unwrap_or(0);
@@ -158,6 +159,16 @@ impl MessageDialogController {
         self.dialog.buttons.get(self.focused).map(|b| &b.id)
     }
 
+    /// The dialog's full on-screen bounds for this backend's current
+    /// viewport — the same [`DialogLayout::bounds`] [`Self::render`] paints
+    /// and [`Self::handle`]'s click routing hit-tests against. A caller
+    /// that tracks a [`crate::ModalStack`] entry for the open dialog (so
+    /// other modal-aware code gets the same hit-test precedence an open
+    /// context menu already has) pushes this.
+    pub fn bounds(&self, backend: &dyn Backend) -> Rect {
+        self.layout(backend).bounds
+    }
+
     // ── Layout ────────────────────────────────────────────────────────
 
     /// Compute the dialog layout from the backend's own metrics
@@ -171,6 +182,16 @@ impl MessageDialogController {
         let char_w = m.char_width;
         let viewport = backend.viewport();
         let has_title = self.dialog.title.spans.iter().any(|s| !s.text.is_empty());
+        // Floored at today's 10-char-width estimate; widened per-button
+        // via `resolved_button_spec()` so an explicit `spec`'s icon +
+        // longer label never clips its closing bracket — see
+        // `ButtonSpec::min_cell_width`'s own doc.
+        let button_width = self
+            .dialog
+            .buttons
+            .iter()
+            .map(|b| b.resolved_button_spec().min_cell_width() * char_w)
+            .fold(char_w * 10.0, f32::max);
         // `button_row_height` is a *single* row; `Dialog::layout` itself
         // multiplies by `self.buttons.len()` when `vertical_buttons` is
         // set (see that method's own `button_block_h` local) — no need
@@ -182,7 +203,7 @@ impl MessageDialogController {
             table_height: 0.0,
             input_height: 0.0,
             button_row_height: lh,
-            button_width: char_w * 10.0,
+            button_width,
             button_gap: char_w * 2.0,
             padding: lh,
         };
@@ -293,12 +314,14 @@ mod tests {
                     label: "Save".into(),
                     is_default: true,
                     is_cancel: false,
+                    spec: None,
                 },
                 MessageDialogButton {
                     id: WidgetId::new("cancel"),
                     label: "Cancel".into(),
                     is_default: false,
                     is_cancel: true,
+                    spec: None,
                 },
             ],
             severity: Some(crate::primitives::dialog::DialogSeverity::Warning),
@@ -314,6 +337,7 @@ mod tests {
                 label: "OK".into(),
                 is_default: true,
                 is_cancel: false,
+                spec: None,
             }],
             severity: None,
         }
@@ -505,10 +529,68 @@ mod tests {
         );
     }
 
+    /// A `MessageDialogButton::spec` override reaches the built `Dialog`'s
+    /// `DialogButton::spec` unchanged — `new()` must not drop it the way
+    /// it used to hardcode `spec: None` regardless of what `opts` carried.
+    #[test]
+    fn new_carries_button_spec_through_to_the_dialog() {
+        let mut opts = opts_ok_only();
+        let mut spec = crate::primitives::button::ButtonSpec::new("Move to Trash");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        opts.buttons[0].spec = Some(spec.clone());
+
+        let controller = MessageDialogController::new(opts);
+        assert_eq!(controller.dialog().buttons[0].spec, Some(spec));
+    }
+
+    /// A `MessageDialogButton` with no `spec` override still builds a
+    /// `DialogButton` with `spec: None`, unaffected by this plumbing.
+    #[test]
+    fn new_leaves_spec_none_when_opts_set_none() {
+        let controller = MessageDialogController::new(opts_ok_only());
+        assert_eq!(controller.dialog().buttons[0].spec, None);
+    }
+
     #[test]
     fn with_id_overrides_widget_id() {
         let controller = MessageDialogController::new(opts_two_buttons()).with_id("confirm_close");
         assert_eq!(controller.dialog().id.as_str(), "confirm_close");
+    }
+
+    #[test]
+    fn bounds_matches_the_layout_render_and_handle_both_use() {
+        let controller = MessageDialogController::new(opts_two_buttons());
+        let backend = crate::tui::backend::TuiBackend::new();
+        assert_eq!(
+            controller.bounds(&backend),
+            controller.layout(&backend).bounds
+        );
+    }
+
+    /// A `DialogButton` with an explicit `Danger` `spec` and a longer
+    /// label than the flat `char_w * 10.0` floor gets a button box wide
+    /// enough for `[ Move to Trash ]` to not clip — the same
+    /// `ButtonSpec::min_cell_width` sizing `tui_dialog_layout` and
+    /// `Dialog::measure_generic_inner` use.
+    #[test]
+    fn danger_spec_button_widens_the_button_row_so_it_is_not_clipped() {
+        let mut controller = MessageDialogController::new(opts_ok_only());
+        let mut spec = crate::primitives::button::ButtonSpec::new("Move to Trash");
+        spec.variant = crate::primitives::button::ButtonVariant::Danger;
+        controller.dialog.buttons[0].label = "Move to Trash".into();
+        controller.dialog.buttons[0].spec = Some(spec.clone());
+
+        let backend = crate::tui::backend::TuiBackend::new();
+        let layout = controller.layout(&backend);
+        let vis = &layout.visible_buttons[0];
+        let char_w = backend.measure().char_width;
+
+        assert!(
+            vis.bounds.width >= spec.min_cell_width() * char_w,
+            "button box ({}) must be at least as wide as the spec needs ({})",
+            vis.bounds.width,
+            spec.min_cell_width() * char_w
+        );
     }
 
     #[test]

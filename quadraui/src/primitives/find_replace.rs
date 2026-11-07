@@ -250,45 +250,68 @@ pub fn compute_hit_regions(
 /// let hit = panel.hit_test(0.0, 0.0, (0.0, 0.0), 1.0, 1.0);
 /// assert_eq!(hit, FindReplaceHit::Target(FindReplaceClickTarget::Chevron));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FindReplacePanel {
     /// Current query text in the find field.
     pub query: String,
     /// Current replacement text (only shown when `show_replace` is true).
+    #[serde(default)]
     pub replacement: String,
     /// Whether the replace row is visible.
+    #[serde(default)]
     pub show_replace: bool,
     /// Which field has focus: 0 = find, 1 = replace.
+    #[serde(default)]
     pub focus: u8,
     /// Cursor position within the focused field (char offset).
+    #[serde(default)]
     pub cursor: usize,
     /// Selection anchor in the focused field. When Some, text between anchor and cursor is selected.
+    #[serde(default)]
     pub sel_anchor: Option<usize>,
     /// "N of M" match count display, or "No results" / empty.
+    #[serde(default)]
     pub match_info: String,
     /// Toggle button states (find row).
+    #[serde(default)]
     pub case_sensitive: bool,
+    #[serde(default)]
     pub whole_word: bool,
+    #[serde(default)]
     pub use_regex: bool,
     /// Toggle button states (replace row).
+    #[serde(default)]
     pub preserve_case: bool,
     /// Find in selection mode.
+    #[serde(default)]
     pub in_selection: bool,
     /// Bounding rect of the active editor group. The overlay positions
     /// itself at the top-right of this rect. Apps with f64 native
     /// rect types convert via `as f32` at construction.
     pub group_bounds: Rect,
     /// Panel width in char cells (used by backends for positioning).
+    #[serde(default = "default_panel_width")]
     pub panel_width: u16,
     /// App-supplied glyph string for the "replace current" button.
     /// Single char (Nerd Font) or multi-char (ASCII fallback).
+    #[serde(default)]
     pub replace_one_glyph: String,
     /// App-supplied glyph string for the "replace all" button.
+    #[serde(default)]
     pub replace_all_glyph: String,
     /// Hit regions for click handling, in char-cell units relative to
     /// the panel content corner (inside borders). Computed once via
     /// [`compute_hit_regions`] at panel construction.
+    #[serde(default)]
     pub hit_regions: Vec<(FrHitRegion, FindReplaceClickTarget)>,
+}
+
+/// `#[serde(default)]` helper for [`FindReplacePanel::panel_width`] — a
+/// decoded panel with no explicit width gets this crate's own default
+/// overlay width ([`FR_PANEL_WIDTH`]) rather than `0`, which a rasteriser
+/// would paint as a zero-width box.
+fn default_panel_width() -> u16 {
+    FR_PANEL_WIDTH
 }
 
 /// Hit-test classification for a click against a [`FindReplacePanel`].

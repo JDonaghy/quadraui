@@ -428,7 +428,7 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
 // (`tests/tui_example_driver.rs`, `tests/gtk_example_driver.rs`) and in
 // `tests/cross_backend_parity.rs`.
 
-const MINIMAP_W: u32 = 400;
+const MINIMAP_W: u32 = 800;
 const MINIMAP_H: u32 = 300;
 
 /// `draw_minimap` is called every frame `MinimapApp::render` runs; this
@@ -1320,51 +1320,58 @@ fn canvas_shapes_demo_ellipse_marker_paints_the_marker_color() {
     );
 }
 
-/// The area outside the chart's own shapes is untouched canvas backing —
-/// `MacBackend`'s bitmap context stores premultiplied alpha, so a partially
-/// covered antialiased edge pixel blended against that fully transparent
-/// backing looks like a faded, not pure, source colour (its RGB channels are
-/// already scaled by its own coverage). Dividing them back out by the pixel's
-/// own alpha recovers the exact source colour at any coverage fraction above
-/// zero, so a half-covered edge pixel reads the same as a fully covered one.
-fn unpremultiply(px: (u8, u8, u8, u8)) -> (u8, u8, u8, u8) {
-    if px.3 == 0 {
-        return (0, 0, 0, 0);
-    }
-    let a = px.3 as f32 / 255.0;
-    (
-        ((px.0 as f32 / a).round() as i32).clamp(0, 255) as u8,
-        ((px.1 as f32 / a).round() as i32).clamp(0, 255) as u8,
-        ((px.2 as f32 / a).round() as i32).clamp(0, 255) as u8,
-        255,
-    )
+/// True when `px` is nearer `target` than `other` in RGB space. A hairline
+/// `StrokeRect` edge whose centre doesn't land on a pixel-row boundary
+/// spreads its coverage over the two straddling rows, so Core Graphics'
+/// antialiasing can leave even the better-covered row short of the stroke's
+/// own colour — a `colors_close` tolerance tight enough to reject the frame
+/// background can also reject every such sample. Comparing distances
+/// sidesteps that: whichever reference colour the blend leans toward wins,
+/// regardless of how far short of full coverage it falls.
+fn closer_to(px: (u8, u8, u8, u8), target: (u8, u8, u8), other: (u8, u8, u8)) -> bool {
+    let dist2 = |c: (u8, u8, u8)| {
+        let dr = px.0 as i32 - c.0 as i32;
+        let dg = px.1 as i32 - c.1 as i32;
+        let db = px.2 as i32 - c.2 as i32;
+        dr * dr + dg * dg + db * db
+    };
+    dist2(target) < dist2(other)
 }
 
-/// Scans the bottom edge of the plot's `StrokeRect` border across the first
-/// inter-bar gap (never under a bar's own fill) and a small y band either
-/// side of the mathematically-exact edge. The scanned area outside the
-/// plotted shapes is untouched (fully transparent) canvas backing, so each
-/// sample is unpremultiplied before comparison — see `unpremultiply`.
+/// Scans the bottom edge of the plot's `StrokeRect` border across the left
+/// half of the first inter-bar gap only — `gap_x + dx` stays strictly below
+/// `geo.bar_gap`, the x where bar 0's own `Polygon` fill begins, so no
+/// scanned column ever sits on the bar colour — and a small y band either
+/// side of the mathematically-exact edge. The scanned area is otherwise the
+/// frame background `render_frame` clears to, so a sample that leans toward
+/// the border colour rather than that background is unambiguously the
+/// border, even where antialiasing splits the hairline stroke's coverage
+/// across two rows and never lets any single sample reach the border colour
+/// outright — see `closer_to`.
 #[test]
 fn canvas_shapes_demo_stroke_rect_paints_a_border() {
     let driver = MacDriver::new(CanvasShapesApp::new(), W, H);
     let geo = ChartGeometry::new(&driver);
     let border_color = (90u8, 90u8, 90u8);
+    let bg = driver.backend().current_theme().background;
+    let background = (bg.r, bg.g, bg.b);
 
     let gap_x = geo.bar_gap / 2.0;
     let mut samples = Vec::new();
-    for dx in 0..(geo.bar_gap as i32).max(1) {
+    for dx in 0..((geo.bar_gap / 2.0) as i32).max(1) {
         for dy in -2..=1 {
             let (sx, sy) = geo.to_screen(quadraui::Point::new(
                 gap_x + dx as f32,
                 geo.plot_h + dy as f32,
             ));
-            samples.push(unpremultiply(driver.pixel(sx, sy)));
+            samples.push(driver.pixel(sx, sy));
         }
     }
 
     assert!(
-        samples.iter().any(|&px| colors_close(px, border_color, 10)),
+        samples
+            .iter()
+            .any(|&px| closer_to(px, border_color, background)),
         "the chart's StrokeRect bottom border should be painted somewhere along the \
          scanned band: {samples:?}"
     );

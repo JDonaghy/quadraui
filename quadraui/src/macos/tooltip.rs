@@ -327,6 +327,52 @@ mod tests {
         );
     }
 
+    /// Regression test: callers following the `TooltipMeasure` contract
+    /// (see that type's doc) size `Sides`/`None` tooltips to exactly one
+    /// content row — no border row to spare, unlike `Full`'s 3 — so
+    /// `paint`'s text placement must not assume a top border those two
+    /// variants never draw. Before that placement accounted for the
+    /// border mode, a one-row `Sides`/`None` box failed the
+    /// `row_y + line_height > bounds.y + bounds.height` guard and drew no
+    /// text at all, i.e. an empty box on every pixel backend.
+    #[test]
+    fn text_paints_inside_bounds_for_every_border_at_contract_height() {
+        let mut probe = MacBackend::new();
+        probe.set_current_font(font());
+        let line_h = probe.line_height();
+
+        for (border, rows) in [
+            (TooltipBorder::Sides, 1.0),
+            (TooltipBorder::Full, 3.0),
+            (TooltipBorder::None, 1.0),
+        ] {
+            let tip = sample_tooltip();
+            let layout = TooltipLayout {
+                bounds: QRect::new(10.0, 10.0, 120.0, line_h * rows),
+                resolved_placement: ResolvedPlacement::Bottom,
+            };
+            let chrome = TooltipChrome::new(border);
+            let surface = paint(&tip, &layout, &chrome);
+            let b = layout.bounds;
+            let bg = bg_reference(&surface, b);
+
+            let has_ink = (b.y as u32..(b.y + b.height) as u32).any(|y| {
+                (b.x as u32..(b.x + b.width) as u32).any(|x| {
+                    (
+                        surface.pixel(x, y).0,
+                        surface.pixel(x, y).1,
+                        surface.pixel(x, y).2,
+                    ) != bg
+                })
+            });
+            assert!(
+                has_ink,
+                "{border:?}: expected glyph ink somewhere inside a {rows}-row-tall box \
+                 sized per the `TooltipMeasure` contract, found none"
+            );
+        }
+    }
+
     #[test]
     fn title_is_ignored_when_border_is_sides_or_none() {
         for border in [TooltipBorder::Sides, TooltipBorder::None] {
@@ -343,6 +389,145 @@ mod tests {
             assert_eq!(
                 top_with, top_without,
                 "{border:?}: setting `title` must not change what's painted at the top edge"
+            );
+        }
+    }
+
+    // ── hover-driven tooltip, end to end through real pointer events ────
+
+    /// Drives [`crate::compose::HoverTooltipTracker`] through real
+    /// [`UiEvent::MouseMoved`] dispatch + [`super::super::testing::MacDriver::tick`]
+    /// — the same `dispatch_event`/`AppLogic::tick` path the live
+    /// `macos::run` runner uses for its `request_frame_in`-scheduled
+    /// repaint (see [`MacDriver::tick`]'s own doc for why the headless
+    /// driver needs this seam instead of a real `NSTimer`). Not a test of
+    /// `HoverTooltipTracker` itself (that lives in its own module) — this
+    /// proves the macOS dispatch + tick + `draw_tooltip` wiring actually
+    /// shows and hides a tooltip in response to pointer movement.
+    mod hover_driven {
+        use std::cell::{Cell, RefCell};
+        use std::rc::Rc;
+
+        use super::super::super::testing::MacDriver;
+        use super::*;
+        use crate::compose::HoverTooltipTracker;
+        use crate::runner::Reaction;
+        use crate::{AppLogic, ButtonMask, Point, UiEvent};
+
+        const DELAY_MS: u64 = 500;
+
+        /// Anchor rect the tooltip is shown for — matches both the
+        /// hover hit-test target and the tooltip's own bounds, so a
+        /// `MouseMoved` anywhere inside it hovers the one tracked item.
+        fn anchor() -> QRect {
+            QRect::new(10.0, 10.0, 60.0, 20.0)
+        }
+
+        /// Minimal [`AppLogic`] wiring a single-widget
+        /// [`HoverTooltipTracker`] to real pointer input: `handle` feeds
+        /// `MouseMoved`'s position through a plain [`QRect::contains`]
+        /// hit-test, `tick` advances the delay, `render` paints the
+        /// tooltip only while [`HoverTooltipTracker::visible_item`] is
+        /// `Some`. `clock_ms` is a caller-driven millisecond counter
+        /// (the tracker's own "headless-clock contract" — see its module
+        /// doc), not a wall clock, so the test controls elapsed time
+        /// exactly without sleeping.
+        struct HoverApp {
+            tracker: RefCell<HoverTooltipTracker<WidgetId>>,
+            clock_ms: Rc<Cell<u64>>,
+        }
+
+        impl AppLogic for HoverApp {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                if self.tracker.borrow().visible_item().is_some() {
+                    let tooltip = sample_tooltip();
+                    let layout = TooltipLayout {
+                        bounds: anchor(),
+                        resolved_placement: ResolvedPlacement::Bottom,
+                    };
+                    backend.draw_tooltip(&tooltip, &layout);
+                }
+            }
+
+            fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+                match event {
+                    UiEvent::MouseMoved { position, .. } => {
+                        let hovered = anchor().contains(position).then(|| WidgetId::new("w"));
+                        let now = self.clock_ms.get();
+                        let changed = self.tracker.borrow_mut().on_hover(hovered, now);
+                        if hovered.is_some() {
+                            backend.request_frame_in(std::time::Duration::from_millis(DELAY_MS));
+                        }
+                        if changed {
+                            Reaction::Redraw
+                        } else {
+                            Reaction::Continue
+                        }
+                    }
+                    _ => Reaction::Continue,
+                }
+            }
+
+            fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+                let now = self.clock_ms.get();
+                if self.tracker.borrow_mut().tick(DELAY_MS, now) {
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
+                }
+            }
+        }
+
+        fn hovering_move(driver: &mut MacDriver<HoverApp>, x: f32, y: f32) {
+            driver.dispatch(UiEvent::MouseMoved {
+                position: Point::new(x, y),
+                buttons: ButtonMask::default(),
+            });
+        }
+
+        #[test]
+        fn tooltip_appears_after_the_delay_and_hides_on_pointer_leave() {
+            let clock = Rc::new(Cell::new(0u64));
+            let app = HoverApp {
+                tracker: RefCell::new(HoverTooltipTracker::new()),
+                clock_ms: clock.clone(),
+            };
+            let mut driver = MacDriver::new(app, 100, 50);
+
+            // Pointer lands on the anchor — still pending, no tooltip yet.
+            hovering_move(&mut driver, 40.0, 20.0);
+            assert!(
+                !driver.screen_contains("Hover hint"),
+                "the tooltip must not show the instant the pointer lands"
+            );
+            // `HoverApp::handle` asked the real `MacBackend::request_frame_in`
+            // to schedule the redraw this delay needs — not just this test's
+            // hand-driven `clock`/`tick()` below. Without this, nothing here
+            // would fail if `request_frame_in` stopped being called at all.
+            assert_eq!(
+                driver.backend().frame_requests(),
+                vec![std::time::Duration::from_millis(DELAY_MS)],
+                "hovering the anchor must request a tick after the hover delay"
+            );
+
+            // The delay elapses with no further pointer movement — the
+            // `tick()` the real runner's `request_frame_in` timer would
+            // have fired now shows the tooltip.
+            clock.set(DELAY_MS);
+            driver.tick();
+            assert!(
+                driver.screen_contains("Hover hint"),
+                "the tooltip must show once the hover delay has elapsed"
+            );
+
+            // The pointer leaves the anchor entirely — the tooltip must
+            // disappear immediately, no further delay.
+            hovering_move(&mut driver, 90.0, 40.0);
+            assert!(
+                !driver.screen_contains("Hover hint"),
+                "the tooltip must hide as soon as the pointer leaves its anchor"
             );
         }
     }

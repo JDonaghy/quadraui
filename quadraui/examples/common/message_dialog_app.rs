@@ -3,7 +3,9 @@
 //!
 //! [`MessageDialogApp`] demonstrates a self-contained `AppLogic` that:
 //! - Opens a "Save changes?" confirm dialog on startup, with Save
-//!   (default) and Discard (cancel) buttons.
+//!   (default) and Discard (cancel) buttons. Discard carries a `Danger`
+//!   [`quadraui::ButtonSpec`] via [`MessageDialogButton::spec`], so it
+//!   paints tinted the way a standalone `Danger` `Button` does.
 //! - Renders it via the `Dialog` primitive, centred in the viewport.
 //! - Resolves a button (`Enter`, `←`/`→`/`Tab` to move focus, click, or
 //!   `Esc`) and shows which one was chosen in a status bar.
@@ -46,12 +48,18 @@ impl MessageDialogApp {
                     label: "Save".into(),
                     is_default: true,
                     is_cancel: false,
+                    spec: None,
                 },
                 MessageDialogButton {
                     id: WidgetId::new("discard"),
                     label: "Discard".into(),
                     is_default: false,
                     is_cancel: true,
+                    spec: Some({
+                        let mut spec = quadraui::ButtonSpec::new("Discard");
+                        spec.variant = quadraui::ButtonVariant::Danger;
+                        spec
+                    }),
                 },
             ],
             severity: Some(quadraui::DialogSeverity::Warning),

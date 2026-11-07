@@ -221,6 +221,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -241,6 +243,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -256,6 +260,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -273,6 +279,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -414,6 +422,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         }
     }
 
@@ -448,6 +458,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -606,6 +618,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -613,6 +627,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let (surface, layout) = paint_via_backend(&form);
         let theme = Theme::default();
@@ -648,12 +664,14 @@ mod tests {
                 kind: FieldKind::ButtonRow {
                     buttons: vec![
                         ButtonRowItem {
+                            spec: None,
                             id: WidgetId::new("find"),
                             label: "Find".into(),
                             disabled: false,
                             icon: None,
                         },
                         ButtonRowItem {
+                            spec: None,
                             id: WidgetId::new("replace"),
                             label: "Replace".into(),
                             disabled: false,
@@ -668,6 +686,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -675,6 +695,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let (_surface, layout) = paint_via_backend(&form);
         let vis = &layout.visible_fields[0];
@@ -728,6 +750,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: Some(WidgetId::new("pw")),
             scroll_offset: 0,
@@ -735,6 +759,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let (surface, layout) = paint_via_backend(&form);
         // Locate the field bounds.
@@ -793,6 +819,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: Some(WidgetId::new("name")),
             scroll_offset: 0,
@@ -800,6 +828,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
 
         // Must not panic.
@@ -830,6 +860,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: Some(WidgetId::new("pw")),
             scroll_offset: 0,
@@ -837,6 +869,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
 
         // Must not panic.

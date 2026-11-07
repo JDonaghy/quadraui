@@ -250,10 +250,29 @@ fn paint_body(
             // `theme` is the local `Theme::default()` — this module is not
             // wired to `current_theme`, so this stays scoped to compiling
             // against `super::tree::draw_tree`'s `&Theme` parameter.
-            let _ = super::tree::draw_tree(target, dwrite, bounds, t, line_height, false, theme);
+            // `style` is likewise `Style::default()` for the same reason.
+            let _ = super::tree::draw_tree(
+                target,
+                dwrite,
+                bounds,
+                t,
+                line_height,
+                false,
+                theme,
+                &crate::style::Style::default(),
+            );
         }
         SectionBody::List(l) => {
-            let _ = super::list::draw_list(target, dwrite, bounds, l, line_height);
+            // `style` is `Style::default()` for the same reason as the
+            // `TreeView` arm above: no live `WinBackend` on hand here.
+            let _ = super::list::draw_list(
+                target,
+                dwrite,
+                bounds,
+                l,
+                line_height,
+                &crate::style::Style::default(),
+            );
         }
         SectionBody::Form(f) => {
             draw_form_body(target, dwrite, bounds, f, theme, line_height);

@@ -202,7 +202,7 @@ fn default_true() -> bool {
 ///
 /// [`Backend::draw_tab_bar_icons`]: crate::Backend::draw_tab_bar_icons
 /// [`Backend::draw_tab_bar`]: crate::Backend::draw_tab_bar
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TabIcon {
     /// Icon glyph — usually a single Nerd Font character.
     pub glyph: String,
@@ -223,6 +223,53 @@ impl TabIcon {
     pub fn cols(&self) -> u16 {
         crate::text_util::display_width(&self.glyph) as u16 + 1
     }
+
+    /// Build a [`TabIcon`] from one of the bundled codicon set's names
+    /// (`"file-code"`, `"markdown"`, …) instead of a raw glyph string —
+    /// the same table [`crate::Icon::codicon`] resolves names through.
+    /// `None` if `name` isn't in the crate's curated name table; see
+    /// `codicon_names.rs`'s module doc for the full list.
+    #[must_use]
+    pub fn codicon(name: &str, color: Color) -> Option<Self> {
+        let glyph = crate::codicon_names::codepoint(name)?;
+        Some(Self {
+            glyph: glyph.to_string(),
+            color,
+        })
+    }
+}
+
+/// Accepts both `{"glyph": ..., "color": ...}` and `{"codicon": "...",
+/// "color": ...}` — the same two-shape convention as [`Icon`]'s manual
+/// `Deserialize` impl; see that type's doc for why `Codicon` is tried
+/// first.
+impl<'de> Deserialize<'de> for TabIcon {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Codicon { codicon: String, color: Color },
+            Glyph { glyph: String, color: Color },
+        }
+
+        match Wire::deserialize(deserializer)? {
+            Wire::Glyph { glyph, color } => Ok(TabIcon { glyph, color }),
+            Wire::Codicon { codicon, color } => {
+                let glyph = crate::codicon_names::codepoint(&codicon).ok_or_else(|| {
+                    serde::de::Error::custom(format!(
+                        "unknown codicon name {codicon:?} — see codicon_names::NAMES"
+                    ))
+                })?;
+                Ok(TabIcon {
+                    glyph: glyph.to_string(),
+                    color,
+                })
+            }
+        }
+    }
 }
 
 /// The icon for tab `idx` in an icon sidecar slice, or `None` when the
@@ -242,6 +289,42 @@ pub fn tab_icon_at(icons: &[Option<TabIcon>], idx: usize) -> Option<&TabIcon> {
 /// rasteriser's paint and measurement paths so the two can't disagree.
 pub fn tab_icon_cols(icons: &[Option<TabIcon>], idx: usize) -> u16 {
     tab_icon_at(icons, idx).map_or(0, TabIcon::cols)
+}
+
+/// Compute the label text to paint inside a tab, after reserving the
+/// leading icon slot and the trailing close-button / dirty-dot slot.
+///
+/// `tab_width` is the tab's full measured width — [`TabMeasure::total_width`]
+/// for a layout built via [`TabBar::layout`]. `icon_width` is the width of
+/// the leading icon slot (before the label; `0.0` when the tab has no
+/// icon). `close_width` is the width of the trailing close-button /
+/// dirty-dot slot (after the label; `0.0` when the tab has no close
+/// button). Both are in the same unit as `tab_width` — char-cell counts
+/// for TUI, Pango/DirectWrite/Core Text pixel widths for GTK/Win/macOS.
+/// `measure` returns an arbitrary string's width in that same unit.
+///
+/// Delegates to [`crate::text_util::truncate_with_ellipsis`]: the label
+/// comes back unchanged when it already fits in `tab_width - icon_width -
+/// close_width`, and ellipsis-truncated otherwise. The returned string's
+/// measured width never exceeds that budget, so a backend that paints it
+/// flush against the icon/close slots can never overlap either one.
+///
+/// Every tab-bar backend calls this instead of re-deriving its own
+/// truncation — see [`crate::tui::tab_bar`]'s painter for the reference
+/// call, which derives `icon_width`/`close_width` from the same slot
+/// widths that built the tab's [`TabMeasure`].
+pub fn fit_tab_label<F>(
+    label: &str,
+    tab_width: f32,
+    icon_width: f32,
+    close_width: f32,
+    measure: F,
+) -> String
+where
+    F: Fn(&str) -> f32,
+{
+    let available = (tab_width - icon_width - close_width).max(0.0);
+    crate::text_util::truncate_with_ellipsis(label, available, measure).0
 }
 
 /// One tab in a `TabBar`.
@@ -365,6 +448,49 @@ impl TabBar {
             best_offset = i;
         }
         best_offset
+    }
+
+    /// Keyboard navigation for [`TabChrome::focused_index`]: `Left`/
+    /// `ArrowLeft` and `Right`/`ArrowRight` move the focused tab one
+    /// position (clamped to `0..tab_count`, starting from tab `0` when
+    /// nothing was focused yet); `Enter` and `Space`/`" "` activate the
+    /// currently focused tab.
+    ///
+    /// A pure, static helper rather than a `&mut self` method — like
+    /// [`Self::fit_active_scroll_offset`] — because the focused index
+    /// lives in [`TabChrome`], not on `TabBar` itself (see that field's
+    /// doc for why). The caller supplies the current focus (`None` if no
+    /// tab is focused yet) and gets back either the new focus to store
+    /// for next frame (`FocusMoved`) or the tab to activate
+    /// (`TabActivated`); every other key returns `None` so the caller's
+    /// own [`TabBarEvent::KeyPressed`] fallback still fires.
+    ///
+    /// `tab_count == 0` always returns `None` — there is nothing to
+    /// focus or activate.
+    pub fn handle_focus_key(
+        focused: Option<usize>,
+        tab_count: usize,
+        key: &str,
+    ) -> Option<TabBarEvent> {
+        if tab_count == 0 {
+            return None;
+        }
+        match key {
+            "ArrowLeft" | "Left" => {
+                let cur = focused.unwrap_or(0);
+                Some(TabBarEvent::FocusMoved {
+                    index: cur.saturating_sub(1),
+                })
+            }
+            "ArrowRight" | "Right" => {
+                let cur = focused.unwrap_or(0);
+                Some(TabBarEvent::FocusMoved {
+                    index: (cur + 1).min(tab_count - 1),
+                })
+            }
+            "Enter" | "Space" | " " => focused.map(|index| TabBarEvent::TabActivated { index }),
+            _ => None,
+        }
     }
 }
 
@@ -613,17 +739,50 @@ pub struct TabChrome {
     /// [`TabFrame::None`].
     #[serde(default)]
     pub active_frame: TabFrame,
+    /// Index into [`TabBar::tabs`] of the keyboard-focused tab, if any.
+    ///
+    /// `Some(i)` tells the rasteriser to paint a focus-visible treatment
+    /// on tab `i` (reverse-video on TUI — see [`crate::tui::tab_bar`]).
+    /// The caller is responsible for composing this with its own
+    /// focus-visible state (e.g. [`crate::compose::focus_ring::FocusRing`]):
+    /// pass `None` whenever the bar has keyboard focus but focus isn't
+    /// currently *visible* (the most recent interaction was a click), the
+    /// same convention [`Toolbar::focused_index`] documents.
+    ///
+    /// An index `>= tabs.len()` paints nothing (no reverse-video, no
+    /// panic) on TUI — see `tui::tab_bar::draw_tab_bar_with_chrome_*`,
+    /// which only ever compares against an actually-visible tab's index.
+    ///
+    /// A sidecar field rather than one on [`TabBar`] itself, for the same
+    /// reason [`Self::active_frame`] is: `TabBar` is built with
+    /// exhaustive literals throughout this repo (including the sealed
+    /// acceptance slices), so a new field there is breaking everywhere at
+    /// once; a new [`TabChrome`] knob is additive.
+    ///
+    /// [`Toolbar::focused_index`]: crate::primitives::toolbar::Toolbar::focused_index
+    #[serde(default)]
+    pub focused_index: Option<usize>,
 }
 
 impl TabChrome {
     /// Chrome requesting the given active-tab frame.
     pub fn new(active_frame: TabFrame) -> Self {
-        Self { active_frame }
+        Self {
+            active_frame,
+            focused_index: None,
+        }
     }
 
     /// Set the active-tab frame.
     pub fn with_active_frame(mut self, active_frame: TabFrame) -> Self {
         self.active_frame = active_frame;
+        self
+    }
+
+    /// Set the keyboard-focused tab index. `None` paints no focus
+    /// treatment at all.
+    pub fn with_focused_index(mut self, focused_index: Option<usize>) -> Self {
+        self.focused_index = focused_index;
         self
     }
 }
@@ -972,6 +1131,7 @@ impl TabBar {
 /// defined for plugin invariants §10 — plugin-declared tab bars will
 /// consume events directly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum TabBarEvent {
     /// User clicked a tab body (not its close button) — index is into
     /// `tabs`, matching the visible order (scroll_offset still applies).
@@ -984,6 +1144,11 @@ pub enum TabBarEvent {
     /// consume it. Currently unused by vimcode (tab bars don't take
     /// keyboard focus) but kept for shape parity.
     KeyPressed { key: String, modifiers: Modifiers },
+    /// Left/Right moved the keyboard-focused tab to this new index. The
+    /// app is responsible for storing it and threading it back as
+    /// [`TabChrome::focused_index`] (with focus-visible composition) on
+    /// the next render — see [`TabBar::handle_focus_key`].
+    FocusMoved { index: usize },
 }
 
 #[cfg(test)]
@@ -1725,5 +1890,211 @@ mod tests {
             let back: TabBarEvent = serde_json::from_str(&json).unwrap();
             assert_eq!(event, &back);
         }
+    }
+
+    #[test]
+    fn tab_icon_codicon_resolves_a_known_name_to_its_bundled_glyph() {
+        let icon = TabIcon::codicon("file-code", Color::rgb(222, 165, 132))
+            .expect("\"file-code\" is a known codicon name");
+        assert_eq!(icon.glyph, "\u{eae9}");
+        assert_eq!(icon.color, Color::rgb(222, 165, 132));
+    }
+
+    #[test]
+    fn tab_icon_codicon_rejects_an_unknown_name() {
+        assert_eq!(
+            TabIcon::codicon("not-a-real-codicon-name", Color::rgb(0, 0, 0)),
+            None
+        );
+    }
+
+    /// The wire shape a Python/JS app sends for a tab icon: `{"codicon":
+    /// "...", "color": ...}` in place of a raw `glyph` string.
+    #[test]
+    fn tab_icon_deserializes_the_codicon_wire_shape() {
+        let icon: TabIcon = serde_json::from_str(
+            r#"{"codicon": "file-code", "color": {"r": 222, "g": 165, "b": 132, "a": 255}}"#,
+        )
+        .expect("codicon wire shape should deserialize");
+        assert_eq!(
+            icon,
+            TabIcon::codicon("file-code", Color::rgb(222, 165, 132)).unwrap()
+        );
+    }
+
+    /// The pre-existing `{"glyph": ..., "color": ...}` wire shape still
+    /// deserializes unchanged.
+    #[test]
+    fn tab_icon_deserializes_the_glyph_wire_shape_unchanged() {
+        let icon: TabIcon =
+            serde_json::from_str(r#"{"glyph": "R", "color": {"r": 1, "g": 2, "b": 3, "a": 255}}"#)
+                .expect("glyph wire shape should deserialize");
+        assert_eq!(
+            icon,
+            TabIcon {
+                glyph: "R".to_string(),
+                color: Color::rgb(1, 2, 3),
+            }
+        );
+    }
+
+    #[test]
+    fn tab_icon_deserialize_rejects_an_unknown_codicon_name() {
+        let result: Result<TabIcon, _> = serde_json::from_str(
+            r#"{"codicon": "not-a-real-codicon-name", "color": {"r": 0, "g": 0, "b": 0, "a": 255}}"#,
+        );
+        assert!(result.is_err());
+    }
+
+    // ── fit_tab_label ────────────────────────────────────────────────────
+
+    /// Monospace measurer: one unit per `char`, like a TUI cell count.
+    fn mono_measure(s: &str) -> f32 {
+        s.chars().count() as f32
+    }
+
+    /// Proportional test measurer: a stand-in for Pango/DirectWrite/Core
+    /// Text pixel widths — each `char` costs a different width, so a
+    /// naive `char`-count budget would mis-measure it.
+    fn proportional_measure(s: &str) -> f32 {
+        s.chars()
+            .map(|c| if "mw".contains(c) { 12.0 } else { 7.0 })
+            .sum()
+    }
+
+    #[test]
+    fn fit_tab_label_returns_the_label_unchanged_when_it_fits() {
+        let fitted = fit_tab_label("main.rs", 20.0, 0.0, 2.0, mono_measure);
+        assert_eq!(fitted, "main.rs");
+    }
+
+    #[test]
+    fn fit_tab_label_truncates_with_ellipsis_on_a_monospace_measurer() {
+        // tab_width 10, icon slot 0, close slot 2 -> label budget 8 cells.
+        let fitted = fit_tab_label("a_very_long_filename.rs", 10.0, 0.0, 2.0, mono_measure);
+        assert!(
+            fitted.ends_with('…'),
+            "overlong label must end in an ellipsis, got {fitted:?}"
+        );
+        assert!(
+            mono_measure(&fitted) <= 10.0 - 2.0,
+            "fitted label {fitted:?} must fit the budget excluding the close slot"
+        );
+    }
+
+    #[test]
+    fn fit_tab_label_truncates_with_ellipsis_on_a_proportional_measurer() {
+        // Each tab reserves a leading icon slot (14 px) and a trailing
+        // close slot (14 px); label budget is whatever's left of
+        // `tab_width`.
+        let fitted = fit_tab_label("settings.json", 80.0, 14.0, 14.0, proportional_measure);
+        assert!(
+            fitted.ends_with('…'),
+            "overlong label must end in an ellipsis, got {fitted:?}"
+        );
+        let budget = 80.0 - 14.0 - 14.0;
+        assert!(
+            proportional_measure(&fitted) <= budget,
+            "fitted label {fitted:?} (width {}) must not exceed the {budget} budget",
+            proportional_measure(&fitted)
+        );
+    }
+
+    #[test]
+    fn fit_tab_label_never_overlaps_the_close_glyph_slot() {
+        // The close slot occupies the tab's last 2 units; the fitted
+        // label's measured width must never eat into it.
+        for label in [
+            "x",
+            "main.rs",
+            "a_very_long_filename_that_keeps_going.rs",
+            "日本語のファイル名.rs",
+        ] {
+            let fitted = fit_tab_label(label, 12.0, 1.0, 2.0, mono_measure);
+            let label_budget = 12.0 - 1.0 - 2.0;
+            assert!(
+                mono_measure(&fitted) <= label_budget,
+                "label {label:?} fitted to {fitted:?} (width {}) overlaps the close slot (budget {label_budget})",
+                mono_measure(&fitted)
+            );
+        }
+    }
+
+    #[test]
+    fn fit_tab_label_budget_too_small_for_any_text_returns_empty() {
+        // icon_width + close_width consume the whole tab; nothing left
+        // even for a bare ellipsis.
+        let fitted = fit_tab_label("main.rs", 4.0, 2.0, 2.0, mono_measure);
+        assert_eq!(fitted, "");
+    }
+
+    // ── Keyboard-focusable seam ───────────────────────────────────────────
+
+    #[test]
+    fn handle_focus_key_left_right_move_and_clamp() {
+        // Nothing focused yet: treated as if tab 0 were current, matching
+        // `PipelineView::handle_key`'s identical `unwrap_or(0)` convention.
+        assert_eq!(
+            TabBar::handle_focus_key(None, 3, "ArrowRight"),
+            Some(TabBarEvent::FocusMoved { index: 1 })
+        );
+        assert_eq!(
+            TabBar::handle_focus_key(Some(0), 3, "Right"),
+            Some(TabBarEvent::FocusMoved { index: 1 })
+        );
+        // Clamps at the last tab rather than wrapping or going out of range.
+        assert_eq!(
+            TabBar::handle_focus_key(Some(2), 3, "ArrowRight"),
+            Some(TabBarEvent::FocusMoved { index: 2 })
+        );
+        // Clamps at 0 going left.
+        assert_eq!(
+            TabBar::handle_focus_key(Some(0), 3, "ArrowLeft"),
+            Some(TabBarEvent::FocusMoved { index: 0 })
+        );
+        assert_eq!(
+            TabBar::handle_focus_key(Some(2), 3, "Left"),
+            Some(TabBarEvent::FocusMoved { index: 1 })
+        );
+    }
+
+    #[test]
+    fn handle_focus_key_enter_and_space_activate_the_focused_tab() {
+        assert_eq!(
+            TabBar::handle_focus_key(Some(1), 3, "Enter"),
+            Some(TabBarEvent::TabActivated { index: 1 })
+        );
+        assert_eq!(
+            TabBar::handle_focus_key(Some(1), 3, "Space"),
+            Some(TabBarEvent::TabActivated { index: 1 })
+        );
+        assert_eq!(
+            TabBar::handle_focus_key(Some(1), 3, " "),
+            Some(TabBarEvent::TabActivated { index: 1 })
+        );
+        // No tab focused yet: Enter/Space have nothing to activate.
+        assert_eq!(TabBar::handle_focus_key(None, 3, "Enter"), None);
+    }
+
+    #[test]
+    fn handle_focus_key_ignores_unrelated_keys_and_empty_bars() {
+        assert_eq!(TabBar::handle_focus_key(Some(0), 3, "Tab"), None);
+        assert_eq!(TabBar::handle_focus_key(Some(0), 0, "ArrowRight"), None);
+        assert_eq!(TabBar::handle_focus_key(Some(0), 0, "Enter"), None);
+    }
+
+    #[test]
+    fn tab_chrome_with_focused_index_round_trips_through_builder_and_serde() {
+        let chrome = TabChrome::new(TabFrame::None).with_focused_index(Some(2));
+        assert_eq!(chrome.focused_index, Some(2));
+
+        let json = serde_json::to_string(&chrome).unwrap();
+        let back: TabChrome = serde_json::from_str(&json).unwrap();
+        assert_eq!(chrome, back);
+
+        // Omitting the field entirely (an older wire payload) decodes to
+        // `None`, not a hard error — the additive-knob contract.
+        let legacy: TabChrome = serde_json::from_str(r#"{"active_frame":"None"}"#).unwrap();
+        assert_eq!(legacy.focused_index, None);
     }
 }

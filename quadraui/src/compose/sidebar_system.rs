@@ -647,11 +647,17 @@ impl SidebarSystem {
         // geometry — including `TreeStyle::row_height`, which it honors via
         // `tree_row_pitch`. Deriving any of it locally from `lh` would
         // re-introduce a copy that silently ignores that style field.
-        // No live `TextMeasure` is reachable from this `&self` call site (no
-        // cached backend handle on `SidebarSystem`), so the chevron end-x is
-        // the `line_height * 0.65` estimate — same as every other caller of
-        // `layout_metrics::tree_layout`.
-        crate::primitives::layout_metrics::tree_layout(tree, body_b, lh as f64)
+        // No live `TextMeasure` or `Style` is reachable from this `&self`
+        // call site (no cached backend handle on `SidebarSystem`), so the
+        // chevron end-x is the `line_height * 0.65` estimate with
+        // `Style::default().row_padding_x` as the left margin — same as
+        // every other no-live-handle caller of `layout_metrics::tree_layout`.
+        crate::primitives::layout_metrics::tree_layout(
+            tree,
+            body_b,
+            lh as f64,
+            crate::style::Style::default().row_padding_x,
+        )
     }
 
     fn handle_key(
@@ -997,6 +1003,8 @@ impl SidebarSystem {
                         label_position: Default::default(),
                         label_align: Default::default(),
                         label_width: None,
+                        control_width: Default::default(),
+                        min_control_width: None,
                     });
                     SectionBody::Form(Form {
                         has_focus: form_focus,
@@ -1961,6 +1969,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("case-sensitive"),
@@ -1973,6 +1983,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
             ],
             focused_field: None,
@@ -1981,6 +1993,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         }
     }
 
@@ -2216,6 +2230,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2223,6 +2239,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let ev = form_click_event(&form, &WidgetId::new("submit"));
         assert_eq!(
@@ -2262,6 +2280,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2269,6 +2289,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let ev = form_click_event(&form, &WidgetId::new("regex"));
         assert_eq!(
@@ -2290,6 +2312,7 @@ mod tests {
                 label: StyledText::plain(""),
                 kind: FieldKind::ButtonRow {
                     buttons: vec![ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("replace-all"),
                         label: "Replace All".into(),
                         disabled: false,
@@ -2303,6 +2326,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2310,6 +2335,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let ev = form_click_event(&form, &WidgetId::new("replace-all"));
         assert_eq!(
@@ -2822,6 +2849,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let m = form_field_measure(&field, 20.0, 10.0);
         assert_eq!(m.item_measures.len(), 2);
@@ -2839,12 +2868,14 @@ mod tests {
             kind: FieldKind::ButtonRow {
                 buttons: vec![
                     ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("replace"),
                         label: "Replace".into(),
                         disabled: false,
                         icon: None,
                     },
                     ButtonRowItem {
+                        spec: None,
                         id: WidgetId::new("replace-all"),
                         label: "Replace All".into(),
                         disabled: false,
@@ -2859,6 +2890,8 @@ mod tests {
             label_align: None,
             label_width: None,
             tab_index: None,
+            control_width: None,
+            min_control_width: None,
         };
         let m = form_field_measure(&field, 20.0, 10.0);
         assert_eq!(m.item_measures.len(), 2);
@@ -2895,6 +2928,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2902,6 +2937,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let lh: f32 = 16.0;
         let row_h = (lh * 1.4).round();
@@ -2942,6 +2979,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2949,6 +2988,8 @@ mod tests {
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
         let ev = form_click_event(&form, &WidgetId::new("case"));
         assert_eq!(

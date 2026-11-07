@@ -59,6 +59,1154 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-07
+### Added
+- `quadraui-py` exposes every `quadraui-binding-core::services` seam as a
+  thin `QuiApp` method (auto-update, the power-save blocker, launch-at-
+  login, protocol registration, drag-out, recent docs/dock menu/jump
+  list), a new `UnsupportedError` exception for a `ServiceError::Unsupported`
+  on a backend with no implementation, a `QuiAppActions` mirror for each
+  void-returning one of those methods, and three module-level, app-less
+  functions (`quadraui.app_path`, `quadraui.set_app_identifier`,
+  `quadraui.install_crash_handler`) — see `quadraui-py/CHANGELOG.md` for
+  the full method list.
+- `quadraui-binding-core::services` — a language-neutral wrapper over every
+  `PlatformServices` seam named in the bindings-parity epic's "missing in
+  both" table (auto-update, the power-save blocker, app standard paths,
+  launch-at-login, protocol registration, the crash reporter, drag-out, and
+  recent docs/dock menu/jump list): one `ServiceError` (`Unsupported` /
+  `Failure` / `InvalidArgument`) both `quadraui-py` and a future
+  `quadraui-node` map onto their own exception type, instead of each leaf
+  re-deriving `BackendError` handling and enum-name parsing on its own.
+  `quadraui_binding_core::host` also gains `app_path_kind`/`power_save_kind`
+  decoders (alongside the existing `pointer_shape`/`dialog_severity`/...
+  table) and `with_window`/`with_tray`/`menu_for_surface`, lifted out of
+  `quadraui-py`'s `set_title`/`set_document_edited`/
+  `set_represented_filename`/tray-menu code so a `quadraui-node` leaf calls
+  the same logic instead of copying it.
+- GTK `List`/`Tree`/`DataTable` painters (`Backend::draw_list_with_state`,
+  `draw_tree_with_state`, and the new `Backend::draw_data_table_with_state`
+  override) now honour a `Some` `scroll_px` on their paint state: the
+  partially visible first row is shifted up by the sub-row remainder and
+  clipped against the viewport, and the vertical scrollbar thumb tracks
+  the same pixel-precise position — the gtk half of the pixel-smooth
+  scrolling seam (TUI/macOS already had this). `scroll_px: None` paints
+  pixel-identically to the pre-existing `draw_list`/`draw_tree`/
+  `draw_data_table`. `GtkBackend::tree_scroll_row_height` is also
+  overridden so `TreeController`'s wheel-scroll accumulation lands on the
+  same real painted row pitch (`tree_row_pitch`, not the raw
+  `line_height`) the tree painter resolves `scroll_px` against.
+- `HoverTooltipTracker::next_wake_ms` (`compose::hover_tooltip_tracker`): a
+  deadline accessor returning the milliseconds remaining until a pending
+  tooltip is due to flip to visible (`0` once already due, `None` while
+  idle or already showing) — the piece a host needs to request an exact
+  `Reaction::RedrawAfter` wake instead of guessing a poll interval.
+  `quadraui-binding-core::BindingHost` is the first caller: its new
+  `drive_hover_tooltip` wires `HoverTooltipTracker` to a shared binding
+  host's own hit-tested hover and a caller-supplied headless clock, so
+  `quadraui-py`/`quadraui-node` both get `Button.tooltip` hover delay with
+  no per-binding reimplementation.
+- `ButtonSpec` (`primitives::button`): a shared, kind-agnostic button
+  description — `label`/`variant`/`icon`/`icon_position`/`icon_gap`/
+  `tooltip`/`disabled`, the B3a vocabulary `Button` itself carries minus
+  `id`/`focused`. `ToolbarButton::Action`, `ButtonRowItem`, `DialogButton`
+  and `ToastButton` each gain an optional `spec: Option<ButtonSpec>`
+  (`#[serde(default)]`) plus a `resolved_button_spec`/`effective` method
+  that returns the explicit override when set, otherwise one derived
+  from that kind's own legacy fields. `spec: None` (every pre-existing
+  construction site across this repo) keeps painting exactly as before;
+  the TUI rasterisers for all four kinds (`tui::{toolbar,form,dialog,
+  toast}`) read the resolved spec and tint the intent colour (e.g. a
+  `Danger` `DialogButton` reads as `[ ⚠ Move to Trash ]` in
+  `theme.error_fg`) or, for `Dialog` specifically, repaint through the
+  same bracket-chrome/icon path `tui::button` uses for a standalone
+  `Button`; `tui::dialog::tui_dialog_layout`, `Dialog::measure_generic_inner`
+  and `MessageDialogController::layout` all size the button row from
+  `ButtonSpec::min_cell_width()` so that bracket chrome never clips.
+  `tui::draw_dialog_with_nerd_fonts` (new `pub` re-export) is `draw_dialog`
+  plus a `nerd_fonts_enabled` flag, for resolving the Nerd-Font half of a
+  `spec`'s icon. GUI backends (GTK/macOS/Win32) are unchanged — they keep
+  reading each kind's legacy fields until a per-backend adoption issue
+  is filed.
+
+  **Downstream impact**: `ToolbarButton::Action`, `ButtonRowItem`,
+  `DialogButton` and `ToastButton` are plain structs/enum variants, not
+  `#[non_exhaustive]`, and every known construction site (in this repo
+  and in `vimcode`) names every field with no `..Default::default()`
+  tail — adding `spec` is therefore a breaking change for any such
+  literal, in this repo and downstream, not merely an additive one.
+  Every in-repo site is migrated in this same PR (`spec: None`);
+  `vimcode` (crates.io, pinned to a `0.1.x` range) and `coord-tui` (git
+  rev-pinned) are unaffected until they each adopt the next release/rev
+  that carries this change, per `ci.yml`'s `downstream` job "pin-and-
+  defer" policy. This change needs a semver minor bump at the next
+  `develop` → `main` promotion.
+- `MessageDialogButton` (`backend`) gains the same optional
+  `spec: Option<ButtonSpec>` override `DialogButton` already has, closing
+  the gap where a binding's `show_message_dialog` decoded a
+  `DialogButton.spec` (variant/icon/tooltip) but
+  `message_dialog_options_from_buttons` silently dropped it building the
+  `MessageDialogButton` row — so it never reached any backend.
+  `native_dialog_options` (the `Dialog` → `MessageDialogOptions` direction)
+  and `MessageDialogController::new` (the reverse, used by
+  `TuiPlatformServices::show_message_dialog`) now both carry `spec`
+  straight through instead of hardcoding `None`. Honored on TUI, where
+  `MessageDialogController` paints it through `Dialog`'s own spec-aware
+  path; not yet read by the native GTK/macOS/Win32 alert facilities
+  (no native alert API exposes per-button icon/variant styling), the same
+  fence the `ButtonSpec` entry above draws for the other three kinds.
+
+  **Downstream impact**: `MessageDialogButton` is a plain all-`pub`-field
+  struct, not `#[non_exhaustive]`, with known construction sites in this
+  repo (examples, `quadraui-binding-core`, `quadraui-gallery`, every
+  backend's own tests) all migrated in this same PR (`spec: None`);
+  adding this field is breaking for any downstream literal naming every
+  field, the same shape as the `ButtonSpec` entry above. `ci.yml`'s
+  `downstream` job (`cargo check --all-targets` against `vimcode` and
+  `coord-tui`) is the gate for whether either consumer constructs
+  `MessageDialogButton` directly; this change needs a semver minor bump
+  at the next `develop` → `main` promotion either way.
+### Removed
+- `Eq` impl on `Toolbar`/`ToolbarButton`, `Dialog`/`DialogInput`/
+  `DialogButton` and `Toast`/`ToastOverlay`/`ToastButton`: each now
+  carries an optional `ButtonSpec`, which has an `f32` (`icon_gap`) with
+  no total order, so only `PartialEq` holds (matching `Button` itself,
+  which has never been `Eq`). Breaking for any downstream `HashSet`/
+  `BTreeSet` key or `#[derive(Eq)]` wrapper over one of these eight
+  types; no such use was found in `vimcode` or `coord-tui`.
+### Added
+- `Backend::draw_context_menu_with_state`/`draw_palette_with_state`/
+  `draw_menu_bar_with_state`: the hover/pressed seam for
+  `ContextMenu`/`Palette`/`MenuBar`, reading a single `InteractionState`
+  the same way `draw_button_with_state`/`draw_toolbar_interactive`
+  already do. Each defaults to its existing positional method (ignoring
+  `interaction`), so no backend breaks. `Theme::menu_item_hover_bg`/
+  `menu_item_pressed_bg` (new accessor methods, derived from
+  `list_hover_bg`/`list_pressed_bg` — no new `Theme` field) supply the
+  tint. The shared
+  `primitives::{context_menu,palette,menu_bar}::native_surface_paint`
+  painters implement the actual hover/pressed treatment (new
+  `paint_interactive`/`paint_with_glyphs_interactive` entry points,
+  additive alongside the existing `paint`/`paint_with_glyphs`) — a
+  `ContextMenuItem`/`MenuBarItem` keyed by its own `id`, and `Palette`'s
+  pinned create-action row keyed by `palette.id` itself (`PaletteItem`
+  carries no id of its own — an unbounded, app-filtered list, the same
+  reason `ListView`/`TreeView` rows stay out of `InteractionState`).
+  `ContextMenuController` and `MenuSystem` (`compose/`) feed their own
+  mouse events into this seam and call the new methods from `render`,
+  so neither a direct Rust `AppLogic` nor a `quadraui-binding-core`
+  host (`quadraui-py`/`quadraui-node`) writes any hover-tracking code of
+  its own. `quadraui-binding-core`'s `Palette` `ExtraPaint` impl does
+  the same for the create row via its existing generic chrome-hit
+  bookkeeping.
+- `Backend::draw_tab_bar_with_state`/`draw_tab_bar_layout_with_state`:
+  the hover/pressed seam for `TabBar`, taking `hovered_tab`/`pressed_tab:
+  Option<usize>` indices alongside the existing `hovered_close_tab`
+  rather than an `InteractionState` — `TabItem` carries no `WidgetId`
+  of its own, only `TabBar::id` (one per bar), which can't name which
+  tab within it is hovered or pressed (see `interaction.rs`'s module
+  doc). Both default to their existing method (ignoring
+  `hovered_tab`/`pressed_tab`), so no backend breaks;
+  `draw_tab_bar_layout_with_state` is reachable from
+  `quadraui-binding-core`'s paint path, which calls
+  `draw_tab_bar_layout`, never the deprecated `draw_tab_bar`. Painting
+  a tab's own hover/pressed background is a per-backend follow-up
+  (GTK/macOS/Win32); **macOS, GTK and Win32 now implement both**
+  (`macos/tab_bar.rs`, `gtk/tab_bar.rs`, `win/tab_bar.rs`), tinting the
+  hovered/pressed tab's whole background via
+  `Theme::list_hover_bg`/`list_pressed_bg`.
+- `ListPaintState`/`TreePaintState`/`DataTablePaintState`: per-frame,
+  `#[non_exhaustive]` paint-time state (`hovered_idx`, `pressed_idx`,
+  `scroll_px: Option<f32>`) for `ListView`/`TreeView`/`DataTable`,
+  built via `Default` + `with_hovered_idx`/`with_pressed_idx`/
+  `with_scroll_px`. `scroll_px` is a pixel-smooth scroll position a
+  host accumulates from fractional wheel/trackpad deltas instead of
+  snapping every gesture to a whole row — `None` paints exactly as
+  today (whole-row from `scroll_offset`); `Some(px)` wins and resolves
+  via the new `primitives::scrollbar::resolve_scroll_px` into a
+  `scroll_offset` plus a sub-row remainder
+  (`ListViewLayout`/`TreeViewLayout::scroll_sub_px`,
+  `DataTable::scroll_sub_row_px`). Deliberately **not** a field on
+  `ListView`/`TreeView`/`DataTable` themselves — those descriptors are
+  built by consumers via full struct literals, so a required field
+  there is breaking (see `PRIMITIVE_RULES.md` rule 8); this state lives
+  only at the paint call site.
+  `Backend::draw_tree_with_state`/`draw_list_with_state` (unreleased,
+  added by #2034) are reshaped to take `&TreePaintState`/
+  `&ListPaintState` instead of two `Option<usize>` arguments; the new
+  `Backend::draw_data_table_with_state` is additive, defaulting to
+  `draw_data_table(rect, table, state.hovered_idx)`. TUI honours
+  `scroll_px` by quantising it to a whole row (via
+  `tui::{draw_list_with_scroll_px, draw_tree_with_scroll_px,
+  draw_data_table_with_state}`) — it never paints a partial row.
+  `ListView::layout_with_scroll_px`/`vscrollbar_with_scroll_px` and
+  `TreeView`'s matching pair are additive alongside the existing
+  `layout`/`vscrollbar_with_track_width`, which keep forwarding
+  `scroll_px: None`. `TreeController` accumulates fractional wheel
+  deltas into its own `scroll_px` (new `Backend::wheel_delta_rows`
+  normalises a backend's native wheel-delta unit into row-notches
+  first) and feeds it to `draw_tree_with_state` from `render()`.
+- macOS now paints `scroll_px` for real (not just the trait shape):
+  `MacBackend::draw_list_with_state`/`draw_tree_with_state`/
+  `draw_data_table_with_state` shift the first visible row/item up by
+  the sub-row remainder and clip it against the viewport, and position
+  the vertical scrollbar thumb from the same pixel-precise value —
+  `scroll_px: None` paints pixel-identically to the existing
+  `draw_list`/`draw_tree`/`draw_data_table`. These `*_with_state`
+  overrides also compose `state.hovered_idx`/`state.pressed_idx` and
+  `focus_ring_visible` (previously dropped by the trait default), so a
+  macOS host already passing a populated `ListPaintState`/
+  `TreePaintState` now sees those painted. New
+  `mac_list_layout_with_scroll_px`/`mac_tree_layout_with_scroll_px`
+  thread it through to `ListView`/`TreeView::layout_with_scroll_px`;
+  `DataTable`'s layout needs no such counterpart (`DataTableLayout`
+  carries a row count, not per-row bounds). The shared
+  `primitives::{list,tree}::native_surface_paint` painters gain an
+  additive `paint_with_scroll_px` (the existing `paint` now forwards to
+  it with `None`), and `primitives::data_table::native_surface_paint`
+  gains `paint_with_state`, both clipping the scrolled body to the
+  region below any fixed title/header so a sub-row shift can't paint
+  over still-pinned chrome — the data-table body clip is gated on a
+  nonzero sub-row remainder, matching the list painter's `scroll_px`
+  gating, so the `scroll_px: None` path never pushes a clip a Win-GUI
+  caller of the unaffected `draw_data_table`/`draw_data_table_with_glyphs`
+  wouldn't expect. The tree painter also now paints a height-clipped
+  last visible row at its full, unclipped row height (relying on the
+  same viewport clip to trim the overflow) instead of the layout's
+  clipped height, so its content no longer compresses toward the
+  viewport edge as the scroll position changes — the same treatment
+  the first (negative-`y`) row already got for free.
+  macOS's trackpad `scrollWheel:` deltas (`NSEvent::scrollingDeltaY`)
+  are pixel-precise but arrive in real points, not the row-notch units
+  every other backend already reports, and a discrete (non-trackpad)
+  wheel notch reports its delta in *lines* instead of points — AppKit's
+  own convention for `hasPreciseScrollingDeltas() == false`.
+  `route_wheel_event` (`macos/events.rs`) now scales an imprecise delta
+  by the current line height before it becomes a `UiEvent::Scroll`, so
+  both device classes arrive in points. `Backend::wheel_delta_rows`
+  gains a `row_height` parameter (the caller's px↔row basis for the
+  same gesture) and a new `Backend::tree_scroll_row_height(&TreeView)`
+  method supplies it — `MacBackend` overrides both: `wheel_delta_rows`
+  divides by `row_height`, and `tree_scroll_row_height` returns the
+  tree's real painted pitch (the *chrome* font metric run through the
+  tree's row-pitch formula), not `Backend::line_height` (the *editor*
+  font metric). `TreeController::scroll_by_wheel` now takes that real
+  pitch instead of `line_height` as its own px↔row basis, so its wheel
+  clamp and the whole-row `scroll_offset` it derives for hit-testing
+  agree with what the paint path resolves `scroll_px` against — not
+  just the raw pixel delta, which happened to round-trip correctly
+  either way. GTK still ignores `scroll_px` (sibling issue) and defaults
+  `tree_scroll_row_height` to `Backend::line_height`, unchanged from its
+  pre-existing behaviour — Win-GUI now honours `scroll_px` for real; see
+  below.
+- Win-GUI now paints `scroll_px` for real too, mirroring the macOS work
+  above: `WinBackend::draw_list_with_state`/`draw_tree_with_state`/
+  `draw_data_table_with_state` shift the first visible row/item up by
+  the sub-row remainder and clip it against the viewport, and position
+  the vertical scrollbar thumb from the same pixel-precise value —
+  `scroll_px: None` paints pixel-identically to the existing
+  `draw_list`/`draw_tree`/`draw_data_table`. These `*_with_state`
+  overrides also compose `state.hovered_idx`/`state.pressed_idx` and
+  `focus_ring_visible`. New `win::list::win_list_layout_with_scroll_px`/
+  `win::tree::win_tree_layout_measured_with_scroll_px` thread it through
+  to `ListView`/`TreeView::layout_with_scroll_px`, matching
+  `win_list_layout`'s/`win_tree_layout_measured`'s existing
+  `border_inset`/chevron-measurement handling; `DataTable` needs no such
+  layout counterpart (see the macOS bullet above for why). `WinBackend`
+  also overrides `Backend::tree_scroll_row_height` to return the real
+  painted pitch (`resolved_row_height` run through the tree's row-pitch
+  formula), not the raw editor `line_height`, so a `TreeController`
+  accumulating `scroll_px` against this basis agrees with what the
+  painters above actually paint. `Backend::wheel_delta_rows` is left at
+  its default on Win-GUI: Win32's `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL`
+  delta is already divided by `WHEEL_DELTA` into fractional row-notch
+  units before it becomes a `UiEvent::Scroll`, the same currency every
+  non-macOS backend already reports.
+  either way. Win32 still ignores `scroll_px` (sibling issue) and
+  defaults `tree_scroll_row_height` to `Backend::line_height`, unchanged
+  from its pre-existing behaviour; GTK now overrides both (see the
+  `draw_list_with_state`/`draw_tree_with_state`/`draw_data_table_with_state`
+  entry above).
+- `compose::HoverTooltipTracker<T>`: the delay + auto-dismiss state
+  machine a hover-driven tooltip needs on top of
+  `ToolbarHoverTracker`/`ListHoverTracker`/`TreeHoverTracker`'s plain
+  "what's hovered" answer — shows after a configurable delay, hides on
+  pointer leave, an explicit dismiss (click/Escape), or a timeout.
+  Headless-clock-friendly: every method takes a caller-supplied `u64`
+  millisecond timestamp rather than reading the wall clock, so it is
+  deterministically testable from Rust and, once a binding wires it up,
+  from Python/node too.
+- `Style::tooltip_delay_ms`: how long the pointer has to hover before a
+  tooltip shows (default `500`, VS Code's own hover-card delay) — the
+  delay `HoverTooltipTracker::tick` waits out. No-op on TUI.
+- `Button::tooltip`: optional hover tooltip text, `None` by default —
+  the same "host decides when to show it" contract
+  `ActivityItem::tooltip`/`Panel::tooltip`/`Toolbar`'s per-button
+  tooltip already carry, now also on the standalone `Button` primitive.
+  No-op on TUI (no hover UI there).
+- `ButtonVariant::{Danger, Warning}`: two new `Button` intent variants,
+  coloured through the new `Theme::button_danger_bg`/`button_warning_bg`
+  accessors (tracking `error_fg`/`warning_fg`, never a new `Theme`
+  field). On TUI, intent paints as the foreground colour on both the
+  bracket chrome and the label — e.g. `[ ⚠ Delete ]` — with no
+  background fill of its own, unlike `Primary`'s solid `accent_bg`.
+  `ButtonVariant` is now `#[non_exhaustive]` (no consumer hits an
+  exhaustive match on it today — see grep in the introducing PR), so the
+  next variant added here won't need this same breaking-change dance. A
+  focused `Danger`/`Warning` button on TUI now also gains the same bold
+  bracket-chrome cue `Primary`/`Secondary` already paint when focused,
+  layered on top of the intent foreground colour rather than replacing
+  it.
+- `Theme::button_success_bg`: a "success"-intent resting fill alongside
+  `button_danger_bg`/`button_warning_bg`, tracking `Theme::success_fg`
+  (itself derived from `git_added`) rather than a new field — same solid-
+  fill-not-tint shape as its two siblings.
+- `Button::icon`/`icon_position`/`icon_gap`: an optional leading or
+  trailing `Icon` painted alongside the label, `None` by default so
+  every existing construction site keeps compiling unchanged. TUI
+  paints `Icon::glyph` when the backend's Nerd Fonts flag is on and
+  `Icon::fallback` otherwise, same convention as `ActivityBar`'s own
+  TUI rasteriser.
+- `ButtonMetrics::resolve`: a `Button`'s height/horizontal-padding/
+  corner-radius resolved from `Style::control_height`/`Style::padding`/
+  `Style::corner_radius` in one shared place, so every backend's
+  rasteriser reads the same three numbers instead of each hardcoding
+  its own literal.
+- `UiEvent::Toolbar(WidgetId, ToolbarEvent)`: a `Toolbar` `Action` button
+  click (mouse, via the new `Toolbar::click`) or Enter/Space on the
+  keyboard-focused button (`Toolbar::activate_focused`) now carries the
+  clicked button's id and its new `is_active` state, instead of staying an
+  untyped `MouseDown`. Wired through `quadraui-binding-core`'s
+  `semantic_event_for_hit`/`focus_scoped_key_event` for every place a
+  `Toolbar` can appear (standalone/`Extra`, `SidebarPanel` header), so
+  `quadraui-py`/`quadraui-node` apps receive the same typed event a native
+  Rust `AppLogic` would build by hand. `Toolbar` now also opts into
+  `ExtraPaint::tab_stop` whenever it has at least one enabled `Action`.
+- `primitives::button::native_surface_paint::focus_ring_geometry`: the
+  shared pixel geometry (outset rect, corner radius, `Style::focus_ring_width`
+  stroke width) for a primitive's focus-visible ring, factored out of
+  `Button`'s own ring paint so `TextInput`'s per-backend rasterisers compute
+  the identical ring instead of re-deriving it independently.
+  `TextInput::has_focus`'s doc now documents the same
+  `ring.is_focused(id) && ring.is_focus_visible()` composition convention
+  `Button::focused` already follows.
+- `primitives::tab_bar::fit_tab_label`: a shared label-fit helper for
+  `TabBar` — given a tab's measured width, its leading icon slot and
+  trailing close/dirty-dot slot, and a measurer closure, returns the
+  label text to paint, ellipsis-truncating via `text_util::truncate_with_ellipsis`
+  when it doesn't fit. The TUI painter (`tui::tab_bar`) now calls it
+  instead of hard-clipping an overlong label mid-glyph.
+- macOS `Backend::draw_scrollbar` now fades in on scroll and back out on
+  idle: `MacBackend::note_scroll_activity` (called from `macos::run`'s
+  `scrollWheel:` handler on every trackpad/wheel delta) resets a
+  per-backend last-interaction clock that `draw_scrollbar` feeds into
+  `primitives::scrollbar::idle_fade_opacity`, painting via the shared
+  `native_surface_paint::paint_with_opacity`. A scrollbar that has never
+  seen a scroll event paints at opacity `0.0` (hidden) until the first one
+  arrives.
+- macOS `TextInput` now paints the focus-visible ring when
+  `TextInput::has_focus` is set: `primitives::text_input::native_surface_paint::paint`
+  strokes it square (matching `TextInput`'s own square border) via
+  `primitives::button::native_surface_paint::focus_ring_geometry`, the
+  same geometry `Button`'s ring already uses.
+- Win-GUI `TextInput` painter (`win::text_input`) now paints the same
+  focus-visible ring when `TextInput::has_focus` is set, via the shared
+  `primitives::button::native_surface_paint::focus_ring_geometry` helper
+  and Direct2D's `stroke_rect` — stroked square, matching `TextInput`'s
+  own square border, same as the macOS treatment above.
+- GTK `TextInput` painter (`gtk::text_input::draw_text_input`) now paints
+  the same focus-visible ring when `TextInput::has_focus` is set, via the
+  shared `primitives::button::native_surface_paint::focus_ring_geometry`
+  helper and a plain Cairo `rectangle`/`stroke` — stroked square, matching
+  `TextInput`'s own square border, same as the macOS/Win-GUI treatments
+  above. `gtk::draw_text_input` gained a new `style: &Style` parameter to
+  read `Style::focus_ring_width` from.
+- `TabChrome::focused_index`: an optional keyboard-focused-tab index,
+  additive on the existing chrome sidecar (not a new `TabBar` field — see
+  that field's doc for why) so it breaks no exhaustive `TabBar` literal.
+  `TabBar::handle_focus_key` turns `Left`/`Right`/`Enter`/`Space` into
+  `TabBarEvent::FocusMoved`/`TabActivated`. TUI (`tui::tab_bar`) paints the
+  focused tab in reverse video when `focused_index` is set; GTK/macOS/Win
+  ring painting is tracked in follow-up per-backend issues. The `"tabs"`
+  layout-node dict (quadraui-py/quadraui-node) grew a matching optional
+  `"focused_index"` key.
+- `ListView`/`TreeView`'s shared GUI painters
+  (`primitives::list::native_surface_paint::paint`,
+  `primitives::tree::native_surface_paint::paint`) gained a
+  `focus_ring_visible` parameter that strokes a `Theme::focus_ring_color`
+  ring at `Style::focus_ring_width`, flush with the selected row's own
+  bounds, when `true`. Threaded through as a new, additive third
+  parameter on `Backend::draw_list_with_state`/`draw_tree_with_state`
+  (default `false`, every existing call site keeps compiling unchanged) —
+  a host composes `ring.is_focused(&list.id) && ring.is_focus_visible()`
+  from its own `compose::FocusRing` and passes that, the same convention
+  `Button::focused`/`TextInput::has_focus` follow. Deliberately **not**
+  tied to `ListView::has_focus`/`TreeView::has_focus` itself: several
+  existing hosts set that field unconditionally `true` as a persistent
+  "currently showing" indicator unrelated to real keyboard focus, and a
+  ring on every one of them would be a regression. Wired on GTK today
+  (`GtkBackend::draw_list_with_state`/`draw_tree_with_state`); macOS/Win
+  pass `false` until they grow their own `_with_state` override, same gap
+  `hovered_idx`/`pressed_idx` already have there. TUI keeps its existing
+  reverse-video/`▶`-prefix treatment, unchanged.
+- macOS: `Backend::draw_tab_bar_with_chrome`/`draw_tab_bar_with_chrome_layout`/
+  `draw_tab_bar_with_chrome_and_glyphs` now all honour
+  `TabChrome::focused_index`, painting a `Theme::focus_ring_color` ring at
+  `Style::focus_ring_width` around the named tab's whole slot — reaching
+  the gallery (`quadraui-gallery/src/demos/tab_bar.rs`) and
+  `quadraui-binding-core::render`'s existing `TabChrome::focused_index`
+  wiring, not only the `_and_glyphs` call a direct caller rarely uses.
+  `macos/tab_bar.rs`'s `draw_tab_bar_icons_with_glyphs` strokes the ring
+  flush with (inset by half the stroke width from) the tab's own slot
+  bounds — not the outset gap `focus_ring_geometry` (`TextInput`/`Button`)
+  uses, which would ink outside the row's top/bottom and into the next
+  tab's background — in a pass *after* every tab's own paint, so a later
+  tab's opaque background fill can never clobber an earlier tab's ring.
+  `active_frame` bracket framing is still unsupported on this backend.
+  `focused_index: None` (a click) paints no ring, matching
+  `TabChrome::focused_index`'s own focus-visible-suppression convention.
+  `quadraui::macos::tab_bar::draw_tab_bar_icons_with_glyphs`'s added
+  `focused_index: Option<usize>` parameter is a source break for any
+  external caller of that `pub` free function; no consumer hits
+  (`grep -rn 'draw_tab_bar_icons_with_glyphs' ~/src/coord-tui/src
+  ~/src/vimcode/src` is empty — both consumers only reach tab-bar
+  painting through the `Backend` trait methods above, which keep their
+  existing signatures).
+- GTK: `gtk::tab_bar::draw_tab_bar_icons_with_chrome_and_glyphs` now
+  honours `TabChrome::focused_index` too, painting a
+  `Theme::focus_ring_color` ring at `Style::focus_ring_width` around the
+  named tab's whole slot — no new parameter needed, since `TabChrome`
+  (already threaded through every `draw_tab_bar_with_chrome*` entry
+  point on `GtkBackend`) carries `focused_index` itself. Strokes flush
+  with (inset by half the stroke width from) the tab's own slot bounds,
+  square even on the active tab's rounded chip, in a pass after every
+  tab's own paint so a later tab's opaque background fill can never
+  clobber an earlier tab's ring — the same geometry convention this
+  bar's macOS twin above uses. `focused_index: None` (a click) paints no
+  ring, matching `TabChrome::focused_index`'s own
+  focus-visible-suppression convention.
+- Win: `win::tab_bar::draw_tab_bar_icons_with_glyphs` now honours
+  `TabChrome::focused_index` too, via a new `focused_index: Option<usize>`
+  trailing parameter, painting a `Theme::focus_ring_color` ring at
+  `Style::focus_ring_width` around the named tab's whole slot through
+  `win::text::stroke_rect` (which insets the stroke by half its own
+  width, unlike the Cairo/CoreGraphics callers its macOS/GTK siblings
+  pre-inset for) in a pass after every tab's own paint, so a later tab's
+  opaque background fill can never clobber an earlier tab's ring.
+  `WinBackend::draw_tab_bar_with_chrome_and_glyphs` now forwards
+  `chrome.focused_index` into it instead of ignoring `chrome` outright;
+  `WinBackend` also now overrides `draw_tab_bar_with_chrome` and
+  `draw_tab_bar_with_chrome_layout` (previously only
+  `draw_tab_bar_with_chrome_and_glyphs` honoured `chrome`), so the
+  gallery and `quadraui-binding-core`'s render path — the entry points
+  they actually call — paint the ring too. `active_frame` bracket
+  framing is still unsupported on this backend. `focused_index: None` (a
+  click) paints no ring, matching `TabChrome::focused_index`'s own
+  focus-visible-suppression convention. `win::tab_bar::draw_tab_bar_icons_with_glyphs`'s
+  and the crate-internal `draw_tab_bar_icons_layout_with_state`'s added
+  `focused_index` parameters are a source break for any external caller
+  of those `pub`/`pub(crate)` free functions; no consumer hits
+  (`grep -rn 'draw_tab_bar_icons_with_glyphs\|draw_tab_bar_icons_layout_with_state'
+  ~/src/coord-tui/src ~/src/vimcode/src` is empty — both consumers only
+  reach tab-bar painting through the `Backend` trait methods above,
+  which keep their existing signatures).
+
+### Changed
+- **Breaking (TUI rasteriser helpers):** `quadraui::tui::draw_button` and
+  `quadraui::tui::draw_button_interactive` take a trailing
+  `nerd_fonts_enabled: bool`, picking `Icon::glyph` vs. `Icon::fallback`
+  for `Button::icon`. `Backend::draw_button`/`draw_button_with_state` —
+  what a consumer actually calls — are unchanged; `TuiBackend` forwards
+  its own Nerd Fonts flag. No consumer hits: `grep -rn 'draw_button\b\|
+  draw_button_interactive\|tui_button_layout' ~/src/coord-tui/src
+  ~/src/vimcode/src` finds only `backend.draw_button(...)` (the trait
+  method) in `vimcode/src/render/welcome.rs`.
+
+### Fixed
+- Win `Backend::waker` payloads queued before the window existed (from
+  `AppLogic::setup`, or a background thread racing window creation) are now
+  delivered: `WinBackend::attach_surface` posts one wake once the `HWND` is
+  live, so `wndproc` drains the pending `UiEvent::User` queue instead of
+  leaving it stranded until some later wake.
+- GTK `Backend::draw_focus_ring` (`gtk::backend`) no longer strokes over a
+  tooltip or toast painted earlier the same frame: `gtk::run::render_frame`
+  paints the generic tab-stop focus ring *after* `AppLogic::render` returns,
+  which previously also put it on top of any tooltip/toast `render` had
+  drawn over that same rect, inverting the overlay-order contract
+  (`quadraui-binding-core::host::render_overlays`'s doc: "tooltip, toast
+  topmost of all"). `GtkBackend` now records every tooltip/toast bound
+  painted this frame and skips the part of the ring's perimeter stroke band
+  that overlaps one, so a toast inset entirely inside a large focused
+  widget still leaves the ring intact. Adds pixel regressions for both
+  directions, a toast-over-bordered-focused-editor regression
+  (`gtk::toast`), and an end-to-end test driving
+  `compose::HoverTooltipTracker` through real `GtkDriver` `MouseMoved`
+  dispatch + the new `GtkDriver::tick` seam to show/hide a tooltip from
+  pointer input.
+- GTK's `TabBar` rasteriser (`gtk::tab_bar::draw_tab_bar_icons_with_chrome_and_glyphs`)
+  now ellipsis-fits the one tab the strip has room to show only partially,
+  through the shared `primitives::tab_bar::fit_tab_label`, instead of
+  dropping that tab from the strip outright: the shared `TabBar::layout`
+  engine only ever shows a tab at its full measured width or omits it, so
+  this shrinks that tab's measured label width and recomputes the layout
+  when a shortened label would fit the remaining strip space, keeping its
+  close glyph fully on-screen.
+- GTK `Backend::draw_scrollbar` (`gtk::backend`) now follows the overlay
+  scrollbar idle-fade seam (`primitives::scrollbar::idle_fade_opacity`)
+  instead of painting at permanent full opacity: `gtk::run`'s scroll
+  controller resets the fade clock on every wheel/trackpad delta via the new
+  `GtkBackend::note_scroll_activity`, and `draw_scrollbar` paints through
+  `native_surface_paint::paint_with_opacity` at the resulting opacity —
+  mirroring the macOS/Win legs. New test seams
+  `GtkBackend::set_scroll_last_interaction`/`set_fade_clock_override` let a
+  headless pixel test assert the fade curve deterministically.
+- GTK's Cairo `DataTable` rasteriser (`gtk::data_table`) now scales its
+  vertical and horizontal scrollbars by the same idle-fade opacity through a
+  new crate-internal `draw_data_table_with_opacity`, instead of always
+  painting them at full opacity.
+- GTK `Backend::tree_vscrollbar` (`gtk::backend`) now resolves its track
+  width from the live `Style::scrollbar_width` instead of the fixed
+  `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH` literal — a host-set
+  override now reaches the hit-tested geometry, matching what `draw_tree`'s
+  shared painter already paints and the same convention
+  `Backend::list_vscrollbar` already follows.
+- Added a GTK-specific regression test
+  (`gtk::tree::tests::tree_controller_render_does_not_double_paint_scrollbar`)
+  confirming `TreeController::render` paints the explorer tree's overlay
+  scrollbar exactly once on GTK, pixel-for-pixel matching a bare `draw_tree`
+  call — the GTK leg of the double-paint/extra-wide fix already shared via
+  `Backend::tree_paints_own_scrollbar`.
+- `Palette`'s GTK scrollbar (`gtk::palette`) now exposes a thumb/track click
+  target as wide as `Style::scrollbar_width`'s default, instead of the
+  narrower 6px visual bar `native_surface_paint`'s own `SB_W` convention
+  paints — the painted bar is unchanged, only the hit region widens, so a
+  click near (not just exactly on) the thumb/track now registers.
+- Win `Backend::tree_vscrollbar` (`win::backend`) now resolves its track
+  width from the live `Style::scrollbar_width` instead of the fixed
+  `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH` literal — a host-set
+  override now reaches the hit-tested geometry, matching what
+  `draw_tree`'s shared painter already paints and the same convention
+  `Backend::list_vscrollbar` already follows.
+- Win-GUI `Backend::draw_scrollbar` (`win::backend`) now follows the overlay
+  scrollbar idle-fade seam (`primitives::scrollbar::idle_fade_opacity`)
+  instead of painting at permanent full opacity: `win::run`'s
+  `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` handler resets the fade clock on every
+  wheel/trackpad delta via the new `WinBackend::note_scroll_activity`, and
+  `draw_scrollbar` paints through `native_surface_paint::paint_with_opacity`
+  at the resulting opacity — mirroring the macOS leg
+  (`MacBackend::note_scroll_activity`/`scrollbar_fade_opacity`). New test
+  seams `WinBackend::set_scroll_last_interaction`/`set_fade_clock_override`
+  let a headless pixel test assert the fade curve deterministically.
+- GTK `TabBar` painter (`gtk::tab_bar`) now insets a tab's label, icon and
+  close/dirty glyph from the tab edge by `Style::tab_padding_x` instead of
+  a fixed 14px literal (default style value: 10px, VS Code's own tab
+  inset) — tab widths and hit rects grow to match, mirroring
+  `row_padding_x`'s treatment in the shared list/tree/menu/palette
+  painter and the macOS `TabBar`'s own `tab_padding_x` wiring. `GtkBackend`'s
+  no-paint `tab_bar_layout`/`resolve_tab_bar_layout` twins (and their
+  `_with_chrome` variants) read the same style token, so paint and
+  hit-test geometry cannot drift apart. `bar.compact` keeps its own fixed
+  2px inset, unaffected by this token.
+- macOS `Backend::draw_focus_ring` (`macos::backend`) no longer strokes over
+  a tooltip or toast painted earlier the same frame. `super::run::render_frame`
+  paints the generic tab-stop focus ring *after* `AppLogic::render` returns
+  (so it stays visible on top of ordinary widget content), which also put it
+  on top of any tooltip/toast `render` had drawn over the same rect,
+  inverting the overlay-order contract documented on
+  `Backend::draw_focus_ring` itself: tooltip/toast stay topmost of all. The
+  ring now skips only the part of its own perimeter stroke band (not the
+  whole focused rect) that a tooltip/toast bound recorded this frame
+  actually overlaps, so a toast or tooltip that lands entirely inside a
+  large focused widget — never touching the stroke itself — still gets its
+  ring.
+- Win-GUI `Backend::draw_focus_ring` (`win::backend`) no longer strokes over
+  a tooltip or toast painted earlier the same frame — the same
+  `super::run::render_frame`-calls-the-ring-after-`AppLogic::render` ordering
+  bug `macos::backend::MacBackend::draw_focus_ring`'s fix above addresses,
+  now closed on Win-GUI too. `WinBackend` records every tooltip/toast bound
+  painted this frame; if any one of them overlaps the ring's perimeter
+  stroke band anywhere (not the whole focused rect), `draw_focus_ring`
+  skips painting the ring entirely for that call, so a toast or tooltip
+  inset entirely inside a large focused widget, never touching the stroke
+  band, still leaves the ring intact.
+- macOS `TabBar` painter (`macos::tab_bar`) now ellipsis-fits a tab's label
+  into whatever space is left on the strip via the shared
+  `primitives::tab_bar::fit_tab_label`, instead of dropping the whole tab
+  when its full (self-sized) width would overflow the bar — the close
+  glyph's hit box stays positioned off the fitted label, so it always lands
+  fully inside the tab's shrunk slot.
+- Win-GUI `TabBar` painter (`win::tab_bar`) now measures and positions tabs
+  by hand, mirroring `macos::tab_bar`'s approach, and ellipsis-fits a tab's
+  label into whatever space is left on the strip via the shared
+  `primitives::tab_bar::fit_tab_label`, instead of dropping the whole tab
+  when its full (self-sized) width would overflow the bar — the close
+  glyph's hit box stays positioned off the fitted label, so it always lands
+  fully inside the tab's shrunk slot.
+- macOS `TabBar` painter (`macos::tab_bar`) now insets a tab's label, icon
+  and close/dirty glyph from the tab edge by `Style::tab_padding_x` instead
+  of a fixed 14px literal (default style value: 10px, VS Code's own tab
+  inset) — tab widths and hit rects grow to match, mirroring
+  `row_padding_x`'s treatment in the shared list/tree/menu/palette painter.
+  `bar.compact` keeps its own fixed 2px inset, unaffected by this token.
+- Win-GUI `TabBar` painter (`win::tab_bar`) now insets a tab's label, icon
+  and close/dirty glyph from the tab edge by `Style::tab_padding_x` instead
+  of a fixed 14px literal (default style value: 10px, VS Code's own tab
+  inset), threaded through `WinBackend::current_style` the same way
+  `row_padding_x` already reaches `win::list`/`win::tree`. Tab slot widths
+  and hit rects grow to match, mirroring the macOS/GTK treatment above.
+- GTK `DataTable` header, body and footer cells too wide for their column
+  now ellipsis-truncate via the shared `fit_text_prefix` (Pango-measured),
+  matching every other backend's `native_surface_paint`, instead of
+  clipping mid-glyph — the per-cell `cr.clip()` stays as an overflow
+  guard, not the primary truncation path.
+- Terminal grid floor raised to 3 columns so a 3-column-wide character
+  can't panic vt100.
+- `Form`'s shared painter now clips to its own bounds (`surface_push_clip`/
+  `surface_pop_clip`) on every backend, so a row whose content overflows a
+  layout-clamped height — e.g. `Toggle`'s checkbox-size floor on a thin,
+  scroll-clipped last row — never bleeds past the form into whatever a host
+  paints below it (a status bar, another section).
+- macOS `Backend::set_cursor` no longer reverts to the arrow on the next
+  mouse move: `MacBackend` now stashes the requested `PointerShape`, and
+  `QuadraView` installs an `NSTrackingArea` (`CursorUpdate`,
+  `EnabledDuringMouseDrag`) that reapplies it from `cursorUpdate:` /
+  `resetCursorRects` on every subsequent move, including mid-drag. The
+  `AppShell` sidebar/main-content divider now sets this resize cursor
+  automatically on hover and drag, on every backend, and keeps it even
+  when the app's own `ShellApp::handle` sets a different cursor for the
+  same `MouseMoved`. `PointerShape::ColResize`/`RowResize` now map to
+  macOS's horizontal/vertical resize cursors instead of the plain arrow.
+- `quadraui-binding-core`'s `data_table_key_event` now maps Enter on a
+  focused `DataTable` to `DataTableEvent::RowActivated { idx }` — the
+  keyboard equivalent of a pointer double-click — instead of being a no-op;
+  previously only Up/Down mapped to `RowSelected` and Enter fell through
+  unhandled. A no-op when nothing is selected, since there is no row to
+  activate.
+- `quadraui-binding-core`'s new `list_key_event` maps Enter on a focused
+  `List` to `ListViewEvent::ItemActivated { idx }` — the same keyboard
+  parity `data_table_key_event` already has for `DataTable`'s own
+  `RowActivated`, and the same event `A11yAction::Click` already produced
+  for a list item. Previously no code path ever constructed
+  `ItemActivated`: Enter on a focused list only ever fell through as a raw
+  `ListViewEvent::KeyPressed`. A no-op on an empty list, since there is no
+  row to activate.
+- `MultiSectionView`'s GTK/macOS/Win section-header chevron now paints the
+  same codicon `CHEVRON_DOWN`/`CHEVRON_RIGHT` glyph `TreeView`'s own GUI
+  paint path substitutes for its default `▾`/`▸`, instead of the plain
+  Unicode triangle — a section header now reads as the same control as the
+  tree it expands/collapses. `PipelineView`'s GTK/macOS/Win stage status
+  icon likewise paints a codicon (`check`/`circle-filled`/`close`/`circle`/
+  `dash`/`history`) in place of `status_glyph`'s plain `✓`/`●`/`✗`/`·`/`─`/
+  `↻`, and `Board`'s card badge icon paints a codicon in place of
+  `badge_icon`'s plain `✓`/`●`/`↩`/`✗`/`·`; TUI is unaffected on all three
+  (`status_glyph`, `badge_icon` and the `▾`/`▸` defaults are unchanged
+  there).
+- `compose::FilePickerController`/`FolderPickerController`'s folder/file row
+  icons now use `Icon::codicon` (glyph = the real codicon, fallback = the
+  same emoji they always painted), so a GUI host paints a vector icon
+  instead of the raw 📁/📄/⚙ emoji while TUI (`nerd_fonts_enabled` defaults
+  `false`) is pixel-unchanged.
+- `Button::icon`/`icon_position`/`icon_gap` now actually paint on GTK,
+  macOS and Win — `primitives::button::native_surface_paint::paint` (the
+  helper all three backends' `draw_button`/`draw_button_with_state` call)
+  previously ignored those fields entirely, so a leading/trailing icon set
+  on any GUI backend silently painted nothing. The icon glyph (always
+  `Icon::glyph`; GUI backends carry the bundled codicon font
+  unconditionally, same rationale as `MacBackend`/`GtkBackend`/
+  `WinBackend`'s own `nerd_fonts_enabled` field doc) and the label now
+  paint as one centred unit, `icon_gap` apart, ordered per
+  `icon_position`, inset from the button's own edge by at least
+  `Style::padding` (`ButtonMetrics::padding_x`'s own source) rather than
+  flush against it with no inset at all. `ButtonVariant`/`ButtonMetrics`/
+  `Theme` are unchanged; this is a paint-body fix behind the existing
+  `native_surface_paint::paint` signature, so every one of its three
+  callers keeps compiling unchanged. TUI already painted the icon
+  correctly and is unaffected.
+
+### Added
+- The shared `primitives::{tree,list}::native_surface_paint` painters every
+  GTK/macOS/Win32 rasteriser's `TreeView`/`List` vertical scrollbar routes
+  through now read `Style::scrollbar_width` instead of the fixed
+  `layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH` constant (`ListView` gained
+  a new `vscrollbar_with_track_width` method, mirroring `TreeView`'s own, so
+  its existing `vscrollbar` stays backward-compatible). `DataTable` keeps
+  its own fixed `pixel::DATA_TABLE_SCROLLBAR_WIDTH` (`8.0`) override and
+  `Palette` keeps its own `6.0` convention — neither reads this token; see
+  `Style::scrollbar_width`'s own doc for why. Every GTK/macOS/Win32
+  backend's `Backend::list_vscrollbar` hit-test now also passes
+  `self.current_style.scrollbar_width` (via `vscrollbar_with_track_width`),
+  the same field the shared painter reads, so `List`'s painted track and
+  its hit-tested track can never drift apart at a non-default width;
+  `Backend::tree_vscrollbar` still passes the fixed constant (a no-op
+  today, since it equals this field's default). Win32's own `List`
+  rasteriser (`win::list::draw_list`) now takes the live `&Style` its
+  `WinBackend` caller holds instead of building a local `Style::default()`,
+  so a host-set `scrollbar_width` reaches the Win32 list scrollbar the
+  same as GTK/macOS. `ListView::vscrollbar`/`vscrollbar_with_track_width`
+  already returned `None` once every row fits the viewport — the "always
+  visible bar" acceptance item was never a painter bug — and that's now
+  pinned by a shared-painter test asserting no scrollbar fill is emitted
+  when content fits; `Palette` keeping its own narrower `6.0` scrollbar
+  convention instead of this token stays an explicit, documented scope
+  exclusion (see `Style::scrollbar_width`'s own doc), not an oversight.
+  `primitives::scrollbar` also gained `idle_fade_opacity` (a
+  `Transition`-based, headless-clock-testable opacity curve for an
+  overlay scrollbar's hover/scroll-then-idle fade, built on the new
+  `SCROLLBAR_FADE_HOLD`/`SCROLLBAR_FADE_OUT` constants) and
+  `native_surface_paint::paint_with_opacity` (the render-side multiplier
+  hook `paint` now delegates to at `opacity = 1.0`) — the backend-neutral
+  seam a follow-up per-backend issue wires to a live last-interaction
+  timestamp.
+- `Style::row_padding_x`/`Style::tab_padding_x` — the horizontal inset a
+  `List`/`TreeView`/`ContextMenu`/`Palette` row's leading content starts
+  at (`row_padding_x`, default `8.0`; `ContextMenu` also uses it for its
+  trailing check-glyph/submenu-arrow/shortcut) and a tab strip's label
+  reserves from its edge (`tab_padding_x`, default `10.0`, consumed by
+  each backend's own `tab_bar.rs` in a follow-up). The shared
+  `primitives::{list,tree,context_menu,palette}::native_surface_paint`
+  painters every GTK/macOS/Win32 rasteriser calls now read
+  `row_padding_x` directly, so a GUI list/tree/menu/palette row's
+  leading content no longer paints flush against its own edge. The
+  `TreeView` chevron hit region (`layout_metrics::tree_layout`/
+  `tree_layout_measured`) now takes `row_padding_x` too, so the painted
+  chevron and its click region can't drift apart when a host sets a
+  non-default value. TUI is cell-quantised and drops below one cell
+  (see `style.rs`'s module doc); no TUI primitive reads either field
+  yet.
+- `quadraui-binding-core`'s render-callback layout tree now accepts
+  `"padding"`/`"margin"` on a `"split"`, `"tabs"` or `"panel"` node, and
+  `"gap"` on a `"split"` node (the space between its two panes) — the
+  same wire shape and cell-quantised TUI degrade `"row"`/`"column"` nodes
+  already had. `"gap"` stays a decode error on `"tabs"`/`"panel"`, which
+  have no second sibling to space it from.
+- `gtk::GtkRunner::waker() -> Arc<dyn Fn(UserPayload) + Send + Sync>` — this
+  runner's own live window's `Backend::waker` closure, captured off its
+  `GtkBackend` before `activate` moves the rest of it into that window's
+  event-controller closures. Lets an embedding host (`quadraui-node`'s own
+  `startNative`) swap a shared waker handle onto a live `GtkRunner` session
+  the same way it already could for `tui::TuiRunner::backend().waker()`, so
+  a background thread's `post`/`wake`/`postAfter` call is actually
+  delivered while a GTK native session is running instead of only before
+  or after one.
+- `Backend::draw_list_with_state`/`draw_tree_with_state` — additive
+  `hovered_idx`/`pressed_idx: Option<usize>` twins of `draw_list`/
+  `draw_tree` that tint the hovered/pressed row via the new
+  `Theme::list_hover_bg`/`list_pressed_bg`/`tree_hover_bg`/`tree_pressed_bg`
+  accessor methods (derived from existing fields, no new `Theme` field).
+  Index-keyed rather than `InteractionState`-keyed — see `interaction.rs`'s
+  module doc for why `ListItem`/`TreeRow` rows stay out of the
+  `WidgetId`-keyed store. New `compose::ListHoverTracker`/
+  `TreeHoverTracker` do the mouse-move-to-row-index bookkeeping, built on
+  the same engine `compose::ToolbarHoverTracker` now shares. Implemented
+  for real on GTK (verified headlessly via `GtkDriver`); every other
+  backend's default forwards to the existing `draw_list`/`draw_tree`,
+  unchanged.
+- `Theme::success_fg`/`success_bg`/`danger_bg`/`warning_bg`/`info_bg` —
+  accessor methods (not new fields, per `theme.rs`'s "adding a field here
+  is a BREAKING change" rule) giving `Toast` and `Form` validation a VS
+  Code-like success/warning/danger/info banner palette derived from
+  existing fields (`git_added`, `error_fg`, `warning_fg`, `accent_bg`).
+  `Toast`'s `Success`/`Warning`/`Error` severity tints (`Info` stays on
+  the neutral `surface_bg` panel colour) and `Form`'s validation-message
+  strip background now paint through these instead of a mix of hardcoded
+  RGB literals and raw foreground fields; an app overrides a role by
+  recolouring the field it derives from (e.g. `set_theme({"error_fg":
+  ...})` also recolours `danger_bg`).
+- `Icon::codicon` gained twelve more names (`"play"`, `"debug-pause"`,
+  `"flag"`, `"check"`, `"close"`, `"circle"`, `"dash"`, `"sync"`,
+  `"history"`, `"layout"`, `"layers"`, `"database"`, plus
+  `"chevron-right"`/`"chevron-down"` aliasing the existing `TreeView`
+  chevron codepoints) covering the toolbar, pipeline, section-header and
+  activity-bar chrome glyphs a GUI app's own icon table needs.
+- `ContextMenuItem::icon: Option<Icon>` — an optional leading icon, painted
+  in the same reserved gutter column `ContextMenuItem::checked`'s `✓` uses
+  (a checkable item's state mark always wins that shared slot over its own
+  icon). GTK/macOS/Win/TUI all paint the resolved codicon/Nerd Font glyph
+  through their respective `*::draw_context_menu` `Backend` methods, which
+  now call the glyph-override-aware paint path (`native_surface_paint::
+  paint_with_glyphs` on GUI, `tui::draw_context_menu_with_glyphs` on TUI)
+  instead of the glyph-override-blind one, so `Backend::nerd_fonts_enabled`
+  resolves an item's icon the same way it already does for `ListItem`/
+  `TreeRow`; TUI paints the resolved glyph's first `char` in the same
+  single-cell gutter `checked` already uses. `#[serde(default)]`, so
+  existing on-disk/wire `ContextMenuItem` JSON keeps decoding unchanged —
+  but `ContextMenuItem` is not `#[non_exhaustive]`, so an exhaustive Rust
+  struct literal (no `..Default::default()`/`..action_item(...)`) needs a
+  new `icon: None` arm, which is a breaking change for that call site and
+  needs the minor version bump at the next develop→main promotion.
+- `Icon::codicon(name, fallback) -> Option<Icon>` and
+  `TabIcon::codicon(name, color) -> Option<TabIcon>` build an icon from the
+  bundled codicon font's name table (`"folder"`, `"file-code"`,
+  `"git-branch"`, …) instead of a raw glyph string. No backend changes are
+  needed to paint it — every GUI backend already appends the bundled
+  codicon font last in its text-rendering fallback chain, so the resolved
+  glyph renders through the same `Icon::resolve` path any other
+  app-supplied glyph already goes through; TUI falls back to the caller's
+  own text when nerd fonts are off. `Icon` and `TabIcon` additionally
+  `Deserialize` a `{"codicon": "folder", ...}` wire shape (alongside the
+  pre-existing `{"glyph": ..., ...}` one), so a `quadraui-py`/
+  `quadraui-node` app can pass a codicon name in a descriptor dict without
+  hand-encoding a PUA codepoint. See `quadraui/src/codicon_names.rs` for
+  the full curated name list, also inlined on `Icon::codicon`'s doc. New
+  `examples/{tui,gtk}_codicon_tree.rs` demo a file-explorer-shaped
+  `TreeView` using it.
+- `ColumnWidth::FixedCells(f32)` and `ColumnWidth::FixedPx(f32)` — explicit-
+  unit replacements for the now-deprecated `ColumnWidth::Fixed(f32)`.
+  `FixedCells` is always read in cells: unchanged on TUI, and scaled up by
+  the pixel backend's own measured average glyph width on GTK/macOS/Win, so
+  `FixedCells(10.0)` reads as roughly the same ten-glyph-wide column on
+  every backend. `FixedPx` is always read in pixels: unchanged on a pixel
+  backend, and divided by a nominal 8px terminal cell on TUI. `ColumnWidth`
+  is now `#[non_exhaustive]`. Fixes the gallery `DataTable` demo's
+  `Fixed(10.0)` "Restarts" column reading as a one-glyph-wide sliver on a
+  pixel backend instead of the ten-cell-wide column it paints on TUI; the
+  gallery demo and `examples/common/data_table_app.rs` now declare it
+  `FixedCells(10.0)` instead. Covered by new unit tests in
+  `primitives::data_table`, `quadraui-py/tests/test_data_table_interactions.py`,
+  and `quadraui-node/tests/data_table_interactions.test.ts`.
+- `ListViewEvent::ItemDoubleClicked { idx }` and
+  `DataTableEvent::RowDoubleClicked { idx }` — distinct double-click events,
+  mirroring `TreeEvent::RowDoubleClicked`, so an app can tell "select" apart
+  from "open" instead of both folding into `ItemActivated`/`RowActivated`.
+  `quadraui-binding-core`'s `semantic_event_for_hit` now checks its own
+  `double_click` flag for a `DataTableRow` hit (previously ignored there, so
+  every row click — single or double — reached the binding as
+  `RowActivated`): a plain click now resolves to `DataTableEvent::RowSelected`
+  and a real double-click to the new `RowDoubleClicked`; a `ListItem` double
+  click now resolves to `ItemDoubleClicked` instead of reusing
+  `ItemActivated`, mirroring how `TreeEvent::RowDoubleClicked` was added
+  previously. `RowActivated`/`ItemActivated` keep their documented
+  click-or-Enter meaning
+  for native `Backend` consumers that construct them directly. Covered by
+  `quadraui-binding-core::engine` tests and `quadraui-py`'s
+  `test_data_table_interactions.py` / inline `lib.rs` list test.
+- `Theme::focus_ring_color()` — derived from `accent_fg` (no new field,
+  matching `Theme::tab_active_border_top`'s pattern), the colour the
+  shared `Button` rasteriser (`button::native_surface_paint`) now
+  strokes an outset focus ring in for a focused, enabled button on GTK,
+  macOS and Win32, at `Style::focus_ring_width`. `compose::FocusRing`
+  gains `is_focus_visible()`/`set_focus_visible()`: a keyboard move
+  (`advance`/`retreat`/`focus_first`) marks the ring visible, a
+  click-to-focus `set()` suppresses it (VS Code's `:focus-visible`
+  convention) — a host composes a primitive's `has_focus`/`focused`
+  bool as `ring.is_focused(id) && ring.is_focus_visible()` to pick this
+  up. `List`/`TreeView`/`TextInput`/`TabBar` still paint only their
+  pre-existing selection/border focus treatment — ringing those too
+  needs threading `Style` through several more per-backend paint
+  wrappers each and is tracked as follow-up work, not done here.
+- `ControlWidth` (`Fill` / `Fixed(px)` / `Content`) plus `Form::control_width`/
+  `FormField::control_width` and `Form::min_control_width`/
+  `FormField::min_control_width` — every non-item-based `FieldKind`
+  (`Toggle`, `TextInput`, `PasswordInput`, `TextArea`, `ReadOnly`, `Slider`,
+  `ColorPicker`, `Dropdown`, `ComboBox`, `DatePicker`) now starts its control
+  at one shared column right after the label, instead of each kind
+  separately hugging the row's right edge. `Fill` (the default) stretches
+  the control to the row's right edge; `Fixed` is an exact width (cells for
+  TUI, device pixels for GTK/macOS/Win, the same dual-unit convention as
+  `label_width`); `Content` sizes to the control's own natural content,
+  repositioned but otherwise matching the pre-existing behaviour.
+  `min_control_width` floors the resolved width so a narrow `Fixed`/`Content`
+  column never clips its value below a usable size — a text input whose
+  column is narrower than its value now clips the value at the box's inner
+  edge on GTK/macOS/Win too, rather than drawing it through the box's
+  border. All additive
+  `#[serde(default)]` fields. `examples/common/form_control_width.rs`
+  (`tui_form_control_width` / `gtk_form_control_width`) exercises all three
+  modes side by side; `tests/tui_example_driver.rs`'s `form_control_width_*`
+  tests cover each mode headlessly on TUI.
+- `Style::scrollbar_width` (default `10.0`, matching the existing
+  `TREE_VSCROLLBAR_WIDTH` constant) — a themeable seam for the
+  `List`/`TreeView`/`DataTable` vertical scrollbar track width.
+  Additive field on the already-`#[non_exhaustive]` `Style` struct; no
+  pixel-backend rasteriser reads it yet. `TreeView` paints its vertical
+  scrollbar through one shared function (`tree::native_surface_paint`)
+  that GTK, macOS and Win32 all call, so wiring the tree to this token
+  is a single follow-up, not one per backend. `DataTable` paints at its
+  own, separate `DATA_TABLE_SCROLLBAR_WIDTH` constant (`8.0`, not
+  `10.0`), so wiring it to this token is a second, independent
+  follow-up that widens that scrollbar unless it also adds a
+  `DataTable`-specific override.
+- `Backend::draw_button_with_state(rect, button, &InteractionState)` — a
+  `Button` rasteriser that tints the background when the button is
+  hovered/pressed, keyed by `button.id`. Additive: `draw_button` is
+  unchanged and `draw_button_with_state` defaults to forwarding to it, so
+  every existing call site and backend implementor keeps compiling.
+  Implemented for real on TUI, GTK, macOS and Win (all four share the
+  button paint path). New `Theme::button_hover_bg(base)` /
+  `Theme::button_pressed_bg(base)` accessor methods derive the tint from
+  `Theme::accent_fg` — no new `Theme` field. `examples/{tui,gtk}_controls`
+  demonstrate it; `tests/tui_example_driver.rs`'s
+  `controls_button_hover_paints_hover_background_at_the_cursor` asserts the
+  painted consequence headlessly.
+- `tui::TuiRunner` gains `parts_mut(&mut self) -> (&mut TuiBackend, &mut A)`,
+  disjoint mutable access to both the backend and the `AppLogic` it drives
+  — for host code running inside `run_tui`/`run_native` that needs to call a
+  `&mut dyn Backend` method (e.g. `compose::ContextMenuController::open`) and
+  mutate `AppLogic`-owned controller state in the same call, outside the
+  `step`/`pump` path where both are normally threaded through together.
+  Mirrors `tui::testing::TuiDriver::parts_mut`'s shape for the headless
+  driver, backing `quadraui-py`'s handler-safe deferred-action queue.
+- `UiEvent` gains three variants routing the remaining in-canvas overlay
+  primitives' interactive regions through the same anchored-overlay slot
+  `MessageDialogResolved`/`ContextMenuItemActivated` already use:
+  `ToastActionClicked(WidgetId)` (a `Toast` action button),
+  `CompletionItemActivated(WidgetId, usize)` (a `Completions` item, by
+  popup id + index), and `RichTextLinkClicked(WidgetId, String)` (a
+  `RichTextPopup` link, by popup id + URL). `quadraui-binding-core`'s
+  `InteractionEngine` gains the matching `show_toast`/`dismiss_toast`,
+  `show_tooltip`/`hide_tooltip`, `show_completions`/`dismiss_completions`,
+  `show_float`/`dismiss_float`, and `show_rich_text_popup`/
+  `dismiss_rich_text_popup` surfaces, exposed on `quadraui-py`'s `QuiApp`.
+- `compose::MenuSystem` gains a `Default` impl (equivalent to
+  `MenuSystem::new(Vec::new())`) and `tui::testing::TuiDriver` gains
+  `parts_mut(&mut self) -> (&mut TuiBackend, &mut A)`, disjoint mutable
+  access to both the backend and the `AppLogic` it drives. Both back
+  `quadraui-py`'s menu-bar/context-menu binding, which needs to hold a
+  `MenuSystem` field with no menus yet and to call
+  `compose::ContextMenuController::open` (which takes `&mut dyn Backend`)
+  while also mutating the app's own controller state in the same call.
+- `Backend` gains `set_focus(&mut self, id: Option<WidgetId>) -> bool`, so a
+  click landing on a focusable widget can move keyboard focus to it instead
+  of leaving focus wherever Tab/Shift+Tab last left it. `quadraui-py`'s
+  `PyAppLogic::handle` calls it on `MouseDown` for any widget in its own
+  `tab_stops`, emitting a `FocusChanged` event ahead of the click's own
+  semantic event. `Backend` is in-tree-only (no downstream consumer
+  implements it), but every in-tree backend (TUI, GTK, macOS, Win, plus the
+  test/testing recording backends) now implements the method since the
+  trait has no default.
+- `quadraui-py`'s `semantic_event_for_hit` now covers a tree row's chevron
+  (`TreeEvent::RowToggleExpand`) and a double-click on a tree row
+  (`TreeEvent::RowDoubleClicked`); the semantic-substitution pass in
+  `PyAppLogic::handle` runs on `DoubleClick` as well as `MouseDown`.
+- `TreeEvent` gains `RowRenameChanged { path, text, cursor, selection_anchor }`,
+  `RowRenameCommitted { path, text }`, and `RowRenameCancelled { path }`.
+  `quadraui-binding-core`'s `tree_edit::tree_row_rename_key_event` applies a
+  key pressed while a `TreeRow::edit` is active (typing, Backspace/Delete,
+  Left/Right/Home/End with optional Shift-extend, Enter, Escape) into the
+  row's next `TreeRowEditState` instead of leaving it to every binding's own
+  handler to reimplement cursor/selection math for a tree-row rename, the
+  same way `apply_text_input_edit` already does for a standalone
+  `TextInput`.
+- `quadraui-py`'s `tabs` layout node now accepts a per-tab `"is_dirty"` and
+  `"is_preview"` (mapping to `TabItem::is_dirty`/`is_preview`) and a
+  strip-level `"scroll_offset"`, `"right_segments"`, `"active_accent"`, and
+  `"compact"` (mapping to the identically named `TabBar` fields) — the same
+  fields the standalone `tab_bar` leaf already accepted, now also honored by
+  the `tabs` container node.
+- `ShellApp` gains a `setup_shell(&mut self, ctx: &ShellContext)` hook, called
+  once right after `ShellApp::setup` with a `ShellContext` already reaching
+  the real `AppShell` — strictly before the first `render()`. Non-breaking:
+  it has a no-op default, so existing `ShellApp` implementors are unaffected.
+  This lets a consumer reconcile shell/sidebar state from live backend or
+  startup state (not just the static `ShellConfig` seed read at construction
+  time) on frame 0, on every backend, since `ShellAdapter::setup` is the one
+  code path shared across TUI, GTK, macOS and Win.
+- `quadraui-py`: extra primitives inserted with `insert_extra` take part in the
+  binding's hit map, so a click on one reaches the Python handler with the
+  descriptor's `id` as the event's `widget` plus a `hit` detail. `switch` is the
+  first interactive opt-in; display-only extras (`progress`, …) stay
+  non-interactive, attaching neither `widget` nor `hit`.
+- `Reaction::merge` is now `pub` (was `pub(crate)`), so a consumer combining
+  `Reaction`s from the same event batch — the way `quadraui-py`'s click-to-focus
+  combines its synthetic `FocusChanged` dispatch with the click's own —
+  reuses this crate's precedence table instead of duplicating it.
+- `UiEvent` gains `MessageDialogResolved(WidgetId)`, dispatched when an
+  in-canvas message/alert/confirm `Dialog` opened via
+  `compose::MessageDialogController` is resolved — the same shape
+  `ContextMenuItemActivated` carries for a context-menu selection.
+  `compose::MessageDialogController` gains `bounds(&self, backend: &dyn
+  Backend) -> Rect`, the same `DialogLayout::bounds` `render`/`handle`
+  already compute, for a caller that tracks a `ModalStack` entry for the
+  open dialog. `quadraui-py` gains `QuiApp::show_message_dialog`, the
+  "one call" anchored-overlay surface `show_context_menu` already has:
+  it opens a `MessageDialogController` behind `InteractionEngine`, which
+  routes every event to it (and pops its `ModalStack` entry on
+  resolution) ahead of the menu-bar dropdown and context-menu popup,
+  matching the dialog's own paint-on-top order — opening a dialog also
+  closes either of those if one happens to be open underneath it.
+  `show_message_dialog` rejects an empty `buttons` list and a button
+  with a non-`None` `tint` (not yet honored by this surface) with
+  `InvalidDescriptorError`. `quadraui-py` also gains
+  `QuiApp::dismiss_message_dialog`, closing the open dialog (if any)
+  without resolving it.
+- `FindReplacePanel` derives `Serialize`/`Deserialize`, so it can be decoded
+  from a binding's own wire format like every other primitive descriptor.
+- `quadraui-py` gains five additive primitive kinds for `insert_extra`/the
+  `render` callback's layout tree: `"editor"` (`Editor`), `"terminal"`
+  (`Terminal`), `"canvas"` (`Canvas`), `"scroll_view"` (`ScrollView`), and
+  `"find_replace"` (`FindReplacePanel`). All five paint, and all but `canvas`
+  take part in the hit map (click-to-focus plus a `MouseDown`/`Scroll`'s
+  `widget` resolving to them) the same way `switch`/`text_input` already do.
+- `PlatformServices` gains `restore_from_trash(&self, path: &Path) ->
+  ServiceResult<()>`, the inverse of `move_to_trash` — restores `path` from
+  the platform trash/recycle bin back to its original location, for an
+  "Undo" affordance on a delete-confirm toast. Defaults to
+  `Err(BackendError::Unsupported)`; `tui`/`gtk`/`win` override it with a real
+  implementation backed by the cross-platform `trash` crate's `os_limited`
+  module (full support on TUI, same as `move_to_trash`). `macos` keeps the
+  `Unsupported` default — `os_limited` has no macOS implementation, so there
+  is nothing honest to override there.
+- `TreeStyle` gains `bordered: bool` (default `false`). When set,
+  `TreeView::layout` reserves a 1-cell/pixel margin on every edge of the
+  viewport for a decorative frame, insetting `visible_rows`/`hit_regions`
+  so painted content and hit-testing stay aligned. The TUI rasteriser
+  (`tui::draw_tree`) paints that margin as a rounded border in
+  `Theme::border_fg`, so a focused, bordered tree's generic focus-ring
+  overlay (`tui::draw_focus_ring`) lands on the border instead of
+  overwriting row 0's content — GTK/macOS/Win don't yet paint a frame in
+  the reserved space (same opt-in-per-backend precedent as
+  `TreeStyle::row_height`).
+- `Style` gains five VS Code chrome-metric tokens: `tab_height` (35),
+  `status_bar_height` (22), `activity_bar_width` (48), `row_height` (22) and
+  `toolbar_height` (35), each with a matching `with_*` builder.
+
+### Deprecated
+- `ColumnWidth::Fixed(f32)` — ambiguous unit (cells on TUI, pixels on
+  GTK/macOS/Win). Use `ColumnWidth::FixedCells` (always cells) or
+  `ColumnWidth::FixedPx` (always pixels) instead; see this release's
+  `### Added` entry. No removal planned yet.
+
+### Changed
+- GUI backends (macOS, GTK, Win) default `AppShell`'s tab strip, status bar,
+  activity bar, sidebar header, bottom-panel tab row, `SidebarPanel` toolbar
+  header, and `List`/`TreeView`/`DataTable` row pitch to the matching new
+  `Style` chrome-metric token instead of scaling with the chrome/editor
+  font's own line height — floored at that font's line height so an
+  unusually large UI font size still isn't clipped. `Backend::set_style`
+  overrides any of them; TUI is unaffected (`Style`'s chrome metrics are a
+  documented no-op on a cell grid). `DataTable`'s header title text and
+  `StatusBar`'s segment text (which also paints `AppShell`'s sidebar header
+  title through the same shared paint path) are now vertically centred
+  within their own band instead of anchored to its top, since that band can
+  now be much taller than the text's own measured height.
+- `AppShell` gains `layout_for(&self, backend: &dyn Backend, area: Rect) ->
+  AppShellLayout`, the entry point `shell_adapter`'s canonical `ShellApp`
+  path now uses instead of `AppShell::layout` — it reads `line_height`,
+  `Style` (so a `Backend::set_style` override reaches the app-visible
+  layout, not just what `AppShell::render` paints) and the snap function
+  from the live `backend`, same as `AppShell::render`/`AppShell::handle`.
+  `AppShell::layout` is unchanged (still resolves against
+  `Style::default()`, documented) for callers with no `&dyn Backend` in
+  hand. `ShellConfig::activity_bar_width_px`/`status_bar_height_px` now
+  default to `None` (was `Some(48.0)`/`Some(22.0)`) so a `Backend::set_style`
+  override on `activity_bar_width`/`status_bar_height` isn't permanently
+  shadowed by a `ShellConfig`-pinned px value — `AppShell::compute_layout`'s
+  own `Style`-token default already resolves to the same 48px/22px with no
+  override, so a default-constructed `ShellConfig` paints identically.
+- TUI: on a kitty-keyboard-capable terminal, a chord whose key is a shifted
+  symbol now arrives as the shifted glyph rather than as the unshifted base
+  key plus `shift` — `Ctrl+Shift+\` reaches `AppLogic` as `Key::Char('|')` +
+  `ctrl`, not `Key::Char('\\')` + `ctrl` + `shift`. That is
+  `REPORT_ALTERNATE_KEYS` semantics: the terminal reports which glyph the
+  layout produces and crossterm resolves it, clearing `SHIFT` as it does.
+  Not a compile break, but a consumer matching such a chord on the base-key
+  glyph plus `shift` has to match the shifted glyph instead.
+- `Form`/`FormField`'s new `control_width` defaults to `ControlWidth::Fill`,
+  so every existing form on every backend repositions its controls from the
+  row's right edge to the shared column right after the label on the next
+  `quadraui` bump — not a compile break (the field is additive), but a
+  visible layout change for any consumer that builds `Form`/`FormField`
+  literals (`grep -rn 'FormField\s*{\|Form\s*{' ~/src/coord-tui/src
+  ~/src/vimcode/src` finds both building forms, so both repaint).
+
+### Fixed
+- GUI (GTK/macOS/Win) single-line inputs now match `TextInput`'s framed
+  convention: `Palette`'s query row paints a thin bar caret (`theme.cursor`),
+  gated on `Palette::has_focus` like `TextInput`'s own bar caret, instead of
+  an unconditional full-glyph-width filled block, and `CommandLine` gains a
+  1px `border_fg` frame around its bar. TUI is unchanged — `Palette`'s own
+  rasteriser keeps its terminal-style inverted block caret, and
+  `CommandLine`'s stays borderless.
+- `compose::MenuSystem::set_menus` no longer leaves `open_item`/`submenu_path`
+  pointing past the end of a shorter menu list it was just handed — it now
+  closes the dropdown (or drops the dangling submenu level) itself. Fixes a
+  panic reachable from `quadraui-py`: a Python app whose menu bar shrinks
+  while a dropdown is open fed `set_menus` a list too short to host the
+  previously-open index, and `MenuSystem::dropdown_layout`/`build_dropdown`
+  indexed it directly.
+- TUI: a shifted-symbol key (`:`, `!`, `%`, `?`, `|`, `~`, `@`, `#`, …) on a
+  kitty-keyboard-capable terminal (iTerm2 with "Report modifiers using CSI u",
+  kitty, WezTerm, foot, Alacritty) now reaches consumers as the glyph the user
+  typed with no `shift` modifier, matching legacy-encoding terminals. A
+  vim-style normal-mode router that treats "printable char + modifier" as a
+  chord dropped such a keystroke entirely (`:` opening the ex command line
+  stopped working). Two parts: the kitty progressive-enhancement push now also
+  asks for `REPORT_ALTERNATE_KEYS`, so the terminal reports the CSI-u
+  `alternate-key-codes` field and crossterm resolves the shifted glyph instead
+  of delivering the unshifted base key; and `Key::Char` presses are brought to
+  one `shift` shape whichever protocol is negotiated — an uppercase glyph
+  always carries `shift`, so `Ctrl+Shift+T` stays distinct from `Ctrl+T` and
+  `<C-S-z>` redo keeps matching.
+- TUI: `Ctrl-C` with an active text selection no longer copies the focus
+  ring's border glyphs instead of the selected text, when the focused
+  widget's tab-stop rect coincides with the selection's region (true for any
+  focused `TextDisplay`/`MessageList`, whose tab stop is their whole painted
+  area). `tui::run::paint_frame` now caches the selected text via
+  `TuiBackend::apply_selection_highlight` before `TuiBackend::draw_focus_ring`
+  paints over those cells, instead of after — the on-screen result is
+  unchanged (the ring still paints last), only `Ctrl-C`'s copied text is now
+  correct.
+- macOS: a region one frame stops painting no longer shows the previous
+  frame's content. `macos::run::render_frame` — shared by the live
+  `QuadraView::draw_rect` path and `macos::testing::MacDriver` — now fills
+  the surface with the theme background at the start of every frame, not
+  just the one `draw_rect` painted before delegating to it; GTK and Win
+  already cleared every frame this way.
+- macOS: toggling the OS Light/Dark appearance (or the accent color) while
+  a quadraui window is open now reaches `AppLogic::handle` as
+  `UiEvent::SystemThemeChanged`, matching the Win-GUI backend's
+  `WM_SETTINGCHANGE` handling. `QuadraView` overrides `NSView`'s
+  `viewDidChangeEffectiveAppearance` and re-reads
+  `PlatformServices::system_theme` on the fly; previously only a one-shot
+  `system_theme()` read was available, with no live notification.
+- macOS: a tray icon or menu bar item activation now reliably reaches
+  `AppLogic::handle` even while the app isn't frontmost. The action
+  selectors (`menu_bar_install::quadra_menu_action`,
+  `tray::quadra_tray_action`) used to force the drain of their queued
+  `UiEvent` by calling `setNeedsDisplay` on `NSApplication.keyWindow()`'s
+  content view — `None` whenever no quadraui window is key, the common
+  case for a tray-icon click. They now call `MacBackend::redraw_kicker`,
+  which schedules the repaint on the app's own view directly, the same
+  path a background-thread wake already used.
+- `Tooltip` with `TooltipChrome { border: TooltipBorder::Sides | TooltipBorder::None, .. }`
+  now renders its text on GTK, macOS and Win32. `native_surface_paint::paint`'s
+  content placement assumed a top border row on every border mode, so a
+  tooltip sized to exactly one content row per the `TooltipMeasure`
+  contract — what `Sides`/`None` have no border row to spare for — failed
+  the "does this row fit" check and drew an empty box. Content now starts
+  flush with the box's top edge for `Sides`/`None`, and 2 units below it
+  (room for the border stroke) for `Full`, unchanged. TUI's own painter
+  never had this bug.
+- `List` row text, `Board` column headers/card titles, and `DataTable`
+  header/body cells now ellipsis-truncate an overflowing label (`…`) on
+  every backend instead of clipping it mid-glyph, via a new shared
+  `text_util::truncate_with_ellipsis(text, max_width, measurer)` helper —
+  the same algorithm `Tree` already used, generalized to a measurer
+  closure so both the pixel backends (through
+  `paint_surface::fit_text_prefix`) and TUI (cell-count measurer) share
+  one implementation.
+- `StatusBar::layout`/`layout_padded` now bound `left_segments` to the
+  space the resolved right group leaves, instead of letting an
+  overflowing left segment (e.g. a long dirty-mode indicator) paint at
+  its full natural width over the right-side segments. `left_segments`
+  keeps its documented most-important-first order: each segment gets its
+  natural width in turn, the one that crosses the budget edge is clamped
+  to the cells that remain (paint time ellipsis-truncates its text to
+  that width), and only a segment left with no cells at all is dropped
+  whole. Applies on both TUI and the shared GTK/macOS/Win paint path,
+  which consume the same resolved `StatusBarLayout`.
+- `StatusBar::layout`/`layout_padded` only reserve `min_gap` for the
+  right group when `right_segments` is non-empty, so a left-only bar's
+  segments now fill it right up to the edge inset instead of stopping
+  `min_gap` short.
+- A `StatusBar` segment that overflows its resolved width *only* by the
+  trailing space a consumer padded it with (`format!(" {label} ")`, the
+  conventional shape) is now clipped rather than ellipsis-truncated, so
+  the invisible pad no longer costs the last character of `label`. New
+  shared `text_util::truncate_padded_with_ellipsis(text, max_width,
+  measurer)` carries that policy for both TUI and the GTK/macOS/Win
+  paint path.
+
 ## [0.8.0] - 2026-10-31
 ### Changed
 - **Breaking (pre-1.0 `MINOR`).** `A11yRole`'s discriminants are renumbered:

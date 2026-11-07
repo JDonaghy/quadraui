@@ -107,8 +107,8 @@ pub struct Palette {
     pub title: String,
     /// Current search query text.
     pub query: String,
-    /// Cursor byte offset in `query`. Backends paint a cursor block
-    /// at the corresponding visible column.
+    /// Cursor byte offset in `query`. Backends paint a cursor (a block
+    /// on TUI, a thin bar on GUI) at the corresponding visible column.
     #[serde(default)]
     pub query_cursor: usize,
     /// Filtered, pre-scored visible items in display order.
@@ -579,8 +579,9 @@ impl Palette {
 //   [`crate::paint_surface::PaintSurface::surface_draw_icon_glyph`].
 // - **Query cursor**: GTK/macOS both painted a filled cursor block
 //   (inverting the character underneath, terminal-style); Windows drew
-//   no cursor. `paint` carries the block-cursor treatment for every
-//   backend.
+//   no cursor. `paint` gives every GUI backend a thin bar caret; the
+//   block-invert treatment is TUI-only (`tui::palette`'s `set_cell`
+//   fg/bg swap).
 // - **`PaletteMode::Input` suppression**: GTK and Windows both hide the
 //   item list in `Input` mode; macOS did not. `paint` suppresses the
 //   item list for every backend.
@@ -606,6 +607,7 @@ impl Palette {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
+    use crate::interaction::InteractionState;
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
     use crate::text_util::safe_prefix;
@@ -617,6 +619,10 @@ pub(crate) mod native_surface_paint {
     /// Scrollbar track width, shared by [`layout`] and [`paint`] so the
     /// two can't disagree on it — the `(6.0, 8.0)` pair GTK and Windows
     /// already agreed on (macOS's `(8.0, 8.0)` was the minority choice).
+    ///
+    /// Deliberately not [`crate::style::Style::scrollbar_width`] — see
+    /// that field's own doc for why `Palette`'s popup scrollbar stays at
+    /// its own narrower convention instead.
     pub(crate) const SB_W: f32 = 6.0;
     /// Minimum scrollbar thumb length, shared by [`layout`] and [`paint`].
     pub(crate) const MIN_THUMB_LEN: f32 = 8.0;
@@ -624,6 +630,9 @@ pub(crate) mod native_surface_paint {
     /// own bottom edge (there is no bottom border row the way TUI has
     /// one — this is purely visual padding).
     const BOTTOM_INSET: f32 = 4.0;
+    /// Query-row insert-cursor width. Matches `text_input`/`command_line`'s
+    /// `CURSOR_W`/`CURSOR_WIDTH` bar-caret convention for every GUI backend.
+    const QUERY_CURSOR_WIDTH: f32 = 2.0;
 
     /// Compute the shared [`Palette`] layout — the one geometry `paint`
     /// paints from and every backend's `Backend::palette_layout` exposes
@@ -741,6 +750,82 @@ pub(crate) mod native_surface_paint {
         theme: &Theme,
         style: &Style,
     ) {
+        paint_impl(
+            palette,
+            area,
+            palette_layout,
+            rows_h,
+            line_height,
+            nerd_fonts_enabled,
+            surface,
+            theme,
+            style,
+            None,
+        );
+    }
+
+    /// [`paint`], reading hover/pressed state from a single
+    /// [`InteractionState`] keyed by [`WidgetId`]. [`PaletteItem`]
+    /// carries no `WidgetId` of its own (an unbounded, app-filtered
+    /// list — see `interaction.rs`'s module doc for why `ListView`/
+    /// `TreeView` rows stay out of `InteractionState` for the same
+    /// reason), so the one row this actually tints is the pinned
+    /// create-action row, keyed by `palette.id` itself (the one stable
+    /// id already on this popup): `interaction.is_hovered(&palette.id)`
+    /// / `is_pressed(&palette.id)` swaps its resting
+    /// [`Theme::hover_bg`] fill for [`Theme::menu_item_hover_bg`] /
+    /// [`Theme::menu_item_pressed_bg`] — see
+    /// [`crate::Backend::draw_palette_with_state`]'s own doc.
+    ///
+    /// Keying on `palette.id` conflates "the palette is hovered" with
+    /// "the create row is hovered" for a caller that resolves its hit
+    /// test coarsely: `quadraui-binding-core` avoids this because its
+    /// hover resolver only ever maps to `palette.id` when the hit is
+    /// inside `PaletteLayout::create_bounds` specifically — but a direct
+    /// `AppLogic` that keeps one frame-wide `InteractionState` and
+    /// resolves any point inside the palette body to `palette.id` will
+    /// tint the create row while the cursor is over an item row instead.
+    /// Resolve `palette.id` only for hits inside `create_bounds`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_interactive(
+        palette: &Palette,
+        area: Rect,
+        palette_layout: &PaletteLayout,
+        rows_h: f32,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        interaction: &InteractionState,
+    ) {
+        paint_impl(
+            palette,
+            area,
+            palette_layout,
+            rows_h,
+            line_height,
+            nerd_fonts_enabled,
+            surface,
+            theme,
+            style,
+            Some(interaction),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_impl(
+        palette: &Palette,
+        area: Rect,
+        palette_layout: &PaletteLayout,
+        rows_h: f32,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+        interaction: Option<&InteractionState>,
+    ) {
         if area.width < 20.0 || area.height < line_height * 4.0 {
             return;
         }
@@ -840,24 +925,21 @@ pub(crate) mod native_surface_paint {
                 theme.query_fg,
             );
 
-            let cursor_prefix = safe_prefix(&palette.query, palette.query_cursor);
-            let (cursor_prefix_w, _) = surface.surface_measure_text(cursor_prefix);
-            let cursor_x = query_text_x + cursor_prefix_w;
-            let cursor_char: String = palette
-                .query
-                .get(palette.query_cursor..)
-                .and_then(|s| s.chars().next())
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| " ".to_string());
-            let (cursor_w, _) = surface.surface_measure_text(&cursor_char);
-            let cursor_w = cursor_w.max(line_height * 0.45);
-            surface.surface_fill_rect(Rect::new(cursor_x, qy, cursor_w, qb.height), theme.query_fg);
-            if !cursor_char.trim().is_empty() {
-                let (_, ch) = surface.surface_measure_text(&cursor_char);
-                surface.surface_draw_text_run(
-                    Rect::new(cursor_x, qy + (qb.height - ch) / 2.0, cursor_w, ch),
-                    &cursor_char,
-                    theme.surface_bg,
+            // Thin bar caret, matching the GUI convention every other
+            // single-line input uses (`text_input`/`command_line`'s
+            // `CURSOR_WIDTH`) — a block caret that inverts the glyph
+            // underneath is TUI-only (`tui::palette` keeps it via
+            // `set_cell`'s fg/bg swap). Only paints while the palette has
+            // focus, same as `text_input::native_surface_paint::paint`'s
+            // `ti.has_focus` gate — an unfocused palette shouldn't still
+            // show a blinking-looking caret.
+            if palette.has_focus {
+                let cursor_prefix = safe_prefix(&palette.query, palette.query_cursor);
+                let (cursor_prefix_w, _) = surface.surface_measure_text(cursor_prefix);
+                let cursor_x = query_text_x + cursor_prefix_w;
+                surface.surface_fill_rect(
+                    Rect::new(cursor_x, qy, QUERY_CURSOR_WIDTH, qb.height),
+                    theme.cursor,
                 );
             }
         }
@@ -915,7 +997,7 @@ pub(crate) mod native_surface_paint {
                 surface.surface_fill_rect(Rect::new(row_x, row_y, row_w, row_h), theme.selected_bg);
             }
 
-            let mut cursor_x = row_x + 8.0;
+            let mut cursor_x = row_x + style.row_padding_x;
 
             let prefix = if is_selected { "\u{25b6} " } else { "  " };
             let (pw, ph) = surface.surface_measure_text(prefix);
@@ -999,6 +1081,15 @@ pub(crate) mod native_surface_paint {
         // ── Create action row (pinned below items) ─────────────────────
         if let Some(ref label) = palette.create_label {
             let create_y = rows_y + rows_h;
+            let is_pressed = interaction.is_some_and(|i| i.is_pressed(&palette.id));
+            let is_hovered = interaction.is_some_and(|i| i.is_hovered(&palette.id));
+            let create_bg = if is_pressed {
+                theme.menu_item_pressed_bg(theme.hover_bg)
+            } else if is_hovered {
+                theme.menu_item_hover_bg(theme.hover_bg)
+            } else {
+                theme.hover_bg
+            };
             surface.surface_fill_rect(
                 Rect::new(
                     area.x,
@@ -1006,7 +1097,7 @@ pub(crate) mod native_surface_paint {
                     palette_layout.item_list_width,
                     line_height,
                 ),
-                theme.hover_bg,
+                create_bg,
             );
             let prefix = "+ ";
             let (pw, ph) = surface.surface_measure_text(prefix);
@@ -1393,6 +1484,45 @@ pub(crate) mod native_surface_paint {
             );
         }
 
+        /// The issue's first acceptance bullet: a row's text starts
+        /// `row_padding_x` in from its rect — the selection-prefix run
+        /// (`"▶ "`/`"  "`) is the first thing `paint` draws at a row's
+        /// leading edge, so its `x` is the inset to assert on. Painted
+        /// with a non-default [`Style::row_padding_x`] (15.0, not the
+        /// 8.0 default) so reverting the token back to the old
+        /// hardcoded `8.0` literal in `paint` would fail this test.
+        #[test]
+        fn row_prefix_starts_row_padding_x_in_from_the_row_rect() {
+            let p = sample();
+            let (palette_layout, rows_h) = layout(AREA.width, AREA.height, &p, LINE_HEIGHT);
+            let row = palette_layout.visible_items[0].bounds;
+
+            let style = Style::default().with_row_padding_x(15.0);
+            let mut surface = RecordingSurface::default();
+            paint(
+                &p,
+                AREA,
+                &palette_layout,
+                rows_h,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &Theme::default(),
+                &style,
+            );
+
+            let (prefix_rect, _, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t, _)| t == "\u{25b6} ")
+                .expect("selected row's prefix run painted");
+            assert_eq!(
+                prefix_rect.x,
+                AREA.x + row.x + style.row_padding_x,
+                "row prefix must start row_padding_x in from the row's left edge"
+            );
+        }
+
         /// `PaletteMode::Input` hides the item list, so there is nothing
         /// for a separator to separate — none is painted.
         #[test]
@@ -1407,6 +1537,90 @@ pub(crate) mod native_surface_paint {
                     .iter()
                     .any(|(r, c)| *c == theme.border_fg && r.height == 1.0),
                 "Input mode must not paint a query/list separator"
+            );
+        }
+
+        /// `PaletteItem` carries no `WidgetId` (see `paint_interactive`'s
+        /// own doc), so the one row `InteractionState` can tint is the
+        /// pinned create-action row, keyed by `palette.id` itself.
+        fn with_create_row() -> Palette {
+            let mut p = sample();
+            p.create_label = Some("Create 'op'".into());
+            p
+        }
+
+        fn paint_sample_interactive(
+            palette: &Palette,
+            interaction: &InteractionState,
+        ) -> RecordingSurface {
+            let (palette_layout, rows_h) = layout(AREA.width, AREA.height, palette, LINE_HEIGHT);
+            let mut surface = RecordingSurface::default();
+            paint_interactive(
+                palette,
+                AREA,
+                &palette_layout,
+                rows_h,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+                interaction,
+            );
+            surface
+        }
+
+        #[test]
+        fn hovered_create_row_paints_menu_item_hover_bg() {
+            let p = with_create_row();
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(p.id));
+            let surface = paint_sample_interactive(&p, &interaction);
+
+            let expected = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == expected),
+                "hovered create row must paint Theme::menu_item_hover_bg: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn leaving_the_create_row_clears_the_hover_fill() {
+            let p = with_create_row();
+            let theme = Theme::default();
+            let interaction = InteractionState::new(); // nothing hovered
+            let surface = paint_sample_interactive(&p, &interaction);
+
+            let hover_bg = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == hover_bg),
+                "create row isn't hovered, so it must keep its plain resting fill: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn pressed_create_row_paints_menu_item_pressed_bg_not_hover_bg() {
+            let p = with_create_row();
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(p.id));
+            interaction.set_pressed(Some(p.id));
+            let surface = paint_sample_interactive(&p, &interaction);
+
+            let pressed = theme.menu_item_pressed_bg(theme.hover_bg);
+            let hover = theme.menu_item_hover_bg(theme.hover_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == pressed),
+                "pressed create row must paint Theme::menu_item_pressed_bg: {:?}",
+                surface.fills
+            );
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == hover),
+                "a pressed create row must not also paint the plain hover tint: {:?}",
+                surface.fills
             );
         }
     }

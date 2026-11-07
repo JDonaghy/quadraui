@@ -23,6 +23,15 @@
 /// on I/O failure, `2` on a malformed flag) — that path never returns.
 /// Otherwise (no `--capture` flag present) returns normally so the
 /// caller's own interactive runner proceeds.
+///
+/// An optional `--theme light|dark` (or `--theme=light|dark`) picks which
+/// [`quadraui_gallery::capture::CaptureTheme`] the whole run renders
+/// under — `dark` (quadraui's own `Theme::default()`) when omitted, so
+/// every pre-existing invocation of this flag keeps behaving exactly as
+/// before. A light-theme CI leg is a second `--capture` invocation into
+/// its own directory with `--theme light` added, the same "each
+/// backend/OS combination gets its own capture directory" shape
+/// `capture`'s own module doc already describes.
 fn maybe_run_capture() {
     let args: Vec<String> = std::env::args().collect();
     let dir = args
@@ -39,7 +48,31 @@ fn maybe_run_capture() {
         }
         return;
     };
-    match quadraui_gallery::capture::run_capture(std::path::Path::new(&dir)) {
+
+    let theme_arg = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--theme=").map(str::to_string))
+        .or_else(|| {
+            let pos = args.iter().position(|a| a == "--theme")?;
+            match args.get(pos + 1) {
+                Some(value) => Some(value.clone()),
+                None => {
+                    eprintln!("quadraui-gallery: --theme requires a light|dark argument");
+                    std::process::exit(2);
+                }
+            }
+        });
+    let theme = match theme_arg.as_deref() {
+        None => quadraui_gallery::capture::CaptureTheme::default(),
+        Some("dark") => quadraui_gallery::capture::CaptureTheme::Dark,
+        Some("light") => quadraui_gallery::capture::CaptureTheme::Light,
+        Some(other) => {
+            eprintln!("quadraui-gallery: --theme must be \"light\" or \"dark\", got {other:?}");
+            std::process::exit(2);
+        }
+    };
+
+    match quadraui_gallery::capture::run_capture(std::path::Path::new(&dir), theme) {
         Ok(entries) => {
             eprintln!(
                 "quadraui-gallery: captured {} manifest entries into {dir}",

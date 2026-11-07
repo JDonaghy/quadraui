@@ -677,6 +677,22 @@ impl PlatformServices for WinPlatformServices {
         }
     }
 
+    /// [`crate::desktop::restore_from_trash`] — see that function's doc:
+    /// full support on Windows, backed by the `trash` crate's
+    /// `os_limited` module rather than hand-rolling the Windows Recycle
+    /// Bin's `IShellItem` restore API here.
+    fn restore_from_trash(&self, path: &Path) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            crate::desktop::restore_from_trash(path)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = path;
+            Err(BackendError::Unsupported)
+        }
+    }
+
     /// `MessageBeep(MB_OK)` — the default system
     /// notification sound (Windows' Settings maps `MB_OK`'s alias, "Asterisk"/
     /// "Default Beep" depending on the Windows version, to whichever sound
@@ -2993,6 +3009,10 @@ mod tests {
         );
         assert_eq!(svc.open_path(scratch), Err(BackendError::Unsupported));
         assert_eq!(svc.move_to_trash(scratch), Err(BackendError::Unsupported));
+        assert_eq!(
+            svc.restore_from_trash(scratch),
+            Err(BackendError::Unsupported)
+        );
         assert_eq!(svc.beep(), Err(BackendError::Unsupported));
         // `displays`/`cursor_screen_point` are likewise fully
         // implemented on real Windows but degrade the same honest way
@@ -3032,6 +3052,7 @@ mod tests {
             label: id.to_string(),
             is_default,
             is_cancel,
+            spec: None,
         }
     }
 

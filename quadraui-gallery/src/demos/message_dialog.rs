@@ -31,7 +31,7 @@ use quadraui::{
     WidgetId,
 };
 
-use crate::demo::{extract_region, Demo};
+use crate::demo::{extract_region, CaptureAction, Demo};
 
 const SOURCE: &str = include_str!("message_dialog.rs");
 
@@ -59,12 +59,14 @@ impl MessageDialogDemo {
                     label: "Save".into(),
                     is_default: true,
                     is_cancel: false,
+                    spec: None,
                 },
                 MessageDialogButton {
                     id: WidgetId::new("gallery:message-dialog:discard"),
                     label: "Discard".into(),
                     is_default: false,
                     is_cancel: true,
+                    spec: None,
                 },
             ],
             severity: Some(DialogSeverity::Warning),
@@ -84,6 +86,7 @@ impl MessageDialogDemo {
             )],
             buttons: vec![
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("gallery:message-dialog:keep"),
                     label: "Keep Editing".to_string(),
                     is_default: true,
@@ -91,6 +94,7 @@ impl MessageDialogDemo {
                     tint: None,
                 },
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("gallery:message-dialog:discard-native"),
                     label: "Discard".to_string(),
                     is_default: false,
@@ -245,6 +249,22 @@ impl Demo for MessageDialogDemo {
             )
         } else {
             None
+        }
+    }
+
+    fn capture_action(&self, variant: usize) -> CaptureAction {
+        // Variant 0 (Direct controller) keeps its open dialog in
+        // `self.dialog` and is safe to open headlessly. Variant 1 (Native
+        // service) calls `backend.services().show_message_dialog` for
+        // real — on GTK that reaches `gtk4::AlertDialog::default()`,
+        // which (unlike `gtk4::FileDialog`) has no "GTK not initialized"
+        // guard and segfaults outside a live `gtk4::Application` main
+        // loop, so capture leaves it idle rather than crashing the whole
+        // capture process.
+        if variant == 0 {
+            CaptureAction::PressNamed(quadraui::NamedKey::Enter)
+        } else {
+            CaptureAction::None
         }
     }
 }

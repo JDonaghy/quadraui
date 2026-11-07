@@ -7,8 +7,18 @@
 //! horizontal/vertical scroll clamp, and `cursor_bounds` — this module
 //! only measures (a plain `line_height`/`char_width` pair, the same
 //! backend-tracked scalars `win::command_line` takes, not a per-glyph
-//! DirectWrite layout) and paints: a background fill, a 1px border, text
-//! rows via [`DWrite::draw_text`], and a 2px cursor bar via `fill_rect`.
+//! DirectWrite layout) and paints: a background fill, a 1px border, a
+//! focus-visible ring when focused, text rows via [`DWrite::draw_text`],
+//! and a 2px cursor bar via `fill_rect`.
+//!
+//! # Focus-visible ring
+//!
+//! When `ti.has_focus`, [`draw_text_input`] strokes an outset ring in
+//! [`Theme::focus_ring_color`] around `rect`, geometry resolved through
+//! the shared
+//! [`crate::primitives::button::native_surface_paint::focus_ring_geometry`]
+//! helper (`style.focus_ring_width`) — the same seam `win::button` and
+//! `win::switch` already paint through for their own rings.
 //!
 //! # No cursor-offset → x arithmetic here
 //!
@@ -31,7 +41,9 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::{fill_rect, stroke_rect, DWrite};
 use crate::event::Rect;
+use crate::primitives::button::native_surface_paint::focus_ring_geometry;
 use crate::primitives::text_input::{TextInput, TextInputLayout, TextInputMeasure};
+use crate::style::Style;
 use crate::theme::Theme;
 
 /// Insert-cursor width in DIPs. Matches `win::command_line`'s
@@ -56,6 +68,10 @@ pub fn win_text_input_layout(
 /// the resolved [`TextInputLayout`] — same contract as the GTK/TUI
 /// twins' `draw_text_input`: callers (and tests) read the layout back
 /// instead of re-deriving it, so paint and hit-test can't drift apart.
+///
+/// `style` supplies the focus-visible ring's geometry
+/// ([`Style::focus_ring_width`]), read fresh each call rather than
+/// hardcoded — see the ring block below.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_text_input(
     target: &ID2D1RenderTarget,
@@ -63,6 +79,7 @@ pub fn draw_text_input(
     rect: Rect,
     ti: &TextInput,
     theme: &Theme,
+    style: &Style,
     line_height: f32,
     char_width: f32,
 ) -> TextInputLayout {
@@ -80,6 +97,22 @@ pub fn draw_text_input(
         theme.border_fg
     };
     let _ = stroke_rect(target, rect, border_color, 1.0);
+
+    // Focus-visible ring: an outset stroke in the theme's ring colour,
+    // independent of the border tint above — see
+    // `crate::primitives::button::native_surface_paint::focus_ring_geometry`'s
+    // doc for why a per-backend `TextInput` rasteriser resolves the
+    // outset gap through that shared helper rather than a hand-tuned
+    // literal, and for why this strokes square (`stroke_rect`, no
+    // radius) rather than at `ring.corner_radius` — `TextInput`'s own
+    // border above is always square. `ti.has_focus` already carries the
+    // caller's focus-visible suppression (composed via
+    // `crate::compose::FocusRing::is_focus_visible` before it's set on
+    // `TextInput`), so no separate check is needed here.
+    if ti.has_focus {
+        let ring = focus_ring_geometry(rect, style);
+        let _ = stroke_rect(target, ring.rect, theme.focus_ring_color(), ring.width);
+    }
 
     let h_scroll = layout.resolved_scroll_col;
     let slice_from = |line: &str, off: usize| -> String {
@@ -152,7 +185,16 @@ mod tests {
 
         let layout = surface
             .paint(|target| {
-                draw_text_input(target, &dwrite, rect, &ti, &theme, 16.0, char_width);
+                draw_text_input(
+                    target,
+                    &dwrite,
+                    rect,
+                    &ti,
+                    &theme,
+                    &Style::default(),
+                    16.0,
+                    char_width,
+                );
             })
             .map(|_| win_text_input_layout(&ti, rect, 16.0, char_width))
             .expect("paint text input");
@@ -186,7 +228,16 @@ mod tests {
 
         let layout = surface
             .paint(|target| {
-                draw_text_input(target, &dwrite, rect, &ti, &theme, 16.0, char_width);
+                draw_text_input(
+                    target,
+                    &dwrite,
+                    rect,
+                    &ti,
+                    &theme,
+                    &Style::default(),
+                    16.0,
+                    char_width,
+                );
             })
             .map(|_| win_text_input_layout(&ti, rect, 16.0, char_width))
             .expect("paint text input");
@@ -228,7 +279,16 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_text_input(target, &dwrite, rect, &ti, &theme, 16.0, char_width);
+                draw_text_input(
+                    target,
+                    &dwrite,
+                    rect,
+                    &ti,
+                    &theme,
+                    &Style::default(),
+                    16.0,
+                    char_width,
+                );
             })
             .expect("paint text input");
 
@@ -240,6 +300,66 @@ mod tests {
             (theme.cursor.r, theme.cursor.g, theme.cursor.b),
             "insert cursor should paint at cursor_bounds",
         );
+    }
+
+    /// Focus-visible ring: present (outset of the border, in
+    /// `theme.focus_ring_color()`) when `ti.has_focus`, absent when not
+    /// — the win-rasteriser half of the seam's "ring present after Tab
+    /// focus, absent after a click" acceptance. Samples a point on the
+    /// ring's *outset* band (outside `rect` entirely, in the
+    /// `focus_ring_geometry` gap), never inside the 1px border's own
+    /// stroke band — so, unlike a sample inside `rect`, this cannot pass
+    /// merely because the border happens to share `theme.accent_fg`
+    /// with `Theme::focus_ring_color()`; only the ring stroke itself
+    /// reaches this pixel.
+    #[test]
+    fn focus_visible_ring_paints_in_the_outset_gap_only_when_focused() {
+        const RING_GAP: f32 = 2.0; // matches `focus_ring_geometry`'s `FOCUS_RING_GAP`
+        let rect = Rect::new(10.0, 10.0, 100.0, 30.0);
+        let theme = Theme::default();
+        let style = Style::default();
+        let baseline = Color::rgb(10, 20, 30);
+        // On the ring's left-edge band, well clear of the top/bottom
+        // corners: outside `rect` (x < rect.x), so neither the
+        // background fill nor the border stroke ever reaches it.
+        let ring_x = (rect.x - RING_GAP / 2.0) as u32;
+        let ring_y = (rect.y + rect.height / 2.0) as u32;
+
+        for has_focus in [true, false] {
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            let (dwrite, _, char_width) =
+                DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+            let mut ti = sample(vec!["hello"], 0, 0);
+            ti.has_focus = has_focus;
+
+            surface
+                .fill_rect(Rect::new(0.0, 0.0, W, H), baseline)
+                .expect("fill baseline");
+            surface
+                .paint(|target| {
+                    draw_text_input(target, &dwrite, rect, &ti, &theme, &style, 16.0, char_width);
+                })
+                .expect("paint text input");
+
+            let px = surface.pixel_at(ring_x, ring_y);
+            if has_focus {
+                assert_eq!(
+                    (px.r, px.g, px.b),
+                    (
+                        theme.focus_ring_color().r,
+                        theme.focus_ring_color().g,
+                        theme.focus_ring_color().b
+                    ),
+                    "focused TextInput should paint the focus-visible ring in the outset gap",
+                );
+            } else {
+                assert_eq!(
+                    (px.r, px.g, px.b),
+                    (baseline.r, baseline.g, baseline.b),
+                    "unfocused TextInput should not paint a focus-visible ring",
+                );
+            }
+        }
     }
 
     #[test]
@@ -256,7 +376,16 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_text_input(target, &dwrite, rect, &ti, &theme, 16.0, char_width);
+                draw_text_input(
+                    target,
+                    &dwrite,
+                    rect,
+                    &ti,
+                    &theme,
+                    &Style::default(),
+                    16.0,
+                    char_width,
+                );
             })
             .expect("paint text input");
 
@@ -287,6 +416,7 @@ mod tests {
                     rect,
                     &ti,
                     &Theme::default(),
+                    &Style::default(),
                     16.0,
                     char_width,
                 );

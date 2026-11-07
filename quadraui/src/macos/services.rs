@@ -846,6 +846,13 @@ impl PlatformServices for MacPlatformServices {
         crate::desktop::move_to_trash(path)
     }
 
+    // `restore_from_trash` is deliberately not overridden here: the `trash`
+    // crate's `os_limited` module — the only part able to list/restore a
+    // specific trashed item — is gated to Windows and freedesktop-ish Unix
+    // only, so macOS keeps `PlatformServices::restore_from_trash`'s honest
+    // `Err(BackendError::Unsupported)` default. See that trait method's own
+    // doc for the full reasoning.
+
     /// `NSBeep` — a bare AppKit C function, not a method on
     /// any object, so unlike every other AppKit call in this module it
     /// needs no `MainThreadMarker`/receiver of its own.
@@ -863,6 +870,15 @@ impl PlatformServices for MacPlatformServices {
     /// `NSAppearance::bestMatchFromAppearancesWithNames` — for a one-shot
     /// query like this, the name itself already carries the answer, and every
     /// system appearance name contains the substring unambiguously.
+    ///
+    /// Reads the *application's* effective appearance, not the
+    /// effective appearance of any particular view. `run::QuadraView`'s
+    /// `viewDidChangeEffectiveAppearance` override calls through here
+    /// from inside that same callback, relying on the app's appearance
+    /// already having resolved by the time AppKit reaches the view —
+    /// true in every observed case, since a view's effective appearance
+    /// derives from its app's, but worth knowing if that call site ever
+    /// needs to report the view's own appearance instead.
     fn system_theme(&self) -> ServiceResult<SystemTheme> {
         let mtm = MainThreadMarker::new().ok_or(BackendError::Unsupported)?;
         let appearance_name = NSApplication::sharedApplication(mtm)
@@ -1472,6 +1488,7 @@ mod tests {
             label: id.to_string(),
             is_default,
             is_cancel,
+            spec: None,
         }
     }
 

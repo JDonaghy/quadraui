@@ -5,8 +5,10 @@
 //! piece:
 //! - Terminal raw-mode + alternate screen + mouse + bracketed-paste
 //!   setup / teardown.
-//! - Best-effort kitty keyboard-protocol push (REPORT_ALL_KEYS_AS_ESCAPE_CODES
-//!   so Ctrl+Shift+L is unambiguous from Ctrl+L), with the outcome exposed
+//! - Best-effort kitty keyboard-protocol push
+//!   (`REPORT_ALL_KEYS_AS_ESCAPE_CODES` so Ctrl+Shift+L is unambiguous from
+//!   Ctrl+L, `REPORT_ALTERNATE_KEYS` so a shifted symbol still arrives as
+//!   the glyph the user typed), with the outcome exposed
 //!   via [`crate::backend::BackendCaps::kitty_keyboard`] so
 //!   an app can tell whether it actually worked instead of finding out by
 //!   a gesture silently never firing.
@@ -487,6 +489,19 @@ impl<A: AppLogic> TuiRunner<A> {
         &mut self.backend
     }
 
+    /// Disjoint mutable access to both the backend and the `AppLogic` this
+    /// runner drives — for host code that needs to call a `&mut dyn
+    /// Backend` method (e.g. [`crate::compose::ContextMenuController::open`])
+    /// and mutate `AppLogic`-owned controller state in the same call,
+    /// outside [`Self::step`]/[`Self::pump`] where both are normally
+    /// threaded through together. Mirrors [`Self::backend_mut`]/
+    /// [`Self::app_mut`]'s split halves, and
+    /// [`crate::tui::testing::TuiDriver::parts_mut`]'s identical shape for
+    /// the headless driver.
+    pub fn parts_mut(&mut self) -> (&mut TuiBackend, &mut A) {
+        (&mut self.backend, &mut self.app)
+    }
+
     /// One non-blocking pass: repaint if needed, drain whatever events are
     /// already queued (never blocks), dispatch them, tick, and return. See
     /// the type-level doc for the full contract.
@@ -720,13 +735,6 @@ where
                 // `AreaId`. Multi-area runners (GTK) pass the AreaId for
                 // whichever surface is repainting.
                 app.render(b, A::AreaId::default());
-                // After app.render: paint the focus-ring convention
-                // so it overlays on top of the widget's own
-                // content, same ordering as the selection-highlight
-                // overlay below.
-                if let Some(rect) = focus_ring_rect {
-                    b.draw_focus_ring(rect);
-                }
             });
             // Clear any `underline_color` ConPTY would misparse as
             // blink/faint before any further
@@ -736,9 +744,28 @@ where
             // through each rasteriser, is the chosen choke point.
             backend.strip_unsupported_underline_colors(frame.buffer_mut());
             // After app.render: overlay selection highlight on the rendered
-            // buffer. Done outside enter_frame_scope so the closure lifetime
-            // doesn't conflict with the frame borrow.
+            // buffer, BEFORE the focus ring below. Done outside
+            // enter_frame_scope so the closure lifetime doesn't conflict
+            // with the frame borrow. Ordered ahead of the ring (not after,
+            // as the ring's own `AppLogic::render`-adjacent paint might
+            // suggest) because the focused widget's tab-stop rect and an
+            // active text selection's bounds are the same rect for a
+            // focused `TextDisplay` (its tab stop is its whole painted
+            // area); caching the selection's text after the ring had
+            // already overwritten those cells with border glyphs made
+            // Ctrl-C copy the ring's glyphs instead of the selected text.
+            // The ring still paints last, so what's on screen is unchanged
+            // either way — only `cached_selection_text`'s correctness
+            // depends on this order.
             backend.apply_selection_highlight(frame.buffer_mut());
+            // Paint the focus-ring convention so it overlays on top of the
+            // widget's own content and the selection highlight above —
+            // via `draw_focus_ring_on_buffer` rather than the
+            // `enter_frame_scope`-bound `Backend::draw_focus_ring`, since
+            // this runs after that scope has already ended.
+            if let Some(rect) = focus_ring_rect {
+                backend.draw_focus_ring_on_buffer(frame.buffer_mut(), rect);
+            }
             // Apply the editor cursor position cached by `draw_editor`.
             // `Backend::draw_editor` only has the buffer,
             // not the `Frame`, so it stashes the position on `TuiBackend`
@@ -807,6 +834,15 @@ pub(crate) fn dispatch_event<A: AppLogic>(
 /// [`crate::tui::backend::TuiBackend::set_kitty_keyboard`] so an app can
 /// read it before relying on a gesture that needs it.
 ///
+/// `REPORT_ALTERNATE_KEYS` is part of the set because the other flags on
+/// their own make a shifted symbol *less* usable, not more: with
+/// `REPORT_ALL_KEYS_AS_ESCAPE_CODES` the terminal reports `:` as the base
+/// key `;` plus a `SHIFT` modifier, and the shifted glyph is only
+/// recoverable from the CSI-u `alternate-key-codes` field this flag asks
+/// for — which crossterm reads, substituting the glyph and clearing
+/// `SHIFT` itself. [`super::events::crossterm_key_to_uievent`] brings what
+/// arrives to one shape either way.
+///
 /// The support check itself is [`crate::tui::caps::probe_kitty_keyboard`],
 /// not a direct `supports_keyboard_enhancement()` call — see that
 /// function's doc for why the fallback to the environment heuristic
@@ -824,6 +860,7 @@ fn push_keyboard_enhancement(stdout: &mut io::Stdout) -> bool {
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                 | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
                 | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
         )
     )
     .is_ok()

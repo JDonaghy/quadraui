@@ -21,7 +21,7 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 use crate::event::Rect;
 use crate::primitives::data_table::DataTable;
 #[cfg(target_os = "windows")]
-use crate::primitives::data_table::DataTableGlyphs;
+use crate::primitives::data_table::{DataTableGlyphs, DataTablePaintState};
 use crate::primitives::layout_metrics::{pixel_data_table_layout, TextMeasure};
 #[cfg(target_os = "windows")]
 use crate::theme::Theme;
@@ -102,6 +102,47 @@ pub fn draw_data_table_with_glyphs(
         hovered_idx,
         glyphs,
         nerd_fonts_enabled,
+    )
+}
+
+/// [`draw_data_table_with_glyphs`], plus — when `state.scroll_px` is
+/// `Some` — a pixel-precise scroll position instead of only
+/// [`DataTable::scroll_offset`]'s whole-row value: the body rows shift
+/// up by the sub-row remainder, clipped to the band below the fixed
+/// header, and the vertical scrollbar thumb tracks the same position
+/// (see
+/// [`crate::primitives::data_table::native_surface_paint::paint_with_state`]).
+/// `state.scroll_px: None` paints pixel-identically to
+/// [`draw_data_table_with_glyphs`]. The layout [`win_data_table_layout`]
+/// returns doesn't depend on `scroll_px` (unlike `ListView`/`TreeView`,
+/// [`DataTableLayout::visible_rows`] is a plain viewport/row-height
+/// count, not individual row bounds), so there is no
+/// [`win_data_table_layout`] counterpart to thread `scroll_px` through —
+/// mirrors `macos::data_table::draw_data_table_with_state`.
+#[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
+pub fn draw_data_table_with_state(
+    target: &ID2D1RenderTarget,
+    dwrite: &super::text::DWrite,
+    rect: Rect,
+    table: &DataTable,
+    line_height: f32,
+    state: &DataTablePaintState,
+) -> DataTableLayout {
+    let theme = Theme::default();
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    crate::primitives::data_table::native_surface_paint::paint_with_state(
+        table,
+        &mut surface,
+        &theme,
+        rect,
+        line_height,
+        state,
+        None,
+        false,
     )
 }
 
@@ -464,6 +505,72 @@ mod tests {
                 .any(|r| r.text.contains(crate::codicon::SORT_DESCENDING)),
             "expected the default codicon sort glyph among painted runs, got {:?}",
             runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    /// `draw_data_table_with_state` with `state.scroll_px: None` must
+    /// paint pixel-identically to [`draw_data_table`]; a fractional
+    /// `scroll_px` must paint a visibly different first body row — the
+    /// clipped partial-row look of pixel-smooth scrolling.
+    #[test]
+    fn draw_data_table_with_state_scroll_px_shifts_first_row_pixels() {
+        let t = table(vec![
+            row("a.txt", "1kb"),
+            row("b.txt", "2kb"),
+            row("c.txt", "3kb"),
+        ]);
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+
+        let paint_at = |scroll_px: Option<f32>| -> HeadlessSurface {
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            let state = crate::primitives::data_table::DataTablePaintState::default()
+                .with_scroll_px(scroll_px);
+            surface
+                .paint(|target| {
+                    draw_data_table_with_state(target, &dwrite, rect, &t, LINE_HEIGHT, &state);
+                })
+                .expect("paint data table");
+            surface
+        };
+
+        let unscrolled = paint_at(None);
+        let half_row_scrolled = paint_at(Some(LINE_HEIGHT / 2.0));
+
+        let reference = {
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            surface
+                .paint(|target| {
+                    draw_data_table(target, &dwrite, rect, &t, LINE_HEIGHT, None);
+                })
+                .expect("paint data table");
+            surface
+        };
+        for y in 0..(H as u32) {
+            for x in 0..(W as u32) {
+                assert_eq!(
+                    unscrolled.pixel_at(x, y),
+                    reference.pixel_at(x, y),
+                    "scroll_px: None must paint pixel-identically to draw_data_table at ({x}, {y})"
+                );
+            }
+        }
+
+        let layout = win_data_table_layout(&dwrite, rect, &t, LINE_HEIGHT);
+        let header_bottom = layout.header_height as u32;
+        let first_row_bottom = (layout.header_height + LINE_HEIGHT) as u32;
+        let mut any_diff = false;
+        for y in header_bottom..first_row_bottom.min(H as u32) {
+            for x in 0..(W as u32) {
+                if unscrolled.pixel_at(x, y) != half_row_scrolled.pixel_at(x, y) {
+                    any_diff = true;
+                }
+            }
+        }
+        assert!(
+            any_diff,
+            "a half-row scroll_px must paint a visibly different first body row \
+             than scroll_px: None"
         );
     }
 }

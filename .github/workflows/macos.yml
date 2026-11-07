@@ -269,23 +269,57 @@ jobs:
     # and exists purely to produce the uploaded artifact.
     # Non-blocking regardless: a real failure here should be fixed by
     # filing/looking at the issue it names, not by retrying the merge.
+    #
+    # `continue-on-error: true` folds a non-zero *step* exit into a job
+    # conclusion of `success`, so a genuine capture bug never reaches the
+    # merge gate. The one conclusion it CANNOT fold is `cancelled`, which
+    # is what `timeout-minutes` produces when the job runs long. This job
+    # does only a `cargo run` (one cold build + the capture), yet the
+    # blocking `macos` job above fits a cold build plus test + clippy +
+    # the gallery check/test + conformance + a Homebrew gtk4 install +
+    # cross-backend parity inside 40 minutes — so the capture's own cold
+    # build comfortably fits the same budget, and a 20-minute ceiling was
+    # merely clipping it mid-build and reporting a `cancelled` the merge
+    # gate reads as a hard failure. Match the blocking job's 40 minutes.
+    #
+    # `cache-on-failure: true` lets a run that still fails or is cut short
+    # persist its partial build cache, so the auto-rerun starts warm
+    # instead of repeating the same cold build from scratch.
     name: gallery capture (macos)
     runs-on: macos-latest
     continue-on-error: true
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Capture every registered demo (macos backend)
+        with:
+          cache-on-failure: true
+      - name: Capture every registered demo (macos backend, dark theme)
         run: |
           mkdir -p target/gallery-capture
           cargo run -p quadraui-gallery --features macos --bin quadraui-gallery -- \
             --capture target/gallery-capture
-      - name: Upload gallery capture (macos)
+      - name: Upload gallery capture (macos, dark)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gallery-capture-macos
           path: target/gallery-capture
+          if-no-files-found: warn
+      # `--theme light` leg — see `ci.yml`'s `gallery-capture-tui`
+      # job's own light-theme step for why this reruns the same binary a
+      # second time rather than varying the theme row-by-row within one
+      # manifest.
+      - name: Capture every registered demo (macos backend, light theme)
+        run: |
+          mkdir -p target/gallery-capture-light
+          cargo run -p quadraui-gallery --features macos --bin quadraui-gallery -- \
+            --capture target/gallery-capture-light --theme light
+      - name: Upload gallery capture (macos, light)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gallery-capture-macos-light
+          path: target/gallery-capture-light
           if-no-files-found: warn

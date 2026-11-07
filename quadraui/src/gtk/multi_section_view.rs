@@ -24,6 +24,7 @@ use crate::primitives::multi_section_view::{
     Axis, EmptyBody, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
     SectionBody, SectionHeader,
 };
+use crate::style::Style;
 use crate::theme::Theme;
 use crate::types::StyledText;
 
@@ -64,6 +65,7 @@ pub fn draw_multi_section_view(
     h: f64,
     view: &MultiSectionView,
     theme: &Theme,
+    style: &Style,
     line_height: f64,
     nerd_fonts_enabled: bool,
     caret_visible: bool,
@@ -114,6 +116,7 @@ pub fn draw_multi_section_view(
                 s_layout.body_bounds,
                 &section.body,
                 theme,
+                style,
                 line_height,
                 nerd_fonts_enabled,
             );
@@ -220,6 +223,7 @@ fn paint_body(
     bounds: QRect,
     body: &SectionBody,
     theme: &Theme,
+    style: &Style,
     line_height: f64,
     nerd_fonts_enabled: bool,
 ) {
@@ -246,6 +250,7 @@ fn paint_body(
                 h,
                 t,
                 theme,
+                style,
                 line_height,
                 nerd_fonts_enabled,
             );
@@ -260,6 +265,7 @@ fn paint_body(
                 h,
                 l,
                 theme,
+                style,
                 line_height,
                 nerd_fonts_enabled,
             );
@@ -660,6 +666,7 @@ mod tests {
                 H as f64,
                 view,
                 &test_theme(),
+                &Style::default(),
                 LINE_HEIGHT,
                 /* nerd_fonts */ false,
                 caret_visible,
@@ -1082,7 +1089,7 @@ mod tests {
             SectionBody::Tree(t) => t,
             _ => panic!("expected tree body"),
         };
-        let tree_layout = gtk_tree_layout(tree_ref, body_b, LINE_HEIGHT);
+        let tree_layout = gtk_tree_layout(tree_ref, body_b, LINE_HEIGHT, 8.0);
 
         let header_h = (LINE_HEIGHT * 1.2).round();
         let item_h = (LINE_HEIGHT * 1.4).round();

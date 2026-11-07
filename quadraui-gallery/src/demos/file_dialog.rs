@@ -260,6 +260,21 @@ impl Demo for FileDialogDemo {
             _ => None,
         }
     }
+
+    // No `capture_action` override: every variant here calls a real
+    // native-service method (`show_file_open_dialog`/
+    // `show_file_save_dialog`/`show_folder_open_dialog`), and a headless
+    // driver's empty scripted input queue resolves that call
+    // synchronously and *before* capture ever repaints — the frame
+    // capture screenshots is already back to idle by the time the call
+    // returns, same gap `MessageDialogDemo`'s "Native service" variant
+    // has. On top of showing nothing extra, replaying `Enter` here isn't
+    // even safe everywhere: GTK's own headless driver has no live
+    // `gtk4::Application` main loop backing `PlatformServices`, and this
+    // demo's native calls can panic (or, for some gtk4-rs dialog types,
+    // segfault outside Rust's own unwinding) rather than degrade. Capture
+    // leaves this demo idle; `DialogDemo`'s always-in-canvas modal is the
+    // one this hook can show genuinely open.
 }
 // gallery:end
 

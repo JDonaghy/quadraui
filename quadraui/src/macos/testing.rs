@@ -515,18 +515,24 @@ mod tests {
         // "logical" fill rect. The shared `native_surface_paint::paint`
         // insets that draw position by `PIXEL_EDGE_INSET` (outer bar edge)
         // *and* `PIXEL_SEGMENT_PADDING` (per-segment text inset), so the
-        // lone left segment's label starts at their sum, not at the bar's
-        // raw origin.
+        // lone left segment's label starts at their sum on the x axis.
         assert_eq!(
-            (bounds.x, bounds.y),
-            (
-                crate::primitives::status_bar::PIXEL_EDGE_INSET
-                    + crate::primitives::status_bar::PIXEL_SEGMENT_PADDING,
-                0.0
-            ),
+            bounds.x,
+            crate::primitives::status_bar::PIXEL_EDGE_INSET
+                + crate::primitives::status_bar::PIXEL_SEGMENT_PADDING,
             "the only segment's label should start `PIXEL_EDGE_INSET + \
-             PIXEL_SEGMENT_PADDING` in from the bar's left edge (issue #1155), \
-             not flush at its origin"
+             PIXEL_SEGMENT_PADDING` in from the bar's left edge, not flush at its \
+             origin"
+        );
+        // On the y axis the text is vertically centred within the bar
+        // (here the whole `H`-tall surface, since this app passes its full
+        // rect as the bar's bounds) rather than anchored to its top edge —
+        // `H` is taller than the chrome font's own line height, so a
+        // flush-top label would sit at `y == 0.0`.
+        assert!(
+            bounds.y > 0.0,
+            "the segment label should be vertically centred within the \
+             {H}px-tall bar, not flush at y=0"
         );
 
         let (x, y) = driver
@@ -640,6 +646,82 @@ mod tests {
             .max_by_key(|(_, count)| *count)
             .map(|(color, _)| color)
             .expect("bounds should contain at least one pixel")
+    }
+
+    /// Paints a full-width `StatusBar` segment in [`KNOWN_BG`] on the first
+    /// frame, then a half-width one on every frame after a `handle` call —
+    /// the ghosting-regression fixture: the right half the second frame
+    /// stops painting is exactly the region a per-frame background clear
+    /// must scrub.
+    struct ShrinkingApp {
+        wide: bool,
+    }
+
+    impl AppLogic for ShrinkingApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let width = if self.wide { W as f32 } else { (W / 2) as f32 };
+            backend.draw_status_bar_interactive(
+                Rect::new(0.0, 0.0, width, H as f32),
+                &StatusBar {
+                    id: WidgetId::new("status"),
+                    left_segments: vec![StatusBarSegment {
+                        text: "wide-pixel".to_string(),
+                        fg: Color::rgb(255, 255, 255),
+                        bg: KNOWN_BG,
+                        bold: false,
+                        action_id: None,
+                    }],
+                    right_segments: vec![],
+                },
+                &crate::InteractionState::new(),
+            );
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.wide = false;
+            Reaction::Redraw
+        }
+    }
+
+    /// `render_frame` must clear the surface to the theme background at
+    /// the start of every frame, not just the first — otherwise a region
+    /// one frame stops painting keeps showing whatever the *previous*
+    /// frame left there. Regression coverage for the gallery capture
+    /// ghosting (stale chrome from a previously-rendered demo bleeding
+    /// through into the next).
+    #[test]
+    fn render_frame_clears_the_previous_frames_paint_before_the_next_render() {
+        let mut driver = MacDriver::new(ShrinkingApp { wide: true }, W, H);
+
+        // Frame 1 paints KNOWN_BG across the full width, including the
+        // right-half probe point the second frame leaves unpainted.
+        let probe_x = W - 5;
+        let probe_y = H / 2;
+        let (r0, g0, b0, _) = driver.pixel(probe_x, probe_y);
+        assert_eq!(
+            (r0, g0, b0),
+            (KNOWN_BG.r, KNOWN_BG.g, KNOWN_BG.b),
+            "frame 1 should paint KNOWN_BG across the full surface width"
+        );
+
+        // Frame 2 paints only the left half — the probe point above is no
+        // longer touched by `app.render` this frame.
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Char('x'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let (r1, g1, b1, _) = driver.pixel(probe_x, probe_y);
+        let bg = crate::Theme::default().background;
+        assert_eq!(
+            (r1, g1, b1),
+            (bg.r, bg.g, bg.b),
+            "frame 2 must clear frame 1's KNOWN_BG from the region it no longer paints \
+             (ghosting from the previous frame must not survive), got ({r1}, {g1}, {b1})"
+        );
     }
 
     /// Fixture analogous to `GtkDriver`'s `ToggleStatusBarApp`: one

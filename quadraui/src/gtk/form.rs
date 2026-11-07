@@ -190,6 +190,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
                 FormField {
                     id: WidgetId::new("enabled"),
@@ -202,6 +204,8 @@ mod tests {
                     label_align: None,
                     label_width: None,
                     tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
                 },
             ],
             // Focused so the resolved field paints `selected_bg` —
@@ -214,6 +218,8 @@ mod tests {
             label_position: LabelPosition::Left,
             label_align: LabelAlign::Start,
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
 
         let mut surface =
@@ -293,6 +299,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: Some(WidgetId::new("name")),
             scroll_offset: 0,
@@ -300,6 +308,8 @@ mod tests {
             label_position: LabelPosition::Left,
             label_align: LabelAlign::Start,
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
 
         // Must not panic.
@@ -330,6 +340,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: Some(WidgetId::new("pw")),
             scroll_offset: 0,
@@ -337,6 +349,8 @@ mod tests {
             label_position: LabelPosition::Left,
             label_align: LabelAlign::Start,
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
 
         // Must not panic.
@@ -368,6 +382,8 @@ mod tests {
                 label_align: None,
                 label_width: None,
                 tab_index: None,
+                control_width: None,
+                min_control_width: None,
             }],
             focused_field: Some(WidgetId::new("notes")),
             scroll_offset: 0,
@@ -375,6 +391,8 @@ mod tests {
             label_position: LabelPosition::Left,
             label_align: LabelAlign::Start,
             label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
         };
 
         // Must not panic.

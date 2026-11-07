@@ -17,8 +17,11 @@ use gtk4::pango;
 
 use super::toolbar::PangoMeasure;
 use crate::event::Rect as QRect;
-use crate::primitives::tree::{TreeView, TreeViewLayout};
+use crate::primitives::layout_metrics::{tree_row_pitch, TextMeasure};
+use crate::primitives::tree::{tree_chevron_glyph, TreeRowMeasure, TreeView, TreeViewLayout};
+use crate::style::Style;
 use crate::theme::Theme;
+use crate::types::Decoration;
 
 /// Compute the layout the GTK rasteriser would produce for `tree` in
 /// `area` at `line_height`. Hosts and tests call this to drive
@@ -35,8 +38,13 @@ use crate::theme::Theme;
 /// chevron glyph width is an *estimate* (`line_height * 0.65`); callers
 /// with a live `pango::Layout` should prefer [`gtk_tree_layout_measured`]
 /// (`draw_tree` and `GtkBackend::tree_layout` both do).
-pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
-    crate::primitives::layout_metrics::tree_layout(tree, area, line_height)
+pub fn gtk_tree_layout(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    row_padding_x: f32,
+) -> TreeViewLayout {
+    crate::primitives::layout_metrics::tree_layout(tree, area, line_height, row_padding_x)
 }
 
 /// Like [`gtk_tree_layout`], but measures the chevron glyph actually
@@ -52,12 +60,70 @@ pub fn gtk_tree_layout_measured(
     line_height: f64,
     pango_layout: Option<&pango::Layout>,
     char_width: f64,
+    row_padding_x: f32,
 ) -> TreeViewLayout {
     let measure = PangoMeasure {
         pango_layout,
         char_width,
     };
-    crate::primitives::layout_metrics::tree_layout_measured(tree, area, line_height, &measure)
+    crate::primitives::layout_metrics::tree_layout_measured(
+        tree,
+        area,
+        line_height,
+        &measure,
+        row_padding_x,
+    )
+}
+
+/// Like [`gtk_tree_layout_measured`], but threads an explicit
+/// pixel-precise scroll position (`scroll_px`) through to
+/// [`TreeView::layout_with_scroll_px`] instead of only
+/// [`TreeView::scroll_offset`]'s whole-row value. The row-measurement
+/// closure mirrors [`crate::primitives::layout_metrics::tree_layout_measured`]'s
+/// (chevron glyph width measured via `pango_layout`, same as
+/// [`gtk_tree_layout_measured`]) — that shared fn calls `TreeView::layout`,
+/// which can't reach the scroll_px-aware method, so this duplicates its
+/// small measurement closure rather than widening that fn's signature
+/// (the same approach
+/// [`super::super::macos::tree::mac_tree_layout_with_scroll_px`] takes).
+/// `scroll_px: None` produces byte-identical output to
+/// [`gtk_tree_layout_measured`].
+pub fn gtk_tree_layout_measured_with_scroll_px(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    pango_layout: Option<&pango::Layout>,
+    char_width: f64,
+    row_padding_x: f32,
+    scroll_px: Option<f32>,
+) -> TreeViewLayout {
+    let measure = PangoMeasure {
+        pango_layout,
+        char_width,
+    };
+    let header_height = (line_height * 1.2).round();
+    let item_height = tree_row_pitch(tree, line_height);
+    let indent_px = (line_height * 0.9).round();
+    let show_chevrons = tree.style.show_chevrons;
+    tree.layout_with_scroll_px(area.width, area.height, scroll_px, |i| {
+        let row = &tree.rows[i];
+        let is_header = matches!(row.decoration, Decoration::Header);
+        let row_h = if is_header {
+            header_height as f32
+        } else {
+            item_height as f32
+        };
+        let chevron_end_x = if let Some(expanded) = row.is_expanded.filter(|_| show_chevrons) {
+            let glyph_w = measure.width_of(&tree_chevron_glyph(&tree.style, expanded)) as f64;
+            Some((row_padding_x as f64 + row.indent as f64 * indent_px + glyph_w + 4.0) as f32)
+        } else {
+            None
+        };
+        TreeRowMeasure {
+            height: row_h,
+            chevron_end_x,
+        }
+    })
 }
 
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `cr`. `nerd_fonts_enabled`
@@ -107,8 +173,94 @@ pub fn draw_tree(
     h: f64,
     tree: &TreeView,
     theme: &Theme,
+    style: &Style,
     line_height: f64,
     nerd_fonts_enabled: bool,
+) {
+    draw_tree_impl(
+        cr,
+        layout,
+        x,
+        y,
+        w,
+        h,
+        tree,
+        theme,
+        style,
+        line_height,
+        nerd_fonts_enabled,
+        None,
+        None,
+        false,
+        None,
+    )
+}
+
+/// [`draw_tree`], tinting the hovered/pressed row's background, and —
+/// when `scroll_px` is `Some` — painting at a pixel-precise scroll
+/// position instead of only [`TreeView::scroll_offset`]'s whole-row
+/// value: the first visible row shifts up by the sub-row remainder
+/// (via [`gtk_tree_layout_measured_with_scroll_px`]) and the vertical
+/// scrollbar thumb tracks the same position (via
+/// [`crate::primitives::tree::native_surface_paint::paint_with_scroll_px`]).
+/// `hovered_idx` / `pressed_idx` are indices into `tree.rows`, same as
+/// [`crate::Backend::draw_tree_with_state`]. `None`/`None`/`false`/`None`
+/// paints byte-for-byte what [`draw_tree`] paints. `focus_ring_visible` —
+/// see [`crate::Backend::draw_tree_with_state`]'s matching doc.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_tree_with_state(
+    cr: &Context,
+    layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    tree: &TreeView,
+    theme: &Theme,
+    style: &Style,
+    line_height: f64,
+    nerd_fonts_enabled: bool,
+    hovered_idx: Option<usize>,
+    pressed_idx: Option<usize>,
+    focus_ring_visible: bool,
+    scroll_px: Option<f32>,
+) {
+    draw_tree_impl(
+        cr,
+        layout,
+        x,
+        y,
+        w,
+        h,
+        tree,
+        theme,
+        style,
+        line_height,
+        nerd_fonts_enabled,
+        hovered_idx,
+        pressed_idx,
+        focus_ring_visible,
+        scroll_px,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_tree_impl(
+    cr: &Context,
+    layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    tree: &TreeView,
+    theme: &Theme,
+    style: &Style,
+    line_height: f64,
+    nerd_fonts_enabled: bool,
+    hovered_idx: Option<usize>,
+    pressed_idx: Option<usize>,
+    focus_ring_visible: bool,
+    scroll_px: Option<f32>,
 ) {
     if w <= 0.0 || h <= 0.0 {
         return;
@@ -116,12 +268,14 @@ pub fn draw_tree(
 
     layout.set_attributes(None);
 
-    let tree_layout = gtk_tree_layout_measured(
+    let tree_layout = gtk_tree_layout_measured_with_scroll_px(
         tree,
         QRect::new(0.0, 0.0, w as f32, h as f32),
         line_height,
         Some(layout),
         0.0,
+        style.row_padding_x,
+        scroll_px,
     );
 
     let area = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
@@ -130,7 +284,7 @@ pub fn draw_tree(
         layout: Some(layout),
         translucent_fill: true,
     };
-    crate::primitives::tree::native_surface_paint::paint(
+    crate::primitives::tree::native_surface_paint::paint_with_scroll_px(
         tree,
         area,
         &tree_layout,
@@ -138,6 +292,11 @@ pub fn draw_tree(
         nerd_fonts_enabled,
         &mut surface,
         theme,
+        style,
+        hovered_idx,
+        pressed_idx,
+        focus_ring_visible,
+        scroll_px,
     );
 
     layout.set_attributes(None);
@@ -236,12 +395,13 @@ mod tests {
                 H as f64,
                 tree,
                 &test_theme(),
+                &Style::default(),
                 LINE_HEIGHT,
                 /* nerd_fonts */ false,
             );
         }
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = gtk_tree_layout(tree, area, LINE_HEIGHT);
+        let layout = gtk_tree_layout(tree, area, LINE_HEIGHT, 8.0);
         (surface, layout)
     }
 
@@ -571,7 +731,7 @@ mod tests {
     fn gtk_chevron_click_returns_chevron_hit() {
         let tree = make_tree(vec![branch(0, "src", true), leaf(1, "beta")]);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT);
+        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT, 8.0);
         // At indent=0 with default TreeStyle, chevron_end_x > 2.0.
         // Clicking at x=1.0 (well inside the chevron region) must give Chevron(0).
         let hit = layout.hit_test(1.0, layout.visible_rows[0].bounds.y + 1.0);
@@ -587,7 +747,7 @@ mod tests {
     fn gtk_body_click_returns_row_hit() {
         let tree = make_tree(vec![branch(0, "src", true)]);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT);
+        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT, 8.0);
         // The chevron is a small fraction of the row width. x=100 is safely past it.
         let hit = layout.hit_test(100.0, layout.visible_rows[0].bounds.y + 1.0);
         assert!(
@@ -602,7 +762,7 @@ mod tests {
     fn gtk_leaf_click_always_row_hit() {
         let tree = make_tree(vec![leaf(0, "main.rs")]);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT);
+        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT, 8.0);
         for x in [0.5_f32, 1.0, 5.0, 50.0] {
             let hit = layout.hit_test(x, layout.visible_rows[0].bounds.y + 1.0);
             assert!(
@@ -626,8 +786,9 @@ mod tests {
         let cr = Context::new(&surface).expect("Context::new");
         let pango_layout = pangocairo::functions::create_layout(&cr);
 
-        let estimated = gtk_tree_layout(&tree, area, LINE_HEIGHT);
-        let measured = gtk_tree_layout_measured(&tree, area, LINE_HEIGHT, Some(&pango_layout), 0.0);
+        let estimated = gtk_tree_layout(&tree, area, LINE_HEIGHT, 8.0);
+        let measured =
+            gtk_tree_layout_measured(&tree, area, LINE_HEIGHT, Some(&pango_layout), 0.0, 8.0);
 
         // The Chevron hit-region's width *is* the row's chevron_end_x
         // (see `TreeView::layout`'s hit-region split).
@@ -638,18 +799,19 @@ mod tests {
             "measured chevron end-x must use the real Pango glyph width ({measured_x}), \
              not the line_height * 0.65 estimate ({est_x})",
         );
-        // Exact geometry: 2px left margin + indent (0 here, `branch`'s
-        // `indent` field) * round(line_height * 0.9) + the real glyph
-        // advance + 4px gap. The default `chevron_expanded` is swapped for
-        // the codicon `CHEVRON_DOWN` glyph before painting/measuring (see
-        // `tree::tree_chevron_glyph`), so that is what must be measured here.
+        // Exact geometry: `row_padding_x` left margin (8.0, passed above) +
+        // indent (0 here, `branch`'s `indent` field) * round(line_height *
+        // 0.9) + the real glyph advance + 4px gap. The default
+        // `chevron_expanded` is swapped for the codicon `CHEVRON_DOWN`
+        // glyph before painting/measuring (see `tree::tree_chevron_glyph`),
+        // so that is what must be measured here.
         pango_layout.set_text(&crate::primitives::tree::tree_chevron_glyph(
             &tree.style,
             true,
         ));
         let glyph_w = pango_layout.pixel_size().0.max(0) as f32;
         let indent_px = (LINE_HEIGHT as f32 * 0.9).round();
-        let expected = 2.0 + tree.rows[0].indent as f32 * indent_px + glyph_w + 4.0;
+        let expected = 8.0 + tree.rows[0].indent as f32 * indent_px + glyph_w + 4.0;
         assert!(
             (measured_x - expected).abs() < 0.01,
             "measured chevron end-x {measured_x} must equal the Pango-measured \
@@ -677,8 +839,8 @@ mod tests {
         tree.style.row_height = Some(30);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
 
-        let small_font_layout = gtk_tree_layout(&tree, area, 14.0);
-        let large_font_layout = gtk_tree_layout(&tree, area, 48.0);
+        let small_font_layout = gtk_tree_layout(&tree, area, 14.0, 8.0);
+        let large_font_layout = gtk_tree_layout(&tree, area, 48.0, 8.0);
 
         assert_eq!(
             small_font_layout.visible_rows.len(),
@@ -734,11 +896,12 @@ mod tests {
                     H as f64,
                     &tree,
                     &test_theme(),
+                    &Style::default(),
                     line_height,
                     /* nerd_fonts */ false,
                 );
                 let area = QRect::new(0.0, 0.0, W as f32, H as f32);
-                gtk_tree_layout(&tree, area, line_height)
+                gtk_tree_layout(&tree, area, line_height, 8.0)
             };
 
             for row_idx in 0..tree.rows.len() {
@@ -768,7 +931,7 @@ mod tests {
     fn layout_returns_local_coords_when_area_offset() {
         let tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
         let area = QRect::new(0.0, 60.0, 240.0, 180.0);
-        let layout = gtk_tree_layout(&tree, area, 16.0);
+        let layout = gtk_tree_layout(&tree, area, 16.0, 8.0);
 
         let first = &layout.visible_rows[0];
         assert_eq!(
@@ -835,12 +998,13 @@ mod tests {
                 H as f64,
                 &tree,
                 &theme,
+                &Style::default(),
                 LINE_HEIGHT,
                 /* nerd_fonts */ false,
             );
         }
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT);
+        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT, 8.0);
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
 
@@ -926,6 +1090,7 @@ mod tests {
                 H as f64,
                 &tree,
                 &test_theme(),
+                &Style::default(),
                 LINE_HEIGHT,
                 false,
             );
@@ -947,6 +1112,95 @@ mod tests {
             "expected the v-scrollbar track at ({probe_x}, {probe_y}) to be painted \
              (non-background), got white — the #1075 regression this test guards"
         );
+    }
+
+    /// Paint `tree` through the real `GtkBackend::draw_tree` trait
+    /// method rather than the free `draw_tree` function
+    /// `paint_then_layout` uses above — the shape
+    /// `tree_controller_render_does_not_double_paint_scrollbar` needs for
+    /// a pixel-identical reference frame. Mirrors
+    /// `macos::tree::paint_via_backend`.
+    fn paint_via_backend(tree: &TreeView) -> ImageSurface {
+        use crate::gtk::GtkBackend;
+        use crate::Backend;
+
+        let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let mut backend = GtkBackend::new();
+            backend.set_current_theme(test_theme());
+            backend.set_current_line_height(LINE_HEIGHT);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_tree(QRect::new(0.0, 0.0, W as f32, H as f32), tree);
+            });
+        }
+        surface
+    }
+
+    /// `TreeController::render` must not double-paint the v-scrollbar:
+    /// `GtkBackend` reports `tree_paints_own_scrollbar() == true`,
+    /// meaning its `draw_tree` already paints the tree's overlay
+    /// scrollbar over the tree's own content. `TreeController::render`
+    /// therefore passes the full rect to `draw_tree` and skips a
+    /// separate `draw_scrollbar` call. Rendering the same rows through
+    /// `TreeController::render` and through a bare `draw_tree` call must
+    /// produce pixel-identical frames; any stray pixel would be an
+    /// extra, separately painted scrollbar. Mirrors
+    /// `macos::tree::tree_controller_render_does_not_double_paint_scrollbar`.
+    #[test]
+    fn tree_controller_render_does_not_double_paint_scrollbar() {
+        use crate::gtk::GtkBackend;
+        use crate::Backend;
+
+        let rows: Vec<TreeRow> = (0..40).map(|i| leaf(i, &format!("row{i}"))).collect();
+        let tree = make_tree(rows.clone());
+        let mut reference = paint_via_backend(&tree);
+
+        let mut controller = crate::TreeController::new("tree");
+        controller.set_rows(rows);
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let mut backend = GtkBackend::new();
+            backend.set_current_theme(test_theme());
+            backend.set_current_line_height(LINE_HEIGHT);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                assert!(
+                    b.tree_paints_own_scrollbar(),
+                    "GTK owns the tree scrollbar paint"
+                );
+                controller.render(b, area);
+            });
+        }
+
+        let ref_stride = reference.stride() as usize;
+        let stride = surface.stride() as usize;
+        assert_eq!(
+            stride, ref_stride,
+            "both surfaces share the same W/H/format"
+        );
+        let ref_data = reference.data().expect("reference surface data");
+        let data = surface.data().expect("surface data");
+        for y in 0..H {
+            for x in 0..W {
+                let off = y as usize * stride + x as usize * 4;
+                assert_eq!(
+                    data[off..off + 4],
+                    ref_data[off..off + 4],
+                    "pixel ({x}, {y}) differs between TreeController::render and a \
+                     draw_tree-only reference frame — TreeController painted \
+                     something extra, i.e. a second scrollbar"
+                );
+            }
+        }
     }
 
     /// Before the `native_surface_paint` migration,
@@ -987,6 +1241,257 @@ mod tests {
             painted.is_some(),
             "editing row interior should still contain painted pixels (caret + text) \
              after the #1075 migration"
+        );
+    }
+
+    fn paint_bytes_tree(tree: &TreeView, scroll_px: Option<f32>) -> (Vec<u8>, usize) {
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_tree_with_state(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                tree,
+                &test_theme(),
+                &Style::default(),
+                LINE_HEIGHT,
+                false,
+                None,
+                None,
+                false,
+                scroll_px,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data").to_vec();
+        (data, stride)
+    }
+
+    fn overflowing_tree() -> TreeView {
+        let mut tree = make_tree((0..30).map(|i| leaf(i, &format!("row {i}"))).collect());
+        tree.selected_path = Some(vec![0]);
+        tree
+    }
+
+    /// `scroll_px: None` must paint pixel-identically to [`draw_tree`] —
+    /// `draw_tree_with_state` is additive, not a behaviour change for the
+    /// default path.
+    #[test]
+    fn scroll_px_none_paints_identically_to_draw_tree() {
+        let tree = overflowing_tree();
+
+        let mut plain_surface =
+            ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&plain_surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_tree(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                &tree,
+                &test_theme(),
+                &Style::default(),
+                LINE_HEIGHT,
+                false,
+            );
+        }
+        plain_surface.flush();
+        let plain_bytes = plain_surface.data().expect("surface data").to_vec();
+
+        let (state_bytes, _) = paint_bytes_tree(&tree, None);
+
+        assert_eq!(
+            plain_bytes, state_bytes,
+            "scroll_px: None must paint the same pixels as draw_tree"
+        );
+    }
+
+    /// A sub-row `scroll_px` shifts row 0 above the viewport top and
+    /// reveals row 1 one sub-row-remainder early — the "partial first
+    /// row clipped" look of pixel-smooth scrolling.
+    #[test]
+    fn scroll_px_shifts_the_first_row_above_the_viewport_top() {
+        let tree = overflowing_tree();
+        // `tree_row_pitch` resolves the real painted pitch — here,
+        // `TreeStyle::default().row_height` (22px), not `LINE_HEIGHT`
+        // scaled by the leaf/branch 1.4x multiplier that applies only
+        // when `row_height` is unset — so half of *that*, not half of
+        // `LINE_HEIGHT`, is the sub-row shift under test.
+        let row_h = crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT) as f32;
+        let half = row_h / 2.0;
+
+        let (scrolled_bytes, stride) = paint_bytes_tree(&tree, Some(half));
+        let (baseline_bytes, _) = paint_bytes_tree(&tree, None);
+
+        // Row 0 is selected, so probing just past its unscrolled bottom
+        // edge must land on row 1's (unselected) background once the
+        // sub-row shift is applied — at that same absolute pixel, the
+        // `scroll_px: None` paint is still inside row 0's selected band.
+        let theme = test_theme();
+        let probe_y = (half + 1.0) as i32;
+        let probe_x = (W / 2).min(W - 1);
+        assert!(
+            probe_y < H,
+            "probe_y ({probe_y}) must be inside the {H}px-tall viewport, or this test \
+             probes the wrong pixel instead of failing loudly"
+        );
+        let (r, g, b) = pixel(&scrolled_bytes, stride, probe_x, probe_y);
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "pixel just below row 0's shifted bottom edge should show row 1's \
+             background, not the still-selected row 0 a whole-row paint would \
+             show there"
+        );
+
+        // Prove the other half of the claim: at that exact same absolute
+        // pixel, a `scroll_px: None` paint (today's baseline behaviour)
+        // *is* still inside row 0's selected band — the two assertions
+        // together show the sub-row shift, not some other difference,
+        // moved the boundary.
+        let (br, bg, bb) = pixel(&baseline_bytes, stride, probe_x, probe_y);
+        assert_eq!(
+            (br, bg, bb),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "the same probe pixel on a scroll_px: None paint must still show \
+             row 0's selected background"
+        );
+    }
+
+    /// End-to-end: a fractional (sub-integer) wheel delta fed through
+    /// [`crate::compose::TreeController`] must land as a sub-row offset
+    /// in what `GtkBackend` actually paints, using
+    /// [`crate::Backend::tree_scroll_row_height`]'s real painted pitch
+    /// as the row↔pixel basis, not `line_height()`.
+    ///
+    /// GTK's `EventControllerScroll::dy` already arrives in row-notch
+    /// units (`Backend::wheel_delta_rows`'s trait default is identity
+    /// here, unlike macOS's points-based delta), so a "fractional wheel
+    /// delta" on GTK is a `delta.y` that is itself a non-integer number
+    /// of rows (`-0.5`, half a notch) rather than a pixel quantity — the
+    /// trackpad case `TreeController::scroll_by_wheel`'s doc calls out.
+    /// `row_h` and `line_h` differ (`TreeStyle::default().row_height`
+    /// vs. the font metric), so this also pins
+    /// `GtkBackend::tree_scroll_row_height` as the basis `scroll_px`
+    /// actually lands on, not a wrong-basis value that would happen to
+    /// coincide.
+    #[test]
+    fn wheel_scroll_feeds_a_fractional_row_delta_into_the_painted_scroll_px_end_to_end() {
+        use crate::compose::TreeController;
+        use crate::gtk::GtkBackend;
+        use crate::Backend;
+        use crate::UiEvent;
+
+        let theme = test_theme();
+        let mut backend = GtkBackend::new();
+        backend.set_current_theme(theme);
+        backend.set_current_line_height(LINE_HEIGHT);
+
+        let probe_tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        let row_h = backend.tree_scroll_row_height(&probe_tree);
+        let line_h = backend.line_height();
+        assert!(
+            row_h != line_h,
+            "this test needs the tree's real pitch to differ from line_height() \
+             to be a discriminating regression guard, got row_h={row_h} line_h={line_h}"
+        );
+
+        // A viewport tall enough for exactly two rows, so the tree's
+        // third row leaves one whole row of scrollable range — a
+        // viewport that already fits every row would clamp
+        // `scroll_by_wheel`'s `max_px` to zero and this test would
+        // trivially pass without exercising the clamp at all.
+        let rect = QRect::new(0.0, 0.0, W as f32, row_h * 2.0);
+
+        let mut tc = TreeController::new("t");
+        tc.set_rows(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        tc.set_selected_path(Some(vec![0]));
+
+        // Half a wheel notch — GTK's own fractional-trackpad-delta case —
+        // scrolling the content down (row 0 shifts up).
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -0.5),
+            position: crate::Point::new(5.0, 5.0),
+        };
+        tc.handle(&ev, &mut backend, rect);
+
+        assert_eq!(
+            tc.scroll_offset(),
+            0,
+            "half a row's wheel delta must not advance scroll_offset to a whole row"
+        );
+        let scroll_px = tc
+            .scroll_px()
+            .expect("a wheel scroll must accumulate scroll_px");
+        let expected_px = 0.5 * row_h;
+        assert!(
+            (scroll_px - expected_px).abs() < 0.01,
+            "scroll_px should land on half the real row pitch ({expected_px}), \
+             got {scroll_px} — a wrong basis (e.g. line_height={line_h}) would \
+             land on a different value"
+        );
+
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                tc.render(b, rect);
+            });
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        // Row 0 (selected) should now be shifted up by `expected_px`
+        // (half a row pitch), so the probe pixel just past its shifted
+        // bottom edge shows row 1's unselected background — the same
+        // assertion `scroll_px_shifts_the_first_row_above_the_viewport_top`
+        // makes against a hand-built layout, now proven against the real
+        // wheel-driven controller + painter round trip.
+        let probe_y = (expected_px + 1.0) as i32;
+        let probe_x = (W / 2).min(W - 1);
+        assert!(
+            probe_y < H,
+            "probe_y ({probe_y}) must be inside the {H}px-tall viewport, or this test \
+             probes the wrong pixel instead of failing loudly"
+        );
+        let (r, g, b) = pixel(&data, stride, probe_x, probe_y);
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "pixel just below row 0's wheel-shifted bottom edge should show row \
+             1's background, not the still-selected row 0 a whole-row paint \
+             would show there"
         );
     }
 }
@@ -1170,5 +1675,126 @@ mod multi_select_driver_tests {
             },
         ));
         assert_eq!(driver.app().selected, vec![1, 4]);
+    }
+}
+
+/// Headless pixel round-trip for [`crate::Backend::draw_tree_with_state`]:
+/// a plain `MouseMoved` over a row tints its background via
+/// [`crate::theme::Theme::tree_hover_bg`], and moving off the row
+/// restores the original pixel — the tree half of the acceptance case
+/// quadraui#2034 asks for (see `gtk::list::hover_driver_tests` for the
+/// `ListView` twin).
+#[cfg(test)]
+mod hover_driver_tests {
+    use crate::gtk::testing::GtkDriver;
+    use crate::primitives::tree::TreeRowMeasure;
+    use crate::runner::{AppLogic, Reaction};
+    use crate::{
+        Backend, Decoration, Point, Rect, SelectionMode, StyledText, TreeHoverTracker, TreeRow,
+        TreeView, UiEvent, WidgetId,
+    };
+
+    const VIEWPORT_W: f32 = 80.0;
+    const VIEWPORT_H: f32 = 40.0;
+    const ROW_H: f32 = 10.0;
+
+    fn leaf(idx: u16, label: &str) -> TreeRow {
+        TreeRow {
+            path: vec![idx],
+            indent: 0,
+            icon: None,
+            text: StyledText::plain(label.to_string()),
+            badge: None,
+            is_expanded: None,
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    fn sample_tree() -> TreeView {
+        TreeView {
+            id: WidgetId::new("t"),
+            rows: (0..4).map(|i| leaf(i, &format!("row {i}"))).collect(),
+            selection_mode: SelectionMode::Single,
+            // No row selected, so `Theme::selected_bg` never masks the
+            // hover tint this test is probing for.
+            selected_path: None,
+            scroll_offset: 0,
+            style: Default::default(),
+            has_focus: true,
+        }
+    }
+
+    struct TreeApp {
+        tree: TreeView,
+        hover: TreeHoverTracker,
+    }
+
+    impl TreeApp {
+        fn new() -> Self {
+            Self {
+                tree: sample_tree(),
+                hover: TreeHoverTracker::new(),
+            }
+        }
+    }
+
+    impl AppLogic for TreeApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_tree_with_state(
+                Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H),
+                &self.tree,
+                &crate::primitives::tree::TreePaintState::default()
+                    .with_hovered_idx(self.hover.hovered_idx()),
+                false,
+            );
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::MouseMoved { position, .. } = event else {
+                return Reaction::Continue;
+            };
+            let layout = self
+                .tree
+                .layout(VIEWPORT_W, VIEWPORT_H, |_| TreeRowMeasure::new(ROW_H));
+            if self.hover.update(&layout, position.x, position.y) {
+                Reaction::Redraw
+            } else {
+                Reaction::Continue
+            }
+        }
+    }
+
+    fn mouse_moved(x: f32, y: f32) -> UiEvent {
+        UiEvent::MouseMoved {
+            position: Point::new(x, y),
+            buttons: Default::default(),
+        }
+    }
+
+    #[test]
+    fn hovering_a_row_tints_its_background_and_moving_off_clears_it() {
+        let mut driver = GtkDriver::new(TreeApp::new(), VIEWPORT_W as i32, VIEWPORT_H as i32);
+        let probe_x = 4;
+        let probe_y = (ROW_H / 2.0) as i32; // inside row 0's band
+        let base = driver.pixel(probe_x, probe_y);
+
+        driver.dispatch(mouse_moved(4.0, ROW_H / 2.0));
+        let hovered = driver.pixel(probe_x, probe_y);
+        assert_ne!(
+            hovered, base,
+            "hovering row 0 at ({probe_x}, {probe_y}) should tint its background"
+        );
+
+        // Below the last row (4 rows of 10px in a 40px-tall viewport) is
+        // the empty tail — hovering there clears the tracker entirely.
+        driver.dispatch(mouse_moved(4.0, VIEWPORT_H - 1.0));
+        let cleared = driver.pixel(probe_x, probe_y);
+        assert_eq!(
+            cleared, base,
+            "moving off row 0 should restore its original background"
+        );
     }
 }
