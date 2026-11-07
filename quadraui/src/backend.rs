@@ -4525,9 +4525,12 @@ pub trait PlatformServices {
     /// per-dialog, whether a given [`Dialog`] can go native at all —
     /// callers should consult that before calling this method, and fall
     /// back to `draw_dialog` when it returns `None`. TUI backends have
-    /// no native dialog to show and unconditionally return `None` (no
-    /// stderr hint is written); the in-canvas `Dialog` primitive stays
-    /// the TUI path.
+    /// no *native* dialog to show; instead they drive an in-canvas
+    /// `MessageDialogController` through the same nested draw-and-read
+    /// loop [`Self::show_file_open_dialog`]'s doc describes, and return
+    /// the id of the button it resolves (or `None` if it's dismissed
+    /// without one) — the in-canvas `Dialog` primitive stays the
+    /// backend-neutral path either way.
     fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice>;
 
     /// Dispatch a system notification — see [`Notification`]'s doc for

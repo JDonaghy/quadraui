@@ -112,6 +112,17 @@ only a push to `main` runs this workflow.
   with a bare path or an unlisted scheme on the macOS backend now gets
   `Unsupported` instead of `open(1)` launching whatever that path or scheme
   resolved to.
+- `tui::services::TuiPlatformServices::begin_power_save_block`/
+  `end_power_save_block` and `login_item_enabled` now fall through to
+  `PlatformServices`'s own `BackendError::Unsupported` default, matching
+  every other in-tree backend (none of which override any of the three),
+  where they previously faked success: `begin`/`end_power_save_block`
+  minted and tracked a `BlockerId` without ever asking the OS to stay
+  awake, and `login_item_enabled` always reported `Ok(false)`. A caller
+  could not tell "this backend did it" from "this backend can't act at
+  all". **Downstream impact:** a TUI consumer that called any of the
+  three and matched on `Ok` now gets `Err(BackendError::Unsupported)`
+  instead.
 ### Fixed
 - `NamedKey::F(n)` for `n` above 12 (F13-F24) now stringifies to `"F13"`-`"F24"`
   everywhere instead of silently dropping out on some call sites: a single
