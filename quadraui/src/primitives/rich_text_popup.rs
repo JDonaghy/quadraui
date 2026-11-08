@@ -518,7 +518,12 @@ impl RichTextPopup {
 // Shared painting implementation for macOS and Windows rasterisers.
 // GTK uses a separate implementation in `gtk::rich_text_popup::draw_rich_text_popup`
 // because it shapes entire lines with Pango's `AttrList` to avoid glyph-position
-// drift from kerning/ligatures that occurs when spans are shaped and advanced separately.
+// drift from kerning/ligatures that occurs when spans are shaped and advanced
+// separately — GTK only reaches into this module for the scrollbar geometry
+// constants (`SB_WIDTH`/`SB_INSET`, re-exported as
+// `gtk::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`/`_SB_INSET`, same derivation
+// `macos::rich_text_popup` already uses), so its own paint stays in sync with
+// macOS/Windows's scrollbar geometry without duplicating the constant.
 //
 // macOS and Windows both use per-span manual x-advance (the approach below),
 // so consolidating them closes gaps between the implementations:
@@ -531,7 +536,11 @@ impl RichTextPopup {
 //
 // Font scaling per row (via `RichTextPopup::line_scales`) is not implemented
 // — it requires per-row font swaps that would need backend-specific capabilities.
-#[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{RichTextPopup, RichTextPopupLayout, TextSelection};

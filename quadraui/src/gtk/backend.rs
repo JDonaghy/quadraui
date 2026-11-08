@@ -4236,6 +4236,13 @@ impl Backend for GtkBackend {
         )
     }
 
+    /// Routes through the shared
+    /// [`crate::primitives::text_input::paint`] via `self`'s own
+    /// [`PaintSurface`] impl — same unwrapped-`self` shape as
+    /// [`Self::draw_number_input`]/[`Self::draw_combo_box`]. `self`'s
+    /// `PaintSurface::surface_draw_text_run` already forces `ui_font`
+    /// (see that method's doc), so no explicit font save/swap/restore is
+    /// needed here, unlike the bespoke rasteriser this replaced.
     fn draw_text_input(
         &mut self,
         rect: QRect,
@@ -4243,24 +4250,11 @@ impl Backend for GtkBackend {
     ) -> crate::primitives::text_input::TextInputLayout {
         let theme = self.current_theme;
         let style = self.style();
-        let lh = self.current_line_height;
-        let cw = self.current_char_width;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_text_input called outside enter_frame_scope");
-        // `TextInput` is chrome (not in
-        // `crate::font_role::EditorClassPrimitive::ALL`) — same
-        // save/swap/restore as `Self::draw_tree`, since
-        // `crate::gtk::draw_text_input` paints directly against whatever
-        // font `pango_layout` carries in rather than going through
-        // `PaintSurface`.
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        let result =
-            crate::gtk::draw_text_input(cr, pango_layout, rect, ti, &theme, &style, lh, cw);
-        pango_layout.set_font_description(saved_font.as_ref());
-        result
+        let lh = self.current_line_height as f32;
+        let cw = self.current_char_width as f32;
+        let layout = crate::gtk::gtk_text_input_layout(ti, rect, lh, cw);
+        crate::primitives::text_input::paint(ti, &layout, self, &theme, &style);
+        layout
     }
 
     fn text_input_layout(

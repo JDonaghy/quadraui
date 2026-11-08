@@ -381,6 +381,25 @@ only a push to `main` runs this workflow.
   no taller than the label's own line height so the chip never paints
   shorter than the label it encloses. The Win-only hovered-close-glyph
   lighten tint is unchanged.
+- `GtkBackend::draw_text_input` now paints through the shared
+  `primitives::text_input::native_surface_paint::paint` (the same painter
+  `MacBackend::draw_text_input` already uses) instead of its own bespoke
+  Cairo/Pango rasteriser, so the GTK caret is now 2.0 units wide, matching
+  macOS and `win::text_input::CURSOR_W_DIP`, instead of the 1.5 the old
+  GTK-only path hardcoded. `gtk::draw_text_input`'s public free-function
+  signature is unchanged — it now paints via a small local `PaintSurface`
+  adapter over the same `(Context, pango::Layout)` pair it always took.
+  `gtk::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`/`_SB_INSET` now derive
+  from the shared `primitives::rich_text_popup::native_surface_paint::
+  SB_WIDTH`/`SB_INSET` constants (the same derivation
+  `macos::rich_text_popup` already used) instead of a second hardcoded
+  `8.0`/`1.0` that could drift from them; GTK's own rich-text-popup body
+  paint is otherwise unchanged (its single-Pango-call-per-line shaping
+  avoids a kerning/ligature drift the shared per-span painter doesn't
+  guard against). `gtk::message_list::draw_message_list` stays on its own
+  Pango-`AttrList` path too — the shared `message_list` painter has no way
+  to honor `MessageRow::scale` (heading rows), so moving GTK onto it would
+  regress heading-row sizing.
 
 ## [0.9.0] - 2026-11-07
 ### Added
