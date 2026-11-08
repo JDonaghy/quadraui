@@ -899,15 +899,15 @@ impl FormController {
         if stops.is_empty() {
             return FormControllerEvent::Ignored;
         }
-        let n = stops.len() as isize;
+        let n = stops.len();
         let cur_idx = form
             .focused_field
             .as_ref()
             .and_then(|id| stops.iter().position(|fid| *fid == id));
         let next_idx = match cur_idx {
-            Some(i) => (((i as isize + delta) % n + n) % n) as usize,
+            Some(i) => crate::focus::cycle_index(i, delta, n),
             None if delta >= 0 => 0,
-            None => stops.len() - 1,
+            None => n - 1,
         };
         let id = *stops[next_idx];
         // The stop's index among `stops` isn't necessarily its index in

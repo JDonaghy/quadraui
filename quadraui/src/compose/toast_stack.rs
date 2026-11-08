@@ -194,19 +194,25 @@ impl ToastStackController {
                 },
             },
             Key::Named(NamedKey::Left) => {
-                self.set_index(&focus.toast_id, (cur + control_count - 1) % control_count);
+                self.set_index(
+                    &focus.toast_id,
+                    crate::focus::cycle_index(cur, -1, control_count),
+                );
                 ToastStackEvent::Consumed
             }
             Key::Named(NamedKey::Right) => {
-                self.set_index(&focus.toast_id, (cur + 1) % control_count);
+                self.set_index(
+                    &focus.toast_id,
+                    crate::focus::cycle_index(cur, 1, control_count),
+                );
                 ToastStackEvent::Consumed
             }
             Key::Named(NamedKey::Tab) => {
-                let next = if modifiers.shift {
-                    (cur + control_count - 1) % control_count
-                } else {
-                    (cur + 1) % control_count
-                };
+                let next = crate::focus::cycle_index(
+                    cur,
+                    if modifiers.shift { -1 } else { 1 },
+                    control_count,
+                );
                 self.set_index(&focus.toast_id, next);
                 ToastStackEvent::Consumed
             }

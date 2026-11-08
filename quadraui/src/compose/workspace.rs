@@ -599,9 +599,8 @@ impl WorkspaceController {
         if n == 0 {
             return None;
         }
-        let active = self.active.unwrap_or(0) as isize;
-        let n_i = n as isize;
-        let next = (active + delta).rem_euclid(n_i) as usize;
+        let active = self.active.unwrap_or(0);
+        let next = crate::focus::cycle_index(active, delta, n);
         self.set_active_index(next)
     }
 

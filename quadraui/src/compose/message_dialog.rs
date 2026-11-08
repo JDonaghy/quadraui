@@ -255,19 +255,19 @@ impl MessageDialogController {
                 None => MessageDialogEvent::Ignored,
             },
             Key::Named(NamedKey::Left) if n > 0 => {
-                self.focused = (self.focused + n - 1) % n;
+                self.focused = crate::focus::cycle_index(self.focused, -1, n);
                 MessageDialogEvent::Consumed
             }
             Key::Named(NamedKey::Right) if n > 0 => {
-                self.focused = (self.focused + 1) % n;
+                self.focused = crate::focus::cycle_index(self.focused, 1, n);
                 MessageDialogEvent::Consumed
             }
             Key::Named(NamedKey::Tab) if n > 0 => {
-                self.focused = if modifiers.shift {
-                    (self.focused + n - 1) % n
-                } else {
-                    (self.focused + 1) % n
-                };
+                self.focused = crate::focus::cycle_index(
+                    self.focused,
+                    if modifiers.shift { -1 } else { 1 },
+                    n,
+                );
                 MessageDialogEvent::Consumed
             }
             _ => MessageDialogEvent::Ignored,
