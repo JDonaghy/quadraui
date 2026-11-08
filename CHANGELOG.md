@@ -92,14 +92,31 @@ only a push to `main` runs this workflow.
   vertical `Toolbar` of icon buttons it's shaped like (`top_items`, a
   `ToolbarButton::Spacer`, then `bottom_items`; `focused_index` from
   whichever item has `is_keyboard_selected`; `is_active` carried through to
-  `ToolbarButton::Action::is_active`). `ActivityBar::layout` now builds this
-  `Toolbar` internally and delegates to `Toolbar::layout_with_options`
-  (`ToolbarOrientation::Vertical`) for its geometry instead of its own
-  hand-rolled top/bottom-pinning arithmetic — every backend's paint and
-  hit-test, which already consume `ActivityBar::layout`'s output, now share
-  one geometry engine with `Toolbar`. `ActivityBarLayout::visible_items`'s
-  own bottom-pinned-first-then-top-pinned order is unchanged.
+  `ToolbarButton::Action::is_active`).
+- `ToolbarLayoutOptions::pin_trailing_overflow_to_origin` — when the
+  trailing group alone (the buttons after a `ToolbarButton::Spacer`) is
+  bigger than the bar, anchors it to the bar's leading edge instead of its
+  trailing edge, so overflow clips its *last* item instead of its *first*.
 ### Changed
+- `ActivityBar::layout` now builds the `Toolbar` from the new `From` impl
+  internally and delegates to `Toolbar::layout_with_options`
+  (`ToolbarOrientation::Vertical`, `pin_trailing_overflow_to_origin: true`)
+  for its geometry instead of its own hand-rolled top/bottom-pinning
+  arithmetic — every backend's paint and hit-test, which already consume
+  `ActivityBar::layout`'s output, now share one geometry engine with
+  `Toolbar`. `ActivityBarLayout::visible_items`'s own
+  bottom-pinned-first-then-top-pinned order is unchanged, and
+  `pin_trailing_overflow_to_origin` keeps the one case that would otherwise
+  differ — a `bottom_items` group alone taller than the viewport — pinned
+  to its pre-delegation rects (e.g. TUI `item_height=1.0`,
+  `viewport_height=2.0`, 3 bottom items: rows at `y=0 h=1` / `y=1 h=1`,
+  third item dropped; pixel backends `item_height=48.0`,
+  `viewport_height=100.0`: rows at `y=0 h=48` / `y=48 h=48` / `y=96 h=4`).
+  Every other case (top-only, bottom-only within the viewport, top/bottom
+  collision) is bit-for-bit identical to the pre-delegation arithmetic, now
+  pinned by a conformance test against `Toolbar::layout_with_options`
+  directly plus dedicated overflow tests on both the `ActivityBar` and
+  `Toolbar` sides.
 - `TreeView`/`ListView` row layout (`layout_with_scroll_px`), the vertical
   scrollbar thumb geometry (`vscrollbar_with_scroll_px`), and the
   hover/press/`scroll_px` paint state (`TreePaintState`/`ListPaintState`,
