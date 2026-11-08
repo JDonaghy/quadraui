@@ -4349,6 +4349,35 @@ fn help_layer_demo_question_mark_opens_cheatsheet_for_active_panel() {
     );
 }
 
+/// The cheatsheet title sits one cell to the right of the content area's
+/// own left edge (the "Reference" section header, which paints flush
+/// against `content_bounds.x` — the same x as the toolbar header's own
+/// bounds) rather than flush against the popup's leading edge.
+#[test]
+fn help_layer_demo_cheatsheet_title_keeps_leading_inset() {
+    let config = HelpLayerDemo::config();
+    let mut driver = driver_with_shell(HelpLayerDemo::new(), config, 100, 30);
+
+    driver.type_char('?');
+
+    let (title_x, _) = driver
+        .find("Help — Explorer")
+        .unwrap_or_else(|| panic!("cheatsheet title not found:\n{}", driver.screen()));
+    let (reference_x, _) = driver.find("Reference").unwrap_or_else(|| {
+        panic!(
+            "cheatsheet reference-section header not found:\n{}",
+            driver.screen()
+        )
+    });
+
+    assert_eq!(
+        title_x,
+        reference_x + 1.0,
+        "title should sit exactly one cell right of the content area's \
+         own left edge, not flush against it"
+    );
+}
+
 /// `Escape` closes an open cheatsheet without quitting the demo, and the
 /// entries it was showing disappear from the screen.
 #[test]

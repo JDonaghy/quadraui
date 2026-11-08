@@ -296,8 +296,15 @@ impl HelpOverlayController {
             id: self.id,
             toolbar: Some(Toolbar {
                 id: WidgetId::new(format!("{}-toolbar", self.id.as_str())),
+                // A `Toolbar` `Label` paints flush against the toolbar's
+                // own leading edge, with no inset of its own — a leading
+                // space in the label text gives the title the same
+                // one-cell/few-pixel breathing room `Panel`'s own title
+                // bar paints, on every backend, without the
+                // `Toolbar`/`SidebarPanel` paint code itself growing a
+                // title-specific padding knob.
                 buttons: vec![ToolbarButton::Label {
-                    text: title,
+                    text: format!(" {title}"),
                     fg: Some(theme.foreground),
                 }],
                 bg: Some(theme.separator),
