@@ -245,7 +245,7 @@ def release_section_body(changelog_text: str, version: str) -> str:
 # edges.
 PR_BODY_MAX_LEN = 60_000
 
-TRUNCATION_MARKER = (
+PROMOTION_BODY_TRUNCATION_MARKER = (
     "\n\n…(truncated — see CHANGELOG.md's full `## [{version}]` section for "
     "the rest)\n"
 )
@@ -258,18 +258,26 @@ def promotion_pr_body(
     header plus `release_section_body`'s content, truncated well under
     GitHub's PR body length limit instead of risking `gh pr create` failing
     with "Body is too long" on a release with a large CHANGELOG section.
+
+    `max_len` must leave room for the header and truncation marker on their
+    own -- raises `ReleaseError` rather than silently returning a body
+    longer than `max_len` when it doesn't.
     """
     section = release_section_body(changelog_text, version)
     header = (
         f"Promotes `develop` to `main` for v{version}. Full release notes "
         f"are CHANGELOG.md's `## [{version}]` section.\n\n"
     )
-    marker = TRUNCATION_MARKER.format(version=version)
+    marker = PROMOTION_BODY_TRUNCATION_MARKER.format(version=version)
     if len(header) + len(section) <= max_len:
         return header + section
     budget = max_len - len(header) - len(marker)
     if budget < 0:
-        budget = 0
+        raise ReleaseError(
+            f"max_len={max_len} leaves no room for the promotion PR body's "
+            f"own header + truncation marker ({len(header) + len(marker)} "
+            "chars combined)"
+        )
     return header + section[:budget].rstrip() + marker
 
 

@@ -121,9 +121,52 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  bump-shape:
+    # A release's bump PR (`release-X.Y.Z` -> `develop`) only ever touches
+    # `quadraui/Cargo.toml`/`quadraui/src/lib.rs` from the two `paths:`
+    # entries above that can trigger this workflow — `scripts/release.py
+    # prepare`'s own file set — so it never changes anything macOS-specific,
+    # yet without this gate it still runs the full ~40-minute macos-latest
+    # build/test/clippy/doc/conformance/gallery/cross-backend-parity job
+    # below. Same detector `ci.yml`'s own `bump-shape` job uses
+    # (`tools/changelog_check.py --print-bump-shape`), duplicated here
+    # rather than shared via a reusable workflow because each caller needs
+    # this as one job inside its own workflow run so its own jobs can
+    # `needs:` it.
+    #
+    # `pull_request`-only: the diff needs a base commit, which only exists
+    # for a PR event. `workflow_dispatch` and the Monday `schedule` cron
+    # both skip this job, leaving `is_bump` empty — every consuming job's
+    # `!= 'true'` condition treats that as "run normally".
+    name: Detect release-bump PR shape
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    outputs:
+      # Forced `'false'` on a `develop` -> `main` promotion PR even if its
+      # diff happens to be bump-shaped too — see `ci.yml`'s `bump-shape`
+      # job for why a promotion PR must never skip real checks.
+      is_bump: ${{ github.base_ref != 'main' && steps.detect.outputs.bump_shape }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect bump-shaped diff
+        id: detect
+        run: |
+          python3 tools/changelog_check.py --print-bump-shape \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
+
   macos:
     name: macos (build, test, clippy)
     runs-on: macos-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment above.
+    # `!cancelled()` is load-bearing: without it, the default `if:
+    # success()` on a `needs:` job would also skip this on
+    # `workflow_dispatch`/`schedule`, where `bump-shape` itself never runs.
+    if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
     # #1292: build/test/clippy/doc for the macos feature plus the
     # conformance matrix and the gtk+tui+macos cross-backend-parity test
     # (with a Homebrew gtk4 install) — normally 10-15 min on macos-latest.
@@ -287,6 +330,12 @@ jobs:
     # instead of repeating the same cold build from scratch.
     name: gallery capture (macos)
     runs-on: macos-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR too — see `bump-shape`'s own comment
+    # above. Non-blocking (`continue-on-error: true` below) doesn't make
+    # this free: `release_full.py`'s check-wait polls every check in the
+    # PR's `statusCheckRollup`, required or not, until it's done.
+    if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
     continue-on-error: true
     timeout-minutes: 40
     steps:

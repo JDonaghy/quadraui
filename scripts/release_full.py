@@ -182,12 +182,19 @@ def check_main_develop_divergence() -> None:
     """Refuse to start the long CI waits below if `origin/main` and
     `origin/develop` have diverged histories: a squash merge of `develop`
     into `main` leaves `main` a same-tree-but-different-history copy, so
-    `git merge-tree` reports conflicts on the *next* promotion even though
-    there is nothing to actually resolve. Detects that specific,
-    recoverable shape (main's tree already matches some commit on develop)
-    and prints the exact `-s ours` sync recipe; a genuine content
-    divergence (main's tree matches no develop commit) is a hard failure a
-    human must resolve.
+    `git merge-tree` reports conflicts (or, when the squashing severed any
+    common ancestor entirely, refuses outright with "unrelated histories")
+    on the *next* promotion even though there is nothing to actually
+    resolve. Detects that specific, recoverable shape (main's tree already
+    matches some commit on develop) and prints the exact `-s ours` sync
+    recipe regardless of which of those two ways `merge-tree` failed —
+    the tree-identity check is what actually proves there's nothing to
+    resolve, not the particular exit code. A genuine content divergence
+    (main's tree matches no develop commit) is a hard failure a human must
+    resolve, and gets a message that distinguishes a real reported
+    conflict (exit 1) from `merge-tree` itself failing to run (any other
+    non-zero exit — a `git` too old for `--write-tree`, a bad ref, …) so a
+    tooling bug doesn't get misread as proven divergent content.
     """
     git(["fetch", "origin", "main", "develop"], check=False)
     if git(["rev-parse", "--verify", "--quiet", "origin/main"], check=False).returncode != 0:
@@ -211,26 +218,49 @@ def check_main_develop_divergence() -> None:
             break
 
     if match_commit is None:
+        # `git merge-tree`'s own exit-status contract: 0 is a clean merge,
+        # 1 is a real conflict, anything else (128 for "refusing to merge
+        # unrelated histories", or an outright `git` usage error) is the
+        # command failing to run rather than reporting conflicting content.
+        if merge_check.returncode == 1:
+            fail(
+                "origin/main and origin/develop have genuinely diverged "
+                "content — `git merge-tree --write-tree origin/main "
+                "origin/develop` reports conflicts, and main's tree matches "
+                "no commit on develop. Resolve the divergence by hand "
+                "before releasing."
+            )
         fail(
-            "origin/main and origin/develop have genuinely diverged content — "
-            "`git merge-tree --write-tree origin/main origin/develop` reports "
-            "conflicts, and main's tree matches no commit on develop. "
-            "Resolve the divergence by hand before releasing."
+            "`git merge-tree --write-tree origin/main origin/develop` could "
+            f"not complete (exit {merge_check.returncode}), and main's tree "
+            "matches no commit on develop either, so this isn't confirmed "
+            "divergence — investigate the command's own failure before "
+            f"releasing:\n{merge_check.stderr.strip()}"
         )
 
     warn(
         "origin/main and origin/develop have diverged histories (merge-tree "
         f"reports conflicts), but main's tree is byte-identical to develop "
-        f"commit {match_commit[:12]} — sync before releasing:\n"
+        f"commit {match_commit[:12]} — sync before releasing. `develop` is "
+        "protected (CLAUDE.md: never commit directly to it), so this lands "
+        "through a sync branch + PR, not a direct push:\n"
     )
     print("    git fetch origin main develop")
-    print("    git checkout develop && git pull --ff-only")
+    print("    git checkout -b sync-main-into-develop origin/develop")
     print(
         "    git merge -s ours origin/main "
         "-m 'Sync main into develop (tree already identical, no content change)'"
     )
-    print("    git push origin develop")
-    fail("run the sync recipe above, then re-run release_full.py")
+    print("    git push -u origin sync-main-into-develop")
+    print(
+        "    gh pr create --base develop --head sync-main-into-develop "
+        "--title 'Sync main into develop' "
+        "--body 'main'\\''s tree is already identical to develop; "
+        "-s ours records the merge with no content change.'"
+    )
+    fail(
+        "run the sync recipe above, merge that PR, then re-run release_full.py"
+    )
 
 
 def wait_for_crate(version: str, timeout: int = 600) -> bool:
