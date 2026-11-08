@@ -4172,7 +4172,11 @@ impl Backend for WinBackend {
     /// and hands it to the shared [`crate::primitives::text_input::paint`]
     /// through this backend's own [`PaintSurface`] impl, mirroring
     /// `MacBackend::draw_text_input`'s shape. See [`Self::draw_status_bar`]'s
-    /// doc for the "surface not attached yet" fallback posture.
+    /// doc for the "surface not attached yet" fallback posture. The paint
+    /// guard accepts either `self.chrome_dwrite` or `self.dwrite` — the
+    /// shared painter's `surface_draw_text_run` resolves
+    /// `chrome_dwrite.or(dwrite)` on every call anyway, so requiring both
+    /// to exist would reject a paint the painter could still perform.
     fn draw_text_input(
         &mut self,
         rect: Rect,

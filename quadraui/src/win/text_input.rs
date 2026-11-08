@@ -62,9 +62,15 @@ mod tests {
 
     /// Paint `ti` via the shared
     /// [`crate::primitives::text_input::native_surface_paint::paint`]
-    /// through a [`super::super::surface::D2dSurface`] over `surface`'s
-    /// headless target — the same adapter `WinBackend::draw_text_input`
-    /// uses, exercised here directly — and return the resolved layout.
+    /// through a [`super::super::surface::D2dSurface`] built directly over
+    /// `surface`'s headless target. This is a lighter-weight adapter than
+    /// production: `WinBackend::draw_text_input` instead passes `self` —
+    /// `impl PaintSurface for WinBackend` — straight to the shared
+    /// `paint` function, so this helper's `D2dSurface` is a stand-in that
+    /// bottoms out in the same `win::text::*` drawing helpers, not the
+    /// production call path itself; see
+    /// `backend::tests::win_backend_draw_text_input_paints_text_in_the_chrome_fonts_size`
+    /// for a test that does go through `WinBackend::draw_text_input`.
     fn paint(
         surface: &HeadlessSurface,
         dwrite: &DWrite,
