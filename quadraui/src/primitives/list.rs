@@ -888,6 +888,7 @@ mod vscrollbar_tests {
 pub(crate) mod native_surface_paint {
     use super::{ListView, ListViewLayout};
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::row_stack;
     use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::Decoration;
@@ -1158,27 +1159,20 @@ pub(crate) mod native_surface_paint {
             // still draws it — it has no row-fill cue to lean on).
             let mut cursor_x = row_x + style.row_padding_x - h_off_px;
 
-            if let Some(ref icon) = item.icon {
-                let glyph = if nerd_fonts_enabled {
-                    icon.glyph.as_str()
-                } else {
-                    icon.fallback.as_str()
-                };
-                let (iw, ih) = surface.surface_measure_text(glyph);
-                surface.surface_draw_text_run(
-                    Rect::new(cursor_x, row_y + (row_h - ih) / 2.0, iw, ih),
-                    glyph,
-                    decoration_fg,
-                );
-                cursor_x += iw + 6.0;
-            }
+            cursor_x = row_stack::row_content_paint::paint_row_icon(
+                surface,
+                item.icon.as_ref(),
+                nerd_fonts_enabled,
+                decoration_fg,
+                row_y,
+                row_h,
+                cursor_x,
+                |s, r, glyph, fg| s.surface_draw_text_run(r, glyph, fg),
+            );
 
-            let detail_info = item.detail.as_ref().map(|detail| {
-                let detail_text: String = detail.spans.iter().map(|s| s.text.as_str()).collect();
-                let (dw, _) = surface.surface_measure_text(&detail_text);
-                (detail_text, dw)
-            });
-            let detail_reserve = detail_info.as_ref().map(|(_, dw)| *dw + 8.0).unwrap_or(0.0);
+            let detail_info =
+                row_stack::row_content_paint::measure_row_detail(surface, item.detail.as_ref());
+            let detail_reserve = row_stack::row_content_paint::row_detail_reserve(&detail_info);
             // text_right_limit is absolute; the h_scroll shift of
             // cursor_x does not affect where the detail reserve
             // boundary sits.
@@ -1230,17 +1224,14 @@ pub(crate) mod native_surface_paint {
             // row clip.
             surface.surface_pop_clip();
 
-            if let Some((detail_text, dw)) = detail_info {
-                let dx = row_x + row_w - dw - 4.0;
-                if dx > cursor_x {
-                    let (_, dh) = surface.surface_measure_text(&detail_text);
-                    surface.surface_draw_text_run(
-                        Rect::new(dx, row_y + (row_h - dh) / 2.0, dw, dh),
-                        &detail_text,
-                        theme.muted_fg,
-                    );
-                }
-            }
+            row_stack::row_content_paint::paint_row_detail(
+                surface,
+                &detail_info,
+                Rect::new(row_x, row_y, row_w, row_h),
+                4.0,
+                cursor_x,
+                theme.muted_fg,
+            );
         }
 
         if items_clip_active {

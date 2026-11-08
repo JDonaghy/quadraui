@@ -195,6 +195,306 @@ impl RowPaintState {
     }
 }
 
+// ── Shared icon + detail row-content painting ───────────────────────────
+//
+// `ListView::native_surface_paint` and `Palette::native_surface_paint`
+// each painted a leading icon glyph and a right-aligned "detail" span
+// with their own, independently-maintained copy of the same
+// measure/position arithmetic. The two below are the shared
+// implementation; each primitive's main-text treatment (`ListView`'s
+// per-span styling + ellipsis truncation vs. `Palette`'s match-position
+// highlighting) stays primitive-specific — those genuinely differ, not
+// just by accident of two authors.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod row_content_paint {
+    use crate::event::Rect;
+    use crate::paint_surface::PaintSurface;
+    use crate::types::{Color, Icon, StyledText};
+
+    /// Paint a row's optional leading icon glyph (`ListItem::icon` /
+    /// `PaletteItem::icon`) at `cursor_x`, nerd-font glyph vs. ASCII
+    /// fallback per `nerd_fonts_enabled`, and return the cursor position
+    /// advanced past it (plus a 6-unit trailing gap) — unchanged
+    /// (`cursor_x` as given) when there is no icon.
+    ///
+    /// `draw` is the actual `PaintSurface` verb to paint with — callers
+    /// keep their own choice: `ListView` paints the glyph via
+    /// `surface_draw_text_run` (plain text in the row's decoration
+    /// colour); `Palette` paints it via `surface_draw_icon_glyph` (the
+    /// dedicated icon-font path). `fg` is whatever colour that call
+    /// should use — `ListView` passes its per-row `decoration_fg`;
+    /// `Palette` passes the flat `theme.surface_fg` (its items carry no
+    /// decoration).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_row_icon(
+        surface: &mut dyn PaintSurface,
+        icon: Option<&Icon>,
+        nerd_fonts_enabled: bool,
+        fg: Color,
+        row_y: f32,
+        row_h: f32,
+        cursor_x: f32,
+        draw: impl FnOnce(&mut dyn PaintSurface, Rect, &str, Color),
+    ) -> f32 {
+        let Some(icon) = icon else {
+            return cursor_x;
+        };
+        let glyph = if nerd_fonts_enabled {
+            icon.glyph.as_str()
+        } else {
+            icon.fallback.as_str()
+        };
+        let (iw, ih) = surface.surface_measure_text(glyph);
+        draw(
+            surface,
+            Rect::new(cursor_x, row_y + (row_h - ih) / 2.0, iw, ih),
+            glyph,
+            fg,
+        );
+        cursor_x + iw + 6.0
+    }
+
+    /// A row's optional right-aligned "detail" text (`ListItem::detail` /
+    /// `PaletteItem::detail`), measured ahead of painting the row's main
+    /// content so the caller knows how much trailing width to reserve.
+    pub(crate) struct RowDetail {
+        pub text: String,
+        pub width: f32,
+    }
+
+    /// Measure `detail`, if present, via [`RowDetail`].
+    pub(crate) fn measure_row_detail(
+        surface: &mut dyn PaintSurface,
+        detail: Option<&StyledText>,
+    ) -> Option<RowDetail> {
+        detail.map(|d| {
+            let text: String = d.spans.iter().map(|s| s.text.as_str()).collect();
+            let (width, _) = surface.surface_measure_text(&text);
+            RowDetail { text, width }
+        })
+    }
+
+    /// Width to reserve right of a row's main content for `detail` —
+    /// its measured width plus an 8-unit gap, or `0.0` when there is no
+    /// detail. Shared so `ListView`/`Palette` can't drift on how much
+    /// room a detail column needs ahead of painting the main text.
+    pub(crate) fn row_detail_reserve(detail: &Option<RowDetail>) -> f32 {
+        detail.as_ref().map(|d| d.width + 8.0).unwrap_or(0.0)
+    }
+
+    /// Paint `detail` right-aligned within `row_rect`, `right_margin`
+    /// units in from the row's right edge, skipped when there isn't room
+    /// past `cursor_x` (the main content's own trailing edge).
+    ///
+    /// `right_margin` is caller-supplied rather than a shared constant:
+    /// `ListView` uses `4.0`, `Palette` uses `8.0` — a pre-existing,
+    /// intentional difference between the two that this extraction
+    /// preserves rather than silently unifies.
+    pub(crate) fn paint_row_detail(
+        surface: &mut dyn PaintSurface,
+        detail: &Option<RowDetail>,
+        row_rect: Rect,
+        right_margin: f32,
+        cursor_x: f32,
+        fg: Color,
+    ) {
+        let Some(detail) = detail else {
+            return;
+        };
+        let dx = row_rect.x + row_rect.width - detail.width - right_margin;
+        if dx <= cursor_x {
+            return;
+        }
+        let (_, dh) = surface.surface_measure_text(&detail.text);
+        surface.surface_draw_text_run(
+            Rect::new(
+                dx,
+                row_rect.y + (row_rect.height - dh) / 2.0,
+                detail.width,
+                dh,
+            ),
+            &detail.text,
+            fg,
+        );
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::types::StyledText;
+        use crate::{Icon, Image, Point, Viewport};
+
+        /// Minimal `PaintSurface` double: 8-unit-wide chars, 16-unit
+        /// lines — matches the mocks every other `native_surface_paint`
+        /// test module in this crate uses. Records every
+        /// `surface_draw_text_run` call so a test can assert whether
+        /// [`paint_row_detail`] actually painted.
+        #[derive(Default)]
+        struct RecordingSurface {
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: Point,
+                _to: Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        #[test]
+        fn paint_row_icon_without_an_icon_returns_cursor_unchanged() {
+            let mut surface = RecordingSurface::default();
+            let cursor_x = paint_row_icon(
+                &mut surface,
+                None,
+                false,
+                Color::rgb(0, 0, 0),
+                0.0,
+                16.0,
+                10.0,
+                |_, _, _, _| panic!("draw must not be called without an icon"),
+            );
+            assert_eq!(cursor_x, 10.0);
+        }
+
+        #[test]
+        fn paint_row_icon_advances_past_the_glyph_plus_a_6_unit_gap() {
+            let mut surface = RecordingSurface::default();
+            let icon = Icon {
+                glyph: "\u{f15b}".to_string(),
+                fallback: "F".to_string(),
+                color: None,
+            };
+            let mut drawn: Option<(Rect, String, Color)> = None;
+            let cursor_x = paint_row_icon(
+                &mut surface,
+                Some(&icon),
+                false,
+                Color::rgb(10, 20, 30),
+                0.0,
+                16.0,
+                10.0,
+                |_, rect, glyph, fg| drawn = Some((rect, glyph.to_string(), fg)),
+            );
+            // ASCII fallback ("F") is one char wide == 8.0 units.
+            assert_eq!(cursor_x, 10.0 + 8.0 + 6.0);
+            let (rect, glyph, fg) = drawn.expect("draw must be called when an icon is present");
+            assert_eq!(glyph, "F");
+            assert_eq!(fg, Color::rgb(10, 20, 30));
+            assert_eq!(rect.x, 10.0);
+        }
+
+        #[test]
+        fn paint_row_icon_nerd_fonts_enabled_uses_the_glyph_not_the_fallback() {
+            let mut surface = RecordingSurface::default();
+            let icon = Icon {
+                glyph: "XY".to_string(),
+                fallback: "F".to_string(),
+                color: None,
+            };
+            let mut drawn_glyph = String::new();
+            paint_row_icon(
+                &mut surface,
+                Some(&icon),
+                true,
+                Color::rgb(0, 0, 0),
+                0.0,
+                16.0,
+                0.0,
+                |_, _, glyph, _| drawn_glyph = glyph.to_string(),
+            );
+            assert_eq!(drawn_glyph, "XY");
+        }
+
+        #[test]
+        fn row_detail_reserve_is_zero_without_a_detail() {
+            assert_eq!(row_detail_reserve(&None), 0.0);
+        }
+
+        #[test]
+        fn measure_and_reserve_detail_adds_an_8_unit_gap() {
+            let mut surface = RecordingSurface::default();
+            let detail = measure_row_detail(&mut surface, Some(&StyledText::plain("abc")));
+            assert_eq!(row_detail_reserve(&detail), 3.0 * 8.0 + 8.0);
+        }
+
+        #[test]
+        fn paint_row_detail_skipped_when_main_content_runs_past_it() {
+            let mut surface = RecordingSurface::default();
+            let detail = measure_row_detail(&mut surface, Some(&StyledText::plain("abc")));
+            let row_rect = Rect::new(0.0, 0.0, 100.0, 16.0);
+            // `cursor_x` (100.0) is already past where `dx` would land, so
+            // the detail must not paint at all.
+            paint_row_detail(
+                &mut surface,
+                &detail,
+                row_rect,
+                4.0,
+                100.0,
+                Color::rgb(1, 1, 1),
+            );
+            assert!(surface.text_runs.is_empty());
+        }
+
+        #[test]
+        fn paint_row_detail_paints_right_aligned_within_right_margin_when_there_is_room() {
+            let mut surface = RecordingSurface::default();
+            let detail = measure_row_detail(&mut surface, Some(&StyledText::plain("abc")));
+            let row_rect = Rect::new(0.0, 0.0, 100.0, 16.0);
+            paint_row_detail(
+                &mut surface,
+                &detail,
+                row_rect,
+                4.0,
+                0.0,
+                Color::rgb(9, 9, 9),
+            );
+            assert_eq!(surface.text_runs.len(), 1);
+            let (rect, text, fg) = &surface.text_runs[0];
+            assert_eq!(text, "abc");
+            assert_eq!(*fg, Color::rgb(9, 9, 9));
+            // dx = row_rect.x + row_rect.width - detail.width - right_margin
+            //    = 0 + 100 - 24 - 4 = 72.
+            assert_eq!(rect.x, 72.0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

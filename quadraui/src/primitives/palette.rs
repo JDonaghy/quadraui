@@ -31,6 +31,7 @@
 //! open? If yes, route here instead."
 
 use crate::event::Rect;
+use crate::primitives::row_stack;
 use crate::primitives::scrollbar::fit_thumb;
 use crate::types::{Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -438,23 +439,27 @@ impl Palette {
         };
         let resolved_scroll_offset = self.resolved_scroll_offset(estimated_visible_rows);
 
-        for i in resolved_scroll_offset..self.items.len() {
-            if y >= items_bottom {
-                break;
-            }
-            let m = measure_item(i);
-            let remaining = items_bottom - y;
-            let height = m.height.min(remaining).max(0.0);
-            if height <= 0.0 {
-                break;
-            }
-            let bounds = Rect::new(0.0, y, item_list_width, height);
+        // Row-stacking math (scroll clamping, per-row measurement, last-row
+        // viewport clip) delegates to the same
+        // `primitives::row_stack::layout_row_stack` `ListView`/`TreeView`
+        // share — `y`/`items_top`/`items_bottom` above still gate *where*
+        // the item band starts/ends; only the per-row walk itself moves.
+        let stacked = row_stack::layout_row_stack(
+            resolved_scroll_offset,
+            None,
+            self.items.len(),
+            0.0,
+            items_top,
+            items_bottom,
+            item_list_width,
+            |i| (measure_item(i).height, ()),
+        );
+        for row in stacked.visible {
             visible_items.push(VisiblePaletteItem {
-                item_idx: i,
-                bounds,
+                item_idx: row.idx,
+                bounds: row.bounds,
             });
-            hit_regions.push((bounds, PaletteHit::Item(i)));
-            y += m.height;
+            hit_regions.push((row.bounds, PaletteHit::Item(row.idx)));
         }
 
         let total = self.items.len();
@@ -609,6 +614,7 @@ pub(crate) mod native_surface_paint {
     use super::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
     use crate::interaction::InteractionState;
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::row_stack;
     use crate::style::Style;
     use crate::text_util::safe_prefix;
     use crate::theme::Theme;
@@ -1008,27 +1014,20 @@ pub(crate) mod native_surface_paint {
             );
             cursor_x += pw;
 
-            if let Some(ref icon) = item.icon {
-                let glyph = if nerd_fonts_enabled {
-                    icon.glyph.as_str()
-                } else {
-                    icon.fallback.as_str()
-                };
-                let (iw, ih) = surface.surface_measure_text(glyph);
-                surface.surface_draw_icon_glyph(
-                    Rect::new(cursor_x, row_y + (row_h - ih) / 2.0, iw, ih),
-                    glyph,
-                    theme.surface_fg,
-                );
-                cursor_x += iw + 6.0;
-            }
+            cursor_x = row_stack::row_content_paint::paint_row_icon(
+                surface,
+                item.icon.as_ref(),
+                nerd_fonts_enabled,
+                theme.surface_fg,
+                row_y,
+                row_h,
+                cursor_x,
+                |s, r, glyph, fg| s.surface_draw_icon_glyph(r, glyph, fg),
+            );
 
-            let detail_info = item.detail.as_ref().map(|detail| {
-                let detail_text: String = detail.spans.iter().map(|s| s.text.as_str()).collect();
-                let (dw, _) = surface.surface_measure_text(&detail_text);
-                (detail_text, dw)
-            });
-            let detail_reserve = detail_info.as_ref().map(|(_, dw)| *dw + 8.0).unwrap_or(0.0);
+            let detail_info =
+                row_stack::row_content_paint::measure_row_detail(surface, item.detail.as_ref());
+            let detail_reserve = row_stack::row_content_paint::row_detail_reserve(&detail_info);
             let text_right_limit = row_x + row_w - detail_reserve - 4.0;
 
             let full_text: String = item.text.spans.iter().map(|s| s.text.as_str()).collect();
@@ -1046,17 +1045,14 @@ pub(crate) mod native_surface_paint {
                 theme.match_fg,
             );
 
-            if let Some((detail_text, dw)) = detail_info {
-                let dx = row_x + row_w - dw - 8.0;
-                if dx > cursor_x {
-                    let (_, dh) = surface.surface_measure_text(&detail_text);
-                    surface.surface_draw_text_run(
-                        Rect::new(dx, row_y + (row_h - dh) / 2.0, dw, dh),
-                        &detail_text,
-                        theme.muted_fg,
-                    );
-                }
-            }
+            row_stack::row_content_paint::paint_row_detail(
+                surface,
+                &detail_info,
+                Rect::new(row_x, row_y, row_w, row_h),
+                8.0,
+                cursor_x,
+                theme.muted_fg,
+            );
         }
         surface.surface_pop_clip();
 
