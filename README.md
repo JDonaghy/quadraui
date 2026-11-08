@@ -207,11 +207,14 @@ Pick the backends you ship; `terminal` is independent of them.
 
 ## What's in the box
 
-**49 primitives**, one module each under `quadraui/src/primitives/`: a
+**50 primitive modules**, one each under `quadraui/src/primitives/`: a
 declarative description and a shared layout, each with a rasteriser per
 backend — except `DatePicker`, which currently ships layout/hit-test
 logic only and has no backend rasteriser yet (it is a seam, exercised
-headlessly via `quadraui/tests/date_picker_driver.rs`). Among them:
+headlessly via `quadraui/tests/date_picker_driver.rs`), and the two
+shared-math modules `layout_metrics` and `row_stack`, which hold
+arithmetic several primitives reuse rather than a widget of their own.
+Among them:
 
 - Content: `TreeView`, `ListView`, `DataTable`, `Form`, `Editor`,
   `TextDisplay`, `MessageList`, `DiffView`, `Chart`, `Board`, `Terminal`,
