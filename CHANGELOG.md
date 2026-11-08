@@ -135,6 +135,20 @@ only a push to `main` runs this workflow.
   fields, and builders. The docs that quote the primitive-module count
   (root README, `lib.rs` crate doc, `canvas.rs`) now say 50 and name
   `layout_metrics`/`row_stack` as shared-math modules rather than widgets.
+- `Panel::layout`'s action-button right-alignment now delegates to
+  `Toolbar::layout_with_options`'s `Spacer` push-to-trailing-edge mechanism
+  instead of hand-rolling the same arithmetic a second time. Pure refactor
+  — no behavior change; every existing `Panel`/TUI/GTK/macOS/Win-GUI test
+  for it stays green. `Panel`'s own docs now point new callers at
+  `SidebarPanel` + `Toolbar` as the preferred shape for new chrome.
+  `HelpOverlayController::render` (the crate's only in-tree `Panel`
+  consumer) migrates to `SidebarPanel` + `Toolbar`. `MultiSectionView`'s
+  `HeaderAction` rendering (section header actions and the `SectionAux::Toolbar`
+  inline strip) now reduces each action to a `ToolbarButton::Action` and
+  composes its glyph through `toolbar::action_text`, the same text-assembly
+  rule every other action button in this crate uses, instead of indexing
+  `icon.fallback` by hand. Pure refactor — no visual change; every existing
+  `multi_section_view` paint test stays green.
 - `tui::services::TuiPlatformServices::open_url`/`open_url_result` now rejects
   any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
   `BackendError::Unsupported`, where it previously forwarded every input

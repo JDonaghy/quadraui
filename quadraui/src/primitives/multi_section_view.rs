@@ -1418,14 +1418,56 @@ fn push_aux_hits(
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{EmptyBody, SectionAux, SectionHeader};
+    use super::{EmptyBody, HeaderAction, SectionAux, SectionHeader};
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::toolbar::{action_text, ToolbarButton};
     use crate::theme::Theme;
-    use crate::types::{Color, StyledText};
+    use crate::types::{Color, StyledText, WidgetId};
 
     fn plain_text(t: &StyledText) -> String {
         t.spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    /// Reduce a [`HeaderAction`] to the [`ToolbarButton::Action`] it paints
+    /// as — the icon glyph becomes the button's `label` (no separate `icon`
+    /// field, since `HeaderAction` has no key hint or distinct icon+label
+    /// composition to preserve), so its glyph text is composed through the
+    /// same [`action_text`] every other action button in this crate uses.
+    fn header_action_button(action: &HeaderAction) -> ToolbarButton {
+        ToolbarButton::Action {
+            spec: None,
+            id: WidgetId::new(action.id.clone()),
+            label: action.icon.fallback.clone(),
+            icon: None,
+            key_hint: None,
+            enabled: action.enabled,
+            is_active: false,
+            tooltip: action.tooltip.clone().unwrap_or_default(),
+        }
+    }
+
+    /// Glyph text + resolved foreground for a [`HeaderAction`]'s button,
+    /// derived from its [`header_action_button`] reduction.
+    fn header_action_glyph_and_fg(
+        action: &HeaderAction,
+        theme: &Theme,
+        enabled_fg: Color,
+    ) -> (String, Color) {
+        let btn = header_action_button(action);
+        let ToolbarButton::Action {
+            label,
+            icon,
+            key_hint,
+            enabled,
+            ..
+        } = &btn
+        else {
+            unreachable!("header_action_button always returns ToolbarButton::Action")
+        };
+        let glyph = action_text(label, icon.as_deref(), key_hint.as_deref());
+        let fg = if *enabled { enabled_fg } else { theme.muted_fg };
+        (glyph, fg)
     }
 
     /// Paint a section header row: background fill, optional leading
@@ -1468,20 +1510,15 @@ pub(crate) mod native_surface_paint {
         // Right-aligned actions, right-to-left.
         let mut right_x = bounds.x + bounds.width - 4.0;
         for action in header.actions.iter().rev() {
-            let glyph = action.icon.fallback.as_str();
-            let (gw, gh) = surface.surface_measure_text(glyph);
+            let (glyph, action_fg) = header_action_glyph_and_fg(action, theme, theme.header_fg);
+            let (gw, gh) = surface.surface_measure_text(&glyph);
             right_x -= gw;
             if right_x < left_x {
                 break;
             }
-            let action_fg = if action.enabled {
-                theme.header_fg
-            } else {
-                theme.muted_fg
-            };
             surface.surface_draw_text_run(
                 Rect::new(right_x, row_text_y(gh), gw, gh),
-                glyph,
+                &glyph,
                 action_fg,
             );
             right_x -= 8.0;
@@ -1570,16 +1607,11 @@ pub(crate) mod native_surface_paint {
             SectionAux::Toolbar(actions) => {
                 let mut tx = bounds.x + 4.0;
                 for a in actions {
-                    let glyph = a.icon.fallback.as_str();
-                    let action_fg = if a.enabled {
-                        theme.foreground
-                    } else {
-                        theme.muted_fg
-                    };
-                    let (gw, gh) = surface.surface_measure_text(glyph);
+                    let (glyph, action_fg) = header_action_glyph_and_fg(a, theme, theme.foreground);
+                    let (gw, gh) = surface.surface_measure_text(&glyph);
                     surface.surface_draw_text_run(
                         Rect::new(tx, bounds.y + (bounds.height - gh) / 2.0, gw, gh),
-                        glyph,
+                        &glyph,
                         action_fg,
                     );
                     tx += gw + 8.0;
