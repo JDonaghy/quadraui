@@ -250,17 +250,20 @@ impl ToolbarButton {
                 tooltip,
                 ..
             } => {
-                let mut derived = crate::primitives::button::ButtonSpec::new(label.clone());
-                derived.icon = icon
+                let icon = icon
                     .as_ref()
                     .map(|glyph| crate::types::Icon::new(glyph.clone(), glyph.clone()));
-                derived.tooltip = if tooltip.is_empty() {
+                let tooltip = if tooltip.is_empty() {
                     None
                 } else {
                     Some(tooltip.clone())
                 };
-                derived.disabled = !enabled;
-                Some(derived)
+                Some(crate::primitives::button::ButtonSpec::from_legacy(
+                    label.clone(),
+                    icon,
+                    tooltip,
+                    !enabled,
+                ))
             }
             ToolbarButton::Separator | ToolbarButton::Label { .. } => None,
         }
@@ -810,6 +813,8 @@ pub(crate) mod native_surface_paint {
     };
     use crate::event::{Point, Rect};
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::button;
+    use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::WidgetId;
 
@@ -855,11 +860,43 @@ pub(crate) mod native_surface_paint {
                     key_hint,
                     enabled,
                     is_active,
+                    spec,
                     ..
                 } => {
                     let is_hovered = *enabled && hovered_id == Some(id);
                     let is_pressed = *enabled && pressed_id == Some(id);
                     let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
+
+                    // An explicit `spec` override paints through the
+                    // shared `Button` fill/border/icon/intent-colour path
+                    // instead of this item's own bracket-less pill look,
+                    // so e.g. a `Danger` spec reads in
+                    // `theme.button_danger_bg()` the same way a
+                    // standalone `Button` does — see
+                    // `button::native_surface_paint::paint`'s own doc.
+                    // `Style::default()` stands in for a live `&Style`:
+                    // this fn has no style parameter of its own (every
+                    // existing call site predates one), so a host's
+                    // `Backend::set_style` override doesn't reach a
+                    // spec-backed toolbar button's corner radius/padding
+                    // yet — same limit `ButtonSpec::min_cell_width`'s TUI
+                    // sibling has no such gap for, since TUI has no
+                    // sub-cell geometry to miss. A `spec: None` action
+                    // keeps painting through the plain pill/label path
+                    // below, unchanged.
+                    if let Some(spec) = spec {
+                        let resolved_button = spec.to_button(*id, is_focused);
+                        button::native_surface_paint::paint(
+                            &resolved_button,
+                            surface,
+                            theme,
+                            item,
+                            &Style::default(),
+                            is_hovered,
+                            is_pressed,
+                        );
+                        continue;
+                    }
 
                     // Highlight background: pressed/active > hovered > none.
                     let highlight = if is_pressed || *is_active {
@@ -930,6 +967,170 @@ pub(crate) mod native_surface_paint {
                     );
                 }
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::toolbar::ToolbarItemMeasure;
+        use crate::types::Color;
+        use crate::Image;
+
+        /// Records every fill/stroke call — enough to assert the
+        /// shared `Button` path's intent colour and hover/pressed
+        /// forwarding without a Cairo/Core Graphics/Direct2D host.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color, f32)>,
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(300.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                14.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                7.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 7.0, 12.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _sw: f32) {}
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn mk_spec_action(
+            id: &str,
+            label: &str,
+            spec: crate::primitives::button::ButtonSpec,
+        ) -> ToolbarButton {
+            ToolbarButton::Action {
+                spec: Some(spec),
+                id: WidgetId::new(id),
+                label: label.to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }
+        }
+
+        /// A toolbar action carrying an explicit `Danger` spec paints
+        /// through `button::native_surface_paint::paint` —
+        /// `theme.button_danger_bg()`, not this module's own plain
+        /// pill/label look `spec: None` actions still get.
+        #[test]
+        fn danger_spec_action_fills_the_shared_button_danger_colour() {
+            let mut spec = crate::primitives::button::ButtonSpec::new("Delete");
+            spec.variant = crate::primitives::button::ButtonVariant::Danger;
+            let bar = Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![mk_spec_action("tb:delete", "Delete", spec)],
+                bg: None,
+                focused_index: None,
+            };
+            let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
+                ToolbarItemMeasure::new(match btn {
+                    ToolbarButton::Action { label, .. } => label.chars().count() as f32 * 7.0 + 8.0,
+                    _ => 0.0,
+                })
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &bar,
+                &layout,
+                &mut surface,
+                &theme,
+                None,
+                None,
+                ToolbarPaintOptions::default(),
+            );
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(_, c)| *c == theme.button_danger_bg()),
+                "a Danger spec must fill the shared Button's danger colour; \
+                 fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "Delete"),
+                "the button label must still be painted through the shared \
+                 Button path; text runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
+        /// Hover/pressed state reaches the shared `Button` path's own
+        /// tint, not just this module's own highlight pill — pressed
+        /// wins over the plain `Primary` resting colour
+        /// (`theme.accent_bg`), tinted by `theme.button_pressed_bg`.
+        #[test]
+        fn pressed_spec_action_tints_through_the_shared_button_path() {
+            let spec = crate::primitives::button::ButtonSpec::new("Refresh");
+            let id = WidgetId::new("tb:refresh");
+            let bar = Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![mk_spec_action("tb:refresh", "Refresh", spec)],
+                bg: None,
+                focused_index: None,
+            };
+            let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
+                ToolbarItemMeasure::new(match btn {
+                    ToolbarButton::Action { label, .. } => label.chars().count() as f32 * 7.0 + 8.0,
+                    _ => 0.0,
+                })
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &bar,
+                &layout,
+                &mut surface,
+                &theme,
+                None,
+                Some(&id),
+                ToolbarPaintOptions::default(),
+            );
+
+            let expected = theme.button_pressed_bg(theme.accent_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == expected),
+                "a pressed spec-backed action must tint through \
+                 `theme.button_pressed_bg`; fills were {:?}",
+                surface.fills,
+            );
         }
     }
 }

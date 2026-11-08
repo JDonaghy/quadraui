@@ -165,7 +165,12 @@ impl ToastButton {
         if let Some(spec) = &self.spec {
             return spec.clone();
         }
-        let mut derived = crate::primitives::button::ButtonSpec::new(self.label.clone());
+        let mut derived = crate::primitives::button::ButtonSpec::from_legacy(
+            self.label.clone(),
+            None,
+            None,
+            false,
+        );
         derived.variant = if self.primary {
             crate::primitives::button::ButtonVariant::Primary
         } else {
@@ -1075,6 +1080,26 @@ pub(crate) mod native_surface_paint {
         }
 
         for (i, (ab, action)) in vt.action_rects.iter().zip(toast.actions.iter()).enumerate() {
+            let is_focused = matches!(focus, Some(f) if f.target == ToastFocusTarget::Action(i));
+
+            // An explicit `spec` override paints through the shared
+            // `Button` fill/border/icon/intent-colour path instead of
+            // this action's own filled-chip/plain-text look, so e.g. a
+            // `Danger` spec reads in `theme.button_danger_bg()` rather
+            // than the plain `accent_bg`/`link_fg` pair below —
+            // `button::native_surface_paint::paint` also draws its own
+            // focus ring, so `is_focused` reaches it instead of the
+            // `surface_stroke_rect` call this arm uses otherwise. A
+            // `spec: None` action keeps painting through the plain
+            // filled-chip/plain-text path below, unchanged.
+            if let Some(spec) = &action.spec {
+                let button = spec.to_button(action.id, is_focused);
+                crate::primitives::button::native_surface_paint::paint(
+                    &button, surface, theme, *ab, style, false, false,
+                );
+                continue;
+            }
+
             if action.primary {
                 surface.surface_fill_rect(*ab, theme.accent_bg);
             }
@@ -1086,7 +1111,7 @@ pub(crate) mod native_surface_paint {
             };
             let rect = Rect::new(ab.x + (ab.width - tw) / 2.0, ab.y, ab.width, ab.height);
             surface.surface_draw_text_run(rect, &action.label, fg);
-            if matches!(focus, Some(f) if f.target == ToastFocusTarget::Action(i)) {
+            if is_focused {
                 surface.surface_stroke_rect(*ab, theme.link_fg, 2.0);
             }
         }
@@ -1421,6 +1446,96 @@ pub(crate) mod native_surface_paint {
                 .iter()
                 .any(|(r, c)| *r == install_bounds && *c == theme.accent_bg));
             assert!(!surface.fills.iter().any(|(r, _)| *r == skip_bounds));
+        }
+
+        /// A `Primary` spec on a `ToastButton` paints through
+        /// `button::native_surface_paint::paint` —
+        /// `theme.accent_bg` via the shared `Button` fill path, with its
+        /// bracket-less chrome (border + fill), not just the plain
+        /// `surface_fill_rect` this module's own `primary` legacy field
+        /// paints without `spec`.
+        #[test]
+        fn primary_spec_action_paints_through_the_shared_button_path() {
+            let mut t = toast("t1", "Install?");
+            let spec = crate::primitives::button::ButtonSpec::new("Install");
+            t.actions = vec![ToastButton {
+                spec: Some(spec),
+                id: WidgetId::new("install"),
+                label: "Install".into(),
+                primary: false,
+            }];
+            let stack = stack_br(vec![t]);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
+            let install_bounds = layout.visible_toasts[0].action_rects[0];
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| *r == install_bounds && *c == theme.accent_bg),
+                "a Primary spec must still fill theme.accent_bg through the \
+                 shared Button path; fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "Install"),
+                "the button label must still be painted through the shared \
+                 Button path; text runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
+        /// A `Danger` spec on a `ToastButton` paints
+        /// `theme.button_danger_bg()`, not `theme.accent_bg` — the
+        /// vocabulary the legacy `primary` flag alone can't express.
+        #[test]
+        fn danger_spec_action_fills_the_shared_button_danger_colour() {
+            let mut t = toast("t1", "Delete file?");
+            let mut spec = crate::primitives::button::ButtonSpec::new("Delete");
+            spec.variant = crate::primitives::button::ButtonVariant::Danger;
+            t.actions = vec![ToastButton {
+                spec: Some(spec),
+                id: WidgetId::new("delete"),
+                label: "Delete".into(),
+                primary: false,
+            }];
+            let stack = stack_br(vec![t]);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
+            let delete_bounds = layout.visible_toasts[0].action_rects[0];
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| *r == delete_bounds && *c == theme.button_danger_bg()),
+                "a Danger spec must fill the shared Button's danger colour; \
+                 fills were {:?}",
+                surface.fills,
+            );
         }
 
         /// A focused dismiss button gets a `theme.link_fg` stroke

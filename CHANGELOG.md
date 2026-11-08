@@ -171,6 +171,10 @@ only a push to `main` runs this workflow.
   `quadraui_binding_core::{with_window, with_tray, menu_for_surface}`
   logic `quadraui-py` already calls, with no logic duplicated between the
   two bindings.
+- `ButtonSpec::from_legacy` — the one shared derivation
+  `ToolbarButton::Action`/`DialogButton`/`ToastButton`/`ButtonRowItem`'s own
+  `resolved_button_spec` now all call instead of each reimplementing the
+  same label/icon/tooltip/disabled → `ButtonSpec` mapping.
 
 ### Fixed
 - `quadraui-node`'s `setTrayIcon`/`QuiAppActions.setTrayIcon` now decode
@@ -197,6 +201,17 @@ only a push to `main` runs this workflow.
   path also now leaves a line empty, rather than pushing a guaranteed
   over-budget `"…"`, in the degenerate case where even a bare ellipsis
   doesn't fit a (pixel-measured) `max_width`.
+- GTK/macOS/Win's shared painters for `Toolbar`, `Dialog`, `Toast` and
+  `Form`'s `ButtonRow` now paint a button carrying an explicit
+  `spec: Some(..)` `ButtonSpec` through
+  `button::native_surface_paint::paint` — `ButtonVariant::Danger`/`Warning`
+  now reach `theme.button_danger_bg()`/`theme.button_warning_bg()` on those
+  three backends (TUI's `tui::dialog` already honoured `spec` this way; the
+  other three primitives' GUI painters previously rendered their own plain
+  label/pill look and ignored `spec` entirely). `Toolbar`'s spec-backed
+  action also now picks up live hover/pressed tinting the same way its
+  legacy-field path already does. A button with no explicit `spec` paints
+  exactly as before on every backend.
 
 ## [0.9.0] - 2026-11-07
 ### Added
