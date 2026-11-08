@@ -976,18 +976,20 @@ pub enum UiEvent {
     },
 
     // ── Split-tree divider drag ────────────────────────────────────────
-    /// A [`crate::SplitTree`] divider drag moved. Emitted by
-    /// [`crate::dispatch::dispatch_mouse_drag`] while a
-    /// [`crate::DragTarget::SplitDivider`] is active.
+    /// A [`crate::SplitTree`] — or [`crate::Split`] — divider drag
+    /// moved. Emitted by [`crate::dispatch::dispatch_mouse_drag`] while
+    /// a [`crate::DragTarget::SplitDivider`] is active.
     ///
-    /// `tree` identifies which tree (apps may host more than one — e.g.
-    /// vimcode's editor-group tree and per-group window tree); apps
-    /// dispatch on it and apply the update to the corresponding
-    /// `SplitTree` state. `split_index` is the pre-order index of the
+    /// `tree` identifies which tree or `Split` (apps may host more than
+    /// one — e.g. vimcode's editor-group tree and per-group window
+    /// tree); apps dispatch on it and apply the update to the
+    /// corresponding state. `split_index` is the pre-order index of the
     /// `SplitTree::Split` node being resized (see
-    /// [`crate::SplitTreeDivider::split_index`]). `new_ratio` is the
+    /// [`crate::SplitTreeDivider::split_index`]) — always `0` for a
+    /// plain `Split`, which has exactly one divider. `new_ratio` is the
     /// resolved, already-clamped `0.0..=1.0` ratio ready to feed
-    /// directly to [`crate::SplitTree::set_ratio_at_index`].
+    /// directly to [`crate::SplitTree::set_ratio_at_index`] or, for a
+    /// `Split`, straight into `Split::ratio`.
     SplitDividerDragged {
         tree: WidgetId,
         split_index: usize,
