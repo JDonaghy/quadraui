@@ -824,6 +824,7 @@ pub const CASES: &[Case] = &[
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 }],
                 focused_field: None,
                 scroll_offset: 0,
@@ -833,6 +834,7 @@ pub const CASES: &[Case] = &[
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             };
             b.draw_form(area, &form);
         },

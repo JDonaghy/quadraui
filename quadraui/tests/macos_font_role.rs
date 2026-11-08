@@ -355,6 +355,7 @@ fn draw_form_paints_in_chrome_font() {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -364,6 +365,7 @@ fn draw_form_paints_in_chrome_font() {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         b.draw_form(area, &form);
     });

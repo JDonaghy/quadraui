@@ -2346,6 +2346,7 @@ mod tests {
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             }),
             aux: None,
             size,
@@ -2379,6 +2380,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("case"),
@@ -2393,6 +2395,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
         ];
 
@@ -2508,6 +2511,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }];
 
         let v = view_with(vec![form_section("opts", fields, SectionSize::EqualShare)]);
@@ -2571,6 +2575,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }];
 
         let v = view_with(vec![form_section("opts", fields, SectionSize::EqualShare)]);

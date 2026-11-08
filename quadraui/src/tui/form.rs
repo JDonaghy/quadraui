@@ -1537,6 +1537,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("wrap"),
@@ -1551,6 +1552,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
             ],
             focused_field: Some(WidgetId::new("wrap")),
@@ -1561,6 +1563,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -1622,6 +1625,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("dd"),
@@ -1639,6 +1643,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
             ],
             focused_field: if focused {
@@ -1653,6 +1658,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -1737,6 +1743,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: Some(WidgetId::new("note")),
             scroll_offset: 0,
@@ -1746,6 +1753,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         // `Theme::default()` sets `header_fg == foreground` (both the
         // neutral dark `fg` literal), which would make this test pass
@@ -1840,6 +1848,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -1849,6 +1858,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
         draw_form(&mut buf, Rect::new(0, 0, 30, 3), &f, &Theme::default());
@@ -1903,6 +1913,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -1912,6 +1923,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -2061,6 +2073,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2070,6 +2083,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -2282,6 +2296,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2291,6 +2306,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
@@ -2327,6 +2343,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2336,6 +2353,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
@@ -2368,6 +2386,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2377,6 +2396,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
@@ -2406,6 +2426,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2415,6 +2436,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 3));
         let vis = &layout.visible_fields[0];
@@ -2453,6 +2475,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2462,6 +2485,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 6), &form, &Theme::default());
         let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 6));
@@ -2493,6 +2517,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2502,6 +2527,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 5));
         draw_form(&mut buf, Rect::new(0, 0, 40, 5), &form, &Theme::default());
@@ -2549,6 +2575,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2558,6 +2585,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let col0 = cell_char(&buf, 0, 0);
@@ -2587,6 +2615,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2596,6 +2625,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let col0 = cell_char(&buf, 0, 0);
@@ -2652,6 +2682,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2661,6 +2692,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -2808,6 +2840,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2817,6 +2850,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -2896,6 +2930,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2905,6 +2940,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
@@ -2973,6 +3009,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2982,6 +3019,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
@@ -3022,6 +3060,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -3041,6 +3080,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let area = Rect::new(0, 0, 30, 4);
         let mut buf = Buffer::empty(area);
@@ -3084,6 +3124,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         // Force an explicit column width wider than either label so
         // `End` alignment has room to shift "ID" rightward within it.
@@ -3126,6 +3167,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let area = Rect::new(0, 0, 30, 2);
         let mut buf = Buffer::empty(area);
@@ -3169,6 +3211,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);

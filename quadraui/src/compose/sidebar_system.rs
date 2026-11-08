@@ -1005,6 +1005,7 @@ impl SidebarSystem {
                         label_width: None,
                         control_width: Default::default(),
                         min_control_width: None,
+                        spacing: Default::default(),
                     });
                     SectionBody::Form(Form {
                         has_focus: form_focus,
@@ -1971,6 +1972,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("case-sensitive"),
@@ -1985,6 +1987,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
             ],
             focused_field: None,
@@ -1995,6 +1998,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -2232,6 +2236,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2241,6 +2246,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let ev = form_click_event(&form, &WidgetId::new("submit"));
         assert_eq!(
@@ -2282,6 +2288,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2291,6 +2298,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let ev = form_click_event(&form, &WidgetId::new("regex"));
         assert_eq!(
@@ -2328,6 +2336,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2337,6 +2346,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let ev = form_click_event(&form, &WidgetId::new("replace-all"));
         assert_eq!(
@@ -2851,6 +2861,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let m = form_field_measure(&field, 20.0, 10.0);
         assert_eq!(m.item_measures.len(), 2);
@@ -2892,6 +2903,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let m = form_field_measure(&field, 20.0, 10.0);
         assert_eq!(m.item_measures.len(), 2);
@@ -2930,6 +2942,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2939,6 +2952,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let lh: f32 = 16.0;
         let row_h = (lh * 1.4).round();
@@ -2981,6 +2995,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2990,6 +3005,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let ev = form_click_event(&form, &WidgetId::new("case"));
         assert_eq!(

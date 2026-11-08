@@ -310,6 +310,7 @@ fn field(id: &str, label: &str, kind: FieldKind) -> FormField {
         tab_index: None,
         control_width: None,
         min_control_width: None,
+        row_align: None,
     }
 }
 
@@ -340,6 +341,7 @@ fn form_fields_carry_role_state_and_a_live_validation_alert() {
         label_width: None,
         control_width: Default::default(),
         min_control_width: None,
+        spacing: Default::default(),
     };
     let snapshot = A11yScenario::new()
         .with_surface(Surface::Form {
@@ -402,6 +404,7 @@ fn a_field_that_owns_its_own_set_size_does_not_borrow_the_forms_position() {
         label_width: None,
         control_width: Default::default(),
         min_control_width: None,
+        spacing: Default::default(),
     };
     let snapshot = A11yScenario::new()
         .with_surface(Surface::Form {

@@ -100,6 +100,23 @@ only a push to `main` runs this workflow.
   convention instead of the previous in-order ("first subtree, this node,
   second subtree") numbering. Only observable for a tree with 3+ panes (2+
   `Split` nodes); a single divider's index is unaffected.
+- `Form::spacing: FormSpacing` and `FormField::row_align: Option<RowAlign>`
+  (#2233): a form-wide padding inset (`FormSpacing::padding`, applied on
+  all four edges before any field lays out), a form-wide override for
+  every item-bearing field's inter-item gap (`FormSpacing::item_gap` —
+  `ToggleGroup`/`ButtonRow`/`SegmentedControl`/`Toolbar`), and a
+  `RowAlign` (`Start`/`Center`/`End`/`Stretch`) controlling how those
+  same fields' items pack within their row once `FieldKind::ButtonRow`
+  needs e.g. a dialog-footer's buttons flush right. `Form::layout` is
+  the one place this resolves, so every backend (TUI/GTK/macOS/Win)
+  picks it up with no backend-specific code change — a `Form` that
+  never sets `spacing`/`row_align` lays out bit-for-bit identically to
+  before this field existed. **Breaking** for any consumer constructing
+  `Form`/`FormField` via a full struct literal (not `..Default::default()`)
+  — `vimcode` (crates.io `0.1.x` pin) and `coord-tui` (pinned git rev)
+  both do; see rule 8's *New field on a public struct a consumer
+  constructs* row. `quadraui/src/primitives/form.rs`'s own module-doc
+  doctest and every in-tree construction site are updated in this PR.
 - `primitives::spinner::native_surface_paint::paint`,
   `primitives::command_center::native_surface_paint::paint`, and
   `primitives::form::native_surface_paint::paint_settings_chrome` — shared
