@@ -1,31 +1,28 @@
 //! GTK rasteriser for [`crate::TextInput`].
 //!
-//! Paints a 1px border, the visible text lines, and a thin vertical
-//! cursor bar (matches `FieldKind::TextInput` rendering inside `Form`).
-//! Placeholder renders in `theme.muted_fg` when active.
-//!
-//! # Focus-visible ring
-//!
-//! When `ti.has_focus`, [`draw_text_input`] strokes an outset ring in
-//! [`Theme::focus_ring_color`] around `rect`, geometry resolved through
-//! the shared
-//! [`crate::primitives::button::native_surface_paint::focus_ring_geometry`]
-//! helper (`style.focus_ring_width`) — the same seam `gtk::button` and
-//! `gtk::switch` already paint through for their own rings, and the same
-//! convention `win::text_input` and the macOS `TextInput` painter use.
-//! `TextInput`'s own border always strokes square (no radius), so the
-//! ring strokes square too (a plain `cr.rectangle`), ignoring the
-//! geometry's `corner_radius`.
+//! Painting is implemented in the shared
+//! [`crate::primitives::text_input::paint`] — the same painter
+//! `MacBackend::draw_text_input` uses — via the [`CairoTextInputSurface`]
+//! adapter below, which lets this module's free [`draw_text_input`]
+//! (kept for its existing public signature; `GtkBackend::draw_text_input`
+//! itself now calls the shared painter directly with `self` as the
+//! surface, same shape as `Self::draw_number_input`/`Self::draw_combo_box`)
+//! reach that painter without a live `GtkBackend`. See that function's
+//! doc for the geometry (border, placeholder/text lines, focus-visible
+//! ring, 2-unit cursor bar) — nothing is re-derived here.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::cairo_rgb;
-use crate::primitives::button::native_surface_paint::focus_ring_geometry;
+use crate::backend::ImagePaintResult;
+use crate::event::{Point, Rect, Viewport};
+use crate::paint_surface::PaintSurface;
 use crate::primitives::text_input::{TextInput, TextInputLayout, TextInputMeasure};
 use crate::style::Style;
 use crate::theme::Theme;
 use crate::types::Color;
+use crate::Image;
 
 pub fn gtk_text_input_layout(
     ti: &TextInput,
@@ -34,6 +31,92 @@ pub fn gtk_text_input_layout(
     char_width: f32,
 ) -> TextInputLayout {
     ti.layout(rect, TextInputMeasure::new(line_height, char_width))
+}
+
+/// Free-function-local [`PaintSurface`] adapter over a bare
+/// `(&Context, &pango::Layout)` pair — lets [`draw_text_input`] (no
+/// `&mut GtkBackend` available to this free function) route through
+/// [`crate::primitives::text_input::paint`] the same way
+/// `GtkBackend::draw_text_input` does with `self`. Paints against
+/// whatever font `layout` already carries in — this adapter never
+/// swaps fonts, matching the caller-sets-the-font convention the
+/// bespoke rasteriser this replaced relied on too.
+struct CairoTextInputSurface<'a> {
+    cr: &'a Context,
+    layout: &'a pango::Layout,
+    line_height: f32,
+    char_width: f32,
+}
+
+impl PaintSurface for CairoTextInputSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+    fn surface_end_frame(&mut self) {}
+    fn surface_viewport(&self) -> Viewport {
+        Viewport::default()
+    }
+    fn surface_line_height(&self) -> f32 {
+        self.line_height
+    }
+    fn surface_char_width(&self) -> f32 {
+        self.char_width
+    }
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        self.layout.set_text(text);
+        self.layout.set_attributes(None);
+        let (w, h) = self.layout.pixel_size();
+        (w as f32, h as f32)
+    }
+    fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+        let (r, g, b) = cairo_rgb(color);
+        self.cr.set_source_rgb(r, g, b);
+        self.cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        self.cr.fill().ok();
+    }
+    fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+        self.surface_fill_rect(rect, color);
+    }
+    fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+        let (r, g, b) = cairo_rgb(color);
+        self.cr.set_source_rgb(r, g, b);
+        self.cr.set_line_width(stroke_width as f64);
+        self.cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        self.cr.stroke().ok();
+    }
+    fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+        let (r, g, b) = cairo_rgb(color);
+        self.layout.set_text(text);
+        self.layout.set_attributes(None);
+        self.cr.set_source_rgb(r, g, b);
+        self.cr.move_to(rect.x as f64, rect.y as f64);
+        super::painted_text::show_layout(self.cr, self.layout);
+    }
+    fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _stroke_width: f32) {}
+    fn surface_push_clip(&mut self, rect: Rect) {
+        self.cr.save().ok();
+        self.cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        self.cr.clip();
+    }
+    fn surface_pop_clip(&mut self) {
+        self.cr.restore().ok();
+    }
+    fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+        ImagePaintResult::Unsupported
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -48,157 +131,13 @@ pub fn draw_text_input(
     char_width: f64,
 ) -> TextInputLayout {
     let li = gtk_text_input_layout(ti, rect, line_height as f32, char_width as f32);
-    if rect.width <= 0.0 || rect.height <= 0.0 {
-        return li;
-    }
-
-    let (bg_r, bg_g, bg_b) = cairo_rgb(theme.background);
-    let (fg_r, fg_g, fg_b) = cairo_rgb(theme.foreground);
-    let (muted_r, muted_g, muted_b) = cairo_rgb(theme.muted_fg);
-    let border = if ti.has_focus {
-        theme.accent_fg
-    } else {
-        theme.border_fg
+    let mut surface = CairoTextInputSurface {
+        cr,
+        layout,
+        line_height: line_height as f32,
+        char_width: char_width as f32,
     };
-    let (br, bg2, bb) = cairo_rgb(border);
-
-    // Background.
-    cr.set_source_rgb(bg_r, bg_g, bg_b);
-    cr.rectangle(
-        rect.x as f64,
-        rect.y as f64,
-        rect.width as f64,
-        rect.height as f64,
-    );
-    cr.fill().ok();
-    // 1px border.
-    cr.set_source_rgb(br, bg2, bb);
-    cr.set_line_width(1.0);
-    cr.rectangle(
-        rect.x as f64 + 0.5,
-        rect.y as f64 + 0.5,
-        rect.width as f64 - 1.0,
-        rect.height as f64 - 1.0,
-    );
-    cr.stroke().ok();
-
-    // Focus-visible ring: a second, outset stroke in the theme's ring
-    // colour, independent of the border tint above — see this module's
-    // doc for why it strokes square rather than at the geometry's
-    // `corner_radius`. `ti.has_focus` already carries the caller's
-    // focus-visible suppression (composed via
-    // `crate::compose::FocusRing::is_focus_visible` before it's set on
-    // `TextInput`), so no separate check is needed here.
-    if ti.has_focus {
-        let ring = focus_ring_geometry(rect, style);
-        let (ring_r, ring_g, ring_b) = cairo_rgb(theme.focus_ring_color());
-        cr.set_source_rgb(ring_r, ring_g, ring_b);
-        cr.set_line_width(ring.width as f64);
-        cr.rectangle(
-            ring.rect.x as f64,
-            ring.rect.y as f64,
-            ring.rect.width as f64,
-            ring.rect.height as f64,
-        );
-        cr.stroke().ok();
-    }
-
-    // Clip content rendering to the box interior so glyphs that
-    // overhang the rect (proportional fonts, last visible char at the
-    // edge) can't bleed past the border.
-    cr.save().ok();
-    cr.rectangle(
-        rect.x as f64 + 1.0,
-        rect.y as f64 + 1.0,
-        rect.width as f64 - 2.0,
-        rect.height as f64 - 2.0,
-    );
-    cr.clip();
-
-    let h_scroll = li.resolved_scroll_col;
-
-    // Helper: slice a line at char offset `h_scroll` and return the
-    // tail string (the part the user can see given horizontal scroll).
-    let slice_from = |line: &str, off: usize| -> String {
-        if off == 0 {
-            line.to_string()
-        } else {
-            line.chars().skip(off).collect()
-        }
-    };
-
-    // Content.
-    if li.placeholder_active {
-        if let Some(text) = ti.placeholder.as_ref() {
-            if let Some(first) = li.visible_lines.first() {
-                layout.set_text(text);
-                layout.set_attributes(None);
-                let (_, th) = layout.pixel_size();
-                cr.set_source_rgb(muted_r, muted_g, muted_b);
-                let row_y = first.bounds.y as f64 + (first.bounds.height as f64 - th as f64) / 2.0;
-                cr.move_to(first.bounds.x as f64, row_y);
-                super::painted_text::show_layout(cr, layout);
-            }
-        }
-    } else {
-        for vis in &li.visible_lines {
-            let full = ti.lines.get(vis.line_idx).map(String::as_str).unwrap_or("");
-            let visible = slice_from(full, h_scroll);
-            if visible.is_empty() {
-                continue;
-            }
-            layout.set_text(&visible);
-            layout.set_attributes(None);
-            let (_, th) = layout.pixel_size();
-            cr.set_source_rgb(fg_r, fg_g, fg_b);
-            let row_y = vis.bounds.y as f64 + (vis.bounds.height as f64 - th as f64) / 2.0;
-            cr.move_to(vis.bounds.x as f64, row_y);
-            super::painted_text::show_layout(cr, layout);
-        }
-    }
-
-    // Cursor — thin vertical bar at the proportional-font x position.
-    // We re-shape the visible (post-scroll) tail through Pango and use
-    // index_to_pos so the cursor lands on the actual painted glyph.
-    if ti.has_focus {
-        if let Some(cb) = li.cursor_bounds {
-            let cursor_color = if theme.cursor == Color::rgb(0, 0, 0) {
-                theme.accent_fg
-            } else {
-                theme.cursor
-            };
-            let (cr_r, cr_g, cr_b) = cairo_rgb(cursor_color);
-
-            // Find the visible line that owns the cursor.
-            let cursor_vis = li
-                .visible_lines
-                .iter()
-                .find(|v| (v.bounds.y - cb.y).abs() < 0.5);
-            let cursor_x_px = if let Some(vis) = cursor_vis {
-                let full = ti.lines.get(vis.line_idx).map(String::as_str).unwrap_or("");
-                let visible = slice_from(full, h_scroll);
-                // Cursor column relative to the visible (post-scroll) string.
-                let rel_col = ti.cursor_col.saturating_sub(h_scroll);
-                let byte_off = visible
-                    .char_indices()
-                    .nth(rel_col)
-                    .map(|(b, _)| b)
-                    .unwrap_or(visible.len());
-                layout.set_text(&visible);
-                let pos = layout.index_to_pos(byte_off as i32);
-                vis.bounds.x as f64 + pos.x() as f64 / pango::SCALE as f64
-            } else {
-                cb.x as f64
-            };
-
-            cr.set_source_rgb(cr_r, cr_g, cr_b);
-            cr.rectangle(cursor_x_px, cb.y as f64 + 1.0, 1.5, cb.height as f64 - 2.0);
-            cr.fill().ok();
-        }
-    }
-
-    cr.restore().ok(); // pop the content clip
-
+    crate::primitives::text_input::paint(ti, &li, &mut surface, theme, style);
     li
 }
 
@@ -339,5 +278,43 @@ mod paint_tests {
                 );
             }
         }
+    }
+
+    /// Caret width is 2.0 surface units (the shared painter's `CURSOR_W`
+    /// — see `crate::primitives::text_input::native_surface_paint`'s own
+    /// doc), not the 1.5 the bespoke GTK rasteriser this module's
+    /// `draw_text_input` once hardcoded. Samples the pixel column one
+    /// unit in from `cursor_bounds.x`: at width 2.0 that column sits
+    /// fully inside the filled cursor rect `[cb.x, cb.x + 2.0)`, so it
+    /// paints pure `theme.cursor`; at width 1.5 the same column is only
+    /// half-covered, so cairo's edge antialiasing blends it with
+    /// whatever is underneath instead.
+    #[test]
+    fn caret_is_two_units_wide() {
+        let rect = Rect::new(20.0, 15.0, 100.0, 30.0);
+        let style = Style::default();
+        let theme = Theme::default();
+
+        let mut ti = TextInput::new(WidgetId::new("ti"));
+        ti.lines = vec!["hello".into()];
+        ti.has_focus = true;
+        ti.cursor_col = 2;
+
+        let layout = gtk_text_input_layout(&ti, rect, 16.0, 8.0);
+        let cb = layout.cursor_bounds.expect("cursor visible");
+
+        let mut surface = sample(&ti, rect, &style);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let sample_x = (cb.x + 1.0) as i32;
+        let sample_y = (cb.y + cb.height / 2.0) as i32;
+        let (r, g, b) = pixel(&data, stride, sample_x, sample_y);
+
+        assert_eq!(
+            (r, g, b),
+            (theme.cursor.r, theme.cursor.g, theme.cursor.b),
+            "expected the caret to fully cover the pixel column 1 unit in from \
+             cursor_bounds.x, proving it is at least 2 units wide",
+        );
     }
 }

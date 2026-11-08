@@ -1065,13 +1065,12 @@ impl TextInput {
 // ── PaintSurface paint ─────────────────────────────────────────────────
 //
 // This module provides a portable paint implementation for `MacBackend`'s
-// `draw_text_input`. Unlike `TextDisplay`/`Form`/`FindReplacePanel`, GTK
-// and Windows already carry their own per-backend `draw_text_input`
-// rasterisers. This module avoids a fourth bespoke per-backend copy by
-// building once against the portable `PaintSurface` verbs.
+// and `GtkBackend`'s `draw_text_input`. Windows still carries its own
+// per-backend rasteriser. This module avoids a third bespoke per-backend
+// copy by building once against the portable `PaintSurface` verbs.
 //
-// Shape mirrors the Windows implementation (the simplest of the three
-// existing twins — no selection-range painting, since `TextInput`
+// Shape mirrors the Windows implementation (the simplest of the
+// pre-existing twins — no selection-range painting, since `TextInput`
 // itself carries none; see this module's own doc, "Selection is
 // therefore readable via `TextEditor::selection_range`..."): fill the
 // background, stroke a focus-aware border, paint the placeholder or each
@@ -1092,7 +1091,7 @@ impl TextInput {
 // rather than `surface_stroke_rounded_rect`, ignoring the geometry's
 // `corner_radius` — matching a rounded ring to a square border would
 // trace a mismatched outline.
-#[cfg(all(feature = "macos", target_os = "macos"))]
+#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
 #[allow(dead_code)]
 mod native_surface_paint {
     use super::{TextInput, TextInputLayout};
@@ -1103,7 +1102,7 @@ mod native_surface_paint {
     use crate::theme::Theme;
 
     /// Insert-cursor width in surface-native units. Matches
-    /// `win::text_input::CURSOR_W_DIP` / `gtk::text_input`'s cursor bar.
+    /// `win::text_input::CURSOR_W_DIP`.
     const CURSOR_W: f32 = 2.0;
 
     /// Slice `line` at char offset `off`, returning the tail (the part
@@ -1281,13 +1280,24 @@ mod native_surface_paint {
                 surface.text_runs,
             );
             let cb = layout.cursor_bounds.expect("cursor visible");
+            let cursor_fill = surface
+                .fills
+                .iter()
+                .find(|(r, c)| *c == theme.cursor && (r.x - cb.x).abs() < 0.01);
             assert!(
-                surface
-                    .fills
-                    .iter()
-                    .any(|(r, c)| *c == theme.cursor && (r.x - cb.x).abs() < 0.01),
+                cursor_fill.is_some(),
                 "expected a cursor-colored fill at cursor_bounds.x, fills were {:?}",
                 surface.fills,
+            );
+            // Pinned to `CURSOR_W` (2.0) — every backend that routes
+            // through this shared painter (macOS, GTK) paints the same
+            // caret width; a backend-local override drifting back to a
+            // narrower bar (GTK's bespoke rasteriser once hardcoded
+            // 1.5) would fail here.
+            assert_eq!(
+                cursor_fill.unwrap().0.width,
+                CURSOR_W,
+                "caret width must match the shared CURSOR_W constant",
             );
         }
 
@@ -1388,7 +1398,7 @@ mod native_surface_paint {
     }
 }
 
-#[cfg(all(feature = "macos", target_os = "macos"))]
+#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
 pub(crate) use native_surface_paint::paint;
 
 #[cfg(test)]
