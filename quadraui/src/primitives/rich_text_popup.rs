@@ -55,6 +55,7 @@
 //! precedent.
 
 use crate::event::Rect;
+use crate::layout::{Anchor, Side};
 use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -417,22 +418,24 @@ impl RichTextPopup {
         let outer_w = measure.content_width + pad * 2.0 + border * 2.0;
         let outer_h = content_h + pad * 2.0 + border * 2.0;
 
-        // Placement: above the anchor when there's room, otherwise below.
-        let prefer_above = self.placement == PopupPlacement::Above;
-        let above_y = anchor_y - outer_h;
-        let below_y = anchor_y + measure.row_height;
-        let y = match (prefer_above, above_y >= viewport.y) {
-            (true, true) => above_y,
-            (true, false) => below_y,
-            (false, _) if below_y + outer_h <= viewport.y + viewport.height => below_y,
-            (false, _) => above_y.max(viewport.y),
+        // Placement: above the anchor when there's room, otherwise below,
+        // via the shared `Anchor` flip/clamp resolver. The anchor rect's
+        // width is set to `outer_w` so `Anchor::resolve`'s cross-axis
+        // centering (`(rect.width - w) * 0.5`) collapses to zero and `x`
+        // stays left-aligned with `anchor_x`, matching this popup's
+        // left-aligned (not centered) horizontal placement; its height is
+        // `measure.row_height` so the `Below` candidate opens flush under
+        // the anchor cell, same as the `Above` candidate opens flush above
+        // it.
+        let side = match self.placement {
+            PopupPlacement::Above => Side::Top,
+            PopupPlacement::Below => Side::Bottom,
         };
-        // Clamp x so the popup stays inside viewport horizontally.
-        let max_x = (viewport.x + viewport.width - outer_w).max(viewport.x);
-        let x = anchor_x.clamp(viewport.x, max_x);
-        // Clamp y similarly.
-        let max_y = (viewport.y + viewport.height - outer_h).max(viewport.y);
-        let y = y.clamp(viewport.y, max_y);
+        let anchor_rect = Rect::new(anchor_x, anchor_y, outer_w, measure.row_height);
+        let (origin, _resolved_side) =
+            Anchor::new(anchor_rect, side).resolve((outer_w, outer_h), viewport);
+        let x = origin.x;
+        let y = origin.y;
 
         let bounds = Rect::new(x, y, outer_w, outer_h);
         let content_bounds = Rect::new(
@@ -1057,5 +1060,82 @@ mod tests {
         assert!(multi.contains(5, 2));
         assert!(!multi.contains(5, 3));
         assert!(!multi.contains(6, 0));
+    }
+
+    // ── Placement flip/clamp (via `crate::layout::Anchor`) ──────────────
+
+    #[test]
+    fn rich_text_popup_layout_flips_above_to_below_on_overflow() {
+        // Preferred `Above`, but the anchor sits too close to the
+        // viewport's top edge for the popup to fit above it.
+        let p = make_rich_popup(3, 3, 0);
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = p.layout(
+            50.0,
+            5.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 10.0),
+            |_, s, e| (e - s) as f32,
+        );
+        // outer_h = 3 rows * 10 + 2*padding(1) + 2*border(1) = 34; anchor_y
+        // - outer_h would be negative, so it flips below the anchor cell.
+        assert_eq!(layout.bounds.y, 15.0);
+    }
+
+    #[test]
+    fn rich_text_popup_layout_flips_below_to_above_on_overflow() {
+        // Preferred `Below`, but the anchor sits too close to the
+        // viewport's bottom edge for the popup to fit below it.
+        let mut p = make_rich_popup(3, 3, 0);
+        p.placement = PopupPlacement::Below;
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = p.layout(
+            50.0,
+            190.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 10.0),
+            |_, s, e| (e - s) as f32,
+        );
+        assert_eq!(layout.bounds.y, 156.0);
+    }
+
+    #[test]
+    fn rich_text_popup_layout_pins_to_preferred_side_when_neither_fits() {
+        // Viewport too short (40) for the 34-tall popup to fit fully on
+        // either side of an anchor in the middle (y=20).
+        //
+        // Behaviour change from the pre-`Anchor` implementation: that
+        // code unconditionally flipped to the *opposite* side whenever
+        // the preferred one didn't fit (without checking whether the
+        // opposite fit either), then clamped — landing at y=6 here.
+        // `Anchor::resolve`'s shared fallback instead pins to the
+        // *preferred* side (matching `Tooltip`/`Float`/`ContextMenu`) and
+        // clamps that, landing at y=0.
+        let p = make_rich_popup(3, 3, 0);
+        let viewport = Rect::new(0.0, 0.0, 200.0, 40.0);
+        let layout = p.layout(
+            50.0,
+            20.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 10.0),
+            |_, s, e| (e - s) as f32,
+        );
+        assert_eq!(layout.bounds.y, 0.0);
+    }
+
+    #[test]
+    fn rich_text_popup_layout_clamps_x_to_viewport_when_anchor_near_right_edge() {
+        let p = make_rich_popup(3, 3, 0);
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = p.layout(
+            190.0,
+            50.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 10.0),
+            |_, s, e| (e - s) as f32,
+        );
+        // outer_w = 84; anchor_x + outer_w would overflow the 200-wide
+        // viewport, so x is clamped to the viewport's right edge.
+        assert_eq!(layout.bounds.x, 116.0);
     }
 }

@@ -18,6 +18,7 @@
 //! Tab follow their typical IDE semantics.
 
 use crate::event::Rect;
+use crate::layout::{Anchor, ResolvedSide, Side};
 use crate::types::{Icon, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -309,35 +310,28 @@ impl Completions {
             .sum();
         let desired_height = total_content.min(max_popup_height);
 
-        // Vertical placement: below cursor if it fits, else above.
-        let below_y = cursor_y + line_height;
-        let above_y = cursor_y - desired_height;
-        let below_fits = below_y + desired_height <= viewport.y + viewport.height;
-        let above_fits = above_y >= viewport.y;
-        let (y, placement) = if below_fits {
-            (below_y, CompletionsPlacement::Below)
-        } else if above_fits {
-            (above_y, CompletionsPlacement::Above)
-        } else {
-            // Neither fits cleanly: pick the side with more room and
-            // clip.
-            let below_room = viewport.y + viewport.height - below_y;
-            let above_room = cursor_y - viewport.y;
-            if below_room >= above_room {
-                (below_y, CompletionsPlacement::Below)
-            } else {
-                (
-                    (cursor_y - desired_height).max(viewport.y),
-                    CompletionsPlacement::Above,
-                )
-            }
-        };
-
-        // Horizontal: prefer cursor_x, shift left if overflow.
-        let x = if cursor_x + popup_width > viewport.x + viewport.width {
-            (viewport.x + viewport.width - popup_width).max(viewport.x)
-        } else {
-            cursor_x.max(viewport.x)
+        // Vertical placement: below cursor if it fits, else above, via
+        // the shared `Anchor` flip/clamp resolver. The anchor rect's
+        // width is set to `popup_width` so `Anchor::resolve`'s cross-axis
+        // centering (`(rect.width - w) * 0.5`) collapses to zero and `x`
+        // stays left-aligned with `cursor_x` rather than centered; its
+        // height is `line_height` so the `Below` candidate opens flush
+        // under the cursor's line, matching this popup's pre-`Anchor`
+        // geometry exactly in every case that fits either side.
+        //
+        // When *neither* side fits, `Anchor::resolve` pins to the
+        // preferred side (`Below`) rather than picking whichever side
+        // has more room — see the `completions_layout_pins_below_when_neither_fits`
+        // test for the case that differs from the pre-`Anchor`
+        // implementation.
+        let anchor_rect = Rect::new(cursor_x, cursor_y, popup_width, line_height);
+        let (origin, resolved_side) =
+            Anchor::new(anchor_rect, Side::Bottom).resolve((popup_width, desired_height), viewport);
+        let (x, y) = (origin.x, origin.y);
+        let placement = match resolved_side {
+            ResolvedSide::Bottom => CompletionsPlacement::Below,
+            ResolvedSide::Top => CompletionsPlacement::Above,
+            _ => unreachable!("Completions only ever prefers Side::Bottom"),
         };
 
         // Clip popup to the viewport.
@@ -839,5 +833,57 @@ mod tests {
         });
         // Visible items start at index 5.
         assert_eq!(layout.visible_items[0].item_idx, 5);
+    }
+
+    #[test]
+    fn completions_layout_pins_below_when_neither_side_fully_fits() {
+        // 3 items * 20 = 60 desired height; viewport only 100 tall with
+        // the cursor near its middle, so neither the `below_y`/`above_y`
+        // candidate fits without clamping.
+        //
+        // Behaviour change from the pre-`Anchor` implementation: that
+        // code picked whichever side had more *room* (here, above:
+        // 55 > 40), landing the popup pinned to the viewport's top edge
+        // (y=0). `Anchor::resolve`'s shared fallback instead pins to the
+        // *preferred* side (`Below`, matching `Tooltip`/`Float`/
+        // `ContextMenu`) and clamps that — landing pinned to the bottom
+        // edge instead (y=40, i.e. `bounds.y + bounds.height == 100`).
+        // Both place the (unclipped) 60-tall popup fully inside the
+        // 100-tall viewport; only which edge it is pinned to differs.
+        let c = Completions {
+            id: WidgetId::new("c"),
+            items: (0..3)
+                .map(|i| make_completion(&format!("x{i}"), CompletionKind::Variable))
+                .collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 100.0);
+        let layout = c.layout(100.0, 55.0, 5.0, viewport, 200.0, 60.0, |_| {
+            CompletionItemMeasure::new(20.0)
+        });
+        assert_eq!(layout.placement, CompletionsPlacement::Below);
+        assert_eq!(layout.bounds.y, 40.0);
+        assert_eq!(layout.bounds.height, 60.0);
+    }
+
+    #[test]
+    fn completions_layout_clamps_x_to_viewport_left_edge() {
+        // Cursor at x=0 with `popup_width` larger than it — `x` must
+        // still clamp to the viewport's own left edge rather than go
+        // negative.
+        let c = Completions {
+            id: WidgetId::new("c"),
+            items: vec![make_completion("item", CompletionKind::Text)],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        let viewport = Rect::new(10.0, 0.0, 400.0, 600.0);
+        let layout = c.layout(0.0, 50.0, 18.0, viewport, 300.0, 200.0, |_| {
+            CompletionItemMeasure::new(20.0)
+        });
+        assert_eq!(layout.bounds.x, 10.0);
     }
 }
