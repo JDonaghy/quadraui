@@ -104,6 +104,8 @@ mod form_groups;
 mod form_label_placement;
 #[path = "../examples/common/form_scroll.rs"]
 mod form_scroll;
+#[path = "../examples/common/form_spacing.rs"]
+mod form_spacing;
 #[path = "../examples/common/form_visibility.rs"]
 mod form_visibility;
 #[path = "../examples/common/frame_demo.rs"]
@@ -227,6 +229,7 @@ use form_dropdown::FormDropdownApp;
 use form_groups::FormGroupsApp;
 use form_label_placement::FormLabelPlacementApp;
 use form_scroll::FormScrollApp;
+use form_spacing::FormSpacingApp;
 use form_visibility::FormVisibilityApp;
 use frame_demo::FrameDemo;
 use full_chrome_demo::FullChromeDemo;
@@ -10610,4 +10613,80 @@ fn codicon_tree_falls_back_to_plain_text_when_nerd_fonts_off() {
             "row label {label:?} should still be visible:\n{screen}"
         );
     }
+}
+
+// ─── FormSpacingApp: FormSpacing (padding/item_gap) + RowAlign ─────────
+//
+// `FormSpacing::padding` (2.0) insets the whole form; the footer
+// `ButtonRow`'s `row_align: Some(RowAlign::End)` pushes "Cancel"/"OK"
+// flush against the (padded) row's right edge instead of the left,
+// like every other `ButtonRow` demo in this crate.
+
+#[test]
+fn form_spacing_padding_insets_a_plain_field_on_every_edge() {
+    let driver = TuiDriver::new(FormSpacingApp::new(), 40, 10);
+    let name = driver
+        .find_bounds("Name")
+        .expect("the Name label is painted");
+    // Row 0: 2 rows of top padding. Column: 2 cells of left padding plus
+    // the form's own universal 1-cell label margin (see
+    // `tui_form_control_width`'s unpadded demo, where the same label
+    // starts at column 1).
+    assert_eq!(
+        (name.x, name.y),
+        (3.0, 2.0),
+        "Name label should sit 2 rows down and 3 columns in (2 padding + 1 margin):\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_spacing_padding_insets_the_control_columns_right_edge_too() {
+    let driver = TuiDriver::new(FormSpacingApp::new(), 40, 10);
+    let row = driver
+        .screen()
+        .lines()
+        .nth(2)
+        .unwrap_or_default()
+        .to_string();
+    // The Name/Email text inputs stretch to the row's right edge
+    // (`ControlWidth::Fill`, the default) — with 2 cells of right
+    // padding, that edge is column 37 (width 40, minus 2 padding,
+    // minus 1 for the closing `]` itself), not column 39.
+    assert_eq!(
+        row.chars().nth(37),
+        Some(']'),
+        "Fill's box should close 2 cells short of the unpadded right edge:\n{}",
+        driver.screen()
+    );
+    assert_eq!(
+        row.chars().nth(38),
+        Some(' '),
+        "the 2 padding columns themselves should be blank:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_spacing_row_align_end_pushes_the_button_row_to_the_padded_right_edge() {
+    let driver = TuiDriver::new(FormSpacingApp::new(), 40, 10);
+    let ok = driver
+        .find_bounds("[OK]")
+        .expect("the OK button is painted");
+    // Right content edge is column 38 (width 40 minus 2 padding); "[OK]"
+    // is 4 cells wide, so it starts at 34.
+    assert_eq!(
+        ok.x + ok.width,
+        38.0,
+        "OK's button box should be flush with the padded right edge:\n{}",
+        driver.screen()
+    );
+    let cancel = driver
+        .find_bounds("[Cancel]")
+        .expect("the Cancel button is painted");
+    assert!(
+        cancel.x < ok.x,
+        "Cancel should still sit to the left of OK:\n{}",
+        driver.screen()
+    );
 }
