@@ -1064,15 +1064,16 @@ impl TextInput {
 
 // ── PaintSurface paint ─────────────────────────────────────────────────
 //
-// This module provides a portable paint implementation for `MacBackend`'s
-// and `GtkBackend`'s `draw_text_input`. Windows still carries its own
-// per-backend rasteriser. This module avoids a third bespoke per-backend
-// copy by building once against the portable `PaintSurface` verbs.
+// This module provides the portable paint implementation `MacBackend`,
+// `GtkBackend` and `WinBackend` all route `draw_text_input` through — GTK
+// and Windows via a thin per-backend wrapper, macOS directly. This module
+// avoids a bespoke per-backend copy by building once against the portable
+// `PaintSurface` verbs.
 //
-// Shape mirrors the Windows implementation (the simplest of the
-// pre-existing twins — no selection-range painting, since `TextInput`
-// itself carries none; see this module's own doc, "Selection is
-// therefore readable via `TextEditor::selection_range`..."): fill the
+// The shape is the simplest a `TextInput` rasteriser can take: no
+// selection-range painting, since `TextInput` itself carries none; see
+// this module's own doc, "Selection is therefore readable via
+// `TextEditor::selection_range`..."): fill the
 // background, stroke a focus-aware border, paint the placeholder or each
 // visible (post-h-scroll) line, then — only when focused — a 2-unit-wide
 // cursor bar at `TextInputLayout::cursor_bounds`, the exact rect
@@ -1091,7 +1092,11 @@ impl TextInput {
 // rather than `surface_stroke_rounded_rect`, ignoring the geometry's
 // `corner_radius` — matching a rounded ring to a square border would
 // trace a mismatched outline.
-#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 #[allow(dead_code)]
 mod native_surface_paint {
     use super::{TextInput, TextInputLayout};
@@ -1102,7 +1107,7 @@ mod native_surface_paint {
     use crate::theme::Theme;
 
     /// Insert-cursor width in surface-native units. Matches
-    /// `win::text_input::CURSOR_W_DIP`.
+    /// `gtk::text_input`'s cursor bar.
     const CURSOR_W: f32 = 2.0;
 
     /// Slice `line` at char offset `off`, returning the tail (the part
@@ -1211,6 +1216,7 @@ mod native_surface_paint {
             fills: Vec<(Rect, Color)>,
             strokes: Vec<(Rect, Color, f32)>,
             text_runs: Vec<(Rect, String, Color)>,
+            clips: Vec<Rect>,
         }
 
         impl PaintSurface for RecordingSurface {
@@ -1257,7 +1263,9 @@ mod native_surface_paint {
                 _stroke_width: f32,
             ) {
             }
-            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_push_clip(&mut self, rect: Rect) {
+                self.clips.push(rect);
+            }
             fn surface_pop_clip(&mut self) {}
             fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
                 ImagePaintResult::Unsupported
@@ -1348,6 +1356,28 @@ mod native_surface_paint {
                 .any(|(_, t, c)| t == "type here" && *c == theme.muted_fg));
         }
 
+        /// `paint` clips text drawing to `layout.content_bounds` — so a
+        /// horizontally-unscrolled long line (or a wide glyph under a
+        /// proportional surface font) can't bleed past the widget's
+        /// border on any backend that routes through this shared
+        /// painter.
+        #[test]
+        fn text_drawing_is_clipped_to_content_bounds() {
+            let ti = sample(vec!["hello"], 0, 3);
+            let rect = Rect::new(0.0, 0.0, 200.0, 20.0);
+            let layout = ti.layout(rect, TextInputMeasure::new(16.0, 8.0));
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+
+            paint(&ti, &layout, &mut surface, &theme, &Style::default());
+
+            assert!(
+                surface.clips.contains(&layout.content_bounds),
+                "expected a clip pushed at content_bounds, clips were {:?}",
+                surface.clips,
+            );
+        }
+
         #[test]
         fn zero_size_rect_is_a_no_op() {
             let ti = sample(vec!["hello"], 0, 0);
@@ -1408,7 +1438,12 @@ mod native_surface_paint {
     }
 }
 
-#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(unused_imports)]
 pub(crate) use native_surface_paint::paint;
 
 #[cfg(test)]

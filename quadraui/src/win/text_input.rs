@@ -1,60 +1,32 @@
-//! Direct2D / DirectWrite rasteriser for
-//! [`crate::primitives::text_input::TextInput`].
+//! Layout + the shared painter's entry point for
+//! [`crate::primitives::text_input::TextInput`] on Windows.
 //!
 //! Mirrors `win::command_line`'s posture: [`TextInput::layout`] (already
 //! shared in `primitives/`, see that module's doc) resolves every
 //! positioning decision — border/padding inset, visible-line rects,
-//! horizontal/vertical scroll clamp, and `cursor_bounds` — this module
-//! only measures (a plain `line_height`/`char_width` pair, the same
-//! backend-tracked scalars `win::command_line` takes, not a per-glyph
-//! DirectWrite layout) and paints: a background fill, a 1px border, a
-//! focus-visible ring when focused, text rows via [`DWrite::draw_text`],
-//! and a 2px cursor bar via `fill_rect`.
-//!
-//! # Focus-visible ring
-//!
-//! When `ti.has_focus`, [`draw_text_input`] strokes an outset ring in
-//! [`Theme::focus_ring_color`] around `rect`, geometry resolved through
-//! the shared
-//! [`crate::primitives::button::native_surface_paint::focus_ring_geometry`]
-//! helper (`style.focus_ring_width`) — the same seam `win::button` and
-//! `win::switch` already paint through for their own rings.
-//!
-//! # No cursor-offset → x arithmetic here
-//!
-//! Same rule `win::command_line`'s module doc states: the cursor bar's
-//! rect comes straight from [`crate::primitives::text_input::TextInputLayout::cursor_bounds`],
-//! the exact value `text_input_layout` also hands a host for placing a
-//! caret/IME — this rasteriser does not re-derive a column position from
-//! `char_width` a second time.
-//!
-//! `TextInput` carries no selection range, so unlike a full editor there
-//! is no selection highlight to paint here — only the cursor bar, matching
-//! `gtk::text_input`'s own cursor-only contract.
+//! horizontal/vertical scroll clamp, and `cursor_bounds`. Painting itself
+//! is delegated to the shared
+//! [`crate::primitives::text_input::native_surface_paint::paint`]
+//! function — see that fn's doc for details. The `Backend`-trait entry
+//! point [`super::backend::WinBackend::draw_text_input`] calls the shared
+//! `paint` directly through `self`'s own `PaintSurface` impl, mirroring
+//! `MacBackend::draw_text_input`'s shape. This module carries only
+//! [`win_text_input_layout`], which provides backend-specific geometry
+//! without performing painting.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod text_input;` and `backend.rs`'s
 //! module docs for why the rest of this repo's `--features win` compile
 //! gate stays meaningful without a Windows host.
 
-use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
-
-use super::text::{fill_rect, stroke_rect, DWrite};
 use crate::event::Rect;
-use crate::primitives::button::native_surface_paint::focus_ring_geometry;
 use crate::primitives::text_input::{TextInput, TextInputLayout, TextInputMeasure};
-use crate::style::Style;
-use crate::theme::Theme;
-
-/// Insert-cursor width in DIPs. Matches `win::command_line`'s
-/// `CURSOR_W_DIP` / `win::editor`'s 2px bar-cursor fill.
-const CURSOR_W_DIP: f32 = 2.0;
 
 /// Compute [`TextInputLayout`] for `ti` painted at `rect`, using the
 /// backend's tracked `line_height`/`char_width` — what
-/// [`crate::win::WinBackend::text_input_layout`] calls directly, and what
-/// [`draw_text_input`] paints against. Delegates entirely to
-/// [`TextInput::layout`].
+/// [`crate::win::WinBackend::text_input_layout`] and
+/// [`crate::win::WinBackend::draw_text_input`] both call. Delegates
+/// entirely to [`TextInput::layout`].
 pub fn win_text_input_layout(
     ti: &TextInput,
     rect: Rect,
@@ -64,99 +36,20 @@ pub fn win_text_input_layout(
     ti.layout(rect, TextInputMeasure::new(line_height, char_width))
 }
 
-/// Paint `ti` into `rect` (DIPs, target-relative) on `target` and return
-/// the resolved [`TextInputLayout`] — same contract as the GTK/TUI
-/// twins' `draw_text_input`: callers (and tests) read the layout back
-/// instead of re-deriving it, so paint and hit-test can't drift apart.
-///
-/// `style` supplies the focus-visible ring's geometry
-/// ([`Style::focus_ring_width`]), read fresh each call rather than
-/// hardcoded — see the ring block below.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_text_input(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    rect: Rect,
-    ti: &TextInput,
-    theme: &Theme,
-    style: &Style,
-    line_height: f32,
-    char_width: f32,
-) -> TextInputLayout {
-    let layout = win_text_input_layout(ti, rect, line_height, char_width);
-
-    if rect.width <= 0.0 || rect.height <= 0.0 {
-        return layout;
-    }
-
-    let _ = fill_rect(target, rect, theme.background);
-
-    let border_color = if ti.has_focus {
-        theme.accent_fg
-    } else {
-        theme.border_fg
-    };
-    let _ = stroke_rect(target, rect, border_color, 1.0);
-
-    // Focus-visible ring: an outset stroke in the theme's ring colour,
-    // independent of the border tint above — see
-    // `crate::primitives::button::native_surface_paint::focus_ring_geometry`'s
-    // doc for why a per-backend `TextInput` rasteriser resolves the
-    // outset gap through that shared helper rather than a hand-tuned
-    // literal, and for why this strokes square (`stroke_rect`, no
-    // radius) rather than at `ring.corner_radius` — `TextInput`'s own
-    // border above is always square. `ti.has_focus` already carries the
-    // caller's focus-visible suppression (composed via
-    // `crate::compose::FocusRing::is_focus_visible` before it's set on
-    // `TextInput`), so no separate check is needed here.
-    if ti.has_focus {
-        let ring = focus_ring_geometry(rect, style);
-        let _ = stroke_rect(target, ring.rect, theme.focus_ring_color(), ring.width);
-    }
-
-    let h_scroll = layout.resolved_scroll_col;
-    let slice_from = |line: &str, off: usize| -> String {
-        if off == 0 {
-            line.to_string()
-        } else {
-            line.chars().skip(off).collect()
-        }
-    };
-
-    if layout.placeholder_active {
-        if let (Some(text), Some(first)) = (ti.placeholder.as_ref(), layout.visible_lines.first()) {
-            let _ = dwrite.draw_text(target, text, first.bounds, theme.muted_fg);
-        }
-    } else {
-        for vis in &layout.visible_lines {
-            let full = ti.lines.get(vis.line_idx).map(String::as_str).unwrap_or("");
-            let visible = slice_from(full, h_scroll);
-            if visible.is_empty() {
-                continue;
-            }
-            let _ = dwrite.draw_text(target, &visible, vis.bounds, theme.foreground);
-        }
-    }
-
-    if ti.has_focus {
-        if let Some(cb) = layout.cursor_bounds {
-            let cursor_rect = Rect::new(cb.x, cb.y, CURSOR_W_DIP, cb.height);
-            let _ = fill_rect(target, cursor_rect, theme.cursor);
-        }
-    }
-
-    layout
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::primitives::text_input::TextInputHit;
+    use crate::style::Style;
+    use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
     use crate::win::testing::HeadlessSurface;
+    use crate::win::text::DWrite;
 
     const W: f32 = 200.0;
     const H: f32 = 60.0;
+    /// Matches `primitives::text_input::native_surface_paint::CURSOR_W`.
+    const CURSOR_W: f32 = 2.0;
 
     fn sample(lines: Vec<&str>, cursor_line: usize, cursor_col: usize) -> TextInput {
         let mut ti = TextInput::new(WidgetId::new("ti"));
@@ -167,10 +60,38 @@ mod tests {
         ti
     }
 
-    /// `draw_text_input` must paint text and a click-routable layout,
-    /// and handle multibyte characters correctly so a `cursor_col` landing
-    /// mid-UTF-8 sequence (e.g. mid-`é`) snaps via [`TextInput::layout`]
-    /// rather than slicing a line at a non-char-boundary.
+    /// Paint `ti` via the shared
+    /// [`crate::primitives::text_input::native_surface_paint::paint`]
+    /// through a [`super::super::surface::D2dSurface`] over `surface`'s
+    /// headless target — the same adapter `WinBackend::draw_text_input`
+    /// uses, exercised here directly — and return the resolved layout.
+    fn paint(
+        surface: &HeadlessSurface,
+        dwrite: &DWrite,
+        rect: Rect,
+        ti: &TextInput,
+        theme: &Theme,
+        style: &Style,
+        line_height: f32,
+        char_width: f32,
+    ) -> TextInputLayout {
+        let layout = win_text_input_layout(ti, rect, line_height, char_width);
+        surface
+            .paint(|target| {
+                let mut raw = super::super::surface::D2dSurface {
+                    target,
+                    dwrite: Some(dwrite),
+                };
+                crate::primitives::text_input::paint(ti, &layout, &mut raw, theme, style);
+            })
+            .expect("paint text input");
+        layout
+    }
+
+    /// Text paints, and multibyte characters do not panic: a `cursor_col`
+    /// landing mid-UTF-8 sequence (e.g. mid-`é`) snaps via
+    /// [`TextInput::layout`] rather than slicing a line at a
+    /// non-char-boundary.
     #[test]
     fn draw_text_input_paints_and_does_not_panic_on_multibyte_cursor() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
@@ -183,24 +104,20 @@ mod tests {
         let ti = sample(vec![":éditer"], 0, 2);
         let rect = Rect::new(0.0, 0.0, W, H);
 
-        let layout = surface
-            .paint(|target| {
-                draw_text_input(
-                    target,
-                    &dwrite,
-                    rect,
-                    &ti,
-                    &theme,
-                    &Style::default(),
-                    16.0,
-                    char_width,
-                );
-            })
-            .map(|_| win_text_input_layout(&ti, rect, 16.0, char_width))
-            .expect("paint text input");
+        let layout = paint(
+            &surface,
+            &dwrite,
+            rect,
+            &ti,
+            &theme,
+            &Style::default(),
+            16.0,
+            char_width,
+        );
 
         // "text_ok" — some non-background pixel actually painted inside
-        // the content area (proves DrawText ran, not just the border).
+        // the content area (proves the glyph run ran, not just the
+        // border).
         let mut painted_any = false;
         for x in (layout.content_bounds.x as u32)..(layout.content_bounds.x + 40.0) as u32 {
             for y in (layout.content_bounds.y as u32)..(layout.content_bounds.y + 16.0) as u32 {
@@ -226,21 +143,16 @@ mod tests {
         let ti = sample(vec!["hello", "world"], 0, 0);
         let rect = Rect::new(origin_x, origin_y, W - origin_x, H - origin_y);
 
-        let layout = surface
-            .paint(|target| {
-                draw_text_input(
-                    target,
-                    &dwrite,
-                    rect,
-                    &ti,
-                    &theme,
-                    &Style::default(),
-                    16.0,
-                    char_width,
-                );
-            })
-            .map(|_| win_text_input_layout(&ti, rect, 16.0, char_width))
-            .expect("paint text input");
+        let layout = paint(
+            &surface,
+            &dwrite,
+            rect,
+            &ti,
+            &theme,
+            &Style::default(),
+            16.0,
+            char_width,
+        );
 
         assert!(layout.content_bounds.x >= origin_x);
         assert!(layout.content_bounds.y >= origin_y);
@@ -261,8 +173,7 @@ mod tests {
 
     /// The cursor bar paints at `cursor_bounds` — the same rect
     /// [`TextInputLayout`] hands back for cursor/IME placement, not a
-    /// hand-measured column offset — the paint-side half of "no
-    /// cursor-offset→x arithmetic in `win/`" (module doc).
+    /// hand-measured column offset.
     #[test]
     fn cursor_paints_at_the_shared_layout_bounds() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
@@ -277,22 +188,18 @@ mod tests {
         let layout = win_text_input_layout(&ti, rect, 16.0, char_width);
         let cb = layout.cursor_bounds.expect("cursor visible");
 
-        surface
-            .paint(|target| {
-                draw_text_input(
-                    target,
-                    &dwrite,
-                    rect,
-                    &ti,
-                    &theme,
-                    &Style::default(),
-                    16.0,
-                    char_width,
-                );
-            })
-            .expect("paint text input");
+        paint(
+            &surface,
+            &dwrite,
+            rect,
+            &ti,
+            &theme,
+            &Style::default(),
+            16.0,
+            char_width,
+        );
 
-        let px = (cb.x + CURSOR_W_DIP / 2.0) as u32;
+        let px = (cb.x + CURSOR_W / 2.0) as u32;
         let py = (cb.y + cb.height / 2.0) as u32;
         let sample_px = surface.pixel_at(px, py);
         assert_eq!(
@@ -300,6 +207,51 @@ mod tests {
             (theme.cursor.r, theme.cursor.g, theme.cursor.b),
             "insert cursor should paint at cursor_bounds",
         );
+    }
+
+    /// Placeholder text paints when `ti.lines` is empty and
+    /// `ti.placeholder` is set — the shared painter's
+    /// `layout.placeholder_active` branch, exercised through the Win
+    /// surface adapter rather than assumed from reading the primitive.
+    #[test]
+    fn placeholder_paints_when_lines_are_empty() {
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let theme = Theme {
+            background: Color::rgb(255, 255, 255),
+            muted_fg: Color::rgb(0, 0, 0),
+            ..Theme::default()
+        };
+        let mut ti = TextInput::new(WidgetId::new("ti"));
+        ti.placeholder = Some("search…".to_string());
+        ti.has_focus = false;
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let layout = paint(
+            &surface,
+            &dwrite,
+            rect,
+            &ti,
+            &theme,
+            &Style::default(),
+            16.0,
+            char_width,
+        );
+        assert!(
+            layout.placeholder_active,
+            "expected placeholder to be active"
+        );
+
+        let mut painted_any = false;
+        for x in (layout.content_bounds.x as u32)..(layout.content_bounds.x + 40.0) as u32 {
+            for y in (layout.content_bounds.y as u32)..(layout.content_bounds.y + 16.0) as u32 {
+                let px = surface.pixel_at(x, y);
+                if (px.r, px.g, px.b) != (255, 255, 255) {
+                    painted_any = true;
+                }
+            }
+        }
+        assert!(painted_any, "expected placeholder glyphs to paint");
     }
 
     /// Focus-visible ring: present (outset of the border, in
@@ -335,11 +287,9 @@ mod tests {
             surface
                 .fill_rect(Rect::new(0.0, 0.0, W, H), baseline)
                 .expect("fill baseline");
-            surface
-                .paint(|target| {
-                    draw_text_input(target, &dwrite, rect, &ti, &theme, &style, 16.0, char_width);
-                })
-                .expect("paint text input");
+            paint(
+                &surface, &dwrite, rect, &ti, &theme, &style, 16.0, char_width,
+            );
 
             let px = surface.pixel_at(ring_x, ring_y);
             if has_focus {
@@ -374,20 +324,16 @@ mod tests {
             .fill_rect(Rect::new(0.0, 0.0, W, H), Color::rgb(255, 255, 255))
             .expect("fill background");
 
-        surface
-            .paint(|target| {
-                draw_text_input(
-                    target,
-                    &dwrite,
-                    rect,
-                    &ti,
-                    &theme,
-                    &Style::default(),
-                    16.0,
-                    char_width,
-                );
-            })
-            .expect("paint text input");
+        paint(
+            &surface,
+            &dwrite,
+            rect,
+            &ti,
+            &theme,
+            &Style::default(),
+            16.0,
+            char_width,
+        );
 
         let px = surface.pixel_at(1, 1);
         assert_eq!(
@@ -397,8 +343,8 @@ mod tests {
         );
     }
 
-    /// No-paint layout must agree byte-for-byte with what
-    /// `draw_text_input` painted — same contract every other `win::`
+    /// No-paint layout must agree byte-for-byte with what the shared
+    /// painter paints against — same contract every other `win::`
     /// rasteriser's `no_paint_layout_matches_paint_layout` test proves
     /// (see `win::command_line`, `win::sidebar_panel`).
     #[test]
@@ -408,21 +354,16 @@ mod tests {
         let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
 
-        let painted = surface
-            .paint(|target| {
-                draw_text_input(
-                    target,
-                    &dwrite,
-                    rect,
-                    &ti,
-                    &Theme::default(),
-                    &Style::default(),
-                    16.0,
-                    char_width,
-                );
-            })
-            .map(|_| win_text_input_layout(&ti, rect, 16.0, char_width))
-            .expect("paint");
+        let painted = paint(
+            &surface,
+            &dwrite,
+            rect,
+            &ti,
+            &Theme::default(),
+            &Style::default(),
+            16.0,
+            char_width,
+        );
         let no_paint = win_text_input_layout(&ti, rect, 16.0, char_width);
         assert_eq!(painted, no_paint);
     }

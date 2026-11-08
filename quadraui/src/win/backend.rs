@@ -4168,34 +4168,38 @@ impl Backend for WinBackend {
         }
     }
 
-    /// Real Direct2D/DirectWrite rasteriser via `win::text_input`
-    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
-    /// for the "surface not attached yet" fallback posture.
+    /// Builds the layout via [`super::text_input::win_text_input_layout`]
+    /// and hands it to the shared [`crate::primitives::text_input::paint`]
+    /// through this backend's own [`PaintSurface`] impl, mirroring
+    /// `MacBackend::draw_text_input`'s shape. See [`Self::draw_status_bar`]'s
+    /// doc for the "surface not attached yet" fallback posture.
     fn draw_text_input(
         &mut self,
         rect: Rect,
         ti: &crate::primitives::text_input::TextInput,
     ) -> crate::primitives::text_input::TextInputLayout {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            // `TextInput` is chrome, not `EditorClassPrimitive`-listed —
-            // same `chrome_dwrite`-preferring swap as `Self::draw_palette`.
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            let style = self.style();
-            return super::text_input::draw_text_input(
-                &surface.target,
-                dwrite,
-                rect,
+        {
+            let layout = super::text_input::win_text_input_layout(
                 ti,
-                &self.current_theme,
-                &style,
+                rect,
                 self.current_line_height,
                 self.current_char_width,
             );
+            if self.surface.is_some() && (self.chrome_dwrite.is_some() || self.dwrite.is_some()) {
+                let theme = self.current_theme;
+                let style = self.style();
+                crate::primitives::text_input::paint(ti, &layout, self, &theme, &style);
+            }
+            return layout;
         }
         // Pure geometry — `TextInput::layout` needs only `line_height`/
-        // `char_width`, no real text measurement; paints
-        // nothing since there's no surface to paint onto.
+        // `char_width`, no real text measurement; paints nothing since
+        // there's no surface to paint onto. Only reachable on a
+        // non-Windows host's `--features win` type-check (see
+        // `super::mod`'s `#[cfg(target_os = "windows")] mod text_input;`
+        // doc for why `win_text_input_layout` itself isn't visible here).
+        #[cfg(not(target_os = "windows"))]
         ti.layout(
             rect,
             crate::primitives::text_input::TextInputMeasure::new(
