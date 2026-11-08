@@ -506,7 +506,10 @@ pub struct ButtonRowItem {
     #[serde(default)]
     pub disabled: bool,
     /// Optional icon rendered before the label. Enables icon-button
-    /// rows (commit, push, pull, fetch) in source-control panels.
+    /// rows (commit, push, pull, fetch) in source-control panels. Feeds
+    /// [`Self::resolved_button_spec`]'s derived spec when [`Self::spec`]
+    /// is `None`; ignored once `spec` is `Some` — set the spec's own
+    /// `icon` field to carry an icon on a spec-backed item.
     #[serde(default)]
     pub icon: Option<crate::types::Icon>,
     /// Optional [`crate::ButtonSpec`] override, carrying the B3a
@@ -1639,12 +1642,11 @@ mod native_surface_paint {
                                 // way a standalone `Button` does — see
                                 // `button::native_surface_paint::paint`'s
                                 // own doc. `Style::default()` stands in
-                                // for a live `&Style`: this fn has no
-                                // style parameter of its own (every
-                                // existing call site predates one), so a
-                                // host's `Backend::set_style` override
-                                // doesn't reach a spec-backed row button's
-                                // corner radius/padding yet. A
+                                // for a live `&Style`: this fn takes no
+                                // `&Style` parameter, so a host's
+                                // `Backend::set_style` override doesn't
+                                // reach a spec-backed row button's corner
+                                // radius/padding. A
                                 // `spec: None` item keeps painting
                                 // through the plain hover-tinted
                                 // icon+label path below, unchanged.

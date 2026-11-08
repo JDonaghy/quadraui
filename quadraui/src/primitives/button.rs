@@ -347,13 +347,14 @@ impl ButtonSpec {
         }
     }
 
-    /// Derive a [`ButtonSpec`] from the legacy fields [`crate::ToolbarButton::Action`],
-    /// [`crate::DialogButton`], [`crate::ToastButton`] and [`crate::ButtonRowItem`]
-    /// each carried before `spec` existed — the single derivation those four
-    /// kinds' own `resolved_button_spec` now share instead of each
-    /// reimplementing it. `variant` starts at [`Self::new`]'s own
-    /// `ButtonVariant::Primary` default; a caller that derives a variant
-    /// from its own legacy field (e.g. `DialogButton::is_default`,
+    /// Derive a [`ButtonSpec`] from the plain `label`/`icon`/`tooltip`/
+    /// `disabled` fields [`crate::ToolbarButton::Action`],
+    /// [`crate::DialogButton`], [`crate::ToastButton`] and
+    /// [`crate::ButtonRowItem`] each carry alongside their optional
+    /// `spec` override — the single derivation those four kinds' own
+    /// `resolved_button_spec` share. `variant` starts at [`Self::new`]'s
+    /// own `ButtonVariant::Primary` default; a caller that derives a
+    /// variant from its own legacy field (e.g. `DialogButton::is_default`,
     /// `ToastButton::primary`) sets `.variant` on the result afterwards.
     pub fn from_legacy(
         label: impl Into<String>,

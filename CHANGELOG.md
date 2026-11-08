@@ -210,8 +210,13 @@ only a push to `main` runs this workflow.
   other three primitives' GUI painters previously rendered their own plain
   label/pill look and ignored `spec` entirely). `Toolbar`'s spec-backed
   action also now picks up live hover/pressed tinting the same way its
-  legacy-field path already does. A button with no explicit `spec` paints
-  exactly as before on every backend.
+  legacy-field path already does, and now also folds `enabled: false` into
+  the resolved spec's `disabled` and `is_active: true` into the painter's
+  `is_pressed`, so a spec-backed action that `Toolbar::click`/`hit_test`
+  already treat as inert or toggled-on now *paints* that way too, instead
+  of reading as a fully saturated, live-looking button regardless of
+  either field. A button with no explicit `spec` paints exactly as before
+  on every backend.
 
 ## [0.9.0] - 2026-11-07
 ### Added
