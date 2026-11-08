@@ -2088,3 +2088,12 @@ required-features = ["tui"]
 name = "gtk_codicon_tree"
 path = "examples/gtk_codicon_tree.rs"
 required-features = ["gtk"]
+
+# `Form::spacing`/`RowAlign` demo. Without an explicit `[[example]]`,
+# autodiscovery picks up `tui_form_spacing.rs` with no `required-features`,
+# and `cargo check -p quadraui --all-targets` (no `--features tui`) then
+# fails on `quadraui::tui` being configured out.
+[[example]]
+name = "tui_form_spacing"
+path = "examples/tui_form_spacing.rs"
+required-features = ["tui"]
