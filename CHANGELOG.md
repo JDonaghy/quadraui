@@ -387,14 +387,27 @@ only a push to `main` runs this workflow.
   Cairo/Pango rasteriser, so the GTK caret is now 2.0 units wide, matching
   macOS and `win::text_input::CURSOR_W_DIP`, instead of the 1.5 the old
   GTK-only path hardcoded. `gtk::draw_text_input`'s public free-function
-  signature is unchanged — it now paints via a small local `PaintSurface`
-  adapter over the same `(Context, pango::Layout)` pair it always took.
+  signature is unchanged — it now paints via the shared `gtk::surface::
+  CairoSurface` adapter over the same `(Context, pango::Layout)` pair it
+  always took. Three further rendered-output changes come along with the
+  move, all matching macOS's existing (pre-migration) behaviour on the
+  shared painter: text is no longer vertically centred in its row (each
+  line/placeholder now paints top-aligned in `content_bounds`, like every
+  other shared-painter primitive); the caret now spans the full row height
+  instead of a 1px-inset bar; and a theme whose `Theme::cursor` is left at
+  pure black no longer gets a `theme.accent_fg` fallback on GTK specifically
+  (the shared painter has no such fallback, and macOS never had one). The
+  shared painter also now clips placeholder/line text to
+  `TextInputLayout::content_bounds` before drawing, so a horizontally
+  unscrolled long line (or a wide glyph under a proportional chrome font)
+  can no longer paint past the widget's own border on GTK or macOS — a
+  guard the deleted GTK-only rasteriser body had and the shared painter
+  previously lacked.
   `gtk::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`/`_SB_INSET` now derive
-  from the shared `primitives::rich_text_popup::native_surface_paint::
-  SB_WIDTH`/`SB_INSET` constants (the same derivation
-  `macos::rich_text_popup` already used) instead of a second hardcoded
-  `8.0`/`1.0` that could drift from them; GTK's own rich-text-popup body
-  paint is otherwise unchanged (its single-Pango-call-per-line shaping
+  from `primitives::rich_text_popup::{SB_WIDTH, SB_INSET}` (the same
+  derivation `macos::rich_text_popup` already used) instead of a second
+  hardcoded `8.0`/`1.0` that could drift from them; GTK's own rich-text-popup
+  body paint is otherwise unchanged (its single-Pango-call-per-line shaping
   avoids a kerning/ligature drift the shared per-span painter doesn't
   guard against). `gtk::message_list::draw_message_list` stays on its own
   Pango-`AttrList` path too — the shared `message_list` painter has no way

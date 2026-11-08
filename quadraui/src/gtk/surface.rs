@@ -6,16 +6,17 @@
 //!    [`crate::Split`] and [`crate::SplitTree`] paint with `cr` alone (no
 //!    text); [`crate::Form`], `crate::primitives::sidebar_panel`,
 //!    [`crate::StatusBar`], [`crate::primitives::diff_view::DiffView`],
-//!    [`crate::ToastOverlay`] and [`crate::Panel`] paint text too and need a
-//!    live `pango::Layout`. [`CairoSurface::layout`] is `Option` so one
-//!    struct covers both — [`Self::layout_or_panic`] panics only if a text
-//!    verb is reached with `layout: None`.
+//!    [`crate::ToastOverlay`], [`crate::Panel`] and [`crate::TextInput`]
+//!    paint text too and need a live `pango::Layout`.
+//!    [`CairoSurface::layout`] is `Option` so one struct covers both —
+//!    [`Self::layout_or_panic`] panics only if a text verb is reached with
+//!    `layout: None`.
 //! 2. **Fill translucency.** [`crate::Scrollbar`], `gtk::drop_overlay`,
 //!    `gtk::status_bar`, `gtk::diff_view`, `gtk::toast` and `gtk::panel`
 //!    fill with `set_source_rgba` (honouring `color.a`); [`crate::Form`],
-//!    `gtk::sidebar_panel`, [`crate::Split`] and [`crate::SplitTree`] fill
-//!    with `set_source` (opaque-only). [`CairoSurface::translucent_fill`]
-//!    carries that choice per call site.
+//!    `gtk::sidebar_panel`, [`crate::Split`], [`crate::SplitTree`] and
+//!    [`crate::TextInput`] fill with `set_source` (opaque-only).
+//!    [`CairoSurface::translucent_fill`] carries that choice per call site.
 //!
 //! Every other verb (`surface_stroke_rect`, `surface_draw_text_run`,
 //! `surface_draw_line`, `surface_push_clip`/`surface_pop_clip`,

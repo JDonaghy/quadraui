@@ -4242,7 +4242,7 @@ impl Backend for GtkBackend {
     /// [`Self::draw_number_input`]/[`Self::draw_combo_box`]. `self`'s
     /// `PaintSurface::surface_draw_text_run` already forces `ui_font`
     /// (see that method's doc), so no explicit font save/swap/restore is
-    /// needed here, unlike the bespoke rasteriser this replaced.
+    /// needed here.
     fn draw_text_input(
         &mut self,
         rect: QRect,

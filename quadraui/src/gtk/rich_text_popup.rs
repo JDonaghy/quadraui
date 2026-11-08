@@ -15,7 +15,7 @@ use gtk4::pango;
 
 use super::cairo_rgb;
 use crate::primitives::rich_text_popup::{
-    native_surface_paint, RichTextPopup, RichTextPopupLayout, TextSelection,
+    RichTextPopup, RichTextPopupLayout, TextSelection, SB_INSET, SB_WIDTH,
 };
 use crate::theme::Theme;
 use crate::types::Color;
@@ -24,15 +24,15 @@ use crate::types::Color;
 /// than the layout's 1px border so the bar is paint+click-friendly.
 /// Callers that hit-test the scrollbar should match this constant so
 /// paint and hit-test geometry stay in sync. Derived from the shared
-/// [`native_surface_paint::SB_WIDTH`] — the same constant
+/// [`crate::primitives::rich_text_popup::SB_WIDTH`] — the same constant
 /// `macos::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH` derives from —
 /// rather than a second hardcoded `8.0` that could drift from it.
-pub const RICH_TEXT_POPUP_SB_WIDTH: f64 = native_surface_paint::SB_WIDTH as f64;
+pub const RICH_TEXT_POPUP_SB_WIDTH: f64 = SB_WIDTH as f64;
 /// Pixels of inset between the scrollbar's right edge and the popup's
 /// right border. Derived from the shared
-/// [`native_surface_paint::SB_INSET`] — see
+/// [`crate::primitives::rich_text_popup::SB_INSET`] — see
 /// [`RICH_TEXT_POPUP_SB_WIDTH`]'s doc for why.
-pub const RICH_TEXT_POPUP_SB_INSET: f64 = native_surface_paint::SB_INSET as f64;
+pub const RICH_TEXT_POPUP_SB_INSET: f64 = SB_INSET as f64;
 
 /// Draw a [`RichTextPopup`] at its resolved layout. Returns per-link
 /// hit regions in `(x, y, w, h, url)` form.
@@ -381,25 +381,18 @@ fn selection_byte_range(sel: TextSelection, line_idx: usize, line_text: &str) ->
 }
 
 #[cfg(test)]
-mod scrollbar_geometry_tests {
+mod tests {
     use super::*;
 
     /// Pins [`RICH_TEXT_POPUP_SB_WIDTH`]/[`RICH_TEXT_POPUP_SB_INSET`] to
-    /// the shared [`native_surface_paint::SB_WIDTH`]/[`SB_INSET`] values
-    /// — the same constants `macos::rich_text_popup`'s own
-    /// `RICH_TEXT_POPUP_SB_WIDTH`/`_SB_INSET` derive from — so GTK's
-    /// scrollbar can't silently drift back to a second hardcoded
-    /// literal independent of macOS/Windows.
+    /// the literal values `macos::rich_text_popup`'s own
+    /// `RICH_TEXT_POPUP_SB_WIDTH`/`_SB_INSET` resolve to — both derive
+    /// from `crate::primitives::rich_text_popup::{SB_WIDTH, SB_INSET}`
+    /// by construction (see their own doc comments above), so this
+    /// pins the shared source of truth rather than re-asserting that
+    /// derivation.
     #[test]
     fn scrollbar_geometry_matches_the_shared_constants() {
-        assert_eq!(
-            RICH_TEXT_POPUP_SB_WIDTH,
-            native_surface_paint::SB_WIDTH as f64
-        );
-        assert_eq!(
-            RICH_TEXT_POPUP_SB_INSET,
-            native_surface_paint::SB_INSET as f64
-        );
         assert_eq!(RICH_TEXT_POPUP_SB_WIDTH, 8.0);
         assert_eq!(RICH_TEXT_POPUP_SB_INSET, 1.0);
     }

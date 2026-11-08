@@ -1157,6 +1157,15 @@ mod native_surface_paint {
 
         let h_scroll = layout.resolved_scroll_col;
 
+        // `vis.bounds`/placeholder bounds are not truncated to
+        // `visible_cols` (a horizontally-scrolled line's painted tail
+        // can run arbitrarily long, and a proportional surface font can
+        // make even an in-budget line wider than its monospace
+        // estimate), so clip to `content_bounds` before drawing text —
+        // same pattern as `rich_text_popup::native_surface_paint::paint`
+        // and `palette::native_surface_paint`'s row text.
+        surface.surface_push_clip(layout.content_bounds);
+
         if layout.placeholder_active {
             if let (Some(text), Some(first)) =
                 (ti.placeholder.as_ref(), layout.visible_lines.first())
@@ -1173,6 +1182,8 @@ mod native_surface_paint {
                 surface.surface_draw_text_run(vis.bounds, &visible, theme.foreground);
             }
         }
+
+        surface.surface_pop_clip();
 
         if ti.has_focus {
             if let Some(cb) = layout.cursor_bounds {
@@ -1292,8 +1303,7 @@ mod native_surface_paint {
             // Pinned to `CURSOR_W` (2.0) — every backend that routes
             // through this shared painter (macOS, GTK) paints the same
             // caret width; a backend-local override drifting back to a
-            // narrower bar (GTK's bespoke rasteriser once hardcoded
-            // 1.5) would fail here.
+            // narrower bar would fail here.
             assert_eq!(
                 cursor_fill.unwrap().0.width,
                 CURSOR_W,
