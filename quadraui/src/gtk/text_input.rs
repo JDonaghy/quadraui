@@ -240,26 +240,35 @@ mod paint_tests {
     fn long_line_does_not_paint_past_the_widget_bounds() {
         let rect = Rect::new(20.0, 15.0, 100.0, 30.0);
         let style = Style::default();
+        let line_height = 16.0;
+        let char_width = 8.0;
 
         let mut ti = TextInput::new(WidgetId::new("ti"));
         ti.lines = vec!["x".repeat(500)];
         ti.has_focus = true;
         ti.cursor_col = 0;
 
+        let layout = gtk_text_input_layout(&ti, rect, line_height as f32, char_width as f32);
+
         let mut surface = sample(&ti, rect, &style);
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
 
         // Just right of `rect` (which ends at x = 120), well inside the
-        // W=200 canvas and on the content row's y.
+        // W=200 canvas. Scan the whole painted row's y-band rather than a
+        // single y, since a row-top-aligned layout only puts glyph ink in
+        // part of that band — a single fixed y can land below the ink and
+        // pass even with the clip removed.
         let outside_x = (rect.x + rect.width + 20.0) as i32;
-        let outside_y = (rect.y + rect.height / 2.0) as i32;
-        let (r, g, b) = pixel(&data, stride, outside_x, outside_y);
-
-        assert_eq!(
-            (r, g, b),
-            (10, 20, 30),
-            "a long unscrolled line must not paint past content_bounds / rect",
-        );
+        let row_top = layout.content_bounds.y as i32;
+        let row_bottom = (layout.content_bounds.y + line_height as f32) as i32;
+        for y in row_top..row_bottom {
+            let (r, g, b) = pixel(&data, stride, outside_x, y);
+            assert_eq!(
+                (r, g, b),
+                (10, 20, 30),
+                "a long unscrolled line must not paint past content_bounds / rect at y={y}",
+            );
+        }
     }
 }
