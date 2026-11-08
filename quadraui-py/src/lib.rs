@@ -145,7 +145,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use pyo3::types::{PyDict, PyList};
 
-use quadraui::backend::TrayService;
 #[cfg(test)]
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
@@ -168,11 +167,11 @@ use quadraui::NamedKey;
 use quadraui::Scrollbar;
 use quadraui::{
     Accelerator, AcceleratorId, AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps,
-    BackendError, BottomPanelEvent, Completions, ContextMenu, ContextMenuItem,
-    ContextMenuPlacement, DialogButton, DialogSeverity, FileDialogOptions, Float, FloatMeasure,
-    GlobalShortcutId, ImageSource, MessageDialogOptions, Notification, Point, PointerShape,
-    Reaction, Rect, RgbaImage, RichTextPopup, ServiceResult, ShellApp, ShellConfig, ShellContext,
-    Theme, Toast, ToastCorner, Tooltip, UiEvent, UserPayload, WidgetId, WindowControl,
+    BottomPanelEvent, Completions, ContextMenu, ContextMenuItem, DialogButton, DialogSeverity,
+    FileDialogOptions, Float, FloatMeasure, GlobalShortcutId, ImageSource, MessageDialogOptions,
+    Notification, Point, PointerShape, Reaction, Rect, RgbaImage, RichTextPopup, ServiceResult,
+    ShellApp, ShellConfig, ShellContext, Theme, Toast, ToastCorner, Tooltip, UiEvent, UserPayload,
+    WidgetId,
 };
 
 // The language-neutral `event -> hit -> semantic -> render` engine this
@@ -185,12 +184,17 @@ use quadraui_binding_core::tree_scroll_state;
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
-    callback_reaction, caret_shape, click_down_up_events, color_depth_name, decode_extra_primitive,
-    dialog_severity, draw_bands, font_role, key_pressed_event, merge_overrides,
+    add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction, caret_shape,
+    clear_recent_documents, click_down_up_events, color_depth_name, decode_extra_primitive,
+    dialog_severity, draw_bands, end_power_save_block, font_role, is_default_protocol_client,
+    key_pressed_event, login_item_enabled, menu_for_surface, merge_overrides,
     message_dialog_options_from_buttons, paint_layout, panic_message, pointer_shape,
-    render_overlays, step_driver, text_display_from_lines, theme_color_value, toast_corner,
-    window_close_reaction, BindingHost, ErasedShellDriver, EventSink, HitDetail, InteractionEngine,
-    OverrideError, RenderOutput, WindowCloseHandling,
+    remove_as_default_protocol_client, render_overlays, resolve_app_path,
+    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
+    text_display_from_lines, theme_color_value, toast_corner, update_apply_on_quit,
+    update_check_for_update, update_download_and_stage, window_close_reaction, with_tray,
+    with_window, BindingHost, ErasedShellDriver, EventSink, HitDetail, InteractionEngine,
+    OverrideError, RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling,
 };
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`)
@@ -352,6 +356,20 @@ create_exception!(
     \"editor\" -- the only two `FontRole` variants a caller can name."
 );
 
+create_exception!(
+    _quadraui,
+    UnsupportedError,
+    QuadrauiError,
+    "A platform-services call (auto-update, the power-save blocker, launch- \
+    at-login, protocol registration, drag-out, recent documents/dock menu/ \
+    jump list, ...) has no implementation on this app's current backend -- \
+    `quadraui_binding_core::services::ServiceError::Unsupported` (mirrors \
+    `QUI_ERR_UNSUPPORTED`). Raised instead of silently no-opping or \
+    panicking, so a caller can tell \"this backend doesn't do that\" apart \
+    from a genuine failure (`InternalError`) or a bad argument \
+    (`InvalidDescriptorError`)."
+);
+
 /// Slot id of the app's `Button` descriptor.
 const SLOT_BUTTON: i64 = quadraui_binding_core::SLOT_BUTTON;
 /// Slot id of the app's `TextDisplay` descriptor.
@@ -378,13 +396,24 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 /// `quadraui`/`quadraui_binding_core` call, so applying one is a direct call
 /// with no further decoding or validation left to do.
 ///
-/// `Theme`'s overrides are the one exception: unlike `QuiApp::set_theme`,
+/// `Theme`'s overrides are one exception: unlike `QuiApp::set_theme`,
 /// [`QuiAppActions::set_theme`] has no live backend to merge onto at queue
 /// time (that's the whole problem this type exists to solve), so each
 /// override is decoded and validated against [`Theme::default`]'s field set
 /// only — [`flush_deferred_actions`] re-merges the stored `(field, value)`
 /// pairs onto the real live backend's current theme right before applying
 /// it.
+///
+/// The ten platform-services variants below (`ApplyUpdateOnQuit` through
+/// `SetJumpList`) are a second exception, for the same underlying reason:
+/// every one of them is applied via a `quadraui_binding_core::services`
+/// function that itself takes the `&dyn PlatformServices` this type has no
+/// access to until [`flush_deferred_actions`] runs. Rather than decode (or
+/// call) twice, each stores its plain/wire argument unchanged and
+/// [`flush_deferred_actions`] calls the exact same core function
+/// `QuiApp`'s own matching method calls — so, like `Theme`, validation
+/// happens at flush time, surfaced via `pending_error` the same way a
+/// failing `OpenPath`/`MoveToTrash` already is.
 enum DeferredAction {
     MessageDialog(MessageDialogOptions),
     ContextMenu(Vec<ContextMenuItem>, Point),
@@ -403,6 +432,23 @@ enum DeferredAction {
     TrayMenu(Vec<ContextMenuItem>),
     Cursor(PointerShape),
     Theme(Vec<(String, serde_json::Value)>),
+    ApplyUpdateOnQuit(u64),
+    EndPowerSaveBlock(u64),
+    SetLoginItem {
+        enabled: bool,
+        open_hidden: bool,
+        args: Vec<String>,
+    },
+    SetAsDefaultProtocolClient(String),
+    RemoveAsDefaultProtocolClient(String),
+    BeginDragOut {
+        files: Vec<String>,
+        text: Option<String>,
+    },
+    AddRecentDocument(PathBuf),
+    ClearRecentDocuments,
+    SetDockMenu(serde_json::Value),
+    SetJumpList(serde_json::Value),
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
@@ -484,6 +530,24 @@ impl PyAppLogic {
     /// anything.
     fn clear_extra_slot(&mut self, kind: &str) -> bool {
         self.host.clear_extra_slot(kind)
+    }
+
+    /// Drives [`Self::host`]'s hover-tooltip tracker for this dispatch —
+    /// [`BindingHost::drive_hover_tooltip`] fed [`BindingHost::now_ms`]'s
+    /// own real wall clock (there is no fake one to inject from Python; a
+    /// test instead uses a short real [`Self::host`]-level
+    /// `tooltip_delay_ms` override, same as this crate's existing
+    /// `QuiAppWaker::post_after`/`wake_after` timer tests) and
+    /// [`Self::host`]'s own `style.tooltip_delay_ms` (or the
+    /// behaviour-preserving default when no style has been set). Called
+    /// from both [`AppLogic::handle`] (so a hover change is noticed the
+    /// same frame) and [`AppLogic::tick`] (so the delay still elapses
+    /// with the pointer held still and no further event arriving).
+    fn drive_hover_tooltip(&mut self) -> Reaction {
+        let now_ms = self.host.now_ms();
+        let delay_ms = self.host.style.unwrap_or_default().tooltip_delay_ms;
+        self.host
+            .drive_hover_tooltip(&mut self.engine, now_ms, delay_ms)
     }
 }
 
@@ -574,34 +638,6 @@ fn parse_pointer_shape(what: &str, shape: &str, edge: Option<&str>) -> PyResult<
         .map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
 }
 
-/// Applies `f` to `backend`'s [`WindowControl`] surface, folding
-/// [`Backend::window`] returning `None` (no window at all, or not
-/// constructed yet) into the same [`BackendError::Unsupported`] a missing
-/// method on a real window already reports -- the same fold
-/// `quadraui/examples/common/window_control_demo.rs`'s `describe` helper
-/// uses, so a caller sees one uniform error shape for either case.
-fn with_window<T>(
-    backend: &mut dyn Backend,
-    f: impl FnOnce(&mut dyn WindowControl) -> ServiceResult<T>,
-) -> ServiceResult<T> {
-    match backend.window() {
-        Some(window) => f(window),
-        None => Err(BackendError::Unsupported),
-    }
-}
-
-/// [`with_window`]'s [`TrayService`] counterpart -- folds [`Backend::tray`]
-/// returning `None` into [`BackendError::Unsupported`].
-fn with_tray<T>(
-    backend: &mut dyn Backend,
-    f: impl FnOnce(&mut dyn TrayService) -> ServiceResult<T>,
-) -> ServiceResult<T> {
-    match backend.tray() {
-        Some(tray) => f(tray),
-        None => Err(BackendError::Unsupported),
-    }
-}
-
 /// Maps a [`ServiceResult`] failure to `InternalError`, prefixed with
 /// `what` -- the same shape `open_path`/`move_to_trash`/... already use
 /// for `PlatformServices`' own `ServiceResult`-returning methods.
@@ -609,20 +645,40 @@ fn service_result(what: &str, result: ServiceResult<()>) -> PyResult<()> {
     result.map_err(|err| InternalError::new_err(format!("{what}: {err:?}")))
 }
 
-/// Builds a [`ContextMenu`] from `items` -- the same construction
-/// [`quadraui_binding_core::InteractionEngine::open_context_menu`] uses for
-/// a right-click context menu, reused here for [`TrayService::set_menu`],
-/// which takes a `&ContextMenu` rather than a bare item list.
+/// Maps a [`quadraui_binding_core::services`] call's [`ServiceError`] to
+/// this binding's own exception taxonomy, prefixed with `what` -- the one
+/// place every `quadraui-py` platform-services method (update, power-save
+/// blocker, launch-at-login, protocol registration, drag-out, recent
+/// documents/dock menu/jump list, `app_path`, `install_crash_handler`)
+/// routes its `Err` through, so a new method added there never needs its
+/// own ad hoc mapping. [`ServiceError::Unsupported`] becomes
+/// [`UnsupportedError`] (this backend has no implementation at all --
+/// distinct from a genuine failure); [`ServiceError::Failure`] becomes
+/// [`InternalError`] (the backend tried and it broke);
+/// [`ServiceError::InvalidArgument`] becomes [`InvalidDescriptorError`] (a
+/// wire argument -- an enum-name string, a descriptor dict -- never even
+/// reached a service call).
+fn service_error_to_py(what: &str, err: ServiceError) -> PyErr {
+    match err {
+        ServiceError::Unsupported => {
+            UnsupportedError::new_err(format!("{what}: unsupported on this backend"))
+        }
+        ServiceError::Failure(context) => InternalError::new_err(format!("{what}: {context}")),
+        ServiceError::InvalidArgument(message) => {
+            InvalidDescriptorError::new_err(format!("{what}: {message}"))
+        }
+        // `ServiceError` is `#[non_exhaustive]`: a future core variant this
+        // leaf doesn't know about yet still raises a typed exception
+        // rather than failing to compile.
+        other => InternalError::new_err(format!("{what}: {other}")),
+    }
+}
+
+/// Builds a [`ContextMenu`] for [`quadraui::backend::TrayService::set_menu`], which takes a
+/// `&ContextMenu` rather than a bare item list -- thin wrapper over
+/// [`quadraui_binding_core::menu_for_surface`], named `"qui-tray-menu"`.
 fn tray_menu(items: Vec<ContextMenuItem>) -> ContextMenu {
-    let mut menu = ContextMenu {
-        id: WidgetId::new("qui-tray-menu"),
-        items,
-        selected_idx: 0,
-        bg: None,
-        placement: ContextMenuPlacement::AnchorPoint,
-    };
-    menu.selected_idx = menu.first_selectable();
-    menu
+    menu_for_surface(WidgetId::new("qui-tray-menu"), items)
 }
 
 impl AppLogic for PyAppLogic {
@@ -704,6 +760,7 @@ impl AppLogic for PyAppLogic {
                 self.engine.handle(event, backend, &mut sink)
             }
         };
+        let reaction = reaction.merge(self.drive_hover_tooltip());
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw
@@ -730,6 +787,7 @@ impl AppLogic for PyAppLogic {
                 })
             }
         };
+        let reaction = reaction.merge(self.drive_hover_tooltip());
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw
@@ -1861,6 +1919,116 @@ impl QuiAppActions {
             .push_back(DeferredAction::Theme(decoded));
         Ok(())
     }
+
+    /// Queues a [`DeferredAction::ApplyUpdateOnQuit`] — same argument as
+    /// `QuiApp::apply_on_quit`.
+    fn apply_on_quit(&self, handle: u64) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ApplyUpdateOnQuit(handle));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::EndPowerSaveBlock`] — same argument as
+    /// `QuiApp::end_power_save_block`.
+    fn end_power_save_block(&self, handle: u64) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::EndPowerSaveBlock(handle));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetLoginItem`] — same arguments as
+    /// `QuiApp::set_login_item`.
+    #[pyo3(signature = (enabled, open_hidden=false, args=Vec::new()))]
+    fn set_login_item(&self, enabled: bool, open_hidden: bool, args: Vec<String>) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetLoginItem {
+                enabled,
+                open_hidden,
+                args,
+            });
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetAsDefaultProtocolClient`] — same
+    /// argument as `QuiApp::set_as_default_protocol_client`.
+    fn set_as_default_protocol_client(&self, scheme: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetAsDefaultProtocolClient(
+                scheme.to_string(),
+            ));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::RemoveAsDefaultProtocolClient`] — same
+    /// argument as `QuiApp::remove_as_default_protocol_client`.
+    fn remove_as_default_protocol_client(&self, scheme: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::RemoveAsDefaultProtocolClient(
+                scheme.to_string(),
+            ));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::BeginDragOut`] — same arguments as
+    /// `QuiApp::begin_drag_out`.
+    #[pyo3(signature = (files=Vec::new(), text=None))]
+    fn begin_drag_out(&self, files: Vec<String>, text: Option<String>) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::BeginDragOut { files, text });
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::AddRecentDocument`] — same argument as
+    /// `QuiApp::add_recent_document`.
+    fn add_recent_document(&self, path: &str) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::AddRecentDocument(PathBuf::from(path)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::ClearRecentDocuments`] — no arguments,
+    /// same as `QuiApp::clear_recent_documents`.
+    fn clear_recent_documents(&self) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ClearRecentDocuments);
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetDockMenu`] — same argument as
+    /// `QuiApp::set_dock_menu`, converted to JSON here (the only work this
+    /// method does before queueing); the item list itself is decoded by
+    /// [`quadraui_binding_core::set_dock_menu`] when
+    /// [`flush_deferred_actions`] applies it, same as `QuiApp::set_dock_menu`.
+    fn set_dock_menu(&self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let items = pyany_to_json(items).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_dock_menu: invalid items: {err}"))
+        })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetDockMenu(items));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetJumpList`] — same argument as
+    /// `QuiApp::set_jump_list`, the same JSON-conversion-only shape as
+    /// [`Self::set_dock_menu`].
+    fn set_jump_list(&self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let items = pyany_to_json(items).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_jump_list: invalid items: {err}"))
+        })?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetJumpList(items));
+        Ok(())
+    }
 }
 
 /// Applies every action queued on `app_logic.deferred_actions` directly
@@ -2005,6 +2173,90 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
                 let theme: Theme = serde_json::from_value(value)
                     .expect("fields were already validated by QuiAppActions::set_theme");
                 backend.set_theme(theme);
+            }
+            DeferredAction::ApplyUpdateOnQuit(handle) => {
+                if let Err(err) = update_apply_on_quit(backend.services(), handle) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("apply_on_quit", err),
+                    );
+                }
+            }
+            DeferredAction::EndPowerSaveBlock(handle) => {
+                if let Err(err) = end_power_save_block(backend.services(), handle) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("end_power_save_block", err),
+                    );
+                }
+            }
+            DeferredAction::SetLoginItem {
+                enabled,
+                open_hidden,
+                args,
+            } => {
+                if let Err(err) = set_login_item(backend.services(), enabled, open_hidden, args) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("set_login_item", err),
+                    );
+                }
+            }
+            DeferredAction::SetAsDefaultProtocolClient(scheme) => {
+                if let Err(err) = set_as_default_protocol_client(backend.services(), &scheme) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("set_as_default_protocol_client", err),
+                    );
+                }
+            }
+            DeferredAction::RemoveAsDefaultProtocolClient(scheme) => {
+                if let Err(err) = remove_as_default_protocol_client(backend.services(), &scheme) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("remove_as_default_protocol_client", err),
+                    );
+                }
+            }
+            DeferredAction::BeginDragOut { files, text } => {
+                if let Err(err) = begin_drag_out(backend.services(), files, text) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("begin_drag_out", err),
+                    );
+                }
+            }
+            DeferredAction::AddRecentDocument(path) => {
+                if let Err(err) = add_recent_document(backend.services(), &path.to_string_lossy()) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("add_recent_document", err),
+                    );
+                }
+            }
+            DeferredAction::ClearRecentDocuments => {
+                if let Err(err) = clear_recent_documents(backend.services()) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("clear_recent_documents", err),
+                    );
+                }
+            }
+            DeferredAction::SetDockMenu(items) => {
+                if let Err(err) = set_dock_menu(backend.services(), items) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("set_dock_menu", err),
+                    );
+                }
+            }
+            DeferredAction::SetJumpList(items) => {
+                if let Err(err) = set_jump_list(backend.services(), items) {
+                    record_error(
+                        &app_logic.pending_error,
+                        service_error_to_py("set_jump_list", err),
+                    );
+                }
             }
         }
     }
@@ -2956,7 +3208,7 @@ impl QuiApp {
     /// row-major top-to-bottom left-to-right, exactly `width * height * 4`
     /// bytes.
     ///
-    /// `None` collapses three different [`BackendError`]s this binding
+    /// `None` collapses three different [`quadraui::BackendError`]s this binding
     /// cannot tell apart from here: an empty / non-image clipboard
     /// (`PlatformFailure`, since `arboard` reports "nothing to read" the
     /// same way it reports a real platform error), and a backend with no
@@ -3195,7 +3447,8 @@ impl QuiApp {
     /// Opens a right-click-style popup menu at `position` (view-local
     /// coordinates) built from `items` — a list of dicts, each matching
     /// `ContextMenuItem`'s shape (`id`, `label`, `detail`, `disabled`,
-    /// `checked`, `submenu`; see `quadraui::ContextMenuItem`'s own doc). The
+    /// `checked`, `icon`, `key_equivalent`, `submenu`; see
+    /// `quadraui::ContextMenuItem`'s own doc). The
     /// popup is routed through the same `compose::ContextMenuController`
     /// every in-window backend shares, so a click on an item, an Up/Down +
     /// Enter, or Escape/click-outside all resolve the same way regardless
@@ -3886,7 +4139,7 @@ impl QuiApp {
     // callback instead of these, for the same re-entrant-borrow reason
     // `show_message_dialog`'s own doc describes.
 
-    /// Sets the window title -- [`WindowControl::set_title`]. On the
+    /// Sets the window title -- [`quadraui::WindowControl::set_title`]. On the
     /// headless `TuiBackend` this emits the OSC 0/2 terminal escape
     /// sequence (crossterm's `SetTitle`) to retitle the terminal
     /// emulator's tab/window -- genuinely applied, not a no-op.
@@ -3900,7 +4153,7 @@ impl QuiApp {
     }
 
     /// Marks the window's document as having unsaved changes (`True`) or
-    /// clean (`False`) -- [`WindowControl::set_document_edited`]. Raises
+    /// clean (`False`) -- [`quadraui::WindowControl::set_document_edited`]. Raises
     /// `InternalError` on every in-tree backend except a macOS
     /// `run_native` window, which has no reachable equivalent from this
     /// headless app.
@@ -3914,7 +4167,7 @@ impl QuiApp {
     }
 
     /// Associates the window with the file at `path` (or clears the
-    /// association when `None`) -- [`WindowControl::set_represented_filename`].
+    /// association when `None`) -- [`quadraui::WindowControl::set_represented_filename`].
     /// Same macOS-only story as [`Self::set_document_edited`].
     #[pyo3(signature = (path=None))]
     fn set_represented_filename(&mut self, path: Option<&str>) -> PyResult<()> {
@@ -3928,7 +4181,7 @@ impl QuiApp {
         })
     }
 
-    /// Sets (or replaces) the tray icon's image -- [`TrayService::set_icon`].
+    /// Sets (or replaces) the tray icon's image -- [`quadraui::backend::TrayService::set_icon`].
     /// `icon` is an [`ImageSource`] dict, e.g. `{"Path": "/path/to.png"}` or
     /// `{"Bytes": b"..."}` -- the same externally-tagged shape
     /// `quadraui::ImageSource`'s derived `Deserialize` accepts. Raises
@@ -3947,7 +4200,7 @@ impl QuiApp {
         })
     }
 
-    /// Sets the tray icon's hover tooltip text -- [`TrayService::set_tooltip`].
+    /// Sets the tray icon's hover tooltip text -- [`quadraui::backend::TrayService::set_tooltip`].
     /// Same tray-less-on-TUI story as [`Self::set_tray_icon`].
     fn set_tray_tooltip(&mut self, tooltip: &str) -> PyResult<()> {
         self.guarded(|app| {
@@ -3959,7 +4212,7 @@ impl QuiApp {
     }
 
     /// Attaches (or replaces) the tray icon's right-click/click menu --
-    /// [`TrayService::set_menu`]. `items` decodes the same way
+    /// [`quadraui::backend::TrayService::set_menu`]. `items` decodes the same way
     /// `show_context_menu`'s own `items` argument does -- a list of
     /// [`ContextMenuItem`] dicts; an activated entry fires
     /// `UiEvent::ContextMenuItemActivated` the same way a right-click
@@ -4490,6 +4743,227 @@ impl QuiApp {
     fn platform_name(&mut self) -> PyResult<&'static str> {
         self.guarded(|app| Ok(app.driver.backend().services().platform_name()))
     }
+
+    // ─── Platform services: update, power-save, login item, protocol,
+    // crash reporter, drag-out, recent docs/dock menu/jump list ──────────
+    //
+    // Every method below is argument conversion + one
+    // `quadraui_binding_core::services` call + `service_error_to_py` --
+    // see that module's own doc for why the actual service-building logic
+    // (parsing `kind` strings, collapsing `BackendError`, minting an opaque
+    // handle) lives there rather than here. Every one of these raises
+    // `UnsupportedError` on the headless `TuiBackend`, which implements
+    // none of them -- see `quadraui::tui::services`'s module doc for which
+    // `PlatformServices` methods it does implement. `apply_on_quit`,
+    // `end_power_save_block`, `set_login_item`,
+    // `set_as_default_protocol_client`, `remove_as_default_protocol_client`,
+    // `begin_drag_out`, `add_recent_document`, `clear_recent_documents`,
+    // `set_dock_menu`, and `set_jump_list` have no return value a caller
+    // needs synchronously, so each has a [`QuiAppActions`] mirror (via
+    // [`Self::actions`]) for use from inside a registered handler, the same
+    // handler restriction `show_message_dialog`'s own doc describes.
+    // `check_for_update`, `download_and_stage`, `begin_power_save_block`,
+    // `login_item_enabled`, and `is_default_protocol_client` each return a
+    // value a caller needs right away, so they have no `QuiAppActions`
+    // mirror -- same reason `QuiAppActions::set_theme`'s doc gives for why
+    // it can't just forward to a live backend at queue time.
+
+    /// Queries `feed_url` for a newer version, as a `{"version": str,
+    /// "notes": str, "url": str, "signature": str}` dict (or `None` when
+    /// nothing newer is published) --
+    /// [`quadraui_binding_core::update_check_for_update`].
+    fn check_for_update(&mut self, py: Python<'_>, feed_url: &str) -> PyResult<Py<PyAny>> {
+        self.guarded(|app| {
+            let info = update_check_for_update(app.driver.backend().services(), feed_url)
+                .map_err(|err| service_error_to_py("check_for_update", err))?;
+            pythonize::pythonize(py, &info)
+                .map(|v| v.unbind())
+                .map_err(|err| InternalError::new_err(format!("check_for_update: {err}")))
+        })
+    }
+
+    /// Downloads and stages `info` (the dict [`Self::check_for_update`]
+    /// returned), returning an opaque handle for a later
+    /// [`Self::apply_on_quit`] call -- [`quadraui_binding_core::update_download_and_stage`].
+    fn download_and_stage(&mut self, info: &Bound<'_, PyDict>) -> PyResult<u64> {
+        let info: UpdateInfoWire = pythonize::depythonize(info.as_any()).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("download_and_stage: invalid info: {err}"))
+        })?;
+        self.guarded(|app| {
+            update_download_and_stage(app.driver.backend().services(), info)
+                .map_err(|err| service_error_to_py("download_and_stage", err))
+        })
+    }
+
+    /// Installs the update staged under `handle` --
+    /// [`quadraui_binding_core::update_apply_on_quit`]. `handle` is
+    /// consumed: a second call with the same value raises
+    /// `InvalidDescriptorError`.
+    ///
+    /// Call [`QuiAppActions::apply_on_quit`] (via [`Self::actions`]) from a
+    /// handler instead.
+    fn apply_on_quit(&mut self, handle: u64) -> PyResult<()> {
+        self.guarded(|app| {
+            update_apply_on_quit(app.driver.backend().services(), handle)
+                .map_err(|err| service_error_to_py("apply_on_quit", err))
+        })
+    }
+
+    /// Starts a sleep/suspend inhibitor of the kind named by `kind`
+    /// (`"prevent_display_sleep"` or `"prevent_app_suspension"`), returning
+    /// an opaque handle for a later [`Self::end_power_save_block`] call --
+    /// [`quadraui_binding_core::begin_power_save_block`].
+    fn begin_power_save_block(&mut self, kind: &str) -> PyResult<u64> {
+        self.guarded(|app| {
+            begin_power_save_block(app.driver.backend().services(), kind)
+                .map_err(|err| service_error_to_py("begin_power_save_block", err))
+        })
+    }
+
+    /// Ends the sleep/suspend inhibitor started under `handle` --
+    /// [`quadraui_binding_core::end_power_save_block`]. `handle` is
+    /// consumed, the same one-shot story [`Self::apply_on_quit`]'s doc
+    /// describes.
+    ///
+    /// Call [`QuiAppActions::end_power_save_block`] (via [`Self::actions`])
+    /// from a handler instead.
+    fn end_power_save_block(&mut self, handle: u64) -> PyResult<()> {
+        self.guarded(|app| {
+            end_power_save_block(app.driver.backend().services(), handle)
+                .map_err(|err| service_error_to_py("end_power_save_block", err))
+        })
+    }
+
+    /// Registers (`enabled=True`) or unregisters (`enabled=False`) this app
+    /// to launch at login -- [`quadraui_binding_core::set_login_item`].
+    /// `open_hidden`/`args` are ignored when `enabled` is `False`.
+    ///
+    /// Call [`QuiAppActions::set_login_item`] (via [`Self::actions`]) from
+    /// a handler instead.
+    #[pyo3(signature = (enabled, open_hidden=false, args=Vec::new()))]
+    fn set_login_item(
+        &mut self,
+        enabled: bool,
+        open_hidden: bool,
+        args: Vec<String>,
+    ) -> PyResult<()> {
+        self.guarded(|app| {
+            set_login_item(app.driver.backend().services(), enabled, open_hidden, args)
+                .map_err(|err| service_error_to_py("set_login_item", err))
+        })
+    }
+
+    /// Whether this app is currently registered to launch at login --
+    /// [`quadraui_binding_core::login_item_enabled`].
+    fn login_item_enabled(&mut self) -> PyResult<bool> {
+        self.guarded(|app| {
+            login_item_enabled(app.driver.backend().services())
+                .map_err(|err| service_error_to_py("login_item_enabled", err))
+        })
+    }
+
+    /// Registers this app as the OS-level default handler for `scheme` --
+    /// [`quadraui_binding_core::set_as_default_protocol_client`].
+    ///
+    /// Call [`QuiAppActions::set_as_default_protocol_client`] (via
+    /// [`Self::actions`]) from a handler instead.
+    fn set_as_default_protocol_client(&mut self, scheme: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            set_as_default_protocol_client(app.driver.backend().services(), scheme)
+                .map_err(|err| service_error_to_py("set_as_default_protocol_client", err))
+        })
+    }
+
+    /// Whether this app is currently the OS-level default handler for
+    /// `scheme` -- [`quadraui_binding_core::is_default_protocol_client`].
+    fn is_default_protocol_client(&mut self, scheme: &str) -> PyResult<bool> {
+        self.guarded(|app| {
+            is_default_protocol_client(app.driver.backend().services(), scheme)
+                .map_err(|err| service_error_to_py("is_default_protocol_client", err))
+        })
+    }
+
+    /// Unregisters this app as the OS-level default handler for `scheme` --
+    /// [`quadraui_binding_core::remove_as_default_protocol_client`].
+    ///
+    /// Call [`QuiAppActions::remove_as_default_protocol_client`] (via
+    /// [`Self::actions`]) from a handler instead.
+    fn remove_as_default_protocol_client(&mut self, scheme: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            remove_as_default_protocol_client(app.driver.backend().services(), scheme)
+                .map_err(|err| service_error_to_py("remove_as_default_protocol_client", err))
+        })
+    }
+
+    /// Starts an OS-level drag of `files`/`text` out of this app's window
+    /// -- [`quadraui_binding_core::begin_drag_out`]. At least one of
+    /// `files`/`text` must be given.
+    ///
+    /// Call [`QuiAppActions::begin_drag_out`] (via [`Self::actions`]) from
+    /// a handler instead.
+    #[pyo3(signature = (files=Vec::new(), text=None))]
+    fn begin_drag_out(&mut self, files: Vec<String>, text: Option<String>) -> PyResult<()> {
+        self.guarded(|app| {
+            begin_drag_out(app.driver.backend().services(), files, text)
+                .map_err(|err| service_error_to_py("begin_drag_out", err))
+        })
+    }
+
+    /// Adds `path` to the OS "recent documents" list --
+    /// [`quadraui_binding_core::add_recent_document`].
+    ///
+    /// Call [`QuiAppActions::add_recent_document`] (via [`Self::actions`])
+    /// from a handler instead.
+    fn add_recent_document(&mut self, path: &str) -> PyResult<()> {
+        self.guarded(|app| {
+            add_recent_document(app.driver.backend().services(), path)
+                .map_err(|err| service_error_to_py("add_recent_document", err))
+        })
+    }
+
+    /// Clears the OS "recent documents" list --
+    /// [`quadraui_binding_core::clear_recent_documents`].
+    ///
+    /// Call [`QuiAppActions::clear_recent_documents`] (via
+    /// [`Self::actions`]) from a handler instead.
+    fn clear_recent_documents(&mut self) -> PyResult<()> {
+        self.guarded(|app| {
+            clear_recent_documents(app.driver.backend().services())
+                .map_err(|err| service_error_to_py("clear_recent_documents", err))
+        })
+    }
+
+    /// Attaches (or replaces) this app's Dock icon menu from `items` (a
+    /// list of context-menu-item dicts, the same shape `set_tray_menu`
+    /// takes) -- [`quadraui_binding_core::set_dock_menu`].
+    ///
+    /// Call [`QuiAppActions::set_dock_menu`] (via [`Self::actions`]) from a
+    /// handler instead.
+    fn set_dock_menu(&mut self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let items = pyany_to_json(items).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_dock_menu: invalid items: {err}"))
+        })?;
+        self.guarded(|app| {
+            set_dock_menu(app.driver.backend().services(), items)
+                .map_err(|err| service_error_to_py("set_dock_menu", err))
+        })
+    }
+
+    /// Sets this app's Windows taskbar jump list from `items` (a list of
+    /// `{"title": str, "program": str, "args": [str, ...], "description":
+    /// str}` dicts) -- [`quadraui_binding_core::set_jump_list`].
+    ///
+    /// Call [`QuiAppActions::set_jump_list`] (via [`Self::actions`]) from a
+    /// handler instead.
+    fn set_jump_list(&mut self, items: &Bound<'_, PyAny>) -> PyResult<()> {
+        let items = pyany_to_json(items).map_err(|err| {
+            InvalidDescriptorError::new_err(format!("set_jump_list: invalid items: {err}"))
+        })?;
+        self.guarded(|app| {
+            set_jump_list(app.driver.backend().services(), items)
+                .map_err(|err| service_error_to_py("set_jump_list", err))
+        })
+    }
 }
 
 /// Converts an arbitrary Python value into a [`serde_json::Value`] via
@@ -4663,6 +5137,46 @@ impl QuiApp {
     }
 }
 
+/// The standard, per-app filesystem location named by `kind` (one of
+/// `"user_data"`, `"app_config"`, `"app_cache"`, `"logs"`, `"temp"`,
+/// `"downloads"`, `"documents"`, `"home"`), as a path string --
+/// [`quadraui_binding_core::resolve_app_path`]. A module-level function,
+/// like that one: no live [`QuiApp`] is needed. Every app-scoped kind
+/// (everything but `"temp"`/`"downloads"`/`"documents"`/`"home"`) is
+/// resolved relative to whatever identifier
+/// [`set_app_identifier`] last set, and raises `UnsupportedError` until one
+/// has been.
+#[pyfunction]
+fn app_path(kind: &str) -> PyResult<String> {
+    resolve_app_path(kind)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|err| service_error_to_py("app_path", err))
+}
+
+/// Sets the app identifier scoping [`app_path`]'s app-scoped kinds --
+/// [`quadraui_binding_core::set_app_identifier`]. A module-level function:
+/// the identifier is process-global, not per-`QuiApp`.
+#[pyfunction]
+fn set_app_identifier(identifier: &str) {
+    quadraui_binding_core::set_app_identifier(identifier);
+}
+
+/// Installs a crash handler that writes a [`quadraui::crash::CrashRecord`]
+/// on an uncaught panic, decoding `cfg` (a `{"app_version": str,
+/// "upload_endpoint": str, "metadata": {str: str}, "log_dir": str}` dict,
+/// every key optional) into a [`quadraui::crash::CrashReporterConfig`] --
+/// [`quadraui_binding_core::install_crash_handler`]. A module-level
+/// function, like that one: no live [`QuiApp`] is needed, since this
+/// installs a process-global Rust panic hook.
+#[pyfunction]
+fn install_crash_handler(cfg: &Bound<'_, PyAny>) -> PyResult<()> {
+    let cfg = pyany_to_json(cfg).map_err(|err| {
+        InvalidDescriptorError::new_err(format!("install_crash_handler: invalid cfg: {err}"))
+    })?;
+    quadraui_binding_core::install_crash_handler(cfg)
+        .map_err(|err| service_error_to_py("install_crash_handler", err))
+}
+
 /// The compiled extension module (`_quadraui`) that `python/quadraui/__init__.py`
 /// imports names from.
 #[pymodule]
@@ -4671,6 +5185,9 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QuiAppWaker>()?;
     m.add_class::<QuiAppActions>()?;
     m.add_class::<QuiShellApp>()?;
+    m.add_function(wrap_pyfunction!(app_path, m)?)?;
+    m.add_function(wrap_pyfunction!(set_app_identifier, m)?)?;
+    m.add_function(wrap_pyfunction!(install_crash_handler, m)?)?;
     let py = m.py();
     m.add("QuadrauiError", py.get_type::<QuadrauiError>())?;
     m.add(
@@ -4701,6 +5218,7 @@ fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "InvalidFontRoleError",
         py.get_type::<InvalidFontRoleError>(),
     )?;
+    m.add("UnsupportedError", py.get_type::<UnsupportedError>())?;
     // Which native *feature* (if any) this build was compiled with — `gtk`
     // wins over `macos`, and both win over `win`, when more than one is
     // enabled (see `run_native`'s doc). This is a build configuration
@@ -6016,6 +6534,150 @@ def handle(event):
         });
     }
 
+    /// A `MouseMoved` landing on a painted button's bounds dispatches a
+    /// hit-tested `MouseEntered` ahead of the raw move itself, each key
+    /// the handler sees carrying the button's own id and `button_body`
+    /// `hit` -- the real hover signal a Python-side toolbar/tree/details
+    /// hover tooltip needs instead of re-deriving hit-testing from the raw
+    /// position. A later move off the button dispatches the matching
+    /// `MouseLeft` the same way.
+    #[test]
+    fn mouse_moved_over_a_painted_button_dispatches_mouse_entered_then_mouse_left() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'button': {'id': 'btn:ok', 'label': 'OK'}}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("OK").expect("render must not raise"),
+                "the button's label must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("OK")
+                .expect("button label must be on screen");
+            let inside = Point::new(bounds.x + 0.5, bounds.y + 0.5);
+            let outside = Point::new(1_000.0, 1_000.0);
+
+            let dispatch_move = |app: &mut QuiApp, position: Point| {
+                let mv = UiEvent::MouseMoved {
+                    position,
+                    buttons: quadraui::ButtonMask::default(),
+                };
+                let mv_any = pythonize::pythonize(py, &mv).expect("UiEvent must pythonize");
+                let mv_dict = mv_any
+                    .cast::<PyDict>()
+                    .expect("MouseMoved must pythonize to a dict");
+                app.push_event(mv_dict).expect("valid event shape");
+                app.step().expect("no handler/render error");
+            };
+
+            dispatch_move(&mut app, inside);
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined")
+                .cast_into::<PyList>()
+                .expect("received must be a list");
+            assert_eq!(
+                received.len(),
+                2,
+                "entering the button must dispatch MouseEntered ahead of the raw MouseMoved"
+            );
+            let entered_dict = received
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let entered_widget: String = entered_dict
+                .get_item("MouseEntered")
+                .expect("dict lookup")
+                .expect("payload must carry a MouseEntered key")
+                .cast_into::<PyDict>()
+                .expect("MouseEntered payload must be a dict")
+                .get_item("widget")
+                .expect("dict lookup")
+                .expect("widget key must be present")
+                .extract()
+                .expect("widget must be a string");
+            assert_eq!(entered_widget, "btn:ok");
+            let entered_hit_kind: String = entered_dict
+                .get_item("hit")
+                .expect("dict lookup")
+                .expect("hit key must be attached alongside the MouseEntered key")
+                .cast_into::<PyDict>()
+                .expect("hit must be a dict")
+                .get_item("kind")
+                .expect("dict lookup")
+                .expect("kind key must be present")
+                .extract()
+                .expect("kind must be a string");
+            assert_eq!(entered_hit_kind, "button_body");
+            assert!(
+                received
+                    .get_item(1)
+                    .expect("second item")
+                    .cast_into::<PyDict>()
+                    .expect("event payload must be a dict")
+                    .contains("MouseMoved")
+                    .expect("dict lookup"),
+                "the raw move must still follow the synthesized MouseEntered"
+            );
+
+            let before_leave = received.len();
+
+            dispatch_move(&mut app, outside);
+
+            assert_eq!(
+                received.len(),
+                before_leave + 2,
+                "leaving the button must dispatch MouseLeft ahead of the raw MouseMoved"
+            );
+            let left_dict = received
+                .get_item(before_leave)
+                .expect("first new item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let left_widget: String = left_dict
+                .get_item("MouseLeft")
+                .expect("dict lookup")
+                .expect("payload must carry a MouseLeft key")
+                .cast_into::<PyDict>()
+                .expect("MouseLeft payload must be a dict")
+                .get_item("widget")
+                .expect("dict lookup")
+                .expect("widget key must be present")
+                .extract()
+                .expect("widget must be a string");
+            assert_eq!(left_widget, "btn:ok");
+        });
+    }
+
     /// A primitive nested inside a `Split` pane -- not the `Split` itself --
     /// must claim a click landing on it: `PaintedHit::Split` covers its
     /// whole pane with no "miss" case, so it is pushed into the hit map
@@ -6480,6 +7142,139 @@ def handle(event):
             assert_eq!(
                 index, 1,
                 "the clicked tab's own index (the second tab) must be reported, not tab 0's"
+            );
+        });
+    }
+
+    /// A standalone `toolbar` leaf: a click on its (enabled) `Action`
+    /// button must be replaced by the semantic `UiEvent::Toolbar` it
+    /// stands for — the clicked button's own id, and `is_active` flipped
+    /// from its starting `False` to `True` — rather than staying a raw
+    /// `MouseDown`.
+    #[test]
+    fn mouse_down_over_a_toolbar_button_emits_a_semantic_toolbar_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'id': 'toolbar:main', 'toolbar': {
+        'id': 'toolbar:main',
+        'buttons': [
+            {'Action': {
+                'id': 'filter', 'label': 'Filter', 'icon': None,
+                'key_hint': None, 'enabled': True, 'is_active': False,
+                'tooltip': '',
+            }},
+        ],
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app = QuiApp::new(40, 5, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Filter")
+                    .expect("render must not raise"),
+                "the toolbar's button label must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Filter")
+                .expect("the button's label must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                1,
+                "a toolbar button click carries no leading FocusChanged -- only the bar's own \
+                 id (not the clicked button's) is a tab stop"
+            );
+            let event_dict = received_list
+                .get_item(0)
+                .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let toolbar_payload = event_dict
+                .get_item("Toolbar")
+                .expect("dict lookup")
+                .expect("a toolbar click must dispatch a Toolbar key, not a raw MouseDown")
+                .cast_into::<PyTuple>()
+                .expect("Toolbar must pythonize to a (id, event) tuple");
+            assert_eq!(toolbar_payload.len(), 2, "Toolbar must carry (id, event)");
+            let bar_id: String = toolbar_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the toolbar's own id must be a string");
+            assert_eq!(
+                bar_id, "toolbar:main",
+                "the widget id must be the toolbar's own"
+            );
+            let inner = toolbar_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner ToolbarEvent must pythonize to a dict");
+            let clicked = inner
+                .get_item("ButtonClicked")
+                .expect("dict lookup")
+                .expect("a button click must carry a ButtonClicked key")
+                .cast_into::<PyDict>()
+                .expect("ButtonClicked payload must be a dict");
+            let button_id: String = clicked
+                .get_item("id")
+                .expect("dict lookup")
+                .expect("id key must be present")
+                .extract()
+                .expect("id must be a string");
+            assert_eq!(
+                button_id, "filter",
+                "the clicked button's own id must be reported"
+            );
+            let is_active: bool = clicked
+                .get_item("is_active")
+                .expect("dict lookup")
+                .expect("is_active key must be present")
+                .extract()
+                .expect("is_active must be a bool");
+            assert!(
+                is_active,
+                "the pre-click is_active (False) must be reported flipped (True)"
             );
         });
     }
@@ -7462,6 +8257,127 @@ def handle(event):
         });
     }
 
+    /// Enter on a focused list item must emit the semantic
+    /// `ListViewEvent::ItemActivated` -- the keyboard equivalent of
+    /// [`double_click_over_a_list_item_emits_a_semantic_item_double_clicked_event`]'s
+    /// mouse gesture, so a Python app wired to `ItemActivated` for "open"
+    /// also works from the keyboard, not just a mouse or a screen reader's
+    /// default action.
+    #[test]
+    fn enter_on_a_focused_list_item_emits_a_semantic_item_activated_event() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'list': {
+        'id': 'list:main',
+        'items': [
+            {'text': {'spans': [{'text': 'Alpha', 'fg': None, 'bg': None}]}},
+            {'text': {'spans': [{'text': 'Beta', 'fg': None, 'bg': None}]}},
+        ],
+        'selected_idx': 0,
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app =
+                QuiApp::new(40, 10, Some(handle), Some(render)).expect("valid dimensions");
+            assert!(
+                app.screen_contains("Alpha").expect("render must not raise"),
+                "the first item must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Alpha")
+                .expect("first item's label must be on screen");
+
+            // `render()` is a static Python function that always reports
+            // `selected_idx: 0` — a click on "Alpha" (already row 0) only
+            // needs to focus the list (click-to-focus), the same
+            // click-then-key sequence
+            // `test_down_arrow_on_a_focused_table_selects_the_next_row`
+            // relies on for `DataTable`.
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers::default(),
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            app.driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Enter),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            let event_dict = received_list
+                .get_item(received_list.len() - 1)
+                .expect("last item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            let list_payload = event_dict
+                .get_item("List")
+                .expect("dict lookup")
+                .expect("Enter on a focused list must dispatch a List key, not a raw KeyPressed")
+                .cast_into::<PyTuple>()
+                .expect("List must pythonize to a (id, event) tuple");
+            let widget: String = list_payload
+                .get_item(0)
+                .expect("first element")
+                .extract()
+                .expect("the list's own id must be a string");
+            assert_eq!(widget, "list:main", "the widget id must be the list's own");
+            let inner = list_payload
+                .get_item(1)
+                .expect("second element")
+                .cast_into::<PyDict>()
+                .expect("the inner ListViewEvent must pythonize to a dict");
+            let activated = inner
+                .get_item("ItemActivated")
+                .expect("dict lookup")
+                .expect("Enter on a focused list with a selection must carry an ItemActivated key")
+                .cast_into::<PyDict>()
+                .expect("ItemActivated payload must be a dict");
+            let idx: usize = activated
+                .get_item("idx")
+                .expect("dict lookup")
+                .expect("idx key must be present")
+                .extract()
+                .expect("idx must be an int");
+            assert_eq!(idx, 0, "the activated item's own index must be reported");
+        });
+    }
+
     /// A Ctrl-click on a list item is a multi-select gesture
     /// `ListViewEvent::SelectionChanged` can't represent (it carries no
     /// modifiers), so `semantic_event_for_hit` leaves it unmapped: the raw
@@ -8377,6 +9293,61 @@ def handle(event):
             assert!(
                 !app.screen_contains("Save").expect("render must not raise"),
                 "resolving the dialog must dismiss it"
+            );
+        });
+    }
+
+    /// A button dict's `spec` (the `ButtonSpec` override —
+    /// variant/icon/tooltip) decodes through to the painted dialog: a
+    /// `Danger`-variant "Delete" button reads tinted in `theme.error_fg`,
+    /// proving `spec` survives `show_message_dialog`'s whole
+    /// decode → `message_dialog_options_from_buttons` → `MessageDialogButton`
+    /// → `MessageDialogController` round trip rather than being silently
+    /// dropped along the way.
+    #[test]
+    fn show_message_dialog_button_spec_variant_paints_the_danger_tint() {
+        Python::attach(|py| {
+            let (mut app, _locals) = app_recording_events(py);
+
+            let buttons_any = py
+                .eval(
+                    c"[
+                        {'id': 'delete', 'label': 'Delete', 'is_default': True, \
+                         'spec': {'label': 'Delete', 'variant': 'Danger'}},
+                        {'id': 'cancel', 'label': 'Cancel', 'is_cancel': True},
+                    ]",
+                    None,
+                    None,
+                )
+                .expect("list literal must evaluate");
+            let buttons = buttons_any
+                .cast::<PyList>()
+                .expect("literal must be a list");
+
+            // Title/body deliberately avoid the word "Delete" so
+            // `find_bounds("Delete")` below can only match the button's
+            // own label, not an earlier occurrence painted above it.
+            app.show_message_dialog(
+                "Confirm".to_string(),
+                "This cannot be undone.".to_string(),
+                buttons,
+                None,
+            )
+            .expect("show_message_dialog must open the dialog");
+
+            let button_bounds = app
+                .driver
+                .find_bounds("Delete")
+                .expect("the 'Delete' button must be on screen");
+            let style = app
+                .driver
+                .style_at(button_bounds.x as u16, button_bounds.y as u16)
+                .expect("Delete button label cell must be styled");
+            let theme = app.driver.backend().theme();
+            assert_eq!(
+                style.fg,
+                quadraui::tui::ratatui_color(theme.error_fg),
+                "a 'Danger' spec on the 'Delete' button must tint its label in theme.error_fg"
             );
         });
     }

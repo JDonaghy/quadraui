@@ -375,13 +375,17 @@ impl BoardModel {
         None
     }
 
+    /// `key` is the string a backend's `key_to_binding_name`/
+    /// `key_to_focus_string` produces — [`crate::event::NamedKey::name`]'s
+    /// spellings (`"Down"`, `"Left"`, …), never the DOM `KeyboardEvent.key`
+    /// `"Arrow*"` family no quadraui backend emits.
     pub fn handle_key(&self, key: &str, _modifiers: Modifiers) -> Option<BoardAction> {
         let selected = self.selected_card_id.as_ref();
         match key {
-            "j" | "Down" | "ArrowDown" => Some(BoardAction::MoveSelection(MoveDir::Down)),
-            "k" | "Up" | "ArrowUp" => Some(BoardAction::MoveSelection(MoveDir::Up)),
-            "h" | "Left" | "ArrowLeft" => Some(BoardAction::MoveSelection(MoveDir::Left)),
-            "l" | "Right" | "ArrowRight" => Some(BoardAction::MoveSelection(MoveDir::Right)),
+            "j" | "Down" => Some(BoardAction::MoveSelection(MoveDir::Down)),
+            "k" | "Up" => Some(BoardAction::MoveSelection(MoveDir::Up)),
+            "h" | "Left" => Some(BoardAction::MoveSelection(MoveDir::Left)),
+            "l" | "Right" => Some(BoardAction::MoveSelection(MoveDir::Right)),
             "Enter" => selected.map(|id| BoardAction::OpenIssue(*id)),
             "g" => Some(BoardAction::JumpToTop),
             "G" => Some(BoardAction::JumpToBottom),
@@ -630,11 +634,11 @@ fn count_fitting_columns(available: usize, col_w: f32, gap: f32, total_width: f3
 //
 // ## Divergences from pre-unified backends:
 //
-// 1. **Column header text overflow.** `PaintSurface` hard-clips every column header
-//    to its own bounds on every backend (the macOS/Windows behaviour; GTK previously
-//    allowed overflow into the next column).
-// 2. **Card title wrapping.** `PaintSurface` hard-clips the single-line title to the
-//    card box on every backend (the macOS/Windows behaviour; GTK previously wrapped).
+// 1. **Column header text overflow.** An overflowing column header is ellipsis-
+//    truncated to its own bounds via `crate::paint_surface::fit_text_prefix`
+//    on every backend (GTK previously allowed overflow into the next column).
+// 2. **Card title wrapping.** `PaintSurface` single-line title is ellipsis-
+//    truncated to the card box on every backend (GTK previously wrapped).
 // 3. **Card border shape.** `PaintSurface::surface_stroke_rect` is axis-aligned only,
 //    so every card border is a straight rectangle on every backend (the Windows
 //    behaviour; GTK/macOS previously used rounded corners). Card fills use the same
@@ -652,12 +656,35 @@ fn count_fitting_columns(available: usize, col_w: f32, gap: f32, total_width: f3
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{
-        badge_fg_color, badge_icon, BoardCard, BoardLayout, BoardModel, BOARD_CARD_H_PAD_PX,
+        badge_fg_color, badge_icon, BadgeStatus, BoardCard, BoardLayout, BoardModel,
+        BOARD_CARD_H_PAD_PX,
     };
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::primitives::layout_metrics::pixel_board_layout;
     use crate::theme::Theme;
+    use std::borrow::Cow;
+
+    /// The codicon counterpart of [`badge_icon`] — every GUI backend
+    /// routes through this module, so a card badge paints as a
+    /// VS-Code-style vector glyph here while TUI keeps `badge_icon`'s
+    /// plain Unicode (TUI's own `draw_board` calls `badge_icon` directly
+    /// and never reaches this module). Falls back to `badge_icon` itself
+    /// if the name isn't registered, which cannot happen for any of
+    /// these four names — covered by this module's own test.
+    fn badge_codicon_glyph(status: BadgeStatus) -> Cow<'static, str> {
+        let name = match status {
+            BadgeStatus::Passed => "check",
+            BadgeStatus::Running => "circle-filled",
+            BadgeStatus::Warning => "warning",
+            BadgeStatus::Blocked => "close",
+            BadgeStatus::Pending => "circle",
+        };
+        match crate::codicon_names::codepoint(name) {
+            Some(c) => Cow::Owned(c.to_string()),
+            None => Cow::Owned(badge_icon(status).to_string()),
+        }
+    }
 
     /// Vertical offset of the card title baseline from the card top.
     const TITLE_Y_OFF: f32 = 6.0;
@@ -700,14 +727,21 @@ pub(crate) mod native_surface_paint {
             let hb = col_layout.header_bounds;
             surface.surface_fill_rect(hb, theme.board_col_header_bg);
             surface.surface_push_clip(hb);
+            let header_avail = (hb.width - h_pad).max(0.0);
+            let (header_w, _) = surface.surface_measure_text(&col.title);
+            let header_text = if header_w <= header_avail {
+                col.title.clone()
+            } else {
+                crate::paint_surface::fit_text_prefix(surface, &col.title, false, header_avail).0
+            };
             surface.surface_draw_text_run(
                 Rect::new(
                     hb.x + h_pad,
                     hb.y + HEADER_Y_OFF,
-                    (hb.width - h_pad).max(0.0),
+                    header_avail,
                     (hb.height - HEADER_Y_OFF).max(0.0),
                 ),
-                &col.title,
+                &header_text,
                 theme.header_fg,
             );
             surface.surface_pop_clip();
@@ -754,14 +788,22 @@ pub(crate) mod native_surface_paint {
                     format!("{} ", card.labels.join(" "))
                 };
                 let full_title = format!("{}{}", prefix, card.title);
+                let title_avail = (cb.width - h_pad * 2.0).max(0.0);
+                let (title_w, _) = surface.surface_measure_text(&full_title);
+                let title_text = if title_w <= title_avail {
+                    full_title
+                } else {
+                    crate::paint_surface::fit_text_prefix(surface, &full_title, false, title_avail)
+                        .0
+                };
                 surface.surface_draw_text_run(
                     Rect::new(
                         cb.x + h_pad,
                         cb.y + TITLE_Y_OFF,
-                        (cb.width - h_pad * 2.0).max(0.0),
+                        title_avail,
                         (cb.height - TITLE_Y_OFF).max(0.0),
                     ),
-                    &full_title,
+                    &title_text,
                     theme.surface_fg,
                 );
 
@@ -781,7 +823,8 @@ pub(crate) mod native_surface_paint {
                     surface.surface_push_clip(badge_band);
                     let mut badge_x = cb.x + h_pad;
                     for badge in &card.badges {
-                        let badge_str = format!("{}{} ", badge_icon(badge.status), badge.label);
+                        let badge_str =
+                            format!("{}{} ", badge_codicon_glyph(badge.status), badge.label);
                         let (bw, bh) = surface.surface_measure_text(&badge_str);
                         let color = badge_fg_color(badge.status, theme);
                         surface.surface_draw_text_run(
@@ -948,9 +991,9 @@ pub(crate) mod native_surface_paint {
             assert!(surface.text_runs.is_empty());
         }
 
-        /// Regression for divergence 1: the column header text is clipped
-        /// to its own bounds (push/pop bracketed) rather than painted
-        /// with no clip at all.
+        /// Regression for divergence 1: the column header text paints
+        /// inside its own push/pop clip bracket rather than with no clip
+        /// at all.
         #[test]
         fn column_header_text_is_clipped() {
             let model = sample_model();
@@ -966,6 +1009,58 @@ pub(crate) mod native_surface_paint {
             assert!(surface.clip_pushes.len() >= 2);
             let header = &model.columns[0];
             assert!(surface.text_runs.iter().any(|(_, t, _)| t == &header.title));
+        }
+
+        /// A column header too wide for its own bounds is ellipsis-
+        /// truncated via the shared `fit_text_prefix`, not clipped
+        /// mid-glyph.
+        #[test]
+        fn column_header_text_ellipsizes_when_it_overflows() {
+            let mut model = sample_model();
+            model.columns[0].title = "x".repeat(80);
+            let mut surface = RecordingSurface::default();
+            paint(
+                &model,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 220.0, 300.0),
+            );
+            let header_text = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t.starts_with('x'))
+                .map(|(_, t, _)| t.clone())
+                .expect("header text must be painted");
+            assert!(
+                header_text.ends_with('…') && header_text.len() < model.columns[0].title.len(),
+                "overlong header must end in an ellipsis, got {header_text:?}"
+            );
+        }
+
+        /// A card title too wide for the card box is ellipsis-truncated
+        /// via the shared `fit_text_prefix`, not clipped mid-glyph.
+        #[test]
+        fn card_title_ellipsizes_when_it_overflows() {
+            let mut model = sample_model();
+            model.columns[0].cards[0].title = "y".repeat(80);
+            model.columns[0].cards[0].labels = vec![];
+            let mut surface = RecordingSurface::default();
+            paint(
+                &model,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 220.0, 300.0),
+            );
+            let title_text = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t.starts_with('y'))
+                .map(|(_, t, _)| t.clone())
+                .expect("card title must be painted");
+            assert!(
+                title_text.ends_with('…') && title_text.len() < 80,
+                "overlong card title must end in an ellipsis, got {title_text:?}"
+            );
         }
 
         /// Regression for divergence 2/3: the card title/badges/hint all
@@ -1131,7 +1226,10 @@ pub(crate) mod native_surface_paint {
         }
 
         /// Badge glyph + label text is drawn via `surface_draw_text_run`,
-        /// not a bespoke per-backend loop.
+        /// not a bespoke per-backend loop. A GUI backend paints the
+        /// codicon counterpart of the badge's status glyph
+        /// (`badge_codicon_glyph`), not `badge_icon`'s plain Unicode `✓`
+        /// — TUI never reaches this module, so TUI output is unaffected.
         #[test]
         fn badge_text_is_recorded() {
             let model = sample_model();
@@ -1142,10 +1240,22 @@ pub(crate) mod native_surface_paint {
                 &Theme::default(),
                 Rect::new(0.0, 0.0, 220.0, 300.0),
             );
-            assert!(surface
-                .text_runs
-                .iter()
-                .any(|(_, t, _)| t.starts_with('✓') && t.contains('P')));
+            let codicon_check = crate::codicon_names::codepoint("check")
+                .expect("\"check\" is a registered codicon name");
+            assert!(
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, _)| t.starts_with(codicon_check) && t.contains('P')),
+                "text_runs were {:?}",
+                surface.text_runs,
+            );
+            assert!(
+                !surface.text_runs.iter().any(|(_, t, _)| t.starts_with('✓')),
+                "the plain Unicode checkmark must not be painted on GUI; \
+                 text_runs were {:?}",
+                surface.text_runs,
+            );
         }
 
         /// A hint is only painted when there's room below the badge row.
@@ -1513,6 +1623,22 @@ mod tests {
     fn handle_key_unknown_returns_none() {
         let m = make_model();
         assert_eq!(m.handle_key("Escape", Modifiers::default()), None);
+    }
+
+    /// No quadraui backend ever stringifies `NamedKey::Up`/`Down`/… as
+    /// `"ArrowUp"`/`"ArrowDown"`/… (`NamedKey::name` always produces
+    /// `"Up"`/`"Down"`), so `handle_key` does not special-case that
+    /// alias — it would never fire from a real key event.
+    #[test]
+    fn handle_key_does_not_accept_dom_arrow_key_spelling() {
+        let m = make_model();
+        for key in ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"] {
+            assert_eq!(
+                m.handle_key(key, Modifiers::default()),
+                None,
+                "key {key:?} is not a spelling any backend emits"
+            );
+        }
     }
 
     /// The keymap does not consume former workflow verb keys (`r`, `d`, `P`, `m`, `b`),

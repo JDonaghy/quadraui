@@ -116,6 +116,22 @@ exports.LiveRunnerActiveError = LiveRunnerActiveError;
 class LiveRunnerExitedError extends QuadrauiError {}
 exports.LiveRunnerExitedError = LiveRunnerExitedError;
 
+/** `startNative` called on a binary built with none of the `gtk`/`macos`/`win` features -- there is no native runner to open a window with. */
+class NoNativeBackendError extends QuadrauiError {}
+exports.NoNativeBackendError = NoNativeBackendError;
+
+/** `startNative` on the `gtk` feature found no display to open a window on (no `DISPLAY`/`WAYLAND_DISPLAY`) -- mirrors `quadraui-py`'s `NoDisplayError`. */
+class NoDisplayError extends QuadrauiError {}
+exports.NoDisplayError = NoDisplayError;
+
+/** `startNative` on the `gtk` feature was given an `appId` that is not a valid `GApplication` id -- mirrors `quadraui-py`'s `InvalidAppIdError`. */
+class InvalidAppIdError extends QuadrauiError {}
+exports.InvalidAppIdError = InvalidAppIdError;
+
+/** A `quadraui_binding_core::services` call (`checkForUpdate`, `setLoginItem`, `setDockMenu`, `setJumpList`, ...) this backend has no implementation for at all -- distinct from {@link InternalError}, which `setTrayIcon`/`setTrayMenu`/`setDocumentEdited`/`setRepresentedFilename` raise instead for the same "no implementation" reason (their own `WindowControl`/`TrayService` seam reports it differently), and from `setCursor`, which raises neither and instead returns `false` -- mirrors `quadraui-py`'s `UnsupportedError`. */
+class UnsupportedError extends QuadrauiError {}
+exports.UnsupportedError = UnsupportedError;
+
 /**
  * Every subclass above, keyed by both its own name and the tag its native
  * `Error.message` prefix carries (the two always match -- see
@@ -137,6 +153,10 @@ const ERROR_CLASSES_BY_TAG: Record<string, new (message: string) => QuadrauiErro
   ReentrantCallError,
   LiveRunnerActiveError,
   LiveRunnerExitedError,
+  NoNativeBackendError,
+  NoDisplayError,
+  InvalidAppIdError,
+  UnsupportedError,
 };
 exports.ERROR_CLASSES = Object.freeze({ ...ERROR_CLASSES_BY_TAG });
 
@@ -205,6 +225,66 @@ wrapNativeErrors(native.QuiShellApp.prototype);
 wrapNativeErrors(native.QuiAppWaker.prototype);
 wrapNativeErrors(native.QuiAppActions.prototype);
 
+// ─── Module-level platform-services functions ──────────────────────────
+//
+// The three app-less seams `quadraui_binding_core::services` exposes with
+// no live app needed at all -- mirrors `quadraui-py`'s own module-level
+// `app_path`/`set_app_identifier`/`install_crash_handler` functions.
+// `wrapNativeErrors` only reaches object prototypes, not these bare
+// `native.*` functions, so each gets its own `toQuadrauiError` wrapper
+// here, the same shape the `QuiApp` constructor above needs for the same
+// reason.
+
+/**
+ * The standard, per-app filesystem location named by `kind` (one of
+ * `"user_data"`, `"app_config"`, `"app_cache"`, `"logs"`, `"temp"`,
+ * `"downloads"`, `"documents"`, `"home"`), as a path string. Every
+ * app-scoped kind (everything but `"temp"`/`"downloads"`/`"documents"`/
+ * `"home"`) is resolved relative to whatever identifier
+ * {@link setAppIdentifier} last set, and raises {@link UnsupportedError}
+ * until one has been.
+ */
+function appPath(kind: string): string {
+  try {
+    return native.appPath(kind);
+  } catch (err) {
+    throw toQuadrauiError(err);
+  }
+}
+exports.appPath = appPath;
+
+/**
+ * Sets the app identifier scoping {@link appPath}'s app-scoped kinds. A
+ * process-global setting, not per-`QuiApp`.
+ */
+function setAppIdentifier(identifier: string): void {
+  try {
+    native.setAppIdentifier(identifier);
+  } catch (err) {
+    throw toQuadrauiError(err);
+  }
+}
+exports.setAppIdentifier = setAppIdentifier;
+
+/**
+ * Installs a crash handler that writes a crash record on an uncaught
+ * panic, decoding `cfg` into a crash-reporter config. `cfg` is a plain
+ * object keyed by the underlying Rust shape's own `snake_case` field
+ * names -- `app_version`/`upload_endpoint`/`metadata`/`log_dir`, every
+ * key optional (a camelCase `appVersion`/`uploadEndpoint`/`metadata`/
+ * `logDir` key is silently ignored, not an error, since this decodes with
+ * no `camelCase` remap). No live `QuiApp` is needed: this installs a
+ * process-global Rust panic hook.
+ */
+function installCrashHandler(cfg: unknown): void {
+  try {
+    native.installCrashHandler(cfg);
+  } catch (err) {
+    throw toQuadrauiError(err);
+  }
+}
+exports.installCrashHandler = installCrashHandler;
+
 /**
  * A headless quadraui app, driven entirely from JavaScript/TypeScript.
  *
@@ -267,12 +347,15 @@ export interface PumpHandle {
  * Drives `app.step()` repeatedly on a timer, cooperatively yielding to the
  * rest of Node's event loop between calls instead of looping synchronously
  * -- the JS-side half of the non-blocking run-loop contract `startTui`/
- * `step` establish on the Rust side (see `quadraui-node/src/lib.rs`'s
- * module doc's "Live run loop" section). `step()` itself never blocks
- * (`startTui` moves this app onto a non-blocking `TuiRunner::step`, and the
- * headless path was always non-blocking), so a `setInterval` cadence here
- * never starves a concurrent timer/microtask/I/O callback the way a tight
- * synchronous loop calling `step()` forever would.
+ * `startNative`/`step` establish on the Rust side (see
+ * `quadraui-node/src/lib.rs`'s module doc's "Live run loop" section).
+ * `step()` itself never blocks (`startTui`/`startNative` each move this app
+ * onto a non-blocking runner `step()`, and the headless path was always
+ * non-blocking), so a `setInterval` cadence here never starves a
+ * concurrent timer/microtask/I/O callback the way a tight synchronous loop
+ * calling `step()` forever would. Works unchanged for a `startNative`
+ * session -- it drives the same `step()`/`stopLive()` surface as a
+ * `startTui` one.
  *
  * Stops automatically once `step()` reports the app has exited (returns
  * `false`), or earlier if the returned handle's `stop()` is called.
@@ -281,13 +364,14 @@ export interface PumpHandle {
  *
  * If `step()` itself throws (a registered handler threw, or a callback
  * raised a pending error `step()` surfaces), this stops the interval and,
- * if `app` is a live `startTui` session (has a `stopLive` method), calls
- * it to restore the terminal (raw mode off, leave alternate screen) before
- * rethrowing -- otherwise an uncaught exception inside `setInterval`'s
- * callback would tear the process down with the terminal left in whatever
- * state `startTui` last left it in, since the Rust-side live runner's own
- * cleanup (raw mode off, leave alternate screen) never runs on an abrupt
- * process exit.
+ * if `app` is a live `startTui`/`startNative` session (has a `stopLive`
+ * method), calls it to tear the session down (terminal: raw mode off,
+ * leave alternate screen; native: destroy the window, where the runner
+ * supports it) before rethrowing -- otherwise an uncaught exception inside
+ * `setInterval`'s callback would tear the process down with the session
+ * left exactly as `startTui`/`startNative` last left it, since the
+ * Rust-side live runner's own cleanup never runs on an abrupt process
+ * exit.
  */
 function pump(
   app: { step(): boolean; stopLive?(): boolean },

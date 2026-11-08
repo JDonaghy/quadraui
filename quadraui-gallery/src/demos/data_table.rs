@@ -49,7 +49,7 @@ impl DataTableDemo {
                 },
                 Column {
                     title: "Restarts".into(),
-                    width: ColumnWidth::Fixed(10.0),
+                    width: ColumnWidth::FixedCells(10.0),
                     align: ColumnAlign::Right,
                 },
             ],

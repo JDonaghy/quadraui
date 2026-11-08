@@ -25,11 +25,16 @@
 //!
 //! ## Precise (trackpad) vs. discrete (wheel) deltas
 //!
-//! [`ns_scroll`] passes `scrollingDeltaX`/`scrollingDeltaY` through at
-//! full `f32` precision regardless of source device, so trackpad
-//! scrolling is already proportional and sub-row. The two device
-//! classes still need different *delivery* treatment, decided by
-//! [`route_wheel_event`] (called from [`super::run`] with
+//! `scrollingDeltaX`/`scrollingDeltaY` are only in real points when
+//! `NSEvent.hasPreciseScrollingDeltas()` is true (a trackpad or Magic
+//! Mouse); a plain discrete wheel notch reports its delta in *lines*
+//! instead, per AppKit's own convention. [`route_wheel_event`] scales
+//! an imprecise delta by the current line height before building the
+//! [`UiEvent::Scroll`], so by the time either device class reaches
+//! [`ns_scroll`] the delta is already in points and trackpad scrolling
+//! is proportional and sub-row. The two device classes still need
+//! different *delivery* treatment too, decided by the same
+//! [`route_wheel_event`] call (made from [`super::run`] with
 //! `NSEvent.hasPreciseScrollingDeltas()`):
 //!
 //! - **Trackpad** (precise): AppKit itself delivers a decaying stream
@@ -211,16 +216,37 @@ pub(crate) enum WheelRouting {
 ///
 /// `precise` is `NSEvent.hasPreciseScrollingDeltas()`; `dx`/`dy` are
 /// `scrollingDeltaX`/`scrollingDeltaY`; `x`/`y` are the view-local
-/// point. Precise (trackpad) deltas are delivered immediately, since
-/// AppKit already provides native momentum-phase events for those.
-/// Imprecise (discrete wheel) deltas are routed into a synthetic
-/// momentum glide instead. This is a pure function so the routing
-/// decision is unit-testable without AppKit.
-pub(crate) fn route_wheel_event(precise: bool, dx: f64, dy: f64, x: f64, y: f64) -> WheelRouting {
-    let event = ns_scroll(dx, dy, x, y);
+/// point; `line_height` is [`crate::backend::Backend::line_height`]'s
+/// current value. Precise (trackpad) deltas are delivered immediately,
+/// since AppKit already provides native momentum-phase events for
+/// those, and are already real points — passed through unscaled.
+/// Imprecise (discrete wheel) deltas carry `dx`/`dy` in *lines*, not
+/// points (AppKit's own documented convention for
+/// `hasPreciseScrollingDeltas() == false`), so they're scaled by
+/// `line_height` here to land in the same points currency as a precise
+/// delta before [`UiEvent::Scroll::delta`] is built — otherwise a
+/// plain USB/third-party mouse wheel notch would read as a sub-pixel
+/// delta once [`crate::backend::Backend::wheel_delta_rows`] divides it
+/// by that same `line_height` again downstream. Routed into a synthetic
+/// momentum glide instead of dispatching directly. This is a pure
+/// function so the routing decision is unit-testable without AppKit.
+pub(crate) fn route_wheel_event(
+    precise: bool,
+    dx: f64,
+    dy: f64,
+    x: f64,
+    y: f64,
+    line_height: f32,
+) -> WheelRouting {
     if precise {
-        return WheelRouting::Immediate(event);
+        return WheelRouting::Immediate(ns_scroll(dx, dy, x, y));
     }
+    let scale = if line_height.is_finite() && line_height > 0.0 {
+        line_height as f64
+    } else {
+        1.0
+    };
+    let event = ns_scroll(dx * scale, dy * scale, x, y);
     match event {
         UiEvent::Scroll {
             delta, position, ..
@@ -655,7 +681,7 @@ mod tests {
 
     #[test]
     fn precise_delta_routes_immediate() {
-        match route_wheel_event(true, 1.5, -2.25, 10.0, 20.0) {
+        match route_wheel_event(true, 1.5, -2.25, 10.0, 20.0, 16.0) {
             WheelRouting::Immediate(UiEvent::Scroll {
                 delta, position, ..
             }) => {
@@ -668,9 +694,22 @@ mod tests {
         }
     }
 
+    /// A precise (trackpad) delta is already in real points and must
+    /// never be scaled by `line_height`, unlike the imprecise case
+    /// below.
+    #[test]
+    fn precise_delta_ignores_line_height() {
+        match route_wheel_event(true, 0.0, 10.0, 0.0, 0.0, 16.0) {
+            WheelRouting::Immediate(UiEvent::Scroll { delta, .. }) => {
+                assert_eq!(delta.y, -10.0);
+            }
+            other => panic!("expected Immediate(Scroll), got {other:?}"),
+        }
+    }
+
     #[test]
     fn discrete_delta_routes_glide() {
-        match route_wheel_event(false, 0.0, 1.0, 3.0, 4.0) {
+        match route_wheel_event(false, 0.0, 1.0, 3.0, 4.0, 1.0) {
             WheelRouting::Glide { dx, dy, x, y } => {
                 assert_eq!(dx, 0.0);
                 assert_eq!(dy, -1.0); // negated per quadraui convention
@@ -678,6 +717,35 @@ mod tests {
                 assert_eq!(y, 4.0);
             }
             other => panic!("expected Glide, got {other:?}"),
+        }
+    }
+
+    /// A discrete (non-precise) wheel notch reports its delta in
+    /// *lines*, not points — `route_wheel_event` must scale it by
+    /// `line_height` before it reaches [`ns_scroll`], otherwise a
+    /// plain USB/third-party mouse wheel's 1-line notch would read as
+    /// a ~1-pixel scroll once `Backend::wheel_delta_rows` divides it
+    /// by that same line height downstream.
+    #[test]
+    fn discrete_delta_is_scaled_by_line_height() {
+        match route_wheel_event(false, 0.0, 1.0, 0.0, 0.0, 16.0) {
+            WheelRouting::Glide { dy, .. } => {
+                assert_eq!(dy, -16.0); // 1 line * 16pt line height, negated
+            }
+            other => panic!("expected Glide, got {other:?}"),
+        }
+    }
+
+    /// A degenerate (non-positive or non-finite) line height falls
+    /// back to an unscaled (1.0x) delta rather than dividing by zero
+    /// or producing `NaN`/`inf`.
+    #[test]
+    fn discrete_delta_falls_back_to_unscaled_on_degenerate_line_height() {
+        for lh in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            match route_wheel_event(false, 0.0, 1.0, 0.0, 0.0, lh) {
+                WheelRouting::Glide { dy, .. } => assert_eq!(dy, -1.0),
+                other => panic!("expected Glide, got {other:?}"),
+            }
         }
     }
 

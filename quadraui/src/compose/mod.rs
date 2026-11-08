@@ -40,6 +40,10 @@
 //!   [`crate::primitives::toast::ToastOverlay`]: Tab/Shift+Tab/Left/Right
 //!   cycle a focused toast's buttons, Up/Down move between toasts, Enter
 //!   activates, Escape dismisses.
+//! - [`HoverTooltipTracker`] — delay + auto-dismiss state machine for a
+//!   hover-driven tooltip, sitting on top of [`ToolbarHoverTracker`]/
+//!   [`ListHoverTracker`]/[`TreeHoverTracker`]'s plain "what's hovered"
+//!   answer.
 //!
 //! [`crate::ScrollView`] is a `primitives` type, not a controller here —
 //! it is the generic seam for a host that scrolls content it lays out
@@ -60,6 +64,7 @@ pub mod focus_ring;
 pub mod folder_picker;
 pub mod form_controller;
 pub mod help_layer;
+pub mod hover_tooltip_tracker;
 pub mod markdown;
 pub mod menu_system;
 pub mod message_dialog;
@@ -92,6 +97,7 @@ pub use help_layer::{
     filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote,
     HelpOverlayController, HelpOverlayEvent, HelpRegistry, ViewHelp,
 };
+pub use hover_tooltip_tracker::HoverTooltipTracker;
 pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown};
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
 pub use message_dialog::{MessageDialogController, MessageDialogEvent};
@@ -106,6 +112,6 @@ pub use tab_group::{
     TabGroupController, TabGroupEvent, TabGroupLayout,
 };
 pub use toast_stack::{ToastStackController, ToastStackEvent};
-pub use toolbar_hover_tracker::ToolbarHoverTracker;
+pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker, TreeHoverTracker};
 pub use tree_controller::{TreeController, TreeControllerEvent};
 pub use workspace::{WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout};

@@ -12,6 +12,44 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `QuiApp` platform-services methods, each a thin wrapper over the matching
+  `quadraui_binding_core::services` function: `check_for_update`/
+  `download_and_stage`/`apply_on_quit` (auto-update), `begin_power_save_block`/
+  `end_power_save_block` (the sleep/suspend inhibitor), `set_login_item`/
+  `login_item_enabled` (launch at login), `set_as_default_protocol_client`/
+  `is_default_protocol_client`/`remove_as_default_protocol_client` (OS
+  protocol registration), `begin_drag_out` (OS-level drag-out of this app's
+  window), and `add_recent_document`/`clear_recent_documents`/
+  `set_dock_menu`/`set_jump_list` (recent documents, the Dock icon menu, and
+  the Windows jump list). A new `UnsupportedError` exception (mirrors
+  `quadraui-ffi`'s `QUI_ERR_UNSUPPORTED`) surfaces a backend with no
+  implementation for one of these — the headless `TuiBackend` implements
+  none of them for real — instead of
+  a panic or a silent no-op. The void-returning methods among these
+  (everything but `check_for_update`, `download_and_stage`,
+  `begin_power_save_block`, `login_item_enabled`, and
+  `is_default_protocol_client`) also gained a `QuiAppActions` mirror for use
+  from inside a registered handler.
+- Three module-level, app-less functions: `quadraui.app_path(kind)` resolves
+  a standard per-app filesystem location (`"user_data"`, `"app_config"`,
+  `"app_cache"`, `"logs"`, `"temp"`, `"downloads"`, `"documents"`, `"home"`);
+  `quadraui.set_app_identifier(identifier)` sets the process-global
+  identifier its app-scoped kinds resolve under;
+  `quadraui.install_crash_handler(cfg)` installs a process-global Rust
+  panic hook that writes a crash record on an uncaught panic.
+- A `MouseMoved` event landing on (or leaving) any painted primitive now
+  dispatches a hit-tested `MouseEntered`/`MouseLeft` to the registered
+  handler ahead of the raw move itself, each carrying the primitive's own
+  `widget` id and `hit` detail — the real hover signal a tree/details-row
+  (or any other non-toolbar widget) hover tooltip needs, instead of a
+  handler re-deriving hit-testing from the raw cursor position itself.
+  Moving between two hits with the same widget id but a different detail
+  (e.g. row 2 to row 3 within the same tree) still reads as a hover
+  change. Suppressed while a divider/scrollbar/column drag is in
+  progress.
+- A `"tabs"` layout-node dict accepts an optional `"focused_index"` key
+  naming the keyboard-focused tab. TUI paints it in reverse video;
+  omitting the key (or passing `None`) keeps today's unfocused paint.
 - `QuiAppActions.set_theme(overrides)` — the deferred counterpart of
   `QuiApp.set_theme`, so a handler reacting to `UiEvent::SystemThemeChanged`
   can repaint the live `run_tui`/`run_native` backend without hitting the
@@ -106,3 +144,26 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   expose `quadraui::PlatformServices`'s OS-wide hotkey seam — headless-only
   for now, and raising `InternalError` until an in-tree backend implements
   a real OS hotkey call.
+
+### Changed
+
+- A `list` event dict can now carry an `"ItemDoubleClicked"` key (double
+  click, distinct from a plain click's `"SelectionChanged"`) alongside the
+  existing `"SelectionChanged"`/`"ItemActivated"`/`"KeyPressed"`/
+  `"SelectionSet"` — mirrors the Rust-side `ListViewEvent::ItemDoubleClicked`
+  through the same generic event-to-dict pythonization every other `list`
+  event already goes through, no new binding code needed. A `data_table`
+  event dict gained the equivalent `"RowDoubleClicked"` key alongside
+  `"RowSelected"`/`"RowActivated"`/`"HeaderClicked"`/etc. A single click on
+  a `list`/`data_table` row now only ever produces
+  `"SelectionChanged"`/`"RowSelected"`, never `"ItemActivated"`/
+  `"RowActivated"` — a Python app that was treating a plain click as
+  "open" (reading `"ItemActivated"`/`"RowActivated"` from a single click)
+  now needs to read `"ItemDoubleClicked"`/`"RowDoubleClicked"` instead, or
+  listen for both to also catch Enter (see next entry).
+- Pressing Enter on a focused `list` with a selected row now also produces
+  an `"ItemActivated"` event dict (previously only a focused `data_table`'s
+  Enter did; a focused list's Enter fell through as a raw `"KeyPressed"`
+  dict instead). A Python app wiring up "open this row" from the keyboard
+  listens for `"ItemActivated"` on a `list` event the same way it already
+  would on a `data_table` one.

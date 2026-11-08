@@ -17,6 +17,7 @@ use gtk4::pango;
 
 use super::{cairo_rgb, rounded_rect_path};
 use crate::primitives::list::{ListView, ListViewLayout};
+use crate::style::Style;
 use crate::theme::Theme;
 
 /// Compute the GTK pixel-unit layout for a [`ListView`] without painting —
@@ -60,6 +61,43 @@ pub fn gtk_list_layout(
     )
 }
 
+/// Like [`gtk_list_layout`], but threads an explicit pixel-precise
+/// scroll position (`scroll_px`) through to
+/// [`ListView::layout_with_scroll_px`] instead of only
+/// [`ListView::scroll_offset`]'s whole-row value — mirrors
+/// [`crate::primitives::layout_metrics::list_layout`]'s own border-inset
+/// and h-scrollbar reservation math (that shared fn calls
+/// `ListView::layout`, which can't reach the scroll_px-aware method, so
+/// this duplicates its small reservation arithmetic rather than widening
+/// that fn's signature — the same approach
+/// [`super::super::macos::list::mac_list_layout_with_scroll_px`] takes).
+/// `scroll_px: None` produces byte-identical output to [`gtk_list_layout`].
+pub fn gtk_list_layout_with_scroll_px(
+    w: f64,
+    h: f64,
+    list: &ListView,
+    line_height: f64,
+    char_width: f64,
+    scroll_px: Option<f32>,
+) -> ListViewLayout {
+    let border_inset: f64 = if list.bordered { 1.0 } else { 0.0 };
+    let visible_px = (w - border_inset * 2.0).max(0.0);
+    let needs_hscrollbar = list
+        .max_content_width
+        .is_some_and(|n| n as f64 * char_width > visible_px);
+    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
+    let title_h = if list.title.is_some() {
+        line_height as f32
+    } else {
+        0.0
+    };
+    let layout_w = (w - border_inset * 2.0) as f32;
+    let layout_h = (h - border_inset * 2.0 - hscrollbar_h).max(0.0) as f32;
+    list.layout_with_scroll_px(layout_w, layout_h, title_h, scroll_px, |_| {
+        crate::primitives::list::ListItemMeasure::new(line_height as f32)
+    })
+}
+
 /// Draw a [`ListView`] into `(x, y, w, h)` on `cr`.
 ///
 /// Caller owns `layout`'s font choice — the rasteriser doesn't
@@ -97,8 +135,94 @@ pub fn draw_list(
     h: f64,
     list: &ListView,
     theme: &Theme,
+    style: &Style,
     line_height: f64,
     nerd_fonts_enabled: bool,
+) {
+    draw_list_impl(
+        cr,
+        layout,
+        x,
+        y,
+        w,
+        h,
+        list,
+        theme,
+        style,
+        line_height,
+        nerd_fonts_enabled,
+        None,
+        None,
+        false,
+        None,
+    )
+}
+
+/// [`draw_list`], tinting the hovered/pressed row's background, and —
+/// when `scroll_px` is `Some` — painting at a pixel-precise scroll
+/// position instead of only [`ListView::scroll_offset`]'s whole-row
+/// value: the first visible row shifts up by the sub-row remainder
+/// (via [`gtk_list_layout_with_scroll_px`]) and the vertical scrollbar
+/// thumb tracks the same position (via
+/// [`crate::primitives::list::native_surface_paint::paint_with_scroll_px`]).
+/// `hovered_idx` / `pressed_idx` are indices into `list.items`, same as
+/// [`crate::Backend::draw_list_with_state`]. `None`/`None`/`false`/`None`
+/// paints byte-for-byte what [`draw_list`] paints. `focus_ring_visible` —
+/// see [`crate::Backend::draw_list_with_state`]'s matching doc.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_list_with_state(
+    cr: &Context,
+    layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    list: &ListView,
+    theme: &Theme,
+    style: &Style,
+    line_height: f64,
+    nerd_fonts_enabled: bool,
+    hovered_idx: Option<usize>,
+    pressed_idx: Option<usize>,
+    focus_ring_visible: bool,
+    scroll_px: Option<f32>,
+) {
+    draw_list_impl(
+        cr,
+        layout,
+        x,
+        y,
+        w,
+        h,
+        list,
+        theme,
+        style,
+        line_height,
+        nerd_fonts_enabled,
+        hovered_idx,
+        pressed_idx,
+        focus_ring_visible,
+        scroll_px,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_list_impl(
+    cr: &Context,
+    layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    list: &ListView,
+    theme: &Theme,
+    style: &Style,
+    line_height: f64,
+    nerd_fonts_enabled: bool,
+    hovered_idx: Option<usize>,
+    pressed_idx: Option<usize>,
+    focus_ring_visible: bool,
+    scroll_px: Option<f32>,
 ) {
     if w <= 0.0 || h <= 0.0 {
         return;
@@ -115,7 +239,7 @@ pub fn draw_list(
     let (cw_px, _) = layout.pixel_size();
     let char_w = cw_px.max(1) as f64;
 
-    let list_layout = gtk_list_layout(w, h, list, line_height, char_w);
+    let list_layout = gtk_list_layout_with_scroll_px(w, h, list, line_height, char_w, scroll_px);
 
     if list.bordered {
         cr.save().ok();
@@ -129,7 +253,7 @@ pub fn draw_list(
         layout: Some(layout),
         translucent_fill: true,
     };
-    crate::primitives::list::native_surface_paint::paint(
+    crate::primitives::list::native_surface_paint::paint_with_scroll_px(
         list,
         area,
         &list_layout,
@@ -139,6 +263,11 @@ pub fn draw_list(
         /* supports_hscrollbar */ true,
         &mut surface,
         theme,
+        style,
+        hovered_idx,
+        pressed_idx,
+        focus_ring_visible,
+        scroll_px,
     );
 
     if list.bordered {
@@ -228,6 +357,7 @@ mod tests {
                 H as f64,
                 &list,
                 &test_theme(),
+                &Style::default(),
                 LINE_HEIGHT,
                 false,
             );
@@ -248,6 +378,189 @@ mod tests {
             (255, 255, 255),
             "expected the v-scrollbar track at ({probe_x}, {probe_y}) to be painted \
              (non-background), got white — the #1075 regression this test guards"
+        );
+    }
+
+    /// Paint-vs-hit-test agreement at a *non-default* [`Style::scrollbar_width`],
+    /// through the real `GtkBackend::draw_list` / `GtkBackend::list_vscrollbar`
+    /// trait methods rather than calling the primitive's geometry directly.
+    ///
+    /// `LINE_HEIGHT` (`10.0`) deliberately equals `Style::default()`'s
+    /// `scrollbar_width`, so a track-width regression that silently falls
+    /// back to `row_height` (what `ListView::vscrollbar` does) would still
+    /// probe the right pixel at the default style — exactly the drift this
+    /// test's non-default width is here to catch. A width far from
+    /// `LINE_HEIGHT` makes the two diverge wherever `list_vscrollbar`'s
+    /// hit-test and `draw_list`'s paint disagree on which token sets the
+    /// track's column width.
+    #[test]
+    fn gtk_list_vscrollbar_hit_test_agrees_with_draw_list_paint_at_non_default_width() {
+        use crate::gtk::GtkBackend;
+        use crate::Backend;
+
+        let list = vlist(30);
+        let rect = crate::event::Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        let mut backend = GtkBackend::new();
+        backend.set_current_style(Style::default().with_scrollbar_width(30.0));
+
+        let expected = backend
+            .list_vscrollbar(rect, &list)
+            .expect("30 rows in a 10-row viewport must need a v-scrollbar");
+
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_list(rect, &list);
+            });
+        }
+
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let probe_x = (expected.track.x + expected.track.width / 2.0).round() as i32;
+        let probe_y = (expected.track.y + expected.track.height / 2.0).round() as i32;
+        let (r, g, b) = pixel(
+            &data,
+            stride,
+            probe_x.clamp(0, W - 1),
+            probe_y.clamp(0, H - 1),
+        );
+        assert_ne!(
+            (r, g, b),
+            (255, 255, 255),
+            "expected the v-scrollbar track `GtkBackend::list_vscrollbar` resolves at \
+             ({probe_x}, {probe_y}) to be painted (non-background) by `GtkBackend::draw_list` \
+             — paint and hit-test must agree on the track's column width"
+        );
+    }
+
+    fn paint_bytes(list: &ListView, scroll_px: Option<f32>) -> (Vec<u8>, usize) {
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(test_theme().background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_list_with_state(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                list,
+                &test_theme(),
+                &Style::default(),
+                LINE_HEIGHT,
+                false,
+                None,
+                None,
+                false,
+                scroll_px,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data").to_vec();
+        (data, stride)
+    }
+
+    /// `scroll_px: None` must paint pixel-identically to [`draw_list`] —
+    /// `draw_list_with_state` is additive, not a behaviour change for the
+    /// default path.
+    #[test]
+    fn scroll_px_none_paints_identically_to_draw_list() {
+        let list = vlist(30);
+
+        let mut plain_surface =
+            ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&plain_surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(test_theme().background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_list(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                &list,
+                &test_theme(),
+                &Style::default(),
+                LINE_HEIGHT,
+                false,
+            );
+        }
+        plain_surface.flush();
+        let plain_bytes = plain_surface.data().expect("surface data").to_vec();
+
+        let (state_bytes, _) = paint_bytes(&list, None);
+
+        assert_eq!(
+            plain_bytes, state_bytes,
+            "scroll_px: None must paint the same pixels as draw_list"
+        );
+    }
+
+    /// A sub-row `scroll_px` shifts row 0 above the viewport top and
+    /// reveals row 1 one sub-row-remainder early — the "partial first
+    /// row clipped" look of pixel-smooth scrolling.
+    #[test]
+    fn scroll_px_shifts_the_first_row_above_the_viewport_top() {
+        let list = vlist(30); // `vlist` already seeds `selected_idx: 0`.
+        let half = (LINE_HEIGHT / 2.0) as f32;
+
+        let (scrolled_bytes, stride) = paint_bytes(&list, Some(half));
+        let (baseline_bytes, _) = paint_bytes(&list, None);
+
+        // Row 0 is selected, so probing just past its unscrolled bottom
+        // edge must land on row 1's (unselected) background once the
+        // sub-row shift is applied — at that same absolute pixel, the
+        // `scroll_px: None` paint is still inside row 0's selected band.
+        let theme = test_theme();
+        let probe_y = (half + 1.0) as i32;
+        let probe_x = (W / 2).min(W - 1);
+        assert!(
+            probe_y < H,
+            "probe_y ({probe_y}) must be inside the {H}px-tall viewport, or this test \
+             probes the wrong pixel instead of failing loudly"
+        );
+        let (r, g, b) = pixel(&scrolled_bytes, stride, probe_x, probe_y);
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "pixel just below row 0's shifted bottom edge should show row 1's \
+             background, not the still-selected row 0 a whole-row paint would \
+             show there"
+        );
+
+        // Prove the other half of the claim: at that exact same absolute
+        // pixel, a `scroll_px: None` paint (today's baseline behaviour)
+        // *is* still inside row 0's selected band — the two assertions
+        // together show the sub-row shift, not some other difference,
+        // moved the boundary.
+        let (br, bg, bb) = pixel(&baseline_bytes, stride, probe_x, probe_y);
+        assert_eq!(
+            (br, bg, bb),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "the same probe pixel on a scroll_px: None paint must still show \
+             row 0's selected background"
         );
     }
 }
@@ -417,5 +730,123 @@ mod multi_select_driver_tests {
             },
         ));
         assert_eq!(driver.app().selected, vec![1, 4]);
+    }
+}
+
+/// Headless pixel round-trip for [`crate::Backend::draw_list_with_state`]:
+/// a plain `MouseMoved` (no button held, unlike [`GtkDriver::mouse_move`]'s
+/// drag-move) over a row tints its background via
+/// [`crate::theme::Theme::list_hover_bg`], and moving off the row restores
+/// the original pixel — the acceptance case quadraui#2034 asks for.
+#[cfg(test)]
+mod hover_driver_tests {
+    use crate::gtk::testing::GtkDriver;
+    use crate::runner::{AppLogic, Reaction};
+    use crate::{
+        Backend, Decoration, ListHoverTracker, ListItem, ListItemMeasure, ListView, Point, Rect,
+        StyledText, UiEvent, WidgetId,
+    };
+
+    const VIEWPORT_W: f32 = 80.0;
+    const VIEWPORT_H: f32 = 40.0;
+    const ROW_H: f32 = 10.0;
+
+    fn item(label: &str) -> ListItem {
+        ListItem {
+            text: StyledText::plain(label.to_string()),
+            icon: None,
+            detail: None,
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn sample_list() -> ListView {
+        ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..4).map(|i| item(&format!("row {i}"))).collect(),
+            // No row selected, so `Theme::selected_bg` never masks the
+            // hover tint this test is probing for.
+            selected_idx: usize::MAX,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        }
+    }
+
+    struct ListApp {
+        list: ListView,
+        hover: ListHoverTracker,
+    }
+
+    impl ListApp {
+        fn new() -> Self {
+            Self {
+                list: sample_list(),
+                hover: ListHoverTracker::new(),
+            }
+        }
+    }
+
+    impl AppLogic for ListApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_list_with_state(
+                Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H),
+                &self.list,
+                &crate::primitives::list::ListPaintState::default()
+                    .with_hovered_idx(self.hover.hovered_idx()),
+                false,
+            );
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::MouseMoved { position, .. } = event else {
+                return Reaction::Continue;
+            };
+            let layout = self
+                .list
+                .layout(VIEWPORT_W, VIEWPORT_H, 0.0, |_| ListItemMeasure::new(ROW_H));
+            if self.hover.update(&layout, position.x, position.y) {
+                Reaction::Redraw
+            } else {
+                Reaction::Continue
+            }
+        }
+    }
+
+    fn mouse_moved(x: f32, y: f32) -> UiEvent {
+        UiEvent::MouseMoved {
+            position: Point::new(x, y),
+            buttons: Default::default(),
+        }
+    }
+
+    #[test]
+    fn hovering_a_row_tints_its_background_and_moving_off_clears_it() {
+        let mut driver = GtkDriver::new(ListApp::new(), VIEWPORT_W as i32, VIEWPORT_H as i32);
+        let probe_x = 4;
+        let probe_y = (ROW_H / 2.0) as i32; // inside row 0's band
+        let base = driver.pixel(probe_x, probe_y);
+
+        driver.dispatch(mouse_moved(4.0, ROW_H / 2.0));
+        let hovered = driver.pixel(probe_x, probe_y);
+        assert_ne!(
+            hovered, base,
+            "hovering row 0 at ({probe_x}, {probe_y}) should tint its background"
+        );
+
+        // Below the last row (4 rows of 10px in a 40px-tall viewport) is
+        // the empty tail — hovering there clears the tracker entirely.
+        driver.dispatch(mouse_moved(4.0, VIEWPORT_H - 1.0));
+        let cleared = driver.pixel(probe_x, probe_y);
+        assert_eq!(
+            cleared, base,
+            "moving off row 0 should restore its original background"
+        );
     }
 }

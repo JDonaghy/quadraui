@@ -1214,13 +1214,13 @@ def test_status_bar_renders_segment_text():
     assert app.screen_contains("main")
 
 
-def test_clicking_a_toolbar_button_sets_widget_to_the_button_id():
-    # `Toolbar` has no typed `UiEvent` of its own, so a click on one of its
-    # buttons reaches the handler as the same raw `MouseDown` a plain
-    # `Button` click would produce: `widget` is the clicked BUTTON's own
-    # id (not the toolbar's), with a `"hit"` dict naming the enclosing bar.
-    # Neither `Toolbar` nor its buttons are a tab stop, so `_click` (which
-    # asserts exactly one event) applies directly.
+def test_clicking_a_toolbar_button_emits_toolbar_button_clicked():
+    # A click on a toolbar `Action` button reaches the handler as a typed
+    # `Toolbar` event: `(bar_id, {"ButtonClicked": {"id", "is_active"}})`,
+    # where `is_active` is the button's flipped state. The clicked button's
+    # id (not the bar's) is what resolves against the hit map, and only the
+    # bar is a tab stop, so no `FocusChanged` precedes it and `_click`
+    # (which asserts exactly one event) applies directly.
     app = QuiApp(40, 20)
     app.insert_extra(
         "toolbar",
@@ -1234,8 +1234,61 @@ def test_clicking_a_toolbar_button_sets_widget_to_the_button_id():
 
     event = _click(app, 1.0, 0.0)
 
-    assert event["MouseDown"]["widget"] == "toolbar:refresh"
-    assert event["hit"] == {"kind": "extra_chrome", "bar": "toolbar:main"}
+    assert "MouseDown" not in event, event
+    bar, payload = event["Toolbar"]
+    assert bar == "toolbar:main"
+    assert payload == {"ButtonClicked": {"id": "toolbar:refresh", "is_active": True}}
+
+
+def test_clicking_an_active_toolbar_button_reports_it_toggled_off():
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "toolbar",
+        {
+            "id": "toolbar:main",
+            "buttons": [
+                {"Action": {"id": "toolbar:wrap", "label": "Wrap", "is_active": True}},
+            ],
+        },
+    )
+
+    event = _click(app, 1.0, 0.0)
+
+    bar, payload = event["Toolbar"]
+    assert bar == "toolbar:main"
+    assert payload == {"ButtonClicked": {"id": "toolbar:wrap", "is_active": False}}
+
+
+def test_enter_on_a_focused_toolbar_activates_its_focused_button():
+    # Tab focuses the toolbar (its only tab stop); Enter then activates the
+    # button `focused_index` names, emitting the same `Toolbar` event shape
+    # a mouse click does.
+    app = QuiApp(40, 20)
+    app.insert_extra(
+        "toolbar",
+        {
+            "id": "toolbar:main",
+            "focused_index": 1,
+            "buttons": [
+                {"Action": {"id": "toolbar:filter", "label": "Filter"}},
+                {"Action": {"id": "toolbar:reset", "label": "Reset"}},
+            ],
+        },
+    )
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    for key in ("Tab", "Enter"):
+        app.push_event(
+            {"KeyPressed": {"key": {"Named": key}, "modifiers": {}, "repeat": False}}
+        )
+        app.run(1)
+
+    toolbar_events = [event["Toolbar"] for event in received if "Toolbar" in event]
+    assert toolbar_events, received
+    bar, payload = toolbar_events[0]
+    assert bar == "toolbar:main"
+    assert payload == {"ButtonClicked": {"id": "toolbar:reset", "is_active": True}}
 
 
 def test_clicking_a_status_bar_segment_emits_segment_clicked():
@@ -2047,6 +2100,40 @@ def test_show_context_menu_escape_dismisses_without_item_activation():
     app.run(1)
 
     assert received == ["ContextMenuDismissed"]
+
+
+def test_show_context_menu_item_with_codicon_icon_renders_fallback():
+    # `ContextMenuItem::icon` accepts the same `{"codicon": "...",
+    # "fallback": "..."}` wire shape a tree row's `icon` does (see
+    # `test_descriptors.py::test_insert_tree_with_codicon_icon`), but
+    # paints into the single-cell gutter `checked`'s `✓` shares (only
+    # the fallback's first character renders) rather than a
+    # measured-width slot -- `QuiApp`'s headless driver defaults to nerd
+    # fonts off, so that's the fallback's plain-text first character,
+    # directly left of the label with no gap.
+    app = QuiApp(40, 20)
+    items = [
+        {
+            "id": "new-file",
+            "label": {"spans": [{"text": "New File", "fg": None, "bg": None}]},
+            "icon": {"codicon": "new-file", "fallback": "NF"},
+        },
+    ]
+    app.show_context_menu(items, (2.0, 2.0))
+    assert app.screen_contains("NNew File")
+
+
+def test_show_context_menu_item_with_unknown_codicon_name_raises():
+    app = QuiApp(40, 20)
+    items = [
+        {
+            "id": "new-file",
+            "label": {"spans": [{"text": "New File", "fg": None, "bg": None}]},
+            "icon": {"codicon": "not-a-real-codicon-name", "fallback": "?"},
+        },
+    ]
+    with pytest.raises(InvalidDescriptorError):
+        app.show_context_menu(items, (2.0, 2.0))
 
 
 def test_show_message_dialog_rejects_empty_buttons():

@@ -240,6 +240,7 @@ fn paint(cr: &Cairo, w: f64, h: f64, state: &AppState, da: &DrawingArea) {
         body_h,
         &list,
         &theme(),
+        &quadraui::Style::default(),
         line_h,
         false,
     );

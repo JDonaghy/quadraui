@@ -126,7 +126,7 @@ use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{MultiSectionView, Section, SectionBody};
 use crate::primitives::palette::Palette;
 use crate::primitives::pipeline_view::{PipelineStage, PipelineView, StageStatus};
-use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemRole};
 use crate::primitives::tree::{TreeRow, TreeView};
 use crate::types::{StyledText, WidgetId};
 
@@ -1315,17 +1315,36 @@ impl A11yPrimitive for Toolbar {
     }
 
     fn a11y_children(&self) -> Vec<A11yChild> {
-        self.buttons
-            .iter()
-            .enumerate()
-            .map(|(idx, button)| toolbar_child(idx, button))
-            .collect()
+        self.a11y_children_with_role(ToolbarItemRole::Button)
     }
 
     fn a11y_focus_key(&self) -> Option<String> {
         let idx = self.focused_index?;
         let button = self.buttons.get(idx)?;
         Some(toolbar_child_key(idx, button))
+    }
+}
+
+impl Toolbar {
+    /// [`A11yPrimitive::a11y_children`], but every [`ToolbarButton::Action`]
+    /// child's role is `role` instead of the trait impl's own
+    /// [`ToolbarItemRole::Button`] default.
+    ///
+    /// A knob on this method rather than a stored field on [`Toolbar`]
+    /// itself: [`A11yPrimitive::a11y_children`] takes no extra
+    /// parameters (shared by every chrome primitive), so threading a
+    /// per-bar role through the generic a11y tree walk would need a new
+    /// `Toolbar` field — and, since `Toolbar` is constructed via
+    /// exhaustive struct literals throughout this crate (not just
+    /// downstream), that would force every one of them to name it. A
+    /// host that wants `ActivityBar`-shaped `Tab` semantics calls this
+    /// method directly instead.
+    pub fn a11y_children_with_role(&self, role: ToolbarItemRole) -> Vec<A11yChild> {
+        self.buttons
+            .iter()
+            .enumerate()
+            .map(|(idx, button)| toolbar_child(idx, button, role))
+            .collect()
     }
 }
 
@@ -1336,10 +1355,11 @@ fn toolbar_child_key(idx: usize, button: &ToolbarButton) -> String {
         ToolbarButton::Action { id, .. } => format!("button.{}", id.as_str()),
         ToolbarButton::Separator => format!("separator.{idx}"),
         ToolbarButton::Label { .. } => format!("label.{idx}"),
+        ToolbarButton::Spacer => format!("spacer.{idx}"),
     }
 }
 
-fn toolbar_child(idx: usize, button: &ToolbarButton) -> A11yChild {
+fn toolbar_child(idx: usize, button: &ToolbarButton, role: ToolbarItemRole) -> A11yChild {
     let key = toolbar_child_key(idx, button);
     let info = match button {
         ToolbarButton::Action {
@@ -1349,15 +1369,25 @@ fn toolbar_child(idx: usize, button: &ToolbarButton) -> A11yChild {
             tooltip,
             ..
         } => {
+            let a11y_role = match role {
+                ToolbarItemRole::Button => A11yRole::Button,
+                ToolbarItemRole::Tab => A11yRole::Tab,
+            };
             let mut info = A11yInfo::new()
-                .with_role(A11yRole::Button)
+                .with_role(a11y_role)
                 .with_disabled(!*enabled);
             if let Some(label) = non_empty(label.clone()) {
                 info = info.with_label(label);
             }
-            if *is_active {
-                info = info.with_checked(A11yChecked::True);
-            }
+            info = match role {
+                // `Button`'s existing contract: a toggled-on action
+                // reads as checked.
+                ToolbarItemRole::Button if *is_active => info.with_checked(A11yChecked::True),
+                // `Tab`'s contract (matching `ActivityItem`'s own):
+                // the active item reads as the selected tab.
+                ToolbarItemRole::Tab => info.with_selected(*is_active),
+                ToolbarItemRole::Button => info,
+            };
             if let Some(tooltip) = non_empty(tooltip.clone()) {
                 info = info.with_value(tooltip);
             }
@@ -1375,6 +1405,9 @@ fn toolbar_child(idx: usize, button: &ToolbarButton) -> A11yChild {
             }
             info
         }
+        // A spacer is an invisible layout gap: no node an assistive
+        // technology should ever land on.
+        ToolbarButton::Spacer => A11yInfo::new().with_role(A11yRole::Presentation),
     };
     A11yChild::new(key, info)
 }
@@ -1937,6 +1970,7 @@ mod tests {
     fn toolbar(id: &str) -> Toolbar {
         Toolbar::new(WidgetId::new(id)).with_buttons(vec![
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("run"),
                 label: "Run".to_string(),
                 icon: None,
@@ -1947,6 +1981,7 @@ mod tests {
             },
             ToolbarButton::Separator,
             ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("stop"),
                 label: "Stop".to_string(),
                 icon: None,
@@ -2111,6 +2146,57 @@ mod tests {
              presentation\n    \
              button \"Stop\" [disabled]\n"
         );
+    }
+
+    /// [`ToolbarItemRole::Tab`] yields `tab` children instead of the
+    /// `a11y_children` trait method's own `Button` default — matching
+    /// `ActivityItem`'s own role for a toolbar repurposed as an
+    /// activity-bar-shaped rail of view switches. `is_active` reads as
+    /// `selected` under this role, not `checked`.
+    #[test]
+    fn toolbar_with_tab_role_yields_tab_children_with_selected_state() {
+        let bar = Toolbar::new(WidgetId::new("rail")).with_buttons(vec![
+            ToolbarButton::Action {
+                spec: None,
+                id: WidgetId::new("explorer"),
+                label: "Explorer".to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: true,
+                tooltip: String::new(),
+            },
+            ToolbarButton::Action {
+                spec: None,
+                id: WidgetId::new("search"),
+                label: "Search".to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            },
+        ]);
+
+        // The trait method keeps its own `Button` default — untouched by
+        // the role knob.
+        let default_children = bar.a11y_children();
+        assert_eq!(default_children[0].info.a11y_role, Some(A11yRole::Button));
+
+        let tab_children = bar.a11y_children_with_role(ToolbarItemRole::Tab);
+        assert_eq!(tab_children[0].info.a11y_role, Some(A11yRole::Tab));
+        assert_eq!(tab_children[1].info.a11y_role, Some(A11yRole::Tab));
+        assert_eq!(tab_children[0].info.selected, Some(true));
+        assert_eq!(tab_children[1].info.selected, Some(false));
+    }
+
+    /// A [`ToolbarButton::Spacer`] is an invisible layout gap: it never
+    /// gets a node an assistive technology could land on.
+    #[test]
+    fn toolbar_spacer_is_presentation_only() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![ToolbarButton::Spacer]);
+        let children = bar.a11y_children();
+        assert_eq!(children[0].info.a11y_role, Some(A11yRole::Presentation));
     }
 
     #[test]

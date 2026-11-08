@@ -17,14 +17,14 @@
 //! TUI has no OS-level login/session-start hook to register against — a
 //! terminal app launching itself at login is physically absent the same
 //! way a tray icon or dock badge is — so
-//! [`crate::tui::services::TuiPlatformServices`] overrides
+//! [`crate::tui::services::TuiPlatformServices`] leaves both
 //! [`PlatformServices::login_item_enabled`][crate::PlatformServices::login_item_enabled]
-//! with an honest no-op that always reports `false` rather than leaving it
-//! `Unsupported`: a caller that only wants to display current state (not
-//! mutate it) gets a truthful answer instead of an error on a query that
-//! has an obvious right answer on this backend. `set_login_item` stays at
-//! its `Unsupported` default on TUI — there is no honest "success" value
-//! for a mutation with nothing to mutate.
+//! and `set_login_item` at the trait's own `Unsupported` default,
+//! matching every other in-tree backend that doesn't override either: a
+//! faked-up `Ok(false)` would read as "this app is not registered to
+//! start at login", which this backend has no way to actually know (a
+//! host or packaging step could still have registered it out of band,
+//! e.g. a cron/systemd-user entry).
 
 use serde::{Deserialize, Serialize};
 

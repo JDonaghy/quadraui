@@ -100,6 +100,7 @@ fn toolbar_builder_covers_every_consumer_set_field() {
             enabled: true,
             is_active: false,
             tooltip: String::new(),
+            spec: None,
         },
     ]);
 
@@ -122,6 +123,7 @@ fn nerd_font_fallbacks_are_available_without_new_toolbar_fields() {
             enabled: true,
             is_active: false,
             tooltip: String::new(),
+            spec: None,
         },
     ]);
     let icons =
@@ -343,6 +345,7 @@ mod toolbar_paint_call_shapes {
             enabled: true,
             is_active: false,
             tooltip: String::new(),
+            spec: None,
         }])
     }
 

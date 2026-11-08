@@ -21,10 +21,62 @@
 //! A caller may choose its own `min_thumb_len` value (cells vs. pixels,
 //! 1 vs. 8, etc.) — that is a per-surface *policy knob* `fit_thumb`
 //! takes as a parameter.
+//!
+//! ## Idle fade
+//!
+//! [`idle_fade_opacity`] is the overlay-scrollbar fade curve: full
+//! opacity for [`SCROLLBAR_FADE_HOLD`] after the last hover/scroll/drag,
+//! then a linear fade to `0.0` over [`SCROLLBAR_FADE_OUT`], built on
+//! [`crate::transition::Transition`] so it shares its deterministic,
+//! headless-clock-friendly contract (pass a fixed [`std::time::Instant`]
+//! captured once at test setup, advance `now` by adding a
+//! [`std::time::Duration`]). The function itself only answers "how
+//! opaque should the bar be right now" — it does not track *when* a
+//! widget was last interacted with; that timestamp is per-widget,
+//! backend-driven state (mouse-move/scroll/drag events differ by
+//! backend) a host feeds in. [`native_surface_paint::paint_with_opacity`]
+//! is the render-side half of the seam: the same track/thumb fill
+//! [`native_surface_paint::paint`] already does, scaled by an opacity
+//! multiplier a caller computed via [`idle_fade_opacity`].
 
 use crate::event::Rect;
+use crate::transition::Transition;
 use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
+
+/// How long an overlay scrollbar stays fully visible after the last
+/// hover/scroll/drag interaction, before [`idle_fade_opacity`] starts
+/// fading it out — VS Code holds the bar at full opacity for a beat
+/// rather than snapping it invisible the instant activity stops.
+pub const SCROLLBAR_FADE_HOLD: Duration = Duration::from_millis(400);
+
+/// How long the fade-out itself takes once [`SCROLLBAR_FADE_HOLD`] elapses.
+pub const SCROLLBAR_FADE_OUT: Duration = Duration::from_millis(800);
+
+/// Opacity multiplier (`0.0..=1.0`) for an overlay scrollbar that was
+/// last interacted with (hovered, scrolled, or dragged) at
+/// `last_interaction`, sampled at `now`.
+///
+/// Full opacity for [`SCROLLBAR_FADE_HOLD`] after `last_interaction`, then
+/// a linear ramp down to `0.0` over the following [`SCROLLBAR_FADE_OUT`] —
+/// a thin wrapper around [`Transition::progress_at`] run in reverse
+/// (`1.0 - progress`). `now` at or before `last_interaction` returns
+/// `1.0` rather than going negative: [`Instant::duration_since`] itself
+/// saturates to a zero [`Duration`] when `now` precedes `last_interaction`,
+/// which already falls inside the hold window below, so no separate
+/// early-return is needed for that case.
+///
+/// Tests build a deterministic headless clock the same way
+/// [`Transition`]'s own doc describes: capture `Instant::now()` once,
+/// then advance `now` by adding a [`Duration`] rather than sleeping.
+pub fn idle_fade_opacity(last_interaction: Instant, now: Instant) -> f32 {
+    if now.duration_since(last_interaction) <= SCROLLBAR_FADE_HOLD {
+        return 1.0;
+    }
+    let fade = Transition::starting_at(last_interaction + SCROLLBAR_FADE_HOLD, SCROLLBAR_FADE_OUT);
+    1.0 - fade.progress_at(now)
+}
 
 /// Orientation of a scrollbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,6 +354,27 @@ pub fn scroll_rows(scroll_offset: f32) -> usize {
     }
 }
 
+/// Floor a continuous pixel offset to the whole row a `scroll_px` paint
+/// path starts painting from.
+///
+/// This is the same `(px / row_height).floor()` [`resolve_scroll_px`]
+/// uses to pick its starting row, extracted so every caller that derives
+/// a row index from a pixel offset (a controller accumulating
+/// `scroll_px`, a paint path resolving it) agrees on the same rounding
+/// direction. Non-finite, non-positive `px`, or a non-finite/non-positive
+/// `row_height`, resolves to `0`.
+pub fn scroll_rows_floor(px: f32, row_height: f32) -> usize {
+    if !row_height.is_finite() || row_height <= 0.0 {
+        return 0;
+    }
+    let row = (px / row_height).floor();
+    if row.is_finite() && row > 0.0 {
+        row as usize
+    } else {
+        0
+    }
+}
+
 /// Clamp `current + delta` into `[0, max]`.
 ///
 /// The core arithmetic behind every `scroll_by` / `page_scroll` operation.
@@ -329,6 +402,54 @@ pub fn clamp_scroll_offset(scroll_offset: usize, content_len: usize) -> usize {
         0
     } else {
         scroll_offset.min(content_len - 1)
+    }
+}
+
+/// Resolve a widget's `(scroll_offset, scroll_px)` pair into a whole
+/// starting-row index plus the sub-row pixel remainder a GUI painter
+/// uses to clip the first visible row.
+///
+/// `scroll_px` wins over `scroll_offset` when it is `Some` and usable
+/// (finite, non-negative, and `row_height` itself finite and positive);
+/// otherwise this is exactly [`clamp_scroll_offset`] with a `0.0`
+/// remainder, so a caller that never has a `scroll_px` to pass (`None`)
+/// sees no behaviour change at all.
+///
+/// `row_height` is the caller's uniform row height in its native unit
+/// (`1.0` on TUI, `line_height` on pixel backends). Content with
+/// per-row-varying heights (`measure_item` returning different values)
+/// should pass a representative row height — the same approximation
+/// `vscrollbar`/`hscrollbar` already make for thumb sizing — so the
+/// conversion is exact for uniform-height content and approximate
+/// otherwise.
+///
+/// The returned `sub_row_px` is `0.0` whenever `px` pushes the floored
+/// row index itself past the content's last reachable offset (nothing
+/// left to partially scroll past) — e.g. `px` far beyond
+/// `content_len * row_height`. It is **not** always `0.0` just because
+/// the resolved row happens to equal `content_len - 1`;
+/// `resolve_scroll_px(0, Some(4.5), 5, 1.0)` still returns `(4, 0.5)`,
+/// since `4` is reachable on its own (no clamping occurred) and `0.5`
+/// pixels remain unaccounted for. A TUI rasteriser that only reads the
+/// row index and never this remainder gets the pre-existing whole-row
+/// behaviour "for free" either way: `scroll_px` degrades to
+/// row-quantised there, rather than breaking.
+pub fn resolve_scroll_px(
+    scroll_offset: usize,
+    scroll_px: Option<f32>,
+    content_len: usize,
+    row_height: f32,
+) -> (usize, f32) {
+    let px = match scroll_px {
+        Some(px) if px.is_finite() && px >= 0.0 && row_height.is_finite() && row_height > 0.0 => px,
+        _ => return (clamp_scroll_offset(scroll_offset, content_len), 0.0),
+    };
+    let row_idx = scroll_rows_floor(px, row_height);
+    let clamped = clamp_scroll_offset(row_idx, content_len);
+    if clamped == row_idx {
+        (clamped, (px - clamped as f32 * row_height).max(0.0))
+    } else {
+        (clamped, 0.0)
     }
 }
 
@@ -452,11 +573,35 @@ pub(crate) mod native_surface_paint {
     /// hover/drag. See this module's doc for the one known divergence
     /// re-verified (already fixed) while unifying three
     /// per-backend copies into this one.
+    ///
+    /// Equivalent to [`paint_with_opacity`] at `opacity = 1.0` — callers
+    /// that don't yet track an idle-fade timestamp (see
+    /// [`crate::primitives::scrollbar::idle_fade_opacity`]) keep calling
+    /// this.
     pub(crate) fn paint(scrollbar: &Scrollbar, surface: &mut dyn PaintSurface, theme: &Theme) {
+        paint_with_opacity(scrollbar, surface, theme, 1.0);
+    }
+
+    /// Like [`paint`], but scales every fill's alpha by `opacity`
+    /// (`0.0..=1.0`) on top of the hover/drag weighting — the render-side
+    /// half of the overlay idle-fade seam
+    /// [`crate::primitives::scrollbar::idle_fade_opacity`] computes.
+    /// Any `opacity` below `1.0 / 255.0` paints nothing at all, the same
+    /// early return as a zero-size track: below that threshold even the
+    /// track's own (lowest-weighted, `>= 0.20`) alpha already rounds to
+    /// `0` in [`crate::types::Color::with_alpha`], so an idle-faded bar
+    /// this close to invisible costs no draw calls.
+    pub(crate) fn paint_with_opacity(
+        scrollbar: &Scrollbar,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        opacity: f32,
+    ) {
         let track = scrollbar.track;
-        if track.width <= 0.0 || track.height <= 0.0 {
+        if track.width <= 0.0 || track.height <= 0.0 || opacity < 1.0 / 255.0 {
             return;
         }
+        let opacity = opacity.min(1.0) as f64;
 
         let track_alpha = if scrollbar.hovered || scrollbar.dragging {
             0.35
@@ -474,7 +619,10 @@ pub(crate) mod native_surface_paint {
             0.65
         };
 
-        surface.surface_fill_rect(track, theme.scrollbar_track.with_alpha(track_alpha));
+        surface.surface_fill_rect(
+            track,
+            theme.scrollbar_track.with_alpha(track_alpha * opacity),
+        );
 
         let thumb_rect = match scrollbar.axis {
             ScrollAxis::Vertical => Rect::new(
@@ -494,7 +642,7 @@ pub(crate) mod native_surface_paint {
         surface.surface_fill_rounded_rect(
             thumb_rect,
             thumb_radius,
-            theme.scrollbar_thumb.with_alpha(thumb_alpha),
+            theme.scrollbar_thumb.with_alpha(thumb_alpha * opacity),
         );
     }
 
@@ -682,6 +830,53 @@ pub(crate) mod native_surface_paint {
             assert_eq!(thumb_rect.height, track.height);
             assert!(thumb_rect.width > 0.0 && thumb_rect.width <= track.width);
         }
+
+        #[test]
+        fn zero_opacity_paints_nothing() {
+            let sb = vertical_bar(0.0, 200.0, 50.0);
+            let mut surface = RecordingSurface::default();
+            paint_with_opacity(&sb, &mut surface, &Theme::default(), 0.0);
+            assert!(
+                surface.fills.is_empty(),
+                "a fully faded-out scrollbar should paint no fills"
+            );
+        }
+
+        #[test]
+        fn partial_opacity_scales_both_fills_alpha_down() {
+            let sb = vertical_bar(0.0, 200.0, 50.0);
+            let theme = Theme::default();
+
+            let mut full = RecordingSurface::default();
+            paint_with_opacity(&sb, &mut full, &theme, 1.0);
+
+            let mut half = RecordingSurface::default();
+            paint_with_opacity(&sb, &mut half, &theme, 0.5);
+
+            assert_eq!(full.fills.len(), half.fills.len());
+            for ((_, full_color), (_, half_color)) in full.fills.iter().zip(half.fills.iter()) {
+                assert!(
+                    half_color.a < full_color.a,
+                    "half opacity should paint a dimmer fill: full a={}, half a={}",
+                    full_color.a,
+                    half_color.a
+                );
+            }
+        }
+
+        #[test]
+        fn paint_is_full_opacity_paint_with_opacity() {
+            let sb = vertical_bar(0.0, 200.0, 50.0);
+            let theme = Theme::default();
+
+            let mut via_paint = RecordingSurface::default();
+            paint(&sb, &mut via_paint, &theme);
+
+            let mut via_opacity = RecordingSurface::default();
+            paint_with_opacity(&sb, &mut via_opacity, &theme, 1.0);
+
+            assert_eq!(via_paint.fills, via_opacity.fills);
+        }
     }
 }
 
@@ -780,6 +975,57 @@ mod tests {
     fn clamp_scroll_offset_single_item() {
         assert_eq!(clamp_scroll_offset(0, 1), 0);
         assert_eq!(clamp_scroll_offset(50, 1), 0);
+    }
+
+    #[test]
+    fn resolve_scroll_px_none_falls_back_to_scroll_offset() {
+        assert_eq!(resolve_scroll_px(3, None, 10, 22.0), (3, 0.0));
+    }
+
+    #[test]
+    fn resolve_scroll_px_sub_row_remainder_on_a_pixel_surface() {
+        // 1.5 rows deep into 22px rows: row 1, 11px leftover for a GUI
+        // painter to clip off the top of the first visible row.
+        let (row, sub) = resolve_scroll_px(0, Some(33.0), 50, 22.0);
+        assert_eq!(row, 1);
+        assert!((sub - 11.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolve_scroll_px_quantises_to_whole_rows_on_tui() {
+        // row_height == 1.0 cell: fractional pixels still resolve to a
+        // whole row index with the TUI rasteriser never reading `sub`.
+        let (row, sub) = resolve_scroll_px(0, Some(3.7), 50, 1.0);
+        assert_eq!(row, 3);
+        assert!((sub - 0.7).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolve_scroll_px_clamped_at_end_has_no_remainder() {
+        // Scrolled past the last reachable row: clamp like
+        // `clamp_scroll_offset`, with no partial row left to show.
+        let (row, sub) = resolve_scroll_px(0, Some(10_000.0), 5, 22.0);
+        assert_eq!(row, 4);
+        assert_eq!(sub, 0.0);
+    }
+
+    #[test]
+    fn resolve_scroll_px_landing_exactly_on_the_last_row_still_has_a_remainder() {
+        // `px` resolves to row 4 (the content's last row) on its own,
+        // with no clamping involved — unlike the test above, this is
+        // *not* "scrolled past the end", so the 0.5-row leftover must
+        // still be reported rather than zeroed out.
+        let (row, sub) = resolve_scroll_px(0, Some(4.5), 5, 1.0);
+        assert_eq!(row, 4);
+        assert!((sub - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolve_scroll_px_non_finite_or_non_positive_row_height_falls_back() {
+        assert_eq!(resolve_scroll_px(2, Some(50.0), 10, 0.0), (2, 0.0));
+        assert_eq!(resolve_scroll_px(2, Some(50.0), 10, -1.0), (2, 0.0));
+        assert_eq!(resolve_scroll_px(2, Some(f32::NAN), 10, 22.0), (2, 0.0));
+        assert_eq!(resolve_scroll_px(2, Some(-5.0), 10, 22.0), (2, 0.0));
     }
 
     #[test]
@@ -986,5 +1232,47 @@ mod tests {
         assert_eq!(wheel_row_delta(-0.1, 1.0), 1);
         assert_eq!(wheel_row_delta(0.0, 1.0), 0);
         assert_eq!(wheel_row_delta(f32::NAN, 1.0), 0);
+    }
+
+    // ── idle_fade_opacity ────────────────────────────────────────────
+    //
+    // Every test builds its own headless clock the way `Transition`'s
+    // own doc describes: capture `Instant::now()` once, then advance
+    // `now` by adding a `Duration` — never `std::thread::sleep`.
+
+    #[test]
+    fn idle_fade_opacity_is_full_during_the_hold_window() {
+        let last = Instant::now();
+        assert_eq!(idle_fade_opacity(last, last), 1.0);
+        assert_eq!(idle_fade_opacity(last, last + SCROLLBAR_FADE_HOLD), 1.0);
+    }
+
+    #[test]
+    fn idle_fade_opacity_ramps_down_linearly_after_the_hold_window() {
+        let last = Instant::now();
+        let mid = last + SCROLLBAR_FADE_HOLD + SCROLLBAR_FADE_OUT / 2;
+        let opacity = idle_fade_opacity(last, mid);
+        assert!(
+            (opacity - 0.5).abs() < 1e-3,
+            "expected ~0.5 opacity halfway through the fade, got {opacity}"
+        );
+    }
+
+    #[test]
+    fn idle_fade_opacity_reaches_zero_after_the_full_idle_interval() {
+        let last = Instant::now();
+        let after = last + SCROLLBAR_FADE_HOLD + SCROLLBAR_FADE_OUT;
+        assert_eq!(idle_fade_opacity(last, after), 0.0);
+        // Staying idle even longer doesn't go negative.
+        assert_eq!(
+            idle_fade_opacity(last, after + Duration::from_secs(10)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn idle_fade_opacity_clamps_to_full_when_now_precedes_last_interaction() {
+        let last = Instant::now() + Duration::from_secs(1);
+        assert_eq!(idle_fade_opacity(last, Instant::now()), 1.0);
     }
 }

@@ -107,7 +107,7 @@ pub(crate) fn draw_dialog_with_style(
                             1.0,
                         );
                     }
-                    ToolbarItemKind::Action | ToolbarItemKind::Label => {
+                    ToolbarItemKind::Action | ToolbarItemKind::Label | ToolbarItemKind::Spacer => {
                         if let Some(crate::primitives::toolbar::ToolbarButton::Action {
                             label,
                             enabled,
@@ -146,6 +146,7 @@ mod tests {
             body: vec![StyledText::plain("Body")],
             buttons: vec![
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("ok"),
                     label: "OK".into(),
                     is_default: true,
@@ -153,6 +154,7 @@ mod tests {
                     tint: None,
                 },
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("cancel"),
                     label: "Cancel".into(),
                     is_default: false,

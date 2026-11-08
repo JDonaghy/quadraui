@@ -17,8 +17,9 @@ use quadraui::testing::{ConformanceDriver, FrameInventory, LogicalViewport};
 use quadraui::tui::ratatui_color;
 use quadraui::tui::testing::{driver_with_shell as tui_driver_with_shell, TuiDriver};
 use quadraui::{
-    AppLogic, Backend, DataTableLayout, NamedKey, Reaction, Rect, Theme, Tooltip, TooltipBorder,
-    TooltipChrome, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
+    AppLogic, Backend, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableLayout,
+    NamedKey, Reaction, Rect, StyledText, Theme, Tooltip, TooltipBorder, TooltipChrome,
+    TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
 };
 
 #[path = "../examples/common/pipeline_app.rs"]
@@ -504,7 +505,7 @@ fn data_table_divider_before_last_column_parity_tui_and_gtk_agree_on_direction()
     // Dragging the divider immediately before the last column (Age |
     // Restarts) right must widen Age on *both* backends — the literal
     // reported symptom was that this direction inverted. Age is
-    // Flex-declared and Restarts (last) is Fixed, the exact shape that
+    // Flex-declared and Restarts (last) is FixedCells, the exact shape that
     // reproduced the bug (see `resolve_columns`'s pass-2 doc comment in
     // `src/primitives/data_table.rs` for the root cause).
     let tui_widened = run_datatable_resize_script::<TuiDriver<DataTableApp>>(60.0);
@@ -584,10 +585,10 @@ fn run_multi_drag_fill_script<D: DataTableResizeDriver + DataTableDriverCtor>(dx
 #[test]
 fn data_table_rightmost_column_stays_flush_after_multiple_drags_parity_tui_and_gtk_agree() {
     // After a sequence of divider drags, the table must still fill its viewport
-    // exactly. Every divider drag now shares the same last column (`Restarts`,
-    // `Fixed(10.0)` — a literal pixel/cell value identical on both backends) as its
-    // absorbing partner. The same dx=5.0 on both backends ensures the net demand on
-    // the shared column stays non-overflowing.
+    // exactly. Every divider drag shares the same last column (`Restarts`,
+    // `FixedCells(10.0)` — 10 cells on TUI, ~10 glyph widths on GTK) as its
+    // absorbing partner. dx=5.0 native units on both backends keeps the net demand
+    // on that column below its room above the 4.0 floor, so nothing overflows.
     let tui_flush = run_multi_drag_fill_script::<TuiDriver<DataTableApp>>(5.0);
     let gtk_flush = run_multi_drag_fill_script::<GtkDriver<DataTableApp>>(5.0);
 
@@ -607,15 +608,27 @@ fn data_table_rightmost_column_stays_flush_after_multiple_drags_parity_tui_and_g
 // on overflow is shared `primitives::data_table` logic, so it must be a cross-backend
 // parity assertion, not TUI-only.
 
-/// Drags the Name|Status divider (col 0) far enough right to drive
-/// `Restarts` (the last column, `Fixed(10.0)`, floored at 4.0 — 6.0 units
-/// of room) past its floor, and returns whether the table ended up
-/// h-scrolling. The h-scrollbar appearing on overflow is shared
+/// Drags the Name|Status divider (col 0) past the room `Restarts` (the last
+/// column, `FixedCells(10.0)`, floored at 4.0 native units) has left, by
+/// `overshoot` native units, and returns whether the table ended up
+/// h-scrolling. The drag distance is derived from the last column's resolved
+/// width on each backend: `FixedCells` is 10 cells on TUI but ~10 glyph widths
+/// of pixels on GTK, so a single literal `dx` cannot mean "past the floor" in
+/// both coordinate spaces. The h-scrollbar appearing on overflow is shared
 /// `primitives::data_table` logic (`resolve_columns` + `DataTable::layout`),
 /// so it must be a cross-backend parity assertion, not TUI-only.
-fn run_overflow_script<D: DataTableResizeDriver + DataTableDriverCtor>(dx: f32) -> bool {
+fn run_overflow_script<D: DataTableResizeDriver + DataTableDriverCtor>(overshoot: f32) -> bool {
     let mut d = D::new_default();
-    d.drag_divider_at(0, dx);
+    let last_width = *d
+        .column_widths()
+        .last()
+        .expect("DataTableApp has at least one column");
+    let room = last_width - 4.0;
+    assert!(
+        room > 0.0,
+        "Restarts must start above its 4.0 floor: width={last_width}"
+    );
+    d.drag_divider_at(0, room + overshoot);
     let layout = d.table_layout();
     layout.h_scrollbar_height > 0.0
         && layout.content_width > layout.viewport_width - layout.scrollbar_width
@@ -623,12 +636,11 @@ fn run_overflow_script<D: DataTableResizeDriver + DataTableDriverCtor>(dx: f32) 
 
 #[test]
 fn data_table_divider_drag_overflows_into_h_scroll_parity_tui_and_gtk_agree() {
-    // 20.0 is well past the 6.0 units of room `Restarts` has on either
-    // backend (see the flush test above for why that floor is identical
-    // in both coordinate spaces) — the drag must not be refused, and the
-    // resulting overflow/h-scroll must show up identically on both.
-    let tui_overflowed = run_overflow_script::<TuiDriver<DataTableApp>>(20.0);
-    let gtk_overflowed = run_overflow_script::<GtkDriver<DataTableApp>>(20.0);
+    // Each backend drags 14.0 native units past the room `Restarts` has left
+    // above its floor — the drag must not be refused, and the resulting
+    // overflow/h-scroll must show up identically on both.
+    let tui_overflowed = run_overflow_script::<TuiDriver<DataTableApp>>(14.0);
+    let gtk_overflowed = run_overflow_script::<GtkDriver<DataTableApp>>(14.0);
 
     assert!(
         tui_overflowed,
@@ -641,6 +653,160 @@ fn data_table_divider_drag_overflows_into_h_scroll_parity_tui_and_gtk_agree() {
     assert_eq!(
         tui_overflowed, gtk_overflowed,
         "both backends should agree that the drag overflowed"
+    );
+}
+
+// ─── `ColumnWidth` unit portability: cells vs pixels across backends ─────────
+//
+// `ColumnWidth::Fixed` is a bare native-unit number, so the same declared
+// value means a ten-cell column on a terminal and a ten-*pixel* sliver on a
+// pixel surface. `FixedCells`/`FixedPx` each name their unit and convert into
+// the other backend family's, so one descriptor describes one column shape
+// everywhere. Measuring both backends in *characters* — resolved native width
+// divided by that backend's own average glyph advance — is what makes the two
+// coordinate spaces comparable without naming either unit in the shared body.
+
+/// Resolves a declared column width through one backend's own
+/// `data_table_layout`, so the assertions below read real per-backend font
+/// metrics rather than a test-local approximation of them.
+trait ColumnUnitProbe {
+    /// Resolved native width of `table`'s first column.
+    fn probe_column_width(&self, table: &DataTable) -> f32;
+    /// Native width of one average glyph: exactly one cell on a terminal,
+    /// the font's measured advance on a pixel surface.
+    fn probe_char_width(&self) -> f32;
+}
+
+impl ColumnUnitProbe for TuiDriver<DataTableApp> {
+    fn probe_column_width(&self, table: &DataTable) -> f32 {
+        // Same viewport the shared `DataTableDriverCtor` builds, in cells.
+        self.backend()
+            .data_table_layout(Rect::new(0.0, 0.0, 100.0, 26.0), table)
+            .columns[0]
+            .width
+    }
+
+    fn probe_char_width(&self) -> f32 {
+        self.backend().char_width()
+    }
+}
+
+impl ColumnUnitProbe for GtkDriver<DataTableApp> {
+    fn probe_column_width(&self, table: &DataTable) -> f32 {
+        // Same viewport the shared `DataTableDriverCtor` builds, in pixels.
+        self.backend()
+            .data_table_layout(Rect::new(0.0, 0.0, 900.0, 600.0), table)
+            .columns[0]
+            .width
+    }
+
+    fn probe_char_width(&self) -> f32 {
+        self.backend().char_width()
+    }
+}
+
+/// A declared width `width` resolved by `d`'s backend, expressed in average
+/// glyph widths. Column 0 carries the declared width; a trailing `Flex(1.0)`
+/// column absorbs the leftover so the "stretch the last column to fill the
+/// viewport" pass never masks what column 0 asked for.
+fn declared_width_in_chars<D: ColumnUnitProbe>(d: &D, width: ColumnWidth) -> f32 {
+    let table = DataTable {
+        id: WidgetId::new("table:column-unit-probe"),
+        columns: vec![
+            Column {
+                title: "Probe".to_string(),
+                width,
+                align: ColumnAlign::Left,
+            },
+            Column {
+                title: "Filler".to_string(),
+                width: ColumnWidth::Flex(1.0),
+                align: ColumnAlign::Left,
+            },
+        ],
+        rows: vec![DataRow {
+            cells: vec![StyledText::plain("probe"), StyledText::plain("filler")],
+            decoration: Default::default(),
+        }],
+        selected_idx: None,
+        scroll_offset: 0,
+        sort: None,
+        has_focus: false,
+        show_scrollbar: false,
+        min_total_width: None,
+        h_scroll: 0.0,
+        column_overrides: vec![],
+        footer: None,
+    };
+    d.probe_column_width(&table) / d.probe_char_width()
+}
+
+/// How many times wider, in characters, the same declared width lands on TUI
+/// than on GTK. `1.0` means the descriptor describes one column shape on both
+/// backends; a large number means the declared number was reinterpreted
+/// instead of converted.
+fn tui_over_gtk_char_ratio(width: ColumnWidth) -> f32 {
+    let tui = TuiDriver::<DataTableApp>::new_default();
+    let gtk = GtkDriver::<DataTableApp>::new_default();
+    let tui_chars = declared_width_in_chars(&tui, width);
+    let gtk_chars = declared_width_in_chars(&gtk, width);
+    assert!(
+        gtk_chars > 0.0,
+        "GTK must resolve the probe column to a nonzero width, got {gtk_chars} chars"
+    );
+    tui_chars / gtk_chars
+}
+
+#[test]
+fn fixed_cells_describes_the_same_column_width_on_tui_and_gtk() {
+    let tui = TuiDriver::<DataTableApp>::new_default();
+    let gtk = GtkDriver::<DataTableApp>::new_default();
+    let tui_chars = declared_width_in_chars(&tui, ColumnWidth::FixedCells(10.0));
+    let gtk_chars = declared_width_in_chars(&gtk, ColumnWidth::FixedCells(10.0));
+
+    // A cell *is* a character on a terminal, so TUI must land on exactly ten.
+    assert!(
+        (tui_chars - 10.0).abs() < 0.01,
+        "TUI: FixedCells(10.0) must resolve to exactly 10 cells, got {tui_chars}"
+    );
+    // GTK scales ten cells by its own glyph advance, so it lands near ten
+    // characters too — the tolerance covers a proportional font, whose
+    // "average glyph" sample and `char_width` need not agree exactly.
+    assert!(
+        (gtk_chars - 10.0).abs() <= 3.0,
+        "GTK: FixedCells(10.0) must resolve to about 10 characters, got {gtk_chars}"
+    );
+}
+
+#[test]
+fn fixed_px_describes_the_same_column_width_on_tui_and_gtk() {
+    let ratio = tui_over_gtk_char_ratio(ColumnWidth::FixedPx(80.0));
+    assert!(
+        (0.5..=2.0).contains(&ratio),
+        "FixedPx(80.0) must describe about the same column width on both \
+         backends, but TUI/GTK character ratio is {ratio}"
+    );
+}
+
+#[test]
+fn deprecated_fixed_width_is_the_ambiguity_fixed_cells_and_fixed_px_replace() {
+    // The negative control for the two tests above: the same declared `10.0`
+    // is ten characters on a terminal and roughly one on a pixel surface.
+    // `ColumnWidth::Fixed` is deprecated precisely because of this gap, so
+    // naming it here is deliberate.
+    #[allow(deprecated)]
+    let ratio = tui_over_gtk_char_ratio(ColumnWidth::Fixed(10.0));
+    assert!(
+        ratio > 3.0,
+        "Fixed(10.0) is expected to read as far more characters on TUI than on \
+         GTK — that unit ambiguity is what FixedCells/FixedPx exist to fix — \
+         but the TUI/GTK character ratio is only {ratio}"
+    );
+    let cells_ratio = tui_over_gtk_char_ratio(ColumnWidth::FixedCells(10.0));
+    assert!(
+        cells_ratio < ratio,
+        "FixedCells(10.0) must agree across backends better than Fixed(10.0): \
+         cells ratio {cells_ratio}, Fixed ratio {ratio}"
     );
 }
 

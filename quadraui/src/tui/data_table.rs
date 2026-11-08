@@ -9,9 +9,10 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
-use super::{ratatui_color, set_cell};
+use super::{ratatui_color, set_cell, set_cell_wide};
 use crate::primitives::data_table::{
-    ColumnAlign, ColumnMeasure, DataTable, DataTableGlyphs, DataTableLayout, SortDirection,
+    ColumnAlign, ColumnMeasure, DataTable, DataTableGlyphs, DataTableLayout, DataTablePaintState,
+    SortDirection,
 };
 use crate::theme::Theme;
 
@@ -77,6 +78,58 @@ pub fn draw_data_table_with_glyphs(
     hovered_idx: Option<usize>,
     glyphs: Option<&DataTableGlyphs>,
     nerd_fonts_enabled: bool,
+) -> DataTableLayout {
+    draw_data_table_inner(
+        buf,
+        area,
+        table,
+        theme,
+        hovered_idx,
+        glyphs,
+        nerd_fonts_enabled,
+        None,
+    )
+}
+
+/// [`draw_data_table`], plus a pixel-precise scroll position via
+/// [`DataTablePaintState::scroll_px`] instead of only
+/// [`DataTable::scroll_offset`]'s whole-row value.
+///
+/// TUI is a cell grid: `scroll_px` wins over `scroll_offset` (see
+/// [`DataTable::effective_scroll_offset`]) but is quantised to a whole
+/// row — the sub-row remainder is computed and then simply never read,
+/// so TUI never paints a partial row. `state.scroll_px: None` (the
+/// default a `state` built with [`DataTablePaintState::default`]
+/// carries) resolves to exactly the pre-existing whole-row behaviour.
+pub fn draw_data_table_with_state(
+    buf: &mut Buffer,
+    area: Rect,
+    table: &DataTable,
+    theme: &Theme,
+    state: &DataTablePaintState,
+) -> DataTableLayout {
+    draw_data_table_inner(
+        buf,
+        area,
+        table,
+        theme,
+        state.hovered_idx,
+        None,
+        false,
+        state.scroll_px,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_data_table_inner(
+    buf: &mut Buffer,
+    area: Rect,
+    table: &DataTable,
+    theme: &Theme,
+    hovered_idx: Option<usize>,
+    glyphs: Option<&DataTableGlyphs>,
+    nerd_fonts_enabled: bool,
+    scroll_px: Option<f32>,
 ) -> DataTableLayout {
     let layout = data_table_layout(area, table);
 
@@ -168,13 +221,18 @@ pub fn draw_data_table_with_glyphs(
     }
 
     // ── Body rows ─────────────────────────────────────────────────────
+    // `scroll_px` wins over `scroll_offset` when set, quantised to a
+    // whole row here — TUI is cell-granular, so the sub-row remainder
+    // `scroll_sub_row_px` pairs with `effective_scroll_offset` for a
+    // pixel-precise painter is simply never read on this backend.
+    let scroll_offset = table.effective_scroll_offset(layout.row_height, scroll_px);
     let body_y = area.y + 1;
     let visible = layout
         .visible_rows
-        .min(table.rows.len().saturating_sub(table.scroll_offset));
+        .min(table.rows.len().saturating_sub(scroll_offset));
 
     for row_idx in 0..visible {
-        let abs_idx = table.scroll_offset + row_idx;
+        let abs_idx = scroll_offset + row_idx;
         let row = &table.rows[abs_idx];
         let y = body_y + row_idx as u16;
         let is_selected = table.selected_idx == Some(abs_idx);
@@ -239,19 +297,40 @@ pub fn draw_data_table_with_glyphs(
                 col_w
             };
 
-            let text_len = full_text.chars().count() as u16;
-            let (visible_len, needs_ellipsis) = if text_len <= usable_w {
-                (text_len, false)
+            // Measure and clip by terminal display width, not char count:
+            // a char-count budget lets a CJK/emoji run overflow its column
+            // (each wide glyph claims two cells, not one) and never adds an
+            // ellipsis within budget. `visible_chars` is how many of
+            // `full_text`'s *characters* to paint; `displayed_len` is their
+            // actual cell width (plus the ellipsis's one cell, if needed) —
+            // the two diverge whenever a wide glyph is in play, which is why
+            // `displayed_len` (not `visible_chars`) feeds `align_offset`.
+            let text_width = crate::text_util::display_width(&full_text) as u16;
+            let (visible_chars, needs_ellipsis, displayed_len): (u16, bool, u16) = if text_width
+                <= usable_w
+            {
+                (full_text.chars().count() as u16, false, text_width)
             } else if usable_w == 0 {
-                (0, false)
+                (0, false, 0)
             } else {
-                (usable_w - 1, true)
+                let (fitted, fitted_w) =
+                    crate::text_util::truncate_with_ellipsis(&full_text, usable_w as f32, |s| {
+                        crate::text_util::display_width(s) as f32
+                    });
+                if fitted.is_empty() {
+                    (0, false, 0)
+                } else {
+                    // `fitted` is always `<content>…` here — strip the
+                    // trailing ellipsis char to get the content count.
+                    let content_chars = fitted.chars().count() as u16 - 1;
+                    (content_chars, true, fitted_w.round() as u16)
+                }
             };
-            let displayed_len = visible_len + u16::from(needs_ellipsis);
             let start = align_offset(align, displayed_len, usable_w) as i32;
 
             let is_muted = row.decoration == crate::types::Decoration::Muted;
-            let mut char_idx = 0u16;
+            let mut chars_emitted = 0u16;
+            let mut width_used = 0u16;
             'cell: for span in &styled.spans {
                 let span_fg = if is_muted {
                     muted_fg
@@ -259,23 +338,29 @@ pub fn draw_data_table_with_glyphs(
                     span.fg.map(ratatui_color).unwrap_or(row_fg)
                 };
                 for ch in span.text.chars() {
-                    if char_idx == visible_len {
+                    if chars_emitted == visible_chars {
                         if needs_ellipsis {
-                            let cx = col_x_raw + start + char_idx as i32;
+                            let cx = col_x_raw + start + width_used as i32;
                             if cx >= area.x as i32 && cx < (area.x + area.width) as i32 {
                                 set_cell(buf, cx as u16, y, '…', span_fg, row_bg);
                             }
                         }
                         break 'cell;
                     }
-                    let cx = col_x_raw + start + char_idx as i32;
+                    let cx = col_x_raw + start + width_used as i32;
                     if cx >= (area.x + area.width) as i32 {
                         break 'cell;
                     }
+                    let w = crate::text_util::char_cell_width(ch);
                     if cx >= area.x as i32 {
-                        set_cell(buf, cx as u16, y, ch, span_fg, row_bg);
+                        if w == 2 && cx + 1 < (area.x + area.width) as i32 {
+                            set_cell_wide(buf, cx as u16, y, ch, span_fg, row_bg);
+                        } else {
+                            set_cell(buf, cx as u16, y, ch, span_fg, row_bg);
+                        }
                     }
-                    char_idx += 1;
+                    width_used += w;
+                    chars_emitted += 1;
                 }
             }
         }
@@ -297,7 +382,7 @@ pub fn draw_data_table_with_glyphs(
         let sb = crate::primitives::scrollbar::Scrollbar::vertical(
             table.id,
             sb_track,
-            table.scroll_offset as f32,
+            scroll_offset as f32,
             table.rows.len() as f32,
             layout.visible_rows as f32,
             1.0,
@@ -441,7 +526,7 @@ mod tests {
                 },
                 Column {
                     title: "Age".into(),
-                    width: ColumnWidth::Fixed(5.0),
+                    width: ColumnWidth::FixedCells(5.0),
                     align: ColumnAlign::Right,
                 },
             ],
@@ -744,6 +829,93 @@ mod tests {
     }
 
     #[test]
+    fn body_cell_with_wide_glyphs_truncates_by_display_width_not_char_count() {
+        // A 6-column-wide cell holding 6 CJK chars (12 display columns)
+        // must truncate to fit the column's *display* width, not its char
+        // count — a char-count budget would paint all 6 chars (12 cells)
+        // across the neighbour column with no ellipsis at all.
+        let table = DataTable {
+            id: WidgetId::new("wide-glyph-test"),
+            columns: vec![
+                Column {
+                    title: "A".into(),
+                    width: ColumnWidth::FixedCells(6.0),
+                    align: ColumnAlign::Left,
+                },
+                Column {
+                    title: "B".into(),
+                    width: ColumnWidth::FixedCells(4.0),
+                    align: ColumnAlign::Left,
+                },
+            ],
+            rows: vec![DataRow {
+                cells: vec![StyledText::plain("日本語日本語"), StyledText::plain("tail")],
+                decoration: Decoration::Normal,
+            }],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+        };
+        let area = Rect::new(0, 0, 10, 10);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+
+        let row: Vec<char> = (0..10)
+            .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        let row_str: String = row.iter().collect();
+
+        let b_col = &layout.columns[1];
+        let b_start = b_col.x.round() as usize;
+        assert!(b_start > 0, "column B must not start at x=0: {row_str:?}");
+
+        // Column A's cell (reserving one cell for the separator) never
+        // overflows into column B's start — only an ellipsis (or blank
+        // padding) appears in the cell right before B, never a CJK glyph
+        // that would occupy two columns and collide with its neighbour.
+        assert_ne!(
+            row[b_start - 1],
+            '語',
+            "a wide glyph must not be painted into the separator cell: {row_str:?}"
+        );
+        assert!(
+            (0..b_start).any(|x| row[x] == '…'),
+            "over-wide CJK cell should end in an ellipsis: {row_str:?}"
+        );
+        // Column B's own content paints intact, undisturbed by A's overflow.
+        assert_eq!(row[b_start], 't', "row: {row_str:?}");
+
+        // The three assertions above hold under a char-count budget too
+        // (it also stops at the separator and also ends in '…' at this
+        // column width), so they alone don't pin the display-width fix.
+        // What distinguishes the two: a char-count budget treats each of
+        // the 2-cell-wide glyphs as 1 cell and packs four of them — 日,
+        // 本, 語, 日 — into columns 0..4 before the ellipsis, so column 2
+        // holds '語'. A display-width budget fits only two whole glyphs
+        // (日, 本 — 4 cells) before the ellipsis, leaving each glyph's
+        // second cell as the wide-char continuation marker that
+        // `set_cell_wide` writes, so column 2 holds '本' and column 1 is
+        // the empty continuation of column 0's glyph.
+        assert_eq!(
+            row[2], '本',
+            "a display-width budget fits only 2 whole glyphs before the ellipsis, \
+             not 4 char-counted ones: {row_str:?}"
+        );
+        assert_eq!(
+            buf[(1, 1)].symbol(),
+            "",
+            "column 1 must be the wide-char continuation cell of column 0's glyph, \
+             not a second glyph painted one-char-per-cell"
+        );
+    }
+
+    #[test]
     fn paint_click_round_trip_header() {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
@@ -900,6 +1072,40 @@ mod tests {
         }
     }
 
+    /// `scroll_px` wins over `scroll_offset`, but on
+    /// TUI's cell grid (`row_height == 1.0`) it quantises to the same
+    /// whole row a GUI backend's sub-row remainder would float between
+    /// — the "TUI quantises scroll_px to whole rows" half of the
+    /// issue's acceptance criterion.
+    #[test]
+    fn scroll_px_quantises_to_a_whole_row_on_tui() {
+        let table = make_scrolling_table(50);
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let state = DataTablePaintState::default().with_scroll_px(Some(10.7)); // 10.7 cells deep → row 10, floored
+        draw_data_table_with_state(&mut buf, area, &table, &Theme::default(), &state);
+
+        let first_body_row: String = (0..40)
+            .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            first_body_row.contains("pod-10"),
+            "scroll_px=10.7 should quantise to row 10 at the top of the body, got: {first_body_row}"
+        );
+
+        // A whole-row scroll_offset of 10 paints byte-for-byte the same
+        // first body row — scroll_px degrades to the pre-existing
+        // row-quantised behaviour, it does not add a new visual.
+        let mut via_offset = make_scrolling_table(50);
+        via_offset.scroll_offset = 10;
+        let mut buf2 = Buffer::empty(area);
+        draw_data_table(&mut buf2, area, &via_offset, &Theme::default(), None);
+        let first_body_row_via_offset: String = (0..40)
+            .map(|x| buf2[(x, 1)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert_eq!(first_body_row, first_body_row_via_offset);
+    }
+
     #[test]
     fn footer_cell_aligns_under_its_column() {
         // Right-aligned "Age" column → its footer total should sit at
@@ -991,7 +1197,7 @@ mod tests {
                 .iter()
                 .map(|t| Column {
                     title: (*t).into(),
-                    width: ColumnWidth::Fixed(12.0),
+                    width: ColumnWidth::FixedCells(12.0),
                     align: ColumnAlign::Left,
                 })
                 .collect(),
@@ -1120,7 +1326,7 @@ mod tests {
                 .iter()
                 .map(|t| Column {
                     title: (*t).into(),
-                    width: ColumnWidth::Fixed(30.0),
+                    width: ColumnWidth::FixedCells(30.0),
                     align: ColumnAlign::Left,
                 })
                 .collect(),

@@ -92,6 +92,58 @@ fn nominal_text_width(text: &str, char_width: f32) -> f32 {
     text.chars().count() as f32 * char_width
 }
 
+/// Whether rects `a` and `b` share any area — used by
+/// [`WinBackend::draw_focus_ring`] to avoid stroking on top of a
+/// tooltip/toast painted earlier this frame; see
+/// `overlay_bounds_this_frame`'s own doc. A shared edge with zero overlap
+/// width/height doesn't count as overlapping. Mirrors
+/// `macos::backend::rects_overlap`.
+fn rects_overlap(a: Rect, b: Rect) -> bool {
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+}
+
+/// Whether `overlay` would land on the pixels [`WinBackend::draw_focus_ring`]
+/// actually paints for `rect` at `stroke_width`.
+///
+/// `surface_stroke_rect` centers a `stroke_width`-thick line on each of
+/// `rect`'s four edges, so the ring only occupies the thin band straddling
+/// those edges by `stroke_width / 2` in each direction — never `rect`'s full
+/// interior. An overlay that lands strictly inside `rect` without reaching
+/// any edge (e.g. a toast inset from the viewport it's raised over, landing
+/// inside a focused widget that spans that same viewport) never shares a
+/// pixel with the ring, so it must not suppress the stroke. Mirrors
+/// `macos::backend::focus_ring_band_overlaps`.
+fn focus_ring_band_overlaps(rect: Rect, stroke_width: f32, overlay: Rect) -> bool {
+    let half = stroke_width / 2.0;
+    let top = Rect::new(
+        rect.x - half,
+        rect.y - half,
+        rect.width + stroke_width,
+        stroke_width,
+    );
+    let bottom = Rect::new(
+        rect.x - half,
+        rect.y + rect.height - half,
+        rect.width + stroke_width,
+        stroke_width,
+    );
+    let left = Rect::new(
+        rect.x - half,
+        rect.y - half,
+        stroke_width,
+        rect.height + stroke_width,
+    );
+    let right = Rect::new(
+        rect.x + rect.width - half,
+        rect.y - half,
+        stroke_width,
+        rect.height + stroke_width,
+    );
+    [top, bottom, left, right]
+        .into_iter()
+        .any(|band| rects_overlap(band, overlay))
+}
+
 /// [`crate::primitives::layout_metrics::TextMeasure`] impl backed by
 /// [`nominal_text_width`] for `*_layout` fallbacks that need a
 /// `&dyn TextMeasure` rather than a bare width.
@@ -641,6 +693,19 @@ pub struct WinBackend {
     /// is a plain `Vec` with no WinAPI dependency. `pub(crate)` so
     /// [`super::testing::WinDriver::inventory`] can read it back.
     pub(crate) zones: Vec<crate::testing::ZoneRec>,
+    /// Bounds of every tooltip/toast painted so far this frame, via
+    /// [`Backend::draw_tooltip_with_chrome`]/[`Backend::draw_toast_overlay`].
+    /// Cleared at the start of each frame by [`Self::begin_frame`], same
+    /// per-frame lifecycle as `zones`. Mirrors
+    /// `MacBackend::overlay_bounds_this_frame`; GTK has no equivalent yet
+    /// (`gtk::backend::draw_focus_ring` strokes unconditionally).
+    ///
+    /// [`Backend::draw_focus_ring`] reads this to decide whether to skip
+    /// painting the generic focus-ring convention entirely for a given
+    /// call, so it never strokes on top of an overlay drawn earlier in the
+    /// same frame — tooltip/toast must stay topmost (see that method's own
+    /// doc for the regression this guards).
+    overlay_bounds_this_frame: Vec<Rect>,
     /// Test-facing [`Backend::request_frame_in`] call-count/deadline
     /// bookkeeping, mirroring
     /// [`crate::tui::TuiBackend`]'s own `frame_scheduler` field — see
@@ -669,6 +734,29 @@ pub struct WinBackend {
     /// with no WinAPI dependency, same rationale as `zones`/`user_events`
     /// above.
     caret_blink: crate::caret_blink::CaretBlinkState,
+    /// Timestamp of the most recent mouse-wheel scroll, fed in by
+    /// `super::run`'s `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` handler via
+    /// [`Self::note_scroll_activity`] — the Win-GUI twin of
+    /// `MacBackend::scroll_fade_last_interaction`. [`Self::new`] seeds
+    /// this with its own construction instant rather than `None`, so a
+    /// scrollbar painted immediately after startup (a live app's first
+    /// frame, a headless pixel test, a gallery capture) still shows at
+    /// full opacity like VS Code's overlay scrollbars briefly do on
+    /// load, instead of starting invisible. With no further scroll
+    /// activity it fades out exactly like any other idle period. `None`
+    /// is a reachable test seam ([`Self::set_scroll_last_interaction`])
+    /// for "never interacted, already fully faded". Not `target_os`-gated:
+    /// the field itself has no WinAPI dependency, same rationale as
+    /// `current_pointer_shape` above — only the real `WM_MOUSEWHEEL`
+    /// handler that would populate it needs a real host.
+    scroll_fade_last_interaction: Option<std::time::Instant>,
+    /// Test seam overriding "now" for
+    /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
+    /// instead of [`std::time::Instant::now`], so pixel tests can assert
+    /// the fade curve deterministically without a real sleep — the
+    /// Win-GUI twin of `MacBackend::scroll_fade_clock_override`. `None`
+    /// (the default) uses real wall-clock time, as a live app does.
+    scroll_fade_clock_override: Option<std::time::Instant>,
 }
 
 impl WinBackend {
@@ -755,8 +843,11 @@ impl WinBackend {
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             zones: Vec::new(),
+            overlay_bounds_this_frame: Vec::new(),
             frame_scheduler: crate::runtime::FrameScheduler::new(),
             caret_blink: crate::caret_blink::CaretBlinkState::default(),
+            scroll_fade_last_interaction: Some(std::time::Instant::now()),
+            scroll_fade_clock_override: None,
         }
     }
 
@@ -839,6 +930,67 @@ impl WinBackend {
     /// [`Self::current_theme`].
     pub fn current_style(&self) -> &crate::Style {
         &self.current_style
+    }
+
+    /// Record that a mouse-wheel scroll just arrived, resetting the
+    /// overlay scrollbar's idle-fade clock to "now". `super::run`'s
+    /// `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` handler calls this for every
+    /// message it receives before dispatching the translated
+    /// [`UiEvent::Scroll`] — mirrors `MacBackend::note_scroll_activity`.
+    ///
+    /// [`UiEvent::Scroll`]: crate::UiEvent::Scroll
+    pub fn note_scroll_activity(&mut self) {
+        self.scroll_fade_last_interaction = Some(self.fade_now());
+    }
+
+    /// Test seam: pin the overlay scrollbar's last-interaction instant
+    /// directly instead of going through a synthetic
+    /// [`Self::note_scroll_activity`] call. `None` resets to "never
+    /// scrolled" (fully faded). Mirrors `MacBackend::set_scroll_last_interaction`.
+    pub fn set_scroll_last_interaction(&mut self, at: Option<std::time::Instant>) {
+        self.scroll_fade_last_interaction = at;
+    }
+
+    /// The overlay scrollbar's current last-interaction instant —
+    /// [`Self::new`]'s own construction time until a real scroll (or a
+    /// test) resets it. `None` once explicitly cleared via
+    /// [`Self::set_scroll_last_interaction`].
+    pub fn scroll_last_interaction(&self) -> Option<std::time::Instant> {
+        self.scroll_fade_last_interaction
+    }
+
+    /// Test seam: override what [`Self::fade_now`] returns, so a pixel
+    /// test can assert the fade curve at an exact offset from the last
+    /// interaction without a real sleep. `None` (the default) falls
+    /// back to [`std::time::Instant::now`]. Mirrors
+    /// `MacBackend::set_fade_clock_override`.
+    pub fn set_fade_clock_override(&mut self, now: Option<std::time::Instant>) {
+        self.scroll_fade_clock_override = now;
+    }
+
+    /// "Now", for overlay-scrollbar fade purposes — real wall-clock
+    /// time unless a test pinned [`Self::set_fade_clock_override`].
+    fn fade_now(&self) -> std::time::Instant {
+        self.scroll_fade_clock_override
+            .unwrap_or_else(std::time::Instant::now)
+    }
+
+    /// Opacity multiplier [`Backend::draw_scrollbar`] paints the track
+    /// and thumb at: `0.0` if [`Self::scroll_last_interaction`] has been
+    /// explicitly cleared to `None`, otherwise
+    /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
+    /// sampled at [`Self::fade_now`]. Mirrors `MacBackend::scrollbar_fade_opacity`.
+    ///
+    /// Only read from [`Backend::draw_scrollbar`]'s `target_os =
+    /// "windows"` painted path (`self.surface` itself is `cfg`-gated to
+    /// that target) — see [`Self::drain_user_events`]'s doc for why that
+    /// reads as dead code on a non-Windows `cargo check` and isn't.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    fn scrollbar_fade_opacity(&self) -> f32 {
+        match self.scroll_fade_last_interaction {
+            Some(last) => crate::primitives::scrollbar::idle_fade_opacity(last, self.fade_now()),
+            None => 0.0,
+        }
     }
 
     /// Resolve the row pitch `draw_list`/`draw_tree`/`draw_data_table`
@@ -928,6 +1080,17 @@ impl WinBackend {
         // for why this can't just be read off `self.hwnd` from inside the closure.
         self.hwnd_raw
             .store(hwnd.0 as isize, std::sync::atomic::Ordering::Release);
+        // A waker called before this point (from `AppLogic::setup`, or a
+        // background thread racing window creation) queued its payload but
+        // had no window to nudge, so nothing would ever drain it. Post one
+        // wake now that the window exists; `wndproc`'s handler drains
+        // whatever is queued, and an empty queue makes it a no-op.
+        //
+        // SAFETY: `hwnd` is the live window this function was called with;
+        // `PostMessageW` only enqueues a message for it.
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_QUADRAUI_USER_EVENT, WPARAM(0), LPARAM(0));
+        }
         // Give `WinPlatformServices` the live window so file dialogs
         // open parented to it and notifications have an owning `HWND` —
         // mirrors `GtkBackend::set_window` calling
@@ -1754,6 +1917,10 @@ impl Backend for WinBackend {
         // painting must stop resolving hit tests too. Mirrors
         // `GtkBackend::begin_frame`'s identical `self.zones.clear()`.
         self.zones.clear();
+        // Clear last frame's tooltip/toast bounds — see
+        // `overlay_bounds_this_frame`'s own doc. Same per-frame lifecycle
+        // as `zones`.
+        self.overlay_bounds_this_frame.clear();
         // Install the shared paint-time text-run recording sink for the
         // duration of this frame — drained into `self.text_runs` by
         // `end_frame` below. Mirrors `MacBackend::enter_frame_scope`'s
@@ -2280,9 +2447,35 @@ impl Backend for WinBackend {
         self.focus.set_focus(id)
     }
 
+    /// Strokes the generic tab-stop focus-ring convention around `rect`.
+    ///
+    /// Called by [`super::run::render_frame`] *after* `AppLogic::render`
+    /// returns, deliberately — so the ring paints on top of whatever the
+    /// focused widget's own content drew. That same lateness means it
+    /// would also paint on top of a tooltip or toast `render` drew over
+    /// this same rect, inverting the overlay-order contract (tooltip/toast
+    /// stay topmost of all). Skipping the stroke wherever it would land on
+    /// a tooltip/toast bound recorded this frame — see
+    /// `overlay_bounds_this_frame` — keeps the ring out of the way of an
+    /// overlay without needing to defer either paint call.
+    ///
+    /// The ring is a perimeter stroke, not a filled rect
+    /// ([`focus_ring_band_overlaps`]), so an overlay that lands strictly
+    /// inside `rect` without touching the stroke band — e.g. a toast inset
+    /// within a focused widget that spans the whole viewport — never
+    /// conflicts with the ring and leaves it (and its `register_zone`
+    /// chrome entry) intact. Mirrors
+    /// `macos::backend::MacBackend::draw_focus_ring`'s identical fix.
     fn draw_focus_ring(&mut self, rect: Rect) {
-        let theme = self.current_theme;
         let stroke_width = self.current_style.focus_ring_width;
+        if self
+            .overlay_bounds_this_frame
+            .iter()
+            .any(|overlay| focus_ring_band_overlaps(rect, stroke_width, *overlay))
+        {
+            return;
+        }
+        let theme = self.current_theme;
         self.surface_stroke_rect(rect, theme.accent_fg, stroke_width);
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
@@ -2569,6 +2762,21 @@ impl Backend for WinBackend {
         self.current_char_width
     }
 
+    /// The tree's real painted row pitch: [`Self::resolved_row_height`]
+    /// run through the same
+    /// [`crate::primitives::layout_metrics::tree_row_pitch`] formula
+    /// [`Self::draw_tree`]/[`Self::draw_tree_with_state`] paint rows
+    /// at — not [`Self::line_height`] (`current_line_height` raw), which
+    /// disagrees with that painted pitch whenever a host sets
+    /// [`crate::style::Style::row_height`] above the chrome font's own
+    /// line height. Mirrors `MacBackend::tree_scroll_row_height`.
+    fn tree_scroll_row_height(&self, tree: &TreeView) -> f32 {
+        crate::primitives::layout_metrics::tree_row_pitch(
+            tree,
+            self.resolved_row_height(self.current_line_height) as f64,
+        ) as f32
+    }
+
     /// Forwards to [`Self::set_current_line_height`] — the
     /// `Backend`-trait-object-reachable twin of that inherent method, the
     /// Win-GUI counterpart of `GtkBackend`'s / `MacBackend`'s overrides of
@@ -2691,6 +2899,7 @@ impl Backend for WinBackend {
                 self.resolved_row_height(self.current_line_height),
                 self.nerd_fonts_enabled,
                 &self.current_theme,
+                &self.current_style,
             );
             return;
         }
@@ -2699,6 +2908,41 @@ impl Backend for WinBackend {
         // nothing rather than panic; the next real
         // `attach_surface`/`attach_headless` resumes painting.
         let _ = (rect, tree);
+    }
+
+    /// [`Self::draw_tree`], plus hover/press row tinting, a
+    /// focus-visible ring, and — when `state.scroll_px` is `Some` — a
+    /// pixel-precise scroll position instead of only
+    /// [`TreeView::scroll_offset`]'s whole-row value, via
+    /// [`super::tree::draw_tree_with_state`]. `state.scroll_px: None`
+    /// paints pixel-identically to [`Self::draw_tree`].
+    fn draw_tree_with_state(
+        &mut self,
+        rect: Rect,
+        tree: &TreeView,
+        state: &crate::primitives::tree::TreePaintState,
+        focus_ring_visible: bool,
+    ) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            super::tree::draw_tree_with_state(
+                &surface.target,
+                dwrite,
+                rect,
+                tree,
+                self.resolved_row_height(self.current_line_height),
+                self.nerd_fonts_enabled,
+                &self.current_theme,
+                &self.current_style,
+                state,
+                focus_ring_visible,
+            );
+            return;
+        }
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking.
+        let _ = (rect, tree, state, focus_ring_visible);
     }
 
     /// see [`Self::draw_tree`]'s doc. `List` is
@@ -2714,12 +2958,46 @@ impl Backend for WinBackend {
                 rect,
                 list,
                 self.resolved_row_height(self.current_line_height),
+                &self.current_style,
             );
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
         // of panicking.
         let _ = (rect, list);
+    }
+
+    /// [`Self::draw_list`], plus hover/press row tinting, a
+    /// focus-visible ring, and — when `state.scroll_px` is `Some` — a
+    /// pixel-precise scroll position instead of only
+    /// [`ListView::scroll_offset`]'s whole-row value, via
+    /// [`super::list::draw_list_with_state`]. `state.scroll_px: None`
+    /// paints pixel-identically to [`Self::draw_list`].
+    fn draw_list_with_state(
+        &mut self,
+        rect: Rect,
+        list: &ListView,
+        state: &crate::primitives::list::ListPaintState,
+        focus_ring_visible: bool,
+    ) {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            super::list::draw_list_with_state(
+                &surface.target,
+                dwrite,
+                rect,
+                list,
+                self.resolved_row_height(self.current_line_height),
+                &self.current_style,
+                state,
+                focus_ring_visible,
+            );
+            return;
+        }
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking.
+        let _ = (rect, list, state, focus_ring_visible);
     }
 
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
@@ -2797,6 +3075,36 @@ impl Backend for WinBackend {
         self.draw_data_table(rect, table, hovered_idx)
     }
 
+    /// [`Self::draw_data_table`], plus — when `state.scroll_px` is
+    /// `Some` — a pixel-precise scroll position instead of only
+    /// [`crate::DataTable::scroll_offset`]'s whole-row value, via
+    /// [`super::data_table::draw_data_table_with_state`].
+    /// `state.scroll_px: None` paints pixel-identically to
+    /// [`Self::draw_data_table`].
+    fn draw_data_table_with_state(
+        &mut self,
+        rect: Rect,
+        table: &crate::DataTable,
+        state: &crate::primitives::data_table::DataTablePaintState,
+    ) -> crate::DataTableLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            return super::data_table::draw_data_table_with_state(
+                &surface.target,
+                dwrite,
+                rect,
+                table,
+                self.resolved_row_height(self.current_line_height),
+                state,
+            );
+        }
+        // No surface/DWrite yet — see `Self::draw_data_table`'s doc for
+        // the same fallback; only `state.hovered_idx` affects the
+        // no-paint layout this falls back to.
+        self.draw_data_table(rect, table, state.hovered_idx)
+    }
+
     /// Pure measurement — only needs `self.dwrite`, not a live
     /// render target. See [`Self::status_bar_layout`]'s doc. Prefers
     /// `chrome_dwrite`, matching [`Self::draw_data_table`]'s paint font
@@ -2854,13 +3162,18 @@ impl Backend for WinBackend {
         ))
     }
 
-    /// `vscrollbar` deals purely in row counts/row-height, so
-    /// unlike [`Self::list_hscrollbar`] the primitive's own geometry
-    /// method is unit-correct for every backend — see
-    /// [`ListView::vscrollbar`]. Cross-platform, same reasoning as
-    /// `list_hscrollbar`.
+    /// `vscrollbar_with_track_width` deals purely in row counts/row-height
+    /// plus an explicit track width, so unlike [`Self::list_hscrollbar`] the
+    /// primitive's own geometry method is unit-correct for every backend —
+    /// see [`ListView::vscrollbar_with_track_width`]. `scrollbar_width` sets
+    /// the track's column width so this hit-test agrees exactly with what
+    /// the shared painter paints.
     fn list_vscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
-        list.vscrollbar(rect, self.resolved_row_height(self.current_line_height))
+        list.vscrollbar_with_track_width(
+            rect,
+            self.resolved_row_height(self.current_line_height),
+            self.current_style.scrollbar_width,
+        )
     }
 
     fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
@@ -3216,6 +3529,7 @@ impl Backend for WinBackend {
                 icons,
                 hovered_close_tab,
                 &self.current_theme,
+                &self.current_style,
             );
         }
         // No surface/DWrite yet — compute the real layout via the same
@@ -3230,6 +3544,7 @@ impl Backend for WinBackend {
             rect,
             bar,
             icons,
+            &self.current_style,
         )
     }
 
@@ -3254,6 +3569,7 @@ impl Backend for WinBackend {
                 icons,
                 hovered_close_tab,
                 &self.current_theme,
+                &self.current_style,
             );
         }
         // See `draw_tab_bar_icons`'s doc.
@@ -3265,16 +3581,21 @@ impl Backend for WinBackend {
             rect,
             bar,
             icons,
+            &self.current_style,
         )
     }
 
     /// [`Self::draw_tab_bar_icons`], but honouring an optional
     /// [`crate::primitives::tab_bar::TabBarGlyphs`] override for the
     /// close/dirty mark — `glyphs: None` reproduces
-    /// [`Self::draw_tab_bar_icons`] exactly. `chrome` is unused: the
-    /// Windows rasteriser has no bracket-chrome support (see
-    /// `super::tab_bar`'s module doc), matching the trait default's
-    /// own posture of ignoring `chrome` on backends without it.
+    /// [`Self::draw_tab_bar_icons`] exactly. `chrome.active_frame` is
+    /// unused: the Windows rasteriser has no bracket-chrome support (see
+    /// `super::tab_bar`'s module doc), matching the trait default's own
+    /// posture of ignoring that knob on backends without it.
+    /// `chrome.focused_index` *is* honoured: it paints a focus-visible
+    /// ring on the named tab — see
+    /// [`super::tab_bar::draw_tab_bar_icons_with_glyphs`]'s "Focus-visible
+    /// ring" doc for the geometry.
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_with_chrome_and_glyphs(
         &mut self,
@@ -3284,7 +3605,6 @@ impl Backend for WinBackend {
         chrome: &TabChrome,
         glyphs: Option<&crate::primitives::tab_bar::TabBarGlyphs>,
     ) -> TabBarHits {
-        let _ = chrome;
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
@@ -3296,13 +3616,156 @@ impl Backend for WinBackend {
                 &[],
                 hovered_close_tab,
                 &self.current_theme,
+                &self.current_style,
                 glyphs,
                 self.nerd_fonts_enabled,
+                None,
+                None,
+                chrome.focused_index,
             );
         }
         #[cfg(not(target_os = "windows"))]
-        let _ = glyphs;
+        let _ = (chrome, glyphs);
         self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
+    }
+
+    /// Trait-level entry point the gallery and `quadraui-binding-core`'s
+    /// render path actually call (`draw_tab_bar_with_chrome_layout`'s
+    /// `TabBarHits`-returning sibling) — delegates to
+    /// [`Self::draw_tab_bar_with_chrome_and_glyphs`] with `glyphs: None`
+    /// so `chrome.focused_index`'s ring paints from this entry point
+    /// too, not only from the `_and_glyphs` spelling.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+    fn draw_tab_bar_with_chrome(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        chrome: &TabChrome,
+    ) -> TabBarHits {
+        self.draw_tab_bar_with_chrome_and_glyphs(rect, bar, hovered_close_tab, chrome, None)
+    }
+
+    /// `TabBarLayout`-returning counterpart to
+    /// [`Self::draw_tab_bar_with_chrome`] — the twin
+    /// `quadraui-binding-core`'s `render.rs` actually calls
+    /// (`TabChrome::default().with_focused_index(tabs.focused_index)`).
+    /// Paints through [`super::tab_bar::draw_tab_bar_icons_layout_with_state`]
+    /// directly, honouring `chrome.focused_index`, even though the ring
+    /// it paints plays no part in the returned [`TabBarLayout`].
+    fn draw_tab_bar_with_chrome_layout(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        chrome: &TabChrome,
+    ) -> TabBarLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            return super::tab_bar::draw_tab_bar_icons_layout_with_state(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                &[],
+                hovered_close_tab,
+                &self.current_theme,
+                &self.current_style,
+                None,
+                None,
+                chrome.focused_index,
+            );
+        }
+        // See `Self::draw_tab_bar_icons`'s doc for the same fallback.
+        #[cfg(not(target_os = "windows"))]
+        let _ = chrome;
+        self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
+    }
+
+    /// [`Self::draw_tab_bar_icons`], plus `hovered_tab`/`pressed_tab`
+    /// indices naming the whole tab (not its close glyph) the mouse is
+    /// over/held down on. Paints a tinted background behind the hovered
+    /// or pressed tab — see
+    /// [`super::tab_bar::paint_tab_bar_icons_from_layout`]'s doc for the
+    /// `Theme::list_hover_bg`/`list_pressed_bg` derivation — rather than
+    /// only tinting the close glyph the way [`Self::draw_tab_bar`]
+    /// already does.
+    ///
+    /// Calls [`super::tab_bar::draw_tab_bar_icons_with_glyphs`] directly
+    /// (icon-less, glyph-less) instead of widening
+    /// [`Self::draw_tab_bar_icons`]'s own signature — the same choice
+    /// [`Self::draw_tab_bar_with_chrome_and_glyphs`] above already makes
+    /// to reach the same painter.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+    fn draw_tab_bar_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> TabBarHits {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            return super::tab_bar::draw_tab_bar_icons_with_glyphs(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                &[],
+                hovered_close_tab,
+                &self.current_theme,
+                &self.current_style,
+                None,
+                self.nerd_fonts_enabled,
+                hovered_tab,
+                pressed_tab,
+                None,
+            );
+        }
+        // No surface/DWrite yet — `hovered_tab`/`pressed_tab` only
+        // affect painting, so they're unused on this layout-only path.
+        // See `Self::draw_tab_bar_icons`'s doc for the same fallback.
+        let _ = (hovered_tab, pressed_tab);
+        self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
+    }
+
+    /// `TabBarLayout`-returning counterpart to
+    /// [`Self::draw_tab_bar_with_state`] — the twin the
+    /// `quadraui-binding-core` paint path can actually reach, since it
+    /// calls `draw_tab_bar_layout`, never the deprecated `draw_tab_bar`.
+    /// Same hover/pressed tint as [`Self::draw_tab_bar_with_state`]; only
+    /// the returned type differs.
+    fn draw_tab_bar_layout_with_state(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> TabBarLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            return super::tab_bar::draw_tab_bar_icons_layout_with_state(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                &[],
+                hovered_close_tab,
+                &self.current_theme,
+                &self.current_style,
+                hovered_tab,
+                pressed_tab,
+                None,
+            );
+        }
+        // See `Self::draw_tab_bar_icons`'s doc for the same fallback.
+        let _ = (hovered_tab, pressed_tab);
+        self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
     }
 
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
@@ -3390,7 +3853,13 @@ impl Backend for WinBackend {
     ) -> TabBarHits {
         #[cfg(target_os = "windows")]
         if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::tab_bar::win_tab_bar_layout_icons(dwrite, rect, bar, icons);
+            return super::tab_bar::win_tab_bar_layout_icons(
+                dwrite,
+                rect,
+                bar,
+                icons,
+                &self.current_style,
+            );
         }
         super::tab_bar::win_tab_bar_layout_icons(
             &NominalTextMeasure {
@@ -3399,6 +3868,7 @@ impl Backend for WinBackend {
             rect,
             bar,
             icons,
+            &self.current_style,
         )
     }
 
@@ -3414,7 +3884,13 @@ impl Backend for WinBackend {
     ) -> TabBarLayout {
         #[cfg(target_os = "windows")]
         if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::tab_bar::win_tab_bar_native_layout_icons(dwrite, rect, bar, icons);
+            return super::tab_bar::win_tab_bar_native_layout_icons(
+                dwrite,
+                rect,
+                bar,
+                icons,
+                &self.current_style,
+            );
         }
         super::tab_bar::win_tab_bar_native_layout_icons(
             &NominalTextMeasure {
@@ -3423,6 +3899,7 @@ impl Backend for WinBackend {
             rect,
             bar,
             icons,
+            &self.current_style,
         )
     }
 
@@ -3704,12 +4181,14 @@ impl Backend for WinBackend {
             // `TextInput` is chrome, not `EditorClassPrimitive`-listed —
             // same `chrome_dwrite`-preferring swap as `Self::draw_palette`.
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            let style = self.style();
             return super::text_input::draw_text_input(
                 &surface.target,
                 dwrite,
                 rect,
                 ti,
                 &self.current_theme,
+                &style,
                 self.current_line_height,
                 self.current_char_width,
             );
@@ -3795,6 +4274,10 @@ impl Backend for WinBackend {
                 &theme,
                 &style,
             );
+            // See `overlay_bounds_this_frame`'s own doc: a later
+            // `draw_focus_ring` call this same frame must not stroke over
+            // this tooltip.
+            self.overlay_bounds_this_frame.push(layout.bounds);
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
@@ -3832,13 +4315,17 @@ impl Backend for WinBackend {
                 target: &surface.target,
                 dwrite: Some(dwrite),
             };
-            return crate::primitives::context_menu::native_surface_paint::paint(
+            // `None` keeps `paint_with_glyphs`'s check/arrow defaults;
+            // the flag resolves an item's own `ContextMenuItem::icon`.
+            return crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
                 menu,
                 layout,
                 crate::accelerator::Platform::Windows,
                 &mut surf,
                 &self.current_theme,
                 &style,
+                None,
+                self.nerd_fonts_enabled,
             );
         }
         // `layout` is already fully resolved — the hit-rect list is a pure
@@ -4072,7 +4559,13 @@ impl Backend for WinBackend {
         let row_height = self.resolved_row_height(self.current_line_height);
         #[cfg(target_os = "windows")]
         if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::tree::win_tree_layout_measured(dwrite, rect, tree, row_height);
+            return super::tree::win_tree_layout_measured(
+                dwrite,
+                rect,
+                tree,
+                row_height,
+                self.current_style.row_padding_x,
+            );
         }
         // No live DWrite handle yet (fresh backend, device lost, or a
         // non-Windows host, where `win::tree` never compiles) — nominal
@@ -4086,6 +4579,7 @@ impl Backend for WinBackend {
             &NominalTextMeasure {
                 char_width: self.current_char_width,
             },
+            self.current_style.row_padding_x,
         )
     }
 
@@ -4102,16 +4596,20 @@ impl Backend for WinBackend {
     /// at `line_height * 1.4` (or `TreeStyle::row_height`), unlike
     /// `ListView` items which really are `line_height` tall; see
     /// `layout_metrics::tree_row_pitch`'s doc.
+    ///
+    /// `scrollbar_width` sets the track's column width to the live
+    /// `self.current_style.scrollbar_width` — the same field
+    /// `draw_tree`'s shared painter
+    /// ([`crate::primitives::tree::native_surface_paint::paint`]) reads —
+    /// mirroring [`Self::list_vscrollbar`]'s own convention, so this
+    /// hit-test agrees exactly with what gets painted at the default
+    /// width or a host override alike.
     fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<crate::Scrollbar> {
         let row_h = crate::primitives::layout_metrics::tree_row_pitch(
             tree,
             self.resolved_row_height(self.current_line_height) as f64,
         );
-        tree.vscrollbar_with_track_width(
-            rect,
-            row_h as f32,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-        )
+        tree.vscrollbar_with_track_width(rect, row_h as f32, self.current_style.scrollbar_width)
     }
 
     fn tree_paints_own_scrollbar(&self) -> bool {
@@ -4339,13 +4837,20 @@ impl Backend for WinBackend {
     /// is attached. See [`Self::draw_status_bar`]'s doc for the "surface
     /// not attached yet" fallback posture. `rect` is unused on the
     /// painted path — `scrollbar.track` is authoritative, mirroring
-    /// `MacBackend::draw_scrollbar`/`GtkBackend::draw_scrollbar`.
+    /// `MacBackend::draw_scrollbar`/`GtkBackend::draw_scrollbar`. Paints
+    /// through [`crate::primitives::scrollbar::native_surface_paint::paint_with_opacity`]
+    /// at [`Self::scrollbar_fade_opacity`] so the bar follows the same
+    /// overlay idle-fade curve as the macOS leg, rather than staying
+    /// permanently opaque.
     fn draw_scrollbar(&mut self, rect: Rect, scrollbar: &Scrollbar) {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() {
             let _ = rect;
             let theme = self.current_theme;
-            crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, self, &theme);
+            let opacity = self.scrollbar_fade_opacity();
+            crate::primitives::scrollbar::native_surface_paint::paint_with_opacity(
+                scrollbar, self, &theme, opacity,
+            );
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
@@ -4695,7 +5200,7 @@ impl Backend for WinBackend {
             let theme = self.current_theme;
             let style = self.style();
             let line_height = self.current_line_height;
-            return crate::primitives::toast::native_surface_paint::paint(
+            let layout = crate::primitives::toast::native_surface_paint::paint(
                 stack,
                 self,
                 &theme,
@@ -4706,6 +5211,12 @@ impl Backend for WinBackend {
                 rect.height,
                 line_height,
             );
+            // See `overlay_bounds_this_frame`'s own doc: a later
+            // `draw_focus_ring` call this same frame must not stroke over
+            // any of these.
+            self.overlay_bounds_this_frame
+                .extend(layout.visible_toasts.iter().map(|t| t.bounds));
+            return layout;
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `toast_stack_layout` falls back to, and paint
@@ -4844,7 +5355,9 @@ impl Backend for WinBackend {
     }
 
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture.
+    /// attached yet" fallback posture. Passes `&self.current_theme` —
+    /// the same field `Backend::set_theme` writes — so the glyph's fg
+    /// colour tracks the live theme, not `Theme::default()`.
     fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
@@ -4852,7 +5365,13 @@ impl Backend for WinBackend {
             // `EditorClassPrimitive`-listed — same `chrome_dwrite`-
             // preferring swap as `Self::draw_palette`.
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            return super::spinner::draw_spinner(&surface.target, dwrite, rect, spinner);
+            return super::spinner::draw_spinner(
+                &surface.target,
+                dwrite,
+                rect,
+                spinner,
+                &self.current_theme,
+            );
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `spinner_layout` falls back to, and paint
@@ -6579,8 +7098,10 @@ mod tests {
     /// into a 300px-tall viewport (300/22 = 13), so an overflow scrollbar must
     /// appear — the raw-`line_height` math (300/16 = 18) would have wrongly
     /// reported "everything fits". The row pitch governs the minimum thumb
-    /// length, not the track's (fixed 10px) width. Cross-platform: no
-    /// `target_os = "windows"` gate needed — see `tree_vscrollbar`'s doc.
+    /// length, not the track's width (see
+    /// `win_backend_tree_vscrollbar_track_width_follows_style_token` for that).
+    /// Cross-platform: no `target_os = "windows"` gate needed — see
+    /// `tree_vscrollbar`'s doc.
     #[test]
     fn win_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
         let backend = WinBackend::new();
@@ -6594,13 +7115,84 @@ mod tests {
         assert_eq!(
             sb.track.width,
             crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-            "track width must stay the fixed VS Code list/tree scrollbar width"
+            "default track width must match the TREE_VSCROLLBAR_WIDTH literal, \
+             independent of whatever Style::scrollbar_width happens to read"
         );
         assert!(
             sb.thumb_len >= expected_row_h,
             "minimum thumb length (and row pitch) must match tree_layout's \
              non-header item_height, not the raw line_height"
         );
+    }
+
+    /// `tree_scroll_row_height` must report the real painted pitch —
+    /// [`crate::primitives::layout_metrics::tree_row_pitch`] run through
+    /// [`WinBackend::resolved_row_height`] — not the raw editor
+    /// `line_height`, so a `TreeController` accumulating `scroll_px`
+    /// against this basis agrees with what `draw_tree`/
+    /// `draw_tree_with_state` actually paint. Mirrors
+    /// `MacBackend::tree_scroll_row_height_is_the_real_painted_pitch_not_the_editor_line_height`.
+    #[test]
+    fn tree_scroll_row_height_is_the_real_painted_pitch_not_the_editor_line_height() {
+        let mut backend = WinBackend::new();
+        let tree = flat_tree(1);
+
+        let default_row_height = backend.tree_scroll_row_height(&tree);
+        assert_ne!(
+            default_row_height,
+            backend.line_height(),
+            "the real painted pitch (line_height * 1.4) must not equal the \
+             raw editor line_height"
+        );
+        assert_eq!(
+            default_row_height as f64,
+            crate::primitives::layout_metrics::tree_row_pitch(
+                &tree,
+                backend.resolved_row_height(backend.current_line_height) as f64
+            )
+        );
+
+        // A host-set `Style::row_height` above the font's own line
+        // height must be honoured too — `resolved_row_height` floors at
+        // it, and `tree_scroll_row_height` must track that override.
+        backend.set_style(crate::Style::default().with_row_height(50.0));
+        let overridden_row_height = backend.tree_scroll_row_height(&tree);
+        assert_eq!(
+            overridden_row_height as f64,
+            crate::primitives::layout_metrics::tree_row_pitch(&tree, 50.0)
+        );
+    }
+
+    /// `tree_vscrollbar`'s track width must follow a host-set
+    /// `Style::scrollbar_width`, the same live field
+    /// `native_surface_paint::paint` reads for `TreeView` — so the painted
+    /// track and the hit-tested track can never drift apart, at the
+    /// default width or a host override. Mirrors
+    /// `win_backend_list_vscrollbar_track_width_follows_style_token`.
+    /// Pure geometry, no `target_os = "windows"` gate needed. `rect` is
+    /// 200px wide — wider than the 24px override below — so the track
+    /// (`area.x + area.width - track_width`) stays inside its own rect
+    /// instead of hanging off the left edge the way a narrower fixture
+    /// would.
+    #[test]
+    fn win_backend_tree_vscrollbar_track_width_follows_style_token() {
+        let mut backend = WinBackend::new();
+        let tree = flat_tree(15);
+        let rect = Rect::new(0.0, 0.0, 200.0, 300.0);
+
+        let default_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
+            .expect("15 rows at the real 22px row pitch overflow a 300px viewport");
+        assert_eq!(
+            default_sb.track.width,
+            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+            "default track width must match the TREE_VSCROLLBAR_WIDTH literal, \
+             independent of whatever Style::scrollbar_width happens to read"
+        );
+
+        backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
+        let overridden_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
+            .expect("15 rows at the real 22px row pitch overflow a 300px viewport");
+        assert_eq!(overridden_sb.track.width, 24.0);
     }
 
     /// Pre-attach fallback: before a surface/DirectWrite
@@ -6796,7 +7388,7 @@ mod tests {
     /// A host-set `TreeStyle::row_height` must be honored
     /// by `tree_vscrollbar`, exactly as `tree_layout`/`draw_tree` honor
     /// it — not silently ignored in favor of `line_height`. It governs the
-    /// minimum thumb length, not the track's (fixed 10px) width.
+    /// minimum thumb length, not the track's width.
     #[test]
     fn win_backend_tree_vscrollbar_honors_tree_style_row_height_override() {
         let backend = WinBackend::new();
@@ -6808,9 +7400,54 @@ mod tests {
             .expect("15 rows at a 50px override overflow a 300px viewport (6 visible)");
         assert_eq!(
             sb.track.width,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH
+            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
+            "default track width must match the TREE_VSCROLLBAR_WIDTH literal, \
+             independent of whatever Style::scrollbar_width happens to read"
         );
         assert!(sb.thumb_len >= 50.0);
+    }
+
+    /// `list_vscrollbar`'s track width must follow a host-set
+    /// `Style::scrollbar_width`, the same live field
+    /// `native_surface_paint::paint` reads — so the painted track and
+    /// the hit-tested track can never drift apart, at the default width
+    /// or a host override. Pure geometry, no `target_os = "windows"`
+    /// gate needed.
+    #[test]
+    fn win_backend_list_vscrollbar_track_width_follows_style_token() {
+        let mut backend = WinBackend::new();
+        let list = ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..30)
+                .map(|i| crate::ListItem {
+                    text: crate::types::StyledText::plain(format!("row {i}")),
+                    detail: None,
+                    icon: None,
+                    decoration: crate::types::Decoration::default(),
+                })
+                .collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: true,
+        };
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+
+        let default_sb = Backend::list_vscrollbar(&backend, rect, &list)
+            .expect("30 rows must overflow a 100px viewport");
+        assert_eq!(
+            default_sb.track.width,
+            backend.current_style().scrollbar_width
+        );
+
+        backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
+        let overridden_sb = Backend::list_vscrollbar(&backend, rect, &list)
+            .expect("30 rows must overflow a 100px viewport");
+        assert_eq!(overridden_sb.track.width, 24.0);
     }
 
     /// `parse_ui_font_desc` splits a Pango-style comma-separated fallback list
@@ -8691,6 +9328,161 @@ mod tests {
         );
     }
 
+    /// Two-tab fixture for the `draw_tab_bar_with_state` hover/pressed
+    /// tests below — tab 0 is active (so its resting fill is
+    /// `tab_active_bg`), tab 1 is inactive (`tab_bar_bg`, the same colour
+    /// as the surrounding strip), which is what makes a hover/pressed
+    /// tint on tab 1 visible against it.
+    #[cfg(target_os = "windows")]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn two_tab_bar() -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![
+                crate::primitives::tab_bar::TabItem {
+                    label: "main.rs".into(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                },
+                crate::primitives::tab_bar::TabItem {
+                    label: "lib.rs".into(),
+                    is_active: false,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                },
+            ],
+            scroll_offset: 0,
+            right_segments: Vec::new(),
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        }
+    }
+
+    /// Paints [`two_tab_bar`] through `WinBackend::draw_tab_bar_with_state`
+    /// into a fresh [`HeadlessSurface`], returning the surface (for pixel
+    /// probing) alongside the painted [`TabBarHits`] (for slot geometry).
+    #[cfg(target_os = "windows")]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn paint_two_tab_bar_with_state(
+        hovered_tab: Option<usize>,
+        pressed_tab: Option<usize>,
+    ) -> (crate::win::testing::HeadlessSurface, TabBarHits) {
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 300;
+        const H: u32 = 30;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let hits =
+            backend.draw_tab_bar_with_state(rect, &two_tab_bar(), None, hovered_tab, pressed_tab);
+        backend.end_frame();
+        (surface, hits)
+    }
+
+    /// `MouseMoved` over an inactive tab (the issue's acceptance scenario)
+    /// tints its whole background, not only the close glyph —
+    /// `draw_tab_bar_with_state` with `hovered_tab: None` leaves it a flat
+    /// `tab_bar_bg`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[allow(deprecated)] // reads the deprecated `TabBarHits::slot_positions` — issue #823
+    fn hovered_tab_tints_the_whole_background_not_just_the_close_glyph() {
+        use crate::theme::Theme;
+
+        let theme = Theme::default();
+        let (_, hits) = paint_two_tab_bar_with_state(None, None);
+        let (start, end) = hits.slot_positions[1];
+        assert!(end > start, "second tab slot must have non-zero width");
+        let probe_x = (start + 2.0) as u32;
+        let probe_y = 15;
+
+        let (resting, _) = paint_two_tab_bar_with_state(None, None);
+        let px = resting.pixel_at(probe_x, probe_y);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "with no hovered_tab, tab 1's background must stay tab_bar_bg",
+        );
+
+        let (hovered, _) = paint_two_tab_bar_with_state(Some(1), None);
+        let px = hovered.pixel_at(probe_x, probe_y);
+        let expected = theme.list_hover_bg(theme.tab_bar_bg);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (expected.r, expected.g, expected.b),
+            "hovered_tab == Some(1) must tint tab 1's background toward list_hover_bg",
+        );
+    }
+
+    /// `pressed_tab` tints deeper than `hovered_tab` — `Theme::list_pressed_bg`
+    /// is a higher-alpha blend than `list_hover_bg` — and wins when both
+    /// name the same tab, matching the precedence every sibling
+    /// `_with_state` painter in this crate applies.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[allow(deprecated)] // reads the deprecated `TabBarHits::slot_positions` — issue #823
+    fn pressed_tab_tints_deeper_than_hovered_tab() {
+        use crate::theme::Theme;
+
+        let theme = Theme::default();
+        let (_, hits) = paint_two_tab_bar_with_state(None, None);
+        let (start, _) = hits.slot_positions[1];
+        let probe_x = (start + 2.0) as u32;
+        let probe_y = 15;
+
+        let (pressed, _) = paint_two_tab_bar_with_state(Some(1), Some(1));
+        let px = pressed.pixel_at(probe_x, probe_y);
+        let expected = theme.list_pressed_bg(theme.tab_bar_bg);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (expected.r, expected.g, expected.b),
+            "pressed_tab == Some(1) must tint tab 1's background toward list_pressed_bg, \
+             even though hovered_tab also names it",
+        );
+
+        let hover_expected = theme.list_hover_bg(theme.tab_bar_bg);
+        assert_ne!(
+            (expected.r, expected.g, expected.b),
+            (hover_expected.r, hover_expected.g, hover_expected.b),
+            "pressed and hover tints must read as visibly different colours",
+        );
+    }
+
+    /// Leaving the hovered tab clears the tint — `draw_tab_bar_with_state`
+    /// with both indices `None` paints exactly the untinted resting
+    /// colour, matching plain `draw_tab_bar`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[allow(deprecated)] // reads the deprecated `TabBarHits::slot_positions` — issue #823
+    fn mouse_leaving_the_tab_clears_the_hover_tint() {
+        use crate::theme::Theme;
+
+        let theme = Theme::default();
+        let (_, hits) = paint_two_tab_bar_with_state(None, None);
+        let (start, _) = hits.slot_positions[1];
+        let probe_x = (start + 2.0) as u32;
+        let probe_y = 15;
+
+        let (after_leave, _) = paint_two_tab_bar_with_state(None, None);
+        let px = after_leave.pixel_at(probe_x, probe_y);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "hovered_tab: None must repaint tab 1 back to the untinted tab_bar_bg",
+        );
+    }
+
     /// `draw_panel`'s title-bar chrome must paint from the live theme
     /// rather than a hardcoded `Theme::default()`.
     #[cfg(target_os = "windows")]
@@ -9793,6 +10585,7 @@ mod tests {
             toolbar: Some(crate::primitives::toolbar::Toolbar {
                 id: WidgetId::new("sb:toolbar"),
                 buttons: vec![ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("sb:refine"),
                     label: "Refine".into(),
                     icon: None,
@@ -9932,6 +10725,90 @@ mod tests {
             "varying only the chrome font size must repaint different pixels — \
              draw_spinner must paint its label through chrome_dwrite, not the \
              (unchanged) editor dwrite handle"
+        );
+    }
+
+    /// `Backend::set_theme` must reach `super::spinner::draw_spinner`, not
+    /// just be stored and ignored. A spinner's glyph is text (no solid-fill
+    /// region to probe pixel-exact like `set_theme_reaches_the_rasterisers`
+    /// does for the terminal divider), so this finds the most-inked pixel
+    /// (max colour distance from an unpainted background sample) and checks
+    /// it lands nearer the theme actually set on the backend than
+    /// `Theme::default()` — robust to anti-aliasing.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_spinner() {
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 220;
+        const H: u32 = 24;
+
+        let custom_fg = Color::rgb(30, 160, 230);
+        let default_fg = Theme::default().foreground;
+        assert_ne!(
+            custom_fg, default_fg,
+            "test fixture bug: the probe colour must differ from the default theme's, or a \
+             hardcoded `Theme::default()` would pass this test too"
+        );
+
+        let spinner = Spinner {
+            id: WidgetId::new("spinner"),
+            label: "Indexing…".to_string(),
+            frame_idx: 0,
+            accent: None,
+        };
+        // Rect offset from the surface's own origin so `(0, 0)` is a
+        // reliable unpainted background sample.
+        let rect = Rect::new(10.0, 4.0, 0.0, 0.0);
+
+        let most_inked = |theme: Theme| -> (u8, u8, u8) {
+            let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+            let mut backend = WinBackend::new();
+            backend
+                .attach_headless(surface.target().clone(), W, H)
+                .expect("attach headless surface");
+            backend.set_theme(theme);
+
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let _ = backend.draw_spinner(rect, &spinner);
+            backend.end_frame();
+
+            let bg = surface.pixel_at(0, 0);
+            let bg = (bg.r, bg.g, bg.b);
+            let mut best = bg;
+            let mut best_d = -1i32;
+            for y in 0..H {
+                for x in 0..W {
+                    let px = surface.pixel_at(x, y);
+                    let c = (px.r, px.g, px.b);
+                    let d = (c.0 as i32 - bg.0 as i32).pow(2)
+                        + (c.1 as i32 - bg.1 as i32).pow(2)
+                        + (c.2 as i32 - bg.2 as i32).pow(2);
+                    if d > best_d {
+                        best_d = d;
+                        best = c;
+                    }
+                }
+            }
+            best
+        };
+
+        let dist = |a: (u8, u8, u8), c: Color| {
+            let d = |x: u8, y: u8| (x as i32 - y as i32).pow(2);
+            d(a.0, c.r) + d(a.1, c.g) + d(a.2, c.b)
+        };
+
+        let custom_ink = most_inked(Theme {
+            foreground: custom_fg,
+            ..Theme::default()
+        });
+        assert!(
+            dist(custom_ink, custom_fg) < dist(custom_ink, default_fg),
+            "most-inked pixel {custom_ink:?} painted after `set_theme` with a non-default \
+             foreground should be closer to that theme's foreground {custom_fg:?} than to \
+             `Theme::default()`'s {default_fg:?}",
         );
     }
 
@@ -10123,6 +11000,7 @@ mod tests {
                 kind: FieldKind::Toolbar(crate::Toolbar {
                     id: WidgetId::new("settings:toolbar:bar"),
                     buttons: vec![ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("settings:toolbar:refine"),
                         label: "Refine".into(),
                         icon: None,
@@ -10424,7 +11302,7 @@ mod tests {
                 // regardless of font.
                 crate::Column {
                     title: String::new(),
-                    width: crate::ColumnWidth::Fixed(0.0),
+                    width: crate::ColumnWidth::FixedPx(0.0),
                     align: crate::ColumnAlign::Left,
                 },
             ],
@@ -10477,6 +11355,7 @@ mod tests {
                 kind: FieldKind::Toolbar(crate::Toolbar {
                     id: WidgetId::new("settings:toolbar:bar"),
                     buttons: vec![ToolbarButton::Action {
+                        spec: None,
                         id: WidgetId::new("settings:toolbar:refine"),
                         label: "Refine".into(),
                         icon: None,
@@ -10672,6 +11551,7 @@ mod tests {
         let bar = crate::primitives::toolbar::Toolbar {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("tb:on"),
                 label: "On".into(),
                 icon: None,
@@ -11837,5 +12717,424 @@ mod tests {
             "a tick during an active typing pause must not flip the phase"
         );
         assert!(backend.caret_visible());
+    }
+
+    // ── overlay order: tooltip/toast stay topmost of the focus ring ──────
+
+    #[cfg(target_os = "windows")]
+    fn sample_toast_overlay() -> ToastOverlay {
+        use crate::primitives::toast::{Toast, ToastCorner, ToastSeverity};
+        ToastOverlay {
+            id: WidgetId::new("toasts:bottom_right"),
+            corner: ToastCorner::BottomRight,
+            toasts: vec![Toast {
+                id: WidgetId::new("toast:1"),
+                title: "Saved".to_string(),
+                body: String::new(),
+                severity: ToastSeverity::Success,
+                actions: vec![],
+                accent: None,
+            }],
+            focus: None,
+        }
+    }
+
+    /// `super::run::render_frame` calls `WinBackend::draw_focus_ring` *after*
+    /// `AppLogic::render` returns, so an app that paints a toast overlapping
+    /// the currently-focused widget's rect — e.g. a toast that lands over a
+    /// focused, bordered editor — must not have the generic focus-ring
+    /// convention stroke on top of it on the very same frame. Regression for
+    /// the overlay-order seam (tooltip/toast topmost of all,
+    /// `quadraui-binding-core::host::render_overlays`'s doc). Mirrors
+    /// `macos::backend::tests::draw_focus_ring_does_not_paint_over_a_toast_from_the_same_frame`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn draw_focus_ring_does_not_paint_over_a_toast_from_the_same_frame() {
+        use crate::theme::Theme;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 400;
+        const H: u32 = 200;
+
+        let overlay = sample_toast_overlay();
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = backend.draw_toast_overlay(Rect::new(0.0, 0.0, W as f32, H as f32), &overlay);
+        let vt = layout.visible_toasts[0].bounds;
+        // A tab-stop focus ring whose rect is the toast's own bounds — the
+        // worst case, a toast that lands exactly over the focused widget it
+        // was raised from.
+        backend.draw_focus_ring(vt);
+        backend.end_frame();
+
+        let theme = Theme::default();
+        let success_bg = theme.success_bg();
+        // Probe right at the toast's edge, where the ring would have
+        // stroked had it not been skipped.
+        let probe_x = (vt.x + vt.width / 2.0) as u32;
+        let probe_y = vt.y as u32;
+        let px = surface.pixel_at(probe_x, probe_y);
+        assert_ne!(
+            (px.r, px.g, px.b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must not stroke over a toast painted earlier this frame",
+        );
+        // The toast's own fill is still intact at its centre.
+        let cx = (vt.x + vt.width / 2.0) as u32;
+        let cy = (vt.y + vt.height / 2.0) as u32;
+        let px = surface.pixel_at(cx, cy);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (success_bg.r, success_bg.g, success_bg.b),
+            "the toast's own fill must still paint",
+        );
+    }
+
+    /// The ring is a perimeter stroke ([`focus_ring_band_overlaps`]), not a
+    /// filled rect, so a toast that lands strictly *inside* a large focused
+    /// widget — e.g. `draw_toast_overlay` insetting the stack from a
+    /// focused editor/list that spans the whole viewport — must leave the
+    /// ring (and its `chrome:focus-ring` zone) intact: there is no pixel
+    /// conflict to suppress. Mirrors
+    /// `macos::backend::tests::draw_focus_ring_survives_a_toast_interior_to_the_focused_widget`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn draw_focus_ring_survives_a_toast_interior_to_the_focused_widget() {
+        use crate::theme::Theme;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 400;
+        const H: u32 = 200;
+
+        let overlay = sample_toast_overlay();
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        // The focused widget spans the whole viewport (a focused
+        // editor/list behind the toast stack); the toast itself is inset
+        // from that same rect by the toast margin, so it never reaches the
+        // focused rect's edges — the stroke band the ring actually paints.
+        let focused_rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let _layout = backend.draw_toast_overlay(focused_rect, &overlay);
+        backend.draw_focus_ring(focused_rect);
+        backend.end_frame();
+
+        let theme = Theme::default();
+        // Probe at the focused rect's own top edge, inside the stroke
+        // band, well away from the inset toast box.
+        let probe_x = (focused_rect.x + 2.0) as u32;
+        let probe_y = focused_rect.y as u32;
+        let px = surface.pixel_at(probe_x, probe_y);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must still paint when the toast is interior to the \
+             focused widget and never touches the ring's stroke band",
+        );
+        assert!(
+            backend
+                .zones
+                .iter()
+                .any(|z| z.id == WidgetId::new("chrome:focus-ring")),
+            "the ring's chrome zone must still be registered",
+        );
+    }
+
+    /// Same contract as the toast regression above, for a tooltip anchored
+    /// directly over the currently-focused widget — the exact "hover
+    /// tooltip over a focused, bordered widget" scenario this issue's
+    /// acceptance criteria name. Mirrors
+    /// `macos::backend::tests::draw_focus_ring_does_not_paint_over_a_tooltip_from_the_same_frame`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn draw_focus_ring_does_not_paint_over_a_tooltip_from_the_same_frame() {
+        use crate::primitives::tooltip::{ResolvedPlacement, Tooltip, TooltipLayout};
+        use crate::theme::Theme;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 400;
+        const H: u32 = 200;
+
+        let rect = Rect::new(20.0, 20.0, 100.0, 30.0);
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let tooltip = Tooltip::new(WidgetId::new("tip"), "Hover text");
+        let layout = TooltipLayout {
+            bounds: rect,
+            resolved_placement: ResolvedPlacement::Bottom,
+        };
+        backend.draw_tooltip(&tooltip, &layout);
+        // The focused widget this tooltip is anchored to shares the
+        // tooltip's own bounds exactly — the ring must yield.
+        backend.draw_focus_ring(rect);
+        backend.end_frame();
+
+        let theme = Theme::default();
+        let probe_x = (rect.x + rect.width / 2.0) as u32;
+        let probe_y = rect.y as u32;
+        let px = surface.pixel_at(probe_x, probe_y);
+        assert_ne!(
+            (px.r, px.g, px.b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must not stroke over a tooltip painted earlier this frame",
+        );
+        // The tooltip's own fill is present at its centre — a positive
+        // assertion that `draw_tooltip` actually painted something there,
+        // not just that the ring's colour is absent.
+        let cx = (rect.x + rect.width / 2.0) as u32;
+        let cy = (rect.y + rect.height / 2.0) as u32;
+        let px = surface.pixel_at(cx, cy);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (theme.hover_bg.r, theme.hover_bg.g, theme.hover_bg.b),
+            "the tooltip's own fill must paint at its centre",
+        );
+    }
+
+    /// The overlay-order contract documented on
+    /// [`crate::Backend::draw_focus_ring`] — tooltip/toast stay topmost of
+    /// all — must hold on Win-GUI even when the base layer underneath is a
+    /// bordered, focused [`crate::primitives::text_input::TextInput`] (e.g.
+    /// the `clipboard_demo` example's editor), not empty space: a toast
+    /// opened over it must still show its own fill, not get painted over
+    /// by the editor's own border/background, nor by the generic focus
+    /// ring `draw_focus_ring` strokes around that same focused editor on
+    /// this same frame. The toast stack is inset from the editor rect, so
+    /// it never reaches the editor's own edges — the ring must still paint
+    /// there, on the far side from the bottom-right toast stack. Mirrors
+    /// `macos::toast::tests::toast_paints_over_a_bordered_focused_text_input`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn draw_toast_overlay_paints_over_a_bordered_focused_text_input() {
+        use crate::primitives::text_input::TextInput;
+        use crate::theme::Theme;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 400;
+        const H: u32 = 200;
+
+        let overlay = sample_toast_overlay();
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let mut editor = TextInput::new(WidgetId::new("editor"));
+        editor.lines = vec!["fn main() {}".to_string()];
+        editor.has_focus = true;
+        let editor_rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.draw_text_input(editor_rect, &editor);
+        let layout = backend.draw_toast_overlay(editor_rect, &overlay);
+        // The chrome-level focus ring the runner strokes around
+        // `editor_rect` once `AppLogic::render` returns — must not land on
+        // top of the toast just painted above.
+        backend.draw_focus_ring(editor_rect);
+        backend.end_frame();
+
+        let vt = &layout.visible_toasts[0];
+        let success_bg = Theme::default().success_bg();
+        let cx = (vt.bounds.x + vt.bounds.width / 2.0) as u32;
+        let cy = (vt.bounds.y + vt.bounds.height / 2.0) as u32;
+        let px = surface.pixel_at(cx, cy);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (success_bg.r, success_bg.g, success_bg.b),
+            "the toast must paint over the bordered, focused editor underneath it, \
+             not get overwritten by its border/background or its focus ring",
+        );
+
+        // The toast stack is inset from `editor_rect`, so it never reaches
+        // the editor's own edges — the ring must still paint there, on the
+        // far (top-left) side from the bottom-right toast stack.
+        let theme = Theme::default();
+        let px = surface.pixel_at(2, 0);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must still paint around the focused editor where the \
+             toast, inset within it, never reaches",
+        );
+    }
+
+    /// Drives [`crate::compose::HoverTooltipTracker`] through real
+    /// [`UiEvent::MouseMoved`] dispatch + [`super::testing::WinDriver::tick`]
+    /// — the same `AppLogic::tick` path the live `win::run` runner uses
+    /// for its `request_frame_in`-scheduled repaint, feeding the event
+    /// straight into dispatch rather than through the live `wndproc`'s
+    /// `route_mouse_move`/`route_pointer` step first. Not a test of
+    /// `HoverTooltipTracker` itself (that lives in its own module) — this
+    /// proves the Win-GUI dispatch + tick + `draw_tooltip` wiring actually
+    /// shows and hides a tooltip in response to real pointer input.
+    /// Mirrors
+    /// `macos::tooltip::tests::hover_driven::tooltip_appears_after_the_delay_and_hides_on_pointer_leave`.
+    #[cfg(target_os = "windows")]
+    mod hover_driven {
+        use std::cell::{Cell, RefCell};
+        use std::rc::Rc;
+
+        use super::*;
+        use crate::compose::HoverTooltipTracker;
+        use crate::primitives::tooltip::{ResolvedPlacement, Tooltip, TooltipLayout};
+        use crate::runner::Reaction;
+        use crate::win::testing::WinDriver;
+        use crate::{AppLogic, ButtonMask, Point, UiEvent};
+
+        const DELAY_MS: u64 = 500;
+
+        /// Anchor rect the tooltip is shown for — matches both the
+        /// hover hit-test target and the tooltip's own bounds, so a
+        /// `MouseMoved` anywhere inside it hovers the one tracked item.
+        fn anchor() -> Rect {
+            Rect::new(10.0, 10.0, 60.0, 20.0)
+        }
+
+        /// Minimal [`AppLogic`] wiring a single-widget
+        /// [`HoverTooltipTracker`] to real pointer input: `handle` feeds
+        /// `MouseMoved`'s position through a plain [`Rect::contains`]
+        /// hit-test, `tick` advances the delay, `render` paints the
+        /// tooltip only while [`HoverTooltipTracker::visible_item`] is
+        /// `Some`. `clock_ms` is a caller-driven millisecond counter (the
+        /// tracker's own "headless-clock contract" — see its module doc),
+        /// not a wall clock, so the test controls elapsed time exactly
+        /// without sleeping.
+        struct HoverApp {
+            tracker: RefCell<HoverTooltipTracker<WidgetId>>,
+            clock_ms: Rc<Cell<u64>>,
+        }
+
+        impl AppLogic for HoverApp {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                if self.tracker.borrow().visible_item().is_some() {
+                    let tooltip = Tooltip::new(WidgetId::new("tip"), "Hover hint");
+                    let layout = TooltipLayout {
+                        bounds: anchor(),
+                        resolved_placement: ResolvedPlacement::Bottom,
+                    };
+                    backend.draw_tooltip(&tooltip, &layout);
+                }
+            }
+
+            fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+                match event {
+                    UiEvent::MouseMoved { position, .. } => {
+                        let hovered = anchor().contains(position).then(|| WidgetId::new("w"));
+                        let now = self.clock_ms.get();
+                        let changed = self.tracker.borrow_mut().on_hover(hovered, now);
+                        if hovered.is_some() {
+                            backend.request_frame_in(std::time::Duration::from_millis(DELAY_MS));
+                        }
+                        if changed {
+                            Reaction::Redraw
+                        } else {
+                            Reaction::Continue
+                        }
+                    }
+                    _ => Reaction::Continue,
+                }
+            }
+
+            fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+                let now = self.clock_ms.get();
+                if self.tracker.borrow_mut().tick(DELAY_MS, now) {
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
+                }
+            }
+        }
+
+        fn hovering_move(driver: &mut WinDriver<HoverApp>, x: f32, y: f32) {
+            driver.dispatch(UiEvent::MouseMoved {
+                position: Point::new(x, y),
+                buttons: ButtonMask::default(),
+            });
+        }
+
+        #[test]
+        fn tooltip_appears_after_the_delay_and_hides_on_pointer_leave() {
+            let clock = Rc::new(Cell::new(0u64));
+            let app = HoverApp {
+                tracker: RefCell::new(HoverTooltipTracker::new()),
+                clock_ms: clock.clone(),
+            };
+            let mut driver = WinDriver::new(app, 100, 50);
+
+            // Pointer lands on the anchor — still pending, no tooltip yet.
+            hovering_move(&mut driver, 40.0, 20.0);
+            assert!(
+                !driver.screen_contains("Hover hint"),
+                "the tooltip must not show the instant the pointer lands"
+            );
+            // `HoverApp::handle` asked the real `WinBackend::request_frame_in`
+            // to schedule the redraw this delay needs — not just this test's
+            // hand-driven `clock`/`tick()` below. Without this, nothing here
+            // would fail if `request_frame_in` stopped being called at all.
+            assert_eq!(
+                driver.backend().frame_requests(),
+                1,
+                "hovering the anchor must request exactly one tick after the hover delay"
+            );
+            let pending = driver
+                .backend()
+                .pending_frame_delay()
+                .expect("hovering the anchor must schedule a pending tick");
+            assert!(
+                pending <= std::time::Duration::from_millis(DELAY_MS),
+                "the pending tick must be due within the hover delay, got {pending:?}"
+            );
+
+            // The delay elapses with no further pointer movement — the
+            // `tick()` the real runner's `request_frame_in` timer would
+            // have fired now shows the tooltip.
+            clock.set(DELAY_MS);
+            driver.tick();
+            assert!(
+                driver.screen_contains("Hover hint"),
+                "the tooltip must show once the hover delay has elapsed"
+            );
+
+            // The pointer leaves the anchor entirely — the tooltip must
+            // disappear immediately, no further delay.
+            hovering_move(&mut driver, 90.0, 40.0);
+            assert!(
+                !driver.screen_contains("Hover hint"),
+                "the tooltip must hide as soon as the pointer leaves its anchor"
+            );
+        }
     }
 }

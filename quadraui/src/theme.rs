@@ -121,8 +121,9 @@ pub struct Theme {
     pub warning_fg: Color,
 
     // ── Palette pilot ───────────────────────────────────────────
-    /// Query-input text colour and cursor block fg in a `Palette`
-    /// modal. Distinct from `surface_fg` — the query line is
+    /// Query-input text colour in a `Palette` modal, also the TUI
+    /// block-cursor fg (GUI backends paint the query cursor as a bar in
+    /// `cursor` instead). Distinct from `surface_fg` — the query line is
     /// emphasised, item rows are not.
     pub query_fg: Color,
     /// Per-character highlight colour for fuzzy-match positions in
@@ -668,6 +669,99 @@ impl Theme {
         base.blend(self.accent_fg, 0.26)
     }
 
+    /// Resting fill for a [`crate::ButtonVariant::Danger`] button — the
+    /// full-strength colour a backend that paints a solid fill uses in
+    /// place of [`Self::accent_bg`], tracking [`Self::error_fg`] so a
+    /// palette that already themes its error colour gets a matching
+    /// danger button for free.
+    ///
+    /// **Not** [`Self::danger_bg`]: that accessor is a *subtle tint* of
+    /// [`Self::background`] for a banner/toast/validation strip, the
+    /// same low-alpha "surface, not solid colour" treatment
+    /// [`Self::success_bg`]'s own doc describes. A button's resting
+    /// fill reads as a solid block of colour the same way
+    /// [`crate::ButtonVariant::Primary`]'s `accent_bg` already does, so
+    /// this accessor returns `error_fg` itself rather than a background
+    /// blend.
+    ///
+    /// **A method, not a field** — the same reasoning as
+    /// [`Self::button_hover_bg`]: purely additive, so it costs nothing
+    /// in a downstream exhaustive palette literal.
+    pub fn button_danger_bg(&self) -> Color {
+        self.error_fg
+    }
+
+    /// Resting fill for a [`crate::ButtonVariant::Warning`] button —
+    /// like [`Self::button_danger_bg`], but tracking [`Self::warning_fg`]
+    /// instead of [`Self::error_fg`]. See that method's doc for why this
+    /// is a solid fill rather than [`Self::warning_bg`]'s subtle tint.
+    pub fn button_warning_bg(&self) -> Color {
+        self.warning_fg
+    }
+
+    /// Resting fill for a "success"-intent [`crate::Button`] — like
+    /// [`Self::button_danger_bg`], but tracking [`Self::success_fg`]
+    /// (itself derived from [`Self::git_added`]) instead of
+    /// [`Self::error_fg`]. See [`Self::button_danger_bg`]'s doc for why
+    /// this is a solid fill rather than [`Self::success_bg`]'s subtle
+    /// tint.
+    pub fn button_success_bg(&self) -> Color {
+        self.success_fg()
+    }
+
+    /// Background tint for a hovered [`crate::ListView`] row, blended
+    /// from `base` (the row's own resting background — `selected_bg`,
+    /// `header_bg`, or the list's base fill) toward [`Self::foreground`]
+    /// at a low alpha.
+    ///
+    /// Blends toward `foreground` rather than [`Self::accent_fg`] like
+    /// [`Self::button_hover_bg`] does: a row hover is a neutral "under
+    /// the cursor" cue (VS Code's own list hover is a flat grey, not an
+    /// accent tint), reserving accent colouring for the row that's
+    /// actually selected.
+    pub fn list_hover_bg(&self, base: Color) -> Color {
+        base.blend(self.foreground, 0.08)
+    }
+
+    /// Background tint for a pressed [`crate::ListView`] row — like
+    /// [`Self::list_hover_bg`], but blended at a higher alpha so a
+    /// press reads as visibly deeper than a hover.
+    pub fn list_pressed_bg(&self, base: Color) -> Color {
+        base.blend(self.foreground, 0.16)
+    }
+
+    /// Background tint for a hovered [`crate::TreeView`] row. Same
+    /// derivation as [`Self::list_hover_bg`] — `ListView` and `TreeView`
+    /// are both flat, vertically-stacked row primitives, so they share
+    /// one hover/pressed visual language rather than each growing its
+    /// own slightly different tint.
+    pub fn tree_hover_bg(&self, base: Color) -> Color {
+        self.list_hover_bg(base)
+    }
+
+    /// Background tint for a pressed [`crate::TreeView`] row. See
+    /// [`Self::tree_hover_bg`].
+    pub fn tree_pressed_bg(&self, base: Color) -> Color {
+        self.list_pressed_bg(base)
+    }
+
+    /// Background tint for a hovered row in a popup menu surface —
+    /// [`crate::ContextMenu`] item, [`crate::MenuBar`] top-level item, or
+    /// [`crate::Palette`]'s pinned create-action row. Same derivation as
+    /// [`Self::list_hover_bg`] (blend toward [`Self::foreground`] at a low
+    /// alpha): all three are flat rows under a cursor, the same visual
+    /// language `ListView`/`TreeView` already use, rather than growing a
+    /// third near-identical tint.
+    pub fn menu_item_hover_bg(&self, base: Color) -> Color {
+        self.list_hover_bg(base)
+    }
+
+    /// Background tint for a pressed row in a popup menu surface. See
+    /// [`Self::menu_item_hover_bg`].
+    pub fn menu_item_pressed_bg(&self, base: Color) -> Color {
+        self.list_pressed_bg(base)
+    }
+
     // ── Terminal find-highlight lift ────────────────────────────
     //
     // `tui/terminal.rs`, `gtk/terminal.rs`, and `macos/terminal.rs`
@@ -738,6 +832,82 @@ impl Theme {
     /// so it costs nothing in downstream exhaustive palette literals.
     pub fn text_selection_highlight(&self) -> Color {
         Color::rgba(99, 148, 255, 77)
+    }
+
+    // ── Success / warning / danger / info roles ──────────────────────────
+    //
+    // `Theme` has `error_fg` / `warning_fg` (text-ish foregrounds) and
+    // `git_added` (a green already themed per-palette), but no "success"
+    // role and no fill colours a `Toast`/banner/validation strip can paint
+    // a tinted background with. Every accessor below derives from a field
+    // that already exists, so it costs nothing in a downstream exhaustive
+    // palette literal (`exhaustive_theme_literal_still_compiles` below) —
+    // same reasoning as [`Self::tab_active_border_top`].
+    //
+    // **Overriding one of these in an app**: there is no independent
+    // field to set, by design — recolour the field it derives from
+    // instead. `success_fg`/`success_bg` track [`Self::git_added`];
+    // `danger_bg` tracks [`Self::error_fg`]; `warning_bg` tracks
+    // [`Self::warning_fg`]; `info_bg` tracks [`Self::accent_bg`]. A host
+    // embedding this crate (vimcode, kubeui, or a `quadraui-py`/
+    // `quadraui-node` script via `set_theme`) that wants its own
+    // "success" colour independent of its git-added colour sets
+    // `git_added` to that colour — there is no separate
+    // `ThemeOverrides` map; the existing field *is* the override point.
+    //
+    // **Known limitation**: every `*_bg` accessor blends against
+    // [`Self::background`] (the window-level backdrop), but every
+    // current consumer (`Toast`, `Form`'s validation strip) paints its
+    // banner onto a *surface* on top of that backdrop
+    // ([`Self::surface_bg`]/a panel fill), not onto `background`
+    // directly. A host that recolours only `surface_bg` and leaves
+    // `background` unchanged gets a banner tint computed against the
+    // wrong base colour. Blending against `background` rather than
+    // `surface_bg` matches [`Self::success_bg`]'s own doc and the rest
+    // of this family; a future change deriving from `surface_bg`
+    // instead would need to re-verify every existing consumer's
+    // contrast.
+
+    /// Foreground for a "success" indicator (a passed check, a saved
+    /// confirmation). Tracks [`Self::git_added`] — both default palettes
+    /// already carry a themed green there, and an app that recolours its
+    /// git-added marker gets a matching success colour for free.
+    pub fn success_fg(&self) -> Color {
+        self.git_added
+    }
+
+    /// Background fill for a "success" banner/toast/validation strip — a
+    /// subtle tint of [`Self::background`] toward [`Self::success_fg`],
+    /// rather than an opaque, saturated green: VS Code's own
+    /// notification/banner backgrounds are a low-alpha tint over the
+    /// editor surface, not a solid colour block.
+    pub fn success_bg(&self) -> Color {
+        self.background.blend(self.success_fg(), 0.25)
+    }
+
+    /// Background fill for a "danger"/destructive banner/toast/validation
+    /// strip — a subtle tint of [`Self::background`] toward
+    /// [`Self::error_fg`]. Same "tint, not solid fill" shape as
+    /// [`Self::success_bg`].
+    pub fn danger_bg(&self) -> Color {
+        self.background.blend(self.error_fg, 0.25)
+    }
+
+    /// Background fill for a "warning" banner/toast/validation strip — a
+    /// subtle tint of [`Self::background`] toward [`Self::warning_fg`].
+    /// Same "tint, not solid fill" shape as [`Self::success_bg`].
+    pub fn warning_bg(&self) -> Color {
+        self.background.blend(self.warning_fg, 0.25)
+    }
+
+    /// Background fill for an "info" banner/toast — a subtle tint of
+    /// [`Self::background`] toward [`Self::accent_bg`]. Same "tint, not
+    /// solid fill" shape as [`Self::success_bg`]; `accent_bg` is this
+    /// crate's existing "this is an accent/highlighted surface" colour
+    /// (reused from the find-replace toggle lift), so an info banner
+    /// tracks whatever accent colour the app already set.
+    pub fn info_bg(&self) -> Color {
+        self.background.blend(self.accent_bg, 0.25)
     }
 
     // ── Light default palette ───────────────────────────────────────────
@@ -1465,6 +1635,218 @@ mod tests {
             "pressed ({pressed:?}) should sit further from the resting colour \
              ({base:?}) than hover ({hovered:?})"
         );
+    }
+
+    #[test]
+    fn button_danger_bg_tracks_error_fg_as_a_solid_fill_not_a_tint() {
+        let theme = Theme::default();
+        assert_eq!(theme.button_danger_bg(), theme.error_fg);
+        assert_ne!(
+            theme.button_danger_bg(),
+            theme.danger_bg(),
+            "a button's resting fill is a solid colour, not the subtle \
+             background tint `danger_bg` blends for a banner/toast"
+        );
+    }
+
+    #[test]
+    fn button_warning_bg_tracks_warning_fg_as_a_solid_fill_not_a_tint() {
+        let theme = Theme::default();
+        assert_eq!(theme.button_warning_bg(), theme.warning_fg);
+        assert_ne!(
+            theme.button_warning_bg(),
+            theme.warning_bg(),
+            "a button's resting fill is a solid colour, not the subtle \
+             background tint `warning_bg` blends for a banner/toast"
+        );
+    }
+
+    #[test]
+    fn button_danger_and_warning_bg_follow_a_custom_theme_override() {
+        let theme = Theme {
+            error_fg: Color::rgb(200, 10, 10),
+            warning_fg: Color::rgb(200, 150, 10),
+            ..Theme::default()
+        };
+        assert_eq!(theme.button_danger_bg(), Color::rgb(200, 10, 10));
+        assert_eq!(theme.button_warning_bg(), Color::rgb(200, 150, 10));
+    }
+
+    #[test]
+    fn button_success_bg_tracks_success_fg_as_a_solid_fill_not_a_tint() {
+        let theme = Theme::default();
+        assert_eq!(theme.button_success_bg(), theme.success_fg());
+        assert_ne!(
+            theme.button_success_bg(),
+            theme.success_bg(),
+            "a button's resting fill is a solid colour, not the subtle \
+             background tint `success_bg` blends for a banner/toast"
+        );
+    }
+
+    #[test]
+    fn button_success_bg_follows_a_custom_git_added_override() {
+        let theme = Theme {
+            git_added: Color::rgb(10, 200, 10),
+            ..Theme::default()
+        };
+        assert_eq!(theme.button_success_bg(), Color::rgb(10, 200, 10));
+    }
+
+    #[test]
+    fn list_hover_bg_shifts_toward_foreground_without_new_field() {
+        let theme = Theme::default();
+        let base = theme.background;
+        let hovered = theme.list_hover_bg(base);
+        assert_ne!(
+            hovered, base,
+            "hovering a list row should visibly tint its resting background"
+        );
+        assert_ne!(
+            hovered,
+            theme.button_hover_bg(base),
+            "a list row's hover tint is its own derivation, not a Button alias"
+        );
+    }
+
+    #[test]
+    fn list_pressed_bg_is_a_deeper_tint_than_hover() {
+        let theme = Theme::default();
+        let base = theme.background;
+        let hovered = theme.list_hover_bg(base);
+        let pressed = theme.list_pressed_bg(base);
+        assert_ne!(pressed, hovered, "pressed must read differently from hover");
+    }
+
+    #[test]
+    fn tree_hover_and_pressed_bg_match_list_s_derivation() {
+        // `ListView` and `TreeView` share one row hover/pressed visual
+        // language — see `Theme::tree_hover_bg`'s doc.
+        let theme = Theme::default();
+        let base = theme.background;
+        assert_eq!(theme.tree_hover_bg(base), theme.list_hover_bg(base));
+        assert_eq!(theme.tree_pressed_bg(base), theme.list_pressed_bg(base));
+    }
+
+    #[test]
+    fn menu_item_hover_and_pressed_bg_match_list_s_derivation() {
+        // `ContextMenu`/`MenuBar`/`Palette` popup rows share the same
+        // hover/pressed visual language as `ListView` — see
+        // `Theme::menu_item_hover_bg`'s doc.
+        let theme = Theme::default();
+        let base = theme.background;
+        assert_eq!(theme.menu_item_hover_bg(base), theme.list_hover_bg(base));
+        assert_eq!(
+            theme.menu_item_pressed_bg(base),
+            theme.list_pressed_bg(base)
+        );
+        assert_ne!(
+            theme.menu_item_hover_bg(base),
+            theme.menu_item_pressed_bg(base),
+            "pressed must read differently from hover"
+        );
+    }
+
+    // ── Success / warning / danger / info roles ──────────────────────────
+
+    /// `success_fg` is a lossless alias for `git_added` — both default
+    /// palettes already carry a themed green there, and a method with no
+    /// backing field costs nothing in `exhaustive_theme_literal_still_compiles`.
+    #[test]
+    fn success_fg_tracks_git_added_on_both_default_themes() {
+        for theme in [Theme::default(), Theme::light_default()] {
+            assert_eq!(theme.success_fg(), theme.git_added);
+        }
+    }
+
+    /// Every `*_bg` role is a visible tint of `background`, not an
+    /// identical or fully-opaque-foreground colour — the "banner", not
+    /// "solid block", shape every accessor's doc promises.
+    #[test]
+    fn severity_bg_roles_are_visible_tints_of_background_on_both_default_themes() {
+        for theme in [Theme::default(), Theme::light_default()] {
+            for (name, bg) in [
+                ("success_bg", theme.success_bg()),
+                ("danger_bg", theme.danger_bg()),
+                ("warning_bg", theme.warning_bg()),
+                ("info_bg", theme.info_bg()),
+            ] {
+                assert_ne!(
+                    bg, theme.background,
+                    "{name} must visibly tint the background, not equal it"
+                );
+            }
+        }
+    }
+
+    /// `danger_bg`/`warning_bg`/`info_bg` each track a *different*
+    /// existing field (`error_fg`/`warning_fg`/`accent_bg`) — asserting
+    /// them mutually distinct on both default palettes catches an
+    /// accessor accidentally wired to the wrong source field.
+    #[test]
+    fn severity_bg_roles_are_mutually_distinct() {
+        for theme in [Theme::default(), Theme::light_default()] {
+            let roles = [
+                theme.success_bg(),
+                theme.danger_bg(),
+                theme.warning_bg(),
+                theme.info_bg(),
+            ];
+            for (i, a) in roles.iter().enumerate() {
+                for (j, b) in roles.iter().enumerate() {
+                    if i != j {
+                        assert_ne!(a, b, "severity bg role {i} and {j} must not collide");
+                    }
+                }
+            }
+        }
+    }
+
+    /// No new `Theme` field — every role is reachable off a value built
+    /// with a `..Theme::default()` spread after overriding the fields it
+    /// derives from, same shape as
+    /// `chart_series_is_reachable_off_a_non_default_theme`. `success_fg`
+    /// derives only from `git_added` (untouched below), so it must match
+    /// the default exactly; `danger_bg` also derives from `background`
+    /// (changed below), so it is checked against the hand-computed blend
+    /// instead of the default's own value.
+    #[test]
+    fn severity_roles_are_reachable_off_a_non_default_theme() {
+        let themed = Theme {
+            background: Color::rgb(250, 250, 250),
+            foreground: Color::rgb(10, 10, 10),
+            ..Theme::default()
+        };
+        assert_eq!(themed.success_fg(), Theme::default().success_fg());
+        assert_eq!(
+            themed.danger_bg(),
+            themed.background.blend(themed.error_fg, 0.25)
+        );
+    }
+
+    /// An app that wants its own "success" colour, independent of its
+    /// git-added marker, recolours `git_added` itself — there is no
+    /// separate storage for `success_fg`/`success_bg` to miss. This is
+    /// the override mechanism the module doc above describes.
+    #[test]
+    fn success_roles_follow_a_custom_git_added_override() {
+        let theme = Theme {
+            git_added: Color::rgb(10, 200, 10),
+            ..Theme::default()
+        };
+        assert_eq!(theme.success_fg(), Color::rgb(10, 200, 10));
+        assert_ne!(theme.success_bg(), Theme::default().success_bg());
+    }
+
+    /// Same override contract as `success_roles_follow_a_custom_git_added_override`,
+    /// for `danger_bg`/`error_fg`.
+    #[test]
+    fn danger_bg_follows_a_custom_error_fg_override() {
+        let theme = Theme {
+            error_fg: Color::rgb(255, 0, 0),
+            ..Theme::default()
+        };
+        assert_ne!(theme.danger_bg(), Theme::default().danger_bg());
     }
 }
 

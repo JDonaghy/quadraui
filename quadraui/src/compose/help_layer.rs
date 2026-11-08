@@ -9,10 +9,11 @@
 //!    accelerator) live in [`HelpAction`].
 //! 2. **[`HelpOverlayController`]** — a `?`-triggered cheatsheet overlay
 //!    rendering the active view's [`ViewHelp`]. Composed from
-//!    [`crate::Panel`] (chrome: title bar + border — `Backend::draw_panel`
-//!    is implemented on every backend) framing a [`crate::TextDisplay`]
-//!    (content: the note/action list). Views with no registered help still
-//!    get a visible (if minimal) cheatsheet rather than a silent no-op — see
+//!    [`crate::SidebarPanel`] (chrome: a [`crate::Toolbar`] header carrying
+//!    the title — `Backend::draw_sidebar_panel_interactive` is implemented
+//!    on every backend) framing a [`crate::TextDisplay`] (content: the
+//!    note/action list). Views with no registered help still get a visible
+//!    (if minimal) cheatsheet rather than a silent no-op — see
 //!    [`HelpOverlayController::render`].
 //! 3. **[`help_actions_to_palette_items`] / [`filter_help_actions`]** — feed
 //!    registered actions into the existing [`crate::Palette`] /
@@ -29,7 +30,10 @@ use std::collections::BTreeMap;
 
 use crate::event::Rect;
 use crate::types::{Decoration, StyledSpan, StyledText, WidgetId};
-use crate::{Backend, Key, NamedKey, PaletteItem, Panel, TextDisplay, TextDisplayLine, UiEvent};
+use crate::{
+    Backend, InteractionState, Key, NamedKey, PaletteItem, SidebarPanel, TextDisplay,
+    TextDisplayLine, Toolbar, ToolbarButton, UiEvent,
+};
 
 // ── Data model ───────────────────────────────────────────────────────────
 
@@ -172,7 +176,7 @@ pub enum HelpOverlayEvent {
 }
 
 /// Cross-backend compose controller for a `?`-triggered cheatsheet
-/// overlay. Wraps a [`Panel`] (chrome) + [`TextDisplay`] (content) —
+/// overlay. Wraps a [`SidebarPanel`] (chrome) + [`TextDisplay`] (content) —
 /// see the module docs for why not the old `Modal` primitive.
 ///
 /// Purely a display + open/close state machine: it does not own a
@@ -196,7 +200,7 @@ impl HelpOverlayController {
         }
     }
 
-    /// Override the `WidgetId` used for the rendered [`Panel`].
+    /// Override the `WidgetId` used for the rendered [`SidebarPanel`].
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = WidgetId::new(id.into());
         self
@@ -287,14 +291,28 @@ impl HelpOverlayController {
             Some(h) => format!("Help — {}  (Esc to close)", h.title),
             None => "Help  (Esc to close)".to_string(),
         };
-        let panel = Panel {
+        let theme = backend.theme();
+        let panel = SidebarPanel {
             id: self.id,
-            title: Some(StyledText::plain(title)),
-            actions: vec![],
-            accent: None,
-            collapsed: false,
+            toolbar: Some(Toolbar {
+                id: WidgetId::new(format!("{}-toolbar", self.id.as_str())),
+                // A `Toolbar` `Label` paints flush against the toolbar's
+                // own leading edge, with no inset of its own — a leading
+                // space in the label text gives the title the same
+                // one-cell/few-pixel breathing room `Panel`'s own title
+                // bar paints, on every backend, without the
+                // `Toolbar`/`SidebarPanel` paint code itself growing a
+                // title-specific padding knob.
+                buttons: vec![ToolbarButton::Label {
+                    text: format!(" {title}"),
+                    fg: Some(theme.foreground),
+                }],
+                bg: Some(theme.separator),
+                focused_index: None,
+            }),
+            toolbar_height: None,
         };
-        let layout = backend.draw_panel(rect, &panel);
+        let layout = backend.draw_sidebar_panel_interactive(rect, &panel, &InteractionState::new());
         let lines = match help {
             Some(h) => build_cheatsheet_lines(h),
             None => vec![TextDisplayLine {

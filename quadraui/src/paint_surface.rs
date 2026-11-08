@@ -478,13 +478,14 @@ pub trait PaintSurface {
     fn surface_draw_image(&mut self, rect: Rect, image: &Image) -> ImagePaintResult;
 }
 
-/// Find the longest prefix of `text` (snapped to a `char` boundary) whose
-/// measured width, with a trailing `…` appended, fits within `max_width`.
+/// [`PaintSurface`]-backed wrapper over the shared
+/// [`crate::text_util::truncate_with_ellipsis`]: measures with
+/// `surface.surface_measure_text_styled(_, bold)` so GTK/macOS/Win each
+/// get their own font's real metrics.
 ///
 /// Returns the prefix-plus-ellipsis string and its measured width. If even
 /// a bare `…` does not fit, returns an empty string and width `0.0`. If the
-/// whole of `text` already fits in `max_width`, callers should paint `text`
-/// directly instead of calling this — it always appends `…`.
+/// whole of `text` already fits in `max_width`, returns it unchanged.
 ///
 /// Binary-searches over `char` count rather than bytes, assuming — as every
 /// text-shaping backend behind [`PaintSurface`] does (Pango on GTK, Core
@@ -501,36 +502,9 @@ pub(crate) fn fit_text_prefix(
     bold: bool,
     max_width: f32,
 ) -> (String, f32) {
-    const ELLIPSIS: char = '…';
-    let (ellipsis_w, _) = surface.surface_measure_text_styled(&ELLIPSIS.to_string(), bold);
-    if ellipsis_w > max_width {
-        return (String::new(), 0.0);
-    }
-
-    let chars: Vec<char> = text.chars().collect();
-    let mut lo = 0usize;
-    let mut hi = chars.len();
-    // Invariant: `lo` chars plus the ellipsis is known to fit; `hi` is
-    // known not to (or is the full length, still unproven).
-    while lo < hi {
-        let mid = lo + (hi - lo).div_ceil(2);
-        let prefix: String = chars[..mid].iter().collect();
-        let candidate = format!("{prefix}{ELLIPSIS}");
-        let (w, _) = surface.surface_measure_text_styled(&candidate, bold);
-        if w <= max_width {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-
-    if lo == 0 {
-        return (ELLIPSIS.to_string(), ellipsis_w);
-    }
-    let prefix: String = chars[..lo].iter().collect();
-    let candidate = format!("{prefix}{ELLIPSIS}");
-    let (w, _) = surface.surface_measure_text_styled(&candidate, bold);
-    (candidate, w)
+    crate::text_util::truncate_with_ellipsis(text, max_width, |s| {
+        surface.surface_measure_text_styled(s, bold).0
+    })
 }
 
 #[cfg(test)]
@@ -783,15 +757,11 @@ mod tests {
         all(feature = "macos", target_os = "macos")
     ))]
     #[test]
-    fn fit_text_prefix_returns_whole_text_unchanged_budget_irrelevant_when_caller_checks_first() {
-        // `fit_text_prefix` always appends `…`, even when the full text
-        // would fit — callers are expected to check the unclipped width
-        // first and only call this once it doesn't. Documented here so a
-        // future caller doesn't assume otherwise.
+    fn fit_text_prefix_returns_whole_text_unchanged_when_it_already_fits() {
         let surface = WidthSurface;
         let (fitted, w) = fit_text_prefix(&surface, "ab", false, 100.0);
-        assert_eq!(fitted, "ab…");
-        assert_eq!(w, 3.0 * 8.0);
+        assert_eq!(fitted, "ab");
+        assert_eq!(w, 2.0 * 8.0);
     }
 
     #[cfg(any(

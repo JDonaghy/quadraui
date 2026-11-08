@@ -17,6 +17,7 @@
 
 use crate::backend::{Backend, ResolvedMenuStyle};
 use crate::event::{Rect, UiEvent};
+use crate::interaction::InteractionState;
 use crate::primitives::context_menu::{
     ContextMenu, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure, ContextMenuLayout,
     ContextMenuPlacement,
@@ -31,9 +32,10 @@ use crate::{FontRole, Key, Modifiers, MouseButton, NamedKey};
 /// (whose `char_width` isn't meaningful for chrome text — see
 /// `Backend::measure_text`'s own doc). Mirrors [`ContextMenu::
 /// measure_generic_width`]'s per-item accounting (a leading `✓ ` slot
-/// when [`ContextMenuItem::checked`] is `Some(_)`, a trailing gap plus
-/// either a `▶` submenu arrow or [`ContextMenuItem::detail`]'s text) but
-/// measures the real chrome-font advance instead of counting characters.
+/// when [`ContextMenuItem::checked`] is `Some(_)`, or the same slot for
+/// [`ContextMenuItem::icon`] when `checked` is unset, plus a trailing gap
+/// plus either a `▶` submenu arrow or [`ContextMenuItem::detail`]'s text)
+/// but measures the real chrome-font advance instead of counting characters.
 /// [`ContextMenuItem::key_equivalent`]-rendered shortcuts aren't counted,
 /// same omission `measure_generic_width` documents for itself.
 fn dropdown_width(backend: &dyn Backend, items: &[ContextMenuItem], lh: f32) -> f32 {
@@ -68,7 +70,7 @@ fn dropdown_width(backend: &dyn Backend, items: &[ContextMenuItem], lh: f32) -> 
         .map(|item| {
             let label: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
             let mut w = backend.measure_text(&label, role).0;
-            if item.checked.is_some() {
+            if item.checked.is_some() || item.icon.is_some() {
                 w += checked_w;
             }
             if item.submenu.is_some() {
@@ -214,14 +216,46 @@ impl MenuSystem {
     }
 
     /// Draw the menu bar and any open dropdown (including nested submenus).
+    ///
+    /// The dropdown/submenu levels paint through the plain
+    /// [`Backend::draw_context_menu`], not
+    /// [`Backend::draw_context_menu_with_state`]: a dropdown row's hover
+    /// already drives [`Self::dropdown_selected`] /
+    /// [`Self::submenu_selected`] (keyboard and mouse both move the same
+    /// selection cursor, which the submenu machinery below keys off of),
+    /// so `draw_context_menu`'s `is_selected` highlight already is the
+    /// hover cue there — a second, independent `InteractionState` feed
+    /// would just double the bookkeeping for the same visual signal.
     pub fn render(&self, backend: &mut dyn Backend, bar_rect: Rect) {
         let bar = self.build_menu_bar();
-        let _ = backend.draw_menu_bar(bar_rect, &bar);
+        let _ = backend.draw_menu_bar_with_state(bar_rect, &bar, &self.bar_interaction());
 
         let stack = self.dropdown_stack(backend, bar_rect);
         for (ctx_menu, layout) in &stack {
             let _ = backend.draw_context_menu(ctx_menu, layout);
         }
+    }
+
+    /// The top-level bar's own hover state, derived from
+    /// [`Self::focused_item`] rather than tracked separately — no
+    /// caller feeds this by hand, so a py/node app gets the hover tint
+    /// for free the moment it registers a `MenuBar` wire extra.
+    ///
+    /// Empty (nothing hovered) while a dropdown is open: `focused_item`
+    /// only updates in [`Self::handle_mouse_moved`]'s closed-bar branch,
+    /// and the open item already gets [`crate::Theme::tab_active_bg`]'s
+    /// stronger treatment in `primitives::menu_bar::native_surface_paint`
+    /// — layering the plain hover tint on top of it there would read as
+    /// a *lighter* highlight than "active", the wrong direction.
+    fn bar_interaction(&self) -> InteractionState {
+        if self.open_item.is_some() {
+            return InteractionState::new();
+        }
+        let hovered = self
+            .focused_item
+            .and_then(|i| self.menus.get(i))
+            .map(|m| m.id);
+        InteractionState::from_parts(hovered, None)
     }
 
     /// Process an event. Call from `handle()` before other UI routing.
@@ -1571,6 +1605,32 @@ mod tests {
         assert!(submenu_w > plain_w, "submenu={submenu_w}, plain={plain_w}");
     }
 
+    /// An `icon`-only item (no `checked` state) reserves the same leading
+    /// gutter width a `checked` item does — menu-bar dropdowns paint
+    /// through this same `native_surface_paint` path, which prefixes an
+    /// icon'd item's label with the same two-space gutter a checked
+    /// item's `✓ ` uses, so a dropdown that doesn't reserve for `icon`
+    /// would let that shifted label clip at the right edge.
+    #[test]
+    fn dropdown_width_reserves_space_for_icon_same_as_checked() {
+        let backend = MockBackend::new();
+        let plain = [action("a", "Reveal in Explorer")];
+        let mut with_icon = plain.clone();
+        with_icon[0].icon = Some(crate::types::Icon::new("G", "F"));
+        let mut checked = plain.clone();
+        checked[0].checked = Some(true);
+
+        let plain_w = dropdown_width(&backend, &plain, 1.0);
+        let icon_w = dropdown_width(&backend, &with_icon, 1.0);
+        let checked_w = dropdown_width(&backend, &checked, 1.0);
+
+        assert!(icon_w > plain_w, "icon={icon_w}, plain={plain_w}");
+        assert_eq!(
+            icon_w, checked_w,
+            "icon and checked reserve the same shared gutter width"
+        );
+    }
+
     /// Separators never gate the width computation on their own (empty)
     /// label — a menu that is otherwise all separators plus one real item
     /// must size off that one item, not panic or report `0.0`.
@@ -1715,6 +1775,31 @@ mod tests {
         assert!(!ms.is_open());
         assert_eq!(ms.open_item, None);
         assert_eq!(ms.focused_item, None);
+    }
+
+    #[test]
+    fn bar_interaction_is_empty_with_nothing_focused() {
+        let ms = MenuSystem::new(sample_menus());
+        assert_eq!(ms.bar_interaction().hovered(), None);
+    }
+
+    #[test]
+    fn bar_interaction_hovers_the_focused_item_s_id() {
+        let mut ms = MenuSystem::new(sample_menus());
+        ms.focused_item = Some(0);
+        assert_eq!(ms.bar_interaction().hovered(), Some(&ms.menus[0].id));
+    }
+
+    #[test]
+    fn bar_interaction_clears_once_a_dropdown_is_open() {
+        // `focused_item` is stale ("whatever it was before the dropdown
+        // opened"), but `bar_interaction` must not paint a hover tint
+        // over the stronger "active" treatment the open item already
+        // gets — see `bar_interaction`'s own doc.
+        let mut ms = MenuSystem::new(sample_menus());
+        ms.focused_item = Some(0);
+        ms.open_item = Some(0);
+        assert_eq!(ms.bar_interaction().hovered(), None);
     }
 
     #[test]

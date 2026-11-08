@@ -59,12 +59,14 @@ impl MessageDialogDemo {
                     label: "Save".into(),
                     is_default: true,
                     is_cancel: false,
+                    spec: None,
                 },
                 MessageDialogButton {
                     id: WidgetId::new("gallery:message-dialog:discard"),
                     label: "Discard".into(),
                     is_default: false,
                     is_cancel: true,
+                    spec: None,
                 },
             ],
             severity: Some(DialogSeverity::Warning),
@@ -84,6 +86,7 @@ impl MessageDialogDemo {
             )],
             buttons: vec![
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("gallery:message-dialog:keep"),
                     label: "Keep Editing".to_string(),
                     is_default: true,
@@ -91,6 +94,7 @@ impl MessageDialogDemo {
                     tint: None,
                 },
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("gallery:message-dialog:discard-native"),
                     label: "Discard".to_string(),
                     is_default: false,

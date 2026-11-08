@@ -18,7 +18,34 @@ Python callback raised, which passes through unchanged) is a
 ``UnknownSlotError``, ``InvalidDimensionsError``, ``InvalidCharError``,
 ``PanicError``, ``PoisonedError``, ``InternalError``,
 ``NativeAlreadyRunError``, ``NoDisplayError``, ``NotOnMainThreadError``,
-``InvalidAppIdError``, and ``InvalidFontRoleError``.
+``InvalidAppIdError``, ``InvalidFontRoleError``, and ``UnsupportedError``.
+
+``QuiApp``'s platform-services methods -- ``check_for_update``/
+``download_and_stage``/``apply_on_quit`` (auto-update), ``begin_power_save_block``/
+``end_power_save_block`` (the sleep/suspend inhibitor), ``set_login_item``/
+``login_item_enabled`` (launch at login), ``set_as_default_protocol_client``/
+``is_default_protocol_client``/``remove_as_default_protocol_client`` (OS
+protocol registration), ``begin_drag_out`` (OS-level drag-out of this app's
+window), and ``add_recent_document``/``clear_recent_documents``/
+``set_dock_menu``/``set_jump_list`` (recent docs, the Dock icon menu, and the
+Windows jump list) -- each raise ``UnsupportedError`` on a backend with no
+implementation (the headless ``TuiBackend`` implements none of them) rather
+than silently no-opping. The void-returning ones among them (every one
+except ``check_for_update``, ``download_and_stage``,
+``begin_power_save_block``, ``login_item_enabled``, and
+``is_default_protocol_client``, which each return a value a caller needs
+right away) have a matching method on the ``QuiAppActions`` handle
+``QuiApp.actions()`` returns, for use from inside a registered handler.
+
+``quadraui.app_path(kind)`` resolves a standard, per-app filesystem location
+(``"user_data"``, ``"app_config"``, ``"app_cache"``, ``"logs"``, ``"temp"``,
+``"downloads"``, ``"documents"``, ``"home"``) with no live ``QuiApp`` needed;
+``quadraui.set_app_identifier(identifier)`` sets the process-global
+identifier the app-scoped kinds resolve under.
+``quadraui.install_crash_handler(cfg)`` installs a process-global panic hook
+that writes a crash record on an uncaught panic, from a ``cfg`` dict whose
+keys (``"app_version"``, ``"upload_endpoint"``, ``"metadata"``,
+``"log_dir"``) are all optional.
 
 ``QuiApp.viewport()``, ``line_height()``, ``char_width()``,
 ``list_char_width()``, ``chrome_line_height()``, ``scrollbar_reserve()``,
@@ -90,6 +117,10 @@ from ._quadraui import (
     QuiShellApp,
     SlotOccupiedError,
     UnknownSlotError,
+    UnsupportedError,
+    app_path,
+    install_crash_handler,
+    set_app_identifier,
 )
 
 __all__ = [
@@ -110,4 +141,8 @@ __all__ = [
     "NotOnMainThreadError",
     "InvalidAppIdError",
     "InvalidFontRoleError",
+    "UnsupportedError",
+    "app_path",
+    "set_app_identifier",
+    "install_crash_handler",
 ]

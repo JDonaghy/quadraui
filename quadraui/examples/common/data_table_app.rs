@@ -110,7 +110,7 @@ impl DataTableApp {
             },
             Column {
                 title: "Restarts".into(),
-                width: ColumnWidth::Fixed(10.0),
+                width: ColumnWidth::FixedCells(10.0),
                 align: ColumnAlign::Right,
             },
         ]
@@ -559,8 +559,9 @@ impl AppLogic for DataTableApp {
                     // rewriting the columns' declared strategies directly.
                     //
                     // Uses a small absolute floor (not per-column minimum): this table's
-                    // own `Restarts` column is declared `Fixed(10.0)` — the same literal
-                    // value in both cell (TUI) and pixel (GTK) units.
+                    // own `Restarts` column is declared `FixedCells(10.0)` — 10 cells on
+                    // TUI and ~10 average glyph widths on GTK, the same perceptual size
+                    // on both backends.
                     //
                     // Uses `resize_base` (captured at mouse-down), not a freshly
                     // re-fetched `table_layout` — see its doc comment for why re-deriving

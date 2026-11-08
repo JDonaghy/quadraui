@@ -162,11 +162,14 @@ mod tests {
             None
         };
 
-        let y0 = origin_y as u32;
-        let y1 = H as u32;
+        // Inset 1px top and bottom to dodge the bar's own `border_fg` frame
+        // rows (`native_surface_paint::paint` strokes the full `rect`),
+        // same convention as `gtk::command_line`'s `col_y_range`.
+        let y0 = origin_y as u32 + 1;
+        let y1 = H as u32 - 1;
 
         // Column 0 (':') interior — inset 1px from the left cell edge to
-        // dodge antialiasing at the boundary.
+        // dodge antialiasing at the boundary (and the frame's left column).
         let col0_x0 = origin_x as u32 + 1;
         let col0_x1 = (origin_x + char_width).floor() as u32;
         let px0 = find_painted(col0_x0, col0_x1, y0, y1)
@@ -307,9 +310,13 @@ mod tests {
             })
             .expect("paint command line selection over text");
 
+        // Inset 1px on every edge so the bar's own `border_fg` frame (which
+        // also differs from the white background) can't satisfy `saw_ink`
+        // on its own — this scan must only be true because of real glyph
+        // ink painted over the highlight.
         let (mut saw_highlight, mut saw_ink) = (false, false);
-        for x in 0..W as u32 {
-            for y in 0..H as u32 {
+        for x in 1..W as u32 - 1 {
+            for y in 1..H as u32 - 1 {
                 match surface.pixel_at(x, y) {
                     px if (px.r, px.g, px.b) == (0, 0, 255) => saw_highlight = true,
                     px if (px.r, px.g, px.b) != (255, 255, 255) => saw_ink = true,

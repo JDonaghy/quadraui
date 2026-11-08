@@ -18,8 +18,13 @@ use core_text::font::CTFont;
 
 use super::cg::{rect, CGContextClipToRect, CGContextRestoreGState, CGContextSaveGState};
 use crate::event::Rect as QRect;
-use crate::primitives::tree::{TreeView, TreeViewLayout};
+use crate::primitives::layout_metrics::{tree_row_pitch, TextMeasure};
+use crate::primitives::tree::{
+    tree_chevron_glyph, TreePaintState, TreeRowMeasure, TreeView, TreeViewLayout,
+};
+use crate::style::Style;
 use crate::theme::Theme;
+use crate::types::Decoration;
 
 /// Compute the layout the macOS rasteriser would produce for `tree`
 /// in `area` at `line_height`. Header rows use `(line_height * 1.2).round()`,
@@ -45,8 +50,58 @@ pub fn mac_tree_layout(
     area: QRect,
     line_height: f64,
     font: &CTFont,
+    row_padding_x: f32,
 ) -> TreeViewLayout {
-    crate::primitives::layout_metrics::tree_layout_measured(tree, area, line_height, font)
+    crate::primitives::layout_metrics::tree_layout_measured(
+        tree,
+        area,
+        line_height,
+        font,
+        row_padding_x,
+    )
+}
+
+/// Like [`mac_tree_layout`], but threads an explicit pixel-precise
+/// scroll position (`scroll_px`) through to
+/// [`TreeView::layout_with_scroll_px`] instead of only
+/// [`TreeView::scroll_offset`]'s whole-row value. The row-measurement
+/// closure mirrors [`crate::primitives::layout_metrics::tree_layout_measured`]'s
+/// (chevron glyph width measured via `font`, same as `mac_tree_layout`)
+/// — that shared fn calls `TreeView::layout`, which can't reach the
+/// scroll_px-aware method, so this duplicates its small measurement
+/// closure rather than widening that fn's signature.
+/// `scroll_px: None` produces byte-identical output to `mac_tree_layout`.
+pub fn mac_tree_layout_with_scroll_px(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    font: &CTFont,
+    row_padding_x: f32,
+    scroll_px: Option<f32>,
+) -> TreeViewLayout {
+    let header_height = (line_height * 1.2).round();
+    let item_height = tree_row_pitch(tree, line_height);
+    let indent_px = (line_height * 0.9).round();
+    let show_chevrons = tree.style.show_chevrons;
+    tree.layout_with_scroll_px(area.width, area.height, scroll_px, |i| {
+        let row = &tree.rows[i];
+        let is_header = matches!(row.decoration, Decoration::Header);
+        let row_h = if is_header {
+            header_height as f32
+        } else {
+            item_height as f32
+        };
+        let chevron_end_x = if let Some(expanded) = row.is_expanded.filter(|_| show_chevrons) {
+            let glyph_w = font.width_of(&tree_chevron_glyph(&tree.style, expanded)) as f64;
+            Some((row_padding_x as f64 + row.indent as f64 * indent_px + glyph_w + 4.0) as f32)
+        } else {
+            None
+        };
+        TreeRowMeasure {
+            height: row_h,
+            chevron_end_x,
+        }
+    })
 }
 
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `ctx`. Returns the
@@ -72,15 +127,16 @@ pub unsafe fn draw_tree(
     h: f64,
     tree: &TreeView,
     theme: &Theme,
+    style: &Style,
     line_height: f64,
     nerd_fonts_enabled: bool,
 ) -> TreeViewLayout {
     let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
     if w <= 0.0 || h <= 0.0 {
-        return mac_tree_layout(tree, area, line_height, font);
+        return mac_tree_layout(tree, area, line_height, font, style.row_padding_x);
     }
 
-    let layout = mac_tree_layout(tree, area, line_height, font);
+    let layout = mac_tree_layout(tree, area, line_height, font, style.row_padding_x);
 
     CGContextSaveGState(ctx);
     CGContextClipToRect(ctx, rect(x, y, w, h));
@@ -97,6 +153,91 @@ pub unsafe fn draw_tree(
         nerd_fonts_enabled,
         &mut surface,
         theme,
+        style,
+        // `hovered_idx` / `pressed_idx`: this base painter never tints
+        // rows — that's `draw_tree_with_state`'s job, which composes
+        // both indices (and the focus-visible ring below) from
+        // `TreePaintState`. `None`/`false` here keep `draw_tree`
+        // pixel-identical to the contract above.
+        None,
+        None,
+        false,
+    );
+
+    CGContextRestoreGState(ctx);
+    layout
+}
+
+/// [`draw_tree`], plus hover/press row tinting, a focus-visible ring,
+/// and — when `state.scroll_px` is `Some` — a pixel-precise scroll
+/// position instead of only [`TreeView::scroll_offset`]'s whole-row
+/// value: the first visible row is shifted up by the sub-row
+/// remainder (via [`mac_tree_layout_with_scroll_px`]) and the vertical
+/// scrollbar thumb tracks the same position (via
+/// [`crate::primitives::tree::native_surface_paint::paint_with_scroll_px`]).
+/// `state.scroll_px: None` paints pixel-identically to [`draw_tree`].
+///
+/// # Safety
+///
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
+/// the call.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_tree_with_state(
+    ctx: CGContextRef,
+    font: &CTFont,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    tree: &TreeView,
+    theme: &Theme,
+    style: &Style,
+    line_height: f64,
+    nerd_fonts_enabled: bool,
+    state: &TreePaintState,
+    focus_ring_visible: bool,
+) -> TreeViewLayout {
+    let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
+    if w <= 0.0 || h <= 0.0 {
+        return mac_tree_layout_with_scroll_px(
+            tree,
+            area,
+            line_height,
+            font,
+            style.row_padding_x,
+            state.scroll_px,
+        );
+    }
+
+    let layout = mac_tree_layout_with_scroll_px(
+        tree,
+        area,
+        line_height,
+        font,
+        style.row_padding_x,
+        state.scroll_px,
+    );
+
+    CGContextSaveGState(ctx);
+    CGContextClipToRect(ctx, rect(x, y, w, h));
+
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    crate::primitives::tree::native_surface_paint::paint_with_scroll_px(
+        tree,
+        area,
+        &layout,
+        line_height as f32,
+        nerd_fonts_enabled,
+        &mut surface,
+        theme,
+        style,
+        state.hovered_idx,
+        state.pressed_idx,
+        focus_ring_visible,
+        state.scroll_px,
     );
 
     CGContextRestoreGState(ctx);
@@ -193,6 +334,7 @@ mod tests {
                 QRect::new(0.0, 0.0, W as f32, H as f32),
                 b.chrome_line_height() as f64,
                 &font(),
+                8.0,
             );
             *layout.borrow_mut() = Some(l);
         });
@@ -293,7 +435,7 @@ mod tests {
         // Area offset by (0, 60) — typical when a tree lives below an
         // MSV header + aux input.
         let area = QRect::new(0.0, 60.0, 240.0, 180.0);
-        let layout = mac_tree_layout(&tree, area, 16.0, &font());
+        let layout = mac_tree_layout(&tree, area, 16.0, &font(), 8.0);
         // Locality: first row's bounds.y must be 0, not 60.
         let first = &layout.visible_rows[0];
         assert_eq!(
@@ -330,8 +472,8 @@ mod tests {
         let tree = make_tree(vec![branch_row(0, "alpha", true)]);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
 
-        let estimated = crate::primitives::layout_metrics::tree_layout(&tree, area, 16.0);
-        let measured = mac_tree_layout(&tree, area, 16.0, &font());
+        let estimated = crate::primitives::layout_metrics::tree_layout(&tree, area, 16.0, 8.0);
+        let measured = mac_tree_layout(&tree, area, 16.0, &font(), 8.0);
 
         // The Chevron hit-region's width *is* the row's chevron_end_x
         // (see `TreeView::layout`'s hit-region split).
@@ -342,16 +484,16 @@ mod tests {
             "measured chevron end-x must use the real Menlo glyph width ({measured_x}), \
              not the line_height * 0.65 estimate ({est_x})",
         );
-        // Exact geometry: 2px left margin + one indent level
-        // (`round(line_height * 0.9)`) + the real glyph advance + 4px gap.
-        // The default `chevron_expanded` is swapped for the codicon
-        // `CHEVRON_DOWN` glyph before painting/measuring (see
+        // Exact geometry: `row_padding_x` left margin (8.0, passed above) +
+        // one indent level (`round(line_height * 0.9)`) + the real glyph
+        // advance + 4px gap. The default `chevron_expanded` is swapped for
+        // the codicon `CHEVRON_DOWN` glyph before painting/measuring (see
         // `tree::tree_chevron_glyph`), so that is what must be measured here.
         let glyph_w = crate::primitives::layout_metrics::TextMeasure::width_of(
             &font(),
             &crate::primitives::tree::tree_chevron_glyph(&tree.style, true),
         );
-        let expected = 2.0 + (16.0f32 * 0.9).round() + glyph_w + 4.0;
+        let expected = 8.0 + (16.0f32 * 0.9).round() + glyph_w + 4.0;
         assert!(
             (measured_x - expected).abs() < 0.01,
             "measured chevron end-x {measured_x} must equal the CTFont-measured \
@@ -441,8 +583,8 @@ mod tests {
         tree.style.row_height = Some(30);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
 
-        let small = mac_tree_layout(&tree, area, 14.0, &font());
-        let large = mac_tree_layout(&tree, area, 48.0, &font());
+        let small = mac_tree_layout(&tree, area, 14.0, &font(), 8.0);
+        let large = mac_tree_layout(&tree, area, 48.0, &font(), 8.0);
 
         assert_eq!(small.visible_rows.len(), large.visible_rows.len());
         for (s, l) in small.visible_rows.iter().zip(large.visible_rows.iter()) {
@@ -731,6 +873,7 @@ mod tests {
                 QRect::new(0.0, 0.0, W as f32, H as f32),
                 b.line_height() as f64,
                 &font(),
+                8.0,
             );
             *layout.borrow_mut() = Some(l);
         });
@@ -793,6 +936,277 @@ mod tests {
         assert!(
             found_paint,
             "editing row interior should contain painted pixels (caret + text)"
+        );
+    }
+
+    /// `TreePaintState::scroll_px: None` must paint pixel-identically to
+    /// [`draw_tree`] — `draw_tree_with_state` is additive, not a
+    /// behaviour change for the default path.
+    #[test]
+    fn scroll_px_none_paints_identically_to_draw_tree() {
+        let tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        let plain_bytes = {
+            let (surface, _layout) = paint_via_backend(&tree);
+            surface.bytes().to_vec()
+        };
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_theme(Theme {
+            tab_bar_bg: Color::rgb(255, 255, 255),
+            background: Color::rgb(255, 255, 255),
+            ..Theme::default()
+        });
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let state = TreePaintState::default();
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_tree_with_state(rect, &tree, &state, false);
+        });
+        backend.end_frame();
+
+        assert_eq!(
+            plain_bytes,
+            surface.bytes().to_vec(),
+            "scroll_px: None must paint the same pixels as draw_tree"
+        );
+    }
+
+    /// A sub-row `scroll_px` shifts row 0 above the viewport top and
+    /// reveals row 1 one sub-row-remainder early. Asserted two ways:
+    /// the resolved layout (`scroll_sub_px`, row 0's negative `bounds.y`,
+    /// via the no-paint [`mac_tree_layout_with_scroll_px`]) and the
+    /// actual painted pixel at the boundary where row 0 ends and row 1
+    /// begins.
+    #[test]
+    fn scroll_px_shifts_the_first_row_above_the_viewport_top() {
+        let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        tree.selected_path = Some(vec![0]);
+        let theme = Theme {
+            tab_bar_bg: Color::rgb(255, 255, 255),
+            background: Color::rgb(255, 255, 255),
+            ..Theme::default()
+        };
+
+        let mut backend = MacBackend::new();
+        backend.set_current_theme(theme);
+        backend.set_current_font(font());
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        // Must match exactly what `MacBackend::draw_tree_with_state` paints
+        // at (`resolved_row_height(chrome_line_height)`, not the raw chrome
+        // font metric) — otherwise this test's reference geometry and the
+        // pixels it probes disagree whenever the host's chrome font
+        // reports a line height below `Style::row_height`.
+        let line_height = backend.resolved_row_height(backend.chrome_line_height().into());
+        let row_h = tree_row_pitch(&tree, line_height) as f32;
+        let half = row_h / 2.0;
+
+        let layout =
+            mac_tree_layout_with_scroll_px(&tree, area, line_height, &font(), 8.0, Some(half));
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let state = TreePaintState::default().with_scroll_px(Some(half));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_tree_with_state(area, &tree, &state, false);
+        });
+        backend.end_frame();
+
+        assert!(
+            (layout.scroll_sub_px - half).abs() < 0.01,
+            "scroll_sub_px should resolve to the sub-row remainder, got {}",
+            layout.scroll_sub_px
+        );
+        assert_eq!(layout.visible_rows[0].row_idx, 0);
+        assert!(
+            layout.visible_rows[0].bounds.y < 0.0,
+            "row 0 should be shifted above the viewport top by the sub-row \
+             remainder, got y={}",
+            layout.visible_rows[0].bounds.y
+        );
+
+        // Row 0 is selected, so probing just past its bottom edge must
+        // land on row 1's (unselected) background once the sub-row
+        // shift is applied — at that same absolute pixel, the
+        // `scroll_px: None` paint is still inside row 0's selected band.
+        let probe_y = (half + 1.0) as u32;
+        let probe_x = (W / 2).min(W - 1);
+        let (r, g, b, _) = surface.pixel(probe_x, probe_y.min(H - 1));
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "pixel just below row 0's shifted bottom edge should show row 1's \
+             background, not the still-selected row 0 a whole-row paint would \
+             show there"
+        );
+
+        // Prove the other half of the claim: at that exact same absolute
+        // pixel, a `scroll_px: None` paint (today's baseline behaviour)
+        // *is* still inside row 0's selected band.
+        let baseline_surface = BitmapSurface::new(W, H);
+        baseline_surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut baseline_backend = MacBackend::new();
+        baseline_backend.set_current_theme(theme);
+        baseline_backend.set_current_font(font());
+        baseline_backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        baseline_backend.enter_frame_scope(baseline_surface.context_ptr(), |b| {
+            b.draw_tree(area, &tree);
+        });
+        baseline_backend.end_frame();
+        let (br, bg, bb, _) = baseline_surface.pixel(probe_x, probe_y.min(H - 1));
+        assert_eq!(
+            (br, bg, bb),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "the same probe pixel on a scroll_px: None paint must still show \
+             row 0's selected background"
+        );
+    }
+
+    /// End-to-end: a fractional wheel delta fed through
+    /// [`crate::compose::TreeController`] — exactly the path
+    /// `MacBackend::wheel_delta_rows`/`tree_scroll_row_height` feed —
+    /// must land as a sub-row offset in what `MacBackend` actually
+    /// paints, and must keep `TreeController`'s own `scroll_offset`
+    /// (what hit-testing resolves against) in step with that paint.
+    ///
+    /// `delta_y` is deliberately chosen strictly between
+    /// `Backend::line_height()` (the *editor* font metric a stale
+    /// currency would have divided/multiplied by) and the tree's real
+    /// painted pitch (`tree_scroll_row_height`, driven by the *chrome*
+    /// font metric and a 1.4x row-pitch expansion) — large enough that
+    /// the wrong basis would wrongly cross a row boundary
+    /// (`floor(delta_y / line_height()) == 1`) while the right basis
+    /// correctly stays within row 0 (`floor(delta_y / row_h) == 0`).
+    /// Before `MacBackend::tree_scroll_row_height` existed, this
+    /// delta's `scroll_offset` would have jumped to `1` a full row
+    /// early and a click at the paint's row-0 band would have resolved
+    /// against the wrong row.
+    #[test]
+    fn wheel_scroll_feeds_a_fractional_row_delta_into_the_painted_scroll_px_end_to_end() {
+        use crate::compose::TreeController;
+        use crate::UiEvent;
+
+        let theme = Theme {
+            tab_bar_bg: Color::rgb(255, 255, 255),
+            background: Color::rgb(255, 255, 255),
+            ..Theme::default()
+        };
+
+        let mut backend = MacBackend::new();
+        backend.set_current_theme(theme);
+        backend.set_current_font(font());
+
+        // The real painted row pitch for this tree, and the editor
+        // line height a stale currency would have used instead — both
+        // used only to size the test's own delta/assertions, not
+        // duplicated into the production math under test.
+        let probe_tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        let row_h = backend.tree_scroll_row_height(&probe_tree);
+        let line_h = backend.line_height();
+        assert!(
+            row_h > line_h,
+            "this test needs the tree's real pitch to exceed line_height() to \
+             be a discriminating regression guard, got row_h={row_h} \
+             line_h={line_h}"
+        );
+        let delta_y = (row_h + line_h) / 2.0; // strictly between the two
+
+        // A viewport tall enough for exactly two rows, so the tree's
+        // third row leaves one whole row of scrollable range — a
+        // viewport that already fits every row would clamp
+        // `scroll_by_wheel`'s `max_px` to zero and this test would
+        // trivially pass without exercising the clamp at all.
+        let rect = QRect::new(0.0, 0.0, W as f32, row_h * 2.0);
+
+        let mut tc = TreeController::new("t");
+        tc.set_rows(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+        tc.set_selected_path(Some(vec![0]));
+
+        let ev = UiEvent::Scroll {
+            widget: None,
+            delta: crate::ScrollDelta::new(0.0, -delta_y),
+            position: crate::Point::new(5.0, 5.0),
+        };
+        tc.handle(&ev, &mut backend, rect);
+
+        assert_eq!(
+            tc.scroll_offset(),
+            0,
+            "a wheel delta smaller than the tree's real row pitch must not \
+             advance scroll_offset, even though it exceeds line_height()"
+        );
+        let scroll_px = tc
+            .scroll_px()
+            .expect("a wheel scroll must accumulate scroll_px");
+        assert!(
+            (scroll_px - delta_y).abs() < 0.01,
+            "scroll_px should land on the real pixel delta, got {scroll_px}"
+        );
+
+        // Click where row 0's still-visible (shifted-up) band now is:
+        // just inside the viewport top. Hit-testing must agree with
+        // scroll_offset == 0 and resolve to row 0, not row 1 — the
+        // concrete "clicks select the wrong row" regression a drifted
+        // scroll_offset would cause.
+        let click_ev = crate::event::mouse_down(
+            crate::MouseButton::Left,
+            5.0,
+            1.0,
+            crate::Modifiers::default(),
+        );
+        let hit = tc.handle(&click_ev, &mut backend, rect);
+        match hit {
+            crate::compose::TreeControllerEvent::RowSelected { path } => {
+                assert_eq!(
+                    path,
+                    vec![0],
+                    "a click just inside the viewport top should still hit row 0, \
+                     not a row scroll_offset drift would shift it onto"
+                );
+            }
+            other => panic!("expected RowSelected, got {other:?}"),
+        }
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            tc.render(b, rect);
+        });
+        backend.end_frame();
+
+        // Row 0 (selected) should now be shifted up by `delta_y`
+        // (which is less than one full row pitch), so the probe pixel
+        // just past its shifted bottom edge shows row 1's unselected
+        // background — the same assertion
+        // `scroll_px_shifts_the_first_row_above_the_viewport_top` makes
+        // against a hand-built layout, now proven against the real
+        // wheel-driven controller + painter round trip.
+        let probe_y = (delta_y + 1.0) as u32;
+        let probe_x = (W / 2).min(W - 1);
+        let (r, g, b, _) = surface.pixel(probe_x, probe_y.min(H - 1));
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "pixel just below row 0's wheel-shifted bottom edge should show row \
+             1's background, not the still-selected row 0 a whole-row paint \
+             would show there"
         );
     }
 }

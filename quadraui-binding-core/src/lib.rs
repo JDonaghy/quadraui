@@ -23,6 +23,7 @@ pub mod host;
 pub mod layout;
 pub mod render;
 pub mod semantic;
+pub mod services;
 pub mod text_input;
 pub mod tree_edit;
 pub mod wire;
@@ -68,12 +69,13 @@ pub use hit::{HitDetail, PaintedHit};
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 pub use host::NativeExitPolicy;
 pub use host::{
-    callback_reaction, callback_reaction_for_render, caret_shape, click_down_up_events,
-    color_depth_name, dialog_severity, font_role, key_pressed_event, merge_overrides,
-    panic_message, pointer_shape, render_overlays, resize_edge, step_driver,
-    text_display_from_lines, theme_color_value, toast_corner, window_close_reaction, BindingHost,
-    ErasedShellDriver, OverrideError, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST,
-    SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
+    app_path_kind, callback_reaction, callback_reaction_for_render, caret_shape,
+    click_down_up_events, color_depth_name, dialog_severity, font_role, key_pressed_event,
+    menu_for_surface, merge_overrides, panic_message, pointer_shape, power_save_kind,
+    render_overlays, resize_edge, step_driver, text_display_from_lines, theme_color_value,
+    toast_corner, window_close_reaction, with_tray, with_window, BindingHost, ErasedShellDriver,
+    OverrideError, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR,
+    SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
 pub use layout::{LayoutPanel, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry};
@@ -81,6 +83,14 @@ pub use layout::{LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS};
 pub use render::{draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf, split_rects};
 pub use render::{split_rects_with_gap, tree_viewport_rows, RenderFrame, RenderRefs};
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
+pub use services::{
+    add_recent_document, app_identifier, begin_drag_out, begin_power_save_block,
+    clear_recent_documents, end_power_save_block, install_crash_handler,
+    is_default_protocol_client, login_item_enabled, remove_as_default_protocol_client,
+    resolve_app_path, set_app_identifier, set_as_default_protocol_client, set_dock_menu,
+    set_jump_list, set_login_item, update_apply_on_quit, update_check_for_update,
+    update_download_and_stage, ServiceError, UpdateInfoWire,
+};
 pub use text_input::{apply_text_input_edit, clamp_cursor, text_input_click_event};
 pub use text_input::{text_input_insert_event, text_input_key_event, TextEditorCache};
 pub use tree_edit::tree_row_rename_key_event;
@@ -88,3 +98,61 @@ pub use wire::{
     decode_layout_node, decode_render_output, decode_shell_config, RenderOutput, StaticTabContent,
     LAYOUT_NODE_KEYS,
 };
+
+/// Lift an optional `"scroll_px"` number out of a `list`/`tree`/
+/// `data_table` leaf's own descriptor dict (the nested value under its
+/// `LEAF_KIND_KEYS` key — e.g. the `{...}` in `{"id": ..., "list":
+/// {...}}`) into the paint-time `scroll_px` a binding passes to a
+/// `ListPaintState`/`TreePaintState`/`DataTablePaintState` builder.
+///
+/// `scroll_px` is **not** a field [`wire::decode_layout_node`] (or any
+/// `ListView`/`TreeView`/`DataTable` decoder) reads — those types have
+/// no such field, by design (see `quadraui`'s `CHANGELOG.md`
+/// `[Unreleased]` → `Added` entry for `ListPaintState`/`TreePaintState`/
+/// `DataTablePaintState`). This function instead reads the key directly
+/// out of the raw `serde_json::Value` a binding already holds
+/// before/alongside decoding, so a descriptor dict that sets
+/// `"scroll_px"` doesn't need a Rust struct field to carry it, and a
+/// dict that never sets it is completely unaffected (`None`, same as
+/// if the key didn't exist).
+///
+/// Returns `None` when the key is absent, not a JSON number, or the
+/// value isn't a plain object — never an error: a malformed or missing
+/// `scroll_px` degrades to the pre-existing whole-row behaviour rather
+/// than failing the whole leaf's decode.
+pub fn scroll_px_from_value(value: &serde_json::Value) -> Option<f32> {
+    value
+        .as_object()?
+        .get("scroll_px")?
+        .as_f64()
+        .map(|v| v as f32)
+}
+
+#[cfg(test)]
+mod scroll_px_tests {
+    use super::scroll_px_from_value;
+    use serde_json::json;
+
+    #[test]
+    fn present_numeric_scroll_px_is_lifted_out() {
+        let dict = json!({"scroll_offset": 0, "scroll_px": 12.5});
+        assert_eq!(scroll_px_from_value(&dict), Some(12.5));
+    }
+
+    #[test]
+    fn absent_scroll_px_is_none_and_leaves_the_dict_unaffected() {
+        let dict = json!({"scroll_offset": 3});
+        assert_eq!(scroll_px_from_value(&dict), None);
+    }
+
+    #[test]
+    fn non_numeric_scroll_px_is_none_not_an_error() {
+        let dict = json!({"scroll_px": "not a number"});
+        assert_eq!(scroll_px_from_value(&dict), None);
+    }
+
+    #[test]
+    fn non_object_value_is_none() {
+        assert_eq!(scroll_px_from_value(&json!([1, 2, 3])), None);
+    }
+}

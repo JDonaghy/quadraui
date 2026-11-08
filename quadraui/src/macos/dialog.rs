@@ -99,6 +99,7 @@ mod tests {
             body: vec![StyledText::plain("Delete this file?")],
             buttons: vec![
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("cancel"),
                     label: "Cancel".into(),
                     is_default: false,
@@ -106,6 +107,7 @@ mod tests {
                     tint: None,
                 },
                 DialogButton {
+                    spec: None,
                     id: WidgetId::new("ok"),
                     label: "Delete".into(),
                     is_default: true,
@@ -149,6 +151,7 @@ mod tests {
                     let (w, _) = measure_text(&make_font("Menlo", 14.0).unwrap(), text);
                     w
                 }
+                crate::primitives::toolbar::ToolbarButton::Spacer => 0.0,
             };
             ToolbarItemMeasure::new(text_w as f32)
         })

@@ -413,16 +413,39 @@ impl PipelineView {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{status_color, status_glyph, PipelineView, PipelineViewLayout};
+    use super::{status_color, status_glyph, PipelineView, PipelineViewLayout, StageStatus};
     use crate::event::{Point, Rect};
     use crate::paint_surface::PaintSurface;
     use crate::primitives::layout_metrics::{pixel, pixel_pipeline_view_layout};
     use crate::theme::Theme;
+    use std::borrow::Cow;
 
     /// Alpha applied to the action button's tint background — the value
     /// every pre-port backend already agreed on (GTK's `set_source_rgba`
     /// alpha, Windows's `Color::blend` factor). See divergence 4 above.
     const ACTION_TINT_ALPHA: f32 = 0.15;
+
+    /// The codicon counterpart of [`status_glyph`] — every GUI backend
+    /// routes through this module, so a stage's status icon paints as a
+    /// VS-Code-style vector glyph here while TUI keeps `status_glyph`'s
+    /// plain Unicode (`tui::pipeline_view` calls `status_glyph` directly
+    /// and never reaches this module). Falls back to `status_glyph`
+    /// itself if the name isn't registered, which cannot happen for any
+    /// of these six names — covered by this module's own test.
+    fn status_codicon_glyph(status: &StageStatus) -> Cow<'static, str> {
+        let name = match status {
+            StageStatus::Done => "check",
+            StageStatus::Active => "circle-filled",
+            StageStatus::Failed => "close",
+            StageStatus::Pending => "circle",
+            StageStatus::Skipped => "dash",
+            StageStatus::Stale => "history",
+        };
+        match crate::codicon_names::codepoint(name) {
+            Some(c) => Cow::Owned(c.to_string()),
+            None => Cow::Borrowed(status_glyph(status)),
+        }
+    }
 
     /// Paint a [`PipelineView`] into `rect` on `surface`, returning
     /// [`PipelineViewLayout`] for host click dispatch — same contract as
@@ -479,15 +502,15 @@ pub(crate) mod native_surface_paint {
             surface.surface_push_clip(bb);
 
             // ── Status icon (top third of box — divergence 1) ────────────
-            let icon_text = status_glyph(&stage.status);
+            let icon_text = status_codicon_glyph(&stage.status);
             let icon_color = status_color(&stage.status, theme);
-            let (iw, ih) = surface.surface_measure_text(icon_text);
+            let (iw, ih) = surface.surface_measure_text(&icon_text);
             let icon_h = bb.height / 3.0;
             let icon_cx = bb.x + bb.width / 2.0 - iw / 2.0;
             let icon_cy = bb.y + icon_h / 2.0 - ih / 2.0;
             surface.surface_draw_text_run(
                 Rect::new(icon_cx, icon_cy, iw.max(1.0), ih.max(1.0)),
-                icon_text,
+                &icon_text,
                 icon_color,
             );
 
@@ -791,6 +814,42 @@ pub(crate) mod native_surface_paint {
             );
         }
 
+        /// A GUI backend paints the codicon counterpart of each stage's
+        /// status glyph (`status_codicon_glyph`) — not the plain Unicode
+        /// `status_glyph` the TUI painter uses, since TUI never reaches
+        /// this `native_surface_paint` module at all.
+        #[test]
+        fn status_icon_paints_the_codicon_glyph_not_plain_unicode() {
+            let view = make_view();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &view,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 300.0, 80.0),
+            );
+
+            // Stage 0 is `StageStatus::Done`, whose TUI glyph is "✓".
+            assert!(
+                !surface.text_runs.iter().any(|(_, t, _)| t == "✓"),
+                "the plain Unicode checkmark must not be painted on GUI; \
+                 text_runs were {:?}",
+                surface.text_runs,
+            );
+            let codicon_check = crate::codicon_names::codepoint("check")
+                .expect("\"check\" is a registered codicon name")
+                .to_string();
+            assert!(
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, _)| *t == codicon_check),
+                "the codicon \"check\" glyph must be painted for a Done stage; \
+                 text_runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
         /// Icon and label are both centred using their measured size:
         #[test]
         fn icon_and_label_are_centred_using_their_measured_size() {
@@ -803,12 +862,13 @@ pub(crate) mod native_surface_paint {
                 Rect::new(0.0, 0.0, 300.0, 80.0),
             );
             let bb = layout.stages[0].box_bounds;
+            let codicon_check = status_codicon_glyph(&StageStatus::Done);
             let (_, icon_text, _) = surface
                 .text_runs
                 .iter()
-                .find(|(_, t, _)| t == status_glyph(&StageStatus::Done))
+                .find(|(_, t, _)| t.as_str() == codicon_check.as_ref())
                 .expect("icon text painted");
-            assert_eq!(icon_text, status_glyph(&StageStatus::Done));
+            assert_eq!(icon_text.as_str(), codicon_check.as_ref());
             let (label_rect, _, _) = surface
                 .text_runs
                 .iter()

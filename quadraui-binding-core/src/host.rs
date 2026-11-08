@@ -7,9 +7,10 @@
 //! fields (a Python callable, a JS function value, ...) and an
 //! [`crate::engine::InteractionEngine`]; [`render_overlays`] is the one
 //! render-time call every binding's `AppLogic::render` makes after painting
-//! its own slots, so the anchored-overlay z-order (dialog > float > menus >
-//! toast > tooltip, in the exact order below) is written down once instead
-//! of copy-pasted per binding.
+//! its own slots, so the anchored-overlay z-order — context menu, float,
+//! rich-text popup, completions, dialog, tooltip, toast topmost of all, in
+//! the exact order [`render_overlays`]'s own body paints them — is written
+//! down once instead of copy-pasted per binding.
 //!
 //! [`NativeExitPolicy`] wraps a binding's own `AppLogic` for the duration of
 //! a `run_native`-style call into a real `GtkRunner`/`MacRunner`/`WinRunner`:
@@ -23,21 +24,21 @@
 //! A napi leaf under `MacRunner` hits the identical hazard, which is why
 //! this lives here rather than back in `quadraui-py`.
 
-#[cfg(all(feature = "macos", not(feature = "gtk")))]
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use quadraui::compose::HoverTooltipTracker;
 use quadraui::tui::testing::TuiDriver;
-#[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 use quadraui::Rect;
 use quadraui::{
     mouse_down, mouse_up, Accelerator, AcceleratorId, AppLogic, Backend, Button, DataTable,
     Decoration, Key, ListView, Modifiers, MouseButton, Reaction, Style, StyledSpan, TabBar,
-    TextDisplay, TextDisplayLine, Theme, TreeView, UiEvent, WidgetId,
+    TextDisplay, TextDisplayLine, Theme, Tooltip, TreeView, UiEvent, WidgetId,
 };
 
 use crate::engine::InteractionEngine;
@@ -116,6 +117,24 @@ pub struct BindingHost {
     /// re-registered onto a new backend in registration order, the same
     /// replay reasoning as [`Self::accelerators`].
     pub registered_fonts: Vec<Vec<u8>>,
+    /// Delay + auto-dismiss state machine for whichever hovered widget's
+    /// tooltip text [`Self::hover_tooltip_text`] resolves, driven by
+    /// [`Self::drive_hover_tooltip`] — the "host decides when to show it"
+    /// half of `Button::tooltip`'s own contract, shared by every binding
+    /// instead of each reimplementing [`HoverTooltipTracker`] wiring like
+    /// a native backend's own hover-driven test does directly against
+    /// `Backend`.
+    pub tooltip_tracker: HoverTooltipTracker<WidgetId>,
+    /// Wall-clock epoch [`Self::now_ms`] measures from, lazily set on its
+    /// first call rather than at construction — a host is typically built
+    /// well before its first frame (a binding constructs its `App` before
+    /// `run_tui`/`run_native`/`step` ever runs it), so starting the clock
+    /// at construction would count that dead time against the hover
+    /// delay. `None` means "not started yet". `pub` like every other
+    /// field here only because `BindingHost { .., ..BindingHost::default() }`
+    /// struct-update literals outside this crate require every field
+    /// visible — a binding should still read this only via [`Self::now_ms`].
+    pub tooltip_clock: Cell<Option<Instant>>,
 }
 
 impl BindingHost {
@@ -216,7 +235,129 @@ impl BindingHost {
             data_table: self.data_table.as_ref(),
             tab_bar: self.tab_bar.as_ref(),
             extra: &self.extra_slots,
+            // `BindingHost`'s slots are set directly from Rust fields, not
+            // decoded from a raw dict, so there is no `scroll_px` key to
+            // lift out here — a host that wants pixel-precise scrolling
+            // drives `Backend::draw_*_with_state` itself instead of this
+            // helper.
+            list_scroll_px: None,
+            tree_scroll_px: None,
+            data_table_scroll_px: None,
         }
+    }
+
+    /// Milliseconds elapsed since this host's own first call to this
+    /// method — a monotonic "headless clock" for [`Self::drive_hover_tooltip`]
+    /// to feed [`HoverTooltipTracker`] with, since there is no
+    /// `Backend`-level clock method to read one from instead (see
+    /// [`Self::tooltip_clock`]'s own doc for why the epoch starts here
+    /// rather than at construction). A caller that wants a fully
+    /// synthetic, no-real-time-elapses clock instead — the way this
+    /// crate's own tests and `quadraui::compose::HoverTooltipTracker`'s
+    /// module doc both demonstrate — calls [`Self::drive_hover_tooltip`]
+    /// with its own hand-picked `now_ms` rather than this method's value.
+    pub fn now_ms(&self) -> u64 {
+        let epoch = self.tooltip_clock.get().unwrap_or_else(|| {
+            let started = Instant::now();
+            self.tooltip_clock.set(Some(started));
+            started
+        });
+        epoch.elapsed().as_millis() as u64
+    }
+
+    /// The hover tooltip text for `id`, if any of this host's slots that
+    /// carry one names it — today, only [`Self::button`]'s own
+    /// `Button::tooltip`. [`Self::drive_hover_tooltip`] uses this to
+    /// decide whether a hovered widget has anything to show at all before
+    /// arming [`Self::tooltip_tracker`] for it; a widget with no tooltip
+    /// text never starts the delay.
+    pub fn hover_tooltip_text(&self, id: WidgetId) -> Option<String> {
+        self.button
+            .as_ref()
+            .filter(|button| button.id == id)
+            .and_then(|button| button.tooltip.clone())
+    }
+
+    /// This host's most recently painted bounds for `id`, read from
+    /// `engine`'s own [`InteractionEngine::hit_map`] — the anchor rect
+    /// [`Self::drive_hover_tooltip`] shows a tooltip against. Only
+    /// [`PaintedHit::Button`] carries a tooltip source today (see
+    /// [`Self::hover_tooltip_text`]), so this only matches that variant;
+    /// extending [`Self::hover_tooltip_text`] to a further primitive
+    /// extends this the same way.
+    fn hover_anchor(engine: &InteractionEngine, id: WidgetId) -> Option<Rect> {
+        engine.hit_map().iter().find_map(|hit| match hit {
+            PaintedHit::Button { id: hit_id, layout } if *hit_id == id => Some(layout.bounds),
+            _ => None,
+        })
+    }
+
+    /// Drives [`Self::tooltip_tracker`] from `engine`'s current hit-tested
+    /// hover ([`InteractionEngine::hovered`]) and the given headless
+    /// clock, opening/closing `engine`'s own tooltip the same way a
+    /// native backend's hover-driven test wires [`HoverTooltipTracker`]
+    /// directly against `Backend::draw_tooltip` — except here the hovered
+    /// widget's tooltip text comes from this host's own descriptor (via
+    /// [`Self::hover_tooltip_text`]) rather than a bespoke test
+    /// `AppLogic`, since a binding's `render` call is what populated that
+    /// descriptor in the first place.
+    ///
+    /// Call this once per `handle`/`tick` dispatch, after `engine.handle`/
+    /// [`InteractionEngine::set_hits`] has already run for the frame, with
+    /// the same `now_ms` headless clock [`crate::engine::InteractionEngine`]'s
+    /// own module doc and [`HoverTooltipTracker`]'s "headless-clock
+    /// contract" describe — [`Self::now_ms`] for a real wall clock, or a
+    /// hand-picked counter in a test. `delay_ms` is normally
+    /// [`quadraui::Style::tooltip_delay_ms`].
+    ///
+    /// Resyncs first: if [`Self::tooltip_tracker`] still thinks a tooltip
+    /// is visible but `engine`'s own tooltip has already closed (e.g.
+    /// [`InteractionEngine::handle`]'s own click/key auto-dismiss ran
+    /// since the last call), the tracker is explicitly dismissed too, so
+    /// a held-still hover over the same widget restarts the delay instead
+    /// of believing a tooltip is still showing that the screen no longer
+    /// has.
+    ///
+    /// Returns the [`Reaction`] the caller should merge into its own:
+    /// [`Reaction::Redraw`] when a tooltip opened or closed this call,
+    /// [`Reaction::RedrawAfter`] (via [`HoverTooltipTracker::next_wake_ms`])
+    /// while one is still pending, [`Reaction::Continue`] otherwise.
+    pub fn drive_hover_tooltip(
+        &mut self,
+        engine: &mut InteractionEngine,
+        now_ms: u64,
+        delay_ms: u64,
+    ) -> Reaction {
+        if self.tooltip_tracker.visible_item().is_some() && !engine.tooltip_open() {
+            self.tooltip_tracker.dismiss();
+        }
+
+        let hovered = engine
+            .hovered()
+            .and_then(|(id, _)| self.hover_tooltip_text(id).map(|text| (id, text)));
+        let hovered_id = hovered.as_ref().map(|(id, _)| *id);
+
+        let mut reaction = if self.tooltip_tracker.on_hover(hovered_id, now_ms) {
+            engine.hide_tooltip();
+            Reaction::Redraw
+        } else {
+            Reaction::Continue
+        };
+
+        if self.tooltip_tracker.tick(delay_ms, now_ms) {
+            if let Some((id, text)) = hovered {
+                if let Some(anchor) = Self::hover_anchor(engine, id) {
+                    engine.show_tooltip(Tooltip::new(id, text), anchor);
+                    reaction = Reaction::Redraw;
+                }
+            }
+        }
+
+        if let Some(remaining_ms) = self.tooltip_tracker.next_wake_ms(now_ms, delay_ms) {
+            reaction = reaction.merge(Reaction::RedrawAfter(Duration::from_millis(remaining_ms)));
+        }
+
+        reaction
     }
 }
 
@@ -750,13 +891,109 @@ pub fn pointer_shape(value: &str, edge: Option<&str>) -> Result<quadraui::Pointe
     }
 }
 
+/// Decodes a friendly lowercase word into a [`quadraui::AppPathKind`] — the
+/// vocabulary a binding's own `app_path`/`resolve_app_path`-style surface
+/// accepts, the same friendly-lowercase-word shape [`dialog_severity`]
+/// decodes `severity` with.
+pub fn app_path_kind(value: &str) -> Result<quadraui::AppPathKind, String> {
+    match value {
+        "user_data" => Ok(quadraui::AppPathKind::UserData),
+        "app_config" => Ok(quadraui::AppPathKind::AppConfig),
+        "app_cache" => Ok(quadraui::AppPathKind::AppCache),
+        "logs" => Ok(quadraui::AppPathKind::Logs),
+        "temp" => Ok(quadraui::AppPathKind::Temp),
+        "downloads" => Ok(quadraui::AppPathKind::Downloads),
+        "documents" => Ok(quadraui::AppPathKind::Documents),
+        "home" => Ok(quadraui::AppPathKind::Home),
+        other => Err(format!(
+            "unknown path kind {other:?}; expected one of \"user_data\", \"app_config\", \
+             \"app_cache\", \"logs\", \"temp\", \"downloads\", \"documents\", \"home\""
+        )),
+    }
+}
+
+/// Decodes a friendly lowercase word into a [`quadraui::PowerSaveKind`] —
+/// the vocabulary a binding's own `begin_power_save_block`-style surface
+/// accepts.
+pub fn power_save_kind(value: &str) -> Result<quadraui::PowerSaveKind, String> {
+    match value {
+        "prevent_display_sleep" => Ok(quadraui::PowerSaveKind::PreventDisplaySleep),
+        "prevent_app_suspension" => Ok(quadraui::PowerSaveKind::PreventAppSuspension),
+        other => Err(format!(
+            "unknown power save kind {other:?}; expected one of \
+             \"prevent_display_sleep\", \"prevent_app_suspension\""
+        )),
+    }
+}
+
+/// Applies `f` to `backend`'s [`quadraui::WindowControl`] surface, folding
+/// [`Backend::window`] returning `None` (no window at all, or not
+/// constructed yet) into the same [`quadraui::BackendError::Unsupported`] a
+/// missing method on a real window already reports — the same fold
+/// `quadraui/examples/common/window_control_demo.rs`'s `describe` helper
+/// uses, so a caller sees one uniform error shape for either case. Shared
+/// by every binding's `set_title`/`set_document_edited`/
+/// `set_represented_filename` surface rather than copied per leaf.
+pub fn with_window<T>(
+    backend: &mut dyn Backend,
+    f: impl FnOnce(&mut dyn quadraui::WindowControl) -> quadraui::ServiceResult<T>,
+) -> quadraui::ServiceResult<T> {
+    match backend.window() {
+        Some(window) => f(window),
+        None => Err(quadraui::BackendError::Unsupported),
+    }
+}
+
+/// [`with_window`]'s [`quadraui::backend::TrayService`] counterpart — folds
+/// [`Backend::tray`] returning `None` into
+/// [`quadraui::BackendError::Unsupported`]. Shared by every binding's
+/// `set_tray_icon`/`set_tray_tooltip`/`set_tray_menu` surface.
+pub fn with_tray<T>(
+    backend: &mut dyn Backend,
+    f: impl FnOnce(&mut dyn quadraui::backend::TrayService) -> quadraui::ServiceResult<T>,
+) -> quadraui::ServiceResult<T> {
+    match backend.tray() {
+        Some(tray) => f(tray),
+        None => Err(quadraui::BackendError::Unsupported),
+    }
+}
+
+/// Builds a [`quadraui::ContextMenu`] from a flat `items` list for
+/// attaching to a non-primitive menu surface — a tray icon's menu or a
+/// Dock icon's menu — neither of which has its own on-screen anchor
+/// point/selection state the way a right-click [`quadraui::ContextMenu`]
+/// does. `id` names the surface (`"qui-tray-menu"`, `"qui-dock-menu"`) so
+/// a [`quadraui::UiEvent::ContextMenuItemActivated`] fired from it is
+/// still traceable back to its source; `selected_idx` is seeded at the
+/// first selectable item the same way a freshly opened right-click menu
+/// starts, even though neither surface actually renders a selection
+/// highlight today.
+pub fn menu_for_surface(
+    id: WidgetId,
+    items: Vec<quadraui::ContextMenuItem>,
+) -> quadraui::ContextMenu {
+    let mut menu = quadraui::ContextMenu {
+        id,
+        items,
+        selected_idx: 0,
+        bg: None,
+        placement: quadraui::ContextMenuPlacement::AnchorPoint,
+    };
+    menu.selected_idx = menu.first_selectable();
+    menu
+}
+
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
 
     use quadraui::backend::MessageDialogOptions;
     use quadraui::tui::testing::TuiDriver;
-    use quadraui::{AppLogic, Backend, Button, Reaction, Rect, Toast, ToastSeverity, UiEvent};
+    use quadraui::{
+        AppLogic, Backend, Button, ButtonMask, Point, Reaction, Rect, TextInput, Toast,
+        ToastSeverity, UiEvent,
+    };
 
     use super::*;
     use crate::engine::EventSink;
@@ -856,6 +1093,300 @@ mod tests {
             driver.screen_contains("Saved"),
             "the toast opened alongside the dialog must still paint through \
              the same render_overlays call"
+        );
+    }
+
+    /// An [`AppLogic`] whose `render` paints a focused, bordered
+    /// [`TextInput`] across the whole viewport directly (not through a
+    /// [`BindingHost`] slot — `TextInput` is a `"text_input"` additive
+    /// extra, and this test only needs its border painted, not its full
+    /// extra-slot wiring) before calling [`render_overlays`], so a toast
+    /// opened on top of it has to paint over real bordered chrome, not
+    /// just empty space.
+    struct BorderedEditorLogic {
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for BorderedEditorLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let mut editor = TextInput::new(WidgetId::new("editor"));
+            editor.lines = vec!["fn main() {}".to_string()];
+            editor.has_focus = true;
+            backend.draw_text_input(rect, &editor);
+            render_overlays(&self.engine, backend, Vec::new());
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            Vec::new()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// The paint-order contract [`render_overlays`]'s own doc states —
+    /// "dialog > float > menus > toast > tooltip" at the module level,
+    /// toast last of all in this function's own body — must hold even
+    /// when the base layer underneath is a *bordered, focused* editor,
+    /// not empty space: a toast opened over it must still show its own
+    /// text, not get painted over by the editor's own border/background.
+    #[test]
+    fn toast_paints_over_a_bordered_focused_editor() {
+        let logic = BorderedEditorLogic {
+            engine: InteractionEngine::default(),
+            sink: RefCell::new(RecordingSink),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+
+        let (_backend, app) = driver.parts_mut();
+        app.engine.show_toast(
+            Toast {
+                id: WidgetId::new("toast"),
+                title: "Saved".to_string(),
+                body: String::new(),
+                severity: ToastSeverity::Info,
+                actions: Vec::new(),
+                accent: None,
+            },
+            quadraui::ToastCorner::BottomRight,
+        );
+
+        driver.render();
+
+        assert!(
+            driver.screen_contains("fn main"),
+            "the editor's own content must still paint"
+        );
+        assert!(
+            driver.screen_contains("Saved"),
+            "the toast must paint over the bordered editor underneath it, \
+             not get overwritten by its border/background"
+        );
+    }
+
+    /// The paint-order contract [`render_overlays`]'s own doc states must
+    /// hold for a tooltip too, not just a toast: shown over a bordered,
+    /// focused editor, its own text must paint over that chrome — above
+    /// the editor's focus ring and border, not underneath it.
+    #[test]
+    fn tooltip_paints_over_a_bordered_focused_editor() {
+        let logic = BorderedEditorLogic {
+            engine: InteractionEngine::default(),
+            sink: RefCell::new(RecordingSink),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+
+        let (_backend, app) = driver.parts_mut();
+        app.engine.show_tooltip(
+            Tooltip::new(WidgetId::new("tip"), "Hint"),
+            Rect::new(2.0, 2.0, 10.0, 1.0),
+        );
+
+        driver.render();
+
+        assert!(
+            driver.screen_contains("fn main"),
+            "the editor's own content must still paint"
+        );
+        assert!(
+            driver.screen_contains("Hint"),
+            "the tooltip must paint over the bordered editor underneath it, \
+             not get overwritten by its border/focus-ring chrome"
+        );
+    }
+
+    /// An [`AppLogic`] wiring [`BindingHost::drive_hover_tooltip`] into
+    /// real `MouseMoved` dispatch + `tick` — the shared-host equivalent of
+    /// a native backend's own `hover_driven` test
+    /// (`quadraui::macos::tooltip::tests::hover_driven`), proving
+    /// `quadraui-binding-core` drives [`HoverTooltipTracker`] through a
+    /// real [`BindingHost`]/[`InteractionEngine`] pair instead of each
+    /// binding (and each binding's own test) reimplementing the wiring.
+    /// `clock_ms` is a caller-driven millisecond counter, not a wall
+    /// clock — the tracker's own "headless-clock contract" — so the test
+    /// controls elapsed time exactly with no sleeping.
+    struct HoverHostLogic {
+        host: BindingHost,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+        clock_ms: Rc<Cell<u64>>,
+        delay_ms: u64,
+    }
+
+    impl AppLogic for HoverHostLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            draw_bands(backend, self.host.render_refs(), &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            render_overlays(&self.engine, backend, hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            let now = self.clock_ms.get();
+            let reaction = self
+                .engine
+                .handle(event, backend, &mut *self.sink.borrow_mut());
+            reaction.merge(
+                self.host
+                    .drive_hover_tooltip(&mut self.engine, now, self.delay_ms),
+            )
+        }
+
+        fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+            let now = self.clock_ms.get();
+            self.host
+                .drive_hover_tooltip(&mut self.engine, now, self.delay_ms)
+        }
+    }
+
+    /// Drives [`BindingHost::drive_hover_tooltip`] through real
+    /// `MouseMoved`/`tick` dispatch with a headless clock: the tooltip
+    /// must not appear the instant the pointer lands, must appear once
+    /// [`HoverHostLogic::delay_ms`] has elapsed with no further movement,
+    /// and must hide again the moment the pointer leaves — the same
+    /// three assertions a native backend's own `hover_driven` test makes,
+    /// here proving `quadraui-binding-core` does the identical job for a
+    /// `Button::tooltip` reached through [`BindingHost`].
+    #[test]
+    fn drive_hover_tooltip_shows_after_the_delay_and_hides_on_pointer_leave() {
+        const DELAY_MS: u64 = 500;
+        let clock = Rc::new(Cell::new(0u64));
+        let mut button = Button::new(WidgetId::new("save"), "Save");
+        button.tooltip = Some("Save the file".to_string());
+        let logic = HoverHostLogic {
+            host: BindingHost {
+                button: Some(button),
+                ..BindingHost::default()
+            },
+            engine: InteractionEngine::default(),
+            sink: RefCell::new(RecordingSink),
+            clock_ms: clock.clone(),
+            delay_ms: DELAY_MS,
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+        driver.render();
+        let (x, y) = driver
+            .find("Save")
+            .expect("the button's own label must be painted");
+
+        // The pointer lands on the button -- still pending, no tooltip yet.
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(x, y),
+            buttons: ButtonMask::default(),
+        });
+        driver.render();
+        assert!(
+            !driver.screen_contains("Save the file"),
+            "the tooltip must not show the instant the pointer lands"
+        );
+
+        // The delay elapses with no further pointer movement -- the
+        // `tick()` a real runner's `RedrawAfter`-scheduled wake would have
+        // triggered now shows the tooltip.
+        clock.set(DELAY_MS);
+        driver.tick();
+        assert!(
+            driver.screen_contains("Save the file"),
+            "the tooltip must show once the hover delay has elapsed"
+        );
+
+        // The pointer leaves the button entirely -- the tooltip must
+        // disappear immediately, no further delay.
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(39.0, 19.0),
+            buttons: ButtonMask::default(),
+        });
+        driver.render();
+        assert!(
+            !driver.screen_contains("Save the file"),
+            "the tooltip must hide as soon as the pointer leaves its anchor"
+        );
+    }
+
+    /// A click anywhere dismisses a visible tooltip through
+    /// [`InteractionEngine::handle`]'s own generic auto-dismiss, which
+    /// [`BindingHost::tooltip_tracker`] has no way to observe on its own
+    /// (it only ever sees `on_hover`/`tick`, not engine-internal state).
+    /// Without [`BindingHost::drive_hover_tooltip`]'s resync, the tracker
+    /// would be stuck believing a tooltip is still visible for the rest
+    /// of this continuous hover and never re-arm; with it, holding the
+    /// pointer still over the same button past a further delay re-shows
+    /// the tooltip exactly as if the hover had restarted.
+    #[test]
+    fn drive_hover_tooltip_resyncs_after_a_click_dismisses_the_tooltip() {
+        const DELAY_MS: u64 = 500;
+        let clock = Rc::new(Cell::new(0u64));
+        let mut button = Button::new(WidgetId::new("save"), "Save");
+        button.tooltip = Some("Save the file".to_string());
+        let logic = HoverHostLogic {
+            host: BindingHost {
+                button: Some(button),
+                ..BindingHost::default()
+            },
+            engine: InteractionEngine::default(),
+            sink: RefCell::new(RecordingSink),
+            clock_ms: clock.clone(),
+            delay_ms: DELAY_MS,
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+        driver.render();
+        let (x, y) = driver
+            .find("Save")
+            .expect("the button's own label must be painted");
+
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(x, y),
+            buttons: ButtonMask::default(),
+        });
+        clock.set(DELAY_MS);
+        driver.tick();
+        driver.render();
+        assert!(
+            driver.screen_contains("Save the file"),
+            "the tooltip must be showing before the click"
+        );
+
+        // A click on the button itself (still hovering it) dismisses the
+        // tooltip via `InteractionEngine::handle`'s own generic auto-dismiss.
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: quadraui::MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers: quadraui::Modifiers::default(),
+        });
+        driver.render();
+        assert!(
+            !driver.screen_contains("Save the file"),
+            "the click must dismiss the tooltip immediately"
+        );
+
+        // Still hovering the same button, unmoved, well past another full
+        // delay -- without the resync, the tracker would still believe
+        // the old (now-closed) tooltip is visible and never re-arm, so
+        // this would stay hidden forever.
+        clock.set(DELAY_MS * 10);
+        driver.tick();
+        driver.render();
+        assert!(
+            driver.screen_contains("Save the file"),
+            "holding the pointer still over the same button after the \
+             click dismissed its tooltip must eventually re-show it, not \
+             stay stuck believing a tooltip is open that the screen no \
+             longer has"
         );
     }
 }

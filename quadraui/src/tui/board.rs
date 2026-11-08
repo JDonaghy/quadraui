@@ -153,6 +153,17 @@ pub fn draw_board(buf: &mut Buffer, area: Rect, model: &BoardModel, theme: &Them
                     format!("{} ", card.labels.join(" "))
                 };
                 let full_title = format!("{}{}", prefix, card.title);
+                // An over-long title is ellipsis-truncated to the card's
+                // own inner width via the shared `truncate_with_ellipsis`
+                // rather than clipped mid-glyph.
+                let full_title = if full_title.chars().count() <= inner_w {
+                    full_title
+                } else {
+                    crate::text_util::truncate_with_ellipsis(&full_title, inner_w as f32, |s| {
+                        s.chars().count() as f32
+                    })
+                    .0
+                };
                 let title_chars: Vec<char> = full_title.chars().collect();
                 for (i, ch) in title_chars.iter().take(inner_w).enumerate() {
                     let col_x = bx + 1 + i as u16;
@@ -422,6 +433,29 @@ mod tests {
         // Title row is row 2 (border row 1 + title row 2). Check '#' from label.
         // The cell at (1, 2) should contain '#'.
         assert_eq!(cell_char(&buf, 1, 2), '#', "title row must start with '#'");
+    }
+
+    #[test]
+    fn overlong_card_title_ellipsizes_instead_of_clipping_mid_glyph() {
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        let mut model = make_model();
+        model.columns[0].cards[0].title = "y".repeat(50);
+        model.columns[0].cards[0].labels = vec![];
+        let layout = draw_board(&mut buf, area, &model, &Theme::default());
+
+        let cb = layout.columns[0].cards[0].bounds;
+        let bx = cb.x.round() as u16;
+        let by = cb.y.round() as u16;
+        let bw = cb.width.round() as u16;
+        let title_row = by + 1;
+        let row: String = (bx + 1..bx + bw.saturating_sub(1))
+            .map(|x| cell_char(&buf, x, title_row))
+            .collect();
+        assert!(
+            row.trim_end().ends_with('…'),
+            "overlong card title must end in an ellipsis, got {row:?}"
+        );
     }
 
     #[test]

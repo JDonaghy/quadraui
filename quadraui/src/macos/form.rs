@@ -664,12 +664,14 @@ mod tests {
                 kind: FieldKind::ButtonRow {
                     buttons: vec![
                         ButtonRowItem {
+                            spec: None,
                             id: WidgetId::new("find"),
                             label: "Find".into(),
                             disabled: false,
                             icon: None,
                         },
                         ButtonRowItem {
+                            spec: None,
                             id: WidgetId::new("replace"),
                             label: "Replace".into(),
                             disabled: false,

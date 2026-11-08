@@ -5,10 +5,10 @@
 //!
 //! Every method resolves against `self.driver`, this app's own headless
 //! `TuiBackend`, and so calls [`QuiApp::check_not_live`] first: once
-//! `startTui` is running, `self.driver`'s backend and [`NodeAppLogic`] are
-//! the orphaned pre-live state rather than the live session's own, and
-//! registering an accelerator against it would never take effect on the
-//! live backend. Every in-tree `PlatformServices` override inherits
+//! `startTui`/`startNative` is running, `self.driver`'s backend and
+//! [`NodeAppLogic`] are the orphaned pre-live state rather than the live
+//! session's own, and registering an accelerator against it would never
+//! take effect on the live backend/window. Every in-tree `PlatformServices` override inherits
 //! [`quadraui::PlatformServices::register_global_shortcut`]'s
 //! `Unsupported` default today, so `registerGlobalShortcut`'s success path
 //! has no automated coverage here and needs manual verification once a

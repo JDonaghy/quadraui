@@ -2629,6 +2629,13 @@ mod win32 {
                     let _ = ScreenToClient(hwnd, &mut pt);
                 }
                 let scale = ws.state.borrow().backend.viewport().scale;
+                // Reset the overlay scrollbar idle-fade clock on every
+                // delta — same "every message, not just whole notches"
+                // posture as the forwarding above — so the bar snaps to
+                // full opacity for the hold window regardless of which
+                // axis or precision this message carries. Mirrors
+                // `macos::run`'s `scrollWheel:` handler.
+                ws.state.borrow_mut().backend.note_scroll_activity();
                 let event =
                     win_wheel_to_uievent(raw_delta, pt.x as i16, pt.y as i16, scale, horizontal);
                 dispatch(ws, hwnd, event);

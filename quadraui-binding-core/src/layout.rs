@@ -139,6 +139,29 @@ pub struct Spacing {
     pub gap: f32,
 }
 
+impl Spacing {
+    /// Shrinks `rect` by this spacing's `margin` (quantised per-axis via
+    /// [`quantise_margin_horizontal`]/[`quantise_margin_vertical`], outside
+    /// the box) and then its `padding` (via [`EdgeInsets::inset`], inside
+    /// the box) — the same order CSS's box model uses, and the shared
+    /// geometry every spacing-aware layout node applies to its own area
+    /// before laying out whatever is inside it (children, pane content,
+    /// panel chrome, tab strip). `gap` plays no part here — it only
+    /// matters between siblings/panes, handled by each node kind's own
+    /// paint logic in `crate::render::paint_layout`.
+    pub fn inset(&self, rect: Rect, char_width: f32, line_height: f32) -> Rect {
+        let margin_h = quantise_margin_horizontal(self.margin, char_width);
+        let margin_v = quantise_margin_vertical(self.margin, line_height);
+        let after_margin = Rect::new(
+            rect.x + margin_h,
+            rect.y + margin_v,
+            (rect.width - margin_h * 2.0).max(0.0),
+            (rect.height - margin_v * 2.0).max(0.0),
+        );
+        self.padding.inset(after_margin, char_width, line_height)
+    }
+}
+
 /// Nominal pixel width of one terminal cell — the pixel reference
 /// [`quantise_horizontal`] falls back to on a cell-grid backend, whose own
 /// `Backend::char_width()` reports `1.0` rather than a real font
@@ -208,21 +231,37 @@ pub fn quantise_margin_vertical(value: f32, line_height: f32) -> f32 {
 /// (its own `id`, `direction`, `ratio`, pane minimums) paired with the two
 /// named child nodes it divides. `first`/`second` are full [`LayoutNode`]s,
 /// not leaf-only slots, so a pane may itself hold a nested row/column/split.
+/// `spacing` is this node's own `padding`/`margin`/`gap` — `gap` is the
+/// space between `first` and `second`, inserted after `Split::first_min`/
+/// `second_min` are evaluated (see `crate::render::paint_layout`'s
+/// `LayoutNode::Split` arm), so a minimum applies to the pane after the
+/// gap is already carved out of the available space.
 pub struct LayoutSplit {
     pub split: Split,
     pub first: Box<LayoutNode>,
     pub second: Box<LayoutNode>,
+    pub spacing: Spacing,
 }
 
 /// A [`LayoutNode::Tabs`]'s decoded shape: a `quadraui::TabBar` descriptor
 /// built from each tab's title (with `selected`'s item marked active) for
 /// painting the strip, paired with `entries` holding the full content
 /// subtree behind each tab. A tab group is a `Split` whose `first`/`second`
-/// are each a `Tabs` — no separate "group" concept.
+/// are each a `Tabs` — no separate "group" concept. `spacing` is this
+/// node's own `padding`/`margin` (its `gap` is always `0.0` — a `"tabs"`
+/// node decodes `"gap"` as an error instead, see
+/// `crate::wire::spacing_from_value`), inset around the whole node
+/// (strip and content both) before the strip/content split.
 pub struct LayoutTabs {
     pub tab_bar: TabBar,
     pub entries: Vec<LayoutTabEntry>,
     pub selected: usize,
+    pub spacing: Spacing,
+    /// Index of the keyboard-focused tab, decoded from the `"tabs"`
+    /// dict's optional `"focused_index"` key. Threaded into a
+    /// [`quadraui::TabChrome`] rather than onto `tab_bar` directly — see
+    /// that field's doc for why `TabBar` itself stays a plain field.
+    pub focused_index: Option<usize>,
 }
 
 /// One tab inside a [`LayoutTabs`]: the id that addresses it, and the full
@@ -236,9 +275,14 @@ pub struct LayoutTabEntry {
 /// descriptor (title/actions/accent/collapsed) paired with the single
 /// content subtree it frames. `content` is a full [`LayoutNode`], not a
 /// leaf-only slot, so a panel may itself hold a nested row/column/split.
+/// `spacing` is this node's own `padding`/`margin` (its `gap` is always
+/// `0.0` — a `"panel"` node decodes `"gap"` as an error instead, see
+/// `crate::wire::spacing_from_value`), inset around the whole panel
+/// (chrome and content both) before the chrome is painted.
 pub struct LayoutPanel {
     pub panel: Panel,
     pub content: Box<LayoutNode>,
+    pub spacing: Spacing,
 }
 
 /// A [`LayoutNode::SidebarPanel`]'s decoded shape: the `quadraui::SidebarPanel`
@@ -272,6 +316,14 @@ pub struct LayoutSplitTree {
 pub struct LayoutLeaf {
     pub id: String,
     pub descriptor: LeafDescriptor,
+    /// Optional pixel-precise scroll position lifted out of this leaf's
+    /// raw `"list"`/`"tree"`/`"data_table"` descriptor dict by
+    /// [`crate::scroll_px_from_value`] — `None` unless the dict set a
+    /// numeric `"scroll_px"` key, and always `None` for a `descriptor`
+    /// that isn't one of those three kinds. [`crate::render::paint_leaf`]
+    /// passes it to the matching `Backend::draw_*_with_state`; a dict
+    /// that never sets the key paints exactly as before.
+    pub scroll_px: Option<f32>,
 }
 
 /// The decoded descriptor carried by a [`LayoutLeaf`] — one variant per

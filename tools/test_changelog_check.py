@@ -12,6 +12,9 @@ Run with:
 """
 from __future__ import annotations
 
+import contextlib
+import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -444,6 +447,95 @@ class ReleasePromotionVersionTest(unittest.TestCase):
             )
 
 
+class IsReleaseBumpPrTest(unittest.TestCase):
+    """`is_release_bump_pr`: ci.yml's `bump-shape` job uses this to
+    decide whether a PR can skip the full build/test/clippy matrix."""
+
+    def _bump_commit(self, repo: TempGitRepo) -> str:
+        """Commit the exact file set + shape `scripts/release.py prepare`
+        leaves on a `release-X.Y.Z` branch."""
+        repo.write_changelog(PROMOTION_CHANGELOG)
+        repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+        (repo.root / "README.md").write_text("# quadraui\n\n`0.2.x`\n", encoding="utf-8")
+        return repo.commit("Release v0.2.0 (version bump + CHANGELOG)")
+
+    def test_pure_bump_commit_is_bump_shaped(self):
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            head = self._bump_commit(repo)
+
+            self.assertTrue(
+                changelog_check.is_release_bump_pr(base, head, repo.root)
+            )
+
+    def test_bump_plus_an_unrelated_file_is_not_bump_shaped(self):
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            # `other.rs` is a real src file outside BUMP_FILE_SET -- unlike
+            # `lib.rs`, which `scripts/release.py prepare` itself touches
+            # (its README/lib.rs version-string rewrite) and so is *in* the
+            # bump set.
+            repo.write_src("other.rs", "pub fn other() -> i32 {\n    1\n}\n")
+            head = repo.commit("bump plus a real, unrelated src change")
+
+            self.assertFalse(
+                changelog_check.is_release_bump_pr(base, head, repo.root)
+            )
+
+    def test_readme_only_edit_with_no_version_bump_is_not_bump_shaped(self):
+        """Touches only files in the bump set, but never actually bumps the
+        version -- e.g. a plain README typo fix -- must still get the full
+        matrix, not be mistaken for a release bump."""
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            (repo.root / "README.md").write_text("# quadraui\n\ntypo fix\n", encoding="utf-8")
+            head = repo.commit("README typo fix, no version bump")
+
+            self.assertFalse(
+                changelog_check.is_release_bump_pr(base, head, repo.root)
+            )
+
+    def test_no_diff_is_not_bump_shaped(self):
+        """`base == head` -- no changed files at all -- must not match."""
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            self.assertFalse(
+                changelog_check.is_release_bump_pr(base, base, repo.root)
+            )
+
+    def test_bump_with_comment_only_lib_rs_doc_edit_is_still_bump_shaped(self):
+        """`release.py prepare`'s own `lib.rs` edit -- rewriting the `//!`
+        Status doc line -- must not disqualify the bump shape."""
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            repo.write_src("lib.rs", BASE_SRC.replace("Example module.", "Example module, v0.2.x."))
+            head = repo.commit("bump plus lib.rs doc-comment rewrite")
+
+            self.assertTrue(
+                changelog_check.is_release_bump_pr(base, head, repo.root)
+            )
+
+    def test_bump_with_a_real_lib_rs_code_change_is_not_bump_shaped(self):
+        """`lib.rs` is in `BUMP_FILE_SET`, but a real `pub fn`/`pub mod`
+        change there -- not just `release.py prepare`'s own doc-comment
+        rewrite -- must still get the full matrix, even though every
+        changed file is still nominally within the bump set."""
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
+            head = repo.commit("bump plus a real lib.rs code change")
+
+            self.assertFalse(
+                changelog_check.is_release_bump_pr(base, head, repo.root)
+            )
+
+
 class MainCliTest(unittest.TestCase):
     """End-to-end `main()` exercises, matching the issue's five fixtures."""
 
@@ -526,6 +618,71 @@ class MainCliTest(unittest.TestCase):
             return changelog_check.main(["--labels", labels, base, head])
         finally:
             changelog_check.REPO_ROOT = real_root
+
+
+class PrintBumpShapeCliTest(unittest.TestCase):
+    """`--print-bump-shape`: the mode `ci.yml`'s `bump-shape` job
+    invokes, instead of the changelog-entry check."""
+
+    def _run(self, repo_root: Path, base: str, head: str) -> tuple[int, str]:
+        real_root = changelog_check.REPO_ROOT
+        changelog_check.REPO_ROOT = repo_root
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                exit_code = changelog_check.main(
+                    ["--print-bump-shape", base, head]
+                )
+        finally:
+            changelog_check.REPO_ROOT = real_root
+        return exit_code, buf.getvalue()
+
+    def test_bump_shaped_diff_prints_true(self):
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(
+                BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"')
+            )
+            head = repo.commit("Release v0.2.0 (version bump + CHANGELOG)")
+
+            exit_code, output = self._run(repo.root, base, head)
+            self.assertEqual(exit_code, 0)
+            self.assertIn("bump_shape=true", output)
+
+    def test_ordinary_diff_prints_false(self):
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_src(
+                "lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n'
+            )
+            head = repo.commit("add farewell(), no version bump")
+
+            exit_code, output = self._run(repo.root, base, head)
+            self.assertEqual(exit_code, 0)
+            self.assertIn("bump_shape=false", output)
+
+    def test_writes_to_github_output_when_set(self):
+        with TempGitRepo() as repo, tempfile.TemporaryDirectory() as out_dir:
+            base = repo.commit("base")
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(
+                BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"')
+            )
+            head = repo.commit("Release v0.2.0 (version bump + CHANGELOG)")
+
+            output_path = Path(out_dir) / "github_output"
+            real_github_output = os.environ.get("GITHUB_OUTPUT")
+            os.environ["GITHUB_OUTPUT"] = str(output_path)
+            try:
+                self._run(repo.root, base, head)
+            finally:
+                if real_github_output is None:
+                    os.environ.pop("GITHUB_OUTPUT", None)
+                else:
+                    os.environ["GITHUB_OUTPUT"] = real_github_output
+
+            self.assertEqual(output_path.read_text(encoding="utf-8"), "bump_shape=true\n")
 
 
 if __name__ == "__main__":

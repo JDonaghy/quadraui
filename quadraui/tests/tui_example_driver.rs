@@ -927,11 +927,11 @@ fn window_control_demo_escape_exits() {
 //
 // `services()` returns `&dyn PlatformServices` directly (never `None`),
 // unlike `WindowControlDemo`'s `window()`, so there's no "no window yet"
-// case to fold in. TUI gives honest real answers for `app_path`, the
-// power-save-block round trip, and `login_item_enabled`, reports a
-// host-dependent real `SystemTheme`/`Unsupported` for `system_theme`, and
-// reports `Unsupported` for everything else — all outcomes are
-// deterministic and assertable headlessly with no live desktop required.
+// case to fold in. TUI gives an honest real answer for `app_path`,
+// reports a host-dependent real `SystemTheme`/`Unsupported` for
+// `system_theme`, and reports `Unsupported` for everything else — all
+// outcomes are deterministic and assertable headlessly with no live
+// desktop required.
 
 #[test]
 fn platform_seams_demo_shows_starting_hint() {
@@ -973,23 +973,25 @@ fn platform_seams_demo_system_theme_surfaces_a_typed_answer_on_tui() {
 }
 
 #[test]
-fn platform_seams_demo_power_save_block_round_trips_on_tui() {
+fn platform_seams_demo_power_save_block_reports_unsupported_on_tui() {
     let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
     driver.type_char('w');
     assert!(
-        driver.screen_contains("power_save_block: ()"),
-        "TUI tracks a real (bookkeeping-only) blocker id end to end:\n{}",
+        driver.screen_contains("power_save_block: Unsupported"),
+        "TUI has no sleep-inhibitor API, so it must not report a blocker it \
+         never actually took out:\n{}",
         driver.screen()
     );
 }
 
 #[test]
-fn platform_seams_demo_login_item_enabled_reports_false_on_tui() {
+fn platform_seams_demo_login_item_enabled_reports_unsupported_on_tui() {
     let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
     driver.type_char('e');
     assert!(
-        driver.screen_contains("login_item_enabled: false"),
-        "TUI has no login-item registry, so it is honestly never enabled:\n{}",
+        driver.screen_contains("login_item_enabled: Unsupported"),
+        "TUI has no login-item registry to query, so it cannot answer \
+         whether the app starts at login:\n{}",
         driver.screen()
     );
 }
@@ -4347,6 +4349,35 @@ fn help_layer_demo_question_mark_opens_cheatsheet_for_active_panel() {
     );
 }
 
+/// The cheatsheet title sits one cell to the right of the content area's
+/// own left edge (the "Reference" section header, which paints flush
+/// against `content_bounds.x` — the same x as the toolbar header's own
+/// bounds) rather than flush against the popup's leading edge.
+#[test]
+fn help_layer_demo_cheatsheet_title_keeps_leading_inset() {
+    let config = HelpLayerDemo::config();
+    let mut driver = driver_with_shell(HelpLayerDemo::new(), config, 100, 30);
+
+    driver.type_char('?');
+
+    let (title_x, _) = driver
+        .find("Help — Explorer")
+        .unwrap_or_else(|| panic!("cheatsheet title not found:\n{}", driver.screen()));
+    let (reference_x, _) = driver.find("Reference").unwrap_or_else(|| {
+        panic!(
+            "cheatsheet reference-section header not found:\n{}",
+            driver.screen()
+        )
+    });
+
+    assert_eq!(
+        title_x,
+        reference_x + 1.0,
+        "title should sit exactly one cell right of the content area's \
+         own left edge, not flush against it"
+    );
+}
+
 /// `Escape` closes an open cheatsheet without quitting the demo, and the
 /// entries it was showing disappear from the screen.
 #[test]
@@ -6429,28 +6460,37 @@ fn indicators_toggling_cancellable_paints_and_clears_cancel_symbol() {
 //
 // `tui_controls` is the first example to exercise the `draw_button`,
 // `draw_radio_group` and `draw_switch` `Backend` trait methods together.
-// This drives the real `ControlsApp` through Tab-focus, Space/Enter
-// activation, arrow-key radio selection and a mouse click, asserting on
-// the painted text each primitive's TUI rasteriser produces (`[ Label ]`
-// for the button, `(•) Label` for the selected radio option).
+// It stacks one button per `ButtonVariant` (Primary, Secondary, Danger,
+// Warning, Icon) above the radio group and the switch, so Tab walks all
+// five buttons before it reaches the group. These tests drive the real
+// `ControlsApp` through Tab-focus, Space/Enter activation, arrow-key
+// radio selection, the `i`/`n` icon toggles and a mouse click, asserting
+// on the painted text each primitive's TUI rasteriser produces
+// (`[ Label ]` for the button, `(•) Label` for the selected radio
+// option).
+
+/// Tabs needed to walk off the last button and onto the radio group —
+/// one per button row. Derived from the labels the example paints, so it
+/// tracks `BUTTON_COUNT` rather than restating it.
+const CONTROLS_BUTTON_LABELS: [&str; 5] = ["OK", "Cancel", "Delete", "Overwrite", "*"];
 
 #[test]
 fn controls_button_click_increments_and_repaints_label() {
     let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
     let before = driver.screen();
     assert!(
-        before.contains("[ Clicked 0x ]"),
-        "button should start unclicked:\n{before}"
+        before.contains("[ v OK ]"),
+        "the Primary button should start unclicked, with its fallback icon:\n{before}"
     );
 
     driver.press_named(NamedKey::Enter);
     let after = driver.screen();
     assert!(
-        after.contains("[ Clicked 1x ]"),
+        after.contains("[ v OK (1x) ]"),
         "Enter should activate the focused button and repaint its label:\n{after}"
     );
     assert!(
-        after.contains("Button clicked"),
+        after.contains("Button 0 clicked"),
         "status bar should report the click:\n{after}"
     );
 }
@@ -6458,15 +6498,38 @@ fn controls_button_click_increments_and_repaints_label() {
 #[test]
 fn controls_mouse_click_on_button_activates_it() {
     let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
-    let (x, y) = driver
-        .find("Clicked 0x")
-        .expect("button label should be on screen");
+    let (x, y) = driver.find("OK").expect("button label should be on screen");
 
     driver.click(x, y);
     let after = driver.screen();
     assert!(
-        after.contains("[ Clicked 1x ]"),
+        after.contains("[ v OK (1x) ]"),
         "clicking the button should activate it:\n{after}"
+    );
+}
+
+/// A click on the `Danger` row activates *that* button, not the focused
+/// `Primary` one — the per-row hit test has to pick the right index.
+#[test]
+fn controls_mouse_click_on_the_danger_button_activates_only_that_row() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+    let (x, y) = driver
+        .find("Delete")
+        .expect("the Danger button label should be on screen");
+
+    driver.click(x, y);
+    let after = driver.screen();
+    assert!(
+        after.contains("[ ! Delete (1x) ]"),
+        "clicking the Danger row should activate it:\n{after}"
+    );
+    assert!(
+        after.contains("[ v OK ]"),
+        "the Primary row must stay unclicked:\n{after}"
+    );
+    assert!(
+        after.contains("Button 2 clicked"),
+        "status bar should report which row was clicked:\n{after}"
     );
 }
 
@@ -6479,7 +6542,10 @@ fn controls_tab_cycles_focus_to_radio_group_and_arrow_keys_move_selection() {
         "Light should start selected:\n{before}"
     );
 
-    driver.press_named(NamedKey::Tab);
+    // Tab walks every button row first, then lands on the radio group.
+    for _ in 0..CONTROLS_BUTTON_LABELS.len() {
+        driver.press_named(NamedKey::Tab);
+    }
     driver.press_named(NamedKey::Down);
     let after = driver.screen();
     assert!(
@@ -6521,7 +6587,7 @@ fn controls_button_hover_paints_hover_background_at_the_cursor() {
 
     let before = driver.screen();
     let (x, y) = driver
-        .find("Clicked 0x")
+        .find("OK")
         .unwrap_or_else(|| panic!("button label should be on screen:\n{before}"));
     let resting_bg = driver
         .style_at(x as u16, y as u16)
@@ -6559,13 +6625,188 @@ fn controls_button_hover_paints_hover_background_at_the_cursor() {
 fn controls_tab_to_switch_and_space_toggles_it() {
     let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
 
-    driver.press_named(NamedKey::Tab);
-    driver.press_named(NamedKey::Tab);
+    // Every button row, then the radio group, then the switch.
+    for _ in 0..CONTROLS_BUTTON_LABELS.len() + 1 {
+        driver.press_named(NamedKey::Tab);
+    }
     driver.press(Key::Char(' '));
     let after = driver.screen();
     assert!(
         after.contains("Switch -> true"),
         "Space on the focused switch should toggle it and repaint the status bar:\n{after}"
+    );
+}
+
+/// The switch is the last row of the stack; on a 12-row terminal it has
+/// to land *above* the bottom status bar, not under it. Pins the knob's
+/// row relative to the status bar text rather than at a fixed `y`.
+#[test]
+fn controls_switch_row_stays_above_the_status_bar() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+
+    let knob = driver
+        .find_bounds("\u{25cf}")
+        .expect("the switch knob should be painted on screen");
+    let status = driver
+        .find_bounds("q=quit")
+        .expect("the status bar should be painted on screen");
+    assert!(
+        knob.y < status.y,
+        "the switch must not be painted underneath the status bar:\n{}",
+        driver.screen()
+    );
+
+    // Toggling it moves the knob along the track, still on its own row.
+    for _ in 0..CONTROLS_BUTTON_LABELS.len() + 1 {
+        driver.press_named(NamedKey::Tab);
+    }
+    driver.press(Key::Char(' '));
+    let toggled = driver
+        .find_bounds("\u{25cf}")
+        .expect("the knob should still be painted once the switch is on");
+    assert_eq!(
+        toggled.y,
+        knob.y,
+        "the knob should stay on the switch row:\n{}",
+        driver.screen()
+    );
+    assert!(
+        toggled.x > knob.x,
+        "toggling the switch on should slide the knob to the far end of the track:\n{}",
+        driver.screen()
+    );
+}
+
+/// Every `ButtonVariant` gets a row: the four labelled variants paint
+/// bracket chrome, `Icon` paints its bare glyph with none.
+#[test]
+fn controls_paints_one_row_per_button_variant() {
+    let driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+    let screen = driver.screen();
+
+    for label in [
+        "[ v OK ]",
+        "[ x Cancel ]",
+        "[ ! Delete ]",
+        "[ ! Overwrite ]",
+    ] {
+        assert!(
+            screen.contains(label),
+            "expected the {label:?} row:\n{screen}"
+        );
+    }
+    assert!(
+        !screen.contains("[ * ]"),
+        "the Icon variant paints no bracket chrome:\n{screen}"
+    );
+    let icon_row = driver
+        .find_bounds("*")
+        .expect("the Icon variant's bare glyph should be painted");
+    let warning_row = driver
+        .find_bounds("Overwrite")
+        .expect("the Warning row should be painted");
+    assert_eq!(
+        icon_row.y,
+        warning_row.y + 1.0,
+        "the Icon row follows the Warning row:\n{screen}"
+    );
+}
+
+/// `Danger`/`Warning` carry their intent in the foreground colour on
+/// TUI — both the label and its bracket chrome — so each must differ
+/// from the `Primary` row's foreground and from each other.
+#[test]
+fn controls_danger_and_warning_rows_paint_a_distinct_foreground() {
+    let driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+
+    let fg_of = |needle: &str| {
+        let at = driver
+            .find_bounds(needle)
+            .unwrap_or_else(|| panic!("{needle:?} should be painted:\n{}", driver.screen()));
+        driver
+            .style_at(at.x as u16, at.y as u16)
+            .expect("label cell should be inside the screen")
+            .fg
+    };
+
+    let primary = fg_of("Cancel");
+    let danger = fg_of("Delete");
+    let warning = fg_of("Overwrite");
+
+    assert_ne!(
+        danger,
+        primary,
+        "a Danger label must not paint in the ordinary foreground:\n{}",
+        driver.screen()
+    );
+    assert_ne!(
+        warning,
+        primary,
+        "a Warning label must not paint in the ordinary foreground:\n{}",
+        driver.screen()
+    );
+    assert_ne!(
+        danger,
+        warning,
+        "Danger and Warning must be distinguishable from each other:\n{}",
+        driver.screen()
+    );
+}
+
+/// `i` drops every button's icon; the labels stay, one cell narrower by
+/// the icon and its gap.
+#[test]
+fn controls_i_toggles_the_button_icons_off_and_back_on() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+    assert!(
+        driver.screen_contains("icons=on"),
+        "icons should start on:\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('i');
+    let off = driver.screen();
+    assert!(
+        off.contains("[ Delete ]"),
+        "'i' should drop the leading icon from the label:\n{off}"
+    );
+    assert!(
+        !off.contains("[ ! Delete ]"),
+        "the icon must be gone, not just moved:\n{off}"
+    );
+    assert!(
+        off.contains("icons=off"),
+        "the status bar should report the icons are off:\n{off}"
+    );
+
+    driver.type_char('i');
+    let on = driver.screen();
+    assert!(
+        on.contains("[ ! Delete ]"),
+        "'i' again should bring the icon back:\n{on}"
+    );
+}
+
+/// `n` switches the painted icon from `Icon::fallback` to `Icon::glyph`
+/// — the Nerd Font half of the same descriptor.
+#[test]
+fn controls_n_switches_the_icon_to_its_nerd_font_glyph() {
+    let mut driver = TuiDriver::new(ControlsApp::new(), 60, 12);
+    let before = driver.screen();
+    assert!(
+        before.contains("[ ! Delete ]") && !before.contains('\u{f071}'),
+        "the plain-text fallback paints while Nerd Fonts are off:\n{before}"
+    );
+
+    driver.type_char('n');
+    let after = driver.screen();
+    assert!(
+        after.contains("[ \u{f071} Delete ]"),
+        "'n' should swap in the Nerd Font glyph:\n{after}"
+    );
+    assert!(
+        after.contains("nerd-fonts=on"),
+        "the status bar should report Nerd Fonts are on:\n{after}"
     );
 }
 
@@ -7141,6 +7382,28 @@ fn message_dialog_app_escape_resolves_cancel_button() {
     assert!(
         after.contains("Resolved: discard"),
         "Escape must resolve the cancel button:\n{after}"
+    );
+}
+
+/// `MessageDialogButton::spec` (a `Danger` override on "Discard") carries
+/// through `MessageDialogController::new` into the `DialogButton` it
+/// builds, and paints in `theme.error_fg` — the "Danger" intent colour —
+/// through the same bracket-chrome path a standalone `Button` uses.
+#[test]
+fn message_dialog_app_discard_button_paints_with_the_danger_spec_tint() {
+    let driver = TuiDriver::new(MessageDialogApp::new(), 100, 20);
+    let bounds = driver
+        .find_bounds("Discard")
+        .expect("Discard button label must be visible on the initial frame");
+    let theme = driver.backend().theme();
+    let style = driver
+        .style_at(bounds.x as u16, bounds.y as u16)
+        .expect("Discard button label cell must be styled");
+    assert_eq!(
+        style.fg,
+        quadraui::tui::ratatui_color(theme.error_fg),
+        "a MessageDialogButton::spec with ButtonVariant::Danger must tint the label in \
+         theme.error_fg, not the plain legacy colour"
     );
 }
 
@@ -8309,6 +8572,101 @@ fn tab_chrome_demo_q_exits() {
     let mut driver = TuiDriver::new(TabChromeDemo::new(), 100, 10);
     driver.type_char('q');
     assert!(driver.exited(), "'q' should exit the tab chrome demo");
+}
+
+/// `Right` moves keyboard focus onto tab 1 (`lib.rs`) and the composed
+/// [`quadraui::TabChrome::focused_index`] paints it in reverse video —
+/// the acceptance list's "focus moves with arrow keys" plus "focus-visible
+/// after keyboard navigation", exercised end to end through the real
+/// `event -> handle -> render` path rather than the primitive's own
+/// cell-level unit test.
+#[test]
+fn tab_chrome_demo_right_arrow_moves_focus_and_shows_it_in_reverse_video() {
+    let mut driver = TuiDriver::new(TabChromeDemo::new(), 100, 10);
+    let (x, y) = driver
+        .tab_center(&tab_chrome_bar_id(), 1)
+        .expect("tab 1 should have painted geometry");
+    let before = driver
+        .style_at(x as u16, y as u16)
+        .expect("lib.rs cell should be inside the screen");
+
+    driver.press_named(quadraui::NamedKey::Right);
+
+    assert!(
+        driver.screen_contains(" focus lib.rs "),
+        "Right should move keyboard focus onto tab 1:\n{}",
+        driver.screen()
+    );
+    let after = driver
+        .style_at(x as u16, y as u16)
+        .expect("lib.rs cell should be inside the screen");
+    assert_ne!(
+        before,
+        after,
+        "the focused tab's fg/bg should swap once focus becomes visible:\n{}",
+        driver.screen()
+    );
+    assert_eq!(
+        (before.fg, before.bg),
+        (after.bg, after.fg),
+        "the swap should be a plain fg/bg reversal, not a colour change:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking a tab suppresses the focus ring even though the click itself
+/// also moves keyboard focus onto the clicked tab — the acceptance list's
+/// "suppressed after a click", and [`quadraui::compose::FocusRing::set`]'s
+/// documented convention. Compares against a driver that activates the
+/// same tab purely by clicking (no prior keyboard move at all): if the
+/// click truly suppresses the ring, the two end states must be visually
+/// identical.
+#[test]
+fn tab_chrome_demo_click_suppresses_focus_visible() {
+    let bar = tab_chrome_bar_id();
+
+    let mut click_only = TuiDriver::new(TabChromeDemo::new(), 100, 10);
+    let (cx, cy) = click_only
+        .tab_center(&bar, 1)
+        .expect("tab 1 should have painted geometry");
+    click_only.click(cx, cy);
+    let click_only_style = click_only
+        .style_at(cx as u16, cy as u16)
+        .expect("lib.rs cell should be inside the screen");
+
+    let mut keyboard_then_click = TuiDriver::new(TabChromeDemo::new(), 100, 10);
+    keyboard_then_click.press_named(quadraui::NamedKey::Right);
+    let (kx, ky) = keyboard_then_click
+        .tab_center(&bar, 1)
+        .expect("tab 1 should have painted geometry");
+    let focused_style = keyboard_then_click
+        .style_at(kx as u16, ky as u16)
+        .expect("lib.rs cell should be inside the screen");
+    keyboard_then_click.click(kx, ky);
+    let after_click_style = keyboard_then_click
+        .style_at(kx as u16, ky as u16)
+        .expect("lib.rs cell should be inside the screen");
+
+    assert!(
+        keyboard_then_click.screen_contains(" activated lib.rs "),
+        "the click should still activate tab 1:\n{}",
+        keyboard_then_click.screen()
+    );
+    assert_ne!(
+        focused_style,
+        after_click_style,
+        "the click should clear the reverse-video focus ring the \
+         preceding Right arrow had shown:\n{}",
+        keyboard_then_click.screen()
+    );
+    assert_eq!(
+        after_click_style,
+        click_only_style,
+        "a tab activated by click alone, and the same tab activated by \
+         click after a keyboard focus move, must render identically — \
+         the ring stays suppressed either way:\n{}",
+        keyboard_then_click.screen()
+    );
 }
 
 // ─── ActivityStyleDemo: VS-Code-style row fill through
@@ -9651,6 +10009,23 @@ fn context_menu_style_demo_click_activates_item() {
     );
 }
 
+/// The "Copy" item's `ContextMenuItem::icon` paints its resolved glyph in
+/// the row's leading gutter column — `TuiDriver` defaults to nerd fonts
+/// off, so that's the icon's plain-text fallback (`Icon::codicon("files",
+/// "C")`'s `C`), immediately left of the label with no gap (the TUI
+/// rasteriser always starts the label exactly one column after the
+/// gutter cell).
+#[test]
+fn context_menu_style_demo_copy_item_shows_icon_glyph() {
+    let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 60, 12);
+    driver.right_click(10.0, 4.0);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("CCopy"),
+        "the icon's fallback glyph should sit directly left of \"Copy\":\n{screen}"
+    );
+}
+
 /// Escape dismisses the painted menu and delivers
 /// `UiEvent::ContextMenuDismissed` without activating anything.
 #[test]
@@ -9729,6 +10104,57 @@ fn status_bar_priority_demo_dirty_drops_low_priority_not_cursor() {
         !driver.screen_contains("Spaces: 4"),
         "the lowest-priority right segment should be the one dropped to \
          make room:\n{screen}"
+    );
+}
+
+#[test]
+fn status_bar_priority_demo_dirty_left_segment_ends_in_an_ellipsis() {
+    let mut driver = TuiDriver::new(StatusBarPriorityDemo::new(), 90, 5);
+    driver.type_char('d');
+    let screen = driver.screen();
+    let bar = screen
+        .lines()
+        .find(|line| line.contains("NORMAL"))
+        .unwrap_or_else(|| panic!("status bar row should paint:\n{screen}"))
+        .to_string();
+
+    // "dirty" grows the left segment past the space the right group
+    // leaves it, so it is squeezed into what remains and the overflow is
+    // marked with a single ellipsis rather than cut mid-word.
+    let left = bar
+        .split_once("Ln 1, Col 1")
+        .map(|(before, _)| before)
+        .unwrap_or_else(|| panic!("cursor segment should paint:\n{screen}"));
+    assert!(
+        left.trim_end().ends_with('…'),
+        "an overflowing left segment should end in an ellipsis, got \
+         {:?}:\n{screen}",
+        left.trim_end()
+    );
+    assert_eq!(
+        bar.chars().filter(|c| *c == '…').count(),
+        1,
+        "exactly one ellipsis marks the truncation point:\n{screen}"
+    );
+}
+
+#[test]
+fn status_bar_priority_demo_undirty_left_segment_has_no_ellipsis() {
+    let mut driver = TuiDriver::new(StatusBarPriorityDemo::new(), 90, 5);
+    driver.type_char('d');
+    driver.type_char('d');
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("NORMAL"),
+        "the short left segment should paint in full:\n{screen}"
+    );
+    assert!(
+        !screen.contains('…'),
+        "a left segment that fits must not be ellipsized:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Spaces: 4"),
+        "every right segment returns once the squeeze is lifted:\n{screen}"
     );
 }
 
@@ -9869,12 +10295,13 @@ fn appshell_chrome_bands_carve_left_to_right() {
         "main area (x={main_x}) sits right of the sidebar header (x={explorer_x})"
     );
 
-    // The sidebar band's width is what clips its content, so the demo's
+    // The sidebar band's width is what bounds its content, so the demo's
     // placeholder text stops at the band edge rather than running under
-    // the main area.
+    // the main area — and it ends in an ellipsis, filling the band right
+    // up to that edge rather than being cut mid-word.
     assert_eq!(
         row_containing(&screen, "(sidebar content").trim_end(),
-        " S │ (sidebar content he"
+        " S │ (sidebar content h…"
     );
 }
 

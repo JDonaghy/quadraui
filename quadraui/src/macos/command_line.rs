@@ -292,8 +292,17 @@ mod tests {
         // Probe: with the bar filled, at least one pixel in the right
         // quarter differs from the bar background (a glyph), while the
         // left quarter is pure background.
+        //
+        // `native_surface_paint::paint` also strokes a 1px `border_fg`
+        // frame around the whole `rect`: the top/bottom edge covers every
+        // column (row 0 and row `bar_height - 1`), and the left/right
+        // edge covers every row (column 0 and column `W - 1`). Every probe
+        // below dodges those four frame lines so this test still proves
+        // something about the *glyphs*, not the frame — same convention
+        // as `gtk::command_line`'s `col_y_range` inset.
         let cmd = sample("3/17", None, true);
-        let (surface, lh) = paint_via_backend(&cmd, QRect::new(0.0, 0.0, W as f32, 20.0));
+        let bar_height = 20.0_f32;
+        let (surface, lh) = paint_via_backend(&cmd, QRect::new(0.0, 0.0, W as f32, bar_height));
         let theme = Theme::default();
         let bg = (
             theme.command_line_bg.r,
@@ -301,8 +310,9 @@ mod tests {
             theme.command_line_bg.b,
         );
         let row = (lh / 2.0) as u32;
+        let bottom_border_row = bar_height as u32 - 1;
 
-        let left_quarter_all_bg = (0..W / 4).all(|x| {
+        let left_quarter_all_bg = (1..W / 4).all(|x| {
             let (r, g, b, _) = surface.pixel(x, row);
             (r, g, b) == bg
         });
@@ -311,8 +321,8 @@ mod tests {
             "right-aligned text must not paint into the left quarter",
         );
 
-        let right_quarter_has_glyph = (W - W / 4..W).any(|x| {
-            (0..(lh as u32).min(H)).any(|dy| {
+        let right_quarter_has_glyph = (W - W / 4..W - 1).any(|x| {
+            (1..(lh as u32).min(bottom_border_row)).any(|dy| {
                 let (r, g, b, _) = surface.pixel(x, dy);
                 (r, g, b) != bg
             })

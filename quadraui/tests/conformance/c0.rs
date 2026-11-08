@@ -155,6 +155,42 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
+        // `hovered_tab`/`pressed_tab`-carrying counterpart to
+        // `draw_tab_bar`. Names tab 0 (the only tab) as hovered so a
+        // backend that honours the seam takes its hover branch rather
+        // than only the untinted path; the label must still reach the
+        // frame either way. Index-keyed like `hovered_close_tab`, not
+        // `InteractionState` — see `draw_tab_bar_with_state`'s own doc
+        // for why.
+        method: "draw_tab_bar_with_state",
+        needle: Some("c0tabsstate"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = TabBar {
+                id: id("tab-bar-state"),
+                tabs: vec![TabItem {
+                    label: " c0tabsstate ".to_string(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: false,
+                }],
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: false,
+                compact: false,
+            };
+            let _ = b.draw_tab_bar_with_state(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &bar,
+                None,
+                Some(0),
+                None,
+            );
+        },
+    },
+    Case {
         method: "draw_tab_bar_icons",
         needle: Some("c0icontabs"),
         paint: |b, area| {
@@ -241,6 +277,39 @@ pub const CASES: &[Case] = &[
                 compact: false,
             };
             let _ = b.draw_tab_bar_layout(Rect::new(0.0, 0.0, area.width, lh), &bar, None);
+        },
+    },
+    Case {
+        // `TabBarLayout`-returning counterpart to `draw_tab_bar_with_state`
+        // — the twin `quadraui-binding-core`'s paint path can actually
+        // reach, since it calls `draw_tab_bar_layout`, never the
+        // deprecated `draw_tab_bar`.
+        method: "draw_tab_bar_layout_with_state",
+        needle: Some("c0tabslayoutstate"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = TabBar {
+                id: id("tab-bar-layout-state"),
+                tabs: vec![TabItem {
+                    label: " c0tabslayoutstate ".to_string(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: false,
+                }],
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: false,
+                compact: false,
+            };
+            let _ = b.draw_tab_bar_layout_with_state(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &bar,
+                None,
+                Some(0),
+                None,
+            );
         },
     },
     Case {
@@ -394,6 +463,39 @@ pub const CASES: &[Case] = &[
             b.draw_list(area, &list);
         },
     },
+    // `draw_list_with_state` is an additive trait default that forwards to
+    // `draw_list`, ignoring both indices, until a backend overrides it to
+    // tint hover/pressed. This row proves the default reaches a rasteriser
+    // and still paints observable content on every backend.
+    Case {
+        method: "draw_list_with_state",
+        needle: Some("c0listhv"),
+        paint: |b, area| {
+            let list = ListView {
+                id: id("list-hover"),
+                title: None,
+                items: vec![ListItem {
+                    text: StyledText::plain("c0listhv"),
+                    icon: None,
+                    detail: None,
+                    decoration: Decoration::Normal,
+                }],
+                selected_idx: usize::MAX,
+                scroll_offset: 0,
+                has_focus: false,
+                bordered: false,
+                h_scroll: 0,
+                max_content_width: None,
+                show_v_scrollbar: false,
+            };
+            b.draw_list_with_state(
+                area,
+                &list,
+                &quadraui::ListPaintState::default().with_hovered_idx(Some(0)),
+                false,
+            );
+        },
+    },
     Case {
         method: "draw_tree",
         needle: Some("c0tree"),
@@ -417,6 +519,40 @@ pub const CASES: &[Case] = &[
                 has_focus: false,
             };
             b.draw_tree(area, &tree);
+        },
+    },
+    // `draw_tree_with_state` is an additive trait default that forwards to
+    // `draw_tree`, ignoring both indices, until a backend overrides it to
+    // tint hover/pressed. This row proves the default reaches a rasteriser
+    // and still paints observable content on every backend.
+    Case {
+        method: "draw_tree_with_state",
+        needle: Some("c0treehv"),
+        paint: |b, area| {
+            let tree = TreeView {
+                id: id("tree-hover"),
+                rows: vec![TreeRow {
+                    path: vec![0],
+                    indent: 0,
+                    icon: None,
+                    text: StyledText::plain("c0treehv"),
+                    badge: None,
+                    is_expanded: None,
+                    decoration: Decoration::Normal,
+                    edit: None,
+                }],
+                selection_mode: SelectionMode::Single,
+                selected_path: None,
+                scroll_offset: 0,
+                style: TreeStyle::default(),
+                has_focus: false,
+            };
+            b.draw_tree_with_state(
+                area,
+                &tree,
+                &quadraui::TreePaintState::default().with_hovered_idx(Some(0)),
+                false,
+            );
         },
     },
     Case {
@@ -629,6 +765,44 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_data_table(area, &table, None);
         },
     },
+    // `draw_data_table_with_state`'s trait default forwards to
+    // `draw_data_table`, ignoring the hovered index, on any backend that
+    // doesn't override it (currently Win-GUI); gtk/macos/tui each
+    // override it to tint the hovered row. This row proves the method
+    // reaches a rasteriser and still paints observable content on every
+    // backend, default or overridden.
+    Case {
+        method: "draw_data_table_with_state",
+        needle: Some("c0dtblhv"),
+        paint: |b, area| {
+            let table = DataTable {
+                id: id("data-table-hover"),
+                columns: vec![Column {
+                    title: "c0dtblhv".to_string(),
+                    width: ColumnWidth::Flex(1.0),
+                    align: ColumnAlign::Left,
+                }],
+                rows: vec![DataRow {
+                    cells: vec![StyledText::plain("row")],
+                    decoration: Decoration::Normal,
+                }],
+                selected_idx: None,
+                scroll_offset: 0,
+                sort: None,
+                has_focus: false,
+                show_scrollbar: false,
+                min_total_width: None,
+                h_scroll: 0.0,
+                column_overrides: vec![],
+                footer: None,
+            };
+            let _ = b.draw_data_table_with_state(
+                area,
+                &table,
+                &quadraui::DataTablePaintState::default().with_hovered_idx(Some(0)),
+            );
+        },
+    },
     Case {
         method: "draw_form",
         needle: Some("c0form"),
@@ -682,6 +856,36 @@ pub const CASES: &[Case] = &[
             palette.show_query = true;
             palette.mode = PaletteMode::List;
             b.draw_palette(area, &palette);
+        },
+    },
+    Case {
+        // `InteractionState`-carrying counterpart to `draw_palette`. The
+        // state names the palette's own id — the one stable id a
+        // `Palette` carries — as hovered, so a backend that honours the
+        // seam tints its pinned create-action row.
+        method: "draw_palette_with_state",
+        needle: Some("c0paltstate"),
+        paint: |b, area| {
+            let palette_id = id("palette-state");
+            let palette = Palette {
+                id: palette_id,
+                title: "Palette".to_string(),
+                items: vec![PaletteItem {
+                    text: StyledText::plain("c0paltstate"),
+                    detail: None,
+                    icon: None,
+                    match_positions: vec![],
+                    depth: 0,
+                    expandable: false,
+                    expanded: false,
+                }],
+                show_query: true,
+                mode: PaletteMode::List,
+                create_label: Some("Create".to_string()),
+                ..Default::default()
+            };
+            let interaction = InteractionState::from_parts(Some(palette_id), None);
+            b.draw_palette_with_state(area, &palette, &interaction);
         },
     },
     Case {
@@ -809,6 +1013,7 @@ pub const CASES: &[Case] = &[
                     disabled: false,
                     key_equivalent: None,
                     checked: None,
+                    icon: None,
                     submenu: None,
                 }],
                 selected_idx: 0,
@@ -822,6 +1027,40 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
+        // `InteractionState`-carrying counterpart to
+        // `draw_context_menu`. The state names the single item's id as
+        // hovered so a backend that honours the seam takes its tint
+        // branch; the item label must still reach the frame either way.
+        method: "draw_context_menu_with_state",
+        needle: Some("c0ctxmstate"),
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            let item_id = id("context-menu-state-item");
+            let menu = ContextMenu {
+                id: id("context-menu-state"),
+                items: vec![ContextMenuItem {
+                    id: Some(item_id),
+                    label: StyledText::plain("c0ctxmstate"),
+                    detail: None,
+                    disabled: false,
+                    key_equivalent: None,
+                    checked: None,
+                    icon: None,
+                    submenu: None,
+                }],
+                selected_idx: 0,
+                bg: None,
+                placement: ContextMenuPlacement::AnchorPoint,
+            };
+            let layout = menu.layout(0.0, 0.0, area, cw * 20.0, |_| {
+                ContextMenuItemMeasure::new(lh)
+            });
+            let interaction = InteractionState::from_parts(Some(item_id), None);
+            let _ = b.draw_context_menu_with_state(&menu, &layout, &interaction);
+        },
+    },
+    Case {
         method: "draw_dialog",
         needle: Some("c0dlgb"),
         paint: |b, area| {
@@ -832,6 +1071,7 @@ pub const CASES: &[Case] = &[
                 title: StyledText::plain("Dialog"),
                 body: vec![StyledText::plain("c0dlgb")],
                 buttons: vec![DialogButton {
+                    spec: None,
                     id: id("dialog-ok"),
                     label: "OK".to_string(),
                     is_default: true,
@@ -1102,6 +1342,32 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_menu_bar(Rect::new(0.0, 0.0, area.width, lh), &bar);
         },
     },
+    Case {
+        // `InteractionState`-carrying counterpart to `draw_menu_bar`.
+        // The state names the single top-level item's id as hovered so a
+        // backend that honours the seam takes its tint branch; the item
+        // label must still reach the frame either way.
+        method: "draw_menu_bar_with_state",
+        needle: Some("c0menustate"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let item_id = id("menu-bar-state-item");
+            let bar = MenuBar {
+                id: id("menu-bar-state"),
+                items: vec![MenuBarItem {
+                    id: item_id,
+                    label: "c0menustate".to_string(),
+                    disabled: false,
+                    submenu: None,
+                }],
+                open_item: None,
+                focused_item: None,
+            };
+            let interaction = InteractionState::from_parts(Some(item_id), None);
+            let _ =
+                b.draw_menu_bar_with_state(Rect::new(0.0, 0.0, area.width, lh), &bar, &interaction);
+        },
+    },
     // ── More chrome-only primitives ────────────────────────────────────
     Case {
         method: "draw_split",
@@ -1247,6 +1513,7 @@ pub const CASES: &[Case] = &[
         paint: |b, area| {
             let lh = b.line_height();
             let bar = Toolbar::new(id("toolbar")).with_buttons(vec![ToolbarButton::Action {
+                spec: None,
                 id: id("toolbar-button"),
                 label: "c0tbar".to_string(),
                 icon: None,
@@ -1275,6 +1542,7 @@ pub const CASES: &[Case] = &[
             let lh = b.line_height();
             let bar =
                 Toolbar::new(id("toolbar-valign")).with_buttons(vec![ToolbarButton::Action {
+                    spec: None,
                     id: id("toolbar-valign-button"),
                     label: "c0tbva".to_string(),
                     icon: None,
@@ -1299,6 +1567,7 @@ pub const CASES: &[Case] = &[
         paint: |b, area| {
             let toolbar =
                 Toolbar::new(id("sidebar-toolbar")).with_buttons(vec![ToolbarButton::Action {
+                    spec: None,
                     id: id("sidebar-toolbar-button"),
                     label: "c0sbpn".to_string(),
                     icon: None,
@@ -1575,6 +1844,7 @@ pub const CASES: &[Case] = &[
                     disabled: false,
                     key_equivalent: None,
                     checked: None,
+                    icon: None,
                     submenu: None,
                 }],
                 selected_idx: 0,
