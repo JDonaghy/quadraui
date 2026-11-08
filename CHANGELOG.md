@@ -89,6 +89,14 @@ only a push to `main` runs this workflow.
   (`"/Applications/Calculator.app"`, `"C:\\Windows\\System32\\calc.exe"`) is
   rejected instead of launched.
 ### Changed
+- `TreeView`/`ListView` row layout (`layout_with_scroll_px`), the vertical
+  scrollbar thumb geometry (`vscrollbar_with_scroll_px`), and the
+  hover/press/`scroll_px` paint state (`TreePaintState`/`ListPaintState`,
+  now aliases of the new shared `primitives::row_stack::RowPaintState`) now
+  go through a new `primitives::row_stack` module instead of two field-
+  identical, independently-maintained copies. Pure refactor — no behavior
+  change; `TreePaintState`/`ListPaintState` keep their existing names,
+  fields, and builders.
 - `tui::services::TuiPlatformServices::open_url`/`open_url_result` now rejects
   any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
   `BackendError::Unsupported`, where it previously forwarded every input
