@@ -54,6 +54,7 @@ impl FormControlWidthApp {
             tab_index: None,
             control_width,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -83,6 +84,7 @@ impl FormControlWidthApp {
             label_width: None,
             control_width: ControlWidth::Fill,
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 }

@@ -1146,6 +1146,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 

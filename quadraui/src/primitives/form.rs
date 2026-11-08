@@ -90,6 +90,7 @@ use serde::{Deserialize, Serialize};
 ///         tab_index: None,
 ///         control_width: None,
 ///         min_control_width: None,
+///         row_align: None,
 ///     }],
 ///     focused_field: None,
 ///     scroll_offset: 0,
@@ -99,6 +100,7 @@ use serde::{Deserialize, Serialize};
 ///     label_width: None,
 ///     control_width: Default::default(),
 ///     min_control_width: None,
+///     spacing: Default::default(),
 /// };
 ///
 /// let layout = form.layout(40.0, 10.0, |_| FormFieldMeasure::new(1.0));
@@ -164,6 +166,12 @@ pub struct Form {
     /// reading this field directly.
     #[serde(default)]
     pub min_control_width: Option<f32>,
+    /// Form-wide padding/item-gap/row-alignment knobs — see
+    /// [`FormSpacing`]. Defaults to [`FormSpacing::default`] (no inset,
+    /// backend-chosen item gap, `Start` alignment), reproducing today's
+    /// only behavior bit-for-bit.
+    #[serde(default)]
+    pub spacing: FormSpacing,
 }
 
 /// How a [`FormField`]'s control column (the checkbox / input / slider
@@ -243,6 +251,67 @@ pub enum LabelAlign {
     End,
 }
 
+/// Form-wide padding/item-gap/row-alignment knobs. Set on [`Form::spacing`];
+/// every field defaults to `0.0`/`None`/`Start`, reproducing a `Form` built
+/// before this type existed bit-for-bit.
+///
+/// # TUI story
+///
+/// Every value here is in the same dual-unit convention as
+/// [`Form::label_width`]: cells for TUI, device pixels for GTK / macOS /
+/// Win. [`Form::layout`] applies all three uniformly for every backend —
+/// a backend's own measure closure (the `measure_field` callback) keeps
+/// supplying each field's natural size exactly as it does today; only
+/// the shared positioning math in [`Form::layout`] changes, so no
+/// backend-specific code needs to change to pick this up.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct FormSpacing {
+    /// Uniform inset, applied on all four edges of the form's content
+    /// area before any field is laid out. `0.0` (the default)
+    /// reproduces today's only behavior: fields fill the full
+    /// viewport passed to [`Form::layout`].
+    #[serde(default)]
+    pub padding: f32,
+    /// Overrides every item-bearing field's own backend-supplied gap
+    /// between items (`ToggleGroup` / `ButtonRow` / `SegmentedControl` /
+    /// `Toolbar`'s buttons). `None` (the default) keeps each field's
+    /// own gap, exactly as [`Form::layout`] already receives it from
+    /// the `measure_field` callback.
+    #[serde(default)]
+    pub item_gap: Option<f32>,
+    /// Form-wide default for how an item-bearing field's items pack
+    /// within their row's available width (see [`RowAlign`]). A
+    /// [`FormField::row_align`] override, when set, wins over this.
+    /// Use [`Form::resolved_row_align`] rather than reading this field
+    /// directly.
+    #[serde(default)]
+    pub row_align: RowAlign,
+}
+
+/// How an item-bearing [`FieldKind`]'s items (`ToggleGroup` /
+/// `ButtonRow` / `SegmentedControl` / `Toolbar`) pack within their
+/// row's available width — the space between `items_start_x` (from the
+/// field's [`FormFieldMeasure`]) and the row's right edge. Set on
+/// [`FormSpacing::row_align`] as the form-wide default, or on
+/// [`FormField::row_align`] to override a single field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RowAlign {
+    /// Items pack left-to-right starting at `items_start_x`, leaving
+    /// any slack at the row's right edge — today's only behavior.
+    #[default]
+    Start,
+    /// Items pack together, centered within the available width.
+    Center,
+    /// Items pack together, flush against the row's right edge.
+    End,
+    /// Slack is distributed evenly into the gaps *between* items
+    /// (never before the first or after the last), so the first and
+    /// last items stay at their `Start` positions while the row's
+    /// whole width is used. A single item behaves like `Start` — there
+    /// is no gap to stretch.
+    Stretch,
+}
+
 /// Validation state rendered as a colored indicator + message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ValidationState {
@@ -306,6 +375,13 @@ pub struct FormField {
     /// [`Form::resolved_min_control_width`].
     #[serde(default)]
     pub min_control_width: Option<f32>,
+    /// Overrides the form-wide [`Form::spacing`]'s
+    /// [`FormSpacing::row_align`] for this field only. Only meaningful
+    /// for an item-bearing [`FieldKind`] (`ToggleGroup`/`ButtonRow`/
+    /// `SegmentedControl`/`Toolbar`). `None` defers to the form's
+    /// default — read through [`Form::resolved_row_align`].
+    #[serde(default)]
+    pub row_align: Option<RowAlign>,
 }
 
 /// The input variant carried by a `FormField`.
@@ -697,6 +773,14 @@ impl Form {
         field.min_control_width.or(self.min_control_width)
     }
 
+    /// The effective row alignment for `field`: its own
+    /// [`FormField::row_align`] override if set, else this form's
+    /// [`FormSpacing::row_align`] default. Only meaningful for an
+    /// item-bearing [`FieldKind`].
+    pub fn resolved_row_align(&self, field: &FormField) -> RowAlign {
+        field.row_align.unwrap_or(self.spacing.row_align)
+    }
+
     /// Compute the full rendering + hit-test layout for this form.
     ///
     /// # Arguments
@@ -727,6 +811,16 @@ impl Form {
             self.fields.len(),
         );
 
+        // `FormSpacing::padding` insets the content box on all four
+        // edges before any field is laid out. `0.0` (the default)
+        // reproduces today's only behavior: fields fill the whole
+        // viewport, `content_*` equal to `viewport_*`.
+        let pad = self.spacing.padding.max(0.0);
+        let content_x = pad;
+        let content_y = pad;
+        let content_width = (viewport_width - pad * 2.0).max(0.0);
+        let content_height = (viewport_height - pad * 2.0).max(0.0);
+
         // First pass: walk fields in order deciding which ones are
         // visible and how tall each renders, using the original
         // sequential "stop once the viewport is exhausted" rule. This
@@ -741,15 +835,16 @@ impl Form {
             item_measures: Vec<FormItemMeasure>,
             items_start_x: f32,
             item_gap: f32,
+            row_align: RowAlign,
         }
         let mut rows: Vec<Row> = Vec::new();
         let mut y = 0.0_f32;
         for i in resolved_scroll_offset..self.fields.len() {
-            if y >= viewport_height {
+            if y >= content_height {
                 break;
             }
             let m = measure_field(i);
-            let remaining = viewport_height - y;
+            let remaining = content_height - y;
             let clipped_height = m.height.min(remaining).max(0.0);
             if clipped_height <= 0.0 {
                 break;
@@ -761,7 +856,10 @@ impl Form {
                 clipped_height,
                 item_measures: m.item_measures,
                 items_start_x: m.items_start_x,
-                item_gap: m.item_gap,
+                // `FormSpacing::item_gap`, when set, overrides every
+                // item-bearing field's own backend-supplied gap.
+                item_gap: self.spacing.item_gap.unwrap_or(m.item_gap),
+                row_align: self.resolved_row_align(&self.fields[i]),
             });
         }
 
@@ -770,19 +868,45 @@ impl Form {
         // invariant as the selection pass above — a row's position
         // never shrinks to make room for its own clipped height).
         let full_heights: Vec<f32> = rows.iter().map(|r| r.full_height).collect();
-        let ys = row_y_positions(viewport_width, &full_heights);
+        let ys = row_y_positions(content_width, &full_heights);
 
         for (row, y) in rows.into_iter().zip(ys) {
-            let bounds = Rect::new(0.0, y, viewport_width, row.clipped_height);
+            let bounds = Rect::new(content_x, content_y + y, content_width, row.clipped_height);
             let id = self.fields[row.idx].id;
 
             let mut item_bounds = Vec::new();
             if !row.item_measures.is_empty() {
                 let widths: Vec<f32> = row.item_measures.iter().map(|item| item.width).collect();
-                let item_xs =
-                    item_x_positions(row.items_start_x, row.clipped_height, row.item_gap, &widths);
+                // Slack between the items' own packed width and the
+                // row's available width (from `items_start_x` to the
+                // content box's right edge) — `RowAlign` decides where
+                // that slack goes; see `RowAlign`'s doc.
+                let available = (content_width - row.items_start_x).max(0.0);
+                let packed_width = widths.iter().sum::<f32>()
+                    + row.item_gap * widths.len().saturating_sub(1) as f32;
+                let slack = (available - packed_width).max(0.0);
+                let (extra_origin, extra_gap) = match row.row_align {
+                    RowAlign::Start => (0.0, 0.0),
+                    RowAlign::Center => (slack / 2.0, 0.0),
+                    RowAlign::End => (slack, 0.0),
+                    RowAlign::Stretch => {
+                        if widths.len() > 1 {
+                            (0.0, slack / (widths.len() - 1) as f32)
+                        } else {
+                            (0.0, 0.0)
+                        }
+                    }
+                };
+                let origin_x = content_x + row.items_start_x + extra_origin;
+                let item_xs = item_x_positions(
+                    origin_x,
+                    row.clipped_height,
+                    row.item_gap + extra_gap,
+                    &widths,
+                );
                 for (item, item_x) in row.item_measures.iter().zip(item_xs) {
-                    let item_rect = Rect::new(item_x, y, item.width, row.clipped_height);
+                    let item_rect =
+                        Rect::new(item_x, content_y + y, item.width, row.clipped_height);
                     hit_regions.push((item_rect, FormHit::Field(item.id)));
                     item_bounds.push((item.id, item_rect));
                 }
@@ -2432,6 +2556,7 @@ mod native_surface_paint {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 }],
                 focused_field: None,
                 scroll_offset: 0,
@@ -2441,6 +2566,7 @@ mod native_surface_paint {
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             }
         }
 
@@ -2510,6 +2636,7 @@ mod native_surface_paint {
                         tab_index: None,
                         control_width: None,
                         min_control_width: None,
+                        row_align: None,
                     },
                     FormField {
                         id: WidgetId::new("toggle-1"),
@@ -2524,6 +2651,7 @@ mod native_surface_paint {
                         tab_index: None,
                         control_width: None,
                         min_control_width: None,
+                        row_align: None,
                     },
                 ],
                 focused_field: None,
@@ -2534,6 +2662,7 @@ mod native_surface_paint {
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             };
             (form, viewport_height)
         }
@@ -2623,6 +2752,7 @@ mod native_surface_paint {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             };
             let form = Form {
                 id: WidgetId::new("control-column"),
@@ -2638,6 +2768,7 @@ mod native_surface_paint {
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             };
 
             let (surface, flayout) = paint_recorded(&form);
@@ -2702,6 +2833,7 @@ mod native_surface_paint {
                 tab_index: None,
                 control_width,
                 min_control_width: None,
+                row_align: None,
             }
         }
 
@@ -2717,6 +2849,7 @@ mod native_surface_paint {
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             }
         }
 
@@ -3650,6 +3783,7 @@ mod native_surface_paint {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             });
 
             let (surface, _) = paint_recorded(&form);
@@ -3794,6 +3928,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("line-numbers"),
@@ -3808,6 +3943,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("tabstop"),
@@ -3827,6 +3963,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("save"),
@@ -3841,6 +3978,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("language"),
@@ -3858,6 +3996,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
             ],
             focused_field: Some(WidgetId::new("line-numbers")),
@@ -3868,6 +4007,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let json = serde_json::to_string(&form).unwrap();
         let back: Form = serde_json::from_str(&json).unwrap();
@@ -3942,6 +4082,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -3999,6 +4140,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -4027,6 +4169,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -4077,6 +4220,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -4115,6 +4259,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -4137,6 +4282,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -4152,6 +4298,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -4269,6 +4416,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -4333,6 +4481,7 @@ mod tests {
             tab_index: None,
             control_width,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -4348,6 +4497,7 @@ mod tests {
             label_width: None,
             control_width: form_control_width,
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -4375,6 +4525,155 @@ mod tests {
 
         let unset = control_width_test_field(None);
         assert_eq!(form.resolved_min_control_width(&unset), Some(40.0));
+    }
+
+    // ── FormSpacing: padding / item_gap / row_align ────────────────────
+
+    #[test]
+    fn spacing_padding_insets_bounds_on_every_edge() {
+        let mut f = make_form(vec![make_form_field("only", "Only", FieldKind::Button)], 0);
+        f.spacing.padding = 2.0;
+        let layout = f.layout(40.0, 20.0, |_| FormFieldMeasure::new(1.0));
+        assert_eq!(layout.visible_fields.len(), 1);
+        let bounds = layout.visible_fields[0].bounds;
+        assert_eq!(bounds.x, 2.0);
+        assert_eq!(bounds.y, 2.0);
+        // Content width/height are shrunk by the inset on both edges.
+        assert_eq!(bounds.width, 36.0);
+    }
+
+    #[test]
+    fn spacing_padding_of_zero_reproduces_unpadded_layout() {
+        let f = make_form(vec![make_form_field("only", "Only", FieldKind::Button)], 0);
+        let layout = f.layout(40.0, 20.0, |_| FormFieldMeasure::new(1.0));
+        let bounds = layout.visible_fields[0].bounds;
+        assert_eq!(bounds, Rect::new(0.0, 0.0, 40.0, 1.0));
+    }
+
+    fn button_row_form(align: RowAlign) -> Form {
+        let mut f = make_form(
+            vec![make_form_field(
+                "buttons",
+                "",
+                FieldKind::ButtonRow {
+                    buttons: vec![
+                        ButtonRowItem {
+                            id: WidgetId::new("a"),
+                            label: "A".into(),
+                            disabled: false,
+                            icon: None,
+                            spec: None,
+                        },
+                        ButtonRowItem {
+                            id: WidgetId::new("b"),
+                            label: "B".into(),
+                            disabled: false,
+                            icon: None,
+                            spec: None,
+                        },
+                    ],
+                },
+            )],
+            0,
+        );
+        f.spacing.row_align = align;
+        f
+    }
+
+    /// Two 10-wide items with a 2-wide gap packed into a 40-wide row
+    /// starting at `items_start_x = 0.0` leave 18.0 of slack
+    /// (`40.0 - (10.0 + 2.0 + 10.0)`), which `RowAlign` places
+    /// differently depending on its mode.
+    fn button_row_item_xs(align: RowAlign) -> Vec<f32> {
+        let f = button_row_form(align);
+        let layout = f.layout(40.0, 1.0, |_| {
+            FormFieldMeasure::with_items(
+                1.0,
+                0.0,
+                2.0,
+                vec![
+                    FormItemMeasure {
+                        id: WidgetId::new("a"),
+                        width: 10.0,
+                    },
+                    FormItemMeasure {
+                        id: WidgetId::new("b"),
+                        width: 10.0,
+                    },
+                ],
+            )
+        });
+        layout.visible_fields[0]
+            .item_bounds
+            .iter()
+            .map(|(_, r)| r.x)
+            .collect()
+    }
+
+    #[test]
+    fn row_align_start_packs_items_flush_left() {
+        assert_eq!(button_row_item_xs(RowAlign::Start), vec![0.0, 12.0]);
+    }
+
+    #[test]
+    fn row_align_center_centers_the_packed_items() {
+        // 18.0 slack / 2 = 9.0 added to both items' start.
+        assert_eq!(button_row_item_xs(RowAlign::Center), vec![9.0, 21.0]);
+    }
+
+    #[test]
+    fn row_align_end_packs_items_flush_right() {
+        // All 18.0 of slack added before the first item.
+        assert_eq!(button_row_item_xs(RowAlign::End), vec![18.0, 30.0]);
+    }
+
+    #[test]
+    fn row_align_stretch_distributes_slack_into_the_gap() {
+        // Slack folds into the single gap between the two items: the
+        // first item stays at its `Start` position, the second moves
+        // to the row's right edge.
+        assert_eq!(button_row_item_xs(RowAlign::Stretch), vec![0.0, 30.0]);
+    }
+
+    #[test]
+    fn resolved_row_align_prefers_the_field_override_over_the_form_default() {
+        let mut form = make_form(vec![], 0);
+        form.spacing.row_align = RowAlign::Start;
+        let mut field = make_form_field("buttons", "", FieldKind::Label);
+        field.row_align = Some(RowAlign::End);
+        assert_eq!(form.resolved_row_align(&field), RowAlign::End);
+
+        field.row_align = None;
+        assert_eq!(form.resolved_row_align(&field), RowAlign::Start);
+    }
+
+    #[test]
+    fn spacing_item_gap_overrides_the_backend_supplied_gap() {
+        let mut f = button_row_form(RowAlign::Start);
+        f.spacing.item_gap = Some(5.0);
+        let layout = f.layout(40.0, 1.0, |_| {
+            FormFieldMeasure::with_items(
+                1.0,
+                0.0,
+                2.0, // backend's own gap — overridden by `spacing.item_gap`.
+                vec![
+                    FormItemMeasure {
+                        id: WidgetId::new("a"),
+                        width: 10.0,
+                    },
+                    FormItemMeasure {
+                        id: WidgetId::new("b"),
+                        width: 10.0,
+                    },
+                ],
+            )
+        });
+        let xs: Vec<f32> = layout.visible_fields[0]
+            .item_bounds
+            .iter()
+            .map(|(_, r)| r.x)
+            .collect();
+        assert_eq!(xs, vec![0.0, 15.0]);
     }
 
     // ── B3b: ButtonSpec seam ─────────────────────────────────────────────
