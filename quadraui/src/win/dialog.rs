@@ -107,7 +107,7 @@ pub(crate) fn draw_dialog_with_style(
                             1.0,
                         );
                     }
-                    ToolbarItemKind::Action | ToolbarItemKind::Label => {
+                    ToolbarItemKind::Action | ToolbarItemKind::Label | ToolbarItemKind::Spacer => {
                         if let Some(crate::primitives::toolbar::ToolbarButton::Action {
                             label,
                             enabled,

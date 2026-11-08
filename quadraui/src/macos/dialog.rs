@@ -151,6 +151,7 @@ mod tests {
                     let (w, _) = measure_text(&make_font("Menlo", 14.0).unwrap(), text);
                     w
                 }
+                crate::primitives::toolbar::ToolbarButton::Spacer => 0.0,
             };
             ToolbarItemMeasure::new(text_w as f32)
         })
