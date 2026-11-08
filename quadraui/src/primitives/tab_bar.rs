@@ -1175,32 +1175,10 @@ pub(crate) mod native_surface_paint {
     use crate::backend::PressableVisual;
     use crate::event::{Point, Rect};
     use crate::paint_surface::{PaintSurface, PathVerb};
+    use crate::primitives::layout_metrics::{pixel, tab_close_hover_bg};
     use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::Color;
-
-    /// Vertical margin (surface-native units) above and below the
-    /// active-tab chip fill — mirrors `gtk::tab_bar`'s pre-migration
-    /// `TAB_CHIP_INSET_Y`.
-    const TAB_CHIP_INSET_Y: f32 = 4.0;
-    /// Corner radius of the active-tab chip — mirrors `gtk::tab_bar`'s
-    /// pre-migration `TAB_CHIP_RADIUS`.
-    const TAB_CHIP_RADIUS: f32 = 4.0;
-    /// Height of the active-tab top-edge accent line — mirrors
-    /// `gtk::tab_bar`'s pre-migration `TAB_ACTIVE_BORDER_TOP_PX`.
-    const TAB_ACTIVE_BORDER_TOP: f32 = 1.0;
-    /// Gap between a tab's leading icon glyph and its label — mirrors
-    /// `gtk::tab_bar`'s own `TAB_ICON_GAP`.
-    const TAB_ICON_GAP: f32 = 6.0;
-    /// Padding, on every side, of the close-button hover backdrop
-    /// inside [`super::VisibleTab::close_bounds`].
-    const CLOSE_HOVER_PAD: f32 = 2.0;
-    /// Corner radius of the close-button hover backdrop.
-    const CLOSE_HOVER_RADIUS: f32 = 3.0;
-    /// Alpha (0.0..=1.0) of the close-button hover backdrop, painted in
-    /// `theme.foreground` — mirrors `gtk::tab_bar`'s pre-migration
-    /// `0.15` constant.
-    const CLOSE_HOVER_ALPHA: f32 = 0.15;
 
     /// Live, per-frame interaction state [`paint`] reads. [`super::TabItem`]
     /// carries no [`crate::types::WidgetId`] (every other
@@ -1266,19 +1244,41 @@ pub(crate) mod native_surface_paint {
 
     /// Paint a [`TabBar`] at its caller-resolved `layout` onto `surface`.
     ///
+    /// # Coordinate space
+    ///
+    /// `layout` (a [`TabBarLayout`]) is bar-relative, not surface-absolute
+    /// — see [`TabBarLayout::tab_center`]'s own doc. This function paints
+    /// every rect verbatim against that bar-relative origin, including the
+    /// `(0, 0)`-anchored background fill. A caller whose bar does not
+    /// start at the surface's own origin (e.g. a tab strip below a
+    /// toolbar) must first translate `surface` to the bar's own top-left
+    /// corner — `PaintSurface` has no offset argument on any `surface_*`
+    /// method, so this function cannot do that translation itself.
+    ///
     /// # Visual contract
     ///
     /// - **Background:** the full bar rect fills with `theme.tab_bar_bg`.
     /// - **Active tab:** an inset, rounded chip
     ///   (`theme.tab_active_bg`) rather than a full-height square block;
     ///   `bar.active_accent`, when set, paints a thin top-edge accent
-    ///   line on the chip's own inset top edge.
+    ///   line on the chip's own inset top edge. The chip (and, below, the
+    ///   inactive-tab fill and the focus ring) spans the tab's full
+    ///   `vt.bounds` width, including [`pixel::TAB_OUTER_GAP`]'s share of
+    ///   it — [`TabBarLayout`] carries no per-tab gap to narrow by, so
+    ///   (unlike `gtk::tab_bar`, which subtracts it) these come out up to
+    ///   1px wider than the GTK reference.
     /// - **Whole-tab hover/pressed:** tints the tab's background toward
     ///   `theme.list_hover_bg`/`theme.list_pressed_bg` — pressed wins —
     ///   independent of the close glyph's own hover state below.
     /// - **Label:** ellipsis-fitted via [`fit_tab_label`] into the space
     ///   left after the leading icon (if any) and the close-button
     ///   region (if any); italic when [`super::TabItem::is_preview`].
+    ///   The leading icon and label both start at
+    ///   [`pixel::TAB_PAD_COMPACT`] from the tab's left edge when
+    ///   [`TabBar::compact`] is set, [`Style::tab_padding_x`] otherwise —
+    ///   the same compact/non-compact switch every backend's own
+    ///   `pixel_tab_bar_layout` caller resolves to measure `vt.bounds`
+    ///   in the first place.
     /// - **Icon:** [`tab_icon_at`]'s glyph, painted in its own `color`
     ///   before the label, independent of the tab's fg colour.
     /// - **Close/dirty glyph:** centred inside
@@ -1352,22 +1352,28 @@ pub(crate) mod native_surface_paint {
 
             let text_y = bounds.y + ((bounds.height - line_height) / 2.0).max(0.0);
 
+            let tab_base_bg = if tab.is_active {
+                tint(theme.tab_active_bg)
+            } else {
+                tint(theme.tab_bar_bg)
+            };
+
             if tab.is_active {
                 let chip = Rect::new(
                     bounds.x,
-                    bounds.y + TAB_CHIP_INSET_Y,
+                    bounds.y + pixel::TAB_CHIP_INSET_Y,
                     bounds.width,
-                    (bounds.height - 2.0 * TAB_CHIP_INSET_Y).max(0.0),
+                    (bounds.height - 2.0 * pixel::TAB_CHIP_INSET_Y).max(0.0),
                 );
-                surface.surface_fill_rounded_rect(chip, TAB_CHIP_RADIUS, tint(theme.tab_active_bg));
+                surface.surface_fill_rounded_rect(chip, pixel::TAB_CHIP_RADIUS, tab_base_bg);
                 if let Some(accent) = bar.active_accent {
                     surface.surface_fill_rect(
-                        Rect::new(chip.x, chip.y, chip.width, TAB_ACTIVE_BORDER_TOP),
+                        Rect::new(chip.x, chip.y, chip.width, pixel::TAB_ACCENT_THICKNESS),
                         accent,
                     );
                 }
             } else {
-                surface.surface_fill_rect(bounds, tint(theme.tab_bar_bg));
+                surface.surface_fill_rect(bounds, tab_base_bg);
             }
 
             let fg = match (tab.is_active, tab.is_preview) {
@@ -1377,7 +1383,17 @@ pub(crate) mod native_surface_paint {
                 (false, false) => theme.tab_inactive_fg,
             };
 
-            let mut cursor_x = bounds.x + style.tab_padding_x;
+            // Matches the compact/non-compact `tab_pad` resolution every
+            // caller of `pixel_tab_bar_layout` already uses to measure
+            // `vt.bounds`/`vt.close_bounds` — reading `style.tab_padding_x`
+            // unconditionally here would start content past the padding
+            // the layout actually reserved whenever `bar.compact` is set.
+            let tab_pad = if bar.compact {
+                pixel::TAB_PAD_COMPACT
+            } else {
+                style.tab_padding_x
+            };
+            let mut cursor_x = bounds.x + tab_pad;
 
             if let Some(icon) = tab_icon_at(icons, vt.tab_idx) {
                 let (icon_w, _) = surface.surface_measure_text(&icon.glyph);
@@ -1386,12 +1402,12 @@ pub(crate) mod native_surface_paint {
                     &icon.glyph,
                     icon.color,
                 );
-                cursor_x += icon_w + TAB_ICON_GAP;
+                cursor_x += icon_w + pixel::TAB_ICON_GAP;
             }
 
             let label_right_edge = match vt.close_bounds {
                 Some(cb) => cb.x,
-                None => bounds.x + bounds.width - style.tab_padding_x,
+                None => bounds.x + bounds.width - tab_pad,
             };
             let label_budget = (label_right_edge - cursor_x).max(0.0);
             let label = fit_tab_label(&tab.label, label_budget, 0.0, 0.0, |s| {
@@ -1412,15 +1428,15 @@ pub(crate) mod native_surface_paint {
                 let is_close_hovered = state.hovered_close_tab == Some(vt.tab_idx);
                 if is_close_hovered {
                     let backdrop = Rect::new(
-                        cb.x + CLOSE_HOVER_PAD,
-                        text_y + CLOSE_HOVER_PAD,
-                        (cb.width - 2.0 * CLOSE_HOVER_PAD).max(0.0),
-                        (line_height - 2.0 * CLOSE_HOVER_PAD).max(0.0),
+                        cb.x + pixel::TAB_CLOSE_HOVER_PAD,
+                        text_y + pixel::TAB_CLOSE_HOVER_PAD,
+                        (cb.width - 2.0 * pixel::TAB_CLOSE_HOVER_PAD).max(0.0),
+                        (line_height - 2.0 * pixel::TAB_CLOSE_HOVER_PAD).max(0.0),
                     );
                     surface.surface_fill_rounded_rect(
                         backdrop,
-                        CLOSE_HOVER_RADIUS,
-                        theme.foreground.with_alpha(CLOSE_HOVER_ALPHA as f64),
+                        pixel::TAB_CLOSE_HOVER_RADIUS,
+                        tab_close_hover_bg(tab_base_bg, theme.foreground),
                     );
                 }
 
@@ -1798,13 +1814,15 @@ pub(crate) mod native_surface_paint {
                 surface.text_runs,
             );
             assert!(!surface.text_runs.iter().any(|(_, t, _)| t == &dirty));
+            let expected_backdrop = tab_close_hover_bg(theme.tab_bar_bg, theme.foreground);
             assert!(
                 surface
                     .rounded_fills
                     .iter()
-                    .any(|(_, _, c)| *c == theme.foreground.with_alpha(0.15)),
-                "a hovered close glyph must paint a rounded backdrop in \
-                 foreground @ 15% alpha; rounded_fills were {:?}",
+                    .any(|(_, _, c)| *c == expected_backdrop),
+                "a hovered close glyph must paint a rounded backdrop blended \
+                 from the tab's own resting background toward foreground; \
+                 rounded_fills were {:?}",
                 surface.rounded_fills,
             );
         }
@@ -1846,12 +1864,13 @@ pub(crate) mod native_surface_paint {
             );
         }
 
-        /// A zero-size layout (e.g. a collapsed split with no width)
-        /// paints nothing rather than panicking on a negative/NaN rect.
+        /// A zero-size or NaN-sized layout (e.g. a collapsed split with
+        /// no width, or a backend that fed through an unresolved
+        /// measurement) paints nothing rather than panicking.
         #[test]
         fn zero_size_layout_paints_nothing() {
             let b = bar(vec![tab("a")]);
-            let layout = TabBarLayout {
+            let zero_layout = TabBarLayout {
                 bar_width: 0.0,
                 bar_height: 0.0,
                 visible_tabs: vec![],
@@ -1861,6 +1880,78 @@ pub(crate) mod native_surface_paint {
                 hit_regions: vec![],
                 resolved_scroll_offset: 0,
             };
+            let nan_layout = TabBarLayout {
+                bar_width: f32::NAN,
+                ..zero_layout.clone()
+            };
+            let theme = Theme::default();
+
+            for layout in [&zero_layout, &nan_layout] {
+                let mut surface = RecordingSurface::default();
+                paint(
+                    &b,
+                    layout,
+                    &[],
+                    None,
+                    true,
+                    TabBarPaintState::default(),
+                    &mut surface,
+                    &theme,
+                    &Style::default(),
+                );
+
+                assert!(surface.fills.is_empty());
+                assert!(surface.rounded_fills.is_empty());
+            }
+        }
+
+        /// A leading icon (from [`tab_icon_at`]) paints at the tab's own
+        /// `tab_padding_x` offset, in the icon's own `color` —
+        /// independent of the label's fg colour.
+        #[test]
+        fn leading_icon_paints_at_tab_padding_x_in_its_own_color() {
+            let b = bar(vec![tab("main.rs")]);
+            let layout = layout_for(&b, 100.0, 0.0, 60.0);
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+            let icon_color = Color::rgba(10, 20, 30, 255);
+            let icons = vec![Some(TabIcon {
+                glyph: "I".to_string(),
+                color: icon_color,
+            })];
+
+            paint(
+                &b,
+                &layout,
+                &icons,
+                None,
+                true,
+                TabBarPaintState::default(),
+                &mut surface,
+                &theme,
+                &style,
+            );
+
+            let tab_x = layout.visible_tabs[0].bounds.x;
+            assert!(
+                surface.text_runs.iter().any(|(r, t, c)| t == "I"
+                    && *c == icon_color
+                    && r.x == tab_x + style.tab_padding_x),
+                "the leading icon must paint at tab_padding_x in its own \
+                 colour; text runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
+        /// The label is ellipsis-fitted so it never overlaps
+        /// [`super::VisibleTab::close_bounds`] — the label's painted
+        /// rect ends at or before the close region's left edge.
+        #[test]
+        fn label_is_ellipsis_fitted_against_close_bounds() {
+            let mut b = bar(vec![tab("a-very-long-tab-label-indeed")]);
+            b.tabs[0].is_active = true;
+            let layout = layout_for(&b, 100.0, 0.0, 40.0);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
 
@@ -1876,8 +1967,148 @@ pub(crate) mod native_surface_paint {
                 &Style::default(),
             );
 
-            assert!(surface.fills.is_empty());
-            assert!(surface.rounded_fills.is_empty());
+            let cb = layout.visible_tabs[0]
+                .close_bounds
+                .expect("tab is closable");
+            let label_run = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t.starts_with('a'))
+                .expect("label must paint a text run");
+            assert!(
+                label_run.0.x + label_run.0.width <= cb.x + 0.01,
+                "label rect {:?} must not extend past close_bounds.x ({})",
+                label_run.0,
+                cb.x,
+            );
+            assert!(
+                label_run.1.ends_with('…') || label_run.1.contains('…'),
+                "a label this long against a 40-wide tab must be \
+                 ellipsis-fitted; painted label was {:?}",
+                label_run.1,
+            );
+        }
+
+        /// `bar.active_accent`, when set, paints a
+        /// [`pixel::TAB_ACCENT_THICKNESS`]-tall line on the active tab
+        /// chip's own inset top edge, in the accent colour.
+        #[test]
+        fn active_accent_paints_a_top_edge_line_on_the_chip() {
+            let mut b = bar(vec![tab("a")]);
+            b.tabs[0].is_active = true;
+            let accent = Color::rgba(200, 50, 50, 255);
+            b.active_accent = Some(accent);
+            let layout = layout_for(&b, 100.0, 0.0, 60.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                TabBarPaintState::default(),
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            let chip_y = layout.visible_tabs[0].bounds.y + pixel::TAB_CHIP_INSET_Y;
+            assert!(
+                surface.fills.iter().any(|(r, c)| {
+                    *c == accent && r.y == chip_y && r.height == pixel::TAB_ACCENT_THICKNESS
+                }),
+                "active_accent must paint a thin line on the chip's own \
+                 inset top edge; fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// The close glyph is painted centred inside
+        /// [`super::VisibleTab::close_bounds`] — the convention-agnostic
+        /// centring the module doc describes, not a fixed leading-gap
+        /// offset.
+        #[test]
+        fn close_glyph_is_centred_inside_close_bounds() {
+            let b = bar(vec![tab("a")]);
+            let layout = layout_for(&b, 100.0, 0.0, 60.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                TabBarPaintState::default(),
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            let cb = layout.visible_tabs[0]
+                .close_bounds
+                .expect("tab is closable");
+            let close = crate::codicon::CLOSE.to_string();
+            let (glyph_w, _) = surface.surface_measure_text(&close);
+            let expected_x = cb.x + ((cb.width - glyph_w) / 2.0).max(0.0);
+            assert!(
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(r, t, _)| t == &close && (r.x - expected_x).abs() < 0.01),
+                "the close glyph must be centred inside close_bounds \
+                 ({:?}); text runs were {:?}",
+                cb,
+                surface.text_runs,
+            );
+        }
+
+        /// [`TabBar::compact`] narrows the leading content offset to
+        /// [`pixel::TAB_PAD_COMPACT`], matching the padding every
+        /// `pixel_tab_bar_layout` caller already measured `vt.bounds`
+        /// with for a compact bar — not `style.tab_padding_x`, which
+        /// would start the icon/label past the space the layout
+        /// actually reserved.
+        #[test]
+        fn compact_bar_starts_content_at_the_compact_pad_not_style_padding() {
+            let mut b = bar(vec![tab("a")]);
+            b.compact = true;
+            let layout = layout_for(&b, 100.0, 0.0, 60.0);
+            let theme = Theme::default();
+            // A non-default, wider `tab_padding_x` — if the painter read
+            // this unconditionally (ignoring `bar.compact`), content
+            // would start well past `pixel::TAB_PAD_COMPACT`.
+            let style = Style::default().with_tab_padding_x(20.0);
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                TabBarPaintState::default(),
+                &mut surface,
+                &theme,
+                &style,
+            );
+
+            let tab_x = layout.visible_tabs[0].bounds.x;
+            let label_run = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "a")
+                .expect("label must paint a text run");
+            assert!(
+                (label_run.0.x - (tab_x + pixel::TAB_PAD_COMPACT)).abs() < 0.01,
+                "a compact bar must start the label at TAB_PAD_COMPACT \
+                 ({}), not style.tab_padding_x (20.0); label rect was {:?}",
+                pixel::TAB_PAD_COMPACT,
+                label_run.0,
+            );
         }
     }
 }
