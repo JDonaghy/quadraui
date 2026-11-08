@@ -423,6 +423,30 @@ only a push to `main` runs this workflow.
   Pango-`AttrList` path too — the shared `message_list` painter has no way
   to honor `MessageRow::scale` (heading rows), so moving GTK onto it would
   regress heading-row sizing.
+- `WinBackend::draw_text_input` now routes through the shared
+  `primitives::text_input::native_surface_paint::paint` (the same painter
+  `macos::draw_text_input` already uses) instead of its own bespoke
+  Direct2D/DirectWrite body — one fewer per-backend copy of the
+  background/border/focus-ring/text/cursor painting logic. Win now
+  inherits the clip to `TextInputLayout::content_bounds` the shared
+  painter already pushes before drawing the placeholder/visible-line
+  text runs, so a horizontally-unscrolled long line or a wide glyph under
+  a proportional chrome font can no longer bleed past the widget's border
+  on Win either, matching GTK and macOS. `win_text_input_layout` and
+  `WinBackend::draw_text_input`'s own signature are unchanged.
+  **Downstream impact:** `grep -rn draw_text_input ~/src/coord-tui/src
+  ~/src/vimcode/src` finds one hit, `vimcode/src/app/paint.rs:711`
+  (`backend.draw_text_input(bands.commit_input, &ti)`), calling the stable
+  `Backend::draw_text_input` trait method — its signature (`rect:
+  Rect, ti: &TextInput) -> TextInputLayout`) is unchanged by this PR, so
+  that call site is unaffected.
+### Removed
+- `win::text_input::draw_text_input`/`CURSOR_W_DIP` — private-module items
+  (`win::text_input` isn't `pub`, so neither was reachable outside the
+  crate); painting moved onto the shared
+  `primitives::text_input::native_surface_paint::paint` above.
+  `grep -rn 'draw_text_input|CURSOR_W_DIP' ~/src/coord-tui/src
+  ~/src/vimcode/src` finds no hit.
 
 ## [0.9.0] - 2026-11-07
 ### Added

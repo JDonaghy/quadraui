@@ -245,9 +245,10 @@ pub mod text;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod text_display;
-/// Direct2D / DirectWrite rasteriser for
-/// [`crate::primitives::text_input::TextInput`]. Windows-only in
-/// full — see its module docs.
+/// Backend-specific layout for
+/// [`crate::primitives::text_input::TextInput`]; painting itself is the
+/// shared `primitives::text_input::native_surface_paint::paint`.
+/// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod text_input;
 /// Direct2D / DirectWrite rasteriser for [`crate::ToastOverlay`]. Issue
@@ -363,7 +364,7 @@ pub use tab_bar::{win_tab_bar_native_layout, win_tab_bar_native_layout_icons};
 #[cfg(target_os = "windows")]
 pub use text_display::win_text_display_layout;
 #[cfg(target_os = "windows")]
-pub use text_input::{draw_text_input, win_text_input_layout};
+pub use text_input::win_text_input_layout;
 pub use toast::win_toast_stack_layout;
 #[cfg(target_os = "windows")]
 pub use toolbar::{draw_toolbar, draw_toolbar_with_options, win_toolbar_layout};
