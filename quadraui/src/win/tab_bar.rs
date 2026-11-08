@@ -2052,6 +2052,12 @@ mod tests {
                 // GTK's twin test's `Antialias::None`: the probed corner
                 // pixels then hold either fill exactly, never a blend
                 // from a fractional chip edge.
+                //
+                // SAFETY: `target` is the live `ID2D1DCRenderTarget`
+                // `HeadlessSurface::paint` lends for the duration of this
+                // closure, between its own `BeginDraw`/`EndDraw` pair;
+                // `SetAntialiasMode` takes a plain enum by value and
+                // borrows no pointers.
                 unsafe { target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED) };
                 draw_tab_bar(target, &dwrite, rect, &bar, None, &theme, &style);
             })
@@ -2111,6 +2117,12 @@ mod tests {
                 // Aliased rasterisation (pixel-centre inclusion): a
                 // sub-half-pixel inset leaves the edge rows fully chip,
                 // with no anti-aliased blend to compare against.
+                //
+                // SAFETY: same as the `SetAntialiasMode` call in
+                // `active_chip_corners_are_bar_background_not_active_fill`
+                // above — `target` is the live render target
+                // `HeadlessSurface::paint` lends for this closure, and the
+                // call borrows no pointers.
                 unsafe { target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED) };
                 draw_tab_bar(target, &dwrite, rect, &bar, None, &theme, &style);
             })
