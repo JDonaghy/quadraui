@@ -108,10 +108,21 @@ only a push to `main` runs this workflow.
   `RowAlign` (`Start`/`Center`/`End`/`Stretch`) controlling how those
   same fields' items pack within their row once `FieldKind::ButtonRow`
   needs e.g. a dialog-footer's buttons flush right. `Form::layout` is
-  the one place this resolves, so every backend (TUI/GTK/macOS/Win)
-  picks it up with no backend-specific code change — a `Form` that
-  never sets `spacing`/`row_align` lays out bit-for-bit identically to
-  before this field existed. **Breaking** for any consumer constructing
+  the one place `item_gap`/`row_align` resolve, so GTK/macOS/Win (which
+  already paint every row at `Form::layout`'s own `bounds`) and TUI's
+  item-bearing fields (whose `item_bounds` already carried the same
+  offset) pick those two up with no backend-specific code change.
+  `padding`'s *vertical* axis is the same story everywhere; its
+  *horizontal* axis needed one further TUI fix — `tui::form::draw_form`'s
+  plain (non-item) field rows positioned their label/control columns
+  from `area.x` directly rather than consulting `Form::layout`'s
+  per-row `bounds.x`, so `tui::form::build_row_ctx` now takes that
+  offset explicitly (`RowX`) and applies it to every column it
+  computes. A `Form` that never sets `spacing`/`row_align` lays out
+  bit-for-bit identically to before these fields existed on every
+  backend — ships with `examples/common/form_spacing.rs` +
+  `examples/tui_form_spacing.rs` and its `TuiDriver` test. **Breaking**
+  for any consumer constructing
   `Form`/`FormField` via a full struct literal (not `..Default::default()`)
   — `vimcode` (crates.io `0.1.x` pin) and `coord-tui` (pinned git rev)
   both do; see rule 8's *New field on a public struct a consumer
