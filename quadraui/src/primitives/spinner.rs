@@ -30,15 +30,38 @@ use crate::event::Rect;
 use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
-/// Braille animation frames shared by every backend's spinner
-/// rasteriser — one table, not four per-backend copies
-/// (`gtk`/`macos`/`win`/`tui`). A backend picks
-/// `FRAMES[frame_idx % FRAMES.len()]` for the current glyph; see
-/// [`frame_glyph`].
+/// Braille animation frames for every backend's spinner rasteriser —
+/// the one table a backend indexes instead of carrying its own copy.
+/// A backend picks `FRAMES[frame_idx % FRAMES.len()]` for the current
+/// glyph; see [`frame_glyph`]. The TUI rasteriser and
+/// `native_surface_paint` read it today; the pixel backends' own
+/// `draw_spinner` copies collapse onto it as each adopts the shared
+/// painter.
+///
+/// Gated on the union of the rasteriser features: a backend-less
+/// `quadraui` build compiles the primitive types but nothing that
+/// paints, so an ungated table is `dead_code` — a hard error under
+/// warnings-as-errors. The gate must stay a superset of every backend
+/// that paints a spinner; adding a rasteriser feature means adding it
+/// here.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub(crate) const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// `FRAMES[frame_idx % FRAMES.len()]` — the glyph a backend paints for
 /// the given animation frame.
+///
+/// Gated with [`FRAMES`], for the same reason.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub(crate) fn frame_glyph(frame_idx: usize) -> char {
     FRAMES[frame_idx % FRAMES.len()]
 }
