@@ -515,12 +515,27 @@ impl RichTextPopup {
     }
 }
 
+/// Visible width of the rich-text-popup scrollbar, shared by
+/// [`native_surface_paint::paint`] and each backend's own hit-testing
+/// constant of the same value
+/// (`gtk`/`macos::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`) — wider
+/// than [`RichTextPopupLayout::scrollbar`]'s bare 1-unit track so the
+/// bar is paint+click-friendly. Lives outside the `native_surface_paint`
+/// cfg gate (unlike the rest of that module) so a GTK build — which
+/// only needs this constant, not the whole shared painter — doesn't
+/// have to compile the ~200-line `paint` function to reach it.
+pub(crate) const SB_WIDTH: f32 = 8.0;
+/// Inset between the scrollbar's right edge and the popup's own right
+/// border. See [`SB_WIDTH`]'s doc for why this sits outside the cfg
+/// gate too.
+pub(crate) const SB_INSET: f32 = 1.0;
+
 // Shared painting implementation for macOS and Windows rasterisers.
 // GTK uses a separate implementation in `gtk::rich_text_popup::draw_rich_text_popup`
 // because it shapes entire lines with Pango's `AttrList` to avoid glyph-position
 // drift from kerning/ligatures that occurs when spans are shaped and advanced
-// separately — GTK only reaches into this module for the scrollbar geometry
-// constants (`SB_WIDTH`/`SB_INSET`, re-exported as
+// separately — GTK only reaches into this file for the scrollbar geometry
+// constants above (re-exported as
 // `gtk::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`/`_SB_INSET`, same derivation
 // `macos::rich_text_popup` already uses), so its own paint stays in sync with
 // macOS/Windows's scrollbar geometry without duplicating the constant.
@@ -536,28 +551,13 @@ impl RichTextPopup {
 //
 // Font scaling per row (via `RichTextPopup::line_scales`) is not implemented
 // — it requires per-row font swaps that would need backend-specific capabilities.
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
+#[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{RichTextPopup, RichTextPopupLayout, TextSelection};
+    use super::{RichTextPopup, RichTextPopupLayout, TextSelection, SB_INSET, SB_WIDTH};
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::{Point, Rect};
-
-    /// Visible width of the rich-text-popup scrollbar, shared by
-    /// [`paint`] and each backend's own hit-testing constant of the
-    /// same value (`gtk`/`macos::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`)
-    /// — wider than [`RichTextPopupLayout::scrollbar`]'s bare 1-unit
-    /// track so the bar is paint+click-friendly. See this module's doc
-    /// for the drift this closes on Windows.
-    pub(crate) const SB_WIDTH: f32 = 8.0;
-    /// Inset between the scrollbar's right edge and the popup's own
-    /// right border. See [`SB_WIDTH`]'s doc.
-    pub(crate) const SB_INSET: f32 = 1.0;
 
     /// Translate a `TextSelection` (char columns) into the byte range
     /// this line contributes to the selection. Returns `(0, 0)` when

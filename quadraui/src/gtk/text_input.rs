@@ -2,27 +2,23 @@
 //!
 //! Painting is implemented in the shared
 //! [`crate::primitives::text_input::paint`] — the same painter
-//! `MacBackend::draw_text_input` uses — via the [`CairoTextInputSurface`]
-//! adapter below, which lets this module's free [`draw_text_input`]
-//! (kept for its existing public signature; `GtkBackend::draw_text_input`
-//! itself now calls the shared painter directly with `self` as the
-//! surface, same shape as `Self::draw_number_input`/`Self::draw_combo_box`)
-//! reach that painter without a live `GtkBackend`. See that function's
-//! doc for the geometry (border, placeholder/text lines, focus-visible
-//! ring, 2-unit cursor bar) — nothing is re-derived here.
+//! `MacBackend::draw_text_input` uses — via the shared
+//! [`super::surface::CairoSurface`] adapter, which lets this module's
+//! free [`draw_text_input`] (kept for its existing public signature;
+//! `GtkBackend::draw_text_input` itself calls the shared painter
+//! directly with `self` as the surface, same shape as
+//! `Self::draw_number_input`/`Self::draw_combo_box`) reach that painter
+//! without a live `GtkBackend`. See that function's doc for the
+//! geometry (border, placeholder/text lines, focus-visible ring,
+//! 2-unit cursor bar) — nothing is re-derived here.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::cairo_rgb;
-use crate::backend::ImagePaintResult;
-use crate::event::{Point, Rect, Viewport};
-use crate::paint_surface::PaintSurface;
+use super::surface::CairoSurface;
 use crate::primitives::text_input::{TextInput, TextInputLayout, TextInputMeasure};
 use crate::style::Style;
 use crate::theme::Theme;
-use crate::types::Color;
-use crate::Image;
 
 pub fn gtk_text_input_layout(
     ti: &TextInput,
@@ -31,92 +27,6 @@ pub fn gtk_text_input_layout(
     char_width: f32,
 ) -> TextInputLayout {
     ti.layout(rect, TextInputMeasure::new(line_height, char_width))
-}
-
-/// Free-function-local [`PaintSurface`] adapter over a bare
-/// `(&Context, &pango::Layout)` pair — lets [`draw_text_input`] (no
-/// `&mut GtkBackend` available to this free function) route through
-/// [`crate::primitives::text_input::paint`] the same way
-/// `GtkBackend::draw_text_input` does with `self`. Paints against
-/// whatever font `layout` already carries in — this adapter never
-/// swaps fonts, matching the caller-sets-the-font convention the
-/// bespoke rasteriser this replaced relied on too.
-struct CairoTextInputSurface<'a> {
-    cr: &'a Context,
-    layout: &'a pango::Layout,
-    line_height: f32,
-    char_width: f32,
-}
-
-impl PaintSurface for CairoTextInputSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: Viewport) {}
-    fn surface_end_frame(&mut self) {}
-    fn surface_viewport(&self) -> Viewport {
-        Viewport::default()
-    }
-    fn surface_line_height(&self) -> f32 {
-        self.line_height
-    }
-    fn surface_char_width(&self) -> f32 {
-        self.char_width
-    }
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        self.layout.set_text(text);
-        self.layout.set_attributes(None);
-        let (w, h) = self.layout.pixel_size();
-        (w as f32, h as f32)
-    }
-    fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
-        let (r, g, b) = cairo_rgb(color);
-        self.cr.set_source_rgb(r, g, b);
-        self.cr.rectangle(
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        self.cr.fill().ok();
-    }
-    fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
-        self.surface_fill_rect(rect, color);
-    }
-    fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
-        let (r, g, b) = cairo_rgb(color);
-        self.cr.set_source_rgb(r, g, b);
-        self.cr.set_line_width(stroke_width as f64);
-        self.cr.rectangle(
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        self.cr.stroke().ok();
-    }
-    fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
-        let (r, g, b) = cairo_rgb(color);
-        self.layout.set_text(text);
-        self.layout.set_attributes(None);
-        self.cr.set_source_rgb(r, g, b);
-        self.cr.move_to(rect.x as f64, rect.y as f64);
-        super::painted_text::show_layout(self.cr, self.layout);
-    }
-    fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _stroke_width: f32) {}
-    fn surface_push_clip(&mut self, rect: Rect) {
-        self.cr.save().ok();
-        self.cr.rectangle(
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        self.cr.clip();
-    }
-    fn surface_pop_clip(&mut self) {
-        self.cr.restore().ok();
-    }
-    fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
-        ImagePaintResult::Unsupported
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -131,11 +41,13 @@ pub fn draw_text_input(
     char_width: f64,
 ) -> TextInputLayout {
     let li = gtk_text_input_layout(ti, rect, line_height as f32, char_width as f32);
-    let mut surface = CairoTextInputSurface {
+    // `translucent_fill: false` matches this painter's own colours
+    // (always opaque — `TextInput` carries no translucent fills), same
+    // as `gtk::surface`'s `Form`/`Split`/`SplitTree` call sites.
+    let mut surface = CairoSurface {
         cr,
-        layout,
-        line_height: line_height as f32,
-        char_width: char_width as f32,
+        layout: Some(layout),
+        translucent_fill: false,
     };
     crate::primitives::text_input::paint(ti, &li, &mut surface, theme, style);
     li
@@ -280,10 +192,9 @@ mod paint_tests {
         }
     }
 
-    /// Caret width is 2.0 surface units (the shared painter's `CURSOR_W`
-    /// — see `crate::primitives::text_input::native_surface_paint`'s own
-    /// doc), not the 1.5 the bespoke GTK rasteriser this module's
-    /// `draw_text_input` once hardcoded. Samples the pixel column one
+    /// Caret width is 2.0 surface units — the shared painter's
+    /// `CURSOR_W` (see `crate::primitives::text_input::
+    /// native_surface_paint`'s own doc). Samples the pixel column one
     /// unit in from `cursor_bounds.x`: at width 2.0 that column sits
     /// fully inside the filled cursor rect `[cb.x, cb.x + 2.0)`, so it
     /// paints pure `theme.cursor`; at width 1.5 the same column is only
@@ -315,6 +226,40 @@ mod paint_tests {
             (theme.cursor.r, theme.cursor.g, theme.cursor.b),
             "expected the caret to fully cover the pixel column 1 unit in from \
              cursor_bounds.x, proving it is at least 2 units wide",
+        );
+    }
+
+    /// A line long enough that its painted tail runs well past
+    /// `rect`'s right edge must still stop at `layout.bounds` —
+    /// `draw_text_input` clips text painting to `content_bounds`, so
+    /// nothing lands outside the widget regardless of how long the
+    /// unclamped Pango run is. Samples a pixel clear of `rect` on the
+    /// right (still inside the `W`x`H` canvas) for the baseline fill,
+    /// which only a clip failure would overwrite.
+    #[test]
+    fn long_line_does_not_paint_past_the_widget_bounds() {
+        let rect = Rect::new(20.0, 15.0, 100.0, 30.0);
+        let style = Style::default();
+
+        let mut ti = TextInput::new(WidgetId::new("ti"));
+        ti.lines = vec!["x".repeat(500)];
+        ti.has_focus = true;
+        ti.cursor_col = 0;
+
+        let mut surface = sample(&ti, rect, &style);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        // Just right of `rect` (which ends at x = 120), well inside the
+        // W=200 canvas and on the content row's y.
+        let outside_x = (rect.x + rect.width + 20.0) as i32;
+        let outside_y = (rect.y + rect.height / 2.0) as i32;
+        let (r, g, b) = pixel(&data, stride, outside_x, outside_y);
+
+        assert_eq!(
+            (r, g, b),
+            (10, 20, 30),
+            "a long unscrolled line must not paint past content_bounds / rect",
         );
     }
 }
