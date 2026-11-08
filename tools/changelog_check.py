@@ -51,6 +51,7 @@ instead of adding one.
 Usage: tools/changelog_check.py [--labels L1,L2,...] [BASE] [HEAD]
        (default: no labels, origin/develop, HEAD)
 Exit 0 when no entry is required, or a qualifying entry was found.
+Exit 1 when a `quadraui/src/**` behavior change has no `[Unreleased]` entry.
 
 `--print-bump-shape [BASE] [HEAD]` is a second, unrelated mode `ci.yml`'s
 `bump-shape` job uses: prints `bump_shape=true`/`bump_shape=false`
@@ -58,7 +59,6 @@ Exit 0 when no entry is required, or a qualifying entry was found.
 `BASE...HEAD` has the release-bump PR shape (see `BUMP_FILE_SET`/
 `is_release_bump_pr`), then exits 0 without running the changelog-entry
 check above.
-Exit 1 when a `quadraui/src/**` behavior change has no `[Unreleased]` entry.
 """
 from __future__ import annotations
 
@@ -393,6 +393,8 @@ def release_promotion_version(base: str, head: str, repo_root: Path) -> str | No
     return version
 
 
+LIB_RS_PATH = "quadraui/src/lib.rs"
+
 # The exact file set `scripts/release.py prepare` commits on a release
 # branch (quadraui/Cargo.toml, Cargo.lock, CHANGELOG.md, README.md and
 # quadraui/src/lib.rs) — the shape ci.yml's `bump-shape` job uses to decide
@@ -404,7 +406,7 @@ BUMP_FILE_SET = frozenset(
         "Cargo.lock",
         CHANGELOG_PATH,
         "README.md",
-        "quadraui/src/lib.rs",
+        LIB_RS_PATH,
     }
 )
 
@@ -413,15 +415,27 @@ def is_release_bump_pr(
     base: str, head: str, repo_root: Path, files: list[str] | None = None
 ) -> bool:
     """True if `base...head` has the release-bump PR shape:
-    every changed file is in `BUMP_FILE_SET`, and the diff also carries
+    every changed file is in `BUMP_FILE_SET`, the diff also carries
     `release.py prepare`'s version-bump shape (`release_promotion_version`,
     already proven correct by the changelog gate's own promotion-PR
     exemption above) -- not just a coincidental README/CHANGELOG-only edit
-    that never actually bumps the version.
+    that never actually bumps the version -- and, when `quadraui/src/lib.rs`
+    is among the changed files, its own diff is comment-only.
+
+    `release.py prepare` only ever rewrites `lib.rs`'s `//!` Status doc
+    line, but `BUMP_FILE_SET` alone can't tell that edit apart from a real
+    `pub mod`/`pub use`/`cfg`-gate change confined to this same file set --
+    this is what rules that out, reusing `is_comment_only_change` (the same
+    strip-and-compare logic the changelog-entry gate above already trusts)
+    rather than re-deriving it.
     """
     if files is None:
         files = changed_files(base, head, repo_root)
     if not files or any(f not in BUMP_FILE_SET for f in files):
+        return False
+    if LIB_RS_PATH in files and not is_comment_only_change(
+        base, head, LIB_RS_PATH, repo_root
+    ):
         return False
     return release_promotion_version(base, head, repo_root) is not None
 

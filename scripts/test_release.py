@@ -283,6 +283,14 @@ class PureFunctionTests(unittest.TestCase):
         self.assertLessEqual(len(body), 300)
         self.assertIn("truncated", body)
 
+    def test_promotion_pr_body_rejects_a_max_len_too_small_for_its_own_header(self):
+        # A max_len smaller than the fixed header + truncation marker text
+        # can never be honored — raise rather than silently return a body
+        # longer than max_len.
+        text = CHANGELOG_TEMPLATE.format(unreleased_body="")
+        with self.assertRaises(release.ReleaseError):
+            release.promotion_pr_body(text, "0.1.0", max_len=10)
+
     def test_pre_1_0_status_string(self):
         self.assertEqual(release.pre_1_0_status_string("0.3.1"), "0.3.x")
 

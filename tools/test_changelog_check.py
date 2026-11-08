@@ -505,6 +505,36 @@ class IsReleaseBumpPrTest(unittest.TestCase):
                 changelog_check.is_release_bump_pr(base, base, repo.root)
             )
 
+    def test_bump_with_comment_only_lib_rs_doc_edit_is_still_bump_shaped(self):
+        """`release.py prepare`'s own `lib.rs` edit -- rewriting the `//!`
+        Status doc line -- must not disqualify the bump shape."""
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            repo.write_src("lib.rs", BASE_SRC.replace("Example module.", "Example module, v0.2.x."))
+            head = repo.commit("bump plus lib.rs doc-comment rewrite")
+
+            self.assertTrue(
+                changelog_check.is_release_bump_pr(base, head, repo.root)
+            )
+
+    def test_bump_with_a_real_lib_rs_code_change_is_not_bump_shaped(self):
+        """`lib.rs` is in `BUMP_FILE_SET`, but a real `pub fn`/`pub mod`
+        change there -- not just `release.py prepare`'s own doc-comment
+        rewrite -- must still get the full matrix, even though every
+        changed file is still nominally within the bump set."""
+        with TempGitRepo() as repo:
+            base = repo.commit("base")
+            repo.write_changelog(PROMOTION_CHANGELOG)
+            repo.write_manifest(BASE_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"'))
+            repo.write_src("lib.rs", BASE_SRC + '\npub fn farewell() -> &\'static str {\n    "bye"\n}\n')
+            head = repo.commit("bump plus a real lib.rs code change")
+
+            self.assertFalse(
+                changelog_check.is_release_bump_pr(base, head, repo.root)
+            )
+
 
 class MainCliTest(unittest.TestCase):
     """End-to-end `main()` exercises, matching the issue's five fixtures."""
