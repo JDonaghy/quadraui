@@ -29,9 +29,11 @@
 //! `draw_tab_bar_icons_layout`) passes `&self.current_theme`, the same
 //! field `Backend::set_theme` writes. Likewise takes `&Style` for
 //! [`Style::tab_padding_x`] — the left+right inset inside a tab's
-//! background fill that the icon/label/close glyph sit inside of — via
-//! `&self.current_style`, the same field `Backend::set_current_style`
-//! writes.
+//! background fill that the icon/label/close glyph sit inside of,
+//! outside [`TabBar::compact`] mode; a compact bar uses the fixed
+//! `TAB_PAD_COMPACT` literal instead, same as `gtk::tab_bar` and
+//! `macos::tab_bar` — via `&self.current_style`, the same field
+//! `Backend::set_current_style` writes.
 //!
 //! Scope: no [`crate::TabChrome`] bracket-frame support (the `Backend`
 //! trait's `draw_tab_bar_with_chrome` / `tab_bar_layout_with_chrome`
@@ -95,22 +97,33 @@ use crate::{tab_icon_at, TabBar, TabBarHits, TabBarLayout, TabIcon};
 use crate::TabChrome;
 
 /// Gap (DIPs) between a tab's label and its close glyph, outside
-/// [`TabBar::compact`] mode. [`pixel_layout`] swaps this for a narrower
-/// 4.0 DIP gap when `bar.compact` — same literal `gtk::tab_bar` and
-/// `macos::tab_bar` use for their own compact inner gap.
+/// [`TabBar::compact`] mode. [`pixel_layout`] and the paint loop both
+/// swap this for [`TAB_INNER_GAP_COMPACT_DIP`] when `bar.compact`.
 const TAB_INNER_GAP_DIP: f32 = 10.0;
 /// Gap (DIPs) between adjacent tabs, outside [`TabBar::compact`] mode.
-/// [`pixel_layout`] drops this to `0.0` when `bar.compact`, matching
-/// `gtk::tab_bar` / `macos::tab_bar`.
+/// [`pixel_layout`] and the paint loop both drop this to
+/// [`TAB_OUTER_GAP_COMPACT_DIP`] when `bar.compact`.
 const TAB_OUTER_GAP_DIP: f32 = 1.0;
+/// [`TAB_INNER_GAP_DIP`]'s replacement in [`TabBar::compact`] mode — same
+/// literal `gtk::tab_bar` and `macos::tab_bar` use for their own compact
+/// inner gap. Named (rather than left as an inline `4.0`) so layout and
+/// paint, which each derive the compact trio independently (see the
+/// paint loop's own comment on why), can't drift apart on this value.
+const TAB_INNER_GAP_COMPACT_DIP: f32 = 4.0;
+/// [`TAB_OUTER_GAP_DIP`]'s replacement in [`TabBar::compact`] mode,
+/// matching `gtk::tab_bar` / `macos::tab_bar`. Named for the same reason
+/// as [`TAB_INNER_GAP_COMPACT_DIP`].
+const TAB_OUTER_GAP_COMPACT_DIP: f32 = 0.0;
 /// Gap (DIPs) between a tab's icon glyph ([`crate::TabIcon`]) and its label.
 const TAB_ICON_GAP_DIP: f32 = 6.0;
 /// Per-tab horizontal padding (left + right) inside the tab background
 /// fill, in [`TabBar::compact`] mode — same value as `gtk::tab_bar` /
 /// `macos::tab_bar`'s own `TAB_PAD_COMPACT`. A compact strip keeps this
 /// fixed literal rather than scaling with [`Style::tab_padding_x`]; the
-/// non-compact case reads that style token instead, so a host-set value
-/// only ever widens the normal strip.
+/// non-compact case reads that style token instead, so a host-set
+/// `tab_padding_x` of at least this value only ever widens the normal
+/// strip relative to the compact one (a smaller host-set value makes the
+/// compact strip the wider of the two).
 const TAB_PAD_COMPACT: f32 = 2.0;
 /// Height (DIPs) of the active tab's top-edge accent line — same value
 /// as `gtk::tab_bar`'s `TAB_ACTIVE_BORDER_TOP_PX` / `macos::tab_bar`'s
@@ -118,11 +131,14 @@ const TAB_PAD_COMPACT: f32 = 2.0;
 /// backend. Only used by the paint path.
 #[cfg(target_os = "windows")]
 const TAB_ACTIVE_ACCENT_DIP: f32 = 1.0;
-/// Vertical margin (DIPs) above and below the active-tab chip fill —
-/// same value as `gtk::tab_bar`'s `TAB_CHIP_INSET_Y` / `macos::tab_bar`'s
-/// own const of the same name. VS Code insets its active-tab pill inside
-/// the tab strip rather than filling the full row height edge to edge.
-/// Only used by the paint path.
+/// Nominal vertical margin (DIPs) above and below the active-tab chip
+/// fill — same value as `gtk::tab_bar`'s `TAB_CHIP_INSET_Y` /
+/// `macos::tab_bar`'s own const of the same name. VS Code insets its
+/// active-tab pill inside the tab strip rather than filling the full row
+/// height edge to edge. The paint loop clamps this down (same as
+/// `macos::tab_bar`'s painter) when the row is no taller than the
+/// label's own line height, so the chip never paints shorter than the
+/// label it encloses. Only used by the paint path.
 #[cfg(target_os = "windows")]
 const TAB_CHIP_INSET_Y: f32 = 4.0;
 /// Corner radius (DIPs) of the active-tab chip, all four corners — same
@@ -257,8 +273,16 @@ fn pixel_layout(
     } else {
         style.tab_padding_x
     };
-    let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP_DIP };
-    let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP_DIP };
+    let tab_inner_gap = if bar.compact {
+        TAB_INNER_GAP_COMPACT_DIP
+    } else {
+        TAB_INNER_GAP_DIP
+    };
+    let tab_outer_gap = if bar.compact {
+        TAB_OUTER_GAP_COMPACT_DIP
+    } else {
+        TAB_OUTER_GAP_DIP
+    };
     let close_glyph_w = close_glyph_width(measure, bar);
 
     let tab_name_widths: Vec<f32> = bar
@@ -539,10 +563,12 @@ pub fn win_tab_bar_native_layout(
 ///
 /// # Visual contract
 ///
-/// - **Active tab:** `theme.tab_active_bg` background, plus a
-///   [`TAB_ACTIVE_ACCENT_DIP`]-tall top-edge accent line when
-///   [`TabBar::active_accent`] is `Some` (`None` paints nothing, matching
-///   every other backend).
+/// - **Active tab:** an inset, [`TAB_CHIP_RADIUS`]-rounded chip
+///   ([`TAB_CHIP_INSET_Y`] above and below, clamped down when the row is
+///   no taller than the label's own line height) in `theme.tab_active_bg`,
+///   plus a [`TAB_ACTIVE_ACCENT_DIP`]-tall top-edge accent line on the
+///   chip's own inset top edge when [`TabBar::active_accent`] is `Some`
+///   (`None` paints nothing, matching every other backend).
 /// - **Dirty tab:** close glyph is a codicon filled circle instead of
 ///   the codicon close mark (suppressed while hovered, so the hover
 ///   state always shows the close mark to close).
@@ -773,8 +799,16 @@ fn paint_tab_bar_icons_from_layout(
     } else {
         style.tab_padding_x
     };
-    let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP_DIP };
-    let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP_DIP };
+    let tab_inner_gap = if bar.compact {
+        TAB_INNER_GAP_COMPACT_DIP
+    } else {
+        TAB_INNER_GAP_DIP
+    };
+    let tab_outer_gap = if bar.compact {
+        TAB_OUTER_GAP_COMPACT_DIP
+    } else {
+        TAB_OUTER_GAP_DIP
+    };
 
     for (slot, vt) in layout.visible_tabs.iter().enumerate() {
         let tab = &bar.tabs[vt.tab_idx];
@@ -810,8 +844,22 @@ fn paint_tab_bar_icons_from_layout(
         } else {
             theme.tab_bar_bg
         };
-        let chip_y = tab_rect.y + TAB_CHIP_INSET_Y;
-        let chip_h = (tab_rect.height - 2.0 * TAB_CHIP_INSET_Y).max(0.0);
+        // The fixed inset is only safe when the row has slack beyond the
+        // label's own line height; the label is centred on the *row*
+        // below, so a row barely taller than that natural line height
+        // (e.g. a caller that reuses `backend.line_height()` as the tab
+        // bar's row height) leaves less than `TAB_CHIP_INSET_Y` of slack
+        // per side above and below the label text — not enough for the
+        // fixed inset, so the chip would paint narrower than the label
+        // and a descender would ink past the chip's edge. Shrinking the
+        // inset (down to 0, at the limit) whenever the row is that tight
+        // keeps the chip at least `natural_line_height` tall, the same
+        // clamp `macos::tab_bar`'s painter applies.
+        let natural_line_height = dwrite.natural_line_height();
+        let max_chip_inset_y = ((tab_rect.height - natural_line_height) / 2.0).max(0.0);
+        let chip_inset_y = TAB_CHIP_INSET_Y.min(max_chip_inset_y);
+        let chip_y = tab_rect.y + chip_inset_y;
+        let chip_h = (tab_rect.height - 2.0 * chip_inset_y).max(0.0);
         if tab.is_active {
             let chip_rect = Rect::new(tab_rect.x, chip_y, tab_rect.width, chip_h);
             let _ = fill_rounded_rect(target, chip_rect, TAB_CHIP_RADIUS, tint(bg));
@@ -1933,8 +1981,11 @@ mod tests {
     /// and `macos::tab_bar`'s `ACCENT_HEIGHT`, both 1.0, so the accent is
     /// the same thickness on every pixel backend. Samples the accent
     /// colour at the chip's own inset top row ([`TAB_CHIP_INSET_Y`]) and
-    /// asserts the very next row already shows something else — a 2-DIP
-    /// band (pre-fix) would still carry the accent colour there too.
+    /// asserts the very next row already carries `theme.tab_active_bg`
+    /// instead — pinning both the accent's height *and* the chip fill
+    /// underneath it in one probe, so dropping the chip fill entirely
+    /// (which would leave `next_row` painted `tab_bar_bg`) fails this
+    /// test too, not just a 2-DIP accent band.
     #[test]
     fn active_tab_accent_is_exactly_one_dip_tall() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
@@ -1965,11 +2016,105 @@ mod tests {
         );
 
         let next_px = surface.pixel_at(sample_x, next_row);
-        assert_ne!(
+        let active_bg = theme.tab_active_bg;
+        assert_eq!(
             (next_px.r, next_px.g, next_px.b),
-            (accent.r, accent.g, accent.b),
-            "row {next_row}, one DIP below the accent's top edge, must not carry the \
-             accent colour — the accent band is exactly TAB_ACTIVE_ACCENT_DIP (1.0) tall"
+            (active_bg.r, active_bg.g, active_bg.b),
+            "row {next_row}, one DIP below the accent's top edge, must carry the chip's \
+             own tab_active_bg fill — the accent band is exactly TAB_ACTIVE_ACCENT_DIP \
+             (1.0) tall and the chip fill sits directly underneath it"
         );
+    }
+
+    /// The four corner pixels of the active chip's bounding rect must be
+    /// the bar background, not `tab_active_bg` — the assertion that
+    /// actually pins the rounded radius (a square chip would fill those
+    /// corners with the active colour). Mirrors `gtk::tab_bar`'s
+    /// `active_chip_corners_are_bar_background_not_active_fill`.
+    #[test]
+    fn active_chip_corners_are_bar_background_not_active_fill() {
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let bar = bar();
+        let theme = Theme::default();
+        let style = Style::default();
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        surface
+            .paint(|target| {
+                draw_tab_bar(target, &dwrite, rect, &bar, None, &theme, &style);
+            })
+            .expect("paint tab bar");
+
+        let layout = compute_layout(&dwrite, rect, &bar, &[], &style);
+        let bounds = layout.visible_tabs[0].bounds;
+        let chip_x0 = bounds.x as u32;
+        // Painted fill width excludes the trailing `TAB_OUTER_GAP_DIP`
+        // (see `visual_w` in `paint_tab_bar_icons_from_layout`).
+        let chip_x1 = (bounds.x + bounds.width - TAB_OUTER_GAP_DIP) as u32 - 1;
+        let chip_y0 = TAB_CHIP_INSET_Y as u32;
+        let chip_y1 = H as u32 - TAB_CHIP_INSET_Y as u32 - 1;
+
+        let bar_bg = theme.tab_bar_bg;
+        for (name, x, y) in [
+            ("top-left", chip_x0, chip_y0),
+            ("top-right", chip_x1, chip_y0),
+            ("bottom-left", chip_x0, chip_y1),
+            ("bottom-right", chip_x1, chip_y1),
+        ] {
+            let px = surface.pixel_at(x, y);
+            assert_eq!(
+                (px.r, px.g, px.b),
+                (bar_bg.r, bar_bg.g, bar_bg.b),
+                "chip bounding-rect {name} corner ({x},{y}) should be bar background \
+                 (rounded off by TAB_CHIP_RADIUS), not the active fill"
+            );
+        }
+    }
+
+    /// A row only as tall as the label's own natural line height (e.g.
+    /// a caller reusing `backend.line_height()` as the tab bar's row
+    /// height, the gallery's actual tab-bar geometry) must still paint a
+    /// chip at least that tall — shrinking `TAB_CHIP_INSET_Y` down from
+    /// its nominal 4.0 DIP rather than letting the label's descenders
+    /// ink past a too-short chip.
+    #[test]
+    fn active_chip_clamps_its_inset_on_a_row_as_tall_as_the_label() {
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 11.0, None).expect("create DWrite");
+        let natural_line_height = dwrite.natural_line_height();
+        // A row exactly as tall as the label's own line height — no
+        // slack at all for the nominal 4.0 DIP inset on either side.
+        let tight_h = natural_line_height;
+        let surface =
+            HeadlessSurface::new(W as u32, tight_h.ceil() as u32).expect("create surface");
+        let bar = bar();
+        let theme = Theme::default();
+        let style = Style::default();
+        let rect = Rect::new(0.0, 0.0, W, tight_h);
+
+        surface
+            .paint(|target| {
+                draw_tab_bar(target, &dwrite, rect, &bar, None, &theme, &style);
+            })
+            .expect("paint tab bar");
+
+        let layout = compute_layout(&dwrite, rect, &bar, &[], &style);
+        let bounds = layout.visible_tabs[0].bounds;
+        let sample_x = (bounds.x + 2.0) as u32;
+        let active_bg = theme.tab_active_bg;
+
+        // Both the row's very top and very bottom pixel must still show
+        // the chip fill — an unclamped 4.0 DIP inset on a row this tight
+        // would leave the chip shorter than the label, and these rows
+        // would still show `tab_bar_bg` instead.
+        for (name, y) in [("top", 0u32), ("bottom", tight_h.ceil() as u32 - 1)] {
+            let px = surface.pixel_at(sample_x, y);
+            assert_eq!(
+                (px.r, px.g, px.b),
+                (active_bg.r, active_bg.g, active_bg.b),
+                "row {y} ({name} of a row as tall as the label) must still show the \
+                 active chip fill once TAB_CHIP_INSET_Y is clamped to fit"
+            );
+        }
     }
 }
