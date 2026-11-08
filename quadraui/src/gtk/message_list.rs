@@ -24,6 +24,18 @@
 //! ~118–249).  When `spans` is **empty** the rasteriser falls back to the
 //! flat `row.text` + `row.fg` path — output is identical to the
 //! pre-styled-row behaviour.
+//!
+//! # Why this does not route through the shared painter
+//!
+//! macOS and Windows both paint [`crate::MessageList`] through
+//! [`crate::primitives::message_list::native_surface_paint::paint`], but
+//! that painter's own doc documents dropping per-row scale entirely —
+//! [`crate::paint_surface::PaintSurface`] has no "render this text run at
+//! N× size" verb, only the fixed-size `surface_draw_text_run[_styled]`.
+//! This rasteriser keeps heading rows (`row.scale != 1.0`) rendering at
+//! their intended size via Pango's `AttrFloat::new_scale`, so it stays on
+//! its own Pango-`AttrList` path rather than taking that regression for
+//! the sake of deduplication.
 
 use gtk4::cairo::Context;
 use gtk4::pango;

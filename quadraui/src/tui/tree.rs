@@ -12,7 +12,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::{draw_styled_text, qc, ratatui_color, set_cell};
+use super::{draw_styled_text, qc, ratatui_color, set_cell, set_cell_wide};
 use crate::primitives::tree::{TreeRowEditState, TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::theme::Theme;
 use crate::types::Decoration;
@@ -206,10 +206,9 @@ pub fn draw_tree_with_scroll_px(
             // painting the label, clamping the label to end at least one
             // blank column short of the badge. The label must not overwrite
             // the badge; a gap indicates when the label is truncated.
-            let badge_start_col = row
-                .badge
-                .as_ref()
-                .map(|badge| (row_w as usize).saturating_sub(badge.text.chars().count()));
+            let badge_start_col = row.badge.as_ref().map(|badge| {
+                (row_w as usize).saturating_sub(crate::text_util::display_width(&badge.text))
+            });
             let draw_badge = badge_start_col.is_some_and(|start| start > text_start);
             let max_text_col = if draw_badge {
                 // Reserve one blank gap column between the label and the
@@ -249,7 +248,7 @@ pub fn draw_tree_with_scroll_px(
                 // reusing whatever fg/bg that cell already has so
                 // per-span colouring (e.g. a muted/error label) survives
                 // the clamp untouched.
-                let ellipsis_col = row_x + (max_text_col - 1) as u16;
+                let last_col = row_x + (max_text_col - 1) as u16;
                 // Use the bounds-checked `Buffer::cell` accessor rather than
                 // direct indexing: `area` is caller-supplied (see
                 // `crate::tui::backend::draw_tree` / `multi_section_view.rs`)
@@ -257,11 +256,32 @@ pub fn draw_tree_with_scroll_px(
                 // `area` across a resize race or a stale cached rect. Direct
                 // indexing panics in that case; `cell()` returns `None` and
                 // we fall back to the row's default colours instead.
+                //
+                // `last_col` may be the empty *continuation* cell of a
+                // wide glyph `draw_styled_text` already painted one
+                // column to its left — writing `…` straight into it would
+                // either get swallowed (ratatui skips redrawing the cell
+                // after a wide symbol) or leave a half-painted glyph next
+                // to the ellipsis. Detect that case (empty symbol, not
+                // just whitespace) and back up to overwrite the glyph's
+                // own cell instead, clearing its now-stale continuation.
+                let last_is_continuation = buf
+                    .cell((last_col, y))
+                    .map(|c| c.symbol().is_empty())
+                    .unwrap_or(false);
+                let ellipsis_col = if last_is_continuation && last_col > row_x {
+                    last_col - 1
+                } else {
+                    last_col
+                };
                 let (ellipsis_fg, ellipsis_bg) = buf
                     .cell((ellipsis_col, y))
                     .map(|existing| (existing.fg, existing.bg))
                     .unwrap_or((default_fg, bg));
                 set_cell(buf, ellipsis_col, y, '…', ellipsis_fg, ellipsis_bg);
+                if ellipsis_col != last_col {
+                    set_cell(buf, last_col, y, ' ', ellipsis_fg, ellipsis_bg);
+                }
             }
 
             if draw_badge {
@@ -270,11 +290,18 @@ pub fn draw_tree_with_scroll_px(
                     badge_start_col.expect("draw_badge is only true when badge_start_col is Some");
                 let badge_fg = badge.fg.map(qc).unwrap_or(dim_fg);
                 let badge_bg = badge.bg.map(qc).unwrap_or(bg);
-                for (bx, ch) in (badge_start_col..).zip(badge.text.chars()) {
+                let mut bx = badge_start_col;
+                for ch in badge.text.chars() {
                     if bx >= row_w as usize {
                         break;
                     }
-                    set_cell(buf, row_x + bx as u16, y, ch, badge_fg, badge_bg);
+                    let w = crate::text_util::char_cell_width(ch) as usize;
+                    if w == 2 && bx + 1 < row_w as usize {
+                        set_cell_wide(buf, row_x + bx as u16, y, ch, badge_fg, badge_bg);
+                    } else {
+                        set_cell(buf, row_x + bx as u16, y, ch, badge_fg, badge_bg);
+                    }
+                    bx += w;
                 }
             }
         }
@@ -666,6 +693,35 @@ mod tests {
     }
 
     #[test]
+    fn wide_glyph_badge_is_measured_and_positioned_by_display_width() {
+        use crate::types::Badge;
+
+        let mut tree = make_tree();
+        // A 2-char CJK badge is 4 display columns wide, not 2 — positioning
+        // it by char count would place it two columns too far right,
+        // running it off the row.
+        tree.rows[1].text = StyledText::plain("short");
+        tree.rows[1].badge = Some(Badge::plain("新着"));
+
+        let width = 20u16;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 5));
+        draw_tree(
+            &mut buf,
+            Rect::new(0, 0, width, 5),
+            &tree,
+            &Theme::default(),
+            false,
+        );
+
+        let text = row_text(&buf, 1);
+        // The badge's two wide chars occupy 4 display columns (2 each),
+        // not 2 — each wide glyph's own cell carries the glyph, and the
+        // cell immediately after it is its (empty) continuation cell.
+        assert_eq!(cell_char(&buf, width - 4, 1), '新', "row text: {text:?}");
+        assert_eq!(cell_char(&buf, width - 2, 1), '着', "row text: {text:?}");
+    }
+
+    #[test]
     fn long_label_ellipsis_tolerates_oversized_area_without_panicking() {
         use crate::types::Badge;
 
@@ -685,6 +741,54 @@ mod tests {
             &Theme::default(),
             false,
         );
+    }
+
+    /// When the label's clamp boundary lands exactly on the continuation
+    /// cell of a wide glyph `draw_styled_text` already painted, the
+    /// ellipsis must overwrite the glyph's own cell (clearing the
+    /// continuation to a blank), never the continuation cell alone —
+    /// that would leave the glyph half-painted next to a stray `…`.
+    #[test]
+    fn ellipsis_overwrite_backs_up_off_a_wide_glyphs_continuation_cell() {
+        use crate::types::Badge;
+
+        let mut tree = make_tree();
+        // Leaf text_start is col 4 (see `icon_color_paints_icon_cell_...`).
+        // 12 ASCII filler chars reach col 16; "字" (2 cells) then occupies
+        // cols 16-17 exactly — col 17 is the last column of the label's
+        // clamp area at width 20 with a 1-char badge — before the
+        // trailing "X" pushes the label past the clamp and triggers the
+        // ellipsis overwrite.
+        tree.rows[1].text = StyledText::plain(&format!("{}字X", "a".repeat(12)));
+        tree.rows[1].badge = Some(Badge::plain("U"));
+
+        let width = 20u16;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 5));
+        draw_tree(
+            &mut buf,
+            Rect::new(0, 0, width, 5),
+            &tree,
+            &Theme::default(),
+            false,
+        );
+
+        let text = row_text(&buf, 1);
+        assert_eq!(
+            cell_char(&buf, 16, 1),
+            '…',
+            "the ellipsis must overwrite the wide glyph's own cell, row text: {text:?}"
+        );
+        assert_eq!(
+            buf[(17u16, 1u16)].symbol(),
+            " ",
+            "the glyph's now-stale continuation cell must be cleared to a blank \
+             cell, not left as an orphaned continuation marker or a stray glyph \
+             remnant: {text:?}"
+        );
+        // The gap column before the badge, and the badge itself, are
+        // undisturbed by the backed-up overwrite.
+        assert_eq!(cell_char(&buf, 18, 1), ' ', "row text: {text:?}");
+        assert_eq!(cell_char(&buf, 19, 1), 'U', "row text: {text:?}");
     }
 
     // ── Paint↔click round-trip harness ─────────────────────────────────────

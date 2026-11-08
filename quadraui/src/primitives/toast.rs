@@ -268,16 +268,12 @@ pub(crate) fn wrap_text_lines(
             if line.is_empty() {
                 // A single word wider than max_width on its own:
                 // hard-truncate it with an ellipsis rather than looping
-                // forever trying (and failing) to fit it whole.
-                let mut piece = String::new();
-                for ch in word.chars() {
-                    let next = format!("{piece}{ch}…");
-                    if width_of(&next) > max_width && !piece.is_empty() {
-                        break;
-                    }
-                    piece.push(ch);
-                }
-                piece.push('…');
+                // forever trying (and failing) to fit it whole. Delegates
+                // to the shared ellipsis-fitting search so a budget too
+                // narrow even for "x…" correctly yields a bare "…" (or
+                // nothing) instead of overflowing by one character.
+                let (piece, _) =
+                    crate::text_util::truncate_with_ellipsis(word, max_width, width_of);
                 line = piece;
                 idx += 1;
             }
@@ -287,13 +283,22 @@ pub(crate) fn wrap_text_lines(
     }
 
     // Words remain past `max_lines`: ellipsize the last line so the cut
-    // is visible rather than silently dropped.
+    // is visible rather than silently dropped. If even a bare "…" doesn't
+    // fit `max_width` — unreachable for the cell-unit TUI measurer, but
+    // reachable for a pixel measurer with a very small budget — there is
+    // no in-budget way to show the cut, so the line is left empty rather
+    // than pushing a guaranteed-over-budget "…", matching
+    // `truncate_with_ellipsis`'s own contract for the same degenerate case.
     if idx < words.len() {
         if let Some(last) = lines.last_mut() {
-            while !last.is_empty() && width_of(&format!("{last}…")) > max_width {
-                last.pop();
+            if width_of("…") <= max_width {
+                while !last.is_empty() && width_of(&format!("{last}…")) > max_width {
+                    last.pop();
+                }
+                last.push('…');
+            } else {
+                last.clear();
             }
-            last.push('…');
         }
     }
 
@@ -384,8 +389,37 @@ mod wrap_tests {
     }
 
     #[test]
+    fn single_word_truncated_at_width_one_never_overflows_budget() {
+        // At max_width=1 even "x…" (2 cells) doesn't fit — the shared
+        // ellipsis-fitting search must fall back to a bare "…", never an
+        // over-budget "x…".
+        let lines = wrap_text_lines("abc", 1.0, 1, &chars);
+        assert_eq!(lines, vec!["…".to_string()]);
+    }
+
+    #[test]
     fn empty_text_yields_no_lines() {
         assert!(wrap_text_lines("", 20.0, 3, &chars).is_empty());
+    }
+
+    /// A pixel-unit measurer (unlike the cell-unit TUI one, where the
+    /// ellipsis always costs exactly 1 cell) can make even a bare "…"
+    /// wider than `max_width`. The cap-past-`max_lines` path must not
+    /// respond by pushing a guaranteed-over-budget "…" — it leaves the
+    /// line empty, the same degenerate answer `truncate_with_ellipsis`
+    /// gives when nothing, not even the ellipsis, fits.
+    #[test]
+    fn sub_ellipsis_width_budget_never_overflows() {
+        // Each char (including '…') costs 3 width units; a budget of 2
+        // can't afford even one.
+        let three_per_char = |s: &str| 3.0 * s.chars().count() as f32;
+        let lines = wrap_text_lines("ab cd", 2.0, 1, &three_per_char);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            lines[0], "",
+            "no content fits the budget, including the ellipsis itself"
+        );
+        assert!(three_per_char(&lines[0]) <= 2.0);
     }
 }
 
@@ -1041,6 +1075,26 @@ pub(crate) mod native_surface_paint {
         }
 
         for (i, (ab, action)) in vt.action_rects.iter().zip(toast.actions.iter()).enumerate() {
+            let is_focused = matches!(focus, Some(f) if f.target == ToastFocusTarget::Action(i));
+
+            // An explicit `spec` override paints through the shared
+            // `Button` fill/border/icon/intent-colour path instead of
+            // this action's own filled-chip/plain-text look, so e.g. a
+            // `Danger` spec reads in `theme.button_danger_bg()` rather
+            // than the plain `accent_bg`/`link_fg` pair below —
+            // `button::native_surface_paint::paint` also draws its own
+            // focus ring, so `is_focused` reaches it instead of the
+            // `surface_stroke_rect` call this arm uses otherwise. A
+            // `spec: None` action keeps painting through the plain
+            // filled-chip/plain-text path below, unchanged.
+            if let Some(spec) = &action.spec {
+                let button = spec.to_button(action.id, is_focused);
+                crate::primitives::button::native_surface_paint::paint(
+                    &button, surface, theme, *ab, style, false, false,
+                );
+                continue;
+            }
+
             if action.primary {
                 surface.surface_fill_rect(*ab, theme.accent_bg);
             }
@@ -1052,7 +1106,7 @@ pub(crate) mod native_surface_paint {
             };
             let rect = Rect::new(ab.x + (ab.width - tw) / 2.0, ab.y, ab.width, ab.height);
             surface.surface_draw_text_run(rect, &action.label, fg);
-            if matches!(focus, Some(f) if f.target == ToastFocusTarget::Action(i)) {
+            if is_focused {
                 surface.surface_stroke_rect(*ab, theme.link_fg, 2.0);
             }
         }
@@ -1387,6 +1441,96 @@ pub(crate) mod native_surface_paint {
                 .iter()
                 .any(|(r, c)| *r == install_bounds && *c == theme.accent_bg));
             assert!(!surface.fills.iter().any(|(r, _)| *r == skip_bounds));
+        }
+
+        /// A `Primary` spec on a `ToastButton` paints through
+        /// `button::native_surface_paint::paint` —
+        /// `theme.accent_bg` via the shared `Button` fill path, with its
+        /// bracket-less chrome (border + fill), not just the plain
+        /// `surface_fill_rect` this module's own `primary` legacy field
+        /// paints without `spec`.
+        #[test]
+        fn primary_spec_action_paints_through_the_shared_button_path() {
+            let mut t = toast("t1", "Install?");
+            let spec = crate::primitives::button::ButtonSpec::new("Install");
+            t.actions = vec![ToastButton {
+                spec: Some(spec),
+                id: WidgetId::new("install"),
+                label: "Install".into(),
+                primary: false,
+            }];
+            let stack = stack_br(vec![t]);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
+            let install_bounds = layout.visible_toasts[0].action_rects[0];
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| *r == install_bounds && *c == theme.accent_bg),
+                "a Primary spec must still fill theme.accent_bg through the \
+                 shared Button path; fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "Install"),
+                "the button label must still be painted through the shared \
+                 Button path; text runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
+        /// A `Danger` spec on a `ToastButton` paints
+        /// `theme.button_danger_bg()`, not `theme.accent_bg` — the
+        /// vocabulary the legacy `primary` flag alone can't express.
+        #[test]
+        fn danger_spec_action_fills_the_shared_button_danger_colour() {
+            let mut t = toast("t1", "Delete file?");
+            let mut spec = crate::primitives::button::ButtonSpec::new("Delete");
+            spec.variant = crate::primitives::button::ButtonVariant::Danger;
+            t.actions = vec![ToastButton {
+                spec: Some(spec),
+                id: WidgetId::new("delete"),
+                label: "Delete".into(),
+                primary: false,
+            }];
+            let stack = stack_br(vec![t]);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &stack,
+                &mut surface,
+                &theme,
+                &Style::default(),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+                16.0,
+            );
+            let delete_bounds = layout.visible_toasts[0].action_rects[0];
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| *r == delete_bounds && *c == theme.button_danger_bg()),
+                "a Danger spec must fill the shared Button's danger colour; \
+                 fills were {:?}",
+                surface.fills,
+            );
         }
 
         /// A focused dismiss button gets a `theme.link_fg` stroke

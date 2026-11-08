@@ -263,8 +263,13 @@ pub struct DialogButton {
     /// convention). Only one button should have this.
     #[serde(default)]
     pub is_cancel: bool,
-    /// Override colour for destructive actions ("Delete", "Discard").
-    /// `None` = theme default.
+    /// Override colour for destructive actions ("Delete", "Discard") on
+    /// the legacy plain highlighted-row paint path. Ignored once
+    /// [`Self::spec`] is `Some`: a spec expresses "destructive" through
+    /// [`crate::ButtonVariant::Danger`]'s own paint colour instead of a
+    /// standalone tint, so set `.variant` on the spec rather than
+    /// relying on this field once a button carries one. `None` = theme
+    /// default.
     #[serde(default)]
     pub tint: Option<Color>,
     /// Optional [`crate::ButtonSpec`] override, carrying the B3a
@@ -272,7 +277,9 @@ pub struct DialogButton {
     /// for "Move to Trash" — icon, icon placement/gap, a tooltip) this
     /// button's own legacy fields above can't express. `None` (the
     /// default) renders the plain highlighted-row look; see
-    /// [`Self::resolved_button_spec`].
+    /// [`Self::resolved_button_spec`]. A `Some` spec is painted as-is —
+    /// it, not [`Self::tint`], is the source of truth for a spec-backed
+    /// button's colour.
     #[serde(default)]
     pub spec: Option<crate::primitives::button::ButtonSpec>,
 }
@@ -992,6 +999,26 @@ pub(crate) mod native_surface_paint {
             let btn = &dialog.buttons[vis.button_idx];
             rects.push(vis.bounds);
 
+            // An explicit `spec` override paints through the shared
+            // `Button` fill/border/icon/intent-colour path instead of
+            // this bare highlighted-row look, so e.g. a `Danger` spec
+            // reads in `theme.button_danger_bg()` the same way
+            // `crate::tui::dialog`'s own spec-backed path already does —
+            // see that module's doc. `btn.is_default` maps to `focused`
+            // on the materialised `Button`, so the "this is the default"
+            // cue (an accent-tinted border/focus ring) survives on a
+            // spec-backed button the same way the legacy path's
+            // `selected_bg` fill does below. A `spec: None` button keeps
+            // painting through the plain highlighted-row/label path
+            // below, unchanged.
+            if let Some(spec) = &btn.spec {
+                let button = spec.to_button(btn.id, btn.is_default);
+                crate::primitives::button::native_surface_paint::paint(
+                    &button, surface, theme, vis.bounds, style, false, false,
+                );
+                continue;
+            }
+
             if btn.is_default {
                 surface.surface_fill_rect(vis.bounds, theme.selected_bg);
             }
@@ -1184,6 +1211,77 @@ pub(crate) mod native_surface_paint {
                 "the default button must still fill selected_bg as its \
                  marker; fills were {:?}",
                 surface.fills,
+            );
+        }
+
+        /// A `Danger` spec on a `DialogButton` paints through
+        /// `button::native_surface_paint::paint` — `theme.button_danger_bg()`,
+        /// not the plain `selected_bg`/`theme.border_fg` highlighted-row
+        /// look `spec: None` buttons still get.
+        #[test]
+        fn danger_spec_button_fills_the_shared_button_danger_colour() {
+            let mut spec = crate::primitives::button::ButtonSpec::new("Move to Trash");
+            spec.variant = crate::primitives::button::ButtonVariant::Danger;
+            let dialog = Dialog {
+                id: WidgetId::new("dialog:confirm"),
+                title: StyledText::plain("Confirm"),
+                body: vec![],
+                buttons: vec![DialogButton {
+                    spec: Some(spec),
+                    id: WidgetId::new("dialog:delete"),
+                    label: "Move to Trash".to_string(),
+                    is_default: true,
+                    is_cancel: false,
+                    tint: None,
+                }],
+                severity: None,
+                vertical_buttons: true,
+                table: None,
+                input: None,
+            };
+            let dlayout = DialogLayout {
+                bounds: Rect::new(0.0, 0.0, 100.0, 60.0),
+                title_bounds: None,
+                body_bounds: Rect::new(0.0, 0.0, 0.0, 0.0),
+                table_bounds: None,
+                input_bounds: None,
+                body_toolbar_layout: None,
+                button_row_bounds: Rect::new(0.0, 40.0, 100.0, 20.0),
+                visible_buttons: vec![VisibleDialogButton {
+                    button_idx: 0,
+                    id: dialog.buttons[0].id.clone(),
+                    bounds: Rect::new(10.0, 40.0, 40.0, 16.0),
+                }],
+                hit_regions: vec![],
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &dialog,
+                &dlayout,
+                14.0,
+                &mut surface,
+                &theme,
+                &crate::style::Style::default(),
+            );
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(_, c)| *c == theme.button_danger_bg()),
+                "a Danger spec must fill the shared Button's danger colour; \
+                 fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, _)| t == "Move to Trash"),
+                "the button label must still be painted through the shared \
+                 Button path; text runs were {:?}",
+                surface.text_runs,
             );
         }
     }

@@ -60,9 +60,9 @@ use crate::common::quadraui_dir;
 
 /// Primitive modules with no declarative struct/enum of their own, so
 /// they are deliberately absent from [`PRIMITIVES`] rather than padded
-/// with a placeholder. `layout_metrics` is shared pixel-layout *math*
-/// (see its own module doc), not a widget.
-const EXEMPT: &[&str] = &["layout_metrics"];
+/// with a placeholder. `layout_metrics` and `row_stack` are shared
+/// layout *math* (see each module's own doc), not widgets.
+const EXEMPT: &[&str] = &["layout_metrics", "row_stack"];
 
 /// `(module file stem, primitive type name)` for every primitive module
 /// in `src/primitives/mod.rs` except [`EXEMPT`]. Order matches that

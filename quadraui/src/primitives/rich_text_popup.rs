@@ -55,6 +55,7 @@
 //! precedent.
 
 use crate::event::Rect;
+use crate::layout::{Anchor, Side};
 use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -417,22 +418,36 @@ impl RichTextPopup {
         let outer_w = measure.content_width + pad * 2.0 + border * 2.0;
         let outer_h = content_h + pad * 2.0 + border * 2.0;
 
-        // Placement: above the anchor when there's room, otherwise below.
-        let prefer_above = self.placement == PopupPlacement::Above;
-        let above_y = anchor_y - outer_h;
-        let below_y = anchor_y + measure.row_height;
-        let y = match (prefer_above, above_y >= viewport.y) {
-            (true, true) => above_y,
-            (true, false) => below_y,
-            (false, _) if below_y + outer_h <= viewport.y + viewport.height => below_y,
-            (false, _) => above_y.max(viewport.y),
+        // Horizontal position is clamped into the viewport *before*
+        // `Anchor::resolve` runs, independently of the vertical flip
+        // decision below. `Anchor::resolve`'s `fits` predicate tests
+        // both axes together, so an anchor `x` that is already outside
+        // the viewport would make the horizontal overflow fail the fit
+        // test on whichever vertical side is tried, masking the
+        // intended vertical flip.
+        let ax = anchor_x.clamp(
+            viewport.x,
+            (viewport.x + viewport.width - outer_w).max(viewport.x),
+        );
+
+        // Placement: above the anchor when there's room, otherwise below,
+        // via the shared `Anchor` flip/clamp resolver. The anchor rect's
+        // width is set to `outer_w` so `Anchor::resolve`'s cross-axis
+        // centering (`(rect.width - w) * 0.5`) collapses to zero and `x`
+        // stays left-aligned with `ax`, matching this popup's left-aligned
+        // (not centered) horizontal placement; its height is
+        // `measure.row_height` so the `Below` candidate opens flush under
+        // the anchor cell, same as the `Above` candidate opens flush above
+        // it.
+        let side = match self.placement {
+            PopupPlacement::Above => Side::Top,
+            PopupPlacement::Below => Side::Bottom,
         };
-        // Clamp x so the popup stays inside viewport horizontally.
-        let max_x = (viewport.x + viewport.width - outer_w).max(viewport.x);
-        let x = anchor_x.clamp(viewport.x, max_x);
-        // Clamp y similarly.
-        let max_y = (viewport.y + viewport.height - outer_h).max(viewport.y);
-        let y = y.clamp(viewport.y, max_y);
+        let anchor_rect = Rect::new(ax, anchor_y, outer_w, measure.row_height);
+        let (origin, _resolved_side) =
+            Anchor::new(anchor_rect, side).resolve((outer_w, outer_h), viewport);
+        let x = origin.x;
+        let y = origin.y;
 
         let bounds = Rect::new(x, y, outer_w, outer_h);
         let content_bounds = Rect::new(
@@ -515,10 +530,43 @@ impl RichTextPopup {
     }
 }
 
+/// Visible width of the rich-text-popup scrollbar, shared by
+/// [`native_surface_paint::paint`] and each backend's own hit-testing
+/// constant of the same value
+/// (`gtk`/`macos::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`) — wider
+/// than [`RichTextPopupLayout::scrollbar`]'s bare 1-unit track so the
+/// bar is paint+click-friendly. Lives outside the `native_surface_paint`
+/// cfg gate (unlike the rest of that module) so a GTK build — which
+/// only needs this constant, not the whole shared painter — doesn't
+/// have to compile the ~200-line `paint` function to reach it. Its own
+/// gate is therefore the union of the rasterisers that read it, so a
+/// TUI-only build (which has no rich-text-popup scrollbar to paint)
+/// doesn't carry an unused constant.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) const SB_WIDTH: f32 = 8.0;
+/// Inset between the scrollbar's right edge and the popup's own right
+/// border. See [`SB_WIDTH`]'s doc for why this sits outside the
+/// `native_surface_paint` gate and carries this one instead.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) const SB_INSET: f32 = 1.0;
+
 // Shared painting implementation for macOS and Windows rasterisers.
 // GTK uses a separate implementation in `gtk::rich_text_popup::draw_rich_text_popup`
 // because it shapes entire lines with Pango's `AttrList` to avoid glyph-position
-// drift from kerning/ligatures that occurs when spans are shaped and advanced separately.
+// drift from kerning/ligatures that occurs when spans are shaped and advanced
+// separately — GTK only reaches into this file for the scrollbar geometry
+// constants above (re-exported as
+// `gtk::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`/`_SB_INSET`, same derivation
+// `macos::rich_text_popup` already uses), so its own paint stays in sync with
+// macOS/Windows's scrollbar geometry without duplicating the constant.
 //
 // macOS and Windows both use per-span manual x-advance (the approach below),
 // so consolidating them closes gaps between the implementations:
@@ -535,20 +583,14 @@ impl RichTextPopup {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{RichTextPopup, RichTextPopupLayout, TextSelection};
+    // `pub(crate)` (not a plain `use`) so `native_surface_paint::SB_WIDTH`/
+    // `::SB_INSET` stay reachable from `macos::rich_text_popup` and
+    // `win::rich_text_popup`, which both read the constants through this
+    // module path rather than `crate::primitives::rich_text_popup::` directly.
+    pub(crate) use super::{SB_INSET, SB_WIDTH};
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::{Point, Rect};
-
-    /// Visible width of the rich-text-popup scrollbar, shared by
-    /// [`paint`] and each backend's own hit-testing constant of the
-    /// same value (`gtk`/`macos::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`)
-    /// — wider than [`RichTextPopupLayout::scrollbar`]'s bare 1-unit
-    /// track so the bar is paint+click-friendly. See this module's doc
-    /// for the drift this closes on Windows.
-    pub(crate) const SB_WIDTH: f32 = 8.0;
-    /// Inset between the scrollbar's right edge and the popup's own
-    /// right border. See [`SB_WIDTH`]'s doc.
-    pub(crate) const SB_INSET: f32 = 1.0;
 
     /// Translate a `TextSelection` (char columns) into the byte range
     /// this line contributes to the selection. Returns `(0, 0)` when
@@ -1030,5 +1072,102 @@ mod tests {
         assert!(multi.contains(5, 2));
         assert!(!multi.contains(5, 3));
         assert!(!multi.contains(6, 0));
+    }
+
+    // ── Placement flip/clamp (via `crate::layout::Anchor`) ──────────────
+
+    #[test]
+    fn rich_text_popup_layout_flips_above_to_below_on_overflow() {
+        // Preferred `Above`, but the anchor sits too close to the
+        // viewport's top edge for the popup to fit above it.
+        let p = make_rich_popup(3, 3, 0);
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = p.layout(
+            50.0,
+            5.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 10.0),
+            |_, s, e| (e - s) as f32,
+        );
+        // outer_h = 3 rows * 10 + 2*padding(1) + 2*border(1) = 34; anchor_y
+        // - outer_h would be negative, so it flips below the anchor cell.
+        assert_eq!(layout.bounds.y, 15.0);
+    }
+
+    #[test]
+    fn rich_text_popup_layout_flips_below_to_above_on_overflow() {
+        // Preferred `Below`, but the anchor sits too close to the
+        // viewport's bottom edge for the popup to fit below it.
+        let mut p = make_rich_popup(3, 3, 0);
+        p.placement = PopupPlacement::Below;
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = p.layout(
+            50.0,
+            190.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 10.0),
+            |_, s, e| (e - s) as f32,
+        );
+        assert_eq!(layout.bounds.y, 156.0);
+    }
+
+    #[test]
+    fn rich_text_popup_layout_pins_to_preferred_side_when_neither_fits() {
+        // Viewport too short (40) for the 34-tall popup to fit fully on
+        // either side of an anchor in the middle (y=20).
+        //
+        // When neither side fits, the popup pins to the preferred side
+        // (matching `Tooltip`/`Float`/`ContextMenu`) and clamps, landing
+        // at y=0.
+        let p = make_rich_popup(3, 3, 0);
+        let viewport = Rect::new(0.0, 0.0, 200.0, 40.0);
+        let layout = p.layout(
+            50.0,
+            20.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 10.0),
+            |_, s, e| (e - s) as f32,
+        );
+        assert_eq!(layout.bounds.y, 0.0);
+    }
+
+    #[test]
+    fn rich_text_popup_layout_clamps_x_to_viewport_when_anchor_near_right_edge() {
+        let p = make_rich_popup(3, 3, 0);
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = p.layout(
+            190.0,
+            50.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 10.0),
+            |_, s, e| (e - s) as f32,
+        );
+        // outer_w = 84; anchor_x + outer_w would overflow the 200-wide
+        // viewport, so x is clamped to the viewport's right edge.
+        assert_eq!(layout.bounds.x, 116.0);
+    }
+
+    #[test]
+    fn rich_text_popup_layout_flips_above_when_anchor_overflows_both_axes() {
+        // Anchor in the bottom-right corner: `anchor_x` (190) overflows
+        // the viewport horizontally (outer_w 84 in a 200-wide viewport)
+        // AND the preferred `Below` candidate overflows vertically
+        // (anchor near the bottom). The vertical flip to `Above` must
+        // still happen — horizontal overflow is clamped independently
+        // and must not suppress it.
+        let mut p = make_rich_popup(3, 3, 0);
+        p.placement = PopupPlacement::Below;
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = p.layout(
+            190.0,
+            190.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 10.0),
+            |_, s, e| (e - s) as f32,
+        );
+        // x clamps to the right edge: 200 - 84 = 116.
+        assert_eq!(layout.bounds.x, 116.0);
+        // Flips above: y = anchor_y - outer_h = 190 - 34 = 156.
+        assert_eq!(layout.bounds.y, 156.0);
     }
 }

@@ -87,11 +87,6 @@ use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::switch::{Switch, SwitchLayout};
-use crate::update::UpdateService;
-// `TabBarHits` is `#[deprecated]` — this trait still returns it from six
-// methods below, so the import itself needs the same allow every use site
-// does.
-#[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBarGlyphs, TabBarHits, TabBarLayout, TabChrome, TabIcon};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_input::{TextInput, TextInputLayout};
@@ -100,6 +95,7 @@ use crate::primitives::toolbar::{Toolbar, ToolbarLayout, ToolbarPaintOptions};
 use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::{TreePaintState, TreeViewLayout};
 use crate::types::{Color, WidgetId};
+use crate::update::UpdateService;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, GlobalShortcutId, ListView, Palette,
     PaletteLayout, StatusBar, TabBar, Terminal, TextDisplay, TreeView,
@@ -168,6 +164,60 @@ pub enum PointerShape {
     /// A vertical (up-down) row-resize cursor — the row/sash counterpart
     /// of [`Self::ColResize`].
     RowResize,
+}
+
+/// Which visual cue wins when a pressable/toggle control can be
+/// hovered, pressed, and/or toggled "on" (active) at the same time.
+///
+/// Every pressable/toggle painter in this crate resolves the same
+/// priority: pressed or toggled-on reads as the strongest cue, hovered
+/// next, resting otherwise — a control can't be mid-press without
+/// also being hovered, and a toggled-on control reads as "on" even
+/// while merely hovered, not just while actively pressed.
+/// `button::native_surface_paint::paint`'s `is_hovered`/`is_pressed`
+/// branches and `ToolbarButton::Action`'s `is_pressed || is_active`
+/// highlight both resolve through [`Self::resolve`] instead of
+/// re-deriving the same `if pressed || active { .. } else if hovered
+/// { .. } else { .. }` chain by hand.
+///
+/// Gated the same as those `native_surface_paint` modules — the one
+/// `PaintSurface` fallback painter every GTK/Win/macOS backend shares.
+/// TUI paints these primitives through its own cell-based renderer
+/// instead, so it has no consumer for this type.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PressableVisual {
+    /// Pressed, or toggled "on" (`is_active`) — the strongest cue.
+    PressedOrActive,
+    /// Hovered, but neither pressed nor toggled on.
+    Hovered,
+    /// Neither pressed, toggled on, nor hovered.
+    Resting,
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl PressableVisual {
+    /// Resolve the three inputs every pressable/toggle painter in this
+    /// crate carries (in some combination) into the one priority order
+    /// they share. `is_active` is the "toggled on" flag — pass `false`
+    /// for a control with no such concept (a plain [`Button`]).
+    pub(crate) fn resolve(is_pressed: bool, is_active: bool, is_hovered: bool) -> Self {
+        if is_pressed || is_active {
+            Self::PressedOrActive
+        } else if is_hovered {
+            Self::Hovered
+        } else {
+            Self::Resting
+        }
+    }
 }
 
 /// Window-state control surface — set/get the title, size, position and
@@ -2652,11 +2702,6 @@ pub trait Backend: sealed::Sealed {
     /// hovered tab's close glyph (the primitive itself carries no
     /// mouse state). Returns [`TabBarHits`] for click dispatch +
     /// scroll-offset reconciliation.
-    ///
-    /// `TabBarHits` itself is `#[deprecated]` — see that struct's doc for
-    /// why the six-method/four-backend swap to [`TabBarLayout`] is
-    /// separate follow-up work.
-    #[allow(deprecated)]
     fn draw_tab_bar(
         &mut self,
         rect: Rect,
@@ -2691,7 +2736,6 @@ pub trait Backend: sealed::Sealed {
     ///
     /// [`ListPaintState`]: crate::primitives::list::ListPaintState
     /// [`TreePaintState`]: crate::primitives::tree::TreePaintState
-    #[allow(deprecated)]
     fn draw_tab_bar_with_state(
         &mut self,
         rect: Rect,
@@ -2703,8 +2747,8 @@ pub trait Backend: sealed::Sealed {
         self.draw_tab_bar(rect, bar, hovered_close_tab)
     }
 
-    /// Draw a tab bar, returning [`TabBarLayout`] instead of the
-    /// deprecated [`TabBarHits`]. Added *alongside* [`Self::draw_tab_bar`]
+    /// Draw a tab bar, returning [`TabBarLayout`] instead of
+    /// [`TabBarHits`]. Added *alongside* [`Self::draw_tab_bar`]
     /// rather than in place of it, so no existing caller breaks.
     /// Paints exactly what [`Self::draw_tab_bar`] paints (icon-less
     /// sidecar of [`Self::draw_tab_bar_icons_layout`]); the two must never
@@ -2733,7 +2777,7 @@ pub trait Backend: sealed::Sealed {
     /// the [`TabBarLayout`]-returning twin of
     /// [`Self::draw_tab_bar_with_state`], reachable from the `py`/`node`
     /// paint path (`quadraui-binding-core`'s renderer calls
-    /// `draw_tab_bar_layout`, never the deprecated `draw_tab_bar`).
+    /// `draw_tab_bar_layout`, not `draw_tab_bar`).
     ///
     /// Additive over [`Self::draw_tab_bar_layout`], not a replacement —
     /// the default forwards to it (ignoring `hovered_tab`/`pressed_tab`),
@@ -2777,8 +2821,6 @@ pub trait Backend: sealed::Sealed {
     /// compile error and fills in a real rasteriser
     /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn draw_tab_bar_icons(
         &mut self,
         rect: Rect,
@@ -2787,7 +2829,7 @@ pub trait Backend: sealed::Sealed {
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits;
     /// Draw a tab bar with per-tab icon glyphs, returning [`TabBarLayout`]
-    /// instead of the deprecated [`TabBarHits`]. The icon-aware twin of
+    /// instead of [`TabBarHits`]. The icon-aware twin of
     /// [`Self::draw_tab_bar_layout`], exactly as
     /// [`Self::draw_tab_bar_icons`] is the twin of [`Self::draw_tab_bar`]
     /// — same `icons` sidecar convention, same bar-relative coordinate
@@ -2818,8 +2860,6 @@ pub trait Backend: sealed::Sealed {
     /// own. The TUI and GTK backends override it and honour
     /// [`crate::TabFrame::Brackets`] in full.
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn draw_tab_bar_with_chrome(
         &mut self,
         rect: Rect,
@@ -2831,7 +2871,7 @@ pub trait Backend: sealed::Sealed {
         self.draw_tab_bar(rect, bar, hovered_close_tab)
     }
     /// Draw a tab bar with an explicit [`TabChrome`] request, returning
-    /// [`TabBarLayout`] instead of the deprecated [`TabBarHits`] — the
+    /// [`TabBarLayout`] instead of [`TabBarHits`] — the
     /// `TabBarLayout`-returning twin of [`Self::draw_tab_bar_with_chrome`].
     ///
     /// Default body **ignores `chrome`** and delegates to
@@ -2860,8 +2900,6 @@ pub trait Backend: sealed::Sealed {
     /// that hasn't opted in to overrides yet. The TUI backend overrides
     /// it and honours `glyphs` in full.
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn draw_tab_bar_with_chrome_and_glyphs(
         &mut self,
         rect: Rect,
@@ -2958,12 +2996,10 @@ pub trait Backend: sealed::Sealed {
     /// [`Self::draw_activity_bar`]'s bar-relative one — deliberate, and
     /// stated on both.
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits;
 
     /// Compute the tab bar layout without painting, returning
-    /// [`TabBarLayout`] instead of the deprecated [`TabBarHits`]. The
+    /// [`TabBarLayout`] instead of [`TabBarHits`]. The
     /// `TabBarLayout`-returning twin of [`Self::tab_bar_layout`], added
     /// alongside it rather than in place of it — every backend already
     /// resolves this geometry internally before narrowing it down to
@@ -2999,8 +3035,6 @@ pub trait Backend: sealed::Sealed {
     /// No default impl — same rule-7 reasoning as
     /// [`Self::draw_tab_bar_icons`].
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn tab_bar_layout_icons(
         &self,
         rect: Rect,
@@ -3009,8 +3043,8 @@ pub trait Backend: sealed::Sealed {
     ) -> TabBarHits;
 
     /// Compute the tab bar layout without painting, for a bar painted
-    /// with per-tab icons, returning [`TabBarLayout`] instead of the
-    /// deprecated [`TabBarHits`]. The icon-aware twin of
+    /// with per-tab icons, returning [`TabBarLayout`] instead of
+    /// [`TabBarHits`]. The icon-aware twin of
     /// [`Self::resolve_tab_bar_layout`], exactly as
     /// [`Self::tab_bar_layout_icons`] is the twin of
     /// [`Self::tab_bar_layout`] — same `icons` sidecar convention, same
@@ -3040,8 +3074,6 @@ pub trait Backend: sealed::Sealed {
     /// [`Self::tab_bar_layout`], matching [`Self::draw_tab_bar_with_chrome`]'s
     /// default.
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn tab_bar_layout_with_chrome(
         &self,
         rect: Rect,
@@ -3053,7 +3085,7 @@ pub trait Backend: sealed::Sealed {
     }
 
     /// Compute the tab bar layout without painting, for a bar painted
-    /// with chrome, returning [`TabBarLayout`] instead of the deprecated
+    /// with chrome, returning [`TabBarLayout`] instead of
     /// [`TabBarHits`] — the `TabBarLayout`-returning twin of
     /// [`Self::tab_bar_layout_with_chrome`].
     ///
@@ -3960,6 +3992,29 @@ pub trait Backend: sealed::Sealed {
     /// (ABSOLUTE).
     fn draw_radio_group(&mut self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout;
 
+    /// [`Self::draw_radio_group`], reading hover/pressed state from a
+    /// single [`InteractionState`] keyed by [`crate::types::WidgetId`]
+    /// — one entry per `RadioOption::id`, the same per-option
+    /// resolution a backend would read off
+    /// `interaction.is_hovered(&option.id)` / `is_pressed(&option.id)`.
+    ///
+    /// Additive over [`Self::draw_radio_group`], not a replacement —
+    /// the default forwards to it (ignoring `interaction`), so this
+    /// method is the one new backends/hosts adopt for hover feedback
+    /// while every existing call site and implementor keeps compiling
+    /// unchanged. No backend wires real hover/pressed painting through
+    /// this method yet — that per-backend work is tracked on the
+    /// epic, not this method's own addition. Same coordinate frame as
+    /// [`Self::radio_group_layout`] (ABSOLUTE).
+    fn draw_radio_group_with_state(
+        &mut self,
+        rect: Rect,
+        group: &RadioGroup,
+        _interaction: &InteractionState,
+    ) -> RadioGroupLayout {
+        self.draw_radio_group(rect, group)
+    }
+
     /// Compute radio-group layout without painting. Each backend
     /// supplies its own per-option measure (text extents, cell counts,
     /// or a nominal fallback) — see the implementation for the shape.
@@ -3971,6 +4026,27 @@ pub trait Backend: sealed::Sealed {
     /// [`SwitchLayout`] so hosts can route clicks. Same coordinate
     /// frame as [`Self::switch_layout`] (ABSOLUTE).
     fn draw_switch(&mut self, rect: Rect, switch: &Switch) -> SwitchLayout;
+
+    /// [`Self::draw_switch`], reading hover/pressed state from a
+    /// single [`InteractionState`] keyed by [`crate::types::WidgetId`]
+    /// — `interaction.is_hovered(&switch.id)` / `is_pressed(&switch.id)`.
+    ///
+    /// Additive over [`Self::draw_switch`], not a replacement — the
+    /// default forwards to it (ignoring `interaction`), so this method
+    /// is the one new backends/hosts adopt for hover feedback while
+    /// every existing call site and implementor keeps compiling
+    /// unchanged. No backend wires real hover/pressed painting through
+    /// this method yet — that per-backend work is tracked on the
+    /// epic, not this method's own addition. Same coordinate frame as
+    /// [`Self::switch_layout`] (ABSOLUTE).
+    fn draw_switch_with_state(
+        &mut self,
+        rect: Rect,
+        switch: &Switch,
+        _interaction: &InteractionState,
+    ) -> SwitchLayout {
+        self.draw_switch(rect, switch)
+    }
 
     /// Compute switch layout without painting.
     ///
@@ -4319,10 +4395,6 @@ pub enum ImagePaintResult {
 /// target-surface (absolute) coordinates. Rasterisers and the no-paint
 /// `tab_bar_layout` variants both call this with `rect.x` so the two
 /// paths return the same space.
-///
-/// `TabBarHits` is `#[deprecated]` — see its doc for the replacement
-/// plan.
-#[allow(deprecated)]
 pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
     if dx == 0.0 {
         return;
@@ -4353,19 +4425,13 @@ pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
 ///
 /// `TabBarHits`'s `f64` coordinate fields predate the crate's f32-native
 /// convention (`Point`/`Rect`), and this converter is the thing that
-/// keeps constructing them. Full retirement of `TabBarHits` itself (the
-/// `f64` fields, and the six `Backend` trait methods that return it) is
-/// a separate, much larger follow-up: `vimcode` holds a real,
-/// non-doc-only dependency on `TabBarHits`'s field types
-/// (`src/core/engine/mod.rs`, `src/core/engine/terminal_ops.rs`,
-/// `src/gtk/mod.rs`), and two of the four backends (`macos::tab_bar`,
-/// `win::tab_bar`) construct `TabBarHits` directly without ever computing
-/// an intermediate `TabBarLayout`, so a safe migration needs new native
-/// per-backend rasterisers, not just a signature change.
-///
-/// `TabBarHits` is `#[deprecated]`; this converter is the one place
-/// in-tree still allowed to construct it.
-#[allow(deprecated)]
+/// keeps constructing them. `vimcode` holds a real, non-doc-only
+/// dependency on `TabBarHits`'s field types (`src/core/engine/mod.rs`,
+/// `src/core/engine/terminal_ops.rs`, `src/gtk/mod.rs`), and two of the
+/// four backends (`macos::tab_bar`, `win::tab_bar`) construct
+/// `TabBarHits` directly without ever computing an intermediate
+/// `TabBarLayout` — this converter is the one in-tree spot that builds a
+/// `TabBarHits` from a `TabBarLayout` instead.
 pub fn tab_bar_hits_from_layout(layout: &TabBarLayout, bar: &TabBar) -> TabBarHits {
     let mut slot_positions = vec![(0.0, 0.0); bar.tabs.len()];
     let mut close_bounds = vec![None; bar.tabs.len()];
@@ -4525,9 +4591,12 @@ pub trait PlatformServices {
     /// per-dialog, whether a given [`Dialog`] can go native at all —
     /// callers should consult that before calling this method, and fall
     /// back to `draw_dialog` when it returns `None`. TUI backends have
-    /// no native dialog to show and unconditionally return `None` (no
-    /// stderr hint is written); the in-canvas `Dialog` primitive stays
-    /// the TUI path.
+    /// no *native* dialog to show; instead they drive an in-canvas
+    /// `MessageDialogController` through the same nested draw-and-read
+    /// loop [`Self::show_file_open_dialog`]'s doc describes, and return
+    /// the id of the button it resolves (or `None` if it's dismissed
+    /// without one) — the in-canvas `Dialog` primitive stays the
+    /// backend-neutral path either way.
     fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice>;
 
     /// Dispatch a system notification — see [`Notification`]'s doc for
@@ -4881,8 +4950,9 @@ pub trait PlatformServices {
     /// real inhibitor yet (`IOPMAssertionCreateWithName` on macOS,
     /// `SetThreadExecutionState` on Win-GUI, `org.freedesktop.login1`'s
     /// `Inhibit` call on GTK/Linux are separate, backend-specific
-    /// follow-ons). TUI overrides this with an honest no-op blocker — see
-    /// [`crate::tui::services::TuiPlatformServices::begin_power_save_block`].
+    /// follow-ons). TUI leaves this at the default: a terminal has no
+    /// inhibitor API of its own, and a [`BlockerId`] minted without ever
+    /// asking the OS to stay awake would not be a truthful `Ok`.
     fn begin_power_save_block(&self, kind: PowerSaveKind) -> ServiceResult<BlockerId> {
         let _ = kind;
         Err(BackendError::Unsupported)
@@ -5033,12 +5103,11 @@ pub trait PlatformServices {
     /// `app.getLoginItemSettings().openAtLogin`.
     ///
     /// Default: [`BackendError::Unsupported`], mirroring
-    /// [`Self::set_login_item`]'s default. TUI overrides this with an
-    /// honest no-op that always reports `false` rather than staying
-    /// `Unsupported` — see
-    /// [`crate::tui::services::TuiPlatformServices::login_item_enabled`]
-    /// and [`crate::login_item`]'s module doc for why the query and the
-    /// mutation get different defaults.
+    /// [`Self::set_login_item`]'s default. TUI leaves this at the default
+    /// too: a blanket `Ok(false)` would read as "this app is not
+    /// registered to start at login", which a terminal has no way to
+    /// actually know — a host or packaging step can still have registered
+    /// the binary out of band. See [`crate::login_item`]'s module doc.
     fn login_item_enabled(&self) -> ServiceResult<bool> {
         Err(BackendError::Unsupported)
     }
@@ -5052,11 +5121,8 @@ pub trait PlatformServices {
     /// (reserved names, invalid characters).
     ///
     /// Default: [`BackendError::Unsupported`] on every in-tree backend,
-    /// including TUI. Unlike [`Self::set_login_item`]/
-    /// [`Self::login_item_enabled`] — where TUI can answer
-    /// `login_item_enabled` honestly with `false` because a terminal
-    /// binary's own code path could never have created that registration —
-    /// there is no safe uniform default here on *any* backend: this
+    /// including TUI. There is no safe non-error default here on *any*
+    /// backend: this
     /// scheme may already be claimed by a different installation of this
     /// same app, a different app entirely, or nothing at all, and that
     /// fact lives in OS state (`LSSetDefaultHandlerForURLScheme`'s
@@ -5081,8 +5147,9 @@ pub trait PlatformServices {
     /// OS registration state this seam does not yet touch on any
     /// backend, and a blanket `false` would be actively misleading for a
     /// scheme a previous run, a packaging step, or a different app
-    /// already claimed — not merely incomplete, the way
-    /// [`Self::login_item_enabled`]'s TUI override is.
+    /// already claimed — the same reason
+    /// [`Self::login_item_enabled`] keeps its own `Unsupported` default
+    /// everywhere.
     fn is_default_protocol_client(&self, scheme: &str) -> ServiceResult<bool> {
         let _ = scheme;
         Err(BackendError::Unsupported)

@@ -765,7 +765,7 @@ impl ChatController {
         // while `render` takes `&self` (required by the `AppLogic` trait).
         if self.stuck_to_bottom {
             self.transcript_scroll_top
-                .set(total_rows.saturating_sub(visible_rows));
+                .set(transcript_max_offset(total_rows, visible_rows));
         }
 
         let list = MessageList {
@@ -896,13 +896,12 @@ impl ChatController {
     /// After clamping, [`stuck_to_bottom`](Self) is recomputed: scrolling up
     /// disengages follow-tail; scrolling back to the last page re-engages it.
     pub fn scroll_transcript_by(&mut self, delta: isize, total_rows: usize, visible_rows: usize) {
-        let max = total_rows.saturating_sub(visible_rows);
+        let max = transcript_max_offset(total_rows, visible_rows);
         let new = scroll_by_clamped(self.transcript_scroll_top.get(), delta, max);
         self.transcript_scroll_top.set(new);
         // Re-engage follow-tail when scrolled to (or past) the last page;
         // disengage it when scrolled up from there.
-        self.stuck_to_bottom =
-            self.transcript_scroll_top.get() >= total_rows.saturating_sub(visible_rows);
+        self.stuck_to_bottom = transcript_reached_bottom(self.transcript_scroll_top.get(), max);
     }
 
     // ── Focused-turn cursor ─────────────────────────────────────────────
@@ -1626,7 +1625,7 @@ impl ChatController {
         let visible = Self::transcript_visible_rows_for(backend.line_height(), layout.transcript);
         let col_budget = self.transcript_col_budget(backend.char_width(), layout.transcript);
         let total = self.build_transcript_rows(col_budget).len();
-        let max_offset = total.saturating_sub(visible);
+        let max_offset = transcript_max_offset(total, visible);
         if max_offset == 0 {
             return ChatControllerEvent::Ignored;
         }
@@ -1677,7 +1676,7 @@ impl ChatController {
             return ChatControllerEvent::Ignored;
         }
         self.transcript_scroll_top.set(new);
-        self.stuck_to_bottom = new >= max_offset;
+        self.stuck_to_bottom = transcript_reached_bottom(new, max_offset);
         ChatControllerEvent::Consumed
     }
 
@@ -1739,6 +1738,30 @@ impl ChatController {
 }
 
 // ── Module-level helpers ───────────────────────────────────────────────────────
+
+/// Last valid transcript scroll offset for `total_rows` wrapped rows in a
+/// `visible_rows`-tall viewport — the "last page" position follow-tail
+/// pins [`ChatController::render`] to, and the threshold
+/// [`ChatController::scroll_transcript_by`]'s `handle_drag`/
+/// `click_scrollbar` siblings each need to decide whether
+/// [`stuck_to_bottom`](ChatController) should (re-)engage. One shared
+/// definition so the render-time pin, the scroll-by clamp, the
+/// scrollbar-drag clamp, and the scrollbar-track click-jump clamp can't
+/// drift on what "the bottom" means — the same role
+/// [`crate::primitives::text_display::TextDisplay::layout`]'s own
+/// `auto_scroll` resolution plays for that primitive's declarative
+/// scroll state.
+fn transcript_max_offset(total_rows: usize, visible_rows: usize) -> usize {
+    total_rows.saturating_sub(visible_rows)
+}
+
+/// Whether a transcript scrolled to `scroll_top` (out of `max_offset`,
+/// from [`transcript_max_offset`]) has reached or passed the last page —
+/// the follow-tail re-engage/disengage predicate shared by
+/// [`ChatController::scroll_transcript_by`] and `handle_drag`.
+fn transcript_reached_bottom(scroll_top: usize, max_offset: usize) -> bool {
+    scroll_top >= max_offset
+}
 
 fn build_scrollbar(
     id: String,
@@ -1900,13 +1923,36 @@ fn wrap_input_rows(text: &str, col_budget: usize) -> Vec<InputRow> {
 /// [`crate::text_util::word_wrap`]'s convention.
 fn wrap_line_exact(line: &str, col_budget: usize) -> Vec<(usize, String)> {
     let chars: Vec<char> = line.chars().collect();
-    if col_budget == 0 || chars.len() <= col_budget {
+    let total_width: usize = chars
+        .iter()
+        .map(|&c| crate::text_util::char_cell_width(c) as usize)
+        .sum();
+    if col_budget == 0 || total_width <= col_budget {
         return vec![(0, line.to_string())];
     }
     let mut rows = Vec::new();
     let mut start = 0usize;
     while start < chars.len() {
-        let mut end = (start + col_budget).min(chars.len());
+        // Grow `end` by display width, not char count, so a row of CJK
+        // or emoji never exceeds `col_budget` cells — each of those
+        // chars claims two columns, not one.
+        let mut width = 0usize;
+        let mut end = start;
+        while end < chars.len() {
+            let w = crate::text_util::char_cell_width(chars[end]) as usize;
+            if width + w > col_budget {
+                break;
+            }
+            width += w;
+            end += 1;
+        }
+        if end == start {
+            // Not even one (possibly double-width) char fits the
+            // budget — take it anyway so the loop always makes forward
+            // progress, same as every other row-budget clamp in this
+            // file.
+            end = start + 1;
+        }
         if end < chars.len() {
             if let Some(space_rel) = chars[start..end].iter().rposition(|&c| c == ' ') {
                 let space_idx = start + space_rel;
@@ -2483,6 +2529,24 @@ mod tests {
     // ── Transcript scroll ─────────────────────────────────────────────
 
     #[test]
+    fn transcript_max_offset_is_total_minus_visible() {
+        assert_eq!(transcript_max_offset(10, 4), 6);
+        assert_eq!(
+            transcript_max_offset(4, 10),
+            0,
+            "fits entirely: no overflow"
+        );
+        assert_eq!(transcript_max_offset(0, 0), 0);
+    }
+
+    #[test]
+    fn transcript_reached_bottom_is_at_or_past_max_offset() {
+        assert!(!transcript_reached_bottom(4, 6));
+        assert!(transcript_reached_bottom(6, 6));
+        assert!(transcript_reached_bottom(7, 6));
+    }
+
+    #[test]
     fn scroll_transcript_clamps_to_bounds() {
         let mut cc = ChatController::new("c");
         cc.scroll_transcript_by(100, 10, 5); // total=10, visible=5, max=5
@@ -3000,6 +3064,39 @@ mod tests {
                 (6, "gh".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn wrap_line_exact_never_exceeds_budget_with_wide_glyphs() {
+        // 4 CJK chars (8 display columns) at a budget of 4 cells must
+        // split into rows that each measure <= 4 cells — a char-count
+        // budget would instead put all 4 chars (8 cols) on one row.
+        let rows = wrap_line_exact("日本語日", 4);
+        for (_, text) in &rows {
+            assert!(
+                crate::text_util::display_width(text) <= 4,
+                "row {text:?} exceeds the 4-cell budget"
+            );
+        }
+        // Still an exact, lossless reconstruction.
+        let joined: String = rows.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(joined, "日本語日");
+    }
+
+    #[test]
+    fn wrap_line_exact_single_wide_glyph_overflows_a_degenerate_one_cell_budget() {
+        // At `col_budget == 1`, a single 2-cell-wide glyph can never fit
+        // without being dropped or split mid-glyph — neither of which
+        // `wrap_line_exact` will do, since lossless reconstruction (every
+        // row's text concatenates back to the exact input) always wins
+        // over the cell budget here. The forward-progress fallback takes
+        // the whole glyph anyway, so this row is intentionally 2 cells
+        // wide despite the 1-cell budget. Pinned so a future reader sees
+        // this is deliberate overflow, not an untested gap, and doesn't
+        // "fix" it into a wrap that silently drops or mangles the glyph.
+        let rows = wrap_line_exact("日", 1);
+        assert_eq!(rows, vec![(0, "日".to_string())]);
+        assert_eq!(crate::text_util::display_width(&rows[0].1), 2);
     }
 
     #[test]

@@ -24,7 +24,7 @@
 //!
 //! ## Shape
 //!
-//! Buttons are an ordered list of [`ToolbarButton`] entries. Three variants:
+//! Buttons are an ordered list of [`ToolbarButton`] entries:
 //!
 //! - [`ToolbarButton::Action`] — clickable button with label, optional icon
 //!   glyph and key hint, optional disabled/active state, tooltip.
@@ -32,17 +32,33 @@
 //! - [`ToolbarButton::Label`] — non-clickable inline text (e.g. "2 of 5"
 //!   in a diff toolbar). Distinct from a disabled action because it
 //!   doesn't occupy a button hit zone.
+//! - [`ToolbarButton::Spacer`] — flexible, invisible gap that pushes
+//!   every item after it to the bar's trailing edge; see
+//!   [`Toolbar::layout_with_options`].
+//!
+//! [`Toolbar::layout`]/[`Toolbar::layout_with_options`] pack buttons along
+//! a main axis — left-to-right by default, or top-to-bottom via
+//! [`ToolbarOrientation::Vertical`].
 //!
 //! ## Backend contract
 //!
 //! Declarative. Each backend renders the toolbar in its native idiom:
 //!
 //! - **TUI**: single row of `[ icon label (k) ]` cells with hit zones per
-//!   action. Separators render as a dim `│ ` cell. Disabled buttons paint
-//!   in a muted foreground and don't dispatch clicks.
+//!   action, when [`ToolbarOrientation::Horizontal`] (the default).
+//!   [`ToolbarOrientation::Vertical`] degrades to one item per terminal
+//!   row — see [`crate::tui::toolbar::draw_toolbar_with_options`].
+//!   Separators render as a dim `│ ` cell. Disabled buttons paint in a
+//!   muted foreground and don't dispatch clicks.
 //! - **GTK**: `Gtk.Box` of `Gtk.Button` (or buttons painted with Cairo);
 //!   `Gtk.Separator` between groups. ARIA `role="toolbar"`. Hover paints
-//!   `theme.hover_bg`; pressed paints `theme.selected_bg`.
+//!   `theme.hover_bg`; pressed paints `theme.selected_bg`. An action whose
+//!   `spec` is `Some` paints through `button::native_surface_paint::paint`
+//!   instead, so its intent colour (`Danger`/`Warning`/`Primary`) wins
+//!   over the plain hover/pressed tints; `enabled: false` still folds
+//!   into the resolved spec's `disabled` and `is_active` still folds
+//!   into `is_pressed`, so disabled-dispatch and toggled-on painting
+//!   hold either way.
 //! - **macOS** / **Win-GUI** (future): native button widgets in an inline
 //!   stack view; same hit-test contract returned via
 //!   [`ToolbarLayout::hit_test`].
@@ -161,10 +177,106 @@ pub struct ToolbarPaintOptions {
     pub valign: ToolbarVAlign,
 }
 
+/// Main-axis direction a [`Toolbar`] lays its buttons out along, passed to
+/// [`Toolbar::layout_with_options`].
+///
+/// TUI renders [`Self::Vertical`] by stacking one item per row (the same
+/// single-item-per-line degrade [`crate::primitives::activity_bar::ActivityBar`]
+/// already uses for its own vertical strip); GTK/macOS/Win-GUI are free to
+/// paint a true vertical button column once a per-backend issue wires this
+/// through their own rasteriser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ToolbarOrientation {
+    /// (default) Items flow left-to-right.
+    #[default]
+    Horizontal,
+    /// Items flow top-to-bottom.
+    Vertical,
+}
+
+/// a11y role applied to every [`ToolbarButton::Action`] child by
+/// [`Toolbar::a11y_children_with_role`].
+///
+/// A plain toolbar's buttons read as [`Self::Button`] (today's behaviour,
+/// matching `A11yRole::Button`). A host that repurposes `Toolbar` as an
+/// activity-bar-shaped rail of mutually exclusive view switches — the
+/// pattern [`crate::primitives::activity_bar::ActivityBar`] itself already
+/// exposes as `A11yRole::Tab` — passes [`Self::Tab`] instead, without the
+/// primitive needing a stored field (and the exhaustive-struct-literal
+/// churn a new `Toolbar` field would force across every backend that
+/// constructs one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolbarItemRole {
+    /// (default) Each `Action` child reads as a clickable button.
+    #[default]
+    Button,
+    /// Each `Action` child reads as a tab within an implied tab list —
+    /// matches `ActivityItem`'s own a11y role.
+    Tab,
+}
+
+/// Per-call layout options for [`Toolbar::layout_with_options`] that don't
+/// have a home directly on the [`Toolbar`] snapshot itself — same
+/// independent-growth rationale as [`ToolbarPaintOptions`].
+///
+/// `#[non_exhaustive]`: a future layout knob (e.g. a cross-axis alignment)
+/// is additive. Construct via [`Self::new`] / [`Self::default`] and the
+/// `with_*` builders.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ToolbarLayoutOptions {
+    /// Main-axis direction. See [`ToolbarOrientation`].
+    pub orientation: ToolbarOrientation,
+    /// How the trailing group (the buttons after a [`ToolbarButton::Spacer`])
+    /// clips when it alone — with no leading group in the way — is bigger
+    /// than the bar: `false` (the default) anchors it flush against the
+    /// bar's trailing edge, so overflow drops its items closest to the
+    /// `Spacer`; `true` anchors it flush against the bar's leading edge
+    /// instead (clamping `trailing_origin` to `main_origin`), so overflow
+    /// drops its items closest to the trailing edge instead. Both arms
+    /// paint the trailing group in full when it fits; this only matters
+    /// when it doesn't.
+    ///
+    /// [`crate::primitives::activity_bar::ActivityBar::layout`] sets this
+    /// so its bottom-pinned group, when taller than the viewport alone,
+    /// packs from `y=0` downward and drops its last item — the one visible
+    /// row ordering every backend's existing hit-testing already expects.
+    pub pin_trailing_overflow_to_origin: bool,
+}
+
+impl ToolbarLayoutOptions {
+    /// Options with every knob at its default (`Horizontal`, trailing
+    /// overflow anchored to the trailing edge) — identical to
+    /// [`Self::default`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set [`Self::orientation`].
+    #[must_use]
+    pub fn with_orientation(mut self, orientation: ToolbarOrientation) -> Self {
+        self.orientation = orientation;
+        self
+    }
+
+    /// Set [`Self::pin_trailing_overflow_to_origin`].
+    #[must_use]
+    pub fn with_pin_trailing_overflow_to_origin(mut self, pin: bool) -> Self {
+        self.pin_trailing_overflow_to_origin = pin;
+        self
+    }
+}
+
 /// One item in a [`Toolbar`].
 ///
 /// Not `Eq`: [`ToolbarButton::Action::spec`] carries a [`crate::ButtonSpec`],
 /// which has an `f32` (`icon_gap`) with no total order.
+///
+/// `#[non_exhaustive]`: an exhaustive downstream `match` must add a
+/// wildcard arm to handle [`Self::Spacer`] — marking the enum
+/// non-exhaustive means that same wildcard arm also covers every future
+/// variant, so adding one doesn't force a second migration.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ToolbarButton {
     /// A clickable action button.
@@ -186,7 +298,10 @@ pub enum ToolbarButton {
         #[serde(default)]
         icon: Option<String>,
         /// Optional parenthesised key hint shown after the label
-        /// (e.g. "(r)" for the 'r' keybind).
+        /// (e.g. "(r)" for the 'r' keybind). Painted on the plain
+        /// `spec: None` pill/label path (via [`action_text`]); a
+        /// `ButtonSpec` has no key-hint field, so a `Some(spec)` action
+        /// paints only `spec.label`, with no hint suffix.
         #[serde(default)]
         key_hint: Option<String>,
         /// When false the button renders dimmed and clicks aren't
@@ -222,6 +337,22 @@ pub enum ToolbarButton {
         #[serde(default)]
         fg: Option<Color>,
     },
+    /// Flexible, invisible gap that pushes every item after it to the
+    /// bar's trailing edge (the right edge for [`ToolbarOrientation::Horizontal`],
+    /// the bottom edge for [`ToolbarOrientation::Vertical`]).
+    ///
+    /// Only the first `Spacer` in [`Toolbar::buttons`] affects layout —
+    /// see [`Toolbar::layout_with_options`]'s own doc for the exact
+    /// split/collision rule, which mirrors
+    /// [`crate::primitives::activity_bar::ActivityBar`]'s top/bottom
+    /// pinning (the trailing group wins when the bar is too small for
+    /// both groups). A second `Spacer` renders with zero width/height —
+    /// one push point per bar is the shape this variant models.
+    ///
+    /// Never clickable, never measured by [`measure_button`] or a TUI
+    /// rasteriser's own item-width formula — its slot is whatever room is
+    /// left over, not a caller-supplied measurement.
+    Spacer,
 }
 
 impl ToolbarButton {
@@ -250,19 +381,22 @@ impl ToolbarButton {
                 tooltip,
                 ..
             } => {
-                let mut derived = crate::primitives::button::ButtonSpec::new(label.clone());
-                derived.icon = icon
+                let icon = icon
                     .as_ref()
                     .map(|glyph| crate::types::Icon::new(glyph.clone(), glyph.clone()));
-                derived.tooltip = if tooltip.is_empty() {
+                let tooltip = if tooltip.is_empty() {
                     None
                 } else {
                     Some(tooltip.clone())
                 };
-                derived.disabled = !enabled;
-                Some(derived)
+                Some(crate::primitives::button::ButtonSpec::from_legacy(
+                    label.clone(),
+                    icon,
+                    tooltip,
+                    !enabled,
+                ))
             }
-            ToolbarButton::Separator | ToolbarButton::Label { .. } => None,
+            ToolbarButton::Separator | ToolbarButton::Label { .. } | ToolbarButton::Spacer => None,
         }
     }
 }
@@ -432,6 +566,11 @@ impl ToolbarIcons {
 // ── Layout + hit-testing ─────────────────────────────────────────────────────
 
 /// Which variant a visible toolbar slot belongs to.
+///
+/// `#[non_exhaustive]`: same rationale as [`ToolbarButton`]'s own doc —
+/// [`Self::Spacer`] forces a downstream wildcard arm either way, so the
+/// next addition doesn't need a second one.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolbarItemKind {
     /// Clickable action button.
@@ -440,6 +579,8 @@ pub enum ToolbarItemKind {
     Separator,
     /// Non-clickable label.
     Label,
+    /// Flexible gap — see [`ToolbarButton::Spacer`].
+    Spacer,
 }
 
 /// Resolved position of one visible toolbar item after layout.
@@ -588,6 +729,17 @@ pub fn valign_offset_y(
 /// TUI does not call this: its cell-based `[ icon label (hint) ]`
 /// bracket format with icon-only compaction and double-width-glyph
 /// awareness follows a different formula.
+///
+/// Measures only [`ToolbarButton::Action::label`]/`icon`/`key_hint` —
+/// it does not know about `spec`. A `spec`-backed action paints through
+/// `button::native_surface_paint::paint`, whose own content inset
+/// floors at `ButtonMetrics::resolve(style).padding_x`
+/// (`Style::default().padding` here); that happens to match this
+/// function's `ACTION_H_PAD` when `spec.label == label` and the spec
+/// carries no icon. A spec with an icon, or a label that differs from
+/// this action's own `label`, is sized by this function as if it were
+/// the plain label/icon/key_hint, so its painted content can clip
+/// against that narrower slot.
 pub fn measure_button(
     measure: &dyn crate::primitives::layout_metrics::TextMeasure,
     btn: &ToolbarButton,
@@ -604,6 +756,11 @@ pub fn measure_button(
         }
         ToolbarButton::Separator => SEPARATOR_PX,
         ToolbarButton::Label { text, .. } => measure.width_of(text),
+        // Never consulted by `layout_with_options` — a `Spacer`'s slot is
+        // the room left over, not a measured size. Zero here so a caller
+        // that measures one anyway (outside `layout_with_options`) gets an
+        // inert, zero-size result rather than an arbitrary guess.
+        ToolbarButton::Spacer => 0.0,
     }
 }
 
@@ -688,7 +845,7 @@ impl Toolbar {
         let idx = self.focused_index?;
         match self.buttons.get(idx)? {
             ToolbarButton::Action { id, .. } => self.click(*id),
-            ToolbarButton::Separator | ToolbarButton::Label { .. } => None,
+            ToolbarButton::Separator | ToolbarButton::Label { .. } | ToolbarButton::Spacer => None,
         }
     }
 
@@ -703,6 +860,14 @@ impl Toolbar {
     ///
     /// `bar_height` is shared by every item. Numeric arguments share
     /// the same unit; the primitive itself is unit-agnostic.
+    ///
+    /// Equivalent to [`Self::layout_with_options`] with
+    /// [`ToolbarLayoutOptions::default`] (`Horizontal`, no `Spacer` in
+    /// `buttons`) — kept as a separate, **unchanged** function (rather
+    /// than growing this one's argument list) so every existing caller
+    /// of this `pub fn` keeps compiling untouched, same rationale as
+    /// [`crate::tui::toolbar::draw_toolbar`]'s own split from
+    /// [`crate::tui::toolbar::draw_toolbar_with_options`].
     pub fn layout<F>(
         &self,
         origin_x: f32,
@@ -714,41 +879,192 @@ impl Toolbar {
     where
         F: Fn(&ToolbarButton) -> ToolbarItemMeasure,
     {
+        self.layout_with_options(
+            origin_x,
+            origin_y,
+            bar_width,
+            bar_height,
+            ToolbarLayoutOptions::default(),
+            measure,
+        )
+    }
+
+    /// [`Self::layout`], plus [`ToolbarLayoutOptions`]: `options.orientation`
+    /// picks the main axis buttons flow along (see [`ToolbarOrientation`]),
+    /// and a [`ToolbarButton::Spacer`] in [`Self::buttons`] pushes every
+    /// item after it to the bar's trailing edge.
+    ///
+    /// With no `Spacer` present this is bit-for-bit identical to the
+    /// pre-`Spacer` algorithm on either axis: items pack from
+    /// `(origin_x, origin_y)` toward the trailing edge, and an item that
+    /// would extend past it is clipped (or `width`/`height == 0` if it
+    /// would start beyond the edge entirely).
+    ///
+    /// With a `Spacer` at index `s`, `buttons[..s]` (the **leading**
+    /// group) and `buttons[s + 1..]` (the **trailing** group) are packed
+    /// independently — the trailing group flush against the trailing
+    /// edge, the leading group from the origin — with the `Spacer`
+    /// itself occupying whatever room is left between them. When the bar
+    /// is too small for both groups to fit without overlap, **the
+    /// trailing group wins**: it always paints in full (clipped only
+    /// against the bar's own edges), and the leading group is clipped
+    /// against the trailing group's start instead of the bar's edge —
+    /// the exact collision rule
+    /// [`crate::primitives::activity_bar::ActivityBar::layout`] already
+    /// uses for its own bottom-pinned-wins-over-top items. Only the
+    /// *first* `Spacer` affects layout; a second one gets a zero-size
+    /// slot, since one push point per bar is the shape this models.
+    pub fn layout_with_options<F>(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        bar_width: f32,
+        bar_height: f32,
+        options: ToolbarLayoutOptions,
+        measure: F,
+    ) -> ToolbarLayout
+    where
+        F: Fn(&ToolbarButton) -> ToolbarItemMeasure,
+    {
         let bar_bounds = Rect::new(origin_x, origin_y, bar_width, bar_height);
         let mut visible_items: Vec<VisibleToolbarItem> = Vec::with_capacity(self.buttons.len());
 
-        let widths: Vec<f32> = self
+        // Main axis = the direction items flow along (x for Horizontal,
+        // y for Vertical); cross axis = the other one, shared uniformly
+        // by every item. `item_cursor_positions` only ever computes 1D
+        // cumulative positions along one abstract axis, so the same
+        // helper packs either real axis — `mk_bounds` below is what maps
+        // an abstract (main, size) pair back onto a real `Rect`.
+        let (main_origin, main_len, cross_origin, cross_len) = match options.orientation {
+            ToolbarOrientation::Horizontal => (origin_x, bar_width, origin_y, bar_height),
+            ToolbarOrientation::Vertical => (origin_y, bar_height, origin_x, bar_width),
+        };
+        let mk_bounds = |main_pos: f32, main_size: f32| match options.orientation {
+            ToolbarOrientation::Horizontal => {
+                Rect::new(main_pos, cross_origin, main_size, cross_len)
+            }
+            ToolbarOrientation::Vertical => Rect::new(cross_origin, main_pos, cross_len, main_size),
+        };
+        let classify = |btn: &ToolbarButton, visible_main: f32| match btn {
+            ToolbarButton::Action { id, enabled, .. } => (
+                ToolbarItemKind::Action,
+                *enabled && visible_main > 0.0,
+                Some(*id),
+            ),
+            ToolbarButton::Separator => (ToolbarItemKind::Separator, false, None),
+            ToolbarButton::Label { .. } => (ToolbarItemKind::Label, false, None),
+            ToolbarButton::Spacer => (ToolbarItemKind::Spacer, false, None),
+        };
+        let main_edge = main_origin + main_len;
+
+        let spacer_idx = self
             .buttons
             .iter()
-            .map(|btn| measure(btn).width.max(0.0))
-            .collect();
-        let cursors = item_cursor_positions(origin_x, bar_height, &widths);
-        let right_edge = origin_x + bar_width;
+            .position(|b| matches!(b, ToolbarButton::Spacer));
 
-        for (i, btn) in self.buttons.iter().enumerate() {
-            let w = widths[i];
-            let cursor = cursors[i];
-            // Clip width so item doesn't paint past the bar's right edge.
-            let visible_w = (right_edge - cursor).max(0.0).min(w);
-            let bounds = Rect::new(cursor, origin_y, visible_w, bar_height);
+        match spacer_idx {
+            None => {
+                let sizes: Vec<f32> = self
+                    .buttons
+                    .iter()
+                    .map(|btn| measure(btn).width.max(0.0))
+                    .collect();
+                let cursors = item_cursor_positions(main_origin, cross_len, &sizes);
 
-            let (kind, clickable, action_id) = match btn {
-                ToolbarButton::Action { id, enabled, .. } => (
-                    ToolbarItemKind::Action,
-                    *enabled && visible_w > 0.0,
-                    Some(*id),
-                ),
-                ToolbarButton::Separator => (ToolbarItemKind::Separator, false, None),
-                ToolbarButton::Label { .. } => (ToolbarItemKind::Label, false, None),
-            };
+                for (i, btn) in self.buttons.iter().enumerate() {
+                    let size = sizes[i];
+                    let cursor = cursors[i];
+                    // Clip so the item doesn't paint past the trailing edge.
+                    let visible = (main_edge - cursor).max(0.0).min(size);
+                    let (kind, clickable, action_id) = classify(btn, visible);
+                    visible_items.push(VisibleToolbarItem {
+                        item_idx: i,
+                        kind,
+                        bounds: mk_bounds(cursor, visible),
+                        clickable,
+                        action_id,
+                    });
+                }
+            }
+            Some(spacer_idx) => {
+                let leading_sizes: Vec<f32> = self.buttons[..spacer_idx]
+                    .iter()
+                    .map(|btn| measure(btn).width.max(0.0))
+                    .collect();
+                let trailing_sizes: Vec<f32> = self.buttons[spacer_idx + 1..]
+                    .iter()
+                    .map(|btn| measure(btn).width.max(0.0))
+                    .collect();
 
-            visible_items.push(VisibleToolbarItem {
-                item_idx: i,
-                kind,
-                bounds,
-                clickable,
-                action_id,
-            });
+                let leading_end = main_origin + leading_sizes.iter().sum::<f32>();
+                let trailing_total: f32 = trailing_sizes.iter().sum();
+                let mut trailing_origin = main_edge - trailing_total;
+                if options.pin_trailing_overflow_to_origin {
+                    // The trailing group alone is bigger than the bar:
+                    // anchor it to the leading edge instead of letting it
+                    // hang off the trailing edge, so overflow clips its
+                    // last item instead of its first.
+                    trailing_origin = trailing_origin.max(main_origin);
+                }
+
+                let leading_cursors = item_cursor_positions(main_origin, cross_len, &leading_sizes);
+                let trailing_cursors =
+                    item_cursor_positions(trailing_origin, cross_len, &trailing_sizes);
+
+                // Trailing wins on collision: the leading group's
+                // trailing-edge clip is the gap's end, not the bar's own
+                // edge — same rule `ActivityBar::layout` uses for its own
+                // top group when it collides with the bottom-pinned one.
+                let leading_clip_edge = trailing_origin.min(main_edge);
+                for (local_i, btn) in self.buttons[..spacer_idx].iter().enumerate() {
+                    let size = leading_sizes[local_i];
+                    let cursor = leading_cursors[local_i];
+                    let visible = (leading_clip_edge - cursor).max(0.0).min(size);
+                    let (kind, clickable, action_id) = classify(btn, visible);
+                    visible_items.push(VisibleToolbarItem {
+                        item_idx: local_i,
+                        kind,
+                        bounds: mk_bounds(cursor, visible),
+                        clickable,
+                        action_id,
+                    });
+                }
+
+                // The `Spacer` itself: whatever room is left between the
+                // two groups (zero when they collide).
+                let spacer_size = (trailing_origin - leading_end).max(0.0);
+                visible_items.push(VisibleToolbarItem {
+                    item_idx: spacer_idx,
+                    kind: ToolbarItemKind::Spacer,
+                    bounds: mk_bounds(leading_end, spacer_size),
+                    clickable: false,
+                    action_id: None,
+                });
+
+                // Trailing group: always painted in full, clipped only
+                // against the bar's own edges (it can run off either end
+                // if `trailing_total` alone exceeds `main_len`).
+                for (local_i, btn) in self.buttons[spacer_idx + 1..].iter().enumerate() {
+                    let size = trailing_sizes[local_i];
+                    let cursor = trailing_cursors[local_i];
+                    let start = cursor.max(main_origin);
+                    let end = (cursor + size).min(main_edge);
+                    let visible = (end - start).max(0.0);
+                    let (kind, clickable, action_id) = classify(btn, visible);
+                    visible_items.push(VisibleToolbarItem {
+                        item_idx: spacer_idx + 1 + local_i,
+                        kind,
+                        bounds: mk_bounds(start, visible),
+                        clickable,
+                        action_id,
+                    });
+                }
+
+                // Restore document order so painters that rely on
+                // increasing `item_idx` (z-order, focus-index lookup)
+                // see buttons the same way regardless of the Spacer split.
+                visible_items.sort_by_key(|v| v.item_idx);
+            }
         }
 
         ToolbarLayout {
@@ -808,8 +1124,11 @@ pub(crate) mod native_surface_paint {
     use super::{
         action_text, valign_offset_y, Toolbar, ToolbarButton, ToolbarLayout, ToolbarPaintOptions,
     };
+    use crate::backend::PressableVisual;
     use crate::event::{Point, Rect};
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::button;
+    use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::WidgetId;
 
@@ -855,20 +1174,62 @@ pub(crate) mod native_surface_paint {
                     key_hint,
                     enabled,
                     is_active,
+                    spec,
                     ..
                 } => {
                     let is_hovered = *enabled && hovered_id == Some(id);
                     let is_pressed = *enabled && pressed_id == Some(id);
                     let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
 
+                    // An explicit `spec` override paints through the
+                    // shared `Button` fill/border/icon/intent-colour path
+                    // instead of this item's own bracket-less pill look,
+                    // so e.g. a `Danger` spec reads in
+                    // `theme.button_danger_bg()` the same way a
+                    // standalone `Button` does — see
+                    // `button::native_surface_paint::paint`'s own doc.
+                    // `enabled` and `is_active` are live per-item state
+                    // that the spec itself carries no field for, so they
+                    // fold into the resolved spec the same way: `!enabled`
+                    // ORs into `disabled` (an inert action must still
+                    // paint and dispatch as inert, same as the legacy arm
+                    // below), and `is_active` ORs into the painter's
+                    // `is_pressed` (there is no separate "toggled on"
+                    // visual in `Button`, so pressed is the closest
+                    // match — this mirrors `tui::toolbar`'s own
+                    // pressed > ... > is_active priority). `Style::
+                    // default()` stands in for a live `&Style`: this fn
+                    // takes no `&Style` parameter, so a host's
+                    // `Backend::set_style` override doesn't reach a
+                    // spec-backed toolbar button's corner radius/padding
+                    // — same limit `ButtonSpec::min_cell_width`'s TUI
+                    // sibling has no such gap for, since TUI has no
+                    // sub-cell geometry to miss. A `spec: None` action
+                    // keeps painting through the plain pill/label path
+                    // below, unchanged.
+                    if let Some(spec) = spec {
+                        let mut resolved = spec.clone();
+                        resolved.disabled = resolved.disabled || !*enabled;
+                        let resolved_button = resolved.to_button(*id, is_focused);
+                        button::native_surface_paint::paint(
+                            &resolved_button,
+                            surface,
+                            theme,
+                            item,
+                            &Style::default(),
+                            is_hovered,
+                            is_pressed || *is_active,
+                        );
+                        continue;
+                    }
+
                     // Highlight background: pressed/active > hovered > none.
-                    let highlight = if is_pressed || *is_active {
-                        Some(theme.selected_bg)
-                    } else if is_hovered {
-                        Some(theme.hover_bg)
-                    } else {
-                        None
-                    };
+                    let highlight =
+                        match PressableVisual::resolve(is_pressed, *is_active, is_hovered) {
+                            PressableVisual::PressedOrActive => Some(theme.selected_bg),
+                            PressableVisual::Hovered => Some(theme.hover_bg),
+                            PressableVisual::Resting => None,
+                        };
                     if let Some(bg) = highlight {
                         let inset = Rect::new(
                             item.x + 2.0,
@@ -929,7 +1290,318 @@ pub(crate) mod native_surface_paint {
                         color,
                     );
                 }
+                // Invisible by definition — see `ToolbarButton::Spacer`'s
+                // own doc.
+                ToolbarButton::Spacer => {}
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::toolbar::ToolbarItemMeasure;
+        use crate::types::Color;
+        use crate::Image;
+
+        /// Records every fill/stroke call — enough to assert the
+        /// shared `Button` path's intent colour and hover/pressed
+        /// forwarding without a Cairo/Core Graphics/Direct2D host.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color, f32)>,
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(300.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                14.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                7.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 7.0, 12.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _sw: f32) {}
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn mk_spec_action(
+            id: &str,
+            label: &str,
+            spec: crate::primitives::button::ButtonSpec,
+        ) -> ToolbarButton {
+            ToolbarButton::Action {
+                spec: Some(spec),
+                id: WidgetId::new(id),
+                label: label.to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }
+        }
+
+        /// A toolbar action carrying an explicit `Danger` spec paints
+        /// through `button::native_surface_paint::paint` —
+        /// `theme.button_danger_bg()`, not this module's own plain
+        /// pill/label look `spec: None` actions still get.
+        #[test]
+        fn danger_spec_action_fills_the_shared_button_danger_colour() {
+            let mut spec = crate::primitives::button::ButtonSpec::new("Delete");
+            spec.variant = crate::primitives::button::ButtonVariant::Danger;
+            let bar = Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![mk_spec_action("tb:delete", "Delete", spec)],
+                bg: None,
+                focused_index: None,
+            };
+            let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
+                ToolbarItemMeasure::new(match btn {
+                    ToolbarButton::Action { label, .. } => label.chars().count() as f32 * 7.0 + 8.0,
+                    _ => 0.0,
+                })
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &bar,
+                &layout,
+                &mut surface,
+                &theme,
+                None,
+                None,
+                ToolbarPaintOptions::default(),
+            );
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(_, c)| *c == theme.button_danger_bg()),
+                "a Danger spec must fill the shared Button's danger colour; \
+                 fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "Delete"),
+                "the button label must still be painted through the shared \
+                 Button path; text runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
+        /// Hover/pressed state reaches the shared `Button` path's own
+        /// tint, not just this module's own highlight pill — pressed
+        /// wins over the plain `Primary` resting colour
+        /// (`theme.accent_bg`), tinted by `theme.button_pressed_bg`.
+        #[test]
+        fn pressed_spec_action_tints_through_the_shared_button_path() {
+            let spec = crate::primitives::button::ButtonSpec::new("Refresh");
+            let id = WidgetId::new("tb:refresh");
+            let bar = Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![mk_spec_action("tb:refresh", "Refresh", spec)],
+                bg: None,
+                focused_index: None,
+            };
+            let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
+                ToolbarItemMeasure::new(match btn {
+                    ToolbarButton::Action { label, .. } => label.chars().count() as f32 * 7.0 + 8.0,
+                    _ => 0.0,
+                })
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &bar,
+                &layout,
+                &mut surface,
+                &theme,
+                None,
+                Some(&id),
+                ToolbarPaintOptions::default(),
+            );
+
+            let expected = theme.button_pressed_bg(theme.accent_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == expected),
+                "a pressed spec-backed action must tint through \
+                 `theme.button_pressed_bg`; fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// The hover half of the same forwarding: hovering (not pressing)
+        /// a spec-backed action tints through `theme.button_hover_bg`,
+        /// not just this module's own `theme.hover_bg` pill.
+        #[test]
+        fn hovered_spec_action_tints_through_the_shared_button_path() {
+            let spec = crate::primitives::button::ButtonSpec::new("Refresh");
+            let id = WidgetId::new("tb:refresh");
+            let bar = Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![mk_spec_action("tb:refresh", "Refresh", spec)],
+                bg: None,
+                focused_index: None,
+            };
+            let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
+                ToolbarItemMeasure::new(match btn {
+                    ToolbarButton::Action { label, .. } => label.chars().count() as f32 * 7.0 + 8.0,
+                    _ => 0.0,
+                })
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &bar,
+                &layout,
+                &mut surface,
+                &theme,
+                Some(&id),
+                None,
+                ToolbarPaintOptions::default(),
+            );
+
+            let expected = theme.button_hover_bg(theme.accent_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == expected),
+                "a hovered spec-backed action must tint through \
+                 `theme.button_hover_bg`; fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// `enabled: false` on a spec-backed action still folds into the
+        /// resolved spec's `disabled`, so it paints the same muted
+        /// `theme.surface_bg`/`theme.muted_fg` a disabled standalone
+        /// `Button` paints, not its `Danger` spec's saturated colour —
+        /// an inert control must still *look* inert on every backend.
+        #[test]
+        fn disabled_spec_action_paints_muted_not_the_spec_variant_colour() {
+            let mut spec = crate::primitives::button::ButtonSpec::new("Delete");
+            spec.variant = crate::primitives::button::ButtonVariant::Danger;
+            let mut action = mk_spec_action("tb:delete", "Delete", spec);
+            if let ToolbarButton::Action { enabled, .. } = &mut action {
+                *enabled = false;
+            }
+            let bar = Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![action],
+                bg: None,
+                focused_index: None,
+            };
+            let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
+                ToolbarItemMeasure::new(match btn {
+                    ToolbarButton::Action { label, .. } => label.chars().count() as f32 * 7.0 + 8.0,
+                    _ => 0.0,
+                })
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &bar,
+                &layout,
+                &mut surface,
+                &theme,
+                None,
+                None,
+                ToolbarPaintOptions::default(),
+            );
+
+            assert!(
+                !surface
+                    .fills
+                    .iter()
+                    .any(|(_, c)| *c == theme.button_danger_bg()),
+                "a disabled spec-backed action must not paint its spec's \
+                 Danger colour; fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == theme.surface_bg),
+                "a disabled spec-backed action must paint the shared \
+                 Button's muted disabled fill; fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// `is_active: true` on a spec-backed action folds into the
+        /// painter's `is_pressed`, so a toggled-on action still shows a
+        /// tinted state through the shared `Button` path — matching the
+        /// legacy pill arm's `is_pressed || is_active` highlight and
+        /// `tui::toolbar`'s own pressed/is_active priority, instead of
+        /// losing its toggled-on look entirely once it carries a spec.
+        #[test]
+        fn active_spec_action_tints_through_the_shared_button_pressed_path() {
+            let spec = crate::primitives::button::ButtonSpec::new("Filter");
+            let mut action = mk_spec_action("tb:filter", "Filter", spec);
+            if let ToolbarButton::Action { is_active, .. } = &mut action {
+                *is_active = true;
+            }
+            let bar = Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![action],
+                bg: None,
+                focused_index: None,
+            };
+            let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
+                ToolbarItemMeasure::new(match btn {
+                    ToolbarButton::Action { label, .. } => label.chars().count() as f32 * 7.0 + 8.0,
+                    _ => 0.0,
+                })
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &bar,
+                &layout,
+                &mut surface,
+                &theme,
+                None,
+                None,
+                ToolbarPaintOptions::default(),
+            );
+
+            let expected = theme.button_pressed_bg(theme.accent_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == expected),
+                "an active spec-backed action must tint through \
+                 `theme.button_pressed_bg`, mirroring is_pressed; fills \
+                 were {:?}",
+                surface.fills,
+            );
         }
     }
 }
@@ -982,6 +1654,7 @@ mod tests {
             ToolbarButton::Label { text, .. } => {
                 ToolbarItemMeasure::new(crate::text_util::display_width(text) as f32)
             }
+            ToolbarButton::Spacer => ToolbarItemMeasure::new(0.0),
         }
     }
 
@@ -1130,6 +1803,207 @@ mod tests {
         assert_eq!(layout.bar_bounds.y, 5.0);
         assert_eq!(layout.visible_items[0].bounds.x, 10.0);
         assert_eq!(layout.visible_items[0].bounds.y, 5.0);
+    }
+
+    // ── `ToolbarOrientation` / `ToolbarButton::Spacer` ──────────────────
+
+    #[test]
+    fn layout_with_options_default_matches_plain_layout() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            mk_action("a", "Refine", true),
+            mk_action("b", "Drop", true),
+        ]);
+        let plain = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
+        let via_options = bar.layout_with_options(
+            0.0,
+            0.0,
+            80.0,
+            1.0,
+            ToolbarLayoutOptions::default(),
+            cell_measure(),
+        );
+        assert_eq!(plain, via_options);
+    }
+
+    #[test]
+    fn vertical_orientation_stacks_items_top_to_bottom() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            mk_action("a", "Run", true),
+            mk_action("b", "Stop", true),
+        ]);
+        let options = ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical);
+        let layout = bar.layout_with_options(0.0, 0.0, 20.0, 10.0, options, |_| {
+            ToolbarItemMeasure::new(1.0)
+        });
+
+        assert_eq!(layout.visible_items.len(), 2);
+        // Every item spans the full cross-axis width (20.0) and is one
+        // row tall, stacked one below the other instead of side by side.
+        assert_eq!(
+            layout.visible_items[0].bounds,
+            Rect::new(0.0, 0.0, 20.0, 1.0)
+        );
+        assert_eq!(
+            layout.visible_items[1].bounds,
+            Rect::new(0.0, 1.0, 20.0, 1.0)
+        );
+    }
+
+    /// Fixed 10-wide `Action` measurer for the `Spacer` tests below — a
+    /// `Spacer` is never measured, so any other variant maps to `0.0`.
+    fn fixed_width_measure(btn: &ToolbarButton) -> ToolbarItemMeasure {
+        match btn {
+            ToolbarButton::Action { .. } => ToolbarItemMeasure::new(10.0),
+            _ => ToolbarItemMeasure::new(0.0),
+        }
+    }
+
+    #[test]
+    fn spacer_pushes_trailing_items_to_the_far_edge() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            mk_action("a", "Left", true),
+            ToolbarButton::Spacer,
+            mk_action("b", "Right", true),
+        ]);
+        let layout = bar.layout_with_options(
+            0.0,
+            0.0,
+            100.0,
+            1.0,
+            ToolbarLayoutOptions::default(),
+            fixed_width_measure,
+        );
+
+        assert_eq!(layout.visible_items.len(), 3);
+        // Leading item at the origin.
+        assert_eq!(layout.visible_items[0].bounds.x, 0.0);
+        assert_eq!(layout.visible_items[0].bounds.width, 10.0);
+        // The `Spacer` fills the remaining 80 cells between the groups.
+        assert_eq!(layout.visible_items[1].kind, ToolbarItemKind::Spacer);
+        assert_eq!(layout.visible_items[1].bounds.x, 10.0);
+        assert_eq!(layout.visible_items[1].bounds.width, 80.0);
+        assert!(!layout.visible_items[1].clickable);
+        // Trailing item flush against the bar's right edge.
+        assert_eq!(layout.visible_items[2].bounds.x, 90.0);
+        assert_eq!(layout.visible_items[2].bounds.width, 10.0);
+    }
+
+    #[test]
+    fn spacer_collision_trailing_group_wins() {
+        // A 15-cell bar can't fit a 10-cell leading item AND a 10-cell
+        // trailing one without overlap: the trailing item wins, painting
+        // in full at the right edge, while the leading item is clipped
+        // to the 5 cells of room left before it — the same collision
+        // rule `ActivityBar::layout` uses for its own bottom-pinned
+        // group winning over the top one.
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            mk_action("a", "Left", true),
+            ToolbarButton::Spacer,
+            mk_action("b", "Right", true),
+        ]);
+        let layout = bar.layout_with_options(
+            0.0,
+            0.0,
+            15.0,
+            1.0,
+            ToolbarLayoutOptions::default(),
+            fixed_width_measure,
+        );
+
+        assert_eq!(layout.visible_items[0].bounds.x, 0.0);
+        assert_eq!(
+            layout.visible_items[0].bounds.width, 5.0,
+            "leading item clipped against the gap, not the bar's own edge"
+        );
+        assert_eq!(
+            layout.visible_items[1].bounds.width, 0.0,
+            "no room left over for the spacer"
+        );
+        assert_eq!(layout.visible_items[2].bounds.x, 5.0);
+        assert_eq!(
+            layout.visible_items[2].bounds.width, 10.0,
+            "trailing item still paints in full"
+        );
+    }
+
+    #[test]
+    fn only_the_first_spacer_affects_layout() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            mk_action("a", "Left", true),
+            ToolbarButton::Spacer,
+            mk_action("b", "Mid", true),
+            ToolbarButton::Spacer,
+            mk_action("c", "Right", true),
+        ]);
+        let layout = bar.layout_with_options(
+            0.0,
+            0.0,
+            100.0,
+            1.0,
+            ToolbarLayoutOptions::default(),
+            fixed_width_measure,
+        );
+
+        // The second `Spacer` is part of the trailing group, not a
+        // second split point, so it gets a zero-size slot rather than
+        // absorbing any more of the leftover room.
+        assert_eq!(layout.visible_items[3].kind, ToolbarItemKind::Spacer);
+        assert_eq!(layout.visible_items[3].bounds.width, 0.0);
+    }
+
+    /// Default [`ToolbarLayoutOptions`]
+    /// (`pin_trailing_overflow_to_origin: false`): a trailing group bigger
+    /// than the bar on its own hangs off the trailing edge, so overflow
+    /// clips the item closest to the `Spacer` (the trailing group's
+    /// first), not the one closest to the trailing edge.
+    #[test]
+    fn trailing_group_overflow_clips_item_nearest_spacer_by_default() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            ToolbarButton::Spacer,
+            mk_action("0", "0", true),
+            mk_action("1", "1", true),
+            mk_action("2", "2", true),
+        ]);
+        let layout =
+            bar.layout_with_options(0.0, 0.0, 2.0, 1.0, ToolbarLayoutOptions::default(), |_| {
+                ToolbarItemMeasure::new(1.0)
+            });
+        // item "0" (nearest the Spacer) is dropped; "1" and "2" paint at
+        // y=0 and y=1.
+        assert_eq!(layout.visible_items[1].bounds.width, 0.0, "item 0 dropped");
+        assert_eq!(layout.visible_items[2].bounds.x, 0.0);
+        assert_eq!(layout.visible_items[2].bounds.width, 1.0);
+        assert_eq!(layout.visible_items[3].bounds.x, 1.0);
+        assert_eq!(layout.visible_items[3].bounds.width, 1.0);
+    }
+
+    /// `pin_trailing_overflow_to_origin: true`: the same overflowing
+    /// trailing group instead anchors to the bar's leading edge, so
+    /// overflow clips the item closest to the trailing edge (the last
+    /// one) — the rule [`crate::primitives::activity_bar::ActivityBar::layout`]
+    /// relies on for its bottom-pinned group.
+    #[test]
+    fn trailing_group_overflow_clips_last_item_when_pinned_to_origin() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            ToolbarButton::Spacer,
+            mk_action("0", "0", true),
+            mk_action("1", "1", true),
+            mk_action("2", "2", true),
+        ]);
+        let layout = bar.layout_with_options(
+            0.0,
+            0.0,
+            2.0,
+            1.0,
+            ToolbarLayoutOptions::new().with_pin_trailing_overflow_to_origin(true),
+            |_| ToolbarItemMeasure::new(1.0),
+        );
+        // item "0" at y=0, item "1" at y=1, item "2" (last) dropped.
+        assert_eq!(layout.visible_items[1].bounds.x, 0.0);
+        assert_eq!(layout.visible_items[1].bounds.width, 1.0);
+        assert_eq!(layout.visible_items[2].bounds.x, 1.0);
+        assert_eq!(layout.visible_items[2].bounds.width, 1.0);
+        assert_eq!(layout.visible_items[3].bounds.width, 0.0, "item 2 dropped");
     }
 
     // ── Serde ────────────────────────────────────────────────────────────

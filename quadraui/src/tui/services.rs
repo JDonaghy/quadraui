@@ -204,7 +204,13 @@
 //! tray icon, a dock badge); a terminal session on a desktop can launch a
 //! browser perfectly well, so that answer was never earned.
 //!
-//! [`TuiPlatformServices::open_url_result`] now tries, in order:
+//! [`TuiPlatformServices::open_url_result`] first validates `url` through
+//! [`crate::desktop::validate_open_url`] — the backend-neutral seam every
+//! `PlatformServices::open_url` implementation is meant to run its input
+//! through before handing it to a platform opener, so a bare executable
+//! path or app-bundle `file:` URL is rejected with
+//! `Err(BackendError::Unsupported)` instead of being launched. Once a
+//! `url` passes that check, this method tries, in order:
 //!
 //! 1. **The platform opener** ([`crate::desktop::try_open_with_default`],
 //!    issue #1087 — originally this module's own `try_platform_opener`,
@@ -277,20 +283,24 @@
 //!
 //! ## Login items
 //!
-//! `login_item_enabled` overrides the trait default with an honest
-//! no-op that always reports `false`, since a terminal has no OS
-//! login-item registration of its own to query and `set_login_item`
-//! itself stays `Unsupported` on this backend — quadraui itself can
-//! never have created a registration here. This `false` only reflects
-//! that: it says nothing about a registration a host or packaging step
-//! may have created out of band (e.g. a cron/systemd-user entry that
-//! happens to launch this binary), so a settings screen built on this
-//! query can display "off" for an app that does, in fact, start at
-//! login by some other mechanism. `set_login_item` stays at the trait's
-//! `Unsupported` default: there is no honest "success" value for a
-//! mutation with nothing in this backend to mutate. See
-//! [`TuiPlatformServices::login_item_enabled`]'s own doc and
-//! `login_item`'s module doc.
+//! `login_item_enabled` and `set_login_item` both keep the trait's
+//! `Unsupported` default on TUI, matching every other in-tree backend
+//! that doesn't override either: a terminal has no OS login-item
+//! registration of its own to query or mutate, so there is no honest
+//! non-error answer for either — a faked-up `Ok(false)` would read as
+//! "this app is not registered to start at login", which this backend
+//! has no way to actually know (e.g. a cron/systemd-user entry could
+//! still launch it out of band). See `login_item`'s module doc.
+//!
+//! ## Power-save blocking
+//!
+//! `begin_power_save_block`/`end_power_save_block` both keep the
+//! trait's `Unsupported` default on TUI, matching every other in-tree
+//! backend: a terminal has no sleep-inhibitor API to call into, and a
+//! blocker id minted without ever asking the OS to stay awake is not a
+//! truthful `Ok` — a caller needs to be able to tell "this backend
+//! can't hold the machine awake" from "it did". See `power`'s module
+//! doc.
 //!
 //! ## Recent documents / Dock menu
 //!
@@ -304,7 +314,7 @@
 //! all four.
 
 use std::cell::RefCell;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -318,7 +328,6 @@ use crate::compose::{
 };
 use crate::diagnostics;
 use crate::event::{Point, Rect, UiEvent};
-use crate::power::{BlockerId, PowerSaveKind};
 use crate::tui::backend::TuiBackend;
 use crate::update::{StagedUpdate, UpdateInfo, UpdateService};
 use crate::{Key, Modifiers, NamedKey};
@@ -1306,6 +1315,73 @@ mod open_url_tests {
         assert_eq!(result, Ok(()));
     }
 
+    /// Acceptance bar: `open_url_result` rejects a bare
+    /// executable path with `Err(BackendError::Unsupported)` and never
+    /// spawns anything, even when an opener binary that *would* succeed
+    /// is sitting right there on `$PATH` — [`crate::desktop::validate_open_url`]
+    /// rejects the input before `open_url_via` ever runs the opener
+    /// closure. Uses the same `$PATH`-stub technique as
+    /// `open_url_result_returns_ok_through_the_real_delegation`, except
+    /// the stub opener here writes a marker file so this test can prove
+    /// it was never invoked, rather than merely assuming so from the
+    /// `Err` return value alone.
+    ///
+    /// **Unix only** — see that test's doc for why Windows has no
+    /// `$PATH`-resolved-binary equivalent to intercept this way.
+    #[cfg(unix)]
+    #[test]
+    fn open_url_result_rejects_a_bare_executable_path_and_spawns_nothing() {
+        let _guard = crate::desktop::PATH_OVERRIDE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        #[cfg(target_os = "macos")]
+        const OPENER_NAME: &str = "open";
+        #[cfg(all(unix, not(target_os = "macos")))]
+        const OPENER_NAME: &str = "xdg-open";
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stub_path = tmp.path().join(OPENER_NAME);
+        let marker_path = tmp.path().join("opener-was-invoked");
+        std::fs::write(
+            &stub_path,
+            format!("#!/bin/sh\ntouch {:?}\nexit 0\n", marker_path),
+        )
+        .expect("write stub opener");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod +x stub opener");
+        }
+
+        let original_path = std::env::var_os("PATH");
+        struct RestorePath(Option<std::ffi::OsString>);
+        impl Drop for RestorePath {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+        let _restore = RestorePath(original_path.clone());
+
+        let mut new_path = std::ffi::OsString::from(tmp.path());
+        if let Some(existing) = &original_path {
+            new_path.push(":");
+            new_path.push(existing);
+        }
+        std::env::set_var("PATH", new_path);
+
+        let services = TuiPlatformServices::new();
+        let result = services.open_url_result("/usr/bin/calc.exe");
+        assert_eq!(result, Err(BackendError::Unsupported));
+        assert!(
+            !marker_path.exists(),
+            "the opener must never be spawned for a bare executable path"
+        );
+    }
+
     /// Before this fix,
     /// `TuiPlatformServices::open_path` hand-rolled its own
     /// `std::process::Command::new(OPENER).arg(path).spawn()` instead of
@@ -1520,11 +1596,6 @@ pub struct TuiPlatformServices {
     /// empty queue — means "test mode, never touch the real terminal".
     /// Set via [`Self::queue_dialog_events`].
     scripted_dialog_events: RefCell<Option<VecDeque<UiEvent>>>,
-    /// Ids minted by [`Self::begin_power_save_block`] and not yet passed
-    /// to [`Self::end_power_save_block`] — see `power`'s module doc for
-    /// why TUI tracks this honestly instead of leaving the pair
-    /// `Unsupported`.
-    power_save_blocks: RefCell<HashSet<BlockerId>>,
 }
 
 impl TuiPlatformServices {
@@ -1533,7 +1604,6 @@ impl TuiPlatformServices {
             clipboard: TuiClipboard::new(),
             dialog_surface: RefCell::new(None),
             scripted_dialog_events: RefCell::new(None),
-            power_save_blocks: RefCell::new(HashSet::new()),
         }
     }
 
@@ -1851,16 +1921,22 @@ impl PlatformServices for TuiPlatformServices {
     }
 
     /// Genuinely opens `url`, rather than #949's honest but
-    /// unconditional `Err(BackendError::Unsupported)`. Tries the platform
-    /// URL opener first ([`crate::desktop::try_open_with_default`] —
-    /// `xdg-open`/`open` on Unix, `ShellExecuteW` directly on Windows,
-    /// never a shell); if it can't even launch (no desktop session,
-    /// opener binary missing), falls back to an OSC 8 hyperlink
-    /// ([`emit_osc8_hyperlink`]) so a capable terminal still makes the
-    /// URL clickable. Only reports `Err(BackendError::Unsupported)` when
-    /// *neither* leg reached anything — see the module doc for the full
+    /// unconditional `Err(BackendError::Unsupported)`. First validates
+    /// `url` via [`crate::desktop::validate_open_url`] — rejecting a bare
+    /// path, a `javascript:`/`data:` scheme, or a `file:` URL that points
+    /// at an executable or app bundle, so this method stays "open a URL
+    /// in a browser", not "run whatever string a caller hands it" — then
+    /// tries the platform URL opener
+    /// ([`crate::desktop::try_open_with_default`] — `xdg-open`/`open` on
+    /// Unix, `ShellExecuteW` directly on Windows, never a shell); if it
+    /// can't even launch (no desktop session, opener binary missing),
+    /// falls back to an OSC 8 hyperlink ([`emit_osc8_hyperlink`]) so a
+    /// capable terminal still makes the URL clickable. Only reports
+    /// `Err(BackendError::Unsupported)` when validation fails or *neither*
+    /// opener leg reached anything — see the module doc for the full
     /// three-step story.
     fn open_url_result(&self, url: &str) -> ServiceResult<()> {
+        crate::desktop::validate_open_url(url)?;
         open_url_via(url, |u| {
             crate::desktop::try_open_with_default(std::ffi::OsStr::new(u))
         })
@@ -2003,44 +2079,16 @@ impl PlatformServices for TuiPlatformServices {
         &SERVICE
     }
 
-    /// An honest no-op blocker, not `Unsupported`: a terminal has no
-    /// sleep-inhibitor API to call into, but it can still mint and track
-    /// a real [`BlockerId`] so a TUI app's begin/end lifecycle behaves
-    /// consistently rather than failing on the very first call. See
-    /// `power`'s module doc.
-    fn begin_power_save_block(&self, kind: PowerSaveKind) -> ServiceResult<BlockerId> {
-        let _ = kind;
-        let id = BlockerId::next();
-        self.power_save_blocks.borrow_mut().insert(id);
-        Ok(id)
-    }
-
-    /// Ends a blocker previously started by [`Self::begin_power_save_block`].
-    /// Errors on an unknown or already-ended id rather than silently
-    /// succeeding — the bookkeeping is the whole point of the no-op
-    /// degrade, so it stays honest about what it actually tracked.
-    fn end_power_save_block(&self, id: BlockerId) -> ServiceResult<()> {
-        if self.power_save_blocks.borrow_mut().remove(&id) {
-            Ok(())
-        } else {
-            Err(BackendError::PlatformFailure {
-                context: "end_power_save_block: unknown or already-ended blocker id".to_string(),
-            })
-        }
-    }
-
-    /// An honest no-op, not `Unsupported`: this backend itself never
-    /// creates a login-item registration (`set_login_item` stays
-    /// `Unsupported` on TUI), so `false` is always truthful about *this
-    /// backend's own* state — see this module's "Login items" doc
-    /// section for the caveat that a host or packaging step can still
-    /// have registered the binary out of band, in which case this call
-    /// reports `false` for an app that does start at login some other
-    /// way. `login_item`'s module doc has why `set_login_item` keeps the
-    /// trait's `Unsupported` default while this query does not.
-    fn login_item_enabled(&self) -> ServiceResult<bool> {
-        Ok(false)
-    }
+    // `begin_power_save_block`/`end_power_save_block` and
+    // `login_item_enabled` all fall through to the trait's own
+    // `Unsupported` default — a terminal has no sleep-inhibitor API and
+    // no OS login-item registration to query, so there is no honest
+    // non-error answer to give for any of the three. See this module's
+    // "Login items" doc section and `power`'s module doc. Left
+    // unoverridden (rather than restated here) so that default is the
+    // one place this behavior lives, the same posture
+    // `add_recent_document`/`clear_recent_documents`/`set_dock_menu`
+    // already have below.
 
     // `add_recent_document`, `clear_recent_documents`, and `set_dock_menu`
     // all fall through to the trait's own `Unsupported` default — see
@@ -2122,40 +2170,25 @@ mod update_service_tests {
 #[cfg(test)]
 mod power_save_block_tests {
     use super::*;
+    use crate::power::{BlockerId, PowerSaveKind};
 
+    /// A terminal has no sleep-inhibitor API to call into — `begin`/
+    /// `end_power_save_block` stay at the trait's own `Unsupported`
+    /// default, the same answer GTK/macOS/Win give (none of them
+    /// override either method). Callers must be able to tell "this
+    /// backend can't hold the machine awake" from "it did and is now
+    /// holding it", so a faked-up blocker id that never asked the OS for
+    /// anything is not an honest `Ok`.
     #[test]
-    fn begin_mints_distinct_ids() {
+    fn begin_and_end_stay_unsupported() {
         let service = TuiPlatformServices::new();
-        let a = service
-            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
-            .unwrap();
-        let b = service
-            .begin_power_save_block(PowerSaveKind::PreventAppSuspension)
-            .unwrap();
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn end_succeeds_on_a_just_begun_id() {
-        let service = TuiPlatformServices::new();
-        let id = service
-            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
-            .unwrap();
-        assert_eq!(service.end_power_save_block(id), Ok(()));
-    }
-
-    #[test]
-    fn end_fails_on_an_unknown_or_already_ended_id() {
-        let service = TuiPlatformServices::new();
-        let id = service
-            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
-            .unwrap();
-        assert_eq!(service.end_power_save_block(id), Ok(()));
         assert_eq!(
-            service.end_power_save_block(id),
-            Err(BackendError::PlatformFailure {
-                context: "end_power_save_block: unknown or already-ended blocker id".to_string(),
-            })
+            service.begin_power_save_block(PowerSaveKind::PreventDisplaySleep),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(
+            service.end_power_save_block(BlockerId::next()),
+            Err(BackendError::Unsupported)
         );
     }
 
@@ -2338,15 +2371,19 @@ mod message_dialog_tests {
     }
 
     /// A terminal has no OS login-item registration to query — this pins
-    /// the honest no-op degrade: always `Ok(false)`, on every host this
-    /// runs on (no environment dependency, unlike `displays` above).
-    /// See the module doc's "Login items" section for why `false` here
-    /// is not the same claim as "this app is not registered to start at
-    /// login by any mechanism".
+    /// the trait's own `Unsupported` default, the same answer GTK/
+    /// macOS/Win give (none of them override this method either), on
+    /// every host this runs on (no environment dependency, unlike
+    /// `displays` above). A faked-up `Ok(false)` would read as "this app
+    /// is not registered to start at login", which this backend has no
+    /// way to actually know.
     #[test]
-    fn login_item_enabled_always_reports_false_on_tui() {
+    fn login_item_enabled_always_reports_unsupported_on_tui() {
         let services = TuiPlatformServices::new();
-        assert_eq!(services.login_item_enabled(), Ok(false));
+        assert_eq!(
+            services.login_item_enabled(),
+            Err(BackendError::Unsupported)
+        );
     }
 
     /// A terminal has no OS-level recent-documents list to add to — this

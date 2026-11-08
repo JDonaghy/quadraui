@@ -12,6 +12,31 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `QuiApp` platform-services methods, each a thin wrapper over the matching
+  `quadraui_binding_core::services` function: `check_for_update`/
+  `download_and_stage`/`apply_on_quit` (auto-update), `begin_power_save_block`/
+  `end_power_save_block` (the sleep/suspend inhibitor), `set_login_item`/
+  `login_item_enabled` (launch at login), `set_as_default_protocol_client`/
+  `is_default_protocol_client`/`remove_as_default_protocol_client` (OS
+  protocol registration), `begin_drag_out` (OS-level drag-out of this app's
+  window), and `add_recent_document`/`clear_recent_documents`/
+  `set_dock_menu`/`set_jump_list` (recent documents, the Dock icon menu, and
+  the Windows jump list). A new `UnsupportedError` exception (mirrors
+  `quadraui-ffi`'s `QUI_ERR_UNSUPPORTED`) surfaces a backend with no
+  implementation for one of these — the headless `TuiBackend` implements
+  none of them for real — instead of
+  a panic or a silent no-op. The void-returning methods among these
+  (everything but `check_for_update`, `download_and_stage`,
+  `begin_power_save_block`, `login_item_enabled`, and
+  `is_default_protocol_client`) also gained a `QuiAppActions` mirror for use
+  from inside a registered handler.
+- Three module-level, app-less functions: `quadraui.app_path(kind)` resolves
+  a standard per-app filesystem location (`"user_data"`, `"app_config"`,
+  `"app_cache"`, `"logs"`, `"temp"`, `"downloads"`, `"documents"`, `"home"`);
+  `quadraui.set_app_identifier(identifier)` sets the process-global
+  identifier its app-scoped kinds resolve under;
+  `quadraui.install_crash_handler(cfg)` installs a process-global Rust
+  panic hook that writes a crash record on an uncaught panic.
 - A `MouseMoved` event landing on (or leaving) any painted primitive now
   dispatches a hit-tested `MouseEntered`/`MouseLeft` to the registered
   handler ahead of the raw move itself, each carrying the primitive's own

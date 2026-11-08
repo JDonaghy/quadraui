@@ -16,8 +16,21 @@
 //! `PanelHit::Action`; the title bar hits `PanelHit::TitleBar` (apps
 //! may use this for drag-to-move or focus); content bounds hit
 //! `PanelHit::Content` so the app can route further.
+//!
+//! # Prefer `SidebarPanel` + `Toolbar` for new chrome
+//!
+//! [`crate::SidebarPanel`] with a [`crate::Toolbar`] header — a
+//! [`crate::ToolbarButton::Label`] title, a [`crate::ToolbarButton::Spacer`],
+//! then right-aligned [`crate::ToolbarButton::Action`]s — covers the same
+//! title-bar-plus-actions shape without a third action-button type
+//! alongside `PanelAction` and `SidebarPanel`'s own toolbar actions.
+//! [`Panel::layout`] already delegates its action right-alignment
+//! arithmetic to [`crate::Toolbar::layout_with_options`]'s `Spacer`
+//! mechanism internally. `Panel` keeps working for existing callers;
+//! new code should reach for `SidebarPanel` + `Toolbar` first.
 
 use crate::event::Rect;
+use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemMeasure};
 use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -176,22 +189,90 @@ impl Panel {
             None
         };
 
-        // Action buttons (right-aligned in title bar).
+        // Action buttons (right-aligned in title bar). The right-alignment
+        // arithmetic itself is delegated to `Toolbar::layout_with_options`'s
+        // `Spacer` push-to-trailing-edge mechanism — the same mechanism
+        // `SidebarPanel`'s own toolbar header slot uses — rather than Panel
+        // hand-rolling a second copy of it.
         let mut action_area_right = bounds.x + bounds.width;
         if let Some(tb) = title_bar_bounds {
-            for (i, action) in self.actions.iter().enumerate() {
-                let ax = action_area_right - measure.action_button_width;
+            // An action that wouldn't fully fit is dropped entirely (not
+            // partially clipped) — precompute how many of the actions, taken
+            // from the front of `self.actions`, fit before handing the
+            // trailing layout off to `Toolbar`, since `Toolbar::layout_with_options`
+            // clips a too-wide trailing group instead of dropping items.
+            let mut fit_count = 0usize;
+            let mut probe_right = action_area_right;
+            for _ in &self.actions {
+                let ax = probe_right - measure.action_button_width;
                 if ax < tb.x {
                     break;
                 }
-                let ab = Rect::new(ax, tb.y, measure.action_button_width, tb.height);
-                visible_actions.push(VisiblePanelAction {
-                    action_idx: i,
-                    id: action.id,
-                    bounds: ab,
-                });
-                hit_regions.push((ab, PanelHit::Action(action.id)));
-                action_area_right = ax;
+                probe_right = ax;
+                fit_count += 1;
+            }
+
+            // `Toolbar`'s trailing group packs left-to-right in button order,
+            // placing the first button leftmost within the group — the
+            // opposite of Panel's own "first action is rightmost" contract
+            // — so the fitting actions are fed in reverse. `order[k]` names
+            // which original `self.actions` index sits at trailing-button
+            // position `k`.
+            let order: Vec<usize> = (0..fit_count).rev().collect();
+            let toolbar_buttons: Vec<ToolbarButton> = std::iter::once(ToolbarButton::Spacer)
+                .chain(order.iter().map(|&idx| {
+                    let action = &self.actions[idx];
+                    ToolbarButton::Action {
+                        spec: None,
+                        id: action.id,
+                        label: action.icon.clone(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: action.is_active,
+                        tooltip: action.tooltip.clone(),
+                    }
+                }))
+                .collect();
+            let action_toolbar = Toolbar {
+                id: self.id,
+                buttons: toolbar_buttons,
+                bg: None,
+                focused_index: None,
+            };
+            let toolbar_layout = action_toolbar.layout(tb.x, tb.y, tb.width, tb.height, |_| {
+                ToolbarItemMeasure::new(measure.action_button_width)
+            });
+
+            // Re-key the toolbar's visible items back onto the original
+            // `self.actions` index so `visible_actions`/`hit_regions` keep
+            // Panel's own iteration-order contract (index 0 first, each
+            // test asserting on `visible_actions[i]` by that order).
+            let mut action_bounds: Vec<Option<Rect>> = vec![None; self.actions.len()];
+            let mut spacer_bounds: Option<Rect> = None;
+            for vis in &toolbar_layout.visible_items {
+                if vis.item_idx == 0 {
+                    spacer_bounds = Some(vis.bounds);
+                    continue;
+                }
+                action_bounds[order[vis.item_idx - 1]] = Some(vis.bounds);
+            }
+            for (i, action) in self.actions.iter().enumerate() {
+                if let Some(ab) = action_bounds[i] {
+                    visible_actions.push(VisiblePanelAction {
+                        action_idx: i,
+                        id: action.id,
+                        bounds: ab,
+                    });
+                    hit_regions.push((ab, PanelHit::Action(action.id)));
+                }
+            }
+            // The spacer's bounds span exactly the gap between the title
+            // bar's leading edge and the first visible action (or the full
+            // title bar when no action fit) — the same quantity Panel's own
+            // hand-rolled loop tracked as `action_area_right`.
+            if let Some(sb) = spacer_bounds {
+                action_area_right = sb.x + sb.width;
             }
             // Title-bar body (left of action buttons).
             let tb_body = Rect::new(tb.x, tb.y, action_area_right - tb.x, tb.height);

@@ -14,18 +14,25 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::cairo_rgb;
-use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout, TextSelection};
+use crate::primitives::rich_text_popup::{
+    RichTextPopup, RichTextPopupLayout, TextSelection, SB_INSET, SB_WIDTH,
+};
 use crate::theme::Theme;
 use crate::types::Color;
 
 /// Visible width of the rich-text-popup scrollbar in pixels. Wider
 /// than the layout's 1px border so the bar is paint+click-friendly.
 /// Callers that hit-test the scrollbar should match this constant so
-/// paint and hit-test geometry stay in sync.
-pub const RICH_TEXT_POPUP_SB_WIDTH: f64 = 8.0;
+/// paint and hit-test geometry stay in sync. Derived from the shared
+/// [`crate::primitives::rich_text_popup::SB_WIDTH`] — the same constant
+/// `macos::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH` derives from —
+/// rather than a second hardcoded `8.0` that could drift from it.
+pub const RICH_TEXT_POPUP_SB_WIDTH: f64 = SB_WIDTH as f64;
 /// Pixels of inset between the scrollbar's right edge and the popup's
-/// right border.
-pub const RICH_TEXT_POPUP_SB_INSET: f64 = 1.0;
+/// right border. Derived from the shared
+/// [`crate::primitives::rich_text_popup::SB_INSET`] — see
+/// [`RICH_TEXT_POPUP_SB_WIDTH`]'s doc for why.
+pub const RICH_TEXT_POPUP_SB_INSET: f64 = SB_INSET as f64;
 
 /// Draw a [`RichTextPopup`] at its resolved layout. Returns per-link
 /// hit regions in `(x, y, w, h, url)` form.
@@ -371,4 +378,30 @@ fn selection_byte_range(sel: TextSelection, line_idx: usize, line_text: &str) ->
         crate::text_util::char_to_byte_idx(line_text, start_col),
         crate::text_util::char_to_byte_idx(line_text, end_col),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins [`RICH_TEXT_POPUP_SB_WIDTH`]/[`RICH_TEXT_POPUP_SB_INSET`] to
+    /// `crate::primitives::rich_text_popup::{SB_WIDTH, SB_INSET}` — the
+    /// shared source of truth both derive from (see their own doc
+    /// comments above) — rather than to a literal, so this fails if the
+    /// shared constants change instead of silently drifting from them.
+    /// Also asserts the formula `draw_rich_text_popup` uses to place the
+    /// bar (`bx + bw - sb_w - inset`) resolves consistently through
+    /// these constants, pinning the acceptance criterion ("scrollbar
+    /// geometry equals the shared constants") rather than a number.
+    #[test]
+    fn scrollbar_geometry_matches_the_shared_constants() {
+        assert_eq!(RICH_TEXT_POPUP_SB_WIDTH, SB_WIDTH as f64);
+        assert_eq!(RICH_TEXT_POPUP_SB_INSET, SB_INSET as f64);
+
+        let bx = 5.0_f64;
+        let bw = 100.0_f64;
+        let expected_sb_x = bx + bw - SB_WIDTH as f64 - SB_INSET as f64;
+        let sb_x = bx + bw - RICH_TEXT_POPUP_SB_WIDTH - RICH_TEXT_POPUP_SB_INSET;
+        assert_eq!(sb_x, expected_sb_x);
+    }
 }

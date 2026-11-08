@@ -267,9 +267,9 @@ use quadraui::tui::testing::{driver_with_shell, TuiDriver};
 use quadraui::tui::{RunConfig, StepOutcome, TuiRunner};
 use quadraui::{
     AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps, BottomPanelEvent, Button,
-    ContextMenuItem, DataTable, DialogButton, FloatMeasure, ListView, Notification, Point,
-    Reaction, Rect, RgbaImage, ShellApp, ShellConfig, ShellContext, TabBar, TextDisplay, Toast,
-    ToastCorner, TreeView, UiEvent, UserPayload, WidgetId,
+    ContextMenuItem, DataTable, DialogButton, FloatMeasure, ImageSource, ListView, Notification,
+    Point, PointerShape, Reaction, Rect, RgbaImage, ShellApp, ShellConfig, ShellContext, TabBar,
+    TextDisplay, Toast, ToastCorner, TreeView, UiEvent, UserPayload, WidgetId,
 };
 #[cfg(test)]
 use quadraui_binding_core::callback_reaction;
@@ -294,12 +294,18 @@ use quadraui_binding_core::callback_reaction;
 ))]
 use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
-    callback_reaction_for_render, caret_shape, click_down_up_events, color_depth_name,
+    add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction_for_render,
+    caret_shape, clear_recent_documents, click_down_up_events, color_depth_name,
     decode_extra_primitive, decode_render_output, decode_shell_config, dialog_severity, draw_bands,
-    font_role, key_pressed_event, merge_overrides, message_dialog_options_from_buttons,
-    paint_layout, panic_message, render_overlays, step_driver, text_display_from_lines,
-    theme_color_value, toast_corner, window_close_reaction, BindingHost, DecodeError,
-    ErasedShellDriver, EventSink, HitDetail, InteractionEngine, OverrideError, RenderOutput,
+    end_power_save_block, font_role, install_crash_handler, is_default_protocol_client,
+    key_pressed_event, login_item_enabled, menu_for_surface, merge_overrides,
+    message_dialog_options_from_buttons, paint_layout, panic_message, pointer_shape,
+    remove_as_default_protocol_client, render_overlays, resolve_app_path, set_app_identifier,
+    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
+    text_display_from_lines, theme_color_value, toast_corner, update_apply_on_quit,
+    update_check_for_update, update_download_and_stage, window_close_reaction, with_tray,
+    with_window, BindingHost, DecodeError, ErasedShellDriver, EventSink, HitDetail,
+    InteractionEngine, OverrideError, RenderOutput, ServiceError, UpdateInfoWire,
     WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY,
     SLOT_TREE,
 };
@@ -561,15 +567,17 @@ fn request_exit_before_drop(live: &mut LiveRunner) {
 
 /// One action a [`QuiAppActions`] method recorded, already decoded and
 /// validated, waiting for [`flush_deferred_actions`] to apply it -- the
-/// napi-rs analog of `quadraui-py`'s own `DeferredAction`, covering the
-/// subset of its variants this crate's `actions()` exposes today
-/// (dialogs/menus/toasts/notifications/OS file actions; no window-control
-/// or tray surface exists on this crate's `QuiApp` yet to mirror). Each
-/// variant carries exactly the already-decoded arguments the matching
+/// napi-rs analog of `quadraui-py`'s own `DeferredAction`. Each variant
+/// carries exactly the already-decoded arguments the matching
 /// [`QuiAppActions`] method passes to the same underlying
 /// `quadraui`/`quadraui_binding_core` call, so applying one in
 /// [`flush_deferred_actions`] is a direct Rust call with no further
-/// decoding or validation left to do.
+/// decoding or validation left to do -- except [`Self::SetDockMenu`]/
+/// [`Self::SetJumpList`], whose own `quadraui_binding_core::services` call
+/// still does its own items decode at flush time, same as every other
+/// variant's matching `QuiApp` method does synchronously -- see
+/// `quadraui-py`'s `test_deferred_actions.py` module doc for why that one
+/// exception exists.
 enum DeferredAction {
     MessageDialog(quadraui::MessageDialogOptions),
     ContextMenu(Vec<ContextMenuItem>, Point),
@@ -579,6 +587,22 @@ enum DeferredAction {
     RevealInFileManager(PathBuf),
     MoveToTrash(PathBuf),
     RestoreFromTrash(PathBuf),
+    ApplyUpdateOnQuit(u64),
+    EndPowerSaveBlock(u64),
+    SetLoginItem(bool, bool, Vec<String>),
+    SetAsDefaultProtocolClient(String),
+    RemoveAsDefaultProtocolClient(String),
+    BeginDragOut(Vec<String>, Option<String>),
+    AddRecentDocument(PathBuf),
+    ClearRecentDocuments,
+    SetDockMenu(JsonValue),
+    SetJumpList(JsonValue),
+    TrayIcon(ImageSource),
+    TrayTooltip(String),
+    TrayMenu(Vec<ContextMenuItem>),
+    DocumentEdited(bool),
+    RepresentedFilename(Option<PathBuf>),
+    Cursor(PointerShape),
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin napi-rs leaf around
@@ -1126,36 +1150,160 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app: &mut NodeAppLogic) -> 
                 backend.services().send_notification(notification);
             }
             DeferredAction::OpenPath(path) => {
-                if let Err(err) = backend.services().open_path(&path) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("open_path: {err:?}")),
-                    );
+                if let Err(err) = service_result("open_path", backend.services().open_path(&path)) {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::RevealInFileManager(path) => {
-                if let Err(err) = backend.services().reveal_in_file_manager(&path) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("reveal_in_file_manager: {err:?}")),
-                    );
+                if let Err(err) = service_result(
+                    "reveal_in_file_manager",
+                    backend.services().reveal_in_file_manager(&path),
+                ) {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::MoveToTrash(path) => {
-                if let Err(err) = backend.services().move_to_trash(&path) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("move_to_trash: {err:?}")),
-                    );
+                if let Err(err) =
+                    service_result("move_to_trash", backend.services().move_to_trash(&path))
+                {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::RestoreFromTrash(path) => {
-                if let Err(err) = backend.services().restore_from_trash(&path) {
+                if let Err(err) = service_result(
+                    "restore_from_trash",
+                    backend.services().restore_from_trash(&path),
+                ) {
+                    record_error(&app.pending_error, err);
+                }
+            }
+            DeferredAction::ApplyUpdateOnQuit(handle) => {
+                if let Err(err) = update_apply_on_quit(backend.services(), handle) {
                     record_error(
                         &app.pending_error,
-                        internal_error(format!("restore_from_trash: {err:?}")),
+                        service_error_to_napi("apply_on_quit", err),
                     );
                 }
+            }
+            DeferredAction::EndPowerSaveBlock(handle) => {
+                if let Err(err) = end_power_save_block(backend.services(), handle) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("end_power_save_block", err),
+                    );
+                }
+            }
+            DeferredAction::SetLoginItem(enabled, open_hidden, args) => {
+                if let Err(err) = set_login_item(backend.services(), enabled, open_hidden, args) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("set_login_item", err),
+                    );
+                }
+            }
+            DeferredAction::SetAsDefaultProtocolClient(scheme) => {
+                if let Err(err) = set_as_default_protocol_client(backend.services(), &scheme) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("set_as_default_protocol_client", err),
+                    );
+                }
+            }
+            DeferredAction::RemoveAsDefaultProtocolClient(scheme) => {
+                if let Err(err) = remove_as_default_protocol_client(backend.services(), &scheme) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("remove_as_default_protocol_client", err),
+                    );
+                }
+            }
+            DeferredAction::BeginDragOut(files, text) => {
+                if let Err(err) = begin_drag_out(backend.services(), files, text) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("begin_drag_out", err),
+                    );
+                }
+            }
+            DeferredAction::AddRecentDocument(path) => {
+                if let Err(err) = add_recent_document(backend.services(), &path.to_string_lossy()) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("add_recent_document", err),
+                    );
+                }
+            }
+            DeferredAction::ClearRecentDocuments => {
+                if let Err(err) = clear_recent_documents(backend.services()) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("clear_recent_documents", err),
+                    );
+                }
+            }
+            DeferredAction::SetDockMenu(items) => {
+                if let Err(err) = set_dock_menu(backend.services(), items) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("set_dock_menu", err),
+                    );
+                }
+            }
+            DeferredAction::SetJumpList(items) => {
+                if let Err(err) = set_jump_list(backend.services(), items) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("set_jump_list", err),
+                    );
+                }
+            }
+            DeferredAction::TrayIcon(icon) => {
+                if let Err(err) =
+                    service_result("set_tray_icon", with_tray(backend, |t| t.set_icon(icon)))
+                {
+                    record_error(&app.pending_error, err);
+                }
+            }
+            DeferredAction::TrayTooltip(tooltip) => {
+                if let Err(err) = service_result(
+                    "set_tray_tooltip",
+                    with_tray(backend, |t| t.set_tooltip(&tooltip)),
+                ) {
+                    record_error(&app.pending_error, err);
+                }
+            }
+            DeferredAction::TrayMenu(items) => {
+                let menu = menu_for_surface(WidgetId::new("qui-tray-menu"), items);
+                if let Err(err) =
+                    service_result("set_tray_menu", with_tray(backend, |t| t.set_menu(&menu)))
+                {
+                    record_error(&app.pending_error, err);
+                }
+            }
+            DeferredAction::DocumentEdited(edited) => {
+                if let Err(err) = service_result(
+                    "set_document_edited",
+                    with_window(backend, |w| w.set_document_edited(edited)),
+                ) {
+                    record_error(&app.pending_error, err);
+                }
+            }
+            DeferredAction::RepresentedFilename(path) => {
+                if let Err(err) = service_result(
+                    "set_represented_filename",
+                    with_window(backend, |w| w.set_represented_filename(path.as_deref())),
+                ) {
+                    record_error(&app.pending_error, err);
+                }
+            }
+            DeferredAction::Cursor(shape) => {
+                // Fire-and-forget, the same shape `quadraui-py`'s own
+                // `DeferredAction::Cursor` arm uses: whether the glyph was
+                // actually applied is only observable synchronously via
+                // `QuiApp::set_cursor`'s own return value, and a deferred
+                // action by definition isn't applied until after that
+                // return value would already be gone.
+                let _ = backend.set_cursor(shape);
             }
         }
     }
@@ -1203,6 +1351,55 @@ fn slot_occupied_error(detail: impl std::fmt::Display) -> Error {
 /// `quadraui-py`'s `InternalError` exception subclass.
 fn internal_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("InternalError: {detail}"))
+}
+
+/// Mirrors [`invalid_descriptor_error`] for a
+/// [`quadraui_binding_core::services::ServiceError::Unsupported`] --
+/// this backend has no implementation at all for the platform-services
+/// seam called, distinct from a genuine failure ([`internal_error`]) --
+/// the napi-rs analog of `quadraui-py`'s `UnsupportedError` exception
+/// subclass.
+fn unsupported_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("UnsupportedError: {detail}"))
+}
+
+/// Maps a `quadraui_binding_core::services` call's [`ServiceError`] to this
+/// binding's own tagged-`Error` taxonomy, prefixed with `what` -- the one
+/// place every platform-services method this crate exposes (update,
+/// power-save blocker, launch-at-login, protocol registration, drag-out,
+/// recent documents/dock menu/jump list, `appPath`, `installCrashHandler`)
+/// routes its `Err` through, the napi-rs analog of `quadraui-py`'s
+/// `service_error_to_py`. [`ServiceError::Unsupported`] becomes
+/// [`unsupported_error`] (this backend has no implementation at all --
+/// distinct from a genuine failure); [`ServiceError::Failure`] becomes
+/// [`internal_error`] (the backend tried and it broke);
+/// [`ServiceError::InvalidArgument`] becomes [`invalid_descriptor_error`]
+/// (a wire argument -- an enum-name string, a descriptor object -- never
+/// even reached a service call).
+fn service_error_to_napi(what: &str, err: ServiceError) -> Error {
+    match err {
+        ServiceError::Unsupported => {
+            unsupported_error(format!("{what}: unsupported on this backend"))
+        }
+        ServiceError::Failure(context) => internal_error(format!("{what}: {context}")),
+        ServiceError::InvalidArgument(message) => {
+            invalid_descriptor_error(format!("{what}: {message}"))
+        }
+        // `ServiceError` is `#[non_exhaustive]`: a future core variant this
+        // leaf doesn't know about yet still raises a tagged error rather
+        // than failing to compile.
+        other => internal_error(format!("{what}: {other}")),
+    }
+}
+
+/// Maps a [`quadraui::ServiceResult`] failure to [`internal_error`],
+/// prefixed with `what` -- the one place every `PlatformServices`/
+/// `WindowControl`/`TrayService` method this crate exposes
+/// (`openPath`/`moveToTrash`/.../`setTrayIcon`/`setDocumentEdited`/...)
+/// routes its `Err` through, the napi-rs analog of `quadraui-py`'s own
+/// `service_result`.
+fn service_result(what: &str, result: quadraui::ServiceResult<()>) -> Result<()> {
+    result.map_err(|err| internal_error(format!("{what}: {err:?}")))
 }
 
 /// Mirrors [`invalid_descriptor_error`] for a byte buffer whose length
@@ -1642,6 +1839,204 @@ impl QuiAppActions {
         self.queue
             .borrow_mut()
             .push_back(DeferredAction::RestoreFromTrash(PathBuf::from(path)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::ApplyUpdateOnQuit`] -- same argument as
+    /// `quadraui-py`'s `apply_on_quit`. `handle` is `i64`, not `u64`:
+    /// napi-rs has no `FromNapiValue`/`ToNapiValue` for a bare `u64` (unlike
+    /// `i64`, which it maps to/from a JS `number`), and every handle this
+    /// crate's registries mint (see `quadraui_binding_core::services`'s
+    /// module doc) fits well inside `i64::MAX` in practice.
+    #[napi(js_name = "applyOnQuit")]
+    pub fn apply_on_quit(&self, handle: i64) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ApplyUpdateOnQuit(handle as u64));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::EndPowerSaveBlock`] -- same argument as
+    /// `quadraui-py`'s `end_power_save_block`. Same `i64`-not-`u64` story
+    /// as [`Self::apply_on_quit`].
+    #[napi(js_name = "endPowerSaveBlock")]
+    pub fn end_power_save_block(&self, handle: i64) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::EndPowerSaveBlock(handle as u64));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetLoginItem`] -- same arguments as
+    /// `quadraui-py`'s `set_login_item`.
+    #[napi(js_name = "setLoginItem")]
+    pub fn set_login_item(
+        &self,
+        enabled: bool,
+        open_hidden: Option<bool>,
+        args: Option<Vec<String>>,
+    ) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetLoginItem(
+                enabled,
+                open_hidden.unwrap_or(false),
+                args.unwrap_or_default(),
+            ));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetAsDefaultProtocolClient`] -- same
+    /// argument as `quadraui-py`'s `set_as_default_protocol_client`.
+    #[napi(js_name = "setAsDefaultProtocolClient")]
+    pub fn set_as_default_protocol_client(&self, scheme: String) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetAsDefaultProtocolClient(scheme));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::RemoveAsDefaultProtocolClient`] -- same
+    /// argument as `quadraui-py`'s `remove_as_default_protocol_client`.
+    #[napi(js_name = "removeAsDefaultProtocolClient")]
+    pub fn remove_as_default_protocol_client(&self, scheme: String) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::RemoveAsDefaultProtocolClient(scheme));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::BeginDragOut`] -- same arguments as
+    /// `quadraui-py`'s `begin_drag_out`.
+    #[napi(js_name = "beginDragOut")]
+    pub fn begin_drag_out(&self, files: Option<Vec<String>>, text: Option<String>) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::BeginDragOut(
+                files.unwrap_or_default(),
+                text,
+            ));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::AddRecentDocument`] -- same argument as
+    /// `quadraui-py`'s `add_recent_document`.
+    #[napi(js_name = "addRecentDocument")]
+    pub fn add_recent_document(&self, path: String) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::AddRecentDocument(PathBuf::from(path)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::ClearRecentDocuments`] -- same argument
+    /// (none) as `quadraui-py`'s `clear_recent_documents`.
+    #[napi(js_name = "clearRecentDocuments")]
+    pub fn clear_recent_documents(&self) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ClearRecentDocuments);
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetDockMenu`] -- same argument, same
+    /// decoding, as `quadraui-py`'s `set_dock_menu`. `items` is only
+    /// materialized into a [`JsonValue`] here; the actual item-list shape
+    /// is decoded by `quadraui_binding_core::set_dock_menu` when
+    /// [`flush_deferred_actions`] applies it -- see [`DeferredAction`]'s
+    /// own doc for why.
+    #[napi(js_name = "setDockMenu")]
+    pub fn set_dock_menu(&self, items: Unknown) -> Result<()> {
+        let items = to_descriptor_value(items)
+            .map_err(|detail| invalid_descriptor_error(format!("setDockMenu: {detail}")))?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetDockMenu(items));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetJumpList`] -- same argument, same
+    /// decoding, as `quadraui-py`'s `set_jump_list`. Same decode-at-flush-
+    /// time story as [`Self::set_dock_menu`].
+    #[napi(js_name = "setJumpList")]
+    pub fn set_jump_list(&self, items: Unknown) -> Result<()> {
+        let items = to_descriptor_value(items)
+            .map_err(|detail| invalid_descriptor_error(format!("setJumpList: {detail}")))?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetJumpList(items));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::TrayIcon`] -- same argument, same
+    /// decoding, as `quadraui-py`'s `set_tray_icon`. `icon` decodes via
+    /// [`decode_via_json`], not [`decode_direct`]: a `Buffer`/`Uint8Array`
+    /// `{Bytes: ...}` source needs the byte-array materialization
+    /// [`to_descriptor_value`] does -- see [`QuiApp::set_tray_icon`]'s own
+    /// doc.
+    #[napi(js_name = "setTrayIcon")]
+    pub fn set_tray_icon(&self, icon: Unknown) -> Result<()> {
+        let icon: ImageSource = decode_via_json("setTrayIcon", icon)?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::TrayIcon(icon));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::TrayTooltip`] -- same argument as
+    /// `quadraui-py`'s `set_tray_tooltip`.
+    #[napi(js_name = "setTrayTooltip")]
+    pub fn set_tray_tooltip(&self, tooltip: String) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::TrayTooltip(tooltip));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::TrayMenu`] -- same argument, same
+    /// decoding, as `quadraui-py`'s `set_tray_menu`.
+    #[napi(js_name = "setTrayMenu")]
+    pub fn set_tray_menu(&self, env: Env, items: Unknown) -> Result<()> {
+        let items: Vec<ContextMenuItem> = decode_direct(env, "setTrayMenu", items)?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::TrayMenu(items));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::DocumentEdited`] -- same argument as
+    /// `quadraui-py`'s `set_document_edited`.
+    #[napi(js_name = "setDocumentEdited")]
+    pub fn set_document_edited(&self, edited: bool) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::DocumentEdited(edited));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::RepresentedFilename`] -- same argument as
+    /// `quadraui-py`'s `set_represented_filename`.
+    #[napi(js_name = "setRepresentedFilename")]
+    pub fn set_represented_filename(&self, path: Option<String>) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::RepresentedFilename(path.map(PathBuf::from)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::Cursor`] -- same arguments, same
+    /// decoding, as `quadraui-py`'s `QuiAppActions.set_cursor`. Unlike
+    /// [`QuiApp::set_cursor`], this has no return value: whether the glyph
+    /// was actually applied is only observable synchronously, and a
+    /// deferred action by definition isn't applied until after this call
+    /// returns.
+    #[napi(js_name = "setCursor")]
+    pub fn set_cursor(&self, shape: String, edge: Option<String>) -> Result<()> {
+        let shape: PointerShape = pointer_shape(&shape, edge.as_deref())
+            .map_err(|err| invalid_descriptor_error(format!("setCursor: {err}")))?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Cursor(shape));
         Ok(())
     }
 }

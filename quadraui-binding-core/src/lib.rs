@@ -23,6 +23,7 @@ pub mod host;
 pub mod layout;
 pub mod render;
 pub mod semantic;
+pub mod services;
 pub mod text_input;
 pub mod tree_edit;
 pub mod wire;
@@ -68,12 +69,13 @@ pub use hit::{HitDetail, PaintedHit};
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 pub use host::NativeExitPolicy;
 pub use host::{
-    callback_reaction, callback_reaction_for_render, caret_shape, click_down_up_events,
-    color_depth_name, dialog_severity, font_role, key_pressed_event, merge_overrides,
-    panic_message, pointer_shape, render_overlays, resize_edge, step_driver,
-    text_display_from_lines, theme_color_value, toast_corner, window_close_reaction, BindingHost,
-    ErasedShellDriver, OverrideError, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST,
-    SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
+    app_path_kind, callback_reaction, callback_reaction_for_render, caret_shape,
+    click_down_up_events, color_depth_name, dialog_severity, font_role, key_pressed_event,
+    menu_for_surface, merge_overrides, panic_message, pointer_shape, power_save_kind,
+    render_overlays, resize_edge, step_driver, text_display_from_lines, theme_color_value,
+    toast_corner, window_close_reaction, with_tray, with_window, BindingHost, ErasedShellDriver,
+    OverrideError, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR,
+    SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
 pub use layout::{LayoutPanel, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry};
@@ -81,6 +83,14 @@ pub use layout::{LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS};
 pub use render::{draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf, split_rects};
 pub use render::{split_rects_with_gap, tree_viewport_rows, RenderFrame, RenderRefs};
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
+pub use services::{
+    add_recent_document, app_identifier, begin_drag_out, begin_power_save_block,
+    clear_recent_documents, end_power_save_block, install_crash_handler,
+    is_default_protocol_client, login_item_enabled, remove_as_default_protocol_client,
+    resolve_app_path, set_app_identifier, set_as_default_protocol_client, set_dock_menu,
+    set_jump_list, set_login_item, update_apply_on_quit, update_check_for_update,
+    update_download_and_stage, ServiceError, UpdateInfoWire,
+};
 pub use text_input::{apply_text_input_edit, clamp_cursor, text_input_click_event};
 pub use text_input::{text_input_insert_event, text_input_key_event, TextEditorCache};
 pub use tree_edit::tree_row_rename_key_event;

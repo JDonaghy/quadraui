@@ -86,6 +86,7 @@
 //! ```
 
 use crate::event::Rect;
+use crate::layout::{Anchor, ResolvedSide, Side};
 use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -369,77 +370,29 @@ impl Tooltip {
         let vw = measure.width;
         let vh = measure.height;
 
-        // Compute preferred x/y for each possible placement.
-        let candidate = |p: TooltipPlacement| -> (f32, f32) {
-            match p {
-                TooltipPlacement::Top => {
-                    (anchor.x + (anchor.width - vw) * 0.5, anchor.y - margin - vh)
-                }
-                TooltipPlacement::Bottom => (
-                    anchor.x + (anchor.width - vw) * 0.5,
-                    anchor.y + anchor.height + margin,
-                ),
-                TooltipPlacement::Left => (
-                    anchor.x - margin - vw,
-                    anchor.y + (anchor.height - vh) * 0.5,
-                ),
-                TooltipPlacement::Right => (
-                    anchor.x + anchor.width + margin,
-                    anchor.y + (anchor.height - vh) * 0.5,
-                ),
+        let side = match self.placement {
+            TooltipPlacement::Top => Side::Top,
+            TooltipPlacement::Bottom => Side::Bottom,
+            TooltipPlacement::Left => Side::Left,
+            TooltipPlacement::Right => Side::Right,
+        };
+
+        let (origin, resolved_side) = Anchor::new(anchor, side)
+            .with_margin(margin)
+            .resolve((vw, vh), viewport);
+
+        let resolved_placement = match resolved_side {
+            ResolvedSide::Top => ResolvedPlacement::Top,
+            ResolvedSide::Bottom => ResolvedPlacement::Bottom,
+            ResolvedSide::Left => ResolvedPlacement::Left,
+            ResolvedSide::Right => ResolvedPlacement::Right,
+            ResolvedSide::AtPoint => {
+                unreachable!("TooltipPlacement never maps to Side::AtPoint")
             }
-        };
-
-        let fits = |x: f32, y: f32| -> bool {
-            x >= viewport.x
-                && x + vw <= viewport.x + viewport.width
-                && y >= viewport.y
-                && y + vh <= viewport.y + viewport.height
-        };
-
-        // Try preferred, then opposite, then clamp.
-        let opposite = match self.placement {
-            TooltipPlacement::Top => TooltipPlacement::Bottom,
-            TooltipPlacement::Bottom => TooltipPlacement::Top,
-            TooltipPlacement::Left => TooltipPlacement::Right,
-            TooltipPlacement::Right => TooltipPlacement::Left,
-        };
-
-        let (x, y, resolved) = {
-            let (px, py) = candidate(self.placement);
-            if fits(px, py) {
-                (px, py, self.placement)
-            } else {
-                let (ox, oy) = candidate(opposite);
-                if fits(ox, oy) {
-                    (ox, oy, opposite)
-                } else {
-                    // Fall back to preferred, clamped to viewport. Guard
-                    // against `vw > viewport.width` / `vh > viewport.height`
-                    // — without `.max(viewport.x)` the clamp's max would be
-                    // less than its min and `f32::clamp` panics. When the
-                    // tooltip is too big to fit, pin it to the viewport
-                    // edge and let it overflow on the far side rather than
-                    // crash; the consumer is responsible for choosing a
-                    // sensible width if overflow is undesirable.
-                    let max_x = (viewport.x + viewport.width - vw).max(viewport.x);
-                    let max_y = (viewport.y + viewport.height - vh).max(viewport.y);
-                    let cx = px.clamp(viewport.x, max_x);
-                    let cy = py.clamp(viewport.y, max_y);
-                    (cx, cy, self.placement)
-                }
-            }
-        };
-
-        let resolved_placement = match resolved {
-            TooltipPlacement::Top => ResolvedPlacement::Top,
-            TooltipPlacement::Bottom => ResolvedPlacement::Bottom,
-            TooltipPlacement::Left => ResolvedPlacement::Left,
-            TooltipPlacement::Right => ResolvedPlacement::Right,
         };
 
         TooltipLayout {
-            bounds: Rect::new(x, y, vw, vh),
+            bounds: Rect::new(origin.x, origin.y, vw, vh),
             resolved_placement,
         }
     }

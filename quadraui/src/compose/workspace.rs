@@ -142,10 +142,9 @@
 //! (`quadraui/src/tui/tab_bar.rs`).
 
 use crate::event::{Key, MouseButton, NamedKey, Rect};
-// `TabBarHits` is `#[deprecated]` — this compose helper caches
-// exactly what `Backend::draw_tab_bar` returns for click dispatch. See
-// that struct's doc for the replacement plan.
-#[allow(deprecated)]
+// This compose helper caches exactly what `Backend::draw_tab_bar` returns
+// for click dispatch — see `TabBarHits`'s own doc for its stability
+// contract.
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabItem};
 use crate::text_util::display_width;
 use crate::types::{Modifiers, WidgetId};
@@ -296,7 +295,6 @@ pub struct WorkspaceController {
     preview: Option<String>,
     scroll_offset: usize,
     last_strip: Option<Rect>,
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
     last_hits: Option<TabBarHits>,
 }
 
@@ -691,7 +689,6 @@ impl WorkspaceController {
     ///    strip is repainted inline with the corrected value — the
     ///    two-pass-paint pattern `TabBar`'s module doc prescribes for
     ///    event-driven backends, where a queued redraw is unreliable.
-    #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
     pub fn render(&mut self, backend: &mut dyn Backend, bounds: Rect) -> WorkspaceLayout {
         let lh = backend.chrome_line_height();
         // On a pixel backend (GUI), the tab strip is sized off
@@ -750,7 +747,6 @@ impl WorkspaceController {
     /// closes for neither the close button nor a middle click. Anything
     /// else — the body area, dead space in the strip, a click before the
     /// first [`Self::render`] — returns an empty `Vec`.
-    #[allow(deprecated)] // reads the deprecated `TabBarHits` cache — issue #823
     pub fn handle_click(&mut self, x: f32, y: f32, button: MouseButton) -> Vec<WorkspaceEvent> {
         let (Some(strip), Some(hits)) = (self.last_strip, self.last_hits.as_ref()) else {
             return Vec::new();
@@ -1617,7 +1613,6 @@ mod tests {
     /// event logic without a `Backend`; the rasteriser step itself
     /// (actually painting a `TabBar` into those bounds) is covered
     /// end-to-end by the driver tests in `tests/tui_example_driver.rs`.
-    #[allow(deprecated)] // builds the deprecated `TabBarHits` test fixture — issue #823
     fn seed_click_geometry(ws: &mut WorkspaceController, bounds: Rect, tabs: &[(f64, f64)]) {
         ws.last_strip = Some(bounds);
         ws.last_hits = Some(TabBarHits {

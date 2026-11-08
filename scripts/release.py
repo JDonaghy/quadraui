@@ -66,8 +66,11 @@ mutation).
 `promote`, run from a checkout with `develop` fully merged into it: reads
 `CHANGELOG.md`'s most recent released (non-`Unreleased`) section and prints
 the `gh pr create --base main --head develop` and `gh pr merge --merge`
-commands, with the PR body pre-filled with that section. Never runs them.
-`--merge` is load-bearing in that last command: a squash or rebase merge of
+commands, with the PR body pre-filled by `promotion_pr_body` — a short
+header plus that section, truncated well under GitHub's PR body length
+limit so the printed command never fails with "Body is too long" on a
+release with a large CHANGELOG section. Never runs them. `--merge` is
+load-bearing in that last command: a squash or rebase merge of
 `develop` into `main` leaves the two branches' histories diverged, breaking
 the next promotion's merge-base. When `quadraui-py`'s current version has no
 `py-v<version>` tag yet, `promote` also prints the `git tag py-v<version>` +
@@ -232,6 +235,50 @@ def release_section_body(changelog_text: str, version: str) -> str:
     rest = changelog_text[match.end():]
     next_header = re.search(r"(?m)^## \[", rest)
     return (rest[: next_header.start()] if next_header else rest).strip()
+
+
+# GitHub's hard cap on a PR/issue body (`gh pr create --body` fails with
+# "Body is too long" past this). A large CHANGELOG release section can
+# exceed it on its own, so this constant leaves real margin under the
+# actual limit for the summary header/truncation marker this function adds
+# on top of the section body, and for GitHub trimming whitespace at the
+# edges.
+PR_BODY_MAX_LEN = 60_000
+
+PROMOTION_BODY_TRUNCATION_MARKER = (
+    "\n\n…(truncated — see CHANGELOG.md's full `## [{version}]` section for "
+    "the rest)\n"
+)
+
+
+def promotion_pr_body(
+    changelog_text: str, version: str, *, max_len: int = PR_BODY_MAX_LEN
+) -> str:
+    """The `develop` -> `main` promotion PR body for `version`: a short
+    header plus `release_section_body`'s content, truncated well under
+    GitHub's PR body length limit instead of risking `gh pr create` failing
+    with "Body is too long" on a release with a large CHANGELOG section.
+
+    `max_len` must leave room for the header and truncation marker on their
+    own -- raises `ReleaseError` rather than silently returning a body
+    longer than `max_len` when it doesn't.
+    """
+    section = release_section_body(changelog_text, version)
+    header = (
+        f"Promotes `develop` to `main` for v{version}. Full release notes "
+        f"are CHANGELOG.md's `## [{version}]` section.\n\n"
+    )
+    marker = PROMOTION_BODY_TRUNCATION_MARKER.format(version=version)
+    if len(header) + len(section) <= max_len:
+        return header + section
+    budget = max_len - len(header) - len(marker)
+    if budget < 0:
+        raise ReleaseError(
+            f"max_len={max_len} leaves no room for the promotion PR body's "
+            f"own header + truncation marker ({len(header) + len(marker)} "
+            "chars combined)"
+        )
+    return header + section[:budget].rstrip() + marker
 
 
 def refresh_lock(repo_dir: Path, packages: tuple[str, ...] = ("quadraui",)) -> None:
@@ -461,7 +508,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
     try:
         changelog_text = changelog_path.read_text(encoding="utf-8")
         version = latest_release_version(changelog_text)
-        body = release_section_body(changelog_text, version)
+        body = promotion_pr_body(changelog_text, version)
     except ReleaseError as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 1

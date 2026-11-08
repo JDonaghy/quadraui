@@ -16,9 +16,11 @@
 //!
 //! ## What's in the box
 //!
-//! 49 primitives (one module each under `src/primitives/`), each
-//! declarative + serde-friendly so apps and Lua plugins can describe UI
-//! as data. A representative sample:
+//! 50 primitive modules (one each under `src/primitives/`) — widgets,
+//! each declarative + serde-friendly so apps and Lua plugins can
+//! describe UI as data, plus the `layout_metrics` and `row_stack`
+//! shared-math helpers the widget modules reuse. A representative
+//! sample:
 //!
 //! | Primitive | Use for |
 //! |-----------|---------|
@@ -100,19 +102,20 @@
 //!
 //! ## Status
 //!
-//! `0.8.x` — pre-1.0, published on crates.io. Breaking changes are
+//! `0.9.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
-//! `quadraui/docs/decisions/DECISIONS.md`. 49 primitives shipped. The TUI
-//! and GTK backends have full feature parity and are battle-tested by
-//! vimcode (5000+ tests). The macOS backend implements the whole
-//! `Backend` trait and is built/tested for real on `macos-latest` CI. The
-//! Windows backend's window/event/platform-services infrastructure is
-//! real and CI-blocking on `windows-latest`, and every per-primitive
-//! rasteriser is shipped too, with no `todo!()` left in
-//! `src/win/backend.rs` — builds, tests and the cross-backend conformance
-//! matrix are all blocking on `windows-latest` CI. See the root
-//! `README.md`'s *Status* section for the specifics and issue links.
+//! `quadraui/docs/decisions/DECISIONS.md`. 50 primitive modules
+//! shipped. The TUI and GTK backends have full feature parity and are
+//! battle-tested by vimcode (5000+ tests). The macOS backend
+//! implements the whole `Backend` trait and is built/tested for real
+//! on `macos-latest` CI. The Windows backend's window/event/platform-
+//! services infrastructure is real and CI-blocking on
+//! `windows-latest`, and every per-primitive rasteriser is shipped
+//! too, with no `todo!()` left in `src/win/backend.rs` — builds, tests
+//! and the cross-backend conformance matrix are all blocking on
+//! `windows-latest` CI. See the root `README.md`'s *Status* section
+//! for the specifics and issue links.
 //!
 //! ## Plugin invariants (briefly)
 //!
@@ -564,7 +567,10 @@ pub use primitives::list::{
 pub use primitives::menu_bar::{
     MenuBar, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout, VisibleMenuBarItem,
 };
-pub use primitives::message_list::{MessageList, MessageListHit, MessageListMeasure, MessageRow};
+pub use primitives::message_list::{
+    MessageList, MessageListHit, MessageListLayout, MessageListMeasure, MessageRow,
+    VisibleMessageRow,
+};
 pub use primitives::minimap::{
     aggregate_spans, reserved_width, sample_blocks, sample_window, window_start_line, Minimap,
     MinimapGrid, MinimapHit, MinimapLayout, MinimapLine, MinimapScale, MinimapSizing, MinimapSpan,
@@ -647,7 +653,8 @@ pub use primitives::toast::{
 };
 pub use primitives::toolbar::{
     Toolbar, ToolbarButton, ToolbarEvent, ToolbarHit, ToolbarIcons, ToolbarItemKind,
-    ToolbarItemMeasure, ToolbarLayout, ToolbarPaintOptions, ToolbarVAlign, VisibleToolbarItem,
+    ToolbarItemMeasure, ToolbarItemRole, ToolbarLayout, ToolbarLayoutOptions, ToolbarOrientation,
+    ToolbarPaintOptions, ToolbarVAlign, VisibleToolbarItem,
 };
 pub use primitives::tooltip::{
     ResolvedPlacement, Tooltip, TooltipBorder, TooltipChrome, TooltipHit, TooltipLayout,

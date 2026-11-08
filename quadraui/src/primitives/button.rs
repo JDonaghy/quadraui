@@ -347,6 +347,28 @@ impl ButtonSpec {
         }
     }
 
+    /// Derive a [`ButtonSpec`] from the plain `label`/`icon`/`tooltip`/
+    /// `disabled` fields [`crate::ToolbarButton::Action`],
+    /// [`crate::DialogButton`], [`crate::ToastButton`] and
+    /// [`crate::ButtonRowItem`] each carry alongside their optional
+    /// `spec` override — the single derivation those four kinds' own
+    /// `resolved_button_spec` share. `variant` starts at [`Self::new`]'s
+    /// own `ButtonVariant::Primary` default; a caller that derives a
+    /// variant from its own legacy field (e.g. `DialogButton::is_default`,
+    /// `ToastButton::primary`) sets `.variant` on the result afterwards.
+    pub fn from_legacy(
+        label: impl Into<String>,
+        icon: Option<Icon>,
+        tooltip: Option<String>,
+        disabled: bool,
+    ) -> Self {
+        let mut spec = Self::new(label);
+        spec.icon = icon;
+        spec.tooltip = tooltip;
+        spec.disabled = disabled;
+        spec
+    }
+
     /// Materialise a paintable [`Button`] from this spec, for a host
     /// rasteriser that wants to paint a non-`Button` primitive's button
     /// (a [`crate::ToolbarButton::Action`], [`crate::ButtonRowItem`],
@@ -487,6 +509,7 @@ pub enum ButtonEvent {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{Button, ButtonIconPosition, ButtonLayout, ButtonMetrics, ButtonVariant};
+    use crate::backend::PressableVisual;
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
@@ -605,12 +628,12 @@ pub(crate) mod native_surface_paint {
         };
         let bg = if button.disabled {
             bg
-        } else if is_pressed {
-            theme.button_pressed_bg(bg)
-        } else if is_hovered {
-            theme.button_hover_bg(bg)
         } else {
-            bg
+            match PressableVisual::resolve(is_pressed, false, is_hovered) {
+                PressableVisual::PressedOrActive => theme.button_pressed_bg(bg),
+                PressableVisual::Hovered => theme.button_hover_bg(bg),
+                PressableVisual::Resting => bg,
+            }
         };
         surface.surface_fill_rounded_rect(rect, metrics.corner_radius, bg);
 
@@ -1365,5 +1388,26 @@ mod tests {
         let json = r#"{"label": "OK"}"#;
         let spec: ButtonSpec = serde_json::from_str(json).expect("deserialize label-only spec");
         assert_eq!(spec, ButtonSpec::new("OK"));
+    }
+
+    /// `from_legacy` carries `icon`/`tooltip`/`disabled` straight through
+    /// and leaves `variant` at [`ButtonSpec::new`]'s own `Primary` default
+    /// — a caller that derives a variant from its own legacy field sets
+    /// it afterwards.
+    #[test]
+    fn from_legacy_carries_icon_tooltip_and_disabled_with_primary_variant() {
+        let icon = crate::types::Icon::new("W", "W");
+        let spec = ButtonSpec::from_legacy(
+            "Refresh",
+            Some(icon.clone()),
+            Some("Reload the tree".to_string()),
+            true,
+        );
+
+        assert_eq!(spec.label, "Refresh");
+        assert_eq!(spec.icon, Some(icon));
+        assert_eq!(spec.tooltip, Some("Reload the tree".to_string()));
+        assert!(spec.disabled);
+        assert_eq!(spec.variant, ButtonVariant::Primary);
     }
 }

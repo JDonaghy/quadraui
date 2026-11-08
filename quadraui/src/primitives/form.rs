@@ -506,7 +506,10 @@ pub struct ButtonRowItem {
     #[serde(default)]
     pub disabled: bool,
     /// Optional icon rendered before the label. Enables icon-button
-    /// rows (commit, push, pull, fetch) in source-control panels.
+    /// rows (commit, push, pull, fetch) in source-control panels. Feeds
+    /// [`Self::resolved_button_spec`]'s derived spec when [`Self::spec`]
+    /// is `None`; ignored once `spec` is `Some` — set the spec's own
+    /// `icon` field to carry an icon on a spec-backed item.
     #[serde(default)]
     pub icon: Option<crate::types::Icon>,
     /// Optional [`crate::ButtonSpec`] override, carrying the B3a
@@ -525,10 +528,12 @@ impl ButtonRowItem {
         if let Some(spec) = &self.spec {
             return spec.clone();
         }
-        let mut derived = crate::primitives::button::ButtonSpec::new(self.label.clone());
-        derived.icon = self.icon.clone();
-        derived.disabled = self.disabled;
-        derived
+        crate::primitives::button::ButtonSpec::from_legacy(
+            self.label.clone(),
+            self.icon.clone(),
+            None,
+            self.disabled,
+        )
     }
 }
 
@@ -899,6 +904,8 @@ mod native_surface_paint {
     // the three backends' shapes (macOS painted it, GTK painted nothing,
     // Windows painted `hover_bg` at full row height).
     use crate::paint_geometry::selected_item_fill;
+    use crate::primitives::button;
+    use crate::style::Style;
     use crate::text_util::snap_to_char_boundary;
     use crate::theme::Theme;
     use crate::types::{Color, StyledText};
@@ -1625,6 +1632,40 @@ mod native_surface_paint {
                             if let Some(b) = buttons.iter().find(|b| &b.id == item_id) {
                                 let r = translate(item_rect, origin);
                                 let disabled = b.disabled || field.disabled;
+
+                                // An explicit `spec` override paints
+                                // through the shared `Button` fill/
+                                // border/icon/intent-colour path instead
+                                // of this item's own plain hover-tinted
+                                // row look, so e.g. a `Danger` spec reads
+                                // in `theme.button_danger_bg()` the same
+                                // way a standalone `Button` does — see
+                                // `button::native_surface_paint::paint`'s
+                                // own doc. `Style::default()` stands in
+                                // for a live `&Style`: this fn takes no
+                                // `&Style` parameter, so a host's
+                                // `Backend::set_style` override doesn't
+                                // reach a spec-backed row button's corner
+                                // radius/padding. A
+                                // `spec: None` item keeps painting
+                                // through the plain hover-tinted
+                                // icon+label path below, unchanged.
+                                if let Some(spec) = &b.spec {
+                                    let mut resolved = spec.clone();
+                                    resolved.disabled = resolved.disabled || disabled;
+                                    let button = resolved.to_button(b.id, false);
+                                    button::native_surface_paint::paint(
+                                        &button,
+                                        surface,
+                                        theme,
+                                        r,
+                                        &Style::default(),
+                                        false,
+                                        false,
+                                    );
+                                    continue;
+                                }
+
                                 let bg = if disabled { row_bg } else { theme.hover_bg };
                                 surface.surface_fill_rect(r, bg);
                                 let fg = if disabled { theme.muted_fg } else { field_fg };
@@ -1964,12 +2005,300 @@ mod native_surface_paint {
         }
     }
 
+    /// Cursor width for the settings-chrome search row — matches every
+    /// per-backend `draw_settings_chrome` twin's caret width
+    /// (`gtk::form`'s literal `1.5`, `macos::form::SETTINGS_CURSOR_W`,
+    /// `win::form::SETTINGS_CURSOR_W`).
+    const SETTINGS_CURSOR_W: f32 = 1.5;
+    /// Prefix rendered before the settings-chrome search query — the
+    /// same string every per-backend painter uses.
+    const SETTINGS_SEARCH_PREFIX: &str = " /  ";
+
+    /// Paint settings-panel chrome: a header row and, when
+    /// `rect.height` leaves room for it, a search input row beneath it
+    /// — designed to sit immediately above a [`Form`] body. Replaces
+    /// the three near-identical per-backend `draw_settings_chrome`
+    /// copies (`gtk::form`, `macos::form`, `win::form`); adopting it
+    /// from each backend is follow-on scope.
+    ///
+    /// The header row always paints at one `line_height` tall. The
+    /// search row paints only when `rect.height >= line_height * 1.5`
+    /// — a caller reserving a single row gets a header-only strip
+    /// instead of an unrequested second row painted past its own rect.
+    /// When the search row does paint, its full-width background is
+    /// `theme.selected_bg` when `active`, otherwise `theme.tab_bar_bg`.
+    /// Layout left to right: [`SETTINGS_SEARCH_PREFIX`] in
+    /// `theme.muted_fg`, then either `query` (in `theme.foreground`) or
+    /// `placeholder` (in `theme.muted_fg`, shown only when the query is
+    /// empty *and* the row is inactive). A [`SETTINGS_CURSOR_W`]-wide
+    /// `theme.accent_fg` cursor follows the query when `active`.
+    ///
+    /// Chrome only — the form body and any scrollbar layered below are
+    /// painted separately by the caller.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_settings_chrome(
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        line_height: f32,
+        header_text: &str,
+        query: &str,
+        placeholder: &str,
+        active: bool,
+    ) {
+        if rect.width <= 0.0 || line_height <= 0.0 {
+            return;
+        }
+
+        // Row 0: header bar.
+        surface.surface_fill_rect(
+            Rect::new(rect.x, rect.y, rect.width, line_height),
+            theme.header_bg,
+        );
+        let (header_w, header_h) = surface.surface_measure_text(header_text);
+        let header_y = rect.y + ((line_height - header_h) / 2.0).max(0.0);
+        surface.surface_draw_text_run(
+            Rect::new(rect.x + 2.0, header_y, header_w, header_h),
+            header_text,
+            theme.header_fg,
+        );
+
+        // Row 1: search input — only when `rect.height` leaves room
+        // for it (see this fn's doc). Skipped for a header-only strip
+        // instead of overpainting whatever the caller placed directly
+        // beneath it.
+        if rect.height >= line_height * 1.5 {
+            let search_y = rect.y + line_height;
+            let row_bg = if active {
+                theme.selected_bg
+            } else {
+                theme.tab_bar_bg
+            };
+            surface.surface_fill_rect(Rect::new(rect.x, search_y, rect.width, line_height), row_bg);
+
+            let (prefix_w, prefix_h) = surface.surface_measure_text(SETTINGS_SEARCH_PREFIX);
+            let prefix_y = search_y + ((line_height - prefix_h) / 2.0).max(0.0);
+            surface.surface_draw_text_run(
+                Rect::new(rect.x + 2.0, prefix_y, prefix_w, prefix_h),
+                SETTINGS_SEARCH_PREFIX,
+                theme.muted_fg,
+            );
+
+            let q_x = rect.x + 2.0 + prefix_w;
+            let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
+            let (text, color) = if show_placeholder {
+                (placeholder, theme.muted_fg)
+            } else if query.is_empty() {
+                (query, theme.muted_fg)
+            } else {
+                (query, theme.foreground)
+            };
+            let (text_w, text_h) = surface.surface_measure_text(text);
+            let text_y = search_y + ((line_height - text_h) / 2.0).max(0.0);
+            surface.surface_draw_text_run(Rect::new(q_x, text_y, text_w, text_h), text, color);
+
+            if active {
+                let (query_w, _) = surface.surface_measure_text(query);
+                let cur_x = q_x + if query.is_empty() { 0.0 } else { query_w };
+                surface.surface_fill_rect(
+                    Rect::new(
+                        cur_x,
+                        search_y + 2.0,
+                        SETTINGS_CURSOR_W,
+                        (line_height - 4.0).max(0.0),
+                    ),
+                    theme.accent_fg,
+                );
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod settings_chrome_tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::types::Color;
+        use crate::Image;
+
+        /// Records every drawing verb `paint_settings_chrome` issues —
+        /// mirrors `primitives::progress::native_surface_paint`'s own
+        /// `RecordingSurface`.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(300.0, 60.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn paint_one_row(surface: &mut RecordingSurface, height: f32, active: bool) {
+            paint_settings_chrome(
+                surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 200.0, height),
+                16.0,
+                "Settings",
+                "",
+                "Search",
+                active,
+            );
+        }
+
+        /// A one-`line_height`-tall rect leaves no room for the search
+        /// row — only the header paints.
+        #[test]
+        fn one_row_height_paints_no_search_row() {
+            let mut surface = RecordingSurface::default();
+            paint_one_row(&mut surface, 16.0, false);
+            assert_eq!(surface.fills.len(), 1, "only the header bar should fill");
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Settings"));
+            assert!(!surface.text_runs.iter().any(|(_, t, _)| t == "Search"));
+        }
+
+        /// A two-`line_height`-tall rect leaves room for the search
+        /// row, which shows the placeholder when `query` is empty and
+        /// the row is inactive.
+        #[test]
+        fn two_row_height_paints_search_row_with_placeholder() {
+            let mut surface = RecordingSurface::default();
+            paint_one_row(&mut surface, 32.0, false);
+            assert_eq!(
+                surface.fills.len(),
+                2,
+                "header bar + search row should fill"
+            );
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Search"));
+            assert!(surface
+                .text_runs
+                .iter()
+                .any(|(_, t, _)| t == SETTINGS_SEARCH_PREFIX));
+        }
+
+        /// An active search row with a non-empty query paints the
+        /// query (not the placeholder) plus a cursor fill.
+        #[test]
+        fn active_row_paints_query_and_cursor() {
+            let mut surface = RecordingSurface::default();
+            paint_settings_chrome(
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 200.0, 32.0),
+                16.0,
+                "Settings",
+                "abc",
+                "Search",
+                true,
+            );
+            let theme = Theme::default();
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "abc"));
+            assert!(!surface.text_runs.iter().any(|(_, t, _)| t == "Search"));
+            // Row bg + cursor are both fills distinct from the header fill.
+            assert!(surface.fills.iter().any(|(_, c)| *c == theme.selected_bg));
+            assert!(surface
+                .fills
+                .iter()
+                .any(|(r, c)| *c == theme.accent_fg && r.width == SETTINGS_CURSOR_W));
+        }
+
+        /// Inactive row background is `tab_bar_bg`, not `selected_bg`.
+        #[test]
+        fn inactive_row_uses_tab_bar_bg() {
+            let mut surface = RecordingSurface::default();
+            paint_one_row(&mut surface, 32.0, false);
+            let theme = Theme::default();
+            assert!(surface.fills.iter().any(|(_, c)| *c == theme.tab_bar_bg));
+            assert!(!surface.fills.iter().any(|(_, c)| *c == theme.selected_bg));
+        }
+
+        /// Zero-width rect is a no-op: nothing paints.
+        #[test]
+        fn zero_width_is_a_no_op() {
+            let mut surface = RecordingSurface::default();
+            paint_settings_chrome(
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 0.0, 32.0),
+                16.0,
+                "Settings",
+                "",
+                "Search",
+                false,
+            );
+            assert!(surface.fills.is_empty());
+            assert!(surface.text_runs.is_empty());
+        }
+
+        /// Chrome paints at a non-zero origin, not hardcoded to (0, 0).
+        #[test]
+        fn paints_at_a_nonzero_origin() {
+            let mut surface = RecordingSurface::default();
+            paint_settings_chrome(
+                &mut surface,
+                &Theme::default(),
+                Rect::new(7.0, 13.0, 200.0, 32.0),
+                16.0,
+                "Settings",
+                "",
+                "",
+                false,
+            );
+            assert!(surface.fills.iter().all(|(r, _)| r.x == 7.0 && r.y >= 13.0));
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::Viewport;
-        use crate::primitives::form::{ControlWidth, FormField, ToggleGroupItem};
+        use crate::primitives::form::{ButtonRowItem, ControlWidth, FormField, ToggleGroupItem};
         use crate::primitives::layout_metrics::{form_field_measure, form_row_height, TextMeasure};
         use crate::types::{StyledSpan, WidgetId};
         use crate::{FormFieldMeasure, Image};
@@ -2113,6 +2442,46 @@ mod native_surface_paint {
                 control_width: Default::default(),
                 min_control_width: None,
             }
+        }
+
+        /// A `Danger` spec on a `ButtonRowItem` paints through
+        /// `button::native_surface_paint::paint` —
+        /// `theme.button_danger_bg()`, not this arm's own plain
+        /// hover-tinted row look `spec: None` items still get.
+        #[test]
+        fn button_row_danger_spec_fills_the_shared_button_danger_colour() {
+            let mut spec = crate::primitives::button::ButtonSpec::new("Delete all");
+            spec.variant = crate::primitives::button::ButtonVariant::Danger;
+            let form = one_field_form(
+                "actions",
+                FieldKind::ButtonRow {
+                    buttons: vec![ButtonRowItem {
+                        spec: Some(spec),
+                        id: WidgetId::new("delete-all"),
+                        label: "Delete all".into(),
+                        disabled: false,
+                        icon: None,
+                    }],
+                },
+            );
+            let theme = Theme::default();
+            let (surface, _) = paint_recorded(&form);
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(_, c)| *c == theme.button_danger_bg()),
+                "a Danger spec must fill the shared Button's danger colour; \
+                 fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "Delete all"),
+                "the button label must still be painted through the shared \
+                 Button path; text runs were {:?}",
+                surface.text_runs,
+            );
         }
 
         /// Two toggle rows at `row_h = 20.0` in a viewport only 23px
@@ -3323,7 +3692,7 @@ mod native_surface_paint {
     all(feature = "macos", target_os = "macos")
 ))]
 #[allow(unused_imports)]
-pub(crate) use native_surface_paint::{left_control_column_start, paint};
+pub(crate) use native_surface_paint::{left_control_column_start, paint, paint_settings_chrome};
 
 /// Events a `Form` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

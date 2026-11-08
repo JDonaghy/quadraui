@@ -29,9 +29,11 @@
 //! `draw_tab_bar_icons_layout`) passes `&self.current_theme`, the same
 //! field `Backend::set_theme` writes. Likewise takes `&Style` for
 //! [`Style::tab_padding_x`] — the left+right inset inside a tab's
-//! background fill that the icon/label/close glyph sit inside of — via
-//! `&self.current_style`, the same field `Backend::set_current_style`
-//! writes.
+//! background fill that the icon/label/close glyph sit inside of,
+//! outside [`TabBar::compact`] mode; a compact bar uses the fixed
+//! `TAB_PAD_COMPACT` literal instead, same as `gtk::tab_bar` and
+//! `macos::tab_bar` — via `&self.current_style`, the same field
+//! `Backend::set_current_style` writes.
 //!
 //! Scope: no [`crate::TabChrome`] bracket-frame support (the `Backend`
 //! trait's `draw_tab_bar_with_chrome` / `tab_bar_layout_with_chrome`
@@ -73,7 +75,7 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 #[cfg(target_os = "windows")]
 use super::text::DWrite;
 #[cfg(target_os = "windows")]
-use super::text::{fill_rect, stroke_rect};
+use super::text::{fill_rect, fill_rounded_rect, stroke_rect};
 use crate::backend::{shift_tab_bar_hits, tab_bar_hits_from_layout};
 use crate::event::Rect;
 use crate::primitives::layout_metrics::TextMeasure;
@@ -94,16 +96,56 @@ use crate::{tab_icon_at, TabBar, TabBarHits, TabBarLayout, TabIcon};
 #[cfg(all(test, target_os = "windows"))]
 use crate::TabChrome;
 
-/// Gap (DIPs) between a tab's label and its close glyph.
+/// Gap (DIPs) between a tab's label and its close glyph, outside
+/// [`TabBar::compact`] mode. [`pixel_layout`] and the paint loop both
+/// swap this for [`TAB_INNER_GAP_COMPACT_DIP`] when `bar.compact`.
 const TAB_INNER_GAP_DIP: f32 = 10.0;
-/// Gap (DIPs) between adjacent tabs.
+/// Gap (DIPs) between adjacent tabs, outside [`TabBar::compact`] mode.
+/// [`pixel_layout`] and the paint loop both drop this to
+/// [`TAB_OUTER_GAP_COMPACT_DIP`] when `bar.compact`.
 const TAB_OUTER_GAP_DIP: f32 = 1.0;
+/// [`TAB_INNER_GAP_DIP`]'s replacement in [`TabBar::compact`] mode — same
+/// literal `gtk::tab_bar` and `macos::tab_bar` use for their own compact
+/// inner gap. Named (rather than left as an inline `4.0`) so layout and
+/// paint, which each derive the compact trio independently (see the
+/// paint loop's own comment on why), can't drift apart on this value.
+const TAB_INNER_GAP_COMPACT_DIP: f32 = 4.0;
+/// [`TAB_OUTER_GAP_DIP`]'s replacement in [`TabBar::compact`] mode,
+/// matching `gtk::tab_bar` / `macos::tab_bar`. Named for the same reason
+/// as [`TAB_INNER_GAP_COMPACT_DIP`].
+const TAB_OUTER_GAP_COMPACT_DIP: f32 = 0.0;
 /// Gap (DIPs) between a tab's icon glyph ([`crate::TabIcon`]) and its label.
 const TAB_ICON_GAP_DIP: f32 = 6.0;
-/// Height (DIPs) of the active tab's top-edge accent line. Only used by
-/// the paint path.
+/// Per-tab horizontal padding (left + right) inside the tab background
+/// fill, in [`TabBar::compact`] mode — same value as `gtk::tab_bar` /
+/// `macos::tab_bar`'s own `TAB_PAD_COMPACT`. A compact strip keeps this
+/// fixed literal rather than scaling with [`Style::tab_padding_x`]; the
+/// non-compact case reads that style token instead, so a host-set
+/// `tab_padding_x` of at least this value only ever widens the normal
+/// strip relative to the compact one (a smaller host-set value makes the
+/// compact strip the wider of the two).
+const TAB_PAD_COMPACT: f32 = 2.0;
+/// Height (DIPs) of the active tab's top-edge accent line — same value
+/// as `gtk::tab_bar`'s `TAB_ACTIVE_BORDER_TOP_PX` / `macos::tab_bar`'s
+/// `ACCENT_HEIGHT`, so the accent is the same thickness on every pixel
+/// backend. Only used by the paint path.
 #[cfg(target_os = "windows")]
-const TAB_ACTIVE_ACCENT_DIP: f32 = 2.0;
+const TAB_ACTIVE_ACCENT_DIP: f32 = 1.0;
+/// Nominal vertical margin (DIPs) above and below the active-tab chip
+/// fill — same value as `gtk::tab_bar`'s `TAB_CHIP_INSET_Y` /
+/// `macos::tab_bar`'s own const of the same name. VS Code insets its
+/// active-tab pill inside the tab strip rather than filling the full row
+/// height edge to edge. The paint loop clamps this down (same as
+/// `macos::tab_bar`'s painter) when the row is no taller than the
+/// label's own line height, so the chip never paints shorter than the
+/// label it encloses. Only used by the paint path.
+#[cfg(target_os = "windows")]
+const TAB_CHIP_INSET_Y: f32 = 4.0;
+/// Corner radius (DIPs) of the active-tab chip, all four corners — same
+/// value as `gtk::tab_bar`'s `TAB_CHIP_RADIUS` / `macos::tab_bar`'s own
+/// const of the same name. Only used by the paint path.
+#[cfg(target_os = "windows")]
+const TAB_CHIP_RADIUS: f32 = 4.0;
 
 /// The codicon close glyph's measured width, or `0.0` when the bar paints
 /// no close button at all. Used by both [`pixel_layout`] (to size the
@@ -153,12 +195,14 @@ fn tab_label_budget(tab_pad: f32, icon_extra: f32, close_extra: f32) -> (f32, f3
     (tab_pad + icon_extra, close_extra + tab_pad)
 }
 
-/// Per-tab close-button reservation: [`TAB_INNER_GAP_DIP`] plus the close
-/// glyph's own width (`close_glyph_w`, from [`close_glyph_width`]) when
-/// `bar` shows a close button for this tab, `0.0` otherwise.
-fn close_extra_for(bar: &TabBar, tab_idx: usize, close_glyph_w: f32) -> f32 {
+/// Per-tab close-button reservation: `tab_inner_gap` (the caller's
+/// [`TAB_INNER_GAP_DIP`], or its `bar.compact` narrowing — see
+/// [`pixel_layout`]) plus the close glyph's own width (`close_glyph_w`,
+/// from [`close_glyph_width`]) when `bar` shows a close button for this
+/// tab, `0.0` otherwise.
+fn close_extra_for(bar: &TabBar, tab_idx: usize, close_glyph_w: f32, tab_inner_gap: f32) -> f32 {
     if bar.show_tab_close && bar.tabs[tab_idx].is_closable {
-        TAB_INNER_GAP_DIP + close_glyph_w
+        tab_inner_gap + close_glyph_w
     } else {
         0.0
     }
@@ -210,6 +254,11 @@ struct PixelLayout {
 /// background fill that [`paint_tab_bar_icons_from_layout`] paints the
 /// icon/label/close glyph inside of — both reach into `style` for the
 /// same value, so paint and layout can never disagree about the inset.
+/// `bar.compact` overrides that inset with [`TAB_PAD_COMPACT`] and
+/// narrows the inner/outer gaps, matching `gtk::tab_bar` /
+/// `macos::tab_bar`'s own `compact` handling; [`paint_tab_bar_icons_from_layout`]
+/// derives the identical trio from `bar.compact` so layout and paint can
+/// never disagree about a compact strip's geometry either.
 fn pixel_layout(
     measure: &dyn TextMeasure,
     rect: Rect,
@@ -219,7 +268,21 @@ fn pixel_layout(
 ) -> PixelLayout {
     let width = rect.width;
     let height = rect.height;
-    let tab_pad = style.tab_padding_x;
+    let tab_pad = if bar.compact {
+        TAB_PAD_COMPACT
+    } else {
+        style.tab_padding_x
+    };
+    let tab_inner_gap = if bar.compact {
+        TAB_INNER_GAP_COMPACT_DIP
+    } else {
+        TAB_INNER_GAP_DIP
+    };
+    let tab_outer_gap = if bar.compact {
+        TAB_OUTER_GAP_COMPACT_DIP
+    } else {
+        TAB_OUTER_GAP_DIP
+    };
     let close_glyph_w = close_glyph_width(measure, bar);
 
     let tab_name_widths: Vec<f32> = bar
@@ -252,9 +315,9 @@ fn pixel_layout(
     // ── Per-tab full (untruncated) slot widths — scroll-offset input ───
     let full_slot_widths: Vec<f32> = (0..bar.tabs.len())
         .map(|i| {
-            let close_extra = close_extra_for(bar, i, close_glyph_w);
+            let close_extra = close_extra_for(bar, i, close_glyph_w, tab_inner_gap);
             let (leading, trailing) = tab_label_budget(tab_pad, icon_extras[i], close_extra);
-            leading + tab_name_widths[i] + trailing + TAB_OUTER_GAP_DIP
+            leading + tab_name_widths[i] + trailing + tab_outer_gap
         })
         .collect();
     let total_tab_width: f32 = full_slot_widths.iter().sum();
@@ -289,17 +352,17 @@ fn pixel_layout(
     for (i, tab) in bar.tabs.iter().enumerate().skip(resolved_scroll_offset) {
         let name_w = tab_name_widths[i];
         let icon_extra = icon_extras[i];
-        let close_extra = close_extra_for(bar, i, close_glyph_w);
+        let close_extra = close_extra_for(bar, i, close_glyph_w, tab_inner_gap);
         let (leading, trailing) = tab_label_budget(tab_pad, icon_extra, close_extra);
         let full_content_w = leading + name_w + trailing;
-        let full_slot_w = full_content_w + TAB_OUTER_GAP_DIP;
+        let full_slot_w = full_content_w + tab_outer_gap;
         let remaining = (tab_area_no_scroll - x).max(0.0);
 
         let (label_used, name_w_used, content_w, truncated) =
             if full_slot_w <= remaining + f32::EPSILON {
                 (tab.label.clone(), name_w, full_content_w, false)
             } else {
-                let truncated_budget = (remaining - TAB_OUTER_GAP_DIP).max(0.0);
+                let truncated_budget = (remaining - tab_outer_gap).max(0.0);
                 if leading + trailing > truncated_budget {
                     // Not even room for this tab's own padding/close slot —
                     // nothing left on the strip to show it in.
@@ -315,12 +378,12 @@ fn pixel_layout(
                 let fitted_w = measure.width_of(&fitted);
                 (fitted, fitted_w, leading + fitted_w + trailing, true)
             };
-        let slot_w = content_w + TAB_OUTER_GAP_DIP;
+        let slot_w = content_w + tab_outer_gap;
         let bounds = Rect::new(x, 0.0, slot_w, height);
 
         let has_close = bar.show_tab_close && tab.is_closable;
         let close_bounds = if has_close {
-            let close_w = TAB_INNER_GAP_DIP + close_glyph_w;
+            let close_w = tab_inner_gap + close_glyph_w;
             let cb = Rect::new(x + leading + name_w_used, 0.0, close_w, height);
             close_regions.push((cb, crate::TabBarHit::TabClose(i)));
             Some(cb)
@@ -500,10 +563,12 @@ pub fn win_tab_bar_native_layout(
 ///
 /// # Visual contract
 ///
-/// - **Active tab:** `theme.tab_active_bg` background, plus a
-///   [`TAB_ACTIVE_ACCENT_DIP`]-tall top-edge accent line when
-///   [`TabBar::active_accent`] is `Some` (`None` paints nothing, matching
-///   every other backend).
+/// - **Active tab:** an inset, [`TAB_CHIP_RADIUS`]-rounded chip
+///   ([`TAB_CHIP_INSET_Y`] above and below, clamped down when the row is
+///   no taller than the label's own line height) in `theme.tab_active_bg`,
+///   plus a [`TAB_ACTIVE_ACCENT_DIP`]-tall top-edge accent line on the
+///   chip's own inset top edge when [`TabBar::active_accent`] is `Some`
+///   (`None` paints nothing, matching every other backend).
 /// - **Dirty tab:** close glyph is a codicon filled circle instead of
 ///   the codicon close mark (suppressed while hovered, so the hover
 ///   state always shows the close mark to close).
@@ -725,10 +790,29 @@ fn paint_tab_bar_icons_from_layout(
     let _ = fill_rect(target, rect, theme.tab_bar_bg);
 
     let close_w = close_glyph_width(dwrite, bar);
+    // Same trio [`pixel_layout`] derives from `bar.compact` — recomputed
+    // here (rather than threaded through `layout`/`fitted_labels`) so
+    // this paint fn can stay a pure function of its own arguments, same
+    // as every other `_with_state` painter in this module.
+    let tab_pad = if bar.compact {
+        TAB_PAD_COMPACT
+    } else {
+        style.tab_padding_x
+    };
+    let tab_inner_gap = if bar.compact {
+        TAB_INNER_GAP_COMPACT_DIP
+    } else {
+        TAB_INNER_GAP_DIP
+    };
+    let tab_outer_gap = if bar.compact {
+        TAB_OUTER_GAP_COMPACT_DIP
+    } else {
+        TAB_OUTER_GAP_DIP
+    };
 
     for (slot, vt) in layout.visible_tabs.iter().enumerate() {
         let tab = &bar.tabs[vt.tab_idx];
-        let visual_w = (vt.bounds.width - TAB_OUTER_GAP_DIP).max(0.0);
+        let visual_w = (vt.bounds.width - tab_outer_gap).max(0.0);
         let tab_rect = Rect::new(
             rect.x + vt.bounds.x,
             rect.y + vt.bounds.y,
@@ -748,21 +832,49 @@ fn paint_tab_bar_icons_from_layout(
             }
         };
 
+        // Tab background. The active tab paints an inset, rounded chip
+        // (VS Code's pill, matching `gtk::tab_bar`'s/`macos::tab_bar`'s
+        // own `TAB_CHIP_INSET_Y`/`TAB_CHIP_RADIUS` — the same active-tab
+        // shape on every pixel backend) rather than a square block
+        // filling the full row height edge to edge. Inactive tabs are
+        // unchanged: a full-height rectangle in the bar's own background
+        // colour.
         let bg = if tab.is_active {
             theme.tab_active_bg
         } else {
             theme.tab_bar_bg
         };
-        let _ = fill_rect(target, tab_rect, tint(bg));
+        // The fixed inset is only safe when the row has slack beyond the
+        // label's own line height; the label is centred on the *row*
+        // below, so a row barely taller than that natural line height
+        // (e.g. a caller that reuses `backend.line_height()` as the tab
+        // bar's row height) leaves less than `TAB_CHIP_INSET_Y` of slack
+        // per side above and below the label text — not enough for the
+        // fixed inset, so the chip would paint narrower than the label
+        // and a descender would ink past the chip's edge. Shrinking the
+        // inset (down to 0, at the limit) whenever the row is that tight
+        // keeps the chip at least `natural_line_height` tall, the same
+        // clamp `macos::tab_bar`'s painter applies.
+        let natural_line_height = dwrite.natural_line_height();
+        let max_chip_inset_y = ((tab_rect.height - natural_line_height) / 2.0).max(0.0);
+        let chip_inset_y = TAB_CHIP_INSET_Y.min(max_chip_inset_y);
+        let chip_y = tab_rect.y + chip_inset_y;
+        let chip_h = (tab_rect.height - 2.0 * chip_inset_y).max(0.0);
+        if tab.is_active {
+            let chip_rect = Rect::new(tab_rect.x, chip_y, tab_rect.width, chip_h);
+            let _ = fill_rounded_rect(target, chip_rect, TAB_CHIP_RADIUS, tint(bg));
+        } else {
+            let _ = fill_rect(target, tab_rect, tint(bg));
+        }
 
+        // Top accent line for the active tab, painted on the chip's own
+        // inset top edge rather than the strip's top edge, so it stays
+        // attached to the pill instead of floating above it — matching
+        // `gtk::tab_bar`'s/`macos::tab_bar`'s own accent placement.
         if tab.is_active {
             if let Some(accent) = bar.active_accent {
-                let accent_rect = Rect::new(
-                    tab_rect.x,
-                    tab_rect.y,
-                    tab_rect.width,
-                    TAB_ACTIVE_ACCENT_DIP,
-                );
+                let accent_rect =
+                    Rect::new(tab_rect.x, chip_y, tab_rect.width, TAB_ACTIVE_ACCENT_DIP);
                 let _ = fill_rect(target, accent_rect, accent);
             }
         }
@@ -772,7 +884,7 @@ fn paint_tab_bar_icons_from_layout(
         } else {
             theme.tab_inactive_fg
         };
-        let mut cursor_x = tab_rect.x + style.tab_padding_x;
+        let mut cursor_x = tab_rect.x + tab_pad;
 
         if let Some(icon) = tab_icon_at(icons, vt.tab_idx) {
             let (iw, ih) = dwrite.measure_text(&icon.glyph).unwrap_or((0.0, 0.0));
@@ -801,7 +913,7 @@ fn paint_tab_bar_icons_from_layout(
 
         if bar.show_tab_close && tab.is_closable {
             if let Some(cb) = vt.close_bounds {
-                let close_x = rect.x + cb.x + TAB_INNER_GAP_DIP;
+                let close_x = rect.x + cb.x + tab_inner_gap;
                 let is_close_hovered = hovered_close_tab == Some(vt.tab_idx);
 
                 if is_close_hovered {
@@ -853,29 +965,29 @@ fn paint_tab_bar_icons_from_layout(
 
     // ── Keyboard-focus ring pass ─────────────────────────────────────
     // Painted after every tab's own background/label/close glyph, not
-    // inside the loop above: slots are contiguous (only
-    // `TAB_OUTER_GAP_DIP` of bar background between them), so a ring
-    // stroked immediately after its own tab would have its trailing
-    // edge painted over by the next tab's opaque background fill.
-    // `focused_index` already carries the caller's own focus-visible
-    // suppression (see `crate::TabChrome::focused_index`'s doc), so
-    // `None` here paints nothing.
+    // inside the loop above: slots are contiguous (only `tab_outer_gap`
+    // of bar background between them), so a ring stroked immediately
+    // after its own tab would have its trailing edge painted over by the
+    // next tab's opaque background fill. `focused_index` already carries
+    // the caller's own focus-visible suppression (see
+    // `crate::TabChrome::focused_index`'s doc), so `None` here paints
+    // nothing.
     //
     // `stroke_rect` insets its own geometry by half of `stroke_width`
     // (see that fn's doc), so the rect handed to it here is the tab's
     // raw visual slot — not pre-inset the way `macos::tab_bar`/
     // `gtk::tab_bar`'s twin painters need, since Cairo/CoreGraphics
-    // centre a stroke on the path verbatim. Strokes square (not the
-    // active tab's rounded chip — this rasteriser paints tabs with
-    // square corners throughout), since keyboard focus can land on an
-    // inactive tab too.
+    // centre a stroke on the path verbatim. Strokes square — around the
+    // full slot, not the active tab's inset rounded chip — since
+    // keyboard focus can land on an inactive tab too, and painting last
+    // means the ring's square edge always wins over the chip underneath.
     if let Some(focus_idx) = focused_index {
         if let Some(vt) = layout
             .visible_tabs
             .iter()
             .find(|vt| vt.tab_idx == focus_idx)
         {
-            let visual_w = (vt.bounds.width - TAB_OUTER_GAP_DIP).max(0.0);
+            let visual_w = (vt.bounds.width - tab_outer_gap).max(0.0);
             let ring_rect = Rect::new(
                 rect.x + vt.bounds.x,
                 rect.y + vt.bounds.y,
@@ -1144,6 +1256,43 @@ mod layout_tests {
              (narrow {narrow_fit:?}, wide {wide_fit:?})"
         );
     }
+
+    /// `bar.compact` must narrow a tab's slot — [`TAB_PAD_COMPACT`]
+    /// instead of `style.tab_padding_x`, a 4.0 DIP inner gap instead of
+    /// [`TAB_INNER_GAP_DIP`]'s 10.0, and a 0.0 DIP outer gap instead of
+    /// [`TAB_OUTER_GAP_DIP`]'s 1.0 — the same constants `gtk::tab_bar`
+    /// and `macos::tab_bar` switch to in their own `bar.compact` branch.
+    /// A strip wide enough to hold both a compact and a non-compact tab
+    /// whole (no ellipsis fit either way) isolates the width difference
+    /// to that trio rather than to `fit_tab_label`'s own truncation
+    /// logic.
+    #[test]
+    fn compact_bar_lays_out_narrower_tabs_than_non_compact() {
+        let style = Style::default();
+        let mut compact_bar = bar_with(&["main.rs"]);
+        compact_bar.compact = true;
+        let non_compact_bar = bar_with(&["main.rs"]);
+        let strip_w = full_slot_width("main.rs", &style);
+
+        let compact = layout_of(&compact_bar, strip_w, &style);
+        let non_compact = layout_of(&non_compact_bar, strip_w, &style);
+
+        assert_eq!(
+            compact.fitted_labels[0], "main.rs",
+            "the strip is wide enough that the compact tab keeps its whole label"
+        );
+        assert_eq!(
+            non_compact.fitted_labels[0], "main.rs",
+            "the strip is wide enough that the non-compact tab keeps its whole label"
+        );
+        let compact_w = compact.layout.visible_tabs[0].bounds.width;
+        let non_compact_w = non_compact.layout.visible_tabs[0].bounds.width;
+        assert!(
+            compact_w < non_compact_w,
+            "a compact tab (width {compact_w}) must lay out narrower than the same \
+             tab non-compact (width {non_compact_w})"
+        );
+    }
 }
 
 // Tests below paint through a real `DWrite`/`HeadlessSurface`, which only
@@ -1155,6 +1304,7 @@ mod tests {
     use crate::primitives::tab_bar::{TabBarHit, TabBarSegment, TabItem};
     use crate::types::{Color, WidgetId};
     use crate::win::testing::HeadlessSurface;
+    use windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_ALIASED;
 
     const W: f32 = 300.0;
     const H: f32 = 30.0;
@@ -1226,11 +1376,14 @@ mod tests {
 
         // Active tab (index 0) is painted with `theme.tab_active_bg`,
         // distinct from the bar's own `tab_bar_bg` — sample just inside
-        // its left padding, clear of the accent line and any glyph.
+        // its left padding, at the row's vertical centre so the sample
+        // stays inside the active tab's chip (inset from the row's
+        // top/bottom edges by `TAB_CHIP_INSET_Y`) and clear of the accent
+        // line and any glyph.
         let theme = Theme::default();
         let active_bounds = layout.visible_tabs[0].bounds;
         let sample_x = (active_bounds.x + 2.0) as u32;
-        let sample_y = (active_bounds.y + active_bounds.height - 4.0) as u32;
+        let sample_y = (active_bounds.y + active_bounds.height / 2.0) as u32;
         let px = surface.pixel_at(sample_x, sample_y);
         assert_eq!(
             (px.r, px.g, px.b),
@@ -1667,12 +1820,13 @@ mod tests {
     /// edges of the ring rect (the focused tab's own slot bounds —
     /// [`super::stroke_rect`] insets by half `style.focus_ring_width`
     /// itself, see this module's "Focus-visible ring" doc), so a
-    /// regression that drops an edge fails here. Unlike the mac/gtk
-    /// fixtures, win paints a tab's background across the full row
-    /// height with no chip margin (see `paint_tab_bar_icons_from_layout`'s
-    /// `tab_rect`), so the click-suppressed probes all fall on tab 0's
-    /// own `tab_active_bg`, not a separate bar background. Drives the
-    /// real `Backend::draw_tab_bar_with_chrome_and_glyphs` entry point on
+    /// regression that drops an edge fails here. The click-suppressed
+    /// half asserts the colour actually underneath each edge — the
+    /// active tab's inset chip on the left/right edges, the flat bar
+    /// background on top/bottom (outside the chip's own
+    /// `TAB_CHIP_INSET_Y` margin) — not just "not the ring colour",
+    /// matching the mac/gtk twin tests' same split. Drives the real
+    /// `Backend::draw_tab_bar_with_chrome_and_glyphs` entry point on
     /// `WinBackend`.
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` half of the paint fn's return
@@ -1685,6 +1839,7 @@ mod tests {
         let style = Style::default().with_focus_ring_width(4.0);
         let ring_color = theme.focus_ring_color();
         let active_bg = theme.tab_active_bg;
+        let bar_bg = theme.tab_bar_bg;
         let rect = Rect::new(0.0, 0.0, W, H);
 
         let paint = |focused_index: Option<usize>| -> (HeadlessSurface, TabBarHits) {
@@ -1728,14 +1883,19 @@ mod tests {
         // centre, which the painted label occupies.
         let label_clear_x = (slot_x + tab_content_w - 5.0).round() as u32;
 
+        // Without a ring, the left/right probes sit on the active tab's
+        // chip (straight vertical edge, well clear of its rounded
+        // corners), while the top/bottom probes sit above/below the
+        // chip's own `TAB_CHIP_INSET_Y` margin, where the flat bar
+        // background still shows through.
         let probes = [
-            ("left", left, mid_y),
-            ("right", right, mid_y),
-            ("top", label_clear_x, top),
-            ("bottom", label_clear_x, bottom),
+            ("left", left, mid_y, active_bg),
+            ("right", right, mid_y, active_bg),
+            ("top", label_clear_x, top, bar_bg),
+            ("bottom", label_clear_x, bottom, bar_bg),
         ];
 
-        for (name, px, py) in probes {
+        for (name, px, py, _) in probes {
             let got = focused_surface.pixel_at(px, py);
             assert_eq!(
                 (got.r, got.g, got.b),
@@ -1746,14 +1906,14 @@ mod tests {
         }
 
         // Click suppresses focus-visible: `focused_index: None` must
-        // paint whatever sits under each edge absent a ring — tab 0's own
-        // `tab_active_bg`, which fills the whole row height here.
+        // paint whatever sits under each edge absent a ring, not just
+        // "something other than the ring colour".
         let (clicked_surface, _clicked_hits) = paint(None);
-        for (name, px, py) in probes {
+        for (name, px, py, expected) in probes {
             let got = clicked_surface.pixel_at(px, py);
             assert_eq!(
                 (got.r, got.g, got.b),
-                (active_bg.r, active_bg.g, active_bg.b),
+                (expected.r, expected.g, expected.b),
                 "expected no focus ring at the {name} edge ({px}, {py}) when \
                  TabChrome::focused_index is None (click-suppressed)",
             );
@@ -1815,5 +1975,179 @@ mod tests {
             (ring_color.r, ring_color.g, ring_color.b),
             "draw_tab_bar_with_chrome_layout must paint chrome.focused_index's ring"
         );
+    }
+
+    /// The active tab's top-edge accent is exactly [`TAB_ACTIVE_ACCENT_DIP`]
+    /// (1 DIP) tall — matching `gtk::tab_bar`'s `TAB_ACTIVE_BORDER_TOP_PX`
+    /// and `macos::tab_bar`'s `ACCENT_HEIGHT`, both 1.0, so the accent is
+    /// the same thickness on every pixel backend. Samples the accent
+    /// colour at the chip's own inset top row ([`TAB_CHIP_INSET_Y`]) and
+    /// asserts the very next row already carries `theme.tab_active_bg`
+    /// instead — pinning both the accent's height *and* the chip fill
+    /// underneath it in one probe, so dropping the chip fill entirely
+    /// (which would leave `next_row` painted `tab_bar_bg`) fails this
+    /// test too, not just a 2-DIP accent band.
+    #[test]
+    fn active_tab_accent_is_exactly_one_dip_tall() {
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let bar = bar();
+        let accent = bar.active_accent.expect("fixture sets an accent colour");
+        let theme = Theme::default();
+        let style = Style::default();
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        surface
+            .paint(|target| {
+                draw_tab_bar(target, &dwrite, rect, &bar, None, &theme, &style);
+            })
+            .expect("paint tab bar");
+
+        let layout = compute_layout(&dwrite, rect, &bar, &[], &style);
+        let active_bounds = layout.visible_tabs[0].bounds;
+        let sample_x = (active_bounds.x + 2.0) as u32;
+        let accent_row = TAB_CHIP_INSET_Y as u32;
+        let next_row = accent_row + 1;
+
+        let accent_px = surface.pixel_at(sample_x, accent_row);
+        assert_eq!(
+            (accent_px.r, accent_px.g, accent_px.b),
+            (accent.r, accent.g, accent.b),
+            "row {accent_row} (the chip's own inset top edge) must carry the accent colour"
+        );
+
+        let next_px = surface.pixel_at(sample_x, next_row);
+        let active_bg = theme.tab_active_bg;
+        assert_eq!(
+            (next_px.r, next_px.g, next_px.b),
+            (active_bg.r, active_bg.g, active_bg.b),
+            "row {next_row}, one DIP below the accent's top edge, must carry the chip's \
+             own tab_active_bg fill — the accent band is exactly TAB_ACTIVE_ACCENT_DIP \
+             (1.0) tall and the chip fill sits directly underneath it"
+        );
+    }
+
+    /// The four corner pixels of the active chip's bounding rect must be
+    /// the bar background, not `tab_active_bg` — the assertion that
+    /// actually pins the rounded radius (a square chip would fill those
+    /// corners with the active colour). Mirrors `gtk::tab_bar`'s
+    /// `active_chip_corners_are_bar_background_not_active_fill`.
+    #[test]
+    fn active_chip_corners_are_bar_background_not_active_fill() {
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        // No accent: the accent is a square band across the chip's top
+        // edge (as on GTK/macOS), so with one set the top corners carry
+        // the accent colour rather than either fill. GTK's twin of this
+        // test likewise runs on a bar without an accent.
+        let mut bar = bar();
+        bar.active_accent = None;
+        let theme = Theme::default();
+        let style = Style::default();
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        surface
+            .paint(|target| {
+                // Aliased rasterisation (pixel-centre inclusion), like
+                // GTK's twin test's `Antialias::None`: the probed corner
+                // pixels then hold either fill exactly, never a blend
+                // from a fractional chip edge.
+                //
+                // SAFETY: `target` is the live `ID2D1DCRenderTarget`
+                // `HeadlessSurface::paint` lends for the duration of this
+                // closure, between its own `BeginDraw`/`EndDraw` pair;
+                // `SetAntialiasMode` takes a plain enum by value and
+                // borrows no pointers.
+                unsafe { target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED) };
+                draw_tab_bar(target, &dwrite, rect, &bar, None, &theme, &style);
+            })
+            .expect("paint tab bar");
+
+        let layout = compute_layout(&dwrite, rect, &bar, &[], &style);
+        let bounds = layout.visible_tabs[0].bounds;
+        let chip_x0 = bounds.x as u32;
+        // Painted fill width excludes the trailing `TAB_OUTER_GAP_DIP`
+        // (see `visual_w` in `paint_tab_bar_icons_from_layout`).
+        let chip_x1 = (bounds.x + bounds.width - TAB_OUTER_GAP_DIP) as u32 - 1;
+        let chip_y0 = TAB_CHIP_INSET_Y as u32;
+        let chip_y1 = H as u32 - TAB_CHIP_INSET_Y as u32 - 1;
+
+        let bar_bg = theme.tab_bar_bg;
+        for (name, x, y) in [
+            ("top-left", chip_x0, chip_y0),
+            ("top-right", chip_x1, chip_y0),
+            ("bottom-left", chip_x0, chip_y1),
+            ("bottom-right", chip_x1, chip_y1),
+        ] {
+            let px = surface.pixel_at(x, y);
+            assert_eq!(
+                (px.r, px.g, px.b),
+                (bar_bg.r, bar_bg.g, bar_bg.b),
+                "chip bounding-rect {name} corner ({x},{y}) should be bar background \
+                 (rounded off by TAB_CHIP_RADIUS), not the active fill"
+            );
+        }
+    }
+
+    /// A row only as tall as the label's own natural line height (e.g.
+    /// a caller reusing `backend.line_height()` as the tab bar's row
+    /// height, the gallery's actual tab-bar geometry) must still paint a
+    /// chip at least that tall — shrinking `TAB_CHIP_INSET_Y` down from
+    /// its nominal 4.0 DIP rather than letting the label's descenders
+    /// ink past a too-short chip.
+    #[test]
+    fn active_chip_clamps_its_inset_on_a_row_as_tall_as_the_label() {
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 11.0, None).expect("create DWrite");
+        let natural_line_height = dwrite.natural_line_height();
+        // A row exactly as tall as the label's own line height — no
+        // slack at all for the nominal 4.0 DIP inset on either side.
+        // Rounded up to whole pixels so the row ends on a pixel
+        // boundary; the clamped inset is then under half a pixel.
+        let tight_h = natural_line_height.ceil();
+        let surface = HeadlessSurface::new(W as u32, tight_h as u32).expect("create surface");
+        // No accent, so the chip's top row shows the chip fill itself.
+        let mut bar = bar();
+        bar.active_accent = None;
+        let theme = Theme::default();
+        let style = Style::default();
+        let rect = Rect::new(0.0, 0.0, W, tight_h);
+
+        surface
+            .paint(|target| {
+                // Aliased rasterisation (pixel-centre inclusion): a
+                // sub-half-pixel inset leaves the edge rows fully chip,
+                // with no anti-aliased blend to compare against.
+                //
+                // SAFETY: same as the `SetAntialiasMode` call in
+                // `active_chip_corners_are_bar_background_not_active_fill`
+                // above — `target` is the live render target
+                // `HeadlessSurface::paint` lends for this closure, and the
+                // call borrows no pointers.
+                unsafe { target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED) };
+                draw_tab_bar(target, &dwrite, rect, &bar, None, &theme, &style);
+            })
+            .expect("paint tab bar");
+
+        let layout = compute_layout(&dwrite, rect, &bar, &[], &style);
+        let bounds = layout.visible_tabs[0].bounds;
+        // Past the corner radius (so the probe sits on the chip's
+        // straight edge, not its rounded corner) and still inside the
+        // tab's left padding (so it misses the label glyphs).
+        let sample_x = (bounds.x + TAB_CHIP_RADIUS + 1.0) as u32;
+        let active_bg = theme.tab_active_bg;
+
+        // Both the row's very top and very bottom pixel must still show
+        // the chip fill — an unclamped 4.0 DIP inset on a row this tight
+        // would leave the chip shorter than the label, and these rows
+        // would still show `tab_bar_bg` instead.
+        for (name, y) in [("top", 0u32), ("bottom", tight_h as u32 - 1)] {
+            let px = surface.pixel_at(sample_x, y);
+            assert_eq!(
+                (px.r, px.g, px.b),
+                (active_bg.r, active_bg.g, active_bg.b),
+                "row {y} ({name} of a row as tall as the label) must still show the \
+                 active chip fill once TAB_CHIP_INSET_Y is clamped to fit"
+            );
+        }
     }
 }
