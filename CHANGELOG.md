@@ -59,6 +59,16 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `primitives::layout_metrics::pixel` gains the remaining pixel-tab-bar
+  constants every backend already duplicated independently —
+  `TAB_PAD_COMPACT`/`TAB_INNER_GAP_COMPACT`/`TAB_OUTER_GAP_COMPACT`,
+  `TAB_CHIP_INSET_Y`/`TAB_CHIP_RADIUS`, `TAB_ACCENT_THICKNESS`, and
+  `TAB_CLOSE_HOVER_ALPHA`/`TAB_CLOSE_HOVER_PAD`/`TAB_CLOSE_HOVER_RADIUS` —
+  plus `tab_close_hover_bg`, one shared derivation for the close-glyph
+  hover backdrop `gtk::tab_bar` already paints (`win::tab_bar`/
+  `macos::tab_bar` currently diverge; adopting the shared helper there is
+  a per-backend follow-up). `pixel_tab_bar_layout`'s doc now states its
+  one-slot close/dirty-glyph convention explicitly.
 - `Backend::draw_switch_with_state`/`draw_radio_group_with_state` — the
   `Switch`/`RadioGroup` twins of `Backend::draw_button_with_state`: each takes
   an `&InteractionState` and defaults to forwarding to the plain
@@ -126,6 +136,14 @@ only a push to `main` runs this workflow.
   content on the cell grid: a kind-icon prefix, every label span instead
   of only the first, and `detail`, which it previously dropped entirely.
 ### Changed
+- `TabBarHits` is no longer `#[deprecated]`. It stays the stable return
+  type of `Backend::draw_tab_bar`/`tab_bar_layout` and their icon/chrome
+  twins; `TabBarLayout` is a parallel, unit-agnostic addition
+  (`*_layout`-suffixed methods, `pixel_tab_bar_layout`), not a migration
+  target for this one — `vimcode` depends on `TabBarHits`'s exact `f64`
+  field shapes, and two of the four in-tree rasterisers construct it
+  directly. Every `#[allow(deprecated)]` suppression for it under
+  `compose/` is gone.
 - `ActivityBar::layout` now builds the `Toolbar` from the new `From` impl
   internally and delegates to `Toolbar::layout_with_options`
   (`ToolbarOrientation::Vertical`, `pin_trailing_overflow_to_origin: true`)

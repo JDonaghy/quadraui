@@ -67,10 +67,8 @@
 //! shell runner maps to [`BottomPanelEvent::Resized`] for the app.
 
 pub use crate::backend::BackendWidget;
-// `TabBarHits` is `#[deprecated]` — this controller caches
-// exactly what `Backend::draw_tab_bar` returns for click dispatch. See
-// that struct's doc for the replacement plan.
-#[allow(deprecated)]
+// This controller caches exactly what `Backend::draw_tab_bar` returns for
+// click dispatch — see `TabBarHits`'s own doc for its stability contract.
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarSegment, TabItem};
 use crate::types::WidgetId;
 use crate::{Backend, Rect};
@@ -188,7 +186,6 @@ pub struct BottomPanelController {
     /// backend's `draw_tab_bar` actually painted against, so paint and click
     /// agree on tab / close-button / maximise positions. Positions are in
     /// target-surface (viewport-absolute) coordinates, matching the click.
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
     last_hits: Option<TabBarHits>,
     last_strip_bounds: Option<Rect>,
 }
@@ -270,7 +267,6 @@ impl BottomPanelController {
     ///
     /// `panel_bounds` must be in the backend's native units (cells for
     /// TUI, pixels for GTK). All returned rects use the same unit.
-    #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
     pub fn render(&mut self, backend: &mut dyn Backend, panel_bounds: Rect) -> BottomPanelLayout {
         let lh = backend.chrome_line_height();
 
@@ -326,7 +322,6 @@ impl BottomPanelController {
     ///
     /// Call this from the shell runner's mouse-down handler after
     /// [`AppShell::handle`] returns [`AppShellEvent::Ignored`].
-    #[allow(deprecated)] // TODO(#823): remove `#[allow(deprecated)]` when `TabBarHits` is removed
     pub fn handle_click(&mut self, x: f32, y: f32) -> Option<BottomPanelEvent> {
         let strip = self.last_strip_bounds?;
         // Check vertical bounds.
@@ -470,7 +465,6 @@ mod tests {
     /// without a real backend render. Measurement: each tab = 6 cells total
     /// (4 label + 2 padding/close), maximise segment = 3 cells. Converted to
     /// `TabBarHits` exactly as a backend's `draw_tab_bar` would return them.
-    #[allow(deprecated)] // builds the deprecated `TabBarHits` test fixture — issue #823
     fn prime_layout(ctrl: &mut BottomPanelController, strip_x: f32, strip_y: f32, bar_w: f32) {
         use crate::backend::tab_bar_hits_from_layout;
         use crate::primitives::tab_bar::{SegmentMeasure, TabMeasure};

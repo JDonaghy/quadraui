@@ -1115,7 +1115,6 @@ mod tests {
         ) -> crate::StatusBarLayout {
             unimplemented!()
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn draw_tab_bar(
             &mut self,
             _r: Rect,
@@ -1124,7 +1123,6 @@ mod tests {
         ) -> crate::TabBarHits {
             unimplemented!()
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn draw_tab_bar_icons(
             &mut self,
             _r: Rect,
@@ -1187,7 +1185,6 @@ mod tests {
                 resolved_right_start: 0,
             }
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarHits {
             crate::TabBarHits::default()
         }
@@ -1220,7 +1217,6 @@ mod tests {
                 resolved_scroll_offset: 0,
             }
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn tab_bar_layout_icons(
             &self,
             _r: Rect,
