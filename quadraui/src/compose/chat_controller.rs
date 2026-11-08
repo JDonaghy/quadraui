@@ -765,7 +765,7 @@ impl ChatController {
         // while `render` takes `&self` (required by the `AppLogic` trait).
         if self.stuck_to_bottom {
             self.transcript_scroll_top
-                .set(total_rows.saturating_sub(visible_rows));
+                .set(transcript_max_offset(total_rows, visible_rows));
         }
 
         let list = MessageList {
@@ -896,13 +896,12 @@ impl ChatController {
     /// After clamping, [`stuck_to_bottom`](Self) is recomputed: scrolling up
     /// disengages follow-tail; scrolling back to the last page re-engages it.
     pub fn scroll_transcript_by(&mut self, delta: isize, total_rows: usize, visible_rows: usize) {
-        let max = total_rows.saturating_sub(visible_rows);
+        let max = transcript_max_offset(total_rows, visible_rows);
         let new = scroll_by_clamped(self.transcript_scroll_top.get(), delta, max);
         self.transcript_scroll_top.set(new);
         // Re-engage follow-tail when scrolled to (or past) the last page;
         // disengage it when scrolled up from there.
-        self.stuck_to_bottom =
-            self.transcript_scroll_top.get() >= total_rows.saturating_sub(visible_rows);
+        self.stuck_to_bottom = transcript_reached_bottom(self.transcript_scroll_top.get(), max);
     }
 
     // ── Focused-turn cursor ─────────────────────────────────────────────
@@ -1626,7 +1625,7 @@ impl ChatController {
         let visible = Self::transcript_visible_rows_for(backend.line_height(), layout.transcript);
         let col_budget = self.transcript_col_budget(backend.char_width(), layout.transcript);
         let total = self.build_transcript_rows(col_budget).len();
-        let max_offset = total.saturating_sub(visible);
+        let max_offset = transcript_max_offset(total, visible);
         if max_offset == 0 {
             return ChatControllerEvent::Ignored;
         }
@@ -1677,7 +1676,7 @@ impl ChatController {
             return ChatControllerEvent::Ignored;
         }
         self.transcript_scroll_top.set(new);
-        self.stuck_to_bottom = new >= max_offset;
+        self.stuck_to_bottom = transcript_reached_bottom(new, max_offset);
         ChatControllerEvent::Consumed
     }
 
@@ -1739,6 +1738,30 @@ impl ChatController {
 }
 
 // ── Module-level helpers ───────────────────────────────────────────────────────
+
+/// Last valid transcript scroll offset for `total_rows` wrapped rows in a
+/// `visible_rows`-tall viewport — the "last page" position follow-tail
+/// pins [`ChatController::render`] to, and the threshold
+/// [`ChatController::scroll_transcript_by`]'s `handle_drag`/
+/// `click_scrollbar` siblings each need to decide whether
+/// [`stuck_to_bottom`](ChatController) should (re-)engage. One shared
+/// definition so the render-time pin, the scroll-by clamp, the
+/// scrollbar-drag clamp, and the scrollbar-track click-jump clamp can't
+/// drift on what "the bottom" means — the same role
+/// [`crate::primitives::text_display::TextDisplay::layout`]'s own
+/// `auto_scroll` resolution plays for that primitive's declarative
+/// scroll state.
+fn transcript_max_offset(total_rows: usize, visible_rows: usize) -> usize {
+    total_rows.saturating_sub(visible_rows)
+}
+
+/// Whether a transcript scrolled to `scroll_top` (out of `max_offset`,
+/// from [`transcript_max_offset`]) has reached or passed the last page —
+/// the follow-tail re-engage/disengage predicate shared by
+/// [`ChatController::scroll_transcript_by`] and `handle_drag`.
+fn transcript_reached_bottom(scroll_top: usize, max_offset: usize) -> bool {
+    scroll_top >= max_offset
+}
 
 fn build_scrollbar(
     id: String,
@@ -2504,6 +2527,24 @@ mod tests {
     }
 
     // ── Transcript scroll ─────────────────────────────────────────────
+
+    #[test]
+    fn transcript_max_offset_is_total_minus_visible() {
+        assert_eq!(transcript_max_offset(10, 4), 6);
+        assert_eq!(
+            transcript_max_offset(4, 10),
+            0,
+            "fits entirely: no overflow"
+        );
+        assert_eq!(transcript_max_offset(0, 0), 0);
+    }
+
+    #[test]
+    fn transcript_reached_bottom_is_at_or_past_max_offset() {
+        assert!(!transcript_reached_bottom(4, 6));
+        assert!(transcript_reached_bottom(6, 6));
+        assert!(transcript_reached_bottom(7, 6));
+    }
 
     #[test]
     fn scroll_transcript_clamps_to_bounds() {

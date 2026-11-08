@@ -25,6 +25,7 @@
 //!   apply `scale` (GTK `AttrFloat::new_scale`, TUI ignores it).
 
 use crate::event::Rect;
+use crate::primitives::row_stack;
 use crate::types::{Color, StyledSpan, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -156,12 +157,73 @@ pub enum MessageListHit {
     Empty,
 }
 
+/// Resolved position of one visible row after [`MessageList::layout`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VisibleMessageRow {
+    /// Index into [`MessageList::rows`].
+    pub idx: usize,
+    pub bounds: Rect,
+}
+
+/// Fully-resolved [`MessageList`] layout — the rows that ended up at
+/// least partially visible, plus the scroll offset actually used.
+///
+/// `#[non_exhaustive]`: a backend-returned value, never constructed by
+/// a consumer via struct literal (same convention as
+/// [`crate::primitives::list::ListViewLayout`]), so a future field add
+/// here is additive.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct MessageListLayout {
+    /// Visible rows, top to bottom.
+    pub visible_rows: Vec<VisibleMessageRow>,
+    /// [`MessageList::scroll_top`], clamped to `[0, rows.len())` (or `0`
+    /// when `rows` is empty) via the same
+    /// [`crate::primitives::row_stack::layout_row_stack`] rule
+    /// `ListView`/`TreeView`/`Palette` already share — a `scroll_top`
+    /// past the end pins the last row rather than showing a blank
+    /// viewport.
+    pub resolved_scroll_offset: usize,
+}
+
 impl MessageList {
+    /// Compute the rows that fit inside `rect`, uniformly
+    /// `measure.line_height` tall, starting at [`Self::scroll_top`] — the
+    /// single source of truth [`Self::hit_test`] and the TUI/macOS/Windows
+    /// rasterisers paint from, built on the same
+    /// [`crate::primitives::row_stack::layout_row_stack`] arithmetic
+    /// `ListView::layout` / `Palette::layout` use.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — `rect` positions rows directly in
+    /// the caller's surface space, matching [`Self::hit_test`]'s
+    /// convention.
+    pub fn layout(&self, rect: Rect, measure: MessageListMeasure) -> MessageListLayout {
+        let stacked = row_stack::layout_row_stack(
+            self.scroll_top,
+            None,
+            self.rows.len(),
+            rect.x,
+            rect.y,
+            rect.y + rect.height,
+            rect.width,
+            |_| (measure.line_height, ()),
+        );
+        MessageListLayout {
+            visible_rows: stacked
+                .visible
+                .into_iter()
+                .map(|row| VisibleMessageRow {
+                    idx: row.idx,
+                    bounds: row.bounds,
+                })
+                .collect(),
+            resolved_scroll_offset: stacked.resolved_scroll_offset,
+        }
+    }
+
     /// Hit-test a click at surface-native `(x, y)` against this list,
-    /// painted into `rect` with `measure.line_height`-tall uniform rows
-    /// starting at [`Self::scroll_top`] — the same walk
-    /// `tui::draw_message_list` / `gtk::draw_message_list` use to
-    /// position each row.
+    /// built from the same [`Self::layout`] the rasterisers paint from so
+    /// paint and hit-test can never disagree.
     ///
     /// Coordinate frame: **ABSOLUTE** — `(x, y)` is compared directly
     /// against `rect`, matching `text_input_layout`'s convention.
@@ -178,13 +240,13 @@ impl MessageList {
         if x < rect.x || x >= rect.x + rect.width || y < rect.y || y >= rect.y + rect.height {
             return MessageListHit::Empty;
         }
-        let row_offset = ((y - rect.y) / measure.line_height) as usize;
-        let idx = self.scroll_top + row_offset;
-        if idx < self.rows.len() {
-            MessageListHit::Row(idx)
-        } else {
-            MessageListHit::Empty
+        let layout = self.layout(rect, measure);
+        for row in &layout.visible_rows {
+            if y >= row.bounds.y && y < row.bounds.y + row.bounds.height {
+                return MessageListHit::Row(row.idx);
+            }
         }
+        MessageListHit::Empty
     }
 }
 
@@ -642,6 +704,66 @@ mod tests {
         assert_eq!(
             list.hit_test(rect, measure, 1.0, 1.0),
             MessageListHit::Empty
+        );
+    }
+
+    #[test]
+    fn layout_builds_visible_rows_from_scroll_top() {
+        let list = list_with_rows(10, 2);
+        let rect = Rect::new(0.0, 0.0, 40.0, 5.0);
+        let layout = list.layout(rect, MessageListMeasure::new(1.0));
+        assert_eq!(layout.resolved_scroll_offset, 2);
+        let idxs: Vec<usize> = layout.visible_rows.iter().map(|r| r.idx).collect();
+        assert_eq!(idxs, vec![2, 3, 4, 5, 6]);
+        assert_eq!(
+            layout.visible_rows[0].bounds,
+            Rect::new(0.0, 0.0, 40.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn layout_clips_the_last_row_to_the_viewport() {
+        let list = list_with_rows(3, 0);
+        let rect = Rect::new(0.0, 0.0, 40.0, 2.5);
+        let layout = list.layout(rect, MessageListMeasure::new(1.0));
+        assert_eq!(layout.visible_rows.len(), 3);
+        assert_eq!(layout.visible_rows[2].bounds.height, 0.5);
+    }
+
+    /// `scroll_top` past the end of `rows` now clamps to the last reachable
+    /// row via `row_stack::layout_row_stack`, matching `ListView`/
+    /// `TreeView`/`Palette`'s convention: an overscrolled list pins its
+    /// last row rather than showing a blank viewport.
+    #[test]
+    fn layout_clamps_an_overscrolled_scroll_top_to_the_last_row() {
+        let list = list_with_rows(5, 1000);
+        let rect = Rect::new(0.0, 0.0, 40.0, 5.0);
+        let layout = list.layout(rect, MessageListMeasure::new(1.0));
+        assert_eq!(layout.resolved_scroll_offset, 4);
+        let idxs: Vec<usize> = layout.visible_rows.iter().map(|r| r.idx).collect();
+        assert_eq!(idxs, vec![4]);
+    }
+
+    #[test]
+    fn layout_empty_rows_is_empty() {
+        let list = list_with_rows(0, 0);
+        let rect = Rect::new(0.0, 0.0, 40.0, 5.0);
+        let layout = list.layout(rect, MessageListMeasure::new(1.0));
+        assert!(layout.visible_rows.is_empty());
+        assert_eq!(layout.resolved_scroll_offset, 0);
+    }
+
+    /// Same overscroll case as [`layout_clamps_an_overscrolled_scroll_top_to_the_last_row`],
+    /// through `hit_test` — a click anywhere in the viewport now lands on
+    /// the pinned last row instead of always missing.
+    #[test]
+    fn hit_test_clamps_an_overscrolled_scroll_top_to_the_last_row() {
+        let list = list_with_rows(5, 1000);
+        let rect = Rect::new(0.0, 0.0, 40.0, 5.0);
+        let measure = MessageListMeasure::new(1.0);
+        assert_eq!(
+            list.hit_test(rect, measure, 5.0, 0.5),
+            MessageListHit::Row(4)
         );
     }
 }

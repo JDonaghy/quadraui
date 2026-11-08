@@ -144,6 +144,26 @@ only a push to `main` runs this workflow.
   field shapes, and two of the four in-tree rasterisers construct it
   directly. Every `#[allow(deprecated)]` suppression for it under
   `compose/` is gone.
+- `MessageList` gains a `layout`/`MessageListLayout`/`VisibleMessageRow`
+  API, built on the same `primitives::row_stack::layout_row_stack`
+  `ListView`/`TreeView`/`Palette` already share; `MessageList::hit_test`
+  now delegates to it instead of its own hand-rolled row-index arithmetic.
+  Behavior change: a `scroll_top` scrolled past the end of `rows` now
+  clamps to the last reachable row (pinning it, matching `ListView`'s/
+  `Palette`'s overscroll convention) instead of always missing every hit
+  test — pinned by new tests. `Palette::layout`'s item-visible-rows walk
+  also now delegates to `layout_row_stack` internally; `PaletteLayout`'s
+  shape and every existing `Palette` test are unchanged (pure refactor
+  for that half).
+- `ListView`'s and `Palette`'s GTK/Windows/macOS `native_surface_paint`
+  row painters share a leading-icon-glyph and right-aligned-detail-text
+  helper (`primitives::row_stack::row_content_paint`) instead of two
+  independently-maintained copies of the same measure/position
+  arithmetic. Pure refactor — each caller's own `PaintSurface` verb
+  choice for the icon (`ListView`: `surface_draw_text_run`; `Palette`:
+  `surface_draw_icon_glyph`) and detail right-margin (`ListView`: `4.0`;
+  `Palette`: `8.0`) are preserved as call-site parameters, and every
+  existing `list`/`palette` native-paint test stays green.
 - `ActivityBar::layout` now builds the `Toolbar` from the new `From` impl
   internally and delegates to `Toolbar::layout_with_options`
   (`ToolbarOrientation::Vertical`, `pin_trailing_overflow_to_origin: true`)
