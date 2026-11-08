@@ -4191,7 +4191,7 @@ impl Backend for WinBackend {
                 let style = self.style();
                 crate::primitives::text_input::paint(ti, &layout, self, &theme, &style);
             }
-            return layout;
+            layout
         }
         // Pure geometry — `TextInput::layout` needs only `line_height`/
         // `char_width`, no real text measurement; paints nothing since
