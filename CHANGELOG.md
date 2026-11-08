@@ -70,6 +70,13 @@ only a push to `main` runs this workflow.
   header/search-row chrome. No backend's `draw_spinner`/`draw_command_center`/
   `draw_settings_chrome` routes through these yet — per-backend adoption
   (gtk/macos/win) is tracked as follow-on issues.
+- `focus::cycle_index(current, delta, n)` — the one wrap-around index
+  arithmetic every Tab/Shift+Tab-style stepper in the crate now shares
+  (`FocusManager::step`, `FocusGroup::cycle`, and the menu/workspace/
+  message-dialog/toast-stack/form-controller cyclers that each used to
+  carry their own `rem_euclid`/modulo expression). `n == 0` returns `0`
+  instead of panicking.
+
 - `primitives::layout_metrics::pixel` gains the remaining pixel-tab-bar
   constants every backend already duplicated independently —
   `TAB_PAD_COMPACT`/`TAB_INNER_GAP_COMPACT`/`TAB_OUTER_GAP_COMPACT`,
@@ -157,6 +164,11 @@ only a push to `main` runs this workflow.
   independent `rows.iter().skip(scroll_top)` walk; migrating them onto
   this layout is follow-up work.
 ### Changed
+- `FocusRing` is now a thin wrapper over `FocusManager` instead of
+  `FocusGroup` — adding only the `:focus-visible` bookkeeping on top of
+  the same `WidgetId`-keyed focus owner every backend's Tab/Shift+Tab
+  intercept already drives. Pure internal refactor: `FocusRing`'s public
+  API and every existing test are unchanged.
 - `TabBarHits` is no longer `#[deprecated]`. It stays the stable return
   type of `Backend::draw_tab_bar`/`tab_bar_layout` and their icon/chrome
   twins; `TabBarLayout` is a parallel, unit-agnostic addition

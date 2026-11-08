@@ -55,17 +55,16 @@ impl FocusGroup {
     /// Wraps around. If `active` is `None`, +delta starts at 0,
     /// -delta starts at last.
     pub fn cycle(&mut self, delta: isize) {
-        let n = self.count as isize;
-        if n == 0 {
+        if self.count == 0 {
             return;
         }
         let next = match self.active {
-            Some(i) => ((i as isize + delta).rem_euclid(n)) as usize,
+            Some(i) => crate::focus::cycle_index(i, delta, self.count),
             None => {
                 if delta >= 0 {
                     0
                 } else {
-                    (n - 1) as usize
+                    self.count - 1
                 }
             }
         };
