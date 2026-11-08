@@ -277,22 +277,27 @@ only a push to `main` runs this workflow.
   all". **Downstream impact:** a TUI consumer that called any of the
   three and matched on `Ok` now gets `Err(BackendError::Unsupported)`
   instead.
-### Fixed
 - `Tooltip::layout`, `RichTextPopup::layout`, `Completions::layout`, and
   `ContextMenu::layout`/`layout_at` now resolve their placement through the
   shared `layout::Anchor::resolve` flip/clamp logic instead of each
   reimplementing their own — their public `TooltipPlacement`/
   `PopupPlacement`/`CompletionsPlacement`/`ContextMenuPlacement` enums and
-  method signatures are unchanged. The four previously disagreed on what to
-  do when *neither* side fits the viewport: `Completions`/`ContextMenu`
-  picked whichever side had more room (regardless of whether that side
-  actually fit either), while `Tooltip`/`Float` pinned to the originally
-  preferred side and clamped. All four now use the latter, pinned-to-
-  preferred policy; `RichTextPopup` also stops unconditionally flipping to
-  the opposite side without checking whether that side fits. This only
-  changes behaviour in the rare case of a popup anchored in a viewport too
-  small to fit it on either side — see the new edge-of-window tests in each
-  primitive's module for the exact before/after geometry.
+  method signatures are unchanged. `Completions`, `RichTextPopup`, and
+  `ContextMenu` pre-clamp the anchor's horizontal position into the
+  viewport before resolving, so an anchor that overflows horizontally
+  (e.g. a caret or trigger near the right edge) no longer suppresses the
+  independent vertical flip decision. The four previously disagreed on
+  what to do when *neither* side fits the viewport: `Completions`/
+  `ContextMenu` picked whichever side had more room (regardless of
+  whether that side actually fit either), while `Tooltip`/`Float` pinned
+  to the originally preferred side and clamped. All four now use the
+  latter, pinned-to-preferred policy; `RichTextPopup` also stops
+  unconditionally flipping to the opposite side without checking whether
+  that side fits. This only changes behaviour in the rare case of a
+  popup anchored in a viewport too small to fit it on either side — see
+  the new edge-of-window tests in each primitive's module for the exact
+  before/after geometry.
+### Fixed
 - `win::draw_spinner` now paints the spinner glyph/label in the colour passed
   in via its new `theme: &Theme` parameter, instead of always building a fresh
   `Theme::default()` and ignoring dark/custom themes — matching

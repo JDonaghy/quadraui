@@ -418,12 +418,24 @@ impl RichTextPopup {
         let outer_w = measure.content_width + pad * 2.0 + border * 2.0;
         let outer_h = content_h + pad * 2.0 + border * 2.0;
 
+        // Horizontal position is clamped into the viewport *before*
+        // `Anchor::resolve` runs, independently of the vertical flip
+        // decision below. `Anchor::resolve`'s `fits` predicate tests
+        // both axes together, so an anchor `x` that is already outside
+        // the viewport would make the horizontal overflow fail the fit
+        // test on whichever vertical side is tried, masking the
+        // intended vertical flip.
+        let ax = anchor_x.clamp(
+            viewport.x,
+            (viewport.x + viewport.width - outer_w).max(viewport.x),
+        );
+
         // Placement: above the anchor when there's room, otherwise below,
         // via the shared `Anchor` flip/clamp resolver. The anchor rect's
         // width is set to `outer_w` so `Anchor::resolve`'s cross-axis
         // centering (`(rect.width - w) * 0.5`) collapses to zero and `x`
-        // stays left-aligned with `anchor_x`, matching this popup's
-        // left-aligned (not centered) horizontal placement; its height is
+        // stays left-aligned with `ax`, matching this popup's left-aligned
+        // (not centered) horizontal placement; its height is
         // `measure.row_height` so the `Below` candidate opens flush under
         // the anchor cell, same as the `Above` candidate opens flush above
         // it.
@@ -431,7 +443,7 @@ impl RichTextPopup {
             PopupPlacement::Above => Side::Top,
             PopupPlacement::Below => Side::Bottom,
         };
-        let anchor_rect = Rect::new(anchor_x, anchor_y, outer_w, measure.row_height);
+        let anchor_rect = Rect::new(ax, anchor_y, outer_w, measure.row_height);
         let (origin, _resolved_side) =
             Anchor::new(anchor_rect, side).resolve((outer_w, outer_h), viewport);
         let x = origin.x;
@@ -1104,13 +1116,9 @@ mod tests {
         // Viewport too short (40) for the 34-tall popup to fit fully on
         // either side of an anchor in the middle (y=20).
         //
-        // Behaviour change from the pre-`Anchor` implementation: that
-        // code unconditionally flipped to the *opposite* side whenever
-        // the preferred one didn't fit (without checking whether the
-        // opposite fit either), then clamped — landing at y=6 here.
-        // `Anchor::resolve`'s shared fallback instead pins to the
-        // *preferred* side (matching `Tooltip`/`Float`/`ContextMenu`) and
-        // clamps that, landing at y=0.
+        // When neither side fits, the popup pins to the preferred side
+        // (matching `Tooltip`/`Float`/`ContextMenu`) and clamps, landing
+        // at y=0.
         let p = make_rich_popup(3, 3, 0);
         let viewport = Rect::new(0.0, 0.0, 200.0, 40.0);
         let layout = p.layout(
@@ -1137,5 +1145,29 @@ mod tests {
         // outer_w = 84; anchor_x + outer_w would overflow the 200-wide
         // viewport, so x is clamped to the viewport's right edge.
         assert_eq!(layout.bounds.x, 116.0);
+    }
+
+    #[test]
+    fn rich_text_popup_layout_flips_above_when_anchor_overflows_both_axes() {
+        // Anchor in the bottom-right corner: `anchor_x` (190) overflows
+        // the viewport horizontally (outer_w 84 in a 200-wide viewport)
+        // AND the preferred `Below` candidate overflows vertically
+        // (anchor near the bottom). The vertical flip to `Above` must
+        // still happen — horizontal overflow is clamped independently
+        // and must not suppress it.
+        let mut p = make_rich_popup(3, 3, 0);
+        p.placement = PopupPlacement::Below;
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = p.layout(
+            190.0,
+            190.0,
+            viewport,
+            RichTextPopupMeasure::new(80.0, 10.0),
+            |_, s, e| (e - s) as f32,
+        );
+        // x clamps to the right edge: 200 - 84 = 116.
+        assert_eq!(layout.bounds.x, 116.0);
+        // Flips above: y = anchor_y - outer_h = 190 - 34 = 156.
+        assert_eq!(layout.bounds.y, 156.0);
     }
 }
