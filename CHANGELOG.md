@@ -135,6 +135,16 @@ only a push to `main` runs this workflow.
   `detail` onto a `PaintSurface`. `tui::draw_completions` gains the same
   content on the cell grid: a kind-icon prefix, every label span instead
   of only the first, and `detail`, which it previously dropped entirely.
+- `MessageList::layout`/`MessageListLayout`/`VisibleMessageRow` — a new,
+  `primitives::row_stack::layout_row_stack`-based layout, the same
+  arithmetic `ListView`/`TreeView`/`Palette` already share.
+  `MessageList::hit_test` now computes its result by walking this layout
+  instead of its own hand-rolled row-index arithmetic, with no observable
+  change to `hit_test`'s own behavior (pinned by existing tests). No
+  rasteriser paints from `MessageList::layout` yet — `tui`, `gtk`, and the
+  shared macOS/Windows `native_surface_paint::paint` still do their own
+  independent `rows.iter().skip(scroll_top)` walk; migrating them onto
+  this layout is follow-up work.
 ### Changed
 - `TabBarHits` is no longer `#[deprecated]`. It stays the stable return
   type of `Backend::draw_tab_bar`/`tab_bar_layout` and their icon/chrome
@@ -155,6 +165,9 @@ only a push to `main` runs this workflow.
   also now delegates to `layout_row_stack` internally; `PaletteLayout`'s
   shape and every existing `Palette` test are unchanged (pure refactor
   for that half).
+- `Palette::layout`'s item-visible-rows walk now delegates to
+  `primitives::row_stack::layout_row_stack` internally; `PaletteLayout`'s
+  shape and every existing `Palette` test are unchanged (pure refactor).
 - `ListView`'s and `Palette`'s GTK/Windows/macOS `native_surface_paint`
   row painters share a leading-icon-glyph and right-aligned-detail-text
   helper (`primitives::row_stack::row_content_paint`) instead of two
