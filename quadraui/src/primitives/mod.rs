@@ -42,6 +42,7 @@ pub mod pipeline_view;
 pub mod progress;
 pub mod radio_group;
 pub mod rich_text_popup;
+pub mod row_stack;
 pub mod scroll_view;
 pub mod scrollbar;
 pub mod sidebar_panel;

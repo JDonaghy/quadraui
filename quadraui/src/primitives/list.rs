@@ -24,6 +24,7 @@
 //! updates `selected_idx` and `scroll_offset` for the next frame.
 
 use crate::event::Rect;
+use crate::primitives::row_stack::{self, RowPaintState};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -255,44 +256,13 @@ impl ListViewLayout {
 
 /// Per-frame paint-time state for a `ListView` — hover/press row
 /// tracking plus a pixel-precise scroll position, none of which live on
-/// the declarative [`ListView`] descriptor itself (see that struct's
-/// doc for why: consumers build it with full struct literals, so a
-/// required field there is a breaking change, per `PRIMITIVE_RULES.md`
-/// rule 8).
-///
-/// `#[non_exhaustive]`: construct via [`Default::default`] plus the
-/// `with_*` builders, so a future field here is additive.
-///
-/// `scroll_px: None` paints exactly as [`ListView::layout`] /
-/// [`ListView::vscrollbar`] already do (whole-row from
-/// `scroll_offset`); `Some(px)` wins and is resolved via
-/// [`crate::primitives::scrollbar::resolve_scroll_px`] into a
-/// `scroll_offset` plus a sub-row remainder — see
-/// [`ListView::layout_with_scroll_px`].
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct ListPaintState {
-    pub hovered_idx: Option<usize>,
-    pub pressed_idx: Option<usize>,
-    pub scroll_px: Option<f32>,
-}
-
-impl ListPaintState {
-    pub fn with_hovered_idx(mut self, idx: Option<usize>) -> Self {
-        self.hovered_idx = idx;
-        self
-    }
-
-    pub fn with_pressed_idx(mut self, idx: Option<usize>) -> Self {
-        self.pressed_idx = idx;
-        self
-    }
-
-    pub fn with_scroll_px(mut self, px: Option<f32>) -> Self {
-        self.scroll_px = px;
-        self
-    }
-}
+/// the declarative [`ListView`] descriptor itself (consumers build it
+/// with full struct literals, so a required field there is a breaking
+/// change, per `PRIMITIVE_RULES.md` rule 8). Field-identical to
+/// [`crate::primitives::tree::TreePaintState`], so both are aliases of
+/// the shared [`RowPaintState`] — see that type's doc for the full
+/// rationale and the `scroll_px` resolution rule.
+pub type ListPaintState = RowPaintState;
 
 impl ListView {
     /// Compute the full rendering + hit-test layout for this list.
@@ -404,51 +374,33 @@ impl ListView {
             title_bounds.map(|b| b.y + b.height).unwrap_or(0.0)
         };
 
-        // Resolve `scroll_offset` vs. `scroll_px` (the latter wins when
-        // set). The first item's height is the uniform row-height basis
-        // for the pixel conversion — the same approximation
-        // `vscrollbar`/`hscrollbar` already make for thumb sizing on
-        // lists with per-row-varying heights. Only measured when
-        // `scroll_px` is actually in play — `measure_item` can do real
-        // text-measurement work (Pango layout on GTK), and `None` never
-        // reads this value.
-        let row_height_basis = if scroll_px.is_none() || self.items.is_empty() {
-            1.0
-        } else {
-            measure_item(0).height
-        };
-        let (resolved_scroll_offset, scroll_sub_px) =
-            crate::primitives::scrollbar::resolve_scroll_px(
-                self.scroll_offset,
-                scroll_px,
-                self.items.len(),
-                row_height_basis,
-            );
-
         let items_y_end = if self.bordered {
             inset_y + items_h_max
         } else {
             viewport_height
         };
 
-        let mut y = items_y_start - scroll_sub_px;
-        for i in resolved_scroll_offset..self.items.len() {
-            if y >= items_y_end {
-                break;
-            }
-            let m = measure_item(i);
-            let remaining = items_y_end - y;
-            let height = m.height.min(remaining).max(0.0);
-            if height <= 0.0 {
-                break;
-            }
-            let bounds = Rect::new(inset_x, y, item_w, height);
+        // Resolve `scroll_offset` vs. `scroll_px` (the latter wins when
+        // set) and walk the rows — the shared row-stacking math also
+        // used by `TreeView::layout_with_scroll_px`. `()` extra: unlike
+        // `TreeView`, `ListView` items have no chevron split.
+        let stack = row_stack::layout_row_stack(
+            self.scroll_offset,
+            scroll_px,
+            self.items.len(),
+            inset_x,
+            items_y_start,
+            items_y_end,
+            item_w,
+            |i| (measure_item(i).height, ()),
+        );
+
+        for r in &stack.visible {
             visible_items.push(VisibleListItem {
-                item_idx: i,
-                bounds,
+                item_idx: r.idx,
+                bounds: r.bounds,
             });
-            hit_regions.push((bounds, ListViewHit::Item(i)));
-            y += m.height;
+            hit_regions.push((r.bounds, ListViewHit::Item(r.idx)));
         }
 
         ListViewLayout {
@@ -457,8 +409,8 @@ impl ListView {
             title_bounds,
             visible_items,
             hit_regions,
-            resolved_scroll_offset,
-            scroll_sub_px,
+            resolved_scroll_offset: stack.resolved_scroll_offset,
+            scroll_sub_px: stack.scroll_sub_px,
         }
     }
 
@@ -617,21 +569,14 @@ impl ListView {
         // `scroll_px` wins over `scroll_offset` when set, so the thumb
         // moves smoothly alongside the sub-row paint shift
         // `layout_with_scroll_px` applies.
-        let (resolved_scroll_offset, scroll_sub_px) =
-            crate::primitives::scrollbar::resolve_scroll_px(
-                self.scroll_offset,
-                scroll_px,
-                self.items.len(),
-                row_height,
-            );
-        let scroll_rows = resolved_scroll_offset as f32 + scroll_sub_px / row_height;
-        Some(Scrollbar::vertical(
+        Some(row_stack::vscrollbar_thumb(
             self.id,
             track,
-            scroll_rows,
-            total,
-            visible,
+            self.scroll_offset,
+            scroll_px,
+            self.items.len(),
             row_height,
+            visible,
         ))
     }
 }
