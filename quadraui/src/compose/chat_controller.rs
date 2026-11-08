@@ -127,16 +127,13 @@
 
 use crate::compose::markdown::render_markdown_to_styled;
 use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
-use crate::text_util::{
-    next_char_boundary, prev_char_boundary, safe_prefix, snap_to_char_boundary, wrap_spans,
-    WrapPolicy,
-};
+use crate::text_util::{wrap_spans, WrapPolicy};
 use crate::theme::Theme;
 use crate::types::StyledSpan;
 use crate::{
-    Backend, ButtonMask, Color, FieldKind, Form, FormField, Key, MessageList, MessageListHit,
-    MessageListMeasure, MessageRow, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar,
-    Spinner, StyledText, TextInput, TextInputHit, UiEvent, WidgetId,
+    Backend, ButtonMask, Color, EditOp, FieldKind, Form, FormField, Key, MessageList,
+    MessageListHit, MessageListMeasure, MessageRow, Modifiers, MouseButton, NamedKey, Point, Rect,
+    Scrollbar, Spinner, StyledText, TextEditor, TextInput, TextInputHit, UiEvent, WidgetId,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
@@ -298,15 +295,15 @@ struct ChatLayout {
 ///
 /// The input box's `TextInput` is built from the *wrapped* buffer, not the
 /// raw one: [`build_text_input`](Self::build_text_input) soft-wraps
-/// `input_buf` to [`TextInput::content_cols`] before handing it to the
-/// primitive, so long lines wrap inside the box instead of scrolling
-/// horizontally. Wrapping is exact — a visual row is always a contiguous
-/// byte range of its logical line, with no whitespace collapsed or
-/// dropped (unlike [`crate::text_util::word_wrap`]'s transcript wrapping,
-/// which *is* lossy at wrap points) — so cursor positions map losslessly
-/// between logical `(line, byte offset)` space (what `input_buf`/
-/// `input_cursor` store) and visual `(row, char column)` space (what the
-/// painted `TextInput` shows).
+/// `input_editor`'s logical lines to [`TextInput::content_cols`] before
+/// handing them to the primitive, so long lines wrap inside the box instead
+/// of scrolling horizontally. Wrapping is exact — a visual row is always a
+/// contiguous char range of its logical line, with no whitespace collapsed
+/// or dropped (unlike [`crate::text_util::word_wrap`]'s transcript
+/// wrapping, which *is* lossy at wrap points) — so cursor positions map
+/// losslessly between logical `(line, char column)` space (what
+/// `input_editor`'s [`TextEditor`] stores) and visual `(row, char column)`
+/// space (what the painted `TextInput` shows).
 ///
 /// `↑`/`↓` move the cursor by **visual** row, not logical line: pressing
 /// `↑` partway through a wrapped paragraph moves to the previous visual
@@ -329,10 +326,18 @@ pub struct ChatController {
     model_label: String,
     spinner_frame: usize,
     // ── Input buffer ─────────────────────────────────────────────────
-    /// Raw text with embedded `\n` separating logical lines.
+    /// Editing session for the input box: logical lines, cursor, selection
+    /// and undo history. Every edit (insert, delete, cursor move, word
+    /// op) routes through [`EditOp`]/[`TextEditor::apply`] — see
+    /// [`apply_input_op`](Self::apply_input_op) — rather than hand-rolled
+    /// byte-offset arithmetic, so the input box gets shift-select and
+    /// word ops for free.
+    input_editor: TextEditor,
+    /// `input_editor.input.lines.join("\n")`, kept in sync by every write
+    /// path (see `apply_input_op`/`set_input_text`) so
+    /// [`input_text`](Self::input_text) can keep returning a plain `&str`
+    /// without borrowing from a `Vec<String>`.
     input_buf: String,
-    /// Byte offset of the cursor inside `input_buf`.
-    input_cursor: usize,
     /// Vertical scroll offset forwarded to [`TextInput::scroll_offset`].
     input_scroll_offset: usize,
     /// Whether the input has keyboard focus (controls cursor visibility).
@@ -344,8 +349,9 @@ pub struct ChatController {
     /// history navigation mode.
     history_pos: Option<usize>,
     /// Input state saved when the user first pressed `↑` to enter history
-    /// navigation. Restored on `↓` past the newest history entry.
-    saved_input: Option<(String, usize)>,
+    /// navigation — `(text, cursor_line, cursor_col)`. Restored on `↓`
+    /// past the newest history entry.
+    saved_input: Option<(String, usize, usize)>,
     // ── Transcript scroll ─────────────────────────────────────────────
     /// First visible wrapped row.
     ///
@@ -410,15 +416,17 @@ impl ChatController {
     /// Create a new controller. `id` is used to namespace widget IDs for all
     /// sub-primitives (transcript, scrollbar, input, spinner).
     pub fn new(id: impl Into<String>) -> Self {
+        let id = WidgetId::new(id);
+        let input_editor = TextEditor::new(TextInput::new(WidgetId::new(format!("{id}-input"))));
         Self {
-            id: WidgetId::new(id),
+            id,
             transcript: Vec::new(),
             status_label: StyledText::plain(""),
             busy: false,
             model_label: String::new(),
             spinner_frame: 0,
+            input_editor,
             input_buf: String::new(),
-            input_cursor: 0,
             input_scroll_offset: 0,
             input_has_focus: true,
             history: Vec::new(),
@@ -478,12 +486,11 @@ impl ChatController {
         &self.input_buf
     }
 
-    /// Clear the input buffer and reset cursor + scroll state.
+    /// Clear the input buffer and reset cursor + selection + scroll state.
     ///
     /// Apps call this after handling a [`ChatControllerEvent::Submit`].
     pub fn clear_input(&mut self) {
-        self.input_buf.clear();
-        self.input_cursor = 0;
+        self.set_input_text("");
         self.input_scroll_offset = 0;
         self.history_pos = None;
         self.saved_input = None;
@@ -970,7 +977,9 @@ impl ChatController {
         // rows. Wraps against `input_row_w`, not the full row width, so
         // auto-grow accounts for the Send/Stop segment eating into it.
         let col_budget = TextInput::content_cols(input_row_w, backend.char_width());
-        let visual_rows = wrap_input_rows(&self.input_buf, col_budget).len().max(1);
+        let visual_rows = wrap_input_rows(&self.input_editor.input.lines, col_budget)
+            .len()
+            .max(1);
         let input_rows = visual_rows.clamp(self.input_min_rows, self.input_max_rows);
         let input_h = input_rows as f32 * lh + 2.0;
 
@@ -1201,11 +1210,11 @@ impl ChatController {
         (rows, turn_starts)
     }
 
-    /// Soft-wrap `input_buf` to `col_budget` and build the `TextInput` the
-    /// rasterisers paint — see this struct's *Input soft-wrap and
-    /// auto-grow* doc section.
+    /// Soft-wrap `input_editor`'s logical lines to `col_budget` and build
+    /// the `TextInput` the rasterisers paint — see this struct's *Input
+    /// soft-wrap and auto-grow* doc section.
     fn build_text_input(&self, col_budget: usize) -> TextInput {
-        let rows = wrap_input_rows(&self.input_buf, col_budget);
+        let rows = wrap_input_rows(&self.input_editor.input.lines, col_budget);
         self.text_input_from_rows(&rows)
     }
 
@@ -1213,12 +1222,14 @@ impl ChatController {
     /// (shared by [`Self::build_text_input`] and
     /// [`Self::handle_click`], which both need the same wrap pass — the
     /// click handler additionally uses `rows` to map the click back to a
-    /// buffer byte offset).
+    /// logical line/column).
     fn text_input_from_rows(&self, rows: &[InputRow]) -> TextInput {
         let lines: Vec<String> = rows.iter().map(|r| r.text.clone()).collect();
-        let (logical_line, logical_col) =
-            cursor_byte_to_line_col(&self.input_buf, self.input_cursor);
-        let (visual_row, visual_col) = input_logical_to_visual(rows, logical_line, logical_col);
+        let (visual_row, visual_col) = input_logical_to_visual(
+            rows,
+            self.input_editor.input.cursor_line,
+            self.input_editor.input.cursor_col,
+        );
         let mut ti = TextInput::new(WidgetId::new(format!("{}-input", self.id)));
         ti.lines = lines;
         ti.cursor_line = visual_row;
@@ -1318,33 +1329,58 @@ impl ChatController {
                 ChatControllerEvent::Consumed
             }
 
-            // ── Backspace ──────────────────────────────────────────────
+            // ── Backspace / Ctrl+Backspace (delete previous word) ──────
+            Key::Named(NamedKey::Backspace) if modifiers.ctrl => {
+                self.input_delete_word_backward();
+                ChatControllerEvent::Consumed
+            }
             Key::Named(NamedKey::Backspace) => {
-                self.input_backspace();
+                self.apply_input_op(EditOp::DeleteBackward);
                 ChatControllerEvent::Consumed
             }
 
-            // ── Delete ─────────────────────────────────────────────────
+            // ── Delete / Ctrl+Delete (delete next word) ─────────────────
+            Key::Named(NamedKey::Delete) if modifiers.ctrl => {
+                self.input_delete_word_forward();
+                ChatControllerEvent::Consumed
+            }
             Key::Named(NamedKey::Delete) => {
-                self.input_delete();
+                self.apply_input_op(EditOp::DeleteForward);
                 ChatControllerEvent::Consumed
             }
 
-            // ── Cursor movement ────────────────────────────────────────
+            // ── Cursor movement — plain moves the cursor, `Shift` extends
+            //    the selection, `Ctrl` jumps by word (`Ctrl+Shift` both) ──
+            Key::Named(NamedKey::Left) if modifiers.ctrl => {
+                self.input_move_word(false, modifiers.shift);
+                ChatControllerEvent::Consumed
+            }
+            Key::Named(NamedKey::Right) if modifiers.ctrl => {
+                self.input_move_word(true, modifiers.shift);
+                ChatControllerEvent::Consumed
+            }
             Key::Named(NamedKey::Left) => {
-                self.input_move_left();
+                self.apply_input_op(EditOp::MoveLeft {
+                    extend: modifiers.shift,
+                });
                 ChatControllerEvent::Consumed
             }
             Key::Named(NamedKey::Right) => {
-                self.input_move_right();
+                self.apply_input_op(EditOp::MoveRight {
+                    extend: modifiers.shift,
+                });
                 ChatControllerEvent::Consumed
             }
             Key::Named(NamedKey::Home) => {
-                self.input_move_home();
+                self.apply_input_op(EditOp::MoveLineStart {
+                    extend: modifiers.shift,
+                });
                 ChatControllerEvent::Consumed
             }
             Key::Named(NamedKey::End) => {
-                self.input_move_end();
+                self.apply_input_op(EditOp::MoveLineEnd {
+                    extend: modifiers.shift,
+                });
                 ChatControllerEvent::Consumed
             }
 
@@ -1354,15 +1390,21 @@ impl ChatController {
             //    row of the whole buffer) ─────────────────────────────
             Key::Named(NamedKey::Up) => {
                 let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
-                let rows = wrap_input_rows(&self.input_buf, col_budget);
-                let (logical_line, logical_col) =
-                    cursor_byte_to_line_col(&self.input_buf, self.input_cursor);
-                let (row_idx, col) = input_logical_to_visual(&rows, logical_line, logical_col);
+                let rows = wrap_input_rows(&self.input_editor.input.lines, col_budget);
+                let (row_idx, col) = input_logical_to_visual(
+                    &rows,
+                    self.input_editor.input.cursor_line,
+                    self.input_editor.input.cursor_col,
+                );
                 if row_idx == 0 {
                     self.history_prev()
                 } else {
-                    self.input_cursor =
-                        input_visual_to_byte(&self.input_buf, &rows, row_idx - 1, col);
+                    let (line, col) = input_visual_to_logical(&rows, row_idx - 1, col);
+                    self.apply_input_op(EditOp::SetCursor {
+                        line,
+                        col,
+                        extend: modifiers.shift,
+                    });
                     ChatControllerEvent::Consumed
                 }
             }
@@ -1371,15 +1413,21 @@ impl ChatController {
             //    see the `Up` arm above) ─────────────────────────────────
             Key::Named(NamedKey::Down) => {
                 let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
-                let rows = wrap_input_rows(&self.input_buf, col_budget);
-                let (logical_line, logical_col) =
-                    cursor_byte_to_line_col(&self.input_buf, self.input_cursor);
-                let (row_idx, col) = input_logical_to_visual(&rows, logical_line, logical_col);
+                let rows = wrap_input_rows(&self.input_editor.input.lines, col_budget);
+                let (row_idx, col) = input_logical_to_visual(
+                    &rows,
+                    self.input_editor.input.cursor_line,
+                    self.input_editor.input.cursor_col,
+                );
                 if row_idx + 1 >= rows.len() {
                     self.history_next()
                 } else {
-                    self.input_cursor =
-                        input_visual_to_byte(&self.input_buf, &rows, row_idx + 1, col);
+                    let (line, col) = input_visual_to_logical(&rows, row_idx + 1, col);
+                    self.apply_input_op(EditOp::SetCursor {
+                        line,
+                        col,
+                        extend: modifiers.shift,
+                    });
                     ChatControllerEvent::Consumed
                 }
             }
@@ -1408,13 +1456,13 @@ impl ChatController {
 
             // ── Ctrl+A: move cursor to beginning of line (readline) ────
             Key::Char('a') if modifiers.ctrl => {
-                self.input_move_home();
+                self.apply_input_op(EditOp::MoveLineStart { extend: false });
                 ChatControllerEvent::Consumed
             }
 
             // ── Ctrl+E: move cursor to end of line (readline) ──────────
             Key::Char('e') if modifiers.ctrl => {
-                self.input_move_end();
+                self.apply_input_op(EditOp::MoveLineEnd { extend: false });
                 ChatControllerEvent::Consumed
             }
 
@@ -1470,20 +1518,22 @@ impl ChatController {
         match self.history_pos {
             None => {
                 // Enter history: save current input, show newest history entry.
-                self.saved_input = Some((self.input_buf.clone(), self.input_cursor));
+                self.saved_input = Some((
+                    self.input_buf.clone(),
+                    self.input_editor.input.cursor_line,
+                    self.input_editor.input.cursor_col,
+                ));
                 let idx = self.history.len() - 1;
                 self.history_pos = Some(idx);
                 let entry = self.history[idx].clone();
-                self.input_cursor = entry.len();
-                self.input_buf = entry;
+                self.set_input_text(&entry);
                 ChatControllerEvent::Consumed
             }
             Some(pos) if pos > 0 => {
                 let idx = pos - 1;
                 self.history_pos = Some(idx);
                 let entry = self.history[idx].clone();
-                self.input_cursor = entry.len();
-                self.input_buf = entry;
+                self.set_input_text(&entry);
                 ChatControllerEvent::Consumed
             }
             Some(_) => {
@@ -1501,13 +1551,11 @@ impl ChatController {
                     let idx = pos + 1;
                     self.history_pos = Some(idx);
                     let entry = self.history[idx].clone();
-                    self.input_cursor = entry.len();
-                    self.input_buf = entry;
+                    self.set_input_text(&entry);
                 } else {
                     // Restore saved input and exit history navigation.
-                    let (text, cursor) = self.saved_input.take().unwrap_or_default();
-                    self.input_buf = text;
-                    self.input_cursor = cursor;
+                    let (text, line, col) = self.saved_input.take().unwrap_or_default();
+                    self.set_input_text_with_cursor(&text, (line, col));
                     self.history_pos = None;
                 }
                 ChatControllerEvent::Consumed
@@ -1580,7 +1628,7 @@ impl ChatController {
         if layout.input.contains(Point::new(x, y)) {
             self.focus_input();
             let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
-            let rows = wrap_input_rows(&self.input_buf, col_budget);
+            let rows = wrap_input_rows(&self.input_editor.input.lines, col_budget);
             let ti = self.text_input_from_rows(&rows);
             let til = backend.text_input_layout(layout.input, &ti);
             // Find the clicked visible line and update the cursor.
@@ -1593,8 +1641,12 @@ impl ChatController {
                         let cw = backend.char_width().max(1.0);
                         let local_x = (x - layout.input.x - r.x).max(0.0);
                         let col = (local_x / cw).floor() as usize;
-                        self.input_cursor =
-                            input_visual_to_byte(&self.input_buf, &rows, *line_idx, col);
+                        let (line, col) = input_visual_to_logical(&rows, *line_idx, col);
+                        self.apply_input_op(EditOp::SetCursor {
+                            line,
+                            col,
+                            extend: false,
+                        });
                     }
                     break;
                 }
@@ -1682,60 +1734,132 @@ impl ChatController {
         ChatControllerEvent::Consumed
     }
 
-    // ── Input text buffer manipulation ────────────────────────────────
+    // ── Input text buffer manipulation ──────────────────────────────────
+
+    /// Route `op` through [`TextEditor::apply`] and resync `input_buf`
+    /// (see that field's doc) so [`input_text`](Self::input_text) keeps
+    /// seeing the result. Returns whether anything changed, mirroring
+    /// `TextEditor::apply`.
+    fn apply_input_op(&mut self, op: EditOp) -> bool {
+        let changed = self.input_editor.apply(op);
+        self.input_buf = self.input_editor.input.lines.join("\n");
+        changed
+    }
+
+    /// Replace the whole buffer, cursor parked at the end of the last
+    /// line with no active selection — used by history navigation and
+    /// [`clear_input`](Self::clear_input).
+    fn set_input_text(&mut self, text: &str) {
+        let lines = Self::split_input_lines(text);
+        let line = lines.len() - 1;
+        let col = lines[line].chars().count();
+        self.set_input_lines(lines, line, col);
+    }
+
+    /// Replace the whole buffer with the cursor at a specific
+    /// `(line, col)` (char columns), clamped to the new content —
+    /// restores the exact position `↑` history navigation saved before
+    /// `↓` walks back off the newest entry.
+    fn set_input_text_with_cursor(&mut self, text: &str, (line, col): (usize, usize)) {
+        let lines = Self::split_input_lines(text);
+        let line = line.min(lines.len() - 1);
+        let col = col.min(lines[line].chars().count());
+        self.set_input_lines(lines, line, col);
+    }
+
+    fn split_input_lines(text: &str) -> Vec<String> {
+        if text.is_empty() {
+            vec![String::new()]
+        } else {
+            text.split('\n').map(str::to_string).collect()
+        }
+    }
+
+    fn set_input_lines(&mut self, lines: Vec<String>, cursor_line: usize, cursor_col: usize) {
+        self.input_editor.input.lines = lines;
+        self.input_editor.input.cursor_line = cursor_line;
+        self.input_editor.input.cursor_col = cursor_col;
+        self.input_editor.set_selection_anchor(None);
+        self.input_buf = self.input_editor.input.lines.join("\n");
+    }
 
     /// Insert a single character at the cursor.  Also used by `CharTyped`.
     pub fn input_insert_char(&mut self, ch: char) {
-        let cursor = snap_to_char_boundary(&self.input_buf, self.input_cursor);
-        self.input_buf.insert(cursor, ch);
-        self.input_cursor = cursor + ch.len_utf8();
+        self.apply_input_op(EditOp::InsertChar(ch));
     }
 
     /// Insert a string at the cursor (e.g. for clipboard paste).
     pub fn input_insert_str(&mut self, s: &str) {
-        let cursor = snap_to_char_boundary(&self.input_buf, self.input_cursor);
-        self.input_buf.insert_str(cursor, s);
-        self.input_cursor = cursor + s.len();
+        self.apply_input_op(EditOp::InsertText(s.to_string()));
     }
 
-    fn input_backspace(&mut self) {
-        if self.input_cursor == 0 {
+    /// `Ctrl+Backspace`: delete the active selection, or the word before
+    /// the cursor; at column 0 of a line (no word to delete) falls back
+    /// to a plain backspace, merging with the previous line.
+    fn input_delete_word_backward(&mut self) {
+        if self.input_editor.selection_range().is_some() {
+            self.apply_input_op(EditOp::DeleteSelection);
             return;
         }
-        let prev = prev_char_boundary(&self.input_buf, self.input_cursor);
-        self.input_buf.replace_range(prev..self.input_cursor, "");
-        self.input_cursor = prev;
-    }
-
-    fn input_delete(&mut self) {
-        if self.input_cursor >= self.input_buf.len() {
+        let line_idx = self.input_editor.input.cursor_line;
+        let col = self.input_editor.input.cursor_col;
+        let start = word_start_left(&self.input_editor.input.lines[line_idx], col);
+        if start == col {
+            self.apply_input_op(EditOp::DeleteBackward);
             return;
         }
-        let next = next_char_boundary(&self.input_buf, self.input_cursor);
-        self.input_buf.replace_range(self.input_cursor..next, "");
+        self.input_editor
+            .set_selection_anchor(Some((line_idx, start)));
+        self.apply_input_op(EditOp::DeleteSelection);
     }
 
-    fn input_move_left(&mut self) {
-        self.input_cursor = prev_char_boundary(&self.input_buf, self.input_cursor);
+    /// `Ctrl+Delete`: delete the active selection, or the word after the
+    /// cursor; at the end of a line (no word to delete) falls back to a
+    /// plain forward-delete, merging with the next line.
+    fn input_delete_word_forward(&mut self) {
+        if self.input_editor.selection_range().is_some() {
+            self.apply_input_op(EditOp::DeleteSelection);
+            return;
+        }
+        let line_idx = self.input_editor.input.cursor_line;
+        let col = self.input_editor.input.cursor_col;
+        let end = word_end_right(&self.input_editor.input.lines[line_idx], col);
+        if end == col {
+            self.apply_input_op(EditOp::DeleteForward);
+            return;
+        }
+        self.input_editor
+            .set_selection_anchor(Some((line_idx, end)));
+        self.apply_input_op(EditOp::DeleteSelection);
     }
 
-    fn input_move_right(&mut self) {
-        self.input_cursor = next_char_boundary(&self.input_buf, self.input_cursor);
-    }
-
-    fn input_move_home(&mut self) {
-        let before = &self.input_buf[..self.input_cursor];
-        let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-        self.input_cursor = line_start;
-    }
-
-    fn input_move_end(&mut self) {
-        let after = &self.input_buf[self.input_cursor..];
-        let line_end = after
-            .find('\n')
-            .map(|i| self.input_cursor + i)
-            .unwrap_or(self.input_buf.len());
-        self.input_cursor = line_end;
+    /// `Ctrl+Left`/`Ctrl+Right`: move the cursor to the next word
+    /// boundary (`extend` selects, matching `Shift+Ctrl+Left`/`Right`).
+    /// When there is no further word boundary on the current line, falls
+    /// back to [`EditOp::MoveLeft`]/[`EditOp::MoveRight`], which crosses
+    /// to the adjacent line exactly like the plain arrow key does.
+    fn input_move_word(&mut self, forward: bool, extend: bool) {
+        let line_idx = self.input_editor.input.cursor_line;
+        let col = self.input_editor.input.cursor_col;
+        let target = if forward {
+            word_end_right(&self.input_editor.input.lines[line_idx], col)
+        } else {
+            word_start_left(&self.input_editor.input.lines[line_idx], col)
+        };
+        if target == col {
+            let op = if forward {
+                EditOp::MoveRight { extend }
+            } else {
+                EditOp::MoveLeft { extend }
+            };
+            self.apply_input_op(op);
+        } else {
+            self.apply_input_op(EditOp::SetCursor {
+                line: line_idx,
+                col: target,
+                extend,
+            });
+        }
     }
 }
 
@@ -1817,57 +1941,37 @@ fn split_spans_by_newline(spans: &[StyledSpan]) -> Vec<Vec<StyledSpan>> {
     lines
 }
 
-/// Convert a byte offset in `text` to `(line, char_col)`.
-fn cursor_byte_to_line_col(text: &str, cursor: usize) -> (usize, usize) {
-    let before = safe_prefix(text, cursor);
-    let line = before.bytes().filter(|&b| b == b'\n').count();
-    let col_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let col = before[col_start..].chars().count();
-    (line, col)
+/// Char-column of the word boundary left of `col` in `line` — `Ctrl+Left`/
+/// `Ctrl+Backspace`: skip any whitespace immediately left of `col`, then
+/// skip the contiguous run of non-whitespace before that. Returns `col`
+/// unchanged when `col == 0` (no boundary within this line), so callers
+/// fall back to crossing the line boundary instead.
+fn word_start_left(line: &str, col: usize) -> usize {
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = col.min(chars.len());
+    while i > 0 && chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    while i > 0 && !chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    i
 }
 
-/// Convert `(line, char_col)` back to a byte offset in `text`.
-///
-/// Clamps to the end of the line if `target_col` exceeds the line length.
-/// Clamps to `text.len()` if `target_line` doesn't exist.
-fn line_col_to_byte(text: &str, target_line: usize, target_col: usize) -> usize {
-    let mut current_line = 0usize;
-    let mut line_start = 0usize;
-
-    for (i, ch) in text.char_indices() {
-        if current_line == target_line {
-            // We're on the right line — scan forward `target_col` chars.
-            let segment = &text[i..];
-            let col_byte = segment
-                .char_indices()
-                .nth(target_col)
-                .map(|(b, _)| b)
-                .unwrap_or_else(|| {
-                    // Clamp to end of this line (before the '\n').
-                    segment.find('\n').unwrap_or(segment.len())
-                });
-            return i + col_byte;
-        }
-        if ch == '\n' {
-            current_line += 1;
-            line_start = i + 1;
-        }
+/// Char-column of the word boundary right of `col` in `line` — the
+/// mirror of [`word_start_left`] for `Ctrl+Right`/`Ctrl+Delete`. Returns
+/// `col` unchanged when already at the line's end.
+fn word_end_right(line: &str, col: usize) -> usize {
+    let chars: Vec<char> = line.chars().collect();
+    let len = chars.len();
+    let mut i = col.min(len);
+    while i < len && chars[i].is_whitespace() {
+        i += 1;
     }
-
-    // Handle the case where we're at line 0 of an empty string, or
-    // the target line is the last line (no trailing \n yet).
-    if current_line == target_line {
-        let segment = &text[line_start..];
-        let col_byte = segment
-            .char_indices()
-            .nth(target_col)
-            .map(|(b, _)| b)
-            .unwrap_or_else(|| segment.find('\n').unwrap_or(segment.len()));
-        return line_start + col_byte;
+    while i < len && !chars[i].is_whitespace() {
+        i += 1;
     }
-
-    // Target line doesn't exist — clamp to end of text.
-    text.len()
+    i
 }
 
 // ── Input soft-wrap ─────────────────────────────────────────────────────
@@ -1879,12 +1983,12 @@ fn line_col_to_byte(text: &str, target_line: usize, target_col: usize) -> usize 
 /// collapsed or dropped (unlike [`crate::text_util::word_wrap`]'s
 /// transcript wrapping, which *is* lossy at wrap points). Concatenating
 /// every row for a given `logical_line`, in order, reconstructs that
-/// line's text byte-for-byte. That's what lets
-/// [`input_logical_to_visual`] / [`input_visual_to_byte`] round-trip
-/// cursor positions losslessly between logical (buffer byte offset) and
-/// visual (row, char column) space.
+/// line's text char-for-char. That's what lets
+/// [`input_logical_to_visual`] / [`input_visual_to_logical`] round-trip
+/// cursor positions losslessly between logical (`input_editor`'s
+/// `(line, char column)`) and visual (row, char column) space.
 struct InputRow {
-    /// Index into the logical (`\n`-separated) lines of the buffer.
+    /// Index into the logical lines of [`ChatController::input_editor`].
     logical_line: usize,
     /// Char-column offset into `logical_line` where this row starts.
     col_offset: usize,
@@ -1892,17 +1996,16 @@ struct InputRow {
     text: String,
 }
 
-/// Soft-wrap `text` (the whole input buffer, `\n`-separated logical
-/// lines) to `col_budget` char columns per visual row. See [`InputRow`]
-/// for the exactness guarantee that makes cursor-position round-tripping
-/// possible.
+/// Soft-wrap `lines` (the input editor's logical lines) to `col_budget`
+/// char columns per visual row. See [`InputRow`] for the exactness
+/// guarantee that makes cursor-position round-tripping possible.
 ///
 /// Always returns at least one row per logical line (an empty logical
 /// line yields one empty row), so `rows.len() >= 1` for any input,
-/// including `""`.
-fn wrap_input_rows(text: &str, col_budget: usize) -> Vec<InputRow> {
+/// including a single empty line.
+fn wrap_input_rows(lines: &[String], col_budget: usize) -> Vec<InputRow> {
     let mut rows = Vec::new();
-    for (logical_line, line) in text.split('\n').enumerate() {
+    for (logical_line, line) in lines.iter().enumerate() {
         for (col_offset, row_text) in wrap_line_exact(line, col_budget) {
             rows.push(InputRow {
                 logical_line,
@@ -1972,9 +2075,9 @@ fn wrap_line_exact(line: &str, col_budget: usize) -> Vec<(usize, String)> {
     rows
 }
 
-/// Map a logical `(line, char_col)` cursor position (as produced by
-/// [`cursor_byte_to_line_col`]) to `(visual_row_idx, visual_col)` within
-/// `rows` — the inverse of [`input_visual_to_byte`].
+/// Map a logical `(line, char_col)` cursor position — `input_editor`'s
+/// own coordinate space — to `(visual_row_idx, visual_col)` within `rows`
+/// — the inverse of [`input_visual_to_logical`].
 fn input_logical_to_visual(rows: &[InputRow], line: usize, col: usize) -> (usize, usize) {
     let mut last_for_line: Option<usize> = None;
     for (i, r) in rows.iter().enumerate() {
@@ -2000,16 +2103,17 @@ fn input_logical_to_visual(rows: &[InputRow], line: usize, col: usize) -> (usize
 }
 
 /// Map a `(visual_row_idx, visual_col)` position within `rows` back to a
-/// byte offset in `text` (the whole input buffer) — the inverse of
-/// [`input_logical_to_visual`]. Both indices are clamped, so this never
-/// panics on an out-of-range row or column; `rows` empty returns `0`.
-fn input_visual_to_byte(text: &str, rows: &[InputRow], row_idx: usize, col: usize) -> usize {
+/// logical `(line, char_col)` position in `input_editor`'s coordinate
+/// space — the inverse of [`input_logical_to_visual`]. Both indices are
+/// clamped, so this never panics on an out-of-range row or column;
+/// `rows` empty returns `(0, 0)`.
+fn input_visual_to_logical(rows: &[InputRow], row_idx: usize, col: usize) -> (usize, usize) {
     let Some(last) = rows.len().checked_sub(1) else {
-        return 0;
+        return (0, 0);
     };
     let r = &rows[row_idx.min(last)];
     let len = r.text.chars().count();
-    line_col_to_byte(text, r.logical_line, r.col_offset + col.min(len))
+    (r.logical_line, r.col_offset + col.min(len))
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -2069,7 +2173,8 @@ mod tests {
         cc.input_insert_str("hello\nworld");
         cc.clear_input();
         assert_eq!(cc.input_text(), "");
-        assert_eq!(cc.input_cursor, 0);
+        assert_eq!(cc.input_editor.input.cursor_line, 0);
+        assert_eq!(cc.input_editor.input.cursor_col, 0);
     }
 
     // ── Keyboard: submit ──────────────────────────────────────────────
@@ -2208,10 +2313,10 @@ mod tests {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("hello");
         // Cursor sits at end of "hello" after insertion.
-        assert_eq!(cc.input_cursor, 5);
+        assert_eq!(cc.input_editor.input.cursor_col, 5);
         let ev = cc.handle(&ctrl_key('a'), &RecordingBackend::new(), make_rect());
         assert_eq!(ev, ChatControllerEvent::Consumed);
-        assert_eq!(cc.input_cursor, 0);
+        assert_eq!(cc.input_editor.input.cursor_col, 0);
     }
 
     #[test]
@@ -2220,25 +2325,27 @@ mod tests {
         cc.input_insert_str("hello");
         // Move to the start first so Ctrl+E has somewhere to travel.
         cc.handle(&ctrl_key('a'), &RecordingBackend::new(), make_rect());
-        assert_eq!(cc.input_cursor, 0);
+        assert_eq!(cc.input_editor.input.cursor_col, 0);
         let ev = cc.handle(&ctrl_key('e'), &RecordingBackend::new(), make_rect());
         assert_eq!(ev, ChatControllerEvent::Consumed);
-        assert_eq!(cc.input_cursor, 5);
+        assert_eq!(cc.input_editor.input.cursor_col, 5);
     }
 
     #[test]
     fn ctrl_a_e_respect_current_line_in_multiline() {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("hello\nworld");
-        // Cursor is on the second line, at its end (byte index 11).
-        assert_eq!(cc.input_cursor, 11);
+        // Cursor is on the second line, at its end.
+        assert_eq!(cc.input_editor.input.cursor_line, 1);
+        assert_eq!(cc.input_editor.input.cursor_col, 5);
         // Ctrl+A moves to the start of the *current* line, not the buffer.
         cc.handle(&ctrl_key('a'), &RecordingBackend::new(), make_rect());
-        // Cursor lands just after the '\n' (start of "world").
-        assert_eq!(cc.input_cursor, 6);
+        assert_eq!(cc.input_editor.input.cursor_line, 1);
+        assert_eq!(cc.input_editor.input.cursor_col, 0);
         // Ctrl+E moves to the end of the current line (end of buffer here).
         cc.handle(&ctrl_key('e'), &RecordingBackend::new(), make_rect());
-        assert_eq!(cc.input_cursor, 11);
+        assert_eq!(cc.input_editor.input.cursor_line, 1);
+        assert_eq!(cc.input_editor.input.cursor_col, 5);
     }
 
     // macOS delivers a Cmd-modified letter as a plain `Key::Char` with
@@ -2512,8 +2619,7 @@ mod tests {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("line0\nline1");
         // Cursor is on line 1 after insert.
-        let (line, _) = cursor_byte_to_line_col(cc.input_text(), cc.input_cursor);
-        assert_eq!(line, 1);
+        assert_eq!(cc.input_editor.input.cursor_line, 1);
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Up),
@@ -2522,8 +2628,7 @@ mod tests {
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(ev, ChatControllerEvent::Consumed);
-        let (new_line, _) = cursor_byte_to_line_col(cc.input_text(), cc.input_cursor);
-        assert_eq!(new_line, 0);
+        assert_eq!(cc.input_editor.input.cursor_line, 0);
         // History should NOT have been entered.
         assert_eq!(cc.history_pos, None);
     }
@@ -3114,9 +3219,13 @@ mod tests {
         }
     }
 
+    fn lines(strs: &[&str]) -> Vec<String> {
+        strs.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn wrap_input_rows_one_row_per_short_logical_line() {
-        let rows = wrap_input_rows("ab\ncd", 80);
+        let rows = wrap_input_rows(&lines(&["ab", "cd"]), 80);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].logical_line, 0);
         assert_eq!(rows[1].logical_line, 1);
@@ -3124,33 +3233,32 @@ mod tests {
 
     #[test]
     fn wrap_input_rows_empty_buffer_yields_one_empty_row() {
-        let rows = wrap_input_rows("", 80);
+        let rows = wrap_input_rows(&lines(&[""]), 80);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].text, "");
     }
 
     #[test]
-    fn logical_to_visual_round_trips_through_visual_to_byte() {
-        let text = "hello world\nsecond line";
-        let rows = wrap_input_rows(text, 6); // forces "hello world" to wrap
+    fn logical_to_visual_round_trips_through_visual_to_logical() {
+        let rows = wrap_input_rows(&lines(&["hello world", "second line"]), 6);
         assert!(rows.len() > 2, "expected wrapping to produce >2 rows");
 
-        // Cursor at byte offset 8 ("hello wo|rld...") -> logical (0, 8).
-        let (line, col) = cursor_byte_to_line_col(text, 8);
-        assert_eq!((line, col), (0, 8));
-
-        let (row_idx, visual_col) = input_logical_to_visual(&rows, line, col);
-        let byte = input_visual_to_byte(text, &rows, row_idx, visual_col);
-        assert_eq!(byte, 8, "round trip through visual space must be lossless");
+        // Logical (0, 8) -> "hello wo|rld...".
+        let (row_idx, visual_col) = input_logical_to_visual(&rows, 0, 8);
+        let logical = input_visual_to_logical(&rows, row_idx, visual_col);
+        assert_eq!(
+            logical,
+            (0, 8),
+            "round trip through visual space must be lossless"
+        );
     }
 
     #[test]
     fn logical_to_visual_end_of_line_lands_on_last_visual_row() {
-        let text = "hello world";
-        let rows = wrap_input_rows(text, 6); // wraps into 2 rows
+        let line = "hello world";
+        let rows = wrap_input_rows(&lines(&[line]), 6); // wraps into 2 rows
         let last_row = rows.len() - 1;
-        let (line, col) = cursor_byte_to_line_col(text, text.len());
-        let (row_idx, _) = input_logical_to_visual(&rows, line, col);
+        let (row_idx, _) = input_logical_to_visual(&rows, 0, line.chars().count());
         assert_eq!(row_idx, last_row);
     }
 
@@ -3181,7 +3289,7 @@ mod tests {
     fn up_on_first_visual_row_of_wrapped_paragraph_enters_history() {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("hello world this wraps");
-        cc.input_cursor = 3; // still within the first wrapped row
+        cc.input_editor.input.cursor_col = 3; // still within the first wrapped row
         cc.history.push("prev".into());
         let rect = Rect::new(0.0, 0.0, 12.0, 24.0);
         let event = UiEvent::KeyPressed {
@@ -3222,67 +3330,23 @@ mod tests {
         assert_eq!(cc.input_text(), "hello world this wraps");
     }
 
-    // ── Cursor byte conversion helpers ────────────────────────────────
-
-    #[test]
-    fn byte_to_line_col_single_line() {
-        assert_eq!(cursor_byte_to_line_col("hello", 3), (0, 3));
-    }
-
-    #[test]
-    fn byte_to_line_col_multiline() {
-        assert_eq!(cursor_byte_to_line_col("ab\ncd", 4), (1, 1));
-    }
-
-    /// Regression test for multibyte character handling: `cursor_byte_to_line_col`
-    /// must snap a cursor byte offset to a valid char boundary, not panic when
-    /// the offset lands mid-multibyte-character (inside a character like "é").
-    #[test]
-    fn byte_to_line_col_multibyte_mid_char_offset_does_not_panic() {
-        let text = "héllo";
-        assert!(!text.is_char_boundary(2)); // inside the 2-byte 'é'
-        let (line, col) = cursor_byte_to_line_col(text, 2);
-        assert_eq!((line, col), (0, 1));
-    }
-
-    #[test]
-    fn line_col_to_byte_first_line() {
-        assert_eq!(line_col_to_byte("hello", 0, 3), 3);
-    }
-
-    #[test]
-    fn line_col_to_byte_second_line() {
-        assert_eq!(line_col_to_byte("ab\ncd", 1, 1), 4);
-    }
-
-    #[test]
-    fn line_col_to_byte_clamps_to_end_of_line() {
-        // "ab\ncd" line 0 has 2 chars; col 99 should clamp to 2 (before \n).
-        assert_eq!(line_col_to_byte("ab\ncd", 0, 99), 2);
-    }
-
-    #[test]
-    fn line_col_to_byte_nonexistent_line_clamps_to_end() {
-        assert_eq!(line_col_to_byte("ab", 5, 0), 2);
-    }
-
     // ── Input backspace / delete ──────────────────────────────────────
 
     #[test]
     fn backspace_deletes_previous_char() {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("hi");
-        cc.input_backspace();
+        cc.apply_input_op(EditOp::DeleteBackward);
         assert_eq!(cc.input_text(), "h");
-        assert_eq!(cc.input_cursor, 1);
+        assert_eq!(cc.input_editor.input.cursor_col, 1);
     }
 
     #[test]
     fn backspace_at_start_is_noop() {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("x");
-        cc.input_cursor = 0;
-        cc.input_backspace();
+        cc.input_editor.input.cursor_col = 0;
+        cc.apply_input_op(EditOp::DeleteBackward);
         assert_eq!(cc.input_text(), "x");
     }
 
@@ -3290,9 +3354,190 @@ mod tests {
     fn delete_removes_char_at_cursor() {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("ab");
-        cc.input_cursor = 0;
-        cc.input_delete();
+        cc.input_editor.input.cursor_col = 0;
+        cc.apply_input_op(EditOp::DeleteForward);
         assert_eq!(cc.input_text(), "b");
+    }
+
+    // ── Selection via Shift+Arrow ────────────────────────────────────
+
+    fn named_key(key: NamedKey, modifiers: Modifiers) -> UiEvent {
+        UiEvent::KeyPressed {
+            key: Key::Named(key),
+            modifiers,
+            repeat: false,
+        }
+    }
+
+    fn shift() -> Modifiers {
+        Modifiers {
+            shift: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn shift_left_extends_selection() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello");
+        // Cursor is at the end (col 5); two Shift+Left presses select "lo".
+        cc.handle(
+            &named_key(NamedKey::Left, shift()),
+            &RecordingBackend::new(),
+            make_rect(),
+        );
+        cc.handle(
+            &named_key(NamedKey::Left, shift()),
+            &RecordingBackend::new(),
+            make_rect(),
+        );
+        assert_eq!(cc.input_editor.selected_text().as_deref(), Some("lo"));
+    }
+
+    #[test]
+    fn typing_over_a_selection_replaces_it() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello");
+        cc.handle(
+            &named_key(NamedKey::Left, shift()),
+            &RecordingBackend::new(),
+            make_rect(),
+        );
+        cc.handle(
+            &named_key(NamedKey::Left, shift()),
+            &RecordingBackend::new(),
+            make_rect(),
+        );
+        cc.input_insert_char('X'); // "lo" is selected; typing replaces it.
+        assert_eq!(cc.input_text(), "helX");
+    }
+
+    #[test]
+    fn plain_left_after_shift_select_collapses_without_extending() {
+        // An unmodified arrow after a selection collapses to the
+        // selection's near edge instead of also taking a step — see
+        // `EditOp::MoveLeft`'s own doc.
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello");
+        cc.handle(
+            &named_key(NamedKey::Left, shift()),
+            &RecordingBackend::new(),
+            make_rect(),
+        );
+        cc.handle(
+            &named_key(NamedKey::Left, Modifiers::default()),
+            &RecordingBackend::new(),
+            make_rect(),
+        );
+        assert_eq!(cc.input_editor.selection_range(), None);
+        // One Shift+Left selects col 4..5; the plain Left lands on the
+        // selection's near edge (4), not one further step back (3).
+        assert_eq!(cc.input_editor.input.cursor_col, 4);
+    }
+
+    // ── Word ops: Ctrl+Backspace / Ctrl+Left/Right ────────────────────
+
+    #[test]
+    fn ctrl_backspace_deletes_previous_word() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello world");
+        let ev = cc.handle(
+            &named_key(
+                NamedKey::Backspace,
+                Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &RecordingBackend::new(),
+            make_rect(),
+        );
+        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(cc.input_text(), "hello ");
+    }
+
+    #[test]
+    fn ctrl_backspace_at_line_start_merges_with_previous_line() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello\nworld");
+        cc.apply_input_op(EditOp::MoveLineStart { extend: false });
+        cc.handle(
+            &named_key(
+                NamedKey::Backspace,
+                Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &RecordingBackend::new(),
+            make_rect(),
+        );
+        assert_eq!(cc.input_text(), "helloworld");
+    }
+
+    #[test]
+    fn ctrl_backspace_with_active_selection_deletes_only_the_selection() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello world");
+        cc.handle(
+            &named_key(NamedKey::Left, shift()),
+            &RecordingBackend::new(),
+            make_rect(),
+        );
+        cc.handle(
+            &named_key(NamedKey::Left, shift()),
+            &RecordingBackend::new(),
+            make_rect(),
+        ); // "ld" selected.
+        cc.handle(
+            &named_key(
+                NamedKey::Backspace,
+                Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &RecordingBackend::new(),
+            make_rect(),
+        );
+        assert_eq!(cc.input_text(), "hello wor");
+    }
+
+    #[test]
+    fn ctrl_left_moves_cursor_to_previous_word_start() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello world");
+        cc.handle(
+            &named_key(
+                NamedKey::Left,
+                Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &RecordingBackend::new(),
+            make_rect(),
+        );
+        assert_eq!(cc.input_editor.input.cursor_col, 6);
+    }
+
+    #[test]
+    fn ctrl_shift_left_selects_the_previous_word() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello world");
+        cc.handle(
+            &named_key(
+                NamedKey::Left,
+                Modifiers {
+                    ctrl: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &RecordingBackend::new(),
+            make_rect(),
+        );
+        assert_eq!(cc.input_editor.selected_text().as_deref(), Some("world"));
     }
 
     // ── Layout zones ─────────────────────────────────────────────────

@@ -76,6 +76,13 @@ only a push to `main` runs this workflow.
   click target to an integer cell. Hosts that hit-test a cached
   `SplitLayout` by hand instead of calling `SplitLayout::hit_test` should
   read this field, not `divider_bounds`.
+- `ChatController`'s input box now has `Shift+Arrow`/`Shift+Home`/
+  `Shift+End` selection and `Ctrl+Left`/`Right`/`Backspace`/`Delete` word
+  ops, same as `FormController`'s text fields — the input now routes every
+  edit through a `TextEditor` instead of hand-rolled byte-offset
+  arithmetic. Every existing public accessor (`input_text`/
+  `input_insert_char`/`input_insert_str`/`clear_input`/`input_has_focus`)
+  keeps its signature.
 ### Changed
 - `Split`/`SplitTree`'s own accessibility role moved from `A11yRole::Group`
   to `A11yRole::Splitter`.
