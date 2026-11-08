@@ -1,16 +1,15 @@
 //! TUI rasteriser for [`crate::Spinner`].
 //!
-//! Paints a braille animation glyph + label. The app advances
-//! `frame_idx` on its own ticker; we render `FRAMES[frame_idx % N]`.
+//! Paints a braille animation glyph + label, indexed by `frame_idx`
+//! into the frame table every backend shares —
+//! [`crate::primitives::spinner::FRAMES`].
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::{ratatui_color, set_cell};
-use crate::primitives::spinner::{Spinner, SpinnerLayout, SpinnerMeasure};
+use crate::primitives::spinner::{frame_glyph, Spinner, SpinnerLayout, SpinnerMeasure};
 use crate::theme::Theme;
-
-const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// Compute the TUI cell-unit layout for a [`Spinner`] without painting.
 pub fn tui_spinner_layout(spinner: &Spinner, area: Rect) -> SpinnerLayout {
@@ -44,7 +43,7 @@ pub fn draw_spinner(
     let x = layout.bounds.x.round() as u16;
     let y = layout.bounds.y.round() as u16;
 
-    let glyph = FRAMES[spinner.frame_idx % FRAMES.len()];
+    let glyph = frame_glyph(spinner.frame_idx);
     let glyph_fg = spinner
         .accent
         .map(ratatui_color)
