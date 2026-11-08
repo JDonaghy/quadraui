@@ -21,6 +21,8 @@ code path.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import subprocess
 import sys
@@ -113,7 +115,8 @@ class FullReleaseFixtureRepo:
         """Simulate a prior `release.py prepare` run: create
         `release-<version>`, bump `quadraui/Cargo.toml` plus the
         README.md/lib.rs version strings `check_readme_truth_version_strings`
-        enforces, commit — optionally pushing it to `origin` and returning to
+        enforces and `CHANGELOG.md`'s `[Unreleased]` -> `[<version>]`
+        retitle, commit — optionally pushing it to `origin` and returning to
         `develop` locally, to exercise the remote-only branch path."""
         branch = f"release-{version}"
         run_git(["checkout", "-b", branch], self.clone)
@@ -134,11 +137,33 @@ class FullReleaseFixtureRepo:
         lib_rs = self.clone / "quadraui" / "src" / "lib.rs"
         lib_rs.write_text(lib_rs.read_text().replace("`0.1.x`", f"`{status}`"))
 
+        changelog = self.clone / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text().replace(
+                "## [Unreleased]\n\n### Added\n\n- a new thing\n",
+                f"## [Unreleased]\n\n## [{version}] - 2026-11-07\n\n"
+                "### Added\n\n- a new thing\n",
+            )
+        )
+
         run_git(["commit", "-a", "-m", f"Release v{version}"], self.clone)
         if push:
             run_git(["push", "-q", "-u", "origin", branch], self.clone)
             run_git(["checkout", "develop"], self.clone)
             run_git(["branch", "-D", branch], self.clone)
+
+    def merge_bump_into_develop(self, version: str) -> None:
+        """Simulate the bump PR's squash merge landing on `origin/develop`
+        the `release-<version>` branch must already carry the
+        bump (`bump_on_new_branch` run first), and this fast-forwards
+        `develop` to it and pushes, then deletes the local release branch
+        -- the exact shape a re-run of `release_full.py` sees after a prior
+        run's bump PR merged and GitHub deleted the head branch."""
+        branch = f"release-{version}"
+        run_git(["checkout", "develop"], self.clone)
+        run_git(["merge", "--ff-only", branch], self.clone)
+        run_git(["push", "-q", "origin", "develop"], self.clone)
+        run_git(["branch", "-D", branch], self.clone)
 
 
 class ResumeBranchDetectionTests(unittest.TestCase):
@@ -211,6 +236,157 @@ class ResumeBranchDetectionTests(unittest.TestCase):
             release_full.REPO_DIR = repo.clone
             release_full.prepare("0.2.0")
             self.assertEqual(repo.current_branch(), "release-0.2.0")
+
+
+class VersionAlreadyLandedOnDevelopTests(unittest.TestCase):
+    """`version_already_landed_on_develop`: a re-run must recognize
+    a bump PR that already merged into `origin/develop` and skip straight
+    to `promote`, instead of re-running `prepare`/`bump_pr` and opening a
+    second, empty bump PR."""
+
+    def setUp(self):
+        self._orig_repo_dir = release_full.REPO_DIR
+
+    def tearDown(self):
+        release_full.REPO_DIR = self._orig_repo_dir
+
+    def test_false_before_any_bump(self):
+        with FullReleaseFixtureRepo() as repo:
+            release_full.REPO_DIR = repo.clone
+            self.assertFalse(
+                release_full.version_already_landed_on_develop("0.2.0")
+            )
+
+    def test_false_while_bump_only_lives_on_the_release_branch(self):
+        """The bump exists, but only on `release-<version>` — its PR into
+        `develop` hasn't merged yet, so a re-run must still go through the
+        ordinary `prepare`/`bump_pr` resume path, not skip it."""
+        with FullReleaseFixtureRepo() as repo:
+            repo.bump_on_new_branch("0.2.0", push=True)
+
+            release_full.REPO_DIR = repo.clone
+            self.assertFalse(
+                release_full.version_already_landed_on_develop("0.2.0")
+            )
+
+    def test_true_after_the_bump_pr_merges_into_develop(self):
+        with FullReleaseFixtureRepo() as repo:
+            repo.bump_on_new_branch("0.2.0")
+            repo.merge_bump_into_develop("0.2.0")
+
+            release_full.REPO_DIR = repo.clone
+            self.assertTrue(
+                release_full.version_already_landed_on_develop("0.2.0")
+            )
+
+    def test_main_skips_prepare_and_bump_pr_when_already_landed(self):
+        """End-to-end: `main()`'s own resume branch checks out `develop`
+        and heads straight to `promote`/`publish` — it never calls
+        `prepare()` (which would try `release.py prepare` again) or
+        `bump_pr()` (which would open a second bump PR)."""
+        with FullReleaseFixtureRepo() as repo:
+            repo.bump_on_new_branch("0.2.0")
+            repo.merge_bump_into_develop("0.2.0")
+            run_git(["checkout", "develop"], repo.clone)
+
+            release_full.REPO_DIR = repo.clone
+            calls: list[str] = []
+            orig_prepare = release_full.prepare
+            orig_bump_pr = release_full.bump_pr
+            orig_promote = release_full.promote
+            orig_publish = release_full.publish
+            release_full.prepare = lambda v: calls.append("prepare")
+            release_full.bump_pr = lambda v: calls.append("bump_pr")
+            release_full.promote = lambda v: calls.append("promote")
+            release_full.publish = lambda v: calls.append("publish")
+            try:
+                release_full.AUTO_YES = True
+                sys.argv = ["release_full.py", "0.2.0", "--yes"]
+                release_full.main()
+            finally:
+                release_full.prepare = orig_prepare
+                release_full.bump_pr = orig_bump_pr
+                release_full.promote = orig_promote
+                release_full.publish = orig_publish
+
+            self.assertNotIn("prepare", calls)
+            self.assertNotIn("bump_pr", calls)
+            self.assertEqual(calls, ["promote", "publish"])
+            self.assertEqual(repo.current_branch(), "develop")
+
+
+class MainDevelopDivergenceGuardTests(unittest.TestCase):
+    """`check_main_develop_divergence`: preflight must catch a
+    `main`/`develop` history split before the long CI waits start, not
+    after a promotion PR's `merge-tree` conflict surprises a human partway
+    through."""
+
+    def setUp(self):
+        self._orig_repo_dir = release_full.REPO_DIR
+
+    def tearDown(self):
+        release_full.REPO_DIR = self._orig_repo_dir
+
+    def _push_main(self, repo: "FullReleaseFixtureRepo") -> None:
+        run_git(["branch", "main"], repo.clone)
+        run_git(["push", "-q", "origin", "main"], repo.clone)
+
+    def test_clean_merge_passes_without_a_fail(self):
+        with FullReleaseFixtureRepo() as repo:
+            self._push_main(repo)
+            # develop has moved ahead of main with an ordinary commit —
+            # merge-tree reports no conflicts.
+            (repo.clone / "quadraui" / "src" / "extra.rs").write_text("pub fn x() {}\n")
+            run_git(["add", "-A"], repo.clone)
+            run_git(["commit", "-q", "-m", "an ordinary change"], repo.clone)
+            run_git(["push", "-q", "origin", "develop"], repo.clone)
+
+            release_full.REPO_DIR = repo.clone
+            release_full.check_main_develop_divergence()  # must not raise/exit
+
+    def test_identical_tree_diverged_history_prints_sync_recipe(self):
+        """`main` is a squash-merged, same-tree-but-different-history copy
+        of a develop commit — a recoverable, same-tree-different-history shape.
+        `merge-tree` reports conflicts, but since main's tree matches a
+        real develop commit this is the *recoverable* shape: it must print
+        the `-s ours` sync recipe (not a bare "resolve by hand" message)
+        before exiting, so a human can run it and re-launch instead of
+        being left to improvise."""
+        with FullReleaseFixtureRepo() as repo:
+            # Diverge main from develop's history (an unrelated root commit
+            # on main with develop's current tree squashed onto it), so
+            # merge-tree sees no common ancestor content to cleanly merge
+            # but the resulting tree is identical to a develop commit.
+            run_git(["checkout", "--orphan", "main"], repo.clone)
+            run_git(["commit", "-q", "-m", "squashed copy of develop"], repo.clone)
+            run_git(["push", "-q", "-u", "origin", "main"], repo.clone)
+            run_git(["checkout", "develop"], repo.clone)
+
+            release_full.REPO_DIR = repo.clone
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                with self.assertRaises(SystemExit):
+                    release_full.check_main_develop_divergence()
+            self.assertIn("git merge -s ours origin/main", buf.getvalue())
+
+    def test_genuinely_diverged_content_fails_without_a_sync_recipe(self):
+        """`main` and `develop` have real, unrelated content — no develop
+        commit's tree matches main's — so this must hard-fail without
+        printing a false sync recipe."""
+        with FullReleaseFixtureRepo() as repo:
+            run_git(["checkout", "--orphan", "main"], repo.clone)
+            (repo.clone / "only-on-main.txt").write_text("unrelated content\n")
+            run_git(["add", "-A"], repo.clone)
+            run_git(["commit", "-q", "-m", "genuinely unrelated main"], repo.clone)
+            run_git(["push", "-q", "-u", "origin", "main"], repo.clone)
+            run_git(["checkout", "develop"], repo.clone)
+
+            release_full.REPO_DIR = repo.clone
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                with self.assertRaises(SystemExit):
+                    release_full.check_main_develop_divergence()
+            self.assertNotIn("git merge -s ours", buf.getvalue())
 
 
 class CheckTimeoutTests(unittest.TestCase):

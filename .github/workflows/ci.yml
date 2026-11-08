@@ -14,6 +14,61 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  bump-shape:
+    # A release's bump PR (`release-X.Y.Z` -> `develop`) touches only
+    # `quadraui/Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`, `README.md` and
+    # `quadraui/src/lib.rs` — `scripts/release.py prepare`'s exact file set —
+    # yet ran the full build/test/clippy matrix below just like any other
+    # PR, re-validating a tree the promotion PR validates again minutes
+    # later. This job tells every heavy job below whether this PR has that
+    # shape, via `needs: bump-shape` + an `if:` reading its `is_bump` output,
+    # so they can skip instead of re-running on essentially the same tree.
+    # `tools/changelog_check.py --print-bump-shape` is the shared detector —
+    # it reuses that script's own `release_promotion_version` diff/version
+    # parsing (already proven by the changelog gate's own promotion-PR
+    # exemption below) rather than reimplementing it here.
+    #
+    # `pull_request`-only, same reasoning as `example-coverage`/
+    # `changelog-check`: the diff needs a base commit, which only exists for
+    # a PR event. A plain `push` (already merged) always reports `is_bump=
+    # ''`, which every consuming job's `!= 'true'` condition treats as "run
+    # normally" — so a push to `develop`/`main` is never affected by this job.
+    name: Detect release-bump PR shape
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    outputs:
+      is_bump: ${{ steps.detect.outputs.bump_shape }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, not the default shallow depth-1: the diff below
+          # needs the PR's base commit in this checkout's object graph.
+          fetch-depth: 0
+      - name: Detect bump-shaped diff
+        id: detect
+        run: |
+          python3 tools/changelog_check.py --print-bump-shape \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
+
+  readme-truth:
+    # `quadraui/tests/readme_truth.rs` is also exercised inside the
+    # `tui` job's full `cargo test --features tui --workspace` run below,
+    # but that job is one of the ones a bump-shaped PR skips — this standalone
+    # job is the fast (no feature flags, ~30s build), always-on version-string
+    # guard that stays required on every PR, bump-shaped or not, matching the
+    # reduced check set this issue specifies (lockfile-check, readme_truth,
+    # the changelog gate, rustfmt, cargo package).
+    name: readme_truth.rs (version-string guard)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p quadraui --test readme_truth
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
@@ -48,6 +103,12 @@ jobs:
     # runs `tools/example_coverage.py` explicitly rather than as a test.
     name: repo-lint (maintainer-workflow guards)
     runs-on: ubuntu-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR, which touches none of the files
+    # this guard cares about. `always()` is load-bearing: without it, the
+    # default `if: success()` on a `needs:` job would also skip this on a
+    # plain push, where `bump-shape` itself never runs.
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     # #1292: single `cargo run -p quadraui-repo-lint`, normally under a
     # couple of minutes including the toolchain/cache steps.
     timeout-minutes: 10
@@ -86,6 +147,9 @@ jobs:
     # output; keep it that way if this job's step order ever changes.
     name: patch-guard (no vendored crates-io patches)
     runs-on: ubuntu-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     # #1292: a grep plus `cargo package --no-verify` (resolution only, no
     # build) — normally a couple of minutes.
     timeout-minutes: 15
@@ -144,6 +208,9 @@ jobs:
     # visibility, not a gate, until an actual limit is worth picking.
     name: cargo publish --dry-run (publishability gate)
     runs-on: ubuntu-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     # #1292: `cargo package --list` + `cargo publish --dry-run`, normally
     # a few minutes with a warm cache (same build cost as `package` above).
     timeout-minutes: 20
@@ -207,6 +274,13 @@ jobs:
     # green when the diff is advisory and red only on the promotion PR.
     name: cargo-semver-checks (public API vs. published crates.io)
     runs-on: ubuntu-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR, which never touches the public
+    # API — see `bump-shape`'s own comment. This job still runs on the
+    # develop -> main promotion PR itself (not bump-shaped: its diff is
+    # every change merged into develop since the last promotion), so the
+    # release-blocking check in the "Classify" step below is unaffected.
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     # #1292: this job builds quadraui's full heuristic feature surface
     # *twice* (current tree + the crates.io baseline) plus rustdoc, from a
     # cold `target/` (see the `rust-cache` step below for why there's no
@@ -298,6 +372,9 @@ jobs:
     # so this fails at gtk4's build-script pkg-config step without them.
     name: cargo doc (docs.rs proxy, all Linux-buildable backend features)
     runs-on: ubuntu-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     # #1292: apt-get install + `cargo doc` across tui,gtk,win,terminal,layout,a11y,
     # normally under 10 minutes with a warm cache.
     timeout-minutes: 25
@@ -338,7 +415,10 @@ jobs:
     # merged, there's nothing left to gate).
     name: Example-test coverage
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    needs: bump-shape
+    # A bump-shaped PR adds no example — skipped the same way as the heavy
+    # jobs, on top of the pre-existing `pull_request`-only gate.
+    if: github.event_name == 'pull_request' && needs.bump-shape.outputs.is_bump != 'true'
     # #1292: a full-history checkout plus one Python script, normally
     # under a couple of minutes.
     timeout-minutes: 10
@@ -508,6 +588,11 @@ jobs:
   tui:
     name: tui + win (build, test, clippy) — ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
+    # `readme_truth.rs` (part of this job's `cargo test --workspace` step)
+    # stays covered on every PR via the standalone `readme-truth` job above.
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     # BOTH legs are blocking (#590, W-7 of #580). The windows-latest leg
     # landed in #581 with `continue-on-error` because the *portable core*
     # (ratatui / arboard / unicode-width / portable-pty→ConPTY) had never been
@@ -1006,6 +1091,9 @@ jobs:
   gtk:
     name: gtk (build, test, clippy)
     runs-on: ubuntu-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     # #1292: build/test/clippy under gtk+tui plus benches, the
     # gtk_terminal example and the conformance matrix — normally well
     # under 10 min with a warm cache.
@@ -1162,6 +1250,11 @@ jobs:
     # separately.
     name: quadraui-py (maturin develop + pytest)
     runs-on: ubuntu-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — it never bumps quadraui-py's own
+    # version (see `bump-shape`'s own comment and `scripts/release.py`'s
+    # `--with-py` docs for why the two version independently).
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     # Sized generously for a cold Rust + maturin build; a healthy run is a
     # couple of minutes once dependencies are warm.
     timeout-minutes: 25
@@ -1236,6 +1329,9 @@ jobs:
     # into this job.
     name: msrv (rust-version floor, ${{ matrix.feature }})
     runs-on: ubuntu-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     # A single `cargo check -p quadraui --features <one>` per matrix leg,
     # normally a few minutes with a warm cache.
     timeout-minutes: 20
@@ -1310,6 +1406,9 @@ jobs:
     # extra fixture needed.
     name: musl static build (tui feature, keyring/trash — #1131)
     runs-on: ubuntu-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     # #1292: a single statically-linked example build plus a `file`/`ldd`
     # check, normally a few minutes with a warm cache.
     timeout-minutes: 20
@@ -1907,6 +2006,9 @@ jobs:
     # load-bearing for cargo to actually discover it.
     name: template (cargo generate smoke test)
     runs-on: ubuntu-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     # #1292: install cargo-generate (a few minutes, cached), generate the
     # template, and `cargo test --features tui` the result — normally
     # under 10 minutes with a warm cache.
@@ -1987,6 +2089,9 @@ jobs:
     # proves the artifact a human would actually look at gets produced.
     name: gallery capture (tui)
     runs-on: ubuntu-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     continue-on-error: true
     # #1292: a single `cargo run --features tui -- --capture` over one
     # registered demo; normally under a minute once the toolchain and
@@ -2045,6 +2150,9 @@ jobs:
     # produce the uploaded artifact `pages.yml` later downloads.
     name: gallery capture (gtk)
     runs-on: ubuntu-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     continue-on-error: true
     timeout-minutes: 15
     steps:
@@ -2108,6 +2216,9 @@ jobs:
     # the artifact `pages.yml` later downloads.
     name: gallery capture (windows)
     runs-on: windows-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
+    if: always() && needs.bump-shape.outputs.is_bump != 'true'
     continue-on-error: true
     timeout-minutes: 20
     steps:

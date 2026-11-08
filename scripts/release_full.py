@@ -151,6 +151,88 @@ def tag_exists_on_remote(tag: str) -> bool:
     return tag in r.stdout
 
 
+def show_remote_file(ref: str, path: str) -> str | None:
+    """`path`'s content at `ref` (e.g. `origin/develop`), or None if the
+    ref or path doesn't exist."""
+    r = git(["show", f"{ref}:{path}"], check=False)
+    return r.stdout if r.returncode == 0 else None
+
+
+def version_already_landed_on_develop(version: str) -> bool:
+    """True if `origin/develop` already carries `version`'s bump + a
+    matching `CHANGELOG.md` section — i.e. a prior `release_full.py` run's
+    bump PR already merged. A re-run must skip `prepare`/`bump_pr` entirely
+    in that case rather than re-invoke `release.py prepare` (whose branch
+    is long gone post-merge) and open a second, empty bump PR.
+    """
+    git(["fetch", "origin", "develop"], check=False)
+    manifest = show_remote_file("origin/develop", "quadraui/Cargo.toml")
+    if manifest is None:
+        return False
+    m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', manifest)
+    if not m or m.group(1) != version:
+        return False
+    changelog = show_remote_file("origin/develop", "CHANGELOG.md")
+    if changelog is None:
+        return False
+    return bool(re.search(rf"(?m)^## \[{re.escape(version)}\]", changelog))
+
+
+def check_main_develop_divergence() -> None:
+    """Refuse to start the long CI waits below if `origin/main` and
+    `origin/develop` have diverged histories: a squash merge of `develop`
+    into `main` leaves `main` a same-tree-but-different-history copy, so
+    `git merge-tree` reports conflicts on the *next* promotion even though
+    there is nothing to actually resolve. Detects that specific,
+    recoverable shape (main's tree already matches some commit on develop)
+    and prints the exact `-s ours` sync recipe; a genuine content
+    divergence (main's tree matches no develop commit) is a hard failure a
+    human must resolve.
+    """
+    git(["fetch", "origin", "main", "develop"], check=False)
+    if git(["rev-parse", "--verify", "--quiet", "origin/main"], check=False).returncode != 0:
+        info("origin/main doesn't exist yet — nothing to diverge from")
+        return
+
+    merge_check = git(
+        ["merge-tree", "--write-tree", "origin/main", "origin/develop"], check=False
+    )
+    if merge_check.returncode == 0:
+        info("origin/main and origin/develop merge cleanly — no sync needed")
+        return
+
+    main_tree = git(["rev-parse", "origin/main^{tree}"]).stdout.strip()
+    log = git(["log", "origin/develop", "--format=%H %T"]).stdout.strip()
+    match_commit = None
+    for line in log.splitlines():
+        commit, tree = line.split()
+        if tree == main_tree:
+            match_commit = commit
+            break
+
+    if match_commit is None:
+        fail(
+            "origin/main and origin/develop have genuinely diverged content — "
+            "`git merge-tree --write-tree origin/main origin/develop` reports "
+            "conflicts, and main's tree matches no commit on develop. "
+            "Resolve the divergence by hand before releasing."
+        )
+
+    warn(
+        "origin/main and origin/develop have diverged histories (merge-tree "
+        f"reports conflicts), but main's tree is byte-identical to develop "
+        f"commit {match_commit[:12]} — sync before releasing:\n"
+    )
+    print("    git fetch origin main develop")
+    print("    git checkout develop && git pull --ff-only")
+    print(
+        "    git merge -s ours origin/main "
+        "-m 'Sync main into develop (tree already identical, no content change)'"
+    )
+    print("    git push origin develop")
+    fail("run the sync recipe above, then re-run release_full.py")
+
+
 def wait_for_crate(version: str, timeout: int = 600) -> bool:
     import urllib.request
     url = "https://crates.io/api/v1/crates/quadraui/versions"
@@ -322,6 +404,8 @@ def preflight(version: str) -> None:
     if tag_exists_on_remote(f"v{version}"):
         fail(f"v{version} tag already exists on remote — already released?")
 
+    check_main_develop_divergence()
+
     info("preflight passed")
 
 
@@ -488,8 +572,8 @@ def promote(version: str) -> None:
         pr_number = existing["number"]
     else:
         changelog_text = (REPO_DIR / "CHANGELOG.md").read_text()
-        from release import release_section_body
-        body = release_section_body(changelog_text, version)
+        from release import promotion_pr_body
+        body = promotion_pr_body(changelog_text, version)
 
         if not confirm("Create develop → main promotion PR?"):
             fail("aborted")
@@ -557,8 +641,22 @@ def main() -> None:
     sys.path.insert(0, str(REPO_DIR / "scripts"))
 
     preflight(args.version)
-    prepare(args.version)
-    bump_pr(args.version)
+
+    if version_already_landed_on_develop(args.version):
+        banner("2-3/5", "Prepare + Bump PR → develop")
+        info(
+            f"{args.version} is already bumped + changelogged on "
+            "origin/develop — a prior run's bump PR already merged. "
+            "Skipping prepare and bump PR entirely instead of re-running "
+            "release.py prepare (whose branch is long gone) and opening a "
+            "second, empty bump PR."
+        )
+        git(["checkout", "develop"])
+        git(["pull", "--ff-only"])
+    else:
+        prepare(args.version)
+        bump_pr(args.version)
+
     promote(args.version)
     publish(args.version)
 

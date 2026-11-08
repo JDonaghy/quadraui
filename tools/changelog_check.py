@@ -51,11 +51,19 @@ instead of adding one.
 Usage: tools/changelog_check.py [--labels L1,L2,...] [BASE] [HEAD]
        (default: no labels, origin/develop, HEAD)
 Exit 0 when no entry is required, or a qualifying entry was found.
+
+`--print-bump-shape [BASE] [HEAD]` is a second, unrelated mode `ci.yml`'s
+`bump-shape` job uses: prints `bump_shape=true`/`bump_shape=false`
+(and appends the same line to `$GITHUB_OUTPUT` when set) reporting whether
+`BASE...HEAD` has the release-bump PR shape (see `BUMP_FILE_SET`/
+`is_release_bump_pr`), then exits 0 without running the changelog-entry
+check above.
 Exit 1 when a `quadraui/src/**` behavior change has no `[Unreleased]` entry.
 """
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
 import subprocess
 import sys
@@ -385,9 +393,43 @@ def release_promotion_version(base: str, head: str, repo_root: Path) -> str | No
     return version
 
 
+# The exact file set `scripts/release.py prepare` commits on a release
+# branch (quadraui/Cargo.toml, Cargo.lock, CHANGELOG.md, README.md and
+# quadraui/src/lib.rs) — the shape ci.yml's `bump-shape` job uses to decide
+# whether a `release-X.Y.Z` -> `develop` bump PR can skip the full
+# build/test/clippy matrix.
+BUMP_FILE_SET = frozenset(
+    {
+        MANIFEST_PATH,
+        "Cargo.lock",
+        CHANGELOG_PATH,
+        "README.md",
+        "quadraui/src/lib.rs",
+    }
+)
+
+
+def is_release_bump_pr(
+    base: str, head: str, repo_root: Path, files: list[str] | None = None
+) -> bool:
+    """True if `base...head` has the release-bump PR shape:
+    every changed file is in `BUMP_FILE_SET`, and the diff also carries
+    `release.py prepare`'s version-bump shape (`release_promotion_version`,
+    already proven correct by the changelog gate's own promotion-PR
+    exemption above) -- not just a coincidental README/CHANGELOG-only edit
+    that never actually bumps the version.
+    """
+    if files is None:
+        files = changed_files(base, head, repo_root)
+    if not files or any(f not in BUMP_FILE_SET for f in files):
+        return False
+    return release_promotion_version(base, head, repo_root) is not None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     labels: set[str] = set()
+    print_bump_shape = False
     positional = []
     i = 0
     while i < len(args):
@@ -395,12 +437,29 @@ def main(argv: list[str] | None = None) -> int:
             i += 1
             if i < len(args):
                 labels = {s.strip() for s in args[i].split(",") if s.strip()}
+        elif args[i] == "--print-bump-shape":
+            print_bump_shape = True
         else:
             positional.append(args[i])
         i += 1
 
     base = positional[0] if len(positional) > 0 else "origin/develop"
     head = positional[1] if len(positional) > 1 else "HEAD"
+
+    if print_bump_shape:
+        # ci.yml's `bump-shape` job: report whether `base...head` has the
+        # release-bump PR shape, instead of running the changelog-entry
+        # check below. Written to stdout and (when set) `$GITHUB_OUTPUT`,
+        # the same two-destination pattern `scripts/release_decide.py`'s
+        # `version`/`decide` subcommands already use.
+        bump = is_release_bump_pr(base, head, REPO_ROOT)
+        value = "true" if bump else "false"
+        print(f"bump_shape={value}")
+        github_output = os.environ.get("GITHUB_OUTPUT")
+        if github_output:
+            with open(github_output, "a", encoding="utf-8") as fh:
+                fh.write(f"bump_shape={value}\n")
+        return 0
 
     if NO_CHANGELOG_LABEL in labels:
         print(f"exempt: PR carries the '{NO_CHANGELOG_LABEL}' label")

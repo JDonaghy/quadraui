@@ -247,6 +247,42 @@ class PureFunctionTests(unittest.TestCase):
         self.assertIn("the first thing", body)
         self.assertNotIn("a new thing", body)
 
+    def test_promotion_pr_body_includes_full_section_when_short(self):
+        text = CHANGELOG_TEMPLATE.format(unreleased_body="### Added\n\n- a new thing")
+        body = release.promotion_pr_body(text, "0.1.0")
+        self.assertIn("the first thing", body)
+        self.assertIn("v0.1.0", body)
+        self.assertLessEqual(len(body), release.PR_BODY_MAX_LEN)
+
+    def test_promotion_pr_body_truncates_an_oversized_section(self):
+        # A release section far larger than GitHub's PR body limit.
+        huge_entries = "\n".join(f"- entry number {i}" for i in range(20_000))
+        text = CHANGELOG_TEMPLATE.replace(
+            "### Added\n\n- the first thing", f"### Added\n\n{huge_entries}"
+        ).format(unreleased_body="")
+        full_section = release.release_section_body(text, "0.1.0")
+        self.assertGreater(len(full_section), release.PR_BODY_MAX_LEN)
+
+        body = release.promotion_pr_body(text, "0.1.0")
+        self.assertLessEqual(len(body), release.PR_BODY_MAX_LEN)
+        self.assertIn("entry number 0", body)
+        self.assertIn("truncated", body)
+        self.assertNotIn(f"entry number {19_999}", body)
+
+    def test_promotion_pr_body_respects_a_custom_max_len(self):
+        # A section bigger than the custom 300-char budget but comfortably
+        # bigger than the fixed header + truncation marker text too, so the
+        # truncation path (not just a pass-through) is what's exercised.
+        many_entries = "\n".join(f"- entry number {i}" for i in range(50))
+        text = CHANGELOG_TEMPLATE.replace(
+            "### Added\n\n- the first thing", f"### Added\n\n{many_entries}"
+        ).format(unreleased_body="")
+        self.assertGreater(len(release.release_section_body(text, "0.1.0")), 300)
+
+        body = release.promotion_pr_body(text, "0.1.0", max_len=300)
+        self.assertLessEqual(len(body), 300)
+        self.assertIn("truncated", body)
+
     def test_pre_1_0_status_string(self):
         self.assertEqual(release.pre_1_0_status_string("0.3.1"), "0.3.x")
 
