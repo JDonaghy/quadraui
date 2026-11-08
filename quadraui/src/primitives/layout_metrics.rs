@@ -180,6 +180,71 @@ pub mod pixel {
     /// fonts have no single "char width", so this is the same estimate
     /// convention `gtk`/`macos` already used independently.
     pub const TAB_CELL_WIDTH_SAMPLE: &str = "ABCDabcd0123.:_";
+
+    /// [`crate::TabBar`] per-tab horizontal padding (left + right) when
+    /// [`crate::TabBar::compact`] is set — [`TAB_PAD`]'s narrower sibling.
+    /// `gtk::tab_bar::TAB_PAD_COMPACT`, `macos::tab_bar::TAB_PAD_COMPACT`,
+    /// and `win::tab_bar::TAB_PAD_COMPACT` are all `2.0` independently.
+    pub const TAB_PAD_COMPACT: f32 = 2.0;
+    /// [`TAB_INNER_GAP`]'s narrower sibling when [`crate::TabBar::compact`]
+    /// is set. Every pixel backend inlines this as a literal `4.0`
+    /// alongside its own `TAB_PAD_COMPACT`.
+    pub const TAB_INNER_GAP_COMPACT: f32 = 4.0;
+    /// [`TAB_OUTER_GAP`]'s narrower sibling when [`crate::TabBar::compact`]
+    /// is set — compact mode removes the gap between adjacent tabs
+    /// entirely. Every pixel backend inlines this as a literal `0.0`.
+    pub const TAB_OUTER_GAP_COMPACT: f32 = 0.0;
+
+    /// [`crate::TabBar`] vertical inset (top and bottom) of the active
+    /// tab's rounded chip from the bar's own row height.
+    /// `gtk::tab_bar::TAB_CHIP_INSET_Y`, `macos::tab_bar::TAB_CHIP_INSET_Y`,
+    /// and `win::tab_bar::TAB_CHIP_INSET_Y` are all `4.0` independently.
+    pub const TAB_CHIP_INSET_Y: f32 = 4.0;
+    /// [`crate::TabBar`] corner radius of the active tab's chip fill.
+    /// `gtk::tab_bar::TAB_CHIP_RADIUS`, `macos::tab_bar::TAB_CHIP_RADIUS`,
+    /// and `win::tab_bar::TAB_CHIP_RADIUS` are all `4.0` independently.
+    pub const TAB_CHIP_RADIUS: f32 = 4.0;
+    /// [`crate::TabBar`] thickness of the active-tab top accent line
+    /// painted on the chip's own inset top edge when
+    /// [`crate::TabBar::active_accent`] is `Some`.
+    /// `gtk::tab_bar::TAB_ACTIVE_BORDER_TOP_PX` and
+    /// `win::tab_bar::TAB_ACTIVE_ACCENT_DIP` are both `1.0` independently.
+    pub const TAB_ACCENT_THICKNESS: f32 = 1.0;
+
+    /// Alpha [`super::tab_close_hover_bg`] blends `foreground` into a
+    /// tab's own resting background at, to derive the hover backdrop
+    /// painted behind a tab's close glyph while the pointer is over it.
+    /// Matches `gtk::tab_bar`'s own close-glyph hover wash — the reference
+    /// value for this backdrop; `macos::tab_bar` currently paints none at
+    /// all and `win::tab_bar` lightens its base colour toward white
+    /// instead (see `primitives::tab_bar`'s module doc table).
+    pub const TAB_CLOSE_HOVER_ALPHA: f64 = 0.15;
+    /// Padding (px) around the close glyph's own measured width that the
+    /// hover backdrop rectangle/rounded-rect extends by on every side.
+    /// Matches `gtk::tab_bar`'s own close-hover backdrop inset.
+    pub const TAB_CLOSE_HOVER_PAD: f32 = 2.0;
+    /// Corner radius of the close-glyph hover backdrop. Matches
+    /// `gtk::tab_bar`'s own close-hover backdrop radius.
+    pub const TAB_CLOSE_HOVER_RADIUS: f32 = 3.0;
+}
+
+/// Background fill for the hover backdrop painted behind a tab's close
+/// glyph while the pointer is over it: `base` (the tab's own resting
+/// background) blended toward `foreground` at
+/// [`pixel::TAB_CLOSE_HOVER_ALPHA`].
+///
+/// One derivation for every pixel backend's close-glyph hover backdrop,
+/// rather than each independently picking its own tint math: `gtk::tab_bar`
+/// already computes exactly this blend; `win::tab_bar` instead lightens
+/// its base colour toward white, and `macos::tab_bar` paints no backdrop
+/// at all. Adopting this helper is a per-backend follow-up outside this
+/// primitive's own scope — see `primitives::tab_bar`'s module doc table
+/// for the current three-way split this unifies.
+pub fn tab_close_hover_bg(
+    base: crate::types::Color,
+    foreground: crate::types::Color,
+) -> crate::types::Color {
+    base.blend(foreground, pixel::TAB_CLOSE_HOVER_ALPHA)
 }
 
 // ── Tree ─────────────────────────────────────────────────────────────
@@ -891,8 +956,22 @@ pub fn pixel_minimap_layout_scaled(
 /// engine-feedback signal, and `available_cols`.
 ///
 /// `tab_pad` / `tab_inner_gap` / `tab_outer_gap` are the caller-resolved
-/// values for this bar — pass the compact variant when `bar.compact` is
-/// set, matching every backend's existing convention.
+/// values for this bar — pass [`pixel::TAB_PAD_COMPACT`] /
+/// [`pixel::TAB_INNER_GAP_COMPACT`] / [`pixel::TAB_OUTER_GAP_COMPACT`]
+/// when `bar.compact` is set, [`pixel::TAB_PAD`] / [`pixel::TAB_INNER_GAP`]
+/// / [`pixel::TAB_OUTER_GAP`] otherwise — matching every backend's
+/// existing convention.
+///
+/// # One slot, two glyphs
+///
+/// There is exactly one trailing glyph slot per tab, sized by
+/// `close_width`: a dirty (unsaved) mark and a close button never both
+/// occupy it at once. [`TabItem::is_dirty`] only changes *which* glyph
+/// the slot paints (a dot instead of an ×) — every in-tree rasteriser
+/// shows the close × once the pointer hovers that slot, otherwise the
+/// dirty dot when `is_dirty` is set — never the width. A tab with neither
+/// (`is_dirty: false` and not closable) passes `close_width: 0.0`, same
+/// as today.
 ///
 /// # The close-button fix
 ///
@@ -1760,5 +1839,204 @@ mod tests {
                 panic!("click in the trailing bracket+padding gap expected Tab(0), got {other:?}")
             }
         }
+    }
+
+    // ── Pixel tab-bar fixtures: normal / overflow / compact / ellipsis /
+    // icons ────────────────────────────────────────────────────────────
+    //
+    // Each fixture reproduces, with `FakeTabMeasure`'s fixed 6px-per-char
+    // metric, the same per-tab width math `gtk::tab_bar` computes with a
+    // real Pango measurer — the union behaviour this module now shares
+    // with every pixel backend's tab strip.
+
+    #[test]
+    fn fixture_normal_three_tabs_land_at_exact_offsets() {
+        let bar = tab_bar_with(vec![
+            closable_tab("a", true),
+            closable_tab("b", false),
+            closable_tab("c", false),
+        ]);
+        // Each label is 1 char (6px). Per-tab width: TAB_PAD*2 + name_w +
+        // (TAB_INNER_GAP + close_glyph_w), close_glyph_w = width_of("×") = 6px.
+        let name_widths = [6.0_f32; 3];
+        let icon_extras = [0.0_f32; 3];
+        let (layout, _, _) = pixel_tab_bar_layout(
+            &bar,
+            400.0,
+            22.0,
+            pixel::TAB_PAD,
+            pixel::TAB_INNER_GAP,
+            pixel::TAB_OUTER_GAP,
+            &name_widths,
+            &icon_extras,
+            &TabChrome::default(),
+            &FakeTabMeasure,
+        );
+        let expected_w =
+            pixel::TAB_PAD * 2.0 + 6.0 + pixel::TAB_INNER_GAP + 6.0 + pixel::TAB_OUTER_GAP;
+        assert_eq!(layout.visible_tabs.len(), 3);
+        assert_eq!(layout.visible_tabs[0].bounds.x, 0.0);
+        assert_eq!(layout.visible_tabs[0].bounds.width, expected_w);
+        assert_eq!(layout.visible_tabs[1].bounds.x, expected_w);
+        assert_eq!(layout.visible_tabs[2].bounds.x, expected_w * 2.0);
+    }
+
+    #[test]
+    fn fixture_overflow_scrolls_to_keep_the_active_tab_visible() {
+        // 10 two-char-label tabs; a narrow bar forces a scroll correction
+        // to keep the active (last) tab on-screen — the same overflow
+        // path `gtk::tab_bar`'s own scroll-offset reconciliation hits.
+        let tabs: Vec<_> = (0..10)
+            .map(|i| closable_tab(&format!("t{i}"), i == 9))
+            .collect();
+        let mut bar = tab_bar_with(tabs);
+        // Caller writes `corrected_scroll_offset` back and repaints — the
+        // two-pass-paint pattern `TabBar::layout`'s own doc describes.
+        // Simulate the corrected second pass directly here.
+        let name_widths = vec![12.0_f32; bar.tabs.len()]; // "tN" = 2 chars * 6px
+        let icon_extras = vec![0.0_f32; bar.tabs.len()];
+        let (_, corrected_scroll_offset, _) = pixel_tab_bar_layout(
+            &bar,
+            150.0,
+            22.0,
+            pixel::TAB_PAD,
+            pixel::TAB_INNER_GAP,
+            pixel::TAB_OUTER_GAP,
+            &name_widths,
+            &icon_extras,
+            &TabChrome::default(),
+            &FakeTabMeasure,
+        );
+        assert!(corrected_scroll_offset > 0 && corrected_scroll_offset < 9);
+
+        bar.scroll_offset = corrected_scroll_offset;
+        let (layout, _, _) = pixel_tab_bar_layout(
+            &bar,
+            150.0,
+            22.0,
+            pixel::TAB_PAD,
+            pixel::TAB_INNER_GAP,
+            pixel::TAB_OUTER_GAP,
+            &name_widths,
+            &icon_extras,
+            &TabChrome::default(),
+            &FakeTabMeasure,
+        );
+        let visible_indices: Vec<usize> = layout.visible_tabs.iter().map(|v| v.tab_idx).collect();
+        assert!(
+            visible_indices.contains(&9),
+            "active tab 9 must be visible once the corrected offset is applied: {visible_indices:?}"
+        );
+    }
+
+    #[test]
+    fn fixture_compact_mode_uses_the_narrower_pad_and_gap_constants() {
+        let bar = TabBar {
+            compact: true,
+            ..tab_bar_with(vec![closable_tab("a", true)])
+        };
+        let name_widths = [6.0_f32];
+        let icon_extras = [0.0_f32];
+        let (layout, _, _) = pixel_tab_bar_layout(
+            &bar,
+            400.0,
+            22.0,
+            pixel::TAB_PAD_COMPACT,
+            pixel::TAB_INNER_GAP_COMPACT,
+            pixel::TAB_OUTER_GAP_COMPACT,
+            &name_widths,
+            &icon_extras,
+            &TabChrome::default(),
+            &FakeTabMeasure,
+        );
+        let expected_w = pixel::TAB_PAD_COMPACT * 2.0
+            + 6.0
+            + pixel::TAB_INNER_GAP_COMPACT
+            + 6.0
+            + pixel::TAB_OUTER_GAP_COMPACT;
+        assert_eq!(layout.visible_tabs[0].bounds.width, expected_w);
+        assert!(
+            expected_w
+                < pixel::TAB_PAD * 2.0 + 6.0 + pixel::TAB_INNER_GAP + 6.0 + pixel::TAB_OUTER_GAP,
+            "compact mode must measure narrower than the non-compact constants"
+        );
+    }
+
+    #[test]
+    fn fixture_long_label_is_ellipsis_fitted_within_its_slot() {
+        let measure = |text: &str| FakeTabMeasure.width_of(text);
+        let long_label = "a_very_long_file_name_that_does_not_fit.rs";
+        let tab_width = 120.0_f32;
+        let icon_width = 0.0_f32;
+        let close_width = pixel::TAB_INNER_GAP + 6.0; // TAB_INNER_GAP + close glyph (6px)
+        let fitted = crate::primitives::tab_bar::fit_tab_label(
+            long_label,
+            tab_width,
+            icon_width,
+            close_width,
+            measure,
+        );
+        assert!(
+            fitted.len() < long_label.len(),
+            "a label wider than its slot must be shortened: {fitted:?}"
+        );
+        assert!(
+            measure(&fitted) <= tab_width - icon_width - close_width,
+            "the fitted label must not exceed its budget: {} > {}",
+            measure(&fitted),
+            tab_width - icon_width - close_width
+        );
+    }
+
+    #[test]
+    fn fixture_icon_reserves_extra_leading_width() {
+        let bar = tab_bar_with(vec![closable_tab("a", true)]);
+        let name_widths = [6.0_f32];
+        let icon_width = 12.0_f32; // glyph + TAB_ICON_GAP, as gtk/macos/win each compute
+        let icon_extras = [icon_width];
+        let no_icon_extras = [0.0_f32];
+        let (with_icon, _, _) = pixel_tab_bar_layout(
+            &bar,
+            400.0,
+            22.0,
+            pixel::TAB_PAD,
+            pixel::TAB_INNER_GAP,
+            pixel::TAB_OUTER_GAP,
+            &name_widths,
+            &icon_extras,
+            &TabChrome::default(),
+            &FakeTabMeasure,
+        );
+        let (without_icon, _, _) = pixel_tab_bar_layout(
+            &bar,
+            400.0,
+            22.0,
+            pixel::TAB_PAD,
+            pixel::TAB_INNER_GAP,
+            pixel::TAB_OUTER_GAP,
+            &name_widths,
+            &no_icon_extras,
+            &TabChrome::default(),
+            &FakeTabMeasure,
+        );
+        let delta =
+            with_icon.visible_tabs[0].bounds.width - without_icon.visible_tabs[0].bounds.width;
+        assert_eq!(
+            delta, icon_width,
+            "the icon slot must widen the tab by exactly its own width"
+        );
+    }
+
+    #[test]
+    fn tab_close_hover_bg_blends_foreground_at_the_shared_alpha() {
+        use crate::types::Color;
+
+        let base = Color::rgb(30, 30, 30);
+        let foreground = Color::rgb(255, 255, 255);
+        let expected = base.blend(foreground, pixel::TAB_CLOSE_HOVER_ALPHA);
+        assert_eq!(tab_close_hover_bg(base, foreground), expected);
+        // Sanity: the blend actually lifts the colour toward foreground,
+        // it's not a no-op.
+        assert_ne!(tab_close_hover_bg(base, foreground), base);
     }
 }

@@ -87,11 +87,6 @@ use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::switch::{Switch, SwitchLayout};
-use crate::update::UpdateService;
-// `TabBarHits` is `#[deprecated]` — this trait still returns it from six
-// methods below, so the import itself needs the same allow every use site
-// does.
-#[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBarGlyphs, TabBarHits, TabBarLayout, TabChrome, TabIcon};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_input::{TextInput, TextInputLayout};
@@ -100,6 +95,7 @@ use crate::primitives::toolbar::{Toolbar, ToolbarLayout, ToolbarPaintOptions};
 use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::{TreePaintState, TreeViewLayout};
 use crate::types::{Color, WidgetId};
+use crate::update::UpdateService;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, GlobalShortcutId, ListView, Palette,
     PaletteLayout, StatusBar, TabBar, Terminal, TextDisplay, TreeView,
@@ -2706,11 +2702,6 @@ pub trait Backend: sealed::Sealed {
     /// hovered tab's close glyph (the primitive itself carries no
     /// mouse state). Returns [`TabBarHits`] for click dispatch +
     /// scroll-offset reconciliation.
-    ///
-    /// `TabBarHits` itself is `#[deprecated]` — see that struct's doc for
-    /// why the six-method/four-backend swap to [`TabBarLayout`] is
-    /// separate follow-up work.
-    #[allow(deprecated)]
     fn draw_tab_bar(
         &mut self,
         rect: Rect,
@@ -2745,7 +2736,6 @@ pub trait Backend: sealed::Sealed {
     ///
     /// [`ListPaintState`]: crate::primitives::list::ListPaintState
     /// [`TreePaintState`]: crate::primitives::tree::TreePaintState
-    #[allow(deprecated)]
     fn draw_tab_bar_with_state(
         &mut self,
         rect: Rect,
@@ -2757,8 +2747,8 @@ pub trait Backend: sealed::Sealed {
         self.draw_tab_bar(rect, bar, hovered_close_tab)
     }
 
-    /// Draw a tab bar, returning [`TabBarLayout`] instead of the
-    /// deprecated [`TabBarHits`]. Added *alongside* [`Self::draw_tab_bar`]
+    /// Draw a tab bar, returning [`TabBarLayout`] instead of
+    /// [`TabBarHits`]. Added *alongside* [`Self::draw_tab_bar`]
     /// rather than in place of it, so no existing caller breaks.
     /// Paints exactly what [`Self::draw_tab_bar`] paints (icon-less
     /// sidecar of [`Self::draw_tab_bar_icons_layout`]); the two must never
@@ -2787,7 +2777,7 @@ pub trait Backend: sealed::Sealed {
     /// the [`TabBarLayout`]-returning twin of
     /// [`Self::draw_tab_bar_with_state`], reachable from the `py`/`node`
     /// paint path (`quadraui-binding-core`'s renderer calls
-    /// `draw_tab_bar_layout`, never the deprecated `draw_tab_bar`).
+    /// `draw_tab_bar_layout`, not `draw_tab_bar`).
     ///
     /// Additive over [`Self::draw_tab_bar_layout`], not a replacement —
     /// the default forwards to it (ignoring `hovered_tab`/`pressed_tab`),
@@ -2831,8 +2821,6 @@ pub trait Backend: sealed::Sealed {
     /// compile error and fills in a real rasteriser
     /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn draw_tab_bar_icons(
         &mut self,
         rect: Rect,
@@ -2841,7 +2829,7 @@ pub trait Backend: sealed::Sealed {
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits;
     /// Draw a tab bar with per-tab icon glyphs, returning [`TabBarLayout`]
-    /// instead of the deprecated [`TabBarHits`]. The icon-aware twin of
+    /// instead of [`TabBarHits`]. The icon-aware twin of
     /// [`Self::draw_tab_bar_layout`], exactly as
     /// [`Self::draw_tab_bar_icons`] is the twin of [`Self::draw_tab_bar`]
     /// — same `icons` sidecar convention, same bar-relative coordinate
@@ -2872,8 +2860,6 @@ pub trait Backend: sealed::Sealed {
     /// own. The TUI and GTK backends override it and honour
     /// [`crate::TabFrame::Brackets`] in full.
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn draw_tab_bar_with_chrome(
         &mut self,
         rect: Rect,
@@ -2885,7 +2871,7 @@ pub trait Backend: sealed::Sealed {
         self.draw_tab_bar(rect, bar, hovered_close_tab)
     }
     /// Draw a tab bar with an explicit [`TabChrome`] request, returning
-    /// [`TabBarLayout`] instead of the deprecated [`TabBarHits`] — the
+    /// [`TabBarLayout`] instead of [`TabBarHits`] — the
     /// `TabBarLayout`-returning twin of [`Self::draw_tab_bar_with_chrome`].
     ///
     /// Default body **ignores `chrome`** and delegates to
@@ -2914,8 +2900,6 @@ pub trait Backend: sealed::Sealed {
     /// that hasn't opted in to overrides yet. The TUI backend overrides
     /// it and honours `glyphs` in full.
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn draw_tab_bar_with_chrome_and_glyphs(
         &mut self,
         rect: Rect,
@@ -3012,12 +2996,10 @@ pub trait Backend: sealed::Sealed {
     /// [`Self::draw_activity_bar`]'s bar-relative one — deliberate, and
     /// stated on both.
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits;
 
     /// Compute the tab bar layout without painting, returning
-    /// [`TabBarLayout`] instead of the deprecated [`TabBarHits`]. The
+    /// [`TabBarLayout`] instead of [`TabBarHits`]. The
     /// `TabBarLayout`-returning twin of [`Self::tab_bar_layout`], added
     /// alongside it rather than in place of it — every backend already
     /// resolves this geometry internally before narrowing it down to
@@ -3053,8 +3035,6 @@ pub trait Backend: sealed::Sealed {
     /// No default impl — same rule-7 reasoning as
     /// [`Self::draw_tab_bar_icons`].
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn tab_bar_layout_icons(
         &self,
         rect: Rect,
@@ -3063,8 +3043,8 @@ pub trait Backend: sealed::Sealed {
     ) -> TabBarHits;
 
     /// Compute the tab bar layout without painting, for a bar painted
-    /// with per-tab icons, returning [`TabBarLayout`] instead of the
-    /// deprecated [`TabBarHits`]. The icon-aware twin of
+    /// with per-tab icons, returning [`TabBarLayout`] instead of
+    /// [`TabBarHits`]. The icon-aware twin of
     /// [`Self::resolve_tab_bar_layout`], exactly as
     /// [`Self::tab_bar_layout_icons`] is the twin of
     /// [`Self::tab_bar_layout`] — same `icons` sidecar convention, same
@@ -3094,8 +3074,6 @@ pub trait Backend: sealed::Sealed {
     /// [`Self::tab_bar_layout`], matching [`Self::draw_tab_bar_with_chrome`]'s
     /// default.
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn tab_bar_layout_with_chrome(
         &self,
         rect: Rect,
@@ -3107,7 +3085,7 @@ pub trait Backend: sealed::Sealed {
     }
 
     /// Compute the tab bar layout without painting, for a bar painted
-    /// with chrome, returning [`TabBarLayout`] instead of the deprecated
+    /// with chrome, returning [`TabBarLayout`] instead of
     /// [`TabBarHits`] — the `TabBarLayout`-returning twin of
     /// [`Self::tab_bar_layout_with_chrome`].
     ///
@@ -4417,10 +4395,6 @@ pub enum ImagePaintResult {
 /// target-surface (absolute) coordinates. Rasterisers and the no-paint
 /// `tab_bar_layout` variants both call this with `rect.x` so the two
 /// paths return the same space.
-///
-/// `TabBarHits` is `#[deprecated]` — see its doc for the replacement
-/// plan.
-#[allow(deprecated)]
 pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
     if dx == 0.0 {
         return;
@@ -4451,19 +4425,13 @@ pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
 ///
 /// `TabBarHits`'s `f64` coordinate fields predate the crate's f32-native
 /// convention (`Point`/`Rect`), and this converter is the thing that
-/// keeps constructing them. Full retirement of `TabBarHits` itself (the
-/// `f64` fields, and the six `Backend` trait methods that return it) is
-/// a separate, much larger follow-up: `vimcode` holds a real,
-/// non-doc-only dependency on `TabBarHits`'s field types
-/// (`src/core/engine/mod.rs`, `src/core/engine/terminal_ops.rs`,
-/// `src/gtk/mod.rs`), and two of the four backends (`macos::tab_bar`,
-/// `win::tab_bar`) construct `TabBarHits` directly without ever computing
-/// an intermediate `TabBarLayout`, so a safe migration needs new native
-/// per-backend rasterisers, not just a signature change.
-///
-/// `TabBarHits` is `#[deprecated]`; this converter is the one place
-/// in-tree still allowed to construct it.
-#[allow(deprecated)]
+/// keeps constructing them. `vimcode` holds a real, non-doc-only
+/// dependency on `TabBarHits`'s field types (`src/core/engine/mod.rs`,
+/// `src/core/engine/terminal_ops.rs`, `src/gtk/mod.rs`), and two of the
+/// four backends (`macos::tab_bar`, `win::tab_bar`) construct
+/// `TabBarHits` directly without ever computing an intermediate
+/// `TabBarLayout` — this converter is the one in-tree spot that builds a
+/// `TabBarHits` from a `TabBarLayout` instead.
 pub fn tab_bar_hits_from_layout(layout: &TabBarLayout, bar: &TabBar) -> TabBarHits {
     let mut slot_positions = vec![(0.0, 0.0); bar.tabs.len()];
     let mut close_bounds = vec![None; bar.tabs.len()];

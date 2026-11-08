@@ -860,22 +860,19 @@ impl TabBarGlyphs {
 /// TUI-only concept even GTK/macOS fake by measuring a Pango sample
 /// string), for compatibility with existing downstream code.
 ///
-/// # Deprecated
+/// # Stability
 ///
-/// The struct itself carries `#[deprecated]`. Marking it deprecated does
-/// not change what `draw_tab_bar` / `tab_bar_layout` (or their icon/chrome
-/// twins) return — that signature change is tracked separately. What
-/// the deprecation does: mark the type deprecated so every remaining
-/// dependency on its `f64` shape is visible at the type level, and name
-/// [`TabBarLayout`] — already real, already f32/`Rect`/[`TabBarHit`]-based,
-/// already what every in-tree rasteriser computes *before* narrowing to
-/// this struct — as the eventual replacement return type. Removal target:
-/// once the replacement rasterisers exist and the six-method/four-backend
-/// signature swap lands.
-#[deprecated(
-    since = "0.0.1",
-    note = "f64-tuple pre-D6 hit struct; the eventual replacement is `TabBarLayout` (`Rect` + `TabBarHit`) — issue #823; removal target: the #823 six-method/four-backend signature swap, not before v0.2.0"
-)]
+/// This is the stable return type of `draw_tab_bar` / `tab_bar_layout`
+/// and their icon/chrome twins, not a transitional shape scheduled for
+/// removal. [`TabBarLayout`] — f32, `Rect`/[`TabBarHit`]-based, unit
+/// agnostic — is a parallel addition the `*_layout`-suffixed methods and
+/// [`crate::primitives::layout_metrics::pixel_tab_bar_layout`] return, not
+/// a migration target for this one: `vimcode` depends directly on this
+/// struct's exact `f64` field shapes, and two of the four in-tree
+/// rasterisers construct it without ever computing an intermediate
+/// `TabBarLayout`. Both return types coexist; a caller picks whichever
+/// coordinate convention and unit fits — target-surface-absolute `f64`
+/// pairs here, bar-relative `Rect`s there.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TabBarHits {
     /// `[(start_x, end_x)]` per tab index. Tabs before
