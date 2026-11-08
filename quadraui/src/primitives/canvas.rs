@@ -3,11 +3,12 @@
 //! Every other primitive in this crate is a closed shape — an app that
 //! wants a diagram, a custom gauge, a sparkline with bespoke decoration,
 //! or any pixel the 49 other shipped primitive modules don't already
-//! draw has no way to put it on screen. `Canvas` is the escape hatch: a declarative list
-//! of [`DrawOp`]s (rect, rounded rect, line, path, text run, image,
-//! push/pop clip) that every backend paints through the same seam —
-//! [`crate::paint_surface::PaintSurface`] for the three pixel backends,
-//! and a dedicated degrade rasteriser (`crate::tui::canvas`) for TUI.
+//! draw has no way to put it on screen. `Canvas` is the escape hatch: a
+//! declarative list of [`DrawOp`]s (rect, rounded rect, line, path,
+//! text run, image, push/pop clip) that every backend paints through
+//! the same seam — [`crate::paint_surface::PaintSurface`] for the
+//! three pixel backends, and a dedicated degrade rasteriser
+//! (`crate::tui::canvas`) for TUI.
 //!
 //! # Coordinate frame
 //!

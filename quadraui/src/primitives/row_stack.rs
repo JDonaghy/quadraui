@@ -36,8 +36,9 @@ pub struct VisibleRow<E> {
 pub struct RowStackLayout<E> {
     /// Visible rows, top to bottom.
     pub visible: Vec<VisibleRow<E>>,
-    /// Scroll offset actually used. Clamped to `[0, total_rows)` so the
-    /// caller never iterates past the end of its row slice.
+    /// Scroll offset actually used. Clamped to `[0, total_rows)` (or `0`
+    /// when `total_rows == 0`) so the caller never iterates past the end
+    /// of its row slice.
     pub resolved_scroll_offset: usize,
     /// Sub-row pixel remainder when `scroll_px` is in effect — see
     /// [`resolve_scroll_px`]. `0.0` when `scroll_px` is `None`.
@@ -119,6 +120,11 @@ where
 ///
 /// `visible` is how many whole rows fit in the track; `row_height` also
 /// serves as the minimum thumb length, matching both callers.
+///
+/// `row_height <= 0.0` is treated as "no sub-row remainder to apply"
+/// rather than dividing by it: both callers already guard `row_height >
+/// 0.0` before reaching here, but this keeps the function itself free
+/// of a `NaN` result for any other caller.
 pub fn vscrollbar_thumb(
     id: impl Into<WidgetId>,
     track: Rect,
@@ -130,7 +136,12 @@ pub fn vscrollbar_thumb(
 ) -> Scrollbar {
     let (resolved_scroll_offset, scroll_sub_px) =
         resolve_scroll_px(scroll_offset, scroll_px, total_rows, row_height);
-    let scroll_rows = resolved_scroll_offset as f32 + scroll_sub_px / row_height;
+    let scroll_rows = resolved_scroll_offset as f32
+        + if row_height > 0.0 {
+            scroll_sub_px / row_height
+        } else {
+            0.0
+        };
     Scrollbar::vertical(
         id,
         track,
@@ -230,9 +241,21 @@ mod tests {
     #[test]
     fn vscrollbar_thumb_scroll_px_wins_over_scroll_offset() {
         let track = Rect::new(0.0, 0.0, 1.0, 10.0);
-        let via_px = vscrollbar_thumb("rs", track, 0, Some(5.0), 20, 1.0, 10.0);
+        // `scroll_offset` conflicts with `scroll_px` here (9 vs. the 5
+        // rows `scroll_px` resolves to); the thumb matching the `None`
+        // case below proves `scroll_px` actually wins rather than the
+        // two calls merely agreeing by construction.
+        let via_px = vscrollbar_thumb("rs", track, 9, Some(5.0), 20, 1.0, 10.0);
         let via_offset = vscrollbar_thumb("rs", track, 5, None, 20, 1.0, 10.0);
         assert_eq!(via_px.thumb_start, via_offset.thumb_start);
+    }
+
+    #[test]
+    fn vscrollbar_thumb_zero_row_height_does_not_produce_nan() {
+        let track = Rect::new(0.0, 0.0, 1.0, 10.0);
+        let thumb = vscrollbar_thumb("rs", track, 3, Some(5.0), 20, 0.0, 10.0);
+        assert!(!thumb.thumb_start.is_nan());
+        assert!(!thumb.thumb_len.is_nan());
     }
 
     #[test]
