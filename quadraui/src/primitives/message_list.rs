@@ -162,11 +162,21 @@ pub enum MessageListHit {
 pub struct VisibleMessageRow {
     /// Index into [`MessageList::rows`].
     pub idx: usize,
+    /// This row's painted bounds within the `rect` passed to
+    /// [`MessageList::layout`], clipped to the viewport (the last visible
+    /// row may be shorter than a full row when it doesn't wholly fit).
     pub bounds: Rect,
 }
 
 /// Fully-resolved [`MessageList`] layout — the rows that ended up at
 /// least partially visible, plus the scroll offset actually used.
+///
+/// This is a new, [`row_stack`]-based layout that [`MessageList::hit_test`]
+/// consumes; no rasteriser paints from it yet — `tui`, `gtk`, and the
+/// shared macOS/Windows `native_surface_paint::paint` all still walk
+/// `rows.iter().skip(scroll_top)` on their own, independent of this type.
+/// Migrating them onto it (so paint and layout genuinely can't drift) is
+/// follow-up work, not yet done.
 ///
 /// `#[non_exhaustive]`: a backend-returned value, never constructed by
 /// a consumer via struct literal (same convention as
@@ -182,17 +192,20 @@ pub struct MessageListLayout {
     /// [`crate::primitives::row_stack::layout_row_stack`] rule
     /// `ListView`/`TreeView`/`Palette` already share — a `scroll_top`
     /// past the end pins the last row rather than showing a blank
-    /// viewport.
+    /// viewport. No rasteriser implements this clamp yet (see this
+    /// struct's own doc); [`MessageList::hit_test`] guards the
+    /// overscroll case itself instead of inheriting it, so it keeps
+    /// agreeing with what is actually painted.
     pub resolved_scroll_offset: usize,
 }
 
 impl MessageList {
     /// Compute the rows that fit inside `rect`, uniformly
-    /// `measure.line_height` tall, starting at [`Self::scroll_top`] — the
-    /// single source of truth [`Self::hit_test`] and the TUI/macOS/Windows
-    /// rasterisers paint from, built on the same
-    /// [`crate::primitives::row_stack::layout_row_stack`] arithmetic
-    /// `ListView::layout` / `Palette::layout` use.
+    /// `measure.line_height` tall, starting at [`Self::scroll_top`] —
+    /// built on the same [`crate::primitives::row_stack::layout_row_stack`]
+    /// arithmetic `ListView::layout` / `Palette::layout` use. See
+    /// [`MessageListLayout`]'s doc for how this relates (and does not yet
+    /// relate) to what the rasterisers paint.
     ///
     /// Coordinate frame: **ABSOLUTE** — `rect` positions rows directly in
     /// the caller's surface space, matching [`Self::hit_test`]'s
@@ -222,8 +235,15 @@ impl MessageList {
     }
 
     /// Hit-test a click at surface-native `(x, y)` against this list,
-    /// built from the same [`Self::layout`] the rasterisers paint from so
-    /// paint and hit-test can never disagree.
+    /// walking [`Self::layout`]'s row stack.
+    ///
+    /// `scroll_top` past the end of `rows` is **not** pinned to the last
+    /// row here, even though [`Self::layout`] itself clamps it (see
+    /// [`MessageListLayout::resolved_scroll_offset`]'s doc): every
+    /// rasteriser's own unclamped `rows.iter().skip(scroll_top)` walk
+    /// paints nothing in that case, so this misses outright too, keeping
+    /// paint and hit-test in agreement for the one case where they'd
+    /// otherwise diverge.
     ///
     /// Coordinate frame: **ABSOLUTE** — `(x, y)` is compared directly
     /// against `rect`, matching `text_input_layout`'s convention.
@@ -238,6 +258,9 @@ impl MessageList {
             return MessageListHit::Empty;
         }
         if x < rect.x || x >= rect.x + rect.width || y < rect.y || y >= rect.y + rect.height {
+            return MessageListHit::Empty;
+        }
+        if self.scroll_top >= self.rows.len() {
             return MessageListHit::Empty;
         }
         let layout = self.layout(rect, measure);
@@ -730,10 +753,13 @@ mod tests {
         assert_eq!(layout.visible_rows[2].bounds.height, 0.5);
     }
 
-    /// `scroll_top` past the end of `rows` now clamps to the last reachable
+    /// `scroll_top` past the end of `rows` clamps to the last reachable
     /// row via `row_stack::layout_row_stack`, matching `ListView`/
-    /// `TreeView`/`Palette`'s convention: an overscrolled list pins its
-    /// last row rather than showing a blank viewport.
+    /// `TreeView`/`Palette`'s convention for this new layout. No
+    /// rasteriser paints from `layout` yet, and `hit_test` deliberately
+    /// does not inherit this clamp (see
+    /// `hit_test_does_not_pin_an_overscrolled_scroll_top`) — this pins
+    /// `layout`'s own behaviour, not a user-visible guarantee.
     #[test]
     fn layout_clamps_an_overscrolled_scroll_top_to_the_last_row() {
         let list = list_with_rows(5, 1000);
@@ -753,17 +779,19 @@ mod tests {
         assert_eq!(layout.resolved_scroll_offset, 0);
     }
 
-    /// Same overscroll case as [`layout_clamps_an_overscrolled_scroll_top_to_the_last_row`],
-    /// through `hit_test` — a click anywhere in the viewport now lands on
-    /// the pinned last row instead of always missing.
+    /// Unlike [`layout_clamps_an_overscrolled_scroll_top_to_the_last_row`],
+    /// `hit_test` does **not** inherit `layout`'s overscroll clamp: every
+    /// rasteriser's own `rows.iter().skip(scroll_top)` walk paints nothing
+    /// when `scroll_top` is past the end, so a click there must keep
+    /// missing too.
     #[test]
-    fn hit_test_clamps_an_overscrolled_scroll_top_to_the_last_row() {
+    fn hit_test_does_not_pin_an_overscrolled_scroll_top() {
         let list = list_with_rows(5, 1000);
         let rect = Rect::new(0.0, 0.0, 40.0, 5.0);
         let measure = MessageListMeasure::new(1.0);
         assert_eq!(
             list.hit_test(rect, measure, 5.0, 0.5),
-            MessageListHit::Row(4)
+            MessageListHit::Empty
         );
     }
 }

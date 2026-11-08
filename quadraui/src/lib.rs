@@ -567,7 +567,10 @@ pub use primitives::list::{
 pub use primitives::menu_bar::{
     MenuBar, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout, VisibleMenuBarItem,
 };
-pub use primitives::message_list::{MessageList, MessageListHit, MessageListMeasure, MessageRow};
+pub use primitives::message_list::{
+    MessageList, MessageListHit, MessageListLayout, MessageListMeasure, MessageRow,
+    VisibleMessageRow,
+};
 pub use primitives::minimap::{
     aggregate_spans, reserved_width, sample_blocks, sample_window, window_start_line, Minimap,
     MinimapGrid, MinimapHit, MinimapLayout, MinimapLine, MinimapScale, MinimapSizing, MinimapSpan,

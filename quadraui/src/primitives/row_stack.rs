@@ -1,17 +1,22 @@
-//! Shared vertical row-stacking layout math for `TreeView` and `ListView`.
+//! Shared vertical row-stacking layout math for `TreeView`, `ListView`,
+//! `Palette`, and `MessageList`, plus a shared icon/detail row-content
+//! painter for `ListView` and `Palette` (`row_content_paint`, below).
 //!
-//! Both primitives lay out a flat sequence of rows top-to-bottom from a
-//! `scroll_offset` (optionally overridden by a pixel-precise `scroll_px`),
-//! clip the last visible row to the viewport, and expose a vertical
-//! `Scrollbar` whose thumb tracks the same scroll position. This module
-//! is the single home for that shared arithmetic, so `tree.rs` and
-//! `list.rs` cannot drift out of sync on it and a future row-stacking
-//! primitive gets it for free.
+//! Each row-stacking primitive lays out a flat sequence of rows
+//! top-to-bottom from a `scroll_offset` (optionally overridden by a
+//! pixel-precise `scroll_px`), clips the last visible row to the
+//! viewport, and (where it has one) exposes a vertical `Scrollbar` whose
+//! thumb tracks the same scroll position. This module is the single home
+//! for that shared arithmetic, so `tree.rs`, `list.rs`, `palette.rs`, and
+//! `message_list.rs` cannot drift out of sync on it and a future
+//! row-stacking primitive gets it for free.
 //!
 //! What's *not* here: hit-region construction (`TreeView` splits a row
-//! into `Chevron`/`Row` zones; `ListView` doesn't), border/title insets
+//! into `Chevron`/`Row` zones; the others don't), border/title insets
 //! (`ListView`-only), and the public `*Layout`/`*Hit` types themselves —
 //! those stay primitive-specific because their shapes genuinely differ.
+//! `MessageList::layout` uses [`layout_row_stack`] but its rasterisers do
+//! not yet paint from it — see `MessageListLayout`'s own doc.
 
 use crate::event::Rect;
 use crate::primitives::scrollbar::{resolve_scroll_px, Scrollbar};
