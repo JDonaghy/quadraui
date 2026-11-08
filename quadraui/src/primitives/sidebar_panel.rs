@@ -457,6 +457,9 @@ pub(crate) mod native_surface_paint {
                     let ty = item.y + (item.height - th) / 2.0;
                     surface.surface_draw_text_run(Rect::new(item.x, ty, tw, th), text, color);
                 }
+                // Invisible by definition — see `ToolbarButton::Spacer`'s
+                // own doc.
+                ToolbarButton::Spacer => {}
             }
         }
 

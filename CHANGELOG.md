@@ -59,6 +59,21 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `Toolbar::layout_with_options`/`ToolbarLayoutOptions`/`ToolbarOrientation` —
+  a toolbar can now lay its buttons out top-to-bottom
+  (`ToolbarOrientation::Vertical`) instead of only left-to-right; `Toolbar::layout`
+  is unchanged (equivalent to `layout_with_options` with the `Horizontal`
+  default). `ToolbarButton::Spacer` is a new, flexible gap variant that pushes
+  every item after it to the bar's trailing edge, with the same
+  trailing-group-wins collision rule `ActivityBar::layout` uses for its own
+  bottom-pinned items. `Toolbar::a11y_children_with_role`/`ToolbarItemRole`
+  lets a host render a toolbar's `Action` children as `A11yRole::Tab` (with
+  `is_active` read as `selected`) instead of the default `Button` role, for a
+  toolbar repurposed as an activity-bar-shaped rail. TUI renders
+  `Vertical` via the new `tui::draw_toolbar_oriented`/
+  `tui::tui_toolbar_layout_with_options`, degrading to one item per terminal
+  row; GTK/macOS/Win-GUI painting of `Vertical`/`Spacer` is follow-up,
+  per-backend scope.
 - `crate::desktop::validate_open_url` — a backend-neutral seam that checks a
   `PlatformServices::open_url` input before any opener spawns it: accepts
   `http:`/`https:`/`mailto:` unconditionally, accepts `file:` only when the
