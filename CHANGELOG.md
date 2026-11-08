@@ -381,6 +381,7 @@ only a push to `main` runs this workflow.
   no taller than the label's own line height so the chip never paints
   shorter than the label it encloses. The Win-only hovered-close-glyph
   lighten tint is unchanged.
+### Changed
 - `GtkBackend::draw_text_input` now paints through the shared
   `primitives::text_input::native_surface_paint::paint` (the same painter
   `MacBackend::draw_text_input` already uses) instead of its own bespoke
@@ -389,20 +390,29 @@ only a push to `main` runs this workflow.
   GTK-only path hardcoded. `gtk::draw_text_input`'s public free-function
   signature is unchanged — it now paints via the shared `gtk::surface::
   CairoSurface` adapter over the same `(Context, pango::Layout)` pair it
-  always took. Three further rendered-output changes come along with the
+  always took. Several further rendered-output changes come along with the
   move, all matching macOS's existing (pre-migration) behaviour on the
   shared painter: text is no longer vertically centred in its row (each
   line/placeholder now paints top-aligned in `content_bounds`, like every
   other shared-painter primitive); the caret now spans the full row height
-  instead of a 1px-inset bar; and a theme whose `Theme::cursor` is left at
+  instead of a 1px-inset bar; a theme whose `Theme::cursor` is left at
   pure black no longer gets a `theme.accent_fg` fallback on GTK specifically
-  (the shared painter has no such fallback, and macOS never had one). The
-  shared painter also now clips placeholder/line text to
-  `TextInputLayout::content_bounds` before drawing, so a horizontally
-  unscrolled long line (or a wide glyph under a proportional chrome font)
-  can no longer paint past the widget's own border on GTK or macOS — a
-  guard the deleted GTK-only rasteriser body had and the shared painter
-  previously lacked.
+  (the shared painter has no such fallback, and macOS never had one); the
+  border is now stroked centred on `rect`'s own edge (`surface_stroke_rect`,
+  matching every other GTK shared-painter primitive) instead of the deleted
+  rasteriser's crisp 1px-inset stroke, so roughly half the 1-unit-wide line
+  now falls a pixel outside `rect`; and the caret's x is now the monospace
+  estimate `content_x + col_off * char_w` (`TextInputLayout::cursor_bounds`)
+  rather than a Pango `index_to_pos` glyph lookup, so under a proportional
+  `ui_font` the caret can visibly separate from the glyph it sits beside —
+  this matches `win::text_input`'s existing convention and the chat
+  controller's own `local_x / char_width()` hit-testing, which the old
+  glyph-accurate GTK caret did not agree with. The shared painter also now
+  clips placeholder/line text to `TextInputLayout::content_bounds` before
+  drawing, so a horizontally unscrolled long line (or a wide glyph under a
+  proportional chrome font) can no longer paint past the widget's own
+  border on GTK or macOS — a guard the deleted GTK-only rasteriser body had
+  and the shared painter previously lacked.
   `gtk::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`/`_SB_INSET` now derive
   from `primitives::rich_text_popup::{SB_WIDTH, SB_INSET}` (the same
   derivation `macos::rich_text_popup` already used) instead of a second

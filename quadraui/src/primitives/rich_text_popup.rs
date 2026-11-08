@@ -567,7 +567,12 @@ pub(crate) const SB_INSET: f32 = 1.0;
 #[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{RichTextPopup, RichTextPopupLayout, TextSelection, SB_INSET, SB_WIDTH};
+    use super::{RichTextPopup, RichTextPopupLayout, TextSelection};
+    // `pub(crate)` (not a plain `use`) so `native_surface_paint::SB_WIDTH`/
+    // `::SB_INSET` stay reachable from `macos::rich_text_popup` and
+    // `win::rich_text_popup`, which both read the constants through this
+    // module path rather than `crate::primitives::rich_text_popup::` directly.
+    pub(crate) use super::{SB_INSET, SB_WIDTH};
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::{Point, Rect};

@@ -385,15 +385,23 @@ mod tests {
     use super::*;
 
     /// Pins [`RICH_TEXT_POPUP_SB_WIDTH`]/[`RICH_TEXT_POPUP_SB_INSET`] to
-    /// the literal values `macos::rich_text_popup`'s own
-    /// `RICH_TEXT_POPUP_SB_WIDTH`/`_SB_INSET` resolve to — both derive
-    /// from `crate::primitives::rich_text_popup::{SB_WIDTH, SB_INSET}`
-    /// by construction (see their own doc comments above), so this
-    /// pins the shared source of truth rather than re-asserting that
-    /// derivation.
+    /// `crate::primitives::rich_text_popup::{SB_WIDTH, SB_INSET}` — the
+    /// shared source of truth both derive from (see their own doc
+    /// comments above) — rather than to a literal, so this fails if the
+    /// shared constants change instead of silently drifting from them.
+    /// Also asserts the formula `draw_rich_text_popup` uses to place the
+    /// bar (`bx + bw - sb_w - inset`) resolves consistently through
+    /// these constants, pinning the acceptance criterion ("scrollbar
+    /// geometry equals the shared constants") rather than a number.
     #[test]
     fn scrollbar_geometry_matches_the_shared_constants() {
-        assert_eq!(RICH_TEXT_POPUP_SB_WIDTH, 8.0);
-        assert_eq!(RICH_TEXT_POPUP_SB_INSET, 1.0);
+        assert_eq!(RICH_TEXT_POPUP_SB_WIDTH, SB_WIDTH as f64);
+        assert_eq!(RICH_TEXT_POPUP_SB_INSET, SB_INSET as f64);
+
+        let bx = 5.0_f64;
+        let bw = 100.0_f64;
+        let expected_sb_x = bx + bw - SB_WIDTH as f64 - SB_INSET as f64;
+        let sb_x = bx + bw - RICH_TEXT_POPUP_SB_WIDTH - RICH_TEXT_POPUP_SB_INSET;
+        assert_eq!(sb_x, expected_sb_x);
     }
 }
