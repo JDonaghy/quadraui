@@ -170,6 +170,60 @@ pub enum PointerShape {
     RowResize,
 }
 
+/// Which visual cue wins when a pressable/toggle control can be
+/// hovered, pressed, and/or toggled "on" (active) at the same time.
+///
+/// Every pressable/toggle painter in this crate resolves the same
+/// priority: pressed or toggled-on reads as the strongest cue, hovered
+/// next, resting otherwise — a control can't be mid-press without
+/// also being hovered, and a toggled-on control reads as "on" even
+/// while merely hovered, not just while actively pressed.
+/// `button::native_surface_paint::paint`'s `is_hovered`/`is_pressed`
+/// branches and `ToolbarButton::Action`'s `is_pressed || is_active`
+/// highlight both resolve through [`Self::resolve`] instead of
+/// re-deriving the same `if pressed || active { .. } else if hovered
+/// { .. } else { .. }` chain by hand.
+///
+/// Gated the same as those `native_surface_paint` modules — the one
+/// `PaintSurface` fallback painter every GTK/Win/macOS backend shares.
+/// TUI paints these primitives through its own cell-based renderer
+/// instead, so it has no consumer for this type.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PressableVisual {
+    /// Pressed, or toggled "on" (`is_active`) — the strongest cue.
+    PressedOrActive,
+    /// Hovered, but neither pressed nor toggled on.
+    Hovered,
+    /// Neither pressed, toggled on, nor hovered.
+    Resting,
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl PressableVisual {
+    /// Resolve the three inputs every pressable/toggle painter in this
+    /// crate carries (in some combination) into the one priority order
+    /// they share. `is_active` is the "toggled on" flag — pass `false`
+    /// for a control with no such concept (a plain [`Button`]).
+    pub(crate) fn resolve(is_pressed: bool, is_active: bool, is_hovered: bool) -> Self {
+        if is_pressed || is_active {
+            Self::PressedOrActive
+        } else if is_hovered {
+            Self::Hovered
+        } else {
+            Self::Resting
+        }
+    }
+}
+
 /// Window-state control surface — set/get the title, size, position and
 /// tri-state chrome (fullscreen/always-on-top/minimize) of the OS window a
 /// backend owns, once a real window exists.
@@ -3960,6 +4014,29 @@ pub trait Backend: sealed::Sealed {
     /// (ABSOLUTE).
     fn draw_radio_group(&mut self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout;
 
+    /// [`Self::draw_radio_group`], reading hover/pressed state from a
+    /// single [`InteractionState`] keyed by [`crate::types::WidgetId`]
+    /// — one entry per `RadioOption::id`, the same per-option
+    /// resolution a backend would read off
+    /// `interaction.is_hovered(&option.id)` / `is_pressed(&option.id)`.
+    ///
+    /// Additive over [`Self::draw_radio_group`], not a replacement —
+    /// the default forwards to it (ignoring `interaction`), so this
+    /// method is the one new backends/hosts adopt for hover feedback
+    /// while every existing call site and implementor keeps compiling
+    /// unchanged. No backend wires real hover/pressed painting through
+    /// this method yet — that per-backend work is tracked on the
+    /// epic, not this method's own addition. Same coordinate frame as
+    /// [`Self::radio_group_layout`] (ABSOLUTE).
+    fn draw_radio_group_with_state(
+        &mut self,
+        rect: Rect,
+        group: &RadioGroup,
+        _interaction: &InteractionState,
+    ) -> RadioGroupLayout {
+        self.draw_radio_group(rect, group)
+    }
+
     /// Compute radio-group layout without painting. Each backend
     /// supplies its own per-option measure (text extents, cell counts,
     /// or a nominal fallback) — see the implementation for the shape.
@@ -3971,6 +4048,27 @@ pub trait Backend: sealed::Sealed {
     /// [`SwitchLayout`] so hosts can route clicks. Same coordinate
     /// frame as [`Self::switch_layout`] (ABSOLUTE).
     fn draw_switch(&mut self, rect: Rect, switch: &Switch) -> SwitchLayout;
+
+    /// [`Self::draw_switch`], reading hover/pressed state from a
+    /// single [`InteractionState`] keyed by [`crate::types::WidgetId`]
+    /// — `interaction.is_hovered(&switch.id)` / `is_pressed(&switch.id)`.
+    ///
+    /// Additive over [`Self::draw_switch`], not a replacement — the
+    /// default forwards to it (ignoring `interaction`), so this method
+    /// is the one new backends/hosts adopt for hover feedback while
+    /// every existing call site and implementor keeps compiling
+    /// unchanged. No backend wires real hover/pressed painting through
+    /// this method yet — that per-backend work is tracked on the
+    /// epic, not this method's own addition. Same coordinate frame as
+    /// [`Self::switch_layout`] (ABSOLUTE).
+    fn draw_switch_with_state(
+        &mut self,
+        rect: Rect,
+        switch: &Switch,
+        _interaction: &InteractionState,
+    ) -> SwitchLayout {
+        self.draw_switch(rect, switch)
+    }
 
     /// Compute switch layout without painting.
     ///
