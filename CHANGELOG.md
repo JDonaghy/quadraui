@@ -217,6 +217,12 @@ only a push to `main` runs this workflow.
   of reading as a fully saturated, live-looking button regardless of
   either field. A button with no explicit `spec` paints exactly as before
   on every backend.
+- Win `TabBar` now honours `TabBar::compact` (`TAB_PAD_COMPACT`/4.0-DIP
+  inner gap/0.0-DIP outer gap, same constants `gtk::tab_bar` and
+  `macos::tab_bar` already switch to), paints a 1-DIP active-tab accent
+  line instead of 2-DIP, and paints the active tab as an inset,
+  4-DIP-radius rounded chip instead of a square block filling the row
+  edge to edge — matching the GTK/macOS active-tab chrome pixel-for-pixel.
 
 ## [0.9.0] - 2026-11-07
 ### Added
