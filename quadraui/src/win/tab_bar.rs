@@ -1304,6 +1304,7 @@ mod tests {
     use crate::primitives::tab_bar::{TabBarHit, TabBarSegment, TabItem};
     use crate::types::{Color, WidgetId};
     use crate::win::testing::HeadlessSurface;
+    use windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_ALIASED;
 
     const W: f32 = 300.0;
     const H: f32 = 30.0;
@@ -2035,13 +2036,23 @@ mod tests {
     fn active_chip_corners_are_bar_background_not_active_fill() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
-        let bar = bar();
+        // No accent: the accent is a square band across the chip's top
+        // edge (as on GTK/macOS), so with one set the top corners carry
+        // the accent colour rather than either fill. GTK's twin of this
+        // test likewise runs on a bar without an accent.
+        let mut bar = bar();
+        bar.active_accent = None;
         let theme = Theme::default();
         let style = Style::default();
         let rect = Rect::new(0.0, 0.0, W, H);
 
         surface
             .paint(|target| {
+                // Aliased rasterisation (pixel-centre inclusion), like
+                // GTK's twin test's `Antialias::None`: the probed corner
+                // pixels then hold either fill exactly, never a blend
+                // from a fractional chip edge.
+                unsafe { target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED) };
                 draw_tab_bar(target, &dwrite, rect, &bar, None, &theme, &style);
             })
             .expect("paint tab bar");
@@ -2084,30 +2095,40 @@ mod tests {
         let natural_line_height = dwrite.natural_line_height();
         // A row exactly as tall as the label's own line height — no
         // slack at all for the nominal 4.0 DIP inset on either side.
-        let tight_h = natural_line_height;
-        let surface =
-            HeadlessSurface::new(W as u32, tight_h.ceil() as u32).expect("create surface");
-        let bar = bar();
+        // Rounded up to whole pixels so the row ends on a pixel
+        // boundary; the clamped inset is then under half a pixel.
+        let tight_h = natural_line_height.ceil();
+        let surface = HeadlessSurface::new(W as u32, tight_h as u32).expect("create surface");
+        // No accent, so the chip's top row shows the chip fill itself.
+        let mut bar = bar();
+        bar.active_accent = None;
         let theme = Theme::default();
         let style = Style::default();
         let rect = Rect::new(0.0, 0.0, W, tight_h);
 
         surface
             .paint(|target| {
+                // Aliased rasterisation (pixel-centre inclusion): a
+                // sub-half-pixel inset leaves the edge rows fully chip,
+                // with no anti-aliased blend to compare against.
+                unsafe { target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED) };
                 draw_tab_bar(target, &dwrite, rect, &bar, None, &theme, &style);
             })
             .expect("paint tab bar");
 
         let layout = compute_layout(&dwrite, rect, &bar, &[], &style);
         let bounds = layout.visible_tabs[0].bounds;
-        let sample_x = (bounds.x + 2.0) as u32;
+        // Past the corner radius (so the probe sits on the chip's
+        // straight edge, not its rounded corner) and still inside the
+        // tab's left padding (so it misses the label glyphs).
+        let sample_x = (bounds.x + TAB_CHIP_RADIUS + 1.0) as u32;
         let active_bg = theme.tab_active_bg;
 
         // Both the row's very top and very bottom pixel must still show
         // the chip fill — an unclamped 4.0 DIP inset on a row this tight
         // would leave the chip shorter than the label, and these rows
         // would still show `tab_bar_bg` instead.
-        for (name, y) in [("top", 0u32), ("bottom", tight_h.ceil() as u32 - 1)] {
+        for (name, y) in [("top", 0u32), ("bottom", tight_h as u32 - 1)] {
             let px = surface.pixel_at(sample_x, y);
             assert_eq!(
                 (px.r, px.g, px.b),
