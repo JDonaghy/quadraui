@@ -6,12 +6,12 @@
 //! `WindowControlDemo`'s `window()`, which returns
 //! `Option<&mut dyn WindowControl>` and so has a "no window yet" case to
 //! fold in, `services()` returns `&dyn PlatformServices` directly with no
-//! such case). TUI gives three of these real, honest answers (`app_path`,
-//! the power-save-block round trip, `login_item_enabled`) and reports
-//! `Unsupported` for the rest — there is no OS global-shortcut registry,
-//! drag source, login-item registry, protocol-handler registry,
-//! recent-documents list, dock menu, jump list, or updater a terminal
-//! controls. `system_theme` is a fourth, host-dependent case: it reports
+//! such case). TUI answers exactly one of these for real (`app_path`) and
+//! reports `Unsupported` for the rest — there is no sleep inhibitor, OS
+//! global-shortcut registry, drag source, login-item registry,
+//! protocol-handler registry, recent-documents list, dock menu, jump list,
+//! or updater a terminal controls. `system_theme` is a third,
+//! host-dependent case: it reports
 //! the real `SystemTheme` (including `reduce_motion`) when the terminal's
 //! environment exposes one, and `Unsupported` otherwise — both outcomes
 //! are deterministic and driver-testable with no live desktop required.

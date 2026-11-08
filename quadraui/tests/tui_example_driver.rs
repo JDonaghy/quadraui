@@ -927,11 +927,11 @@ fn window_control_demo_escape_exits() {
 //
 // `services()` returns `&dyn PlatformServices` directly (never `None`),
 // unlike `WindowControlDemo`'s `window()`, so there's no "no window yet"
-// case to fold in. TUI gives honest real answers for `app_path`, the
-// power-save-block round trip, and `login_item_enabled`, reports a
-// host-dependent real `SystemTheme`/`Unsupported` for `system_theme`, and
-// reports `Unsupported` for everything else — all outcomes are
-// deterministic and assertable headlessly with no live desktop required.
+// case to fold in. TUI gives an honest real answer for `app_path`,
+// reports a host-dependent real `SystemTheme`/`Unsupported` for
+// `system_theme`, and reports `Unsupported` for everything else — all
+// outcomes are deterministic and assertable headlessly with no live
+// desktop required.
 
 #[test]
 fn platform_seams_demo_shows_starting_hint() {
@@ -973,23 +973,25 @@ fn platform_seams_demo_system_theme_surfaces_a_typed_answer_on_tui() {
 }
 
 #[test]
-fn platform_seams_demo_power_save_block_round_trips_on_tui() {
+fn platform_seams_demo_power_save_block_reports_unsupported_on_tui() {
     let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
     driver.type_char('w');
     assert!(
-        driver.screen_contains("power_save_block: ()"),
-        "TUI tracks a real (bookkeeping-only) blocker id end to end:\n{}",
+        driver.screen_contains("power_save_block: Unsupported"),
+        "TUI has no sleep-inhibitor API, so it must not report a blocker it \
+         never actually took out:\n{}",
         driver.screen()
     );
 }
 
 #[test]
-fn platform_seams_demo_login_item_enabled_reports_false_on_tui() {
+fn platform_seams_demo_login_item_enabled_reports_unsupported_on_tui() {
     let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
     driver.type_char('e');
     assert!(
-        driver.screen_contains("login_item_enabled: false"),
-        "TUI has no login-item registry, so it is honestly never enabled:\n{}",
+        driver.screen_contains("login_item_enabled: Unsupported"),
+        "TUI has no login-item registry to query, so it cannot answer \
+         whether the app starts at login:\n{}",
         driver.screen()
     );
 }
