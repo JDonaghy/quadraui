@@ -523,11 +523,24 @@ impl RichTextPopup {
 /// bar is paint+click-friendly. Lives outside the `native_surface_paint`
 /// cfg gate (unlike the rest of that module) so a GTK build — which
 /// only needs this constant, not the whole shared painter — doesn't
-/// have to compile the ~200-line `paint` function to reach it.
+/// have to compile the ~200-line `paint` function to reach it. Its own
+/// gate is therefore the union of the rasterisers that read it, so a
+/// TUI-only build (which has no rich-text-popup scrollbar to paint)
+/// doesn't carry an unused constant.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub(crate) const SB_WIDTH: f32 = 8.0;
 /// Inset between the scrollbar's right edge and the popup's own right
-/// border. See [`SB_WIDTH`]'s doc for why this sits outside the cfg
-/// gate too.
+/// border. See [`SB_WIDTH`]'s doc for why this sits outside the
+/// `native_surface_paint` gate and carries this one instead.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub(crate) const SB_INSET: f32 = 1.0;
 
 // Shared painting implementation for macOS and Windows rasterisers.
