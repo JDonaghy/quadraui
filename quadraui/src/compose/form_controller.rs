@@ -403,6 +403,37 @@ impl FormController {
         viewport_rows_lh(backend.line_height(), rect)
     }
 
+    /// Resolve where field `id` paints inside `rect` (the same rect
+    /// passed to [`Self::render`]/[`Self::handle`]), in `rect`'s own
+    /// coordinate space. `None` if `id` isn't a field on the currently
+    /// stored form, or is scrolled out of the visible viewport.
+    ///
+    /// For a multi-field `Form`, the field's own rect is *not* the whole
+    /// form rect — a popup-anchored field kind (`ComboBox`, `DatePicker`,
+    /// `ColorPicker`) paints only its compact row; the host paints the
+    /// open popup itself as a separate overlay (see this module's
+    /// "ComboBox fields" doc section) and needs the row's on-screen
+    /// position to anchor it. This is that lookup: it reruns the same
+    /// [`Backend::form_layout`] call [`Self::click_inner`] already uses
+    /// for hit-testing, then offsets the matching field's layout-relative
+    /// `bounds` by `rect`'s origin (and the scrollbar-split form rect's,
+    /// if a scrollbar is present) to hand back an on-screen rect the host
+    /// can pass straight to `Backend::draw_combo_box` or the equivalent.
+    pub fn field_rect(&self, id: WidgetId, backend: &dyn Backend, rect: Rect) -> Option<Rect> {
+        let lh = backend.line_height();
+        let (form_rect, _sb_rect) = split_rect_lh(self.field_count(), lh, rect);
+        let form = self.build_form(form_rect, None);
+        let layout = backend.form_layout(form_rect, &form);
+        layout.visible_fields.iter().find(|f| f.id == id).map(|f| {
+            Rect::new(
+                form_rect.x + f.bounds.x,
+                form_rect.y + f.bounds.y,
+                f.bounds.width,
+                f.bounds.height,
+            )
+        })
+    }
+
     // ── Internal: shared handle dispatch ─────────────────────────────
 
     fn handle_inner(
@@ -1911,6 +1942,91 @@ mod tests {
         let mut fc = test_controller(20);
         fc.scroll_to_field(10, 0);
         assert_eq!(fc.scroll_offset(), 0);
+    }
+
+    // ── field_rect ───────────────────────────────────────────────────
+    //
+    // Drives a real `TuiBackend` (not a hand-rolled mock — see
+    // `context_menu_controller.rs`'s tests module doc for why): the one
+    // thing `field_rect` needs from a `Backend` is `line_height` +
+    // `form_layout`, both cheap and headless on `TuiBackend::new()`.
+
+    #[cfg(feature = "tui")]
+    mod field_rect_tests {
+        use super::*;
+        use crate::tui::TuiBackend;
+
+        #[test]
+        fn resolves_second_field_below_the_first() {
+            let fc = test_controller(3);
+            let backend = TuiBackend::new();
+            let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+            let r0 = fc
+                .field_rect(WidgetId::new("field-0"), &backend, rect)
+                .unwrap();
+            let r1 = fc
+                .field_rect(WidgetId::new("field-1"), &backend, rect)
+                .unwrap();
+            // Same column (and width) as the first field, strictly below
+            // it — this is the whole point of the lookup: a multi-field
+            // form's second field is *not* at the form's own rect.
+            assert_eq!(r0.x, r1.x);
+            assert_eq!(r0.width, r1.width);
+            assert!(r1.y > r0.y);
+        }
+
+        #[test]
+        fn offsets_by_the_passed_rect_origin() {
+            let fc = test_controller(1);
+            let backend = TuiBackend::new();
+            let origin_rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+            let shifted_rect = Rect::new(5.0, 7.0, 40.0, 20.0);
+            let at_origin = fc
+                .field_rect(WidgetId::new("field-0"), &backend, origin_rect)
+                .unwrap();
+            let shifted = fc
+                .field_rect(WidgetId::new("field-0"), &backend, shifted_rect)
+                .unwrap();
+            assert_eq!(shifted.x, at_origin.x + 5.0);
+            assert_eq!(shifted.y, at_origin.y + 7.0);
+        }
+
+        #[test]
+        fn unknown_field_id_returns_none() {
+            let fc = test_controller(3);
+            let backend = TuiBackend::new();
+            let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+            assert_eq!(
+                fc.field_rect(WidgetId::new("no-such-field"), &backend, rect),
+                None
+            );
+        }
+
+        #[test]
+        fn empty_controller_returns_none() {
+            let fc = FormController::new("fc".into());
+            let backend = TuiBackend::new();
+            let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+            assert_eq!(
+                fc.field_rect(WidgetId::new("field-0"), &backend, rect),
+                None
+            );
+        }
+
+        #[test]
+        fn scrolled_out_of_view_field_returns_none() {
+            let mut fc = test_controller(20);
+            // One row per field at `TuiBackend`'s line height leaves a
+            // 20.0-tall viewport room for only a handful of rows — scroll
+            // far enough that field-0 is no longer among the visible ones.
+            fc.set_scroll_offset(15);
+            let backend = TuiBackend::new();
+            let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+            assert_eq!(
+                fc.field_rect(WidgetId::new("field-0"), &backend, rect),
+                None
+            );
+        }
     }
 
     // ── build_form injects controller state ──────────────────────────
