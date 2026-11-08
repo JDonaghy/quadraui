@@ -96,6 +96,17 @@ only a push to `main` runs this workflow.
   through it before trying the platform opener, so a bare executable path
   (`"/Applications/Calculator.app"`, `"C:\\Windows\\System32\\calc.exe"`) is
   rejected instead of launched.
+- `impl From<&ActivityBar> for Toolbar` — rebuilds an activity bar as the
+  vertical `Toolbar` of icon buttons it's shaped like (`top_items`, a
+  `ToolbarButton::Spacer`, then `bottom_items`; `focused_index` from
+  whichever item has `is_keyboard_selected`; `is_active` carried through to
+  `ToolbarButton::Action::is_active`). `ActivityBar::layout` now builds this
+  `Toolbar` internally and delegates to `Toolbar::layout_with_options`
+  (`ToolbarOrientation::Vertical`) for its geometry instead of its own
+  hand-rolled top/bottom-pinning arithmetic — every backend's paint and
+  hit-test, which already consume `ActivityBar::layout`'s output, now share
+  one geometry engine with `Toolbar`. `ActivityBarLayout::visible_items`'s
+  own bottom-pinned-first-then-top-pinned order is unchanged.
 ### Changed
 - `TreeView`/`ListView` row layout (`layout_with_scroll_px`), the vertical
   scrollbar thumb geometry (`vscrollbar_with_scroll_px`), and the
