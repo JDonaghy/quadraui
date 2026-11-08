@@ -165,12 +165,7 @@ impl ToastButton {
         if let Some(spec) = &self.spec {
             return spec.clone();
         }
-        let mut derived = crate::primitives::button::ButtonSpec::from_legacy(
-            self.label.clone(),
-            None,
-            None,
-            false,
-        );
+        let mut derived = crate::primitives::button::ButtonSpec::new(self.label.clone());
         derived.variant = if self.primary {
             crate::primitives::button::ButtonVariant::Primary
         } else {

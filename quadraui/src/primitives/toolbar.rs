@@ -42,7 +42,13 @@
 //!   in a muted foreground and don't dispatch clicks.
 //! - **GTK**: `Gtk.Box` of `Gtk.Button` (or buttons painted with Cairo);
 //!   `Gtk.Separator` between groups. ARIA `role="toolbar"`. Hover paints
-//!   `theme.hover_bg`; pressed paints `theme.selected_bg`.
+//!   `theme.hover_bg`; pressed paints `theme.selected_bg`. An action whose
+//!   `spec` is `Some` paints through `button::native_surface_paint::paint`
+//!   instead, so its intent colour (`Danger`/`Warning`/`Primary`) wins
+//!   over the plain hover/pressed tints; `enabled: false` still folds
+//!   into the resolved spec's `disabled` and `is_active` still folds
+//!   into `is_pressed`, so disabled-dispatch and toggled-on painting
+//!   hold either way.
 //! - **macOS** / **Win-GUI** (future): native button widgets in an inline
 //!   stack view; same hit-test contract returned via
 //!   [`ToolbarLayout::hit_test`].
@@ -186,7 +192,10 @@ pub enum ToolbarButton {
         #[serde(default)]
         icon: Option<String>,
         /// Optional parenthesised key hint shown after the label
-        /// (e.g. "(r)" for the 'r' keybind).
+        /// (e.g. "(r)" for the 'r' keybind). Painted on the plain
+        /// `spec: None` pill/label path (via [`action_text`]); a
+        /// `ButtonSpec` has no key-hint field, so a `Some(spec)` action
+        /// paints only `spec.label`, with no hint suffix.
         #[serde(default)]
         key_hint: Option<String>,
         /// When false the button renders dimmed and clicks aren't
@@ -591,6 +600,17 @@ pub fn valign_offset_y(
 /// TUI does not call this: its cell-based `[ icon label (hint) ]`
 /// bracket format with icon-only compaction and double-width-glyph
 /// awareness follows a different formula.
+///
+/// Measures only [`ToolbarButton::Action::label`]/`icon`/`key_hint` —
+/// it does not know about `spec`. A `spec`-backed action paints through
+/// `button::native_surface_paint::paint`, whose own content inset
+/// floors at `ButtonMetrics::resolve(style).padding_x`
+/// (`Style::default().padding` here); that happens to match this
+/// function's `ACTION_H_PAD` when `spec.label == label` and the spec
+/// carries no icon. A spec with an icon, or a label that differs from
+/// this action's own `label`, is sized by this function as if it were
+/// the plain label/icon/key_hint, so its painted content can clip
+/// against that narrower slot.
 pub fn measure_button(
     measure: &dyn crate::primitives::layout_metrics::TextMeasure,
     btn: &ToolbarButton,
@@ -874,18 +894,29 @@ pub(crate) mod native_surface_paint {
                     // `theme.button_danger_bg()` the same way a
                     // standalone `Button` does — see
                     // `button::native_surface_paint::paint`'s own doc.
-                    // `Style::default()` stands in for a live `&Style`:
-                    // this fn has no style parameter of its own (every
-                    // existing call site predates one), so a host's
+                    // `enabled` and `is_active` are live per-item state
+                    // that the spec itself carries no field for, so they
+                    // fold into the resolved spec the same way: `!enabled`
+                    // ORs into `disabled` (an inert action must still
+                    // paint and dispatch as inert, same as the legacy arm
+                    // below), and `is_active` ORs into the painter's
+                    // `is_pressed` (there is no separate "toggled on"
+                    // visual in `Button`, so pressed is the closest
+                    // match — this mirrors `tui::toolbar`'s own
+                    // pressed > ... > is_active priority). `Style::
+                    // default()` stands in for a live `&Style`: this fn
+                    // takes no `&Style` parameter, so a host's
                     // `Backend::set_style` override doesn't reach a
                     // spec-backed toolbar button's corner radius/padding
-                    // yet — same limit `ButtonSpec::min_cell_width`'s TUI
+                    // — same limit `ButtonSpec::min_cell_width`'s TUI
                     // sibling has no such gap for, since TUI has no
                     // sub-cell geometry to miss. A `spec: None` action
                     // keeps painting through the plain pill/label path
                     // below, unchanged.
                     if let Some(spec) = spec {
-                        let resolved_button = spec.to_button(*id, is_focused);
+                        let mut resolved = spec.clone();
+                        resolved.disabled = resolved.disabled || !*enabled;
+                        let resolved_button = resolved.to_button(*id, is_focused);
                         button::native_surface_paint::paint(
                             &resolved_button,
                             surface,
@@ -893,7 +924,7 @@ pub(crate) mod native_surface_paint {
                             item,
                             &Style::default(),
                             is_hovered,
-                            is_pressed,
+                            is_pressed || *is_active,
                         );
                         continue;
                     }
@@ -1129,6 +1160,150 @@ pub(crate) mod native_surface_paint {
                 surface.fills.iter().any(|(_, c)| *c == expected),
                 "a pressed spec-backed action must tint through \
                  `theme.button_pressed_bg`; fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// The hover half of the same forwarding: hovering (not pressing)
+        /// a spec-backed action tints through `theme.button_hover_bg`,
+        /// not just this module's own `theme.hover_bg` pill.
+        #[test]
+        fn hovered_spec_action_tints_through_the_shared_button_path() {
+            let spec = crate::primitives::button::ButtonSpec::new("Refresh");
+            let id = WidgetId::new("tb:refresh");
+            let bar = Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![mk_spec_action("tb:refresh", "Refresh", spec)],
+                bg: None,
+                focused_index: None,
+            };
+            let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
+                ToolbarItemMeasure::new(match btn {
+                    ToolbarButton::Action { label, .. } => label.chars().count() as f32 * 7.0 + 8.0,
+                    _ => 0.0,
+                })
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &bar,
+                &layout,
+                &mut surface,
+                &theme,
+                Some(&id),
+                None,
+                ToolbarPaintOptions::default(),
+            );
+
+            let expected = theme.button_hover_bg(theme.accent_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == expected),
+                "a hovered spec-backed action must tint through \
+                 `theme.button_hover_bg`; fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// `enabled: false` on a spec-backed action still folds into the
+        /// resolved spec's `disabled`, so it paints the same muted
+        /// `theme.surface_bg`/`theme.muted_fg` a disabled standalone
+        /// `Button` paints, not its `Danger` spec's saturated colour —
+        /// an inert control must still *look* inert on every backend.
+        #[test]
+        fn disabled_spec_action_paints_muted_not_the_spec_variant_colour() {
+            let mut spec = crate::primitives::button::ButtonSpec::new("Delete");
+            spec.variant = crate::primitives::button::ButtonVariant::Danger;
+            let mut action = mk_spec_action("tb:delete", "Delete", spec);
+            if let ToolbarButton::Action { enabled, .. } = &mut action {
+                *enabled = false;
+            }
+            let bar = Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![action],
+                bg: None,
+                focused_index: None,
+            };
+            let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
+                ToolbarItemMeasure::new(match btn {
+                    ToolbarButton::Action { label, .. } => label.chars().count() as f32 * 7.0 + 8.0,
+                    _ => 0.0,
+                })
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &bar,
+                &layout,
+                &mut surface,
+                &theme,
+                None,
+                None,
+                ToolbarPaintOptions::default(),
+            );
+
+            assert!(
+                !surface
+                    .fills
+                    .iter()
+                    .any(|(_, c)| *c == theme.button_danger_bg()),
+                "a disabled spec-backed action must not paint its spec's \
+                 Danger colour; fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == theme.surface_bg),
+                "a disabled spec-backed action must paint the shared \
+                 Button's muted disabled fill; fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// `is_active: true` on a spec-backed action folds into the
+        /// painter's `is_pressed`, so a toggled-on action still shows a
+        /// tinted state through the shared `Button` path — matching the
+        /// legacy pill arm's `is_pressed || is_active` highlight and
+        /// `tui::toolbar`'s own pressed/is_active priority, instead of
+        /// losing its toggled-on look entirely once it carries a spec.
+        #[test]
+        fn active_spec_action_tints_through_the_shared_button_pressed_path() {
+            let spec = crate::primitives::button::ButtonSpec::new("Filter");
+            let mut action = mk_spec_action("tb:filter", "Filter", spec);
+            if let ToolbarButton::Action { is_active, .. } = &mut action {
+                *is_active = true;
+            }
+            let bar = Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![action],
+                bg: None,
+                focused_index: None,
+            };
+            let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
+                ToolbarItemMeasure::new(match btn {
+                    ToolbarButton::Action { label, .. } => label.chars().count() as f32 * 7.0 + 8.0,
+                    _ => 0.0,
+                })
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &bar,
+                &layout,
+                &mut surface,
+                &theme,
+                None,
+                None,
+                ToolbarPaintOptions::default(),
+            );
+
+            let expected = theme.button_pressed_bg(theme.accent_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == expected),
+                "an active spec-backed action must tint through \
+                 `theme.button_pressed_bg`, mirroring is_pressed; fills \
+                 were {:?}",
                 surface.fills,
             );
         }

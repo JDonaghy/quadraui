@@ -263,8 +263,13 @@ pub struct DialogButton {
     /// convention). Only one button should have this.
     #[serde(default)]
     pub is_cancel: bool,
-    /// Override colour for destructive actions ("Delete", "Discard").
-    /// `None` = theme default.
+    /// Override colour for destructive actions ("Delete", "Discard") on
+    /// the legacy plain highlighted-row paint path. Ignored once
+    /// [`Self::spec`] is `Some`: a spec expresses "destructive" through
+    /// [`crate::ButtonVariant::Danger`]'s own paint colour instead of a
+    /// standalone tint, so set `.variant` on the spec rather than
+    /// relying on this field once a button carries one. `None` = theme
+    /// default.
     #[serde(default)]
     pub tint: Option<Color>,
     /// Optional [`crate::ButtonSpec`] override, carrying the B3a
@@ -272,7 +277,9 @@ pub struct DialogButton {
     /// for "Move to Trash" — icon, icon placement/gap, a tooltip) this
     /// button's own legacy fields above can't express. `None` (the
     /// default) renders the plain highlighted-row look; see
-    /// [`Self::resolved_button_spec`].
+    /// [`Self::resolved_button_spec`]. A `Some` spec is painted as-is —
+    /// it, not [`Self::tint`], is the source of truth for a spec-backed
+    /// button's colour.
     #[serde(default)]
     pub spec: Option<crate::primitives::button::ButtonSpec>,
 }
@@ -285,12 +292,7 @@ impl DialogButton {
         if let Some(spec) = &self.spec {
             return spec.clone();
         }
-        let mut derived = crate::primitives::button::ButtonSpec::from_legacy(
-            self.label.clone(),
-            None,
-            None,
-            false,
-        );
+        let mut derived = crate::primitives::button::ButtonSpec::new(self.label.clone());
         derived.variant = if self.is_default {
             crate::primitives::button::ButtonVariant::Primary
         } else {
