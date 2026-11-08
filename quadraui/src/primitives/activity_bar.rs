@@ -418,21 +418,25 @@ impl ActivityBar {
     /// **bottom items win** and top items are clipped.
     ///
     /// Delegates to [`Toolbar::layout_with_options`] (via
-    /// `Toolbar::from(self)`, [`ToolbarOrientation::Vertical`], and a
-    /// fixed `item_height`-per-item measurer): that method's own
-    /// Spacer collision rule — the trailing group always paints in
-    /// full, the leading group clips against the trailing group's
-    /// start — is the exact rule this method's own doc describes, by
-    /// construction (the `Toolbar` built from `self` places
-    /// `bottom_items` as the trailing group). Every pixel/cell backend
-    /// shares this one geometry engine with `Toolbar`.
+    /// `Toolbar::from(self)`, [`ToolbarOrientation::Vertical`], a fixed
+    /// `item_height`-per-item measurer, and
+    /// [`ToolbarLayoutOptions::pin_trailing_overflow_to_origin`] set):
+    /// that method's own Spacer collision rule — the trailing group
+    /// always paints in full, the leading group clips against the
+    /// trailing group's start — is the exact rule this method's own doc
+    /// describes, by construction (the `Toolbar` built from `self`
+    /// places `bottom_items` as the trailing group). The pinned-overflow
+    /// flag additionally makes a `bottom_items` group that alone is
+    /// taller than `viewport_height` pack from `y=0` downward and drop
+    /// its last item, instead of hanging off the bottom edge and
+    /// dropping its first — see that option's own doc for the worked
+    /// example. Every pixel/cell backend shares this one geometry engine
+    /// with `Toolbar`.
     ///
     /// The returned [`ActivityBarLayout::visible_items`] keeps this
     /// type's own **bottom-pinned-items-first, then top-pinned** order
     /// (not `Toolbar`'s document order) — see that field's own doc for
-    /// why: hosts derive `hovered_idx` from this exact enumeration, so
-    /// it must not move just because the geometry underneath it now
-    /// comes from `Toolbar`.
+    /// why: hosts derive `hovered_idx` from this exact enumeration.
     pub fn layout(
         &self,
         viewport_width: f32,
@@ -455,7 +459,9 @@ impl ActivityBar {
             0.0,
             viewport_width,
             viewport_height,
-            ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical),
+            ToolbarLayoutOptions::new()
+                .with_orientation(ToolbarOrientation::Vertical)
+                .with_pin_trailing_overflow_to_origin(true),
             |_btn| ToolbarItemMeasure::new(item_height),
         );
 
@@ -892,7 +898,7 @@ mod tests {
         assert_eq!(toolbar.focused_index, None);
     }
 
-    /// [`ActivityBar::layout`] now delegates its geometry to
+    /// [`ActivityBar::layout`] delegates its geometry to
     /// [`Toolbar::layout_with_options`] under the hood; this pins that
     /// the two stay bit-for-bit in agreement — same bounds, same flat
     /// `Toolbar::buttons` index — for a bar whose top and bottom groups
@@ -920,10 +926,15 @@ mod tests {
             0.0,
             3.0,
             6.0,
-            ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical),
+            ToolbarLayoutOptions::new()
+                .with_orientation(ToolbarOrientation::Vertical)
+                .with_pin_trailing_overflow_to_origin(true),
             |_btn| ToolbarItemMeasure::new(1.0),
         );
 
+        // Every visible `ActivityBar::layout` item has a matching
+        // `Toolbar`-layout entry with the same bounds — catches an
+        // index-mapping slip.
         for vi in &layout.visible_items {
             let flat_idx = match vi.side {
                 ActivitySide::Top => vi.item_idx,
@@ -938,6 +949,63 @@ mod tests {
                 matching.bounds, vi.bounds,
                 "ActivityBar::layout and Toolbar::layout_with_options must agree \
                  on bounds for flat index {flat_idx}"
+            );
+        }
+
+        // The visible-item *counts* also agree — catches a dropped item
+        // that the per-entry loop above (which only walks what
+        // `ActivityBar::layout` kept) can't see on its own.
+        let toolbar_visible_actions = toolbar_layout
+            .visible_items
+            .iter()
+            .filter(|t| t.kind == ToolbarItemKind::Action && t.bounds.height > 0.0)
+            .count();
+        assert_eq!(
+            layout.visible_items.len(),
+            toolbar_visible_actions,
+            "ActivityBar::layout must not drop or add items relative to the Toolbar layout"
+        );
+    }
+
+    /// When the bottom-pinned group alone is taller than the viewport
+    /// (no top items in the way), it packs from `y=0` downward and drops
+    /// its *last* item, via
+    /// [`ToolbarLayoutOptions::pin_trailing_overflow_to_origin`] —
+    /// rather than `Toolbar`'s own default of anchoring the trailing
+    /// group to the far edge and dropping its *first* item.
+    #[test]
+    fn activity_bar_layout_bottom_overflow_drops_last_item_not_first() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![],
+            bottom_items: vec![
+                make_activity_item("bot:0", '0'),
+                make_activity_item("bot:1", '1'),
+                make_activity_item("bot:2", '2'),
+            ],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(3.0, 2.0, 1.0);
+
+        assert_eq!(layout.visible_items.len(), 2, "only 2 of 3 items fit");
+        let item0 = layout.hit_test(1.0, 0.5);
+        let item1 = layout.hit_test(1.0, 1.5);
+        assert_eq!(
+            item0,
+            ActivityBarHit::Item(WidgetId::new("bot:0")),
+            "first bottom item still occupies row 0"
+        );
+        assert_eq!(
+            item1,
+            ActivityBarHit::Item(WidgetId::new("bot:1")),
+            "second bottom item still occupies row 1"
+        );
+        for vi in &layout.visible_items {
+            assert_ne!(
+                vi.item_idx, 2,
+                "the third (last) bottom item is the one that drops, not the first"
             );
         }
     }
@@ -1034,6 +1102,52 @@ mod tests {
             top_count, 3,
             "top truncated to fit above bottom reserved area"
         );
+    }
+
+    /// Same overflow rule as
+    /// `activity_bar_layout_bottom_overflow_drops_last_item_not_first`,
+    /// at pixel-backend scale (48px rows, 100px strip): rects are
+    /// `y=0 h=48`, `y=48 h=48`, `y=96 h=4` — the last item clips to the
+    /// 4px left over rather than the group re-anchoring so an earlier
+    /// item clips instead.
+    #[test]
+    fn activity_bar_layout_pixel_bottom_overflow_matches_legacy_rects() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![],
+            bottom_items: vec![
+                make_activity_item("bot:0", '0'),
+                make_activity_item("bot:1", '1'),
+                make_activity_item("bot:2", '2'),
+            ],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(48.0, 100.0, 48.0);
+
+        assert_eq!(layout.visible_items.len(), 3, "all 3 rows paint, clipped");
+        let item0 = layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == 0)
+            .unwrap();
+        let item1 = layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == 1)
+            .unwrap();
+        let item2 = layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == 2)
+            .unwrap();
+        assert_eq!(item0.bounds.y, 0.0);
+        assert_eq!(item0.bounds.height, 48.0);
+        assert_eq!(item1.bounds.y, 48.0);
+        assert_eq!(item1.bounds.height, 48.0);
+        assert_eq!(item2.bounds.y, 96.0);
+        assert_eq!(item2.bounds.height, 4.0, "clipped to the 4px left over");
     }
 
     #[test]

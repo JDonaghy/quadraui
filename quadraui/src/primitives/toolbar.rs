@@ -227,11 +227,27 @@ pub enum ToolbarItemRole {
 pub struct ToolbarLayoutOptions {
     /// Main-axis direction. See [`ToolbarOrientation`].
     pub orientation: ToolbarOrientation,
+    /// How the trailing group (the buttons after a [`ToolbarButton::Spacer`])
+    /// clips when it alone — with no leading group in the way — is bigger
+    /// than the bar: `false` (the default) anchors it flush against the
+    /// bar's trailing edge, so overflow drops its items closest to the
+    /// `Spacer`; `true` anchors it flush against the bar's leading edge
+    /// instead (clamping `trailing_origin` to `main_origin`), so overflow
+    /// drops its items closest to the trailing edge instead. Both arms
+    /// paint the trailing group in full when it fits; this only matters
+    /// when it doesn't.
+    ///
+    /// [`crate::primitives::activity_bar::ActivityBar::layout`] sets this
+    /// so its bottom-pinned group, when taller than the viewport alone,
+    /// packs from `y=0` downward and drops its last item — the one visible
+    /// row ordering every backend's existing hit-testing already expects.
+    pub pin_trailing_overflow_to_origin: bool,
 }
 
 impl ToolbarLayoutOptions {
-    /// Options with every knob at its default (`Horizontal`) — identical
-    /// to [`Self::default`].
+    /// Options with every knob at its default (`Horizontal`, trailing
+    /// overflow anchored to the trailing edge) — identical to
+    /// [`Self::default`].
     pub fn new() -> Self {
         Self::default()
     }
@@ -240,6 +256,13 @@ impl ToolbarLayoutOptions {
     #[must_use]
     pub fn with_orientation(mut self, orientation: ToolbarOrientation) -> Self {
         self.orientation = orientation;
+        self
+    }
+
+    /// Set [`Self::pin_trailing_overflow_to_origin`].
+    #[must_use]
+    pub fn with_pin_trailing_overflow_to_origin(mut self, pin: bool) -> Self {
+        self.pin_trailing_overflow_to_origin = pin;
         self
     }
 }
@@ -975,7 +998,14 @@ impl Toolbar {
 
                 let leading_end = main_origin + leading_sizes.iter().sum::<f32>();
                 let trailing_total: f32 = trailing_sizes.iter().sum();
-                let trailing_origin = main_edge - trailing_total;
+                let mut trailing_origin = main_edge - trailing_total;
+                if options.pin_trailing_overflow_to_origin {
+                    // The trailing group alone is bigger than the bar:
+                    // anchor it to the leading edge instead of letting it
+                    // hang off the trailing edge, so overflow clips its
+                    // last item instead of its first.
+                    trailing_origin = trailing_origin.max(main_origin);
+                }
 
                 let leading_cursors = item_cursor_positions(main_origin, cross_len, &leading_sizes);
                 let trailing_cursors =
@@ -1919,6 +1949,61 @@ mod tests {
         // absorbing any more of the leftover room.
         assert_eq!(layout.visible_items[3].kind, ToolbarItemKind::Spacer);
         assert_eq!(layout.visible_items[3].bounds.width, 0.0);
+    }
+
+    /// Default [`ToolbarLayoutOptions`]
+    /// (`pin_trailing_overflow_to_origin: false`): a trailing group bigger
+    /// than the bar on its own hangs off the trailing edge, so overflow
+    /// clips the item closest to the `Spacer` (the trailing group's
+    /// first), not the one closest to the trailing edge.
+    #[test]
+    fn trailing_group_overflow_clips_item_nearest_spacer_by_default() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            ToolbarButton::Spacer,
+            mk_action("0", "0", true),
+            mk_action("1", "1", true),
+            mk_action("2", "2", true),
+        ]);
+        let layout =
+            bar.layout_with_options(0.0, 0.0, 2.0, 1.0, ToolbarLayoutOptions::default(), |_| {
+                ToolbarItemMeasure::new(1.0)
+            });
+        // item "0" (nearest the Spacer) is dropped; "1" and "2" paint at
+        // y=0 and y=1.
+        assert_eq!(layout.visible_items[1].bounds.width, 0.0, "item 0 dropped");
+        assert_eq!(layout.visible_items[2].bounds.x, 0.0);
+        assert_eq!(layout.visible_items[2].bounds.width, 1.0);
+        assert_eq!(layout.visible_items[3].bounds.x, 1.0);
+        assert_eq!(layout.visible_items[3].bounds.width, 1.0);
+    }
+
+    /// `pin_trailing_overflow_to_origin: true`: the same overflowing
+    /// trailing group instead anchors to the bar's leading edge, so
+    /// overflow clips the item closest to the trailing edge (the last
+    /// one) — the rule [`crate::primitives::activity_bar::ActivityBar::layout`]
+    /// relies on for its bottom-pinned group.
+    #[test]
+    fn trailing_group_overflow_clips_last_item_when_pinned_to_origin() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            ToolbarButton::Spacer,
+            mk_action("0", "0", true),
+            mk_action("1", "1", true),
+            mk_action("2", "2", true),
+        ]);
+        let layout = bar.layout_with_options(
+            0.0,
+            0.0,
+            2.0,
+            1.0,
+            ToolbarLayoutOptions::new().with_pin_trailing_overflow_to_origin(true),
+            |_| ToolbarItemMeasure::new(1.0),
+        );
+        // item "0" at y=0, item "1" at y=1, item "2" (last) dropped.
+        assert_eq!(layout.visible_items[1].bounds.x, 0.0);
+        assert_eq!(layout.visible_items[1].bounds.width, 1.0);
+        assert_eq!(layout.visible_items[2].bounds.x, 1.0);
+        assert_eq!(layout.visible_items[2].bounds.width, 1.0);
+        assert_eq!(layout.visible_items[3].bounds.width, 0.0, "item 2 dropped");
     }
 
     // ── Serde ────────────────────────────────────────────────────────────
