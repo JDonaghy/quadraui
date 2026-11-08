@@ -113,14 +113,22 @@ only a push to `main` runs this workflow.
   — no behavior change; every existing `Panel`/TUI/GTK/macOS/Win-GUI test
   for it stays green. `Panel`'s own docs now point new callers at
   `SidebarPanel` + `Toolbar` as the preferred shape for new chrome.
-  `HelpOverlayController::render` (the crate's only in-tree `Panel`
-  consumer) migrates to `SidebarPanel` + `Toolbar`. `MultiSectionView`'s
-  `HeaderAction` rendering (section header actions and the `SectionAux::Toolbar`
-  inline strip) now reduces each action to a `ToolbarButton::Action` and
-  composes its glyph through `toolbar::action_text`, the same text-assembly
-  rule every other action button in this crate uses, instead of indexing
-  `icon.fallback` by hand. Pure refactor — no visual change; every existing
-  `multi_section_view` paint test stays green.
+- `HelpOverlayController::render` (the crate's only in-tree `Panel`
+  consumer) migrates its cheatsheet chrome from `Panel` to `SidebarPanel` +
+  `Toolbar`. The title keeps its one-cell/leading-space inset (pinned by a
+  new `TuiDriver` test), but this is not a byte-for-byte repaint: the
+  `Toolbar` header is vertically centred rather than `Panel`'s top-aligned
+  title row, and the `SidebarPanel` surface's `a11y_info` reports a generic
+  "Sidebar panel" label/role instead of `Panel::a11y_info`'s
+  title-and-`expanded` pair (latent today — nothing walks this overlay's
+  a11y tree yet).
+- `MultiSectionView`'s `HeaderAction` rendering (section header actions and
+  the `SectionAux::Toolbar` inline strip) now reduces each action to a
+  `ToolbarButton::Action` and composes its glyph through
+  `toolbar::action_text`, the same text-assembly rule every other action
+  button in this crate uses, instead of indexing `icon.fallback` by hand.
+  Pure refactor — no visual change; every existing `multi_section_view`
+  paint test stays green.
 - `tui::services::TuiPlatformServices::open_url`/`open_url_result` now rejects
   any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
   `BackendError::Unsupported`, where it previously forwarded every input

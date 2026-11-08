@@ -1421,52 +1421,30 @@ pub(crate) mod native_surface_paint {
     use super::{EmptyBody, HeaderAction, SectionAux, SectionHeader};
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
-    use crate::primitives::toolbar::{action_text, ToolbarButton};
+    use crate::primitives::toolbar::action_text;
     use crate::theme::Theme;
-    use crate::types::{Color, StyledText, WidgetId};
+    use crate::types::{Color, StyledText};
 
     fn plain_text(t: &StyledText) -> String {
         t.spans.iter().map(|s| s.text.as_str()).collect()
     }
 
-    /// Reduce a [`HeaderAction`] to the [`ToolbarButton::Action`] it paints
-    /// as — the icon glyph becomes the button's `label` (no separate `icon`
-    /// field, since `HeaderAction` has no key hint or distinct icon+label
-    /// composition to preserve), so its glyph text is composed through the
-    /// same [`action_text`] every other action button in this crate uses.
-    fn header_action_button(action: &HeaderAction) -> ToolbarButton {
-        ToolbarButton::Action {
-            spec: None,
-            id: WidgetId::new(action.id.clone()),
-            label: action.icon.fallback.clone(),
-            icon: None,
-            key_hint: None,
-            enabled: action.enabled,
-            is_active: false,
-            tooltip: action.tooltip.clone().unwrap_or_default(),
-        }
-    }
-
-    /// Glyph text + resolved foreground for a [`HeaderAction`]'s button,
-    /// derived from its [`header_action_button`] reduction.
+    /// Glyph text + resolved foreground for a [`HeaderAction`]'s button.
+    /// `action_text`, not a hand-rolled format, so the glyph composes the
+    /// same way every other action button in this crate does — even
+    /// though a `HeaderAction` only ever supplies the `label` half (no
+    /// separate icon or key hint).
     fn header_action_glyph_and_fg(
         action: &HeaderAction,
         theme: &Theme,
         enabled_fg: Color,
     ) -> (String, Color) {
-        let btn = header_action_button(action);
-        let ToolbarButton::Action {
-            label,
-            icon,
-            key_hint,
-            enabled,
-            ..
-        } = &btn
-        else {
-            unreachable!("header_action_button always returns ToolbarButton::Action")
+        let glyph = action_text(&action.icon.fallback, None, None);
+        let fg = if action.enabled {
+            enabled_fg
+        } else {
+            theme.muted_fg
         };
-        let glyph = action_text(label, icon.as_deref(), key_hint.as_deref());
-        let fg = if *enabled { enabled_fg } else { theme.muted_fg };
         (glyph, fg)
     }
 
