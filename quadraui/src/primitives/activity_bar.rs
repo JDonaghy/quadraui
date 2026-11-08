@@ -29,6 +29,10 @@
 //! beside the primitive, not inside it.**
 
 use crate::event::Rect;
+use crate::primitives::toolbar::{
+    Toolbar, ToolbarButton, ToolbarItemKind, ToolbarItemMeasure, ToolbarLayoutOptions,
+    ToolbarOrientation,
+};
 use crate::types::{Color, Icon, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -126,6 +130,74 @@ pub struct ActivityItem {
     /// `ActivityBar::is_keyboard_focused` is `true`.
     #[serde(default)]
     pub is_keyboard_selected: bool,
+}
+
+/// Rebuild this activity bar as the vertical [`Toolbar`] of icon buttons
+/// it's shaped like: `top_items`, then a [`ToolbarButton::Spacer`], then
+/// `bottom_items` — the exact `buttons` order
+/// [`ActivityBar::layout`] packs via [`Toolbar::layout_with_options`]
+/// with [`ToolbarOrientation::Vertical`], reusing the same
+/// trailing-group-wins collision rule this type's own `layout` doc
+/// already specified for its bottom-pinned items.
+///
+/// - `id` carries straight through.
+/// - Each [`ActivityItem`] becomes a [`ToolbarButton::Action`]: `icon`
+///   is the item's `fallback` half — which glyph half paints
+///   (`Icon::glyph` vs `Icon::fallback`) is a paint-time
+///   `nerd_fonts_enabled` decision this conversion has no way to see,
+///   so a caller that needs the glyph half re-reads `ActivityItem::icon`
+///   directly rather than this `Toolbar`'s `icon` field. `is_active`
+///   carries through verbatim — a `Toolbar`-path renderer shows it as
+///   the same pressed/toggled tint a toggled `ToolbarButton::Action`
+///   gets. `enabled` is always `true` (`ActivityItem` has no disabled
+///   state). `tooltip` and `id` carry through; `spec` stays `None`.
+/// - `focused_index` is the flat `buttons` index of whichever item has
+///   `is_keyboard_selected` set (top items first, then the spacer, then
+///   bottom items — the same order `buttons` itself is built in), or
+///   `None` if no item does.
+/// - `bg` stays `None` — picking `theme.tab_bar_bg` instead of a plain
+///   `Toolbar`'s own `theme.header_bg` default is a rasteriser-level
+///   choice, not a property of this conversion.
+///
+/// A host that wants `ActivityItem`'s own `A11yRole::Tab` semantics from
+/// the resulting `Toolbar` calls
+/// [`Toolbar::a11y_children_with_role`]`(`[`ToolbarItemRole::Tab`]`)`.
+///
+/// [`ToolbarItemRole::Tab`]: crate::primitives::toolbar::ToolbarItemRole::Tab
+impl From<&ActivityBar> for Toolbar {
+    fn from(bar: &ActivityBar) -> Toolbar {
+        let mut buttons = Vec::with_capacity(bar.top_items.len() + 1 + bar.bottom_items.len());
+        let mut focused_index = None;
+        for item in &bar.top_items {
+            if item.is_keyboard_selected {
+                focused_index = Some(buttons.len());
+            }
+            buttons.push(activity_item_to_toolbar_button(item));
+        }
+        buttons.push(ToolbarButton::Spacer);
+        for item in &bar.bottom_items {
+            if item.is_keyboard_selected {
+                focused_index = Some(buttons.len());
+            }
+            buttons.push(activity_item_to_toolbar_button(item));
+        }
+        Toolbar::new(bar.id)
+            .with_buttons(buttons)
+            .with_focused_index(focused_index)
+    }
+}
+
+fn activity_item_to_toolbar_button(item: &ActivityItem) -> ToolbarButton {
+    ToolbarButton::Action {
+        id: item.id,
+        label: String::new(),
+        icon: Some(item.icon.fallback.clone()),
+        key_hint: None,
+        enabled: true,
+        is_active: item.is_active,
+        tooltip: item.tooltip.clone(),
+        spec: None,
+    }
 }
 
 /// Per-frame style overrides for
@@ -343,77 +415,85 @@ impl ActivityBar {
     /// Top items lay out from `y=0` downward until they run out or the
     /// bottom-items region is reached. Bottom items lay out from
     /// `y=viewport_height` upward. If the two groups would overlap,
-    /// **bottom items win** and top items are clipped — matches the
-    /// pre-D6 TUI behaviour (`src/tui_main/quadraui_tui.rs::draw_activity_bar`).
+    /// **bottom items win** and top items are clipped.
+    ///
+    /// Delegates to [`Toolbar::layout_with_options`] (via
+    /// `Toolbar::from(self)`, [`ToolbarOrientation::Vertical`], and a
+    /// fixed `item_height`-per-item measurer): that method's own
+    /// Spacer collision rule — the trailing group always paints in
+    /// full, the leading group clips against the trailing group's
+    /// start — is the exact rule this method's own doc describes, by
+    /// construction (the `Toolbar` built from `self` places
+    /// `bottom_items` as the trailing group). Every pixel/cell backend
+    /// shares this one geometry engine with `Toolbar`.
+    ///
+    /// The returned [`ActivityBarLayout::visible_items`] keeps this
+    /// type's own **bottom-pinned-items-first, then top-pinned** order
+    /// (not `Toolbar`'s document order) — see that field's own doc for
+    /// why: hosts derive `hovered_idx` from this exact enumeration, so
+    /// it must not move just because the geometry underneath it now
+    /// comes from `Toolbar`.
     pub fn layout(
         &self,
         viewport_width: f32,
         viewport_height: f32,
         item_height: f32,
     ) -> ActivityBarLayout {
-        let mut visible_items: Vec<VisibleActivityItem> = Vec::new();
-        let mut hit_regions: Vec<(Rect, ActivityBarHit)> = Vec::new();
-
         if item_height <= 0.0 || viewport_height <= 0.0 {
             return ActivityBarLayout {
                 viewport_width,
                 viewport_height,
-                visible_items,
-                hit_regions,
+                visible_items: Vec::new(),
+                hit_regions: Vec::new(),
             };
         }
 
-        // Bottom items first (they win on collision): place them pinned
-        // to the bottom edge, working upward.
-        let bottom_count = self.bottom_items.len();
-        let bottom_y_start = (viewport_height - (bottom_count as f32) * item_height).max(0.0);
-        for (i, item) in self.bottom_items.iter().enumerate() {
-            let y = bottom_y_start + (i as f32) * item_height;
-            if y >= viewport_height {
-                break;
+        let top_len = self.top_items.len();
+        let toolbar: Toolbar = self.into();
+        let toolbar_layout = toolbar.layout_with_options(
+            0.0,
+            0.0,
+            viewport_width,
+            viewport_height,
+            ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical),
+            |_btn| ToolbarItemMeasure::new(item_height),
+        );
+
+        let mut top: Vec<VisibleActivityItem> = Vec::new();
+        let mut bottom: Vec<VisibleActivityItem> = Vec::new();
+        for vis in &toolbar_layout.visible_items {
+            if vis.kind != ToolbarItemKind::Action || vis.bounds.height <= 0.0 {
+                continue;
             }
-            let height = item_height.min(viewport_height - y);
-            if height <= 0.0 {
-                break;
+            if vis.item_idx < top_len {
+                top.push(VisibleActivityItem {
+                    side: ActivitySide::Top,
+                    item_idx: vis.item_idx,
+                    bounds: vis.bounds,
+                });
+            } else {
+                bottom.push(VisibleActivityItem {
+                    side: ActivitySide::Bottom,
+                    item_idx: vis.item_idx - top_len - 1,
+                    bounds: vis.bounds,
+                });
             }
-            let bounds = Rect::new(0.0, y, viewport_width, height);
-            visible_items.push(VisibleActivityItem {
-                side: ActivitySide::Bottom,
-                item_idx: i,
-                bounds,
-            });
-            hit_regions.push((bounds, ActivityBarHit::Item(item.id)));
         }
 
-        // Top items: place from top, stop at the bottom-items region.
-        let top_limit = bottom_y_start;
-        for (i, item) in self.top_items.iter().enumerate() {
-            let y = (i as f32) * item_height;
-            if y >= top_limit {
-                break;
-            }
-            let height = item_height.min(top_limit - y);
-            if height <= 0.0 {
-                break;
-            }
-            let bounds = Rect::new(0.0, y, viewport_width, height);
-            // Insert top items before bottom items in `visible_items`
-            // so painting order is top-to-bottom visually. Simpler: just
-            // extend and sort on `bounds.y`, but insertion at index
-            // `bottom-items-inserted-so-far ... wait, easier approach:
-            // collect top first, then extend with bottom — but that
-            // changes the collision logic. Keep it ordered by inserting
-            // top at the front of each visible_items run. Since visually
-            // order of iteration doesn't matter for painting (they don't
-            // overlap), and hit_test walks all regions, insertion order
-            // is inconsequential. Just append.
-            visible_items.push(VisibleActivityItem {
-                side: ActivitySide::Top,
-                item_idx: i,
-                bounds,
-            });
-            hit_regions.push((bounds, ActivityBarHit::Item(item.id)));
-        }
+        let mut visible_items = Vec::with_capacity(top.len() + bottom.len());
+        visible_items.extend(bottom);
+        visible_items.extend(top);
+
+        let hit_regions = visible_items
+            .iter()
+            .map(|vi| {
+                let item = match vi.side {
+                    ActivitySide::Top => &self.top_items[vi.item_idx],
+                    ActivitySide::Bottom => &self.bottom_items[vi.item_idx],
+                };
+                (vi.bounds, ActivityBarHit::Item(item.id))
+            })
+            .collect();
 
         ActivityBarLayout {
             viewport_width,
@@ -749,6 +829,117 @@ mod tests {
         let layout = bar.layout(3.0, 20.0, 1.0);
         assert_eq!(layout.visible_items.len(), 0);
         assert_eq!(layout.hit_test(1.0, 5.0), ActivityBarHit::Empty);
+    }
+
+    // ── `From<&ActivityBar> for Toolbar` ────────────────────────────────
+
+    #[test]
+    fn from_activity_bar_orders_buttons_top_spacer_bottom() {
+        let mut explorer = make_activity_item("activity:explorer", 'E');
+        explorer.is_active = true;
+        let mut search = make_activity_item("activity:search", 'S');
+        search.is_keyboard_selected = true;
+        let settings = make_activity_item("activity:settings", 'G');
+
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![explorer, search],
+            bottom_items: vec![settings],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: true,
+        };
+
+        let toolbar: Toolbar = (&bar).into();
+        assert_eq!(toolbar.id, bar.id);
+        assert_eq!(toolbar.buttons.len(), 4, "top(2) + Spacer + bottom(1)");
+        assert!(matches!(toolbar.buttons[2], ToolbarButton::Spacer));
+
+        match &toolbar.buttons[0] {
+            ToolbarButton::Action {
+                id,
+                is_active,
+                enabled,
+                ..
+            } => {
+                assert_eq!(id.as_str(), "activity:explorer");
+                assert!(*is_active, "is_active carries through verbatim");
+                assert!(*enabled, "ActivityItem has no disabled state");
+            }
+            other => panic!("expected Action, got {other:?}"),
+        }
+        match &toolbar.buttons[3] {
+            ToolbarButton::Action { id, .. } => assert_eq!(id.as_str(), "activity:settings"),
+            other => panic!("expected Action, got {other:?}"),
+        }
+
+        // `search` (top_items[1], flat index 1) is the keyboard-selected
+        // item, so `focused_index` must point at it.
+        assert_eq!(toolbar.focused_index, Some(1));
+    }
+
+    #[test]
+    fn from_activity_bar_focused_index_none_when_nothing_selected() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![make_activity_item("activity:settings", 'G')],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let toolbar: Toolbar = (&bar).into();
+        assert_eq!(toolbar.focused_index, None);
+    }
+
+    /// [`ActivityBar::layout`] now delegates its geometry to
+    /// [`Toolbar::layout_with_options`] under the hood; this pins that
+    /// the two stay bit-for-bit in agreement — same bounds, same flat
+    /// `Toolbar::buttons` index — for a bar whose top and bottom groups
+    /// collide (bottom wins), the case most likely to drift if the two
+    /// engines ever disagree.
+    #[test]
+    fn layout_matches_toolbar_layout_with_options_on_collision() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: (0..5)
+                .map(|i| make_activity_item(&format!("top:{i}"), 'T'))
+                .collect(),
+            bottom_items: (0..3)
+                .map(|i| make_activity_item(&format!("bot:{i}"), 'B'))
+                .collect(),
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(3.0, 6.0, 1.0);
+
+        let toolbar: Toolbar = (&bar).into();
+        let toolbar_layout = toolbar.layout_with_options(
+            0.0,
+            0.0,
+            3.0,
+            6.0,
+            ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical),
+            |_btn| ToolbarItemMeasure::new(1.0),
+        );
+
+        for vi in &layout.visible_items {
+            let flat_idx = match vi.side {
+                ActivitySide::Top => vi.item_idx,
+                ActivitySide::Bottom => vi.item_idx + bar.top_items.len() + 1,
+            };
+            let matching = toolbar_layout
+                .visible_items
+                .iter()
+                .find(|t| t.item_idx == flat_idx)
+                .unwrap_or_else(|| panic!("no Toolbar-layout entry for flat index {flat_idx}"));
+            assert_eq!(
+                matching.bounds, vi.bounds,
+                "ActivityBar::layout and Toolbar::layout_with_options must agree \
+                 on bounds for flat index {flat_idx}"
+            );
+        }
     }
 
     #[test]
