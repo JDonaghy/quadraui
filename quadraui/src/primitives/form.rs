@@ -525,10 +525,12 @@ impl ButtonRowItem {
         if let Some(spec) = &self.spec {
             return spec.clone();
         }
-        let mut derived = crate::primitives::button::ButtonSpec::new(self.label.clone());
-        derived.icon = self.icon.clone();
-        derived.disabled = self.disabled;
-        derived
+        crate::primitives::button::ButtonSpec::from_legacy(
+            self.label.clone(),
+            self.icon.clone(),
+            None,
+            self.disabled,
+        )
     }
 }
 
@@ -899,6 +901,8 @@ mod native_surface_paint {
     // the three backends' shapes (macOS painted it, GTK painted nothing,
     // Windows painted `hover_bg` at full row height).
     use crate::paint_geometry::selected_item_fill;
+    use crate::primitives::button;
+    use crate::style::Style;
     use crate::text_util::snap_to_char_boundary;
     use crate::theme::Theme;
     use crate::types::{Color, StyledText};
@@ -1625,6 +1629,41 @@ mod native_surface_paint {
                             if let Some(b) = buttons.iter().find(|b| &b.id == item_id) {
                                 let r = translate(item_rect, origin);
                                 let disabled = b.disabled || field.disabled;
+
+                                // An explicit `spec` override paints
+                                // through the shared `Button` fill/
+                                // border/icon/intent-colour path instead
+                                // of this item's own plain hover-tinted
+                                // row look, so e.g. a `Danger` spec reads
+                                // in `theme.button_danger_bg()` the same
+                                // way a standalone `Button` does — see
+                                // `button::native_surface_paint::paint`'s
+                                // own doc. `Style::default()` stands in
+                                // for a live `&Style`: this fn has no
+                                // style parameter of its own (every
+                                // existing call site predates one), so a
+                                // host's `Backend::set_style` override
+                                // doesn't reach a spec-backed row button's
+                                // corner radius/padding yet. A
+                                // `spec: None` item keeps painting
+                                // through the plain hover-tinted
+                                // icon+label path below, unchanged.
+                                if let Some(spec) = &b.spec {
+                                    let mut resolved = spec.clone();
+                                    resolved.disabled = resolved.disabled || disabled;
+                                    let button = resolved.to_button(b.id, false);
+                                    button::native_surface_paint::paint(
+                                        &button,
+                                        surface,
+                                        theme,
+                                        r,
+                                        &Style::default(),
+                                        false,
+                                        false,
+                                    );
+                                    continue;
+                                }
+
                                 let bg = if disabled { row_bg } else { theme.hover_bg };
                                 surface.surface_fill_rect(r, bg);
                                 let fg = if disabled { theme.muted_fg } else { field_fg };
@@ -1969,7 +2008,7 @@ mod native_surface_paint {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::Viewport;
-        use crate::primitives::form::{ControlWidth, FormField, ToggleGroupItem};
+        use crate::primitives::form::{ButtonRowItem, ControlWidth, FormField, ToggleGroupItem};
         use crate::primitives::layout_metrics::{form_field_measure, form_row_height, TextMeasure};
         use crate::types::{StyledSpan, WidgetId};
         use crate::{FormFieldMeasure, Image};
@@ -2113,6 +2152,46 @@ mod native_surface_paint {
                 control_width: Default::default(),
                 min_control_width: None,
             }
+        }
+
+        /// A `Danger` spec on a `ButtonRowItem` paints through
+        /// `button::native_surface_paint::paint` —
+        /// `theme.button_danger_bg()`, not this arm's own plain
+        /// hover-tinted row look `spec: None` items still get.
+        #[test]
+        fn button_row_danger_spec_fills_the_shared_button_danger_colour() {
+            let mut spec = crate::primitives::button::ButtonSpec::new("Delete all");
+            spec.variant = crate::primitives::button::ButtonVariant::Danger;
+            let form = one_field_form(
+                "actions",
+                FieldKind::ButtonRow {
+                    buttons: vec![ButtonRowItem {
+                        spec: Some(spec),
+                        id: WidgetId::new("delete-all"),
+                        label: "Delete all".into(),
+                        disabled: false,
+                        icon: None,
+                    }],
+                },
+            );
+            let theme = Theme::default();
+            let (surface, _) = paint_recorded(&form);
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(_, c)| *c == theme.button_danger_bg()),
+                "a Danger spec must fill the shared Button's danger colour; \
+                 fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "Delete all"),
+                "the button label must still be painted through the shared \
+                 Button path; text runs were {:?}",
+                surface.text_runs,
+            );
         }
 
         /// Two toggle rows at `row_h = 20.0` in a viewport only 23px

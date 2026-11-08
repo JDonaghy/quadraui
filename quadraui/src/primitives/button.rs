@@ -347,6 +347,27 @@ impl ButtonSpec {
         }
     }
 
+    /// Derive a [`ButtonSpec`] from the legacy fields [`crate::ToolbarButton::Action`],
+    /// [`crate::DialogButton`], [`crate::ToastButton`] and [`crate::ButtonRowItem`]
+    /// each carried before `spec` existed — the single derivation those four
+    /// kinds' own `resolved_button_spec` now share instead of each
+    /// reimplementing it. `variant` starts at [`Self::new`]'s own
+    /// `ButtonVariant::Primary` default; a caller that derives a variant
+    /// from its own legacy field (e.g. `DialogButton::is_default`,
+    /// `ToastButton::primary`) sets `.variant` on the result afterwards.
+    pub fn from_legacy(
+        label: impl Into<String>,
+        icon: Option<Icon>,
+        tooltip: Option<String>,
+        disabled: bool,
+    ) -> Self {
+        let mut spec = Self::new(label);
+        spec.icon = icon;
+        spec.tooltip = tooltip;
+        spec.disabled = disabled;
+        spec
+    }
+
     /// Materialise a paintable [`Button`] from this spec, for a host
     /// rasteriser that wants to paint a non-`Button` primitive's button
     /// (a [`crate::ToolbarButton::Action`], [`crate::ButtonRowItem`],
@@ -1365,5 +1386,26 @@ mod tests {
         let json = r#"{"label": "OK"}"#;
         let spec: ButtonSpec = serde_json::from_str(json).expect("deserialize label-only spec");
         assert_eq!(spec, ButtonSpec::new("OK"));
+    }
+
+    /// `from_legacy` carries `icon`/`tooltip`/`disabled` straight through
+    /// and leaves `variant` at [`ButtonSpec::new`]'s own `Primary` default
+    /// — a caller that derives a variant from its own legacy field sets
+    /// it afterwards.
+    #[test]
+    fn from_legacy_carries_icon_tooltip_and_disabled_with_primary_variant() {
+        let icon = crate::types::Icon::new("W", "W");
+        let spec = ButtonSpec::from_legacy(
+            "Refresh",
+            Some(icon.clone()),
+            Some("Reload the tree".to_string()),
+            true,
+        );
+
+        assert_eq!(spec.label, "Refresh");
+        assert_eq!(spec.icon, Some(icon));
+        assert_eq!(spec.tooltip, Some("Reload the tree".to_string()));
+        assert!(spec.disabled);
+        assert_eq!(spec.variant, ButtonVariant::Primary);
     }
 }
