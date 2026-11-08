@@ -155,9 +155,10 @@ use crate::Backend;
 /// pane vec. `Split` describes how a rect is divided between two sub-trees.
 ///
 /// In-order leaf traversal gives panes from first (left/top) to last
-/// (right/bottom). In-order split traversal gives dividers in the same
-/// display order, matching the `divider_idx` used in events and
-/// `handle_drag_start`.
+/// (right/bottom). Pre-order split traversal — this `Split` node, then
+/// `first`'s dividers, then `second`'s — numbers dividers the same way
+/// [`crate::SplitTree::layout`] numbers `split_index`; that's the
+/// `divider_idx` used in events and `handle_drag_start`.
 ///
 /// The controller maintains the invariant that every pane vec index `0..n`
 /// appears exactly once as a leaf, so `Leaf(k)` always corresponds to pane
@@ -548,8 +549,10 @@ pub enum TabGroupEvent {
     PaneAdded { pane_idx: usize },
     /// User clicked inside a pane's content area — pane received focus.
     PaneFocused { pane_idx: usize },
-    /// User dragged a divider. `divider_idx` is the 0-based in-order index
-    /// of the divider (matching the tree's in-order split traversal).
+    /// User dragged a divider. `divider_idx` is the 0-based pre-order
+    /// index of the divider (matching the tree's pre-order split
+    /// traversal — the same convention [`crate::SplitTree`] uses for
+    /// `split_index`).
     DividerResized { divider_idx: usize },
     /// User clicked the "+" new-tab button in a pane. Apps should call
     /// [`TabGroupController::add_tab`] in response.
@@ -888,8 +891,8 @@ pub struct TabGroupController {
     /// Per-pane: (hits, strip_bounds). `None` before first render.
     /// Indexed by pane vec index.
     last_pane_hits: Vec<Option<PaneHitCache>>,
-    /// Dividers from the last render (in-order split traversal). N-1 entries
-    /// for N panes.
+    /// Dividers from the last render (pre-order split traversal). N-1
+    /// entries for N panes.
     last_dividers: Vec<DividerInfo>,
 
     // ── Interaction state ───────────────────────────────────────────
@@ -1432,7 +1435,7 @@ impl TabGroupController {
 
         let mut counter = 0usize;
         let changed =
-            update_split_ratio_inorder(&mut self.layout, div_idx, new_ratio, &mut counter)
+            update_split_ratio_preorder(&mut self.layout, div_idx, new_ratio, &mut counter)
                 .unwrap_or(false);
 
         if changed {
@@ -1923,13 +1926,15 @@ impl TabGroupController {
 // ── Layout helpers ────────────────────────────────────────────────────────────
 
 /// Walk the layout tree, computing per-pane bounds and collecting divider info
-/// in in-order split traversal.
+/// in pre-order split traversal.
 ///
 /// `pane_bounds[k]` is set to the bounds for the pane at vec index `k`.
-/// `dividers` receives one entry per `Split` node in in-order traversal
-/// (left subtree's splits, then the current split, then right subtree's
-/// splits), matching the divider ordering used in `last_dividers` and
-/// `DividerResized` events.
+/// `dividers` receives one entry per `Split` node in pre-order traversal
+/// (the current split, then first subtree's splits, then second
+/// subtree's splits) — the same convention
+/// [`crate::SplitTree::layout`] uses for its own `split_index`, matching
+/// the divider ordering used in `last_dividers` and `DividerResized`
+/// events.
 fn layout_recursive(
     tree: &GroupLayout,
     backend: &dyn Backend,
@@ -1957,27 +1962,28 @@ fn layout_recursive(
                 second_min: 0.0,
             };
             let sl = backend.split_layout(bounds, &split);
-            // In-order: first subtree's dividers, then this divider, then second.
-            layout_recursive(first, backend, sl.first_bounds, pane_bounds, dividers);
+            // Pre-order: this divider first, then first subtree's
+            // dividers, then second subtree's.
             dividers.push(DividerInfo {
                 divider_bounds: sl.divider_bounds,
                 direction: *direction,
                 split_bounds: bounds,
                 ratio: *ratio,
             });
+            layout_recursive(first, backend, sl.first_bounds, pane_bounds, dividers);
             layout_recursive(second, backend, sl.second_bounds, pane_bounds, dividers);
         }
     }
 }
 
-/// Update the ratio of the in-order-`target` `Split` node in `tree`.
+/// Update the ratio of the pre-order-`target` `Split` node in `tree`.
 ///
 /// Returns `Some(true)` when the node was found and the ratio changed
 /// significantly (≥ 0.001), `Some(false)` when found but unchanged, and
 /// `None` when the target index was not found.
 ///
 /// `counter` must start at 0 on the first call.
-fn update_split_ratio_inorder(
+fn update_split_ratio_preorder(
     tree: &mut GroupLayout,
     target: usize,
     new_ratio: f32,
@@ -1991,10 +1997,7 @@ fn update_split_ratio_inorder(
             second,
             ..
         } => {
-            // In-order: check first subtree, then current node, then second subtree.
-            if let Some(r) = update_split_ratio_inorder(first, target, new_ratio, counter) {
-                return Some(r);
-            }
+            // Pre-order: this node first, then first subtree, then second.
             if *counter == target {
                 let old = *ratio;
                 *counter += 1;
@@ -2002,7 +2005,10 @@ fn update_split_ratio_inorder(
                 return Some((new_ratio - old).abs() >= 0.001);
             }
             *counter += 1;
-            update_split_ratio_inorder(second, target, new_ratio, counter)
+            if let Some(r) = update_split_ratio_preorder(first, target, new_ratio, counter) {
+                return Some(r);
+            }
+            update_split_ratio_preorder(second, target, new_ratio, counter)
         }
     }
 }
@@ -2599,6 +2605,97 @@ mod tests {
             "ratio={ratio}, expected ≈ 0.30"
         );
         assert!((1.0 - ratio - 0.70).abs() < 0.02);
+    }
+
+    /// Pre-order deliberate: `divider_idx` 0 is the *outer* (root) split
+    /// even though it's the second-to-render divider in render order for
+    /// this tree shape (`Split(H root, Leaf(0), Split(V nested, Leaf(1),
+    /// Leaf(2)))` renders the root divider before descending into the
+    /// nested one) — matching `SplitTree::set_ratio_at_index`'s
+    /// pre-order convention, not the in-order "first subtree, this node,
+    /// second subtree" numbering `tab_group` used before.
+    #[test]
+    fn drag_move_targets_the_preorder_indexed_split_not_the_render_sibling() {
+        let panes = vec![
+            Pane::new("left", vec![tab("tl", "left.rs", true)], "tl"),
+            Pane::new("top-right", vec![tab("tr", "top.rs", true)], "tr"),
+            Pane::new("bottom-right", vec![tab("tb", "bottom.rs", true)], "tb"),
+        ];
+        let layout = GroupLayout::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first: Box::new(GroupLayout::Leaf(0)),
+            second: Box::new(GroupLayout::Split {
+                direction: SplitDirection::Vertical,
+                ratio: 0.5,
+                first: Box::new(GroupLayout::Leaf(1)),
+                second: Box::new(GroupLayout::Leaf(2)),
+            }),
+        };
+        let mut ctrl = TabGroupController::from_layout(panes, layout, SplitDirection::Horizontal)
+            .expect("valid mixed-direction layout");
+
+        // Mimic `layout_recursive`'s pre-order push: divider 0 is the
+        // root (Horizontal, full 100-wide bounds); divider 1 is the
+        // nested split (Vertical, confined to the right half).
+        ctrl.last_dividers = vec![
+            DividerInfo {
+                divider_bounds: Rect::new(50.0, 0.0, 1.0, 20.0),
+                direction: SplitDirection::Horizontal,
+                split_bounds: Rect::new(0.0, 0.0, 100.0, 20.0),
+                ratio: 0.5,
+            },
+            DividerInfo {
+                divider_bounds: Rect::new(51.0, 10.0, 49.0, 1.0),
+                direction: SplitDirection::Vertical,
+                split_bounds: Rect::new(51.0, 0.0, 49.0, 20.0),
+                ratio: 0.5,
+            },
+        ];
+
+        fn ratios(layout: &GroupLayout) -> (f32, f32) {
+            match layout {
+                GroupLayout::Split { ratio, second, .. } => {
+                    let nested = match second.as_ref() {
+                        GroupLayout::Split { ratio, .. } => *ratio,
+                        _ => panic!("expected nested Split"),
+                    };
+                    (*ratio, nested)
+                }
+                _ => panic!("expected root Split"),
+            }
+        }
+
+        // Drag divider 0 (the root) — only the root ratio should move.
+        ctrl.handle_drag_start(50.5, 5.0);
+        assert_eq!(ctrl.dragging_divider, Some(0));
+        let ev = ctrl.handle_drag_move(30.0, 5.0, Rect::new(0.0, 0.0, 100.0, 20.0));
+        assert_eq!(ev, Some(TabGroupEvent::DividerResized { divider_idx: 0 }));
+        let (root, nested) = ratios(&ctrl.layout);
+        assert!(
+            (root - 0.30).abs() < 0.02,
+            "root ratio={root}, expected ≈0.30"
+        );
+        assert!(
+            (nested - 0.5).abs() < 1e-6,
+            "nested ratio must be untouched"
+        );
+        ctrl.handle_drag_end();
+
+        // Drag divider 1 (the nested split) — only the nested ratio moves.
+        ctrl.handle_drag_start(51.5, 10.5);
+        assert_eq!(ctrl.dragging_divider, Some(1));
+        let ev = ctrl.handle_drag_move(51.0, 15.0, Rect::new(51.0, 0.0, 49.0, 20.0));
+        assert_eq!(ev, Some(TabGroupEvent::DividerResized { divider_idx: 1 }));
+        let (root_after, nested_after) = ratios(&ctrl.layout);
+        assert!(
+            (root_after - 0.30).abs() < 0.02,
+            "root ratio must stay at its dragged value"
+        );
+        assert!(
+            (nested_after - 0.75).abs() < 0.02,
+            "nested ratio={nested_after}, expected ≈0.75"
+        );
     }
 
     #[test]

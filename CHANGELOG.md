@@ -59,6 +59,27 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `SplitTree::Split` gains `first_min`/`second_min` (default `0.0`, set via
+  the new `SplitTree::with_min_sizes` builder — not a `split()` argument, so
+  existing call sites keep compiling) and now honours them in `layout()`
+  through the same proportional-relax formula `Split::layout` uses.
+  `Split::layout` is now a thin wrapper over `SplitTree::layout` applied to
+  a two-leaf tree, so the two primitives can never drift onto two different
+  relax formulas. `Split`/`SplitTree`'s own accessibility role moved from
+  `A11yRole::Group` to `A11yRole::Splitter`; `DragTarget::SplitDivider`/
+  `UiEvent::SplitDividerDragged` now document and test `Split` usage
+  (`split_index` always `0`), not just `SplitTree`. `tui::split`'s divider
+  paint now truncates its axis coordinate instead of rounding, matching
+  `tui::split_tree`'s convention so a fractional-ratio divider paints at the
+  same cell both rasterisers would resolve it to.
+### Changed
+- `compose::tab_group`'s `GroupLayout` divider numbering (`divider_idx` on
+  `TabGroupEvent::DividerResized`, and the index `handle_drag_start`/
+  `handle_drag_move` address) is now pre-order — this node, then `first`'s
+  dividers, then `second`'s — matching `SplitTree::layout`'s `split_index`
+  convention instead of the previous in-order ("first subtree, this node,
+  second subtree") numbering. Only observable for a tree with 3+ panes (2+
+  `Split` nodes); a single divider's index is unaffected.
 - `primitives::layout_metrics::pixel` gains the remaining pixel-tab-bar
   constants every backend already duplicated independently —
   `TAB_PAD_COMPACT`/`TAB_INNER_GAP_COMPACT`/`TAB_OUTER_GAP_COMPACT`,

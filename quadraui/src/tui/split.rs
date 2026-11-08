@@ -44,7 +44,12 @@ pub fn draw_split(buf: &mut Buffer, area: Rect, split: &Split, theme: &Theme) ->
 
     match split.direction {
         SplitDirection::Horizontal => {
-            let x = div.x.round() as u16;
+            // Truncate (not round) the divider's own axis coordinate —
+            // the same float->cell convention as
+            // `SplitTreeDivider::cell_position`, so a fractional-ratio
+            // `Split` divider paints at the same cell a `SplitTree`
+            // divider at the same position would.
+            let x = div.x.max(0.0) as u16;
             let start_y = div.y.round() as u16;
             let h = div.height.round() as u16;
             let cells: Vec<(u16, u16)> = (0..h).map(|dy| (x, start_y + dy)).collect();
@@ -54,7 +59,8 @@ pub fn draw_split(buf: &mut Buffer, area: Rect, split: &Split, theme: &Theme) ->
             upgrade_junctions(buf, &cells, true, fg, bg);
         }
         SplitDirection::Vertical => {
-            let y = div.y.round() as u16;
+            // See the `Horizontal` arm above for why this truncates.
+            let y = div.y.max(0.0) as u16;
             let start_x = div.x.round() as u16;
             let w = div.width.round() as u16;
             let cells: Vec<(u16, u16)> = (0..w).map(|dx| (start_x + dx, y)).collect();
@@ -234,5 +240,23 @@ mod tests {
         assert_eq!(cell_char(&buf, div_x, 0), '│');
         assert_eq!(cell_char(&buf, div_x - 1, 0), ' ');
         assert_eq!(cell_char(&buf, div_x + 1, 0), ' ');
+    }
+
+    /// Pins the TUI divider float->cell conversion to truncation, not
+    /// rounding — the same rule `tui::split_tree`'s
+    /// `fractional_ratio_round_trip_at` pins for `SplitTree`. A ratio
+    /// chosen so the divider position is NOT cell-aligned (20.7, not
+    /// 20.0 or 21.0) makes a round-vs-truncate regression visible: with
+    /// `.round()` this would paint at column 21, not 20.
+    #[test]
+    fn divider_position_truncates_for_a_fractional_ratio() {
+        let area = Rect::new(0, 0, 101, 10); // available = 100
+        let mut buf = Buffer::empty(area);
+        let split = hsplit(0.207); // position = 20.7
+        let layout = draw_split(&mut buf, area, &split, &Theme::default());
+        assert!((layout.divider_bounds.x - 20.7).abs() < 0.01);
+
+        assert_eq!(cell_char(&buf, 20, 0), '│');
+        assert_eq!(cell_char(&buf, 21, 0), ' ');
     }
 }

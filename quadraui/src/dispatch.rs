@@ -125,9 +125,11 @@ pub enum DragTarget {
         /// Screen position where the drag started.
         anchor: Point,
     },
-    /// A [`crate::SplitTree`] divider drag. `tree` identifies which
-    /// tree this divider belongs to — apps hosting more than one split
-    /// tree (e.g. vimcode's per-window-group tree and its own in-group
+    /// A [`crate::SplitTree`] divider drag — or, with `split_index`
+    /// always `0`, a [`crate::Split`] divider drag, since `Split` is
+    /// exactly a two-leaf `SplitTree`. `tree` identifies which tree (or
+    /// `Split`) this divider belongs to — apps hosting more than one
+    /// (e.g. vimcode's per-window-group tree and its own in-group
     /// vim-window tree) use this to route the resulting event to the
     /// right state. `split_index` is the divider's pre-order index
     /// (see [`crate::SplitTreeDivider::split_index`]).
@@ -135,7 +137,8 @@ pub enum DragTarget {
     /// `axis_start` / `axis_size` are the *parent* rect's extent along
     /// the split axis — copied from
     /// [`crate::SplitTreeDivider::axis_start`] /
-    /// [`crate::SplitTreeDivider::axis_size`] at drag-start so
+    /// [`crate::SplitTreeDivider::axis_size`] (or, for a `Split`, its
+    /// `SplitLayout::bounds`'s matching extent) at drag-start so
     /// [`dispatch_mouse_drag`] can convert a cursor position directly
     /// into a ratio without re-running the tree's `layout()` on every
     /// mouse-move:
@@ -1370,6 +1373,54 @@ mod tests {
         let stack = ModalStack::new();
         dispatch_mouse_up(&stack, &mut drag, pt(5.0, 5.0), MouseButton::Left);
         assert!(!drag.is_active());
+    }
+
+    /// `DragTarget::SplitDivider` / `UiEvent::SplitDividerDragged` aren't
+    /// `SplitTree`-only: a plain two-leaf [`crate::Split`] drives the
+    /// exact same drag with `split_index` fixed at `0`, built straight
+    /// from its own [`crate::primitives::split::SplitLayout`] — no
+    /// hand-rolled ratio math needed at the call site.
+    #[test]
+    fn split_divider_drag_works_for_a_plain_split_not_just_a_split_tree() {
+        use crate::primitives::split::{Split, SplitHit, SplitMeasure};
+
+        let split = Split {
+            id: WidgetId::new("main-split"),
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first_min: 0.0,
+            second_min: 0.0,
+        };
+        let bounds = Rect::new(0.0, 0.0, 41.0, 10.0);
+        let layout = split.layout(bounds, SplitMeasure::new(1.0));
+        assert_eq!(
+            layout.hit_test(20.5, 5.0),
+            SplitHit::Divider(split.id),
+            "sanity: the divider sits where the drag below assumes"
+        );
+
+        let mut drag = DragState::new();
+        drag.begin(DragTarget::SplitDivider {
+            tree: split.id,
+            split_index: 0,
+            direction: split.direction,
+            axis_start: bounds.x,
+            axis_size: bounds.width,
+        });
+        // Cursor at x=30 -> (30 - 0) / 41 ≈ 0.7317.
+        let events = dispatch_mouse_drag(&drag, pt(30.0, 5.0), buttons_mask_left());
+        match &events[1] {
+            UiEvent::SplitDividerDragged {
+                tree,
+                split_index,
+                new_ratio,
+            } => {
+                assert_eq!(tree, &split.id);
+                assert_eq!(*split_index, 0);
+                assert!((new_ratio - 30.0 / 41.0).abs() < 0.001);
+            }
+            other => panic!("expected SplitDividerDragged, got {:?}", other),
+        }
     }
 
     #[test]

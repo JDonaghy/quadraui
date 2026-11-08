@@ -94,6 +94,15 @@ pub enum SplitTree {
         ratio: f32,
         first: Box<SplitTree>,
         second: Box<SplitTree>,
+        /// Minimum size of `first` in the backend's native unit, applied
+        /// by [`SplitTree::layout`]. `0.0` = no minimum. Set via
+        /// [`SplitTree::with_min_sizes`] — not exposed as a `split()`
+        /// argument, so existing call sites keep compiling.
+        #[serde(default)]
+        first_min: f32,
+        /// Minimum size of `second`. See `first_min`.
+        #[serde(default)]
+        second_min: f32,
     },
 }
 
@@ -115,7 +124,38 @@ impl SplitTree {
             ratio,
             first: Box::new(first),
             second: Box::new(second),
+            first_min: 0.0,
+            second_min: 0.0,
         }
+    }
+
+    /// Attach minimum pane sizes (backend native units) to this node,
+    /// enforced by [`SplitTree::layout`] the same way
+    /// [`crate::Split::first_min`] / [`crate::Split::second_min`] are.
+    /// No-op on a `Leaf` — there's nothing to constrain.
+    ///
+    /// ```
+    /// use quadraui::{SplitDirection, SplitTree, WidgetId};
+    ///
+    /// let tree = SplitTree::split(
+    ///     SplitDirection::Horizontal,
+    ///     0.5,
+    ///     SplitTree::leaf(WidgetId::new("a")),
+    ///     SplitTree::leaf(WidgetId::new("b")),
+    /// )
+    /// .with_min_sizes(10.0, 10.0);
+    /// ```
+    pub fn with_min_sizes(mut self, first_min: f32, second_min: f32) -> Self {
+        if let SplitTree::Split {
+            first_min: fm,
+            second_min: sm,
+            ..
+        } = &mut self
+        {
+            *fm = first_min;
+            *sm = second_min;
+        }
+        self
     }
 
     /// True if this node is a leaf (no nesting).
@@ -191,6 +231,8 @@ impl SplitTree {
                 ratio,
                 first,
                 second,
+                first_min,
+                second_min,
             } => {
                 let idx = *counter;
                 *counter += 1;
@@ -202,7 +244,8 @@ impl SplitTree {
                         // Side-by-side (first = left, second = right) —
                         // matches Split::layout's Horizontal case.
                         let available = (bounds.width - thickness).max(0.0);
-                        let first_w = available * clamped;
+                        let first_w =
+                            resolve_pane_size(available, clamped, *first_min, *second_min);
                         let position = bounds.x + first_w;
                         let divider = SplitTreeDivider {
                             split_index: idx,
@@ -227,7 +270,8 @@ impl SplitTree {
                         // Stacked (first = top, second = bottom) —
                         // matches Split::layout's Vertical case.
                         let available = (bounds.height - thickness).max(0.0);
-                        let first_h = available * clamped;
+                        let first_h =
+                            resolve_pane_size(available, clamped, *first_min, *second_min);
                         let position = bounds.y + first_h;
                         let divider = SplitTreeDivider {
                             split_index: idx,
@@ -399,6 +443,32 @@ impl SplitTree {
                     .or_else(|| second.parent_split_of_impl(target, counter))
             }
         }
+    }
+}
+
+/// Resolve `first`'s size out of `available` cross-axis space, honouring
+/// `first_min`/`second_min`: clamp `ratio * available` into
+/// `[first_min, available - second_min]` when both minimums fit, or —
+/// when the container is too small for both — split `available`
+/// proportionally between the two minimums instead. Shared by
+/// [`SplitTree::layout`] and [`crate::Split::layout`] (via
+/// [`SplitTree::Split{Leaf,Leaf}`](SplitTree::Split)) so the two
+/// primitives can never drift onto two different relax formulas.
+pub(crate) fn resolve_pane_size(
+    available: f32,
+    ratio: f32,
+    first_min: f32,
+    second_min: f32,
+) -> f32 {
+    let first_raw = available * ratio;
+    if first_min + second_min <= available {
+        first_raw.max(first_min).min(available - second_min)
+    } else if available > 0.0 {
+        // Minimums don't fit — split proportionally to the mins.
+        let total_min = first_min + second_min;
+        available * (first_min / total_min)
+    } else {
+        0.0
     }
 }
 
@@ -1127,6 +1197,65 @@ mod tests {
         // Every leaf still has positive width.
         for (_, r) in &layout.leaves {
             assert!(r.width > 0.0);
+        }
+    }
+
+    // ── with_min_sizes ────────────────────────────────────────────────
+
+    #[test]
+    fn with_min_sizes_clamps_first_pane_up_to_its_minimum() {
+        let tree = SplitTree::split(
+            SplitDirection::Horizontal,
+            0.1, // would collapse first pane
+            SplitTree::leaf(wid("a")),
+            SplitTree::leaf(wid("b")),
+        )
+        .with_min_sizes(30.0, 20.0);
+        let layout = tree.layout(rect(0.0, 0.0, 100.0, 101.0), measure(1.0));
+        // available = 99. Raw first = 9.9; clamped to first_min = 30.
+        assert_eq!(layout.leaves[0].1.width, 30.0);
+        assert_eq!(layout.leaves[1].1.width, 69.0);
+    }
+
+    #[test]
+    fn with_min_sizes_relaxes_proportionally_when_both_mins_dont_fit() {
+        let tree = SplitTree::split(
+            SplitDirection::Horizontal,
+            0.5,
+            SplitTree::leaf(wid("a")),
+            SplitTree::leaf(wid("b")),
+        )
+        .with_min_sizes(60.0, 60.0); // sum (120) > available (99)
+        let layout = tree.layout(rect(0.0, 0.0, 100.0, 10.0), measure(1.0));
+        // available = 99, split proportionally 60/120 to first.
+        assert!((layout.leaves[0].1.width - 49.5).abs() < 0.001);
+        assert!((layout.leaves[1].1.width - 49.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn with_min_sizes_is_a_no_op_on_a_leaf() {
+        let tree = SplitTree::leaf(wid("a")).with_min_sizes(10.0, 10.0);
+        assert_eq!(tree, SplitTree::leaf(wid("a")));
+    }
+
+    #[test]
+    fn default_min_sizes_are_zero() {
+        let tree = SplitTree::split(
+            SplitDirection::Horizontal,
+            0.5,
+            SplitTree::leaf(wid("a")),
+            SplitTree::leaf(wid("b")),
+        );
+        match tree {
+            SplitTree::Split {
+                first_min,
+                second_min,
+                ..
+            } => {
+                assert_eq!(first_min, 0.0);
+                assert_eq!(second_min, 0.0);
+            }
+            SplitTree::Leaf(_) => panic!("expected Split"),
         }
     }
 }

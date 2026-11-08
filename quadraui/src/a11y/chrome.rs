@@ -1058,7 +1058,7 @@ impl A11yPrimitive for Scrollbar {
 impl A11yPrimitive for Split {
     fn a11y_info(&self) -> A11yInfo {
         A11yInfo::new()
-            .with_role(A11yRole::Group)
+            .with_role(A11yRole::Splitter)
             .with_label("Split")
             .with_value(direction_name(self.direction))
             .with_value_range(A11yValueRange::new(self.ratio as f64, 0.0, 1.0))
@@ -1072,7 +1072,7 @@ impl A11yPrimitive for Split {
 impl A11yPrimitive for SplitTree {
     fn a11y_info(&self) -> A11yInfo {
         A11yInfo::new()
-            .with_role(A11yRole::Group)
+            .with_role(A11yRole::Splitter)
             .with_label("Split tree")
     }
 
@@ -1104,6 +1104,7 @@ fn split_tree_node(tree: &SplitTree, key: impl Into<String>) -> A11yChild {
             ratio,
             first,
             second,
+            ..
         } => {
             let mut children = vec![split_tree_node(first, "split.first")];
             children.push(presentational("divider", "Split divider"));
@@ -1111,7 +1112,7 @@ fn split_tree_node(tree: &SplitTree, key: impl Into<String>) -> A11yChild {
             A11yChild::new(
                 key,
                 A11yInfo::new()
-                    .with_role(A11yRole::Group)
+                    .with_role(A11yRole::Splitter)
                     .with_label("Split")
                     .with_value(direction_name(*direction))
                     .with_value_range(A11yValueRange::new(*ratio as f64, 0.0, 1.0)),

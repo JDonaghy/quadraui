@@ -16,6 +16,7 @@
 //! either pane resolve as `SplitHit::FirstPane` / `SplitHit::SecondPane`.
 
 use crate::event::Rect;
+use crate::primitives::split_tree::{SplitTree, SplitTreeMeasure};
 use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
 
@@ -136,68 +137,37 @@ impl Split {
     /// respective `first_min` / `second_min`. If the container is too
     /// small to satisfy both minimums, the minimums are relaxed
     /// proportionally (first_min and second_min split the available
-    /// space).
+    /// space). This is a thin wrapper over
+    /// [`SplitTree::layout`] — `Split` is exactly a two-leaf
+    /// `SplitTree::Split`, so the two primitives share one relax
+    /// formula and can never drift apart.
     pub fn layout(&self, bounds: Rect, measure: SplitMeasure) -> SplitLayout {
-        let (total, cross_start) = match self.direction {
-            SplitDirection::Horizontal => (bounds.width, bounds.x),
-            SplitDirection::Vertical => (bounds.height, bounds.y),
-        };
-        let available = (total - measure.divider_thickness).max(0.0);
+        let tree = SplitTree::split(
+            self.direction,
+            self.ratio,
+            SplitTree::leaf(self.id),
+            SplitTree::leaf(self.id),
+        )
+        .with_min_sizes(self.first_min, self.second_min);
+        let tl = tree.layout(bounds, SplitTreeMeasure::new(measure.divider_thickness));
 
-        // Clamp ratio to keep both panes above their minimums.
-        let clamped = self.ratio.clamp(0.0, 1.0);
-        let first_size_raw = available * clamped;
-
-        let (first_size, second_size) = if self.first_min + self.second_min <= available {
-            let fs = first_size_raw.max(self.first_min);
-            let fs = fs.min(available - self.second_min);
-            (fs, available - fs)
-        } else if available > 0.0 {
-            // Minimums don't fit — split proportionally to the mins.
-            let total_min = self.first_min + self.second_min;
-            let f = available * (self.first_min / total_min);
-            (f, available - f)
-        } else {
-            (0.0, 0.0)
+        let first_bounds = tl.leaves[0].1;
+        let second_bounds = tl.leaves[1].1;
+        let d = tl.dividers[0];
+        let divider_bounds = match self.direction {
+            SplitDirection::Horizontal => {
+                Rect::new(d.position, d.cross_start, d.thickness, d.cross_size)
+            }
+            SplitDirection::Vertical => {
+                Rect::new(d.cross_start, d.position, d.cross_size, d.thickness)
+            }
         };
 
+        let available = (d.axis_size - d.thickness).max(0.0);
         let resolved_ratio = if available > 0.0 {
-            first_size / available
+            (d.position - d.axis_start) / available
         } else {
-            clamped
-        };
-
-        let (first_bounds, divider_bounds, second_bounds) = match self.direction {
-            SplitDirection::Horizontal => (
-                Rect::new(cross_start, bounds.y, first_size, bounds.height),
-                Rect::new(
-                    cross_start + first_size,
-                    bounds.y,
-                    measure.divider_thickness,
-                    bounds.height,
-                ),
-                Rect::new(
-                    cross_start + first_size + measure.divider_thickness,
-                    bounds.y,
-                    second_size,
-                    bounds.height,
-                ),
-            ),
-            SplitDirection::Vertical => (
-                Rect::new(bounds.x, cross_start, bounds.width, first_size),
-                Rect::new(
-                    bounds.x,
-                    cross_start + first_size,
-                    bounds.width,
-                    measure.divider_thickness,
-                ),
-                Rect::new(
-                    bounds.x,
-                    cross_start + first_size + measure.divider_thickness,
-                    bounds.width,
-                    second_size,
-                ),
-            ),
+            self.ratio.clamp(0.0, 1.0)
         };
 
         // Hit regions: divider first (specificity), then panes.
