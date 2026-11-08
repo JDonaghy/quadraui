@@ -232,6 +232,11 @@ pub enum CompletionsHit {
 }
 
 /// Resolved placement direction for the popup.
+///
+/// When the popup's desired height fits on neither side, this reports
+/// the *preferred* side (`Below`) rather than whichever side the box
+/// was actually pinned against — the box is still clamped fully inside
+/// the viewport, just not necessarily on the side this value names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionsPlacement {
     /// Popup rendered below the cursor anchor.
@@ -310,28 +315,42 @@ impl Completions {
             .sum();
         let desired_height = total_content.min(max_popup_height);
 
+        // Horizontal position is clamped into the viewport *before*
+        // `Anchor::resolve` runs, independently of the vertical flip
+        // decision below. `Anchor::resolve`'s `fits` predicate tests
+        // both axes together, so an anchor `x` that is already outside
+        // the viewport would make the horizontal overflow fail the fit
+        // test on whichever vertical side is tried, masking the
+        // intended vertical flip. Pre-clamping keeps the two axes
+        // independent, matching this popup's horizontal "shift left on
+        // overflow" contract.
+        let ax = cursor_x.clamp(
+            viewport.x,
+            (viewport.x + viewport.width - popup_width).max(viewport.x),
+        );
+
         // Vertical placement: below cursor if it fits, else above, via
         // the shared `Anchor` flip/clamp resolver. The anchor rect's
         // width is set to `popup_width` so `Anchor::resolve`'s cross-axis
         // centering (`(rect.width - w) * 0.5`) collapses to zero and `x`
-        // stays left-aligned with `cursor_x` rather than centered; its
-        // height is `line_height` so the `Below` candidate opens flush
-        // under the cursor's line, matching this popup's pre-`Anchor`
-        // geometry exactly in every case that fits either side.
+        // stays left-aligned with `ax` rather than centered; its height
+        // is `line_height` so the `Below` candidate opens flush under
+        // the cursor's line.
         //
-        // When *neither* side fits, `Anchor::resolve` pins to the
-        // preferred side (`Below`) rather than picking whichever side
-        // has more room — see the `completions_layout_pins_below_when_neither_fits`
-        // test for the case that differs from the pre-`Anchor`
-        // implementation.
-        let anchor_rect = Rect::new(cursor_x, cursor_y, popup_width, line_height);
+        // When *neither* side fits vertically, `Anchor::resolve` pins to
+        // the preferred side (`Below`) and clamps, rather than picking
+        // whichever side has more room — see
+        // `completions_layout_pins_below_when_neither_side_fully_fits`.
+        let anchor_rect = Rect::new(ax, cursor_y, popup_width, line_height);
         let (origin, resolved_side) =
             Anchor::new(anchor_rect, Side::Bottom).resolve((popup_width, desired_height), viewport);
         let (x, y) = (origin.x, origin.y);
         let placement = match resolved_side {
             ResolvedSide::Bottom => CompletionsPlacement::Below,
             ResolvedSide::Top => CompletionsPlacement::Above,
-            _ => unreachable!("Completions only ever prefers Side::Bottom"),
+            ResolvedSide::Left | ResolvedSide::Right | ResolvedSide::AtPoint => {
+                unreachable!("Completions only ever prefers Side::Bottom")
+            }
         };
 
         // Clip popup to the viewport.
@@ -841,15 +860,11 @@ mod tests {
         // the cursor near its middle, so neither the `below_y`/`above_y`
         // candidate fits without clamping.
         //
-        // Behaviour change from the pre-`Anchor` implementation: that
-        // code picked whichever side had more *room* (here, above:
-        // 55 > 40), landing the popup pinned to the viewport's top edge
-        // (y=0). `Anchor::resolve`'s shared fallback instead pins to the
-        // *preferred* side (`Below`, matching `Tooltip`/`Float`/
-        // `ContextMenu`) and clamps that — landing pinned to the bottom
-        // edge instead (y=40, i.e. `bounds.y + bounds.height == 100`).
-        // Both place the (unclipped) 60-tall popup fully inside the
-        // 100-tall viewport; only which edge it is pinned to differs.
+        // When neither side fits, the popup pins to the preferred side
+        // (`Below`) and clamps — landing pinned to the viewport's bottom
+        // edge (y=40, i.e. `bounds.y + bounds.height == 100`), placing
+        // the (unclipped) 60-tall popup fully inside the 100-tall
+        // viewport.
         let c = Completions {
             id: WidgetId::new("c"),
             items: (0..3)
@@ -885,5 +900,33 @@ mod tests {
             CompletionItemMeasure::new(20.0)
         });
         assert_eq!(layout.bounds.x, 10.0);
+    }
+
+    #[test]
+    fn completions_layout_flips_above_when_cursor_overflows_both_axes() {
+        // Caret in the bottom-right corner of the viewport: overflows
+        // horizontally (popup_width 40 past cursor_x 50 in an 80-wide
+        // viewport) AND the `Below` candidate overflows vertically
+        // (cursor near the bottom). The vertical flip to `Above` must
+        // still happen — horizontal overflow is clamped independently
+        // and must not suppress it.
+        let c = Completions {
+            id: WidgetId::new("c"),
+            items: (0..10)
+                .map(|i| make_completion(&format!("x{i}"), CompletionKind::Variable))
+                .collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let layout = c.layout(50.0, 20.0, 1.0, viewport, 40.0, 24.0, |_| {
+            CompletionItemMeasure::new(1.0)
+        });
+        assert_eq!(layout.placement, CompletionsPlacement::Above);
+        // x clamps to the right edge: 80 - 40 = 40.
+        assert_eq!(layout.bounds.x, 40.0);
+        // Above: y = cursor_y - desired_height = 20 - 10 = 10.
+        assert_eq!(layout.bounds.y, 10.0);
     }
 }

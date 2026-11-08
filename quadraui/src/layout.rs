@@ -5,9 +5,15 @@
 //! m: &Self::Measure)`, `fn hit_test(&self, p: Point)`, with bounds in
 //! ABSOLUTE (target-surface) coordinates. All returned bounds use the same
 //! coordinate frame, eliminating the LOCAL/ABSOLUTE ambiguity tracked in
-//! `docs/PRIMITIVE_RULES.md`. Converting a primitive to use this module's
-//! [`VisibleItem`] and [`Anchor`] is a rule-8 breaking change (see
-//! `docs/PRIMITIVE_RULES.md`), landing with a `#[deprecated]` shim.
+//! `docs/PRIMITIVE_RULES.md`. A primitive may adopt [`VisibleItem`] and
+//! [`Anchor`] internally with no public change at all (its own
+//! placement enum and `layout()` signature stay put, mapping onto
+//! `Side`/`Anchor` as an implementation detail — `Tooltip`,
+//! `RichTextPopup`, `Completions`, and `ContextMenu` all do this).
+//! Converting a primitive to the one-argument `fn layout(&self, bounds:
+//! Rect, m: &Self::Measure)` method shape itself is the rule-8 breaking
+//! change (see `docs/PRIMITIVE_RULES.md`), landing with a
+//! `#[deprecated]` shim.
 //!
 //! ## Target convention (for primitives converging onto this module)
 //!
