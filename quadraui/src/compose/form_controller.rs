@@ -2002,6 +2002,44 @@ mod tests {
             );
         }
 
+        // The rect handed back has to be the *same* rect the controller's
+        // own hit-testing resolves to that field — a host that anchors a
+        // popup to it and then routes the user's next click back through
+        // `handle` depends on the two agreeing. Click the centre of every
+        // reported rect and assert the click lands on that field rather
+        // than a neighbour.
+        #[test]
+        fn reported_rect_round_trips_through_hit_testing() {
+            let rect = Rect::new(3.0, 2.0, 40.0, 20.0);
+            let mut backend = TuiBackend::new();
+            for i in 0..3 {
+                let id = WidgetId::new(format!("field-{i}"));
+                let mut fc = test_controller(3);
+                let field = fc.field_rect(id, &backend, rect).unwrap();
+                let ev = fc.handle(
+                    &UiEvent::MouseDown {
+                        widget: None,
+                        button: MouseButton::Left,
+                        position: crate::Point {
+                            x: field.x + field.width / 2.0,
+                            y: field.y + field.height / 2.0,
+                        },
+                        modifiers: Default::default(),
+                    },
+                    &mut backend,
+                    rect,
+                );
+                match ev {
+                    FormControllerEvent::FormAction(FormEvent::ToggleChanged {
+                        id: hit, ..
+                    }) => {
+                        assert_eq!(hit, id, "field-{i}'s reported rect hit-tested elsewhere");
+                    }
+                    other => panic!("expected ToggleChanged for field-{i}, got {other:?}"),
+                }
+            }
+        }
+
         #[test]
         fn empty_controller_returns_none() {
             let fc = FormController::new("fc".into());
