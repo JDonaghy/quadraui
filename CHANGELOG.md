@@ -239,6 +239,17 @@ only a push to `main` runs this workflow.
   shared macOS/Windows `native_surface_paint::paint` still do their own
   independent `rows.iter().skip(scroll_top)` walk; migrating them onto
   this layout is follow-up work.
+- `primitives::tab_bar::native_surface_paint::paint` — a shared `&mut dyn
+  PaintSurface` painter for `TabBar`, written against an already-resolved
+  `TabBarLayout`: background, the active tab's rounded chip + top accent,
+  whole-tab hover/pressed tint, a focus-visible ring, the ellipsis-fitted
+  label (italic for preview tabs), a leading icon, the close/dirty glyph
+  (centred inside `VisibleTab::close_bounds` rather than assuming either
+  backend's own leading-gap convention), and new scroll-arrow chevrons for
+  `TabBarLayout::scroll_left`/`scroll_right` (no in-tree pixel backend
+  painted a visible scroll affordance before this). Not yet wired into
+  `gtk::tab_bar`/`macos::tab_bar`/`win::tab_bar` — each per-backend
+  migration is tracked separately.
 ### Changed
 - `FocusRing` is now a thin wrapper over `FocusManager` instead of
   `FocusGroup` — adding only the `:focus-visible` bookkeeping on top of

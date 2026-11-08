@@ -14,15 +14,21 @@
 //! The primitive defines declarative state + events; backends resolve clicks
 //! through [`crate::backend::tab_bar_hits_from_layout`].
 //!
-//! # `PaintSurface` migration status — NOT migrated
+//! # `PaintSurface` migration status — painter lands, backends pending
 //!
-//! **`TabBar` paint is still per-backend.** There is deliberately no
-//! `native_surface_paint` module in this file, unlike
-//! [`crate::primitives::menu_bar`], [`crate::primitives::toolbar`] and
-//! [`crate::primitives::activity_bar`]. `gtk::tab_bar`,
-//! `macos::tab_bar` and `win::tab_bar` each still carry a full Cairo /
-//! Core Graphics / Direct2D paint loop, and the three copies have
-//! already drifted:
+//! This module now has a shared [`native_surface_paint::paint`], the same
+//! `&mut dyn PaintSurface`-generic shape [`crate::primitives::menu_bar`],
+//! [`crate::primitives::toolbar`] and [`crate::primitives::activity_bar`]
+//! already use. It paints background, active accent + chip, whole-tab
+//! hover/pressed, a focus-visible ring, the label with ellipsis, an
+//! optional leading icon, the close/dirty glyph, and scroll-arrow
+//! chevrons — all from an already-resolved [`TabBarLayout`], the same
+//! layout-in / paint-out split [`crate::primitives::toolbar::native_surface_paint::paint`]
+//! takes.
+//!
+//! **No backend calls it yet.** `gtk::tab_bar`, `macos::tab_bar` and
+//! `win::tab_bar` each still carry their own full Cairo / Core Graphics /
+//! Direct2D paint loop, and the three copies have already drifted:
 //!
 //! | Behaviour | GTK | macOS | Windows |
 //! |---|---|---|---|
@@ -32,7 +38,11 @@
 //! | Preview-tab label | italic + `tab_preview_*_fg` | upright + `tab_preview_*_fg` | upright, **`tab_preview_*_fg` ignored** |
 //! | [`TabFrame::Brackets`] framing | painted | **not painted** | **not painted** |
 //!
-//! ## Why it was held back rather than landed with the other three
+//! Migrating each backend onto [`native_surface_paint::paint`] is a
+//! separate, per-backend issue — this module only adds the shared
+//! painter itself.
+//!
+//! ## Why each backend still carries its own loop
 //!
 //! GTK and Windows resolve geometry through the shared
 //! [`crate::primitives::layout_metrics::pixel_tab_bar_layout`],
@@ -41,18 +51,18 @@
 //! macOS sizes the close box as `close_glyph_w + 2 * CLOSE_PAD` centred
 //! on the glyph, while `pixel_tab_bar_layout` sizes it as
 //! `tab_inner_gap + close_glyph_w` starting one inner gap *before* the
-//! glyph. A single shared `paint` positions the close glyph from
-//! [`VisibleTab::close_bounds`], so it cannot satisfy both conventions
-//! without a per-backend inset knob — which would reintroduce exactly
-//! the per-backend branching the migration exists to delete.
+//! glyph. [`native_surface_paint::paint`] sidesteps the mismatch by
+//! treating [`VisibleTab::close_bounds`] as an opaque "glyph lives
+//! somewhere in here" box and centring the glyph inside it, rather than
+//! assuming either backend's leading-gap convention — so a caller on
+//! either convention gets a correctly centred glyph without this module
+//! having to pick a side.
 //!
-//! Unifying that convention changes macOS's close-button **hit**
-//! geometry. **A layout change belongs to a separate effort from
-//! the paint migration.** The prerequisite is: move `macos::tab_bar`
-//! onto `pixel_tab_bar_layout` so all three pixel backends share one
-//! `close_bounds` convention; only then can this module grow a
-//! `native_surface_paint` module and the three backend paint loops
-//! collapse into it.
+//! Unifying the two backends' close-button **hit** geometry so macOS also
+//! resolves through `pixel_tab_bar_layout` remains a separate effort from
+//! wiring each backend onto this paint module — see
+//! [`native_surface_paint`] for what the shared painter does and does
+//! not yet cover (no [`TabFrame::Brackets`] framing).
 //!
 //! # Backend contract
 //!
@@ -1146,6 +1156,730 @@ pub enum TabBarEvent {
     /// [`TabChrome::focused_index`] (with focus-visible composition) on
     /// the next render — see [`TabBar::handle_focus_key`].
     FocusMoved { index: usize },
+}
+
+// Shared paint implementation, written against
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's
+// Cairo / Core Graphics / Direct2D API — see the module doc's
+// "`PaintSurface` migration status" section for scope and what still
+// lives per-backend (bracket framing, and the macOS/GTK close-bounds
+// convention difference this module sidesteps rather than resolves).
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{fit_tab_label, tab_icon_at, TabBar, TabBarGlyphs, TabBarLayout, TabIcon};
+    use crate::backend::PressableVisual;
+    use crate::event::{Point, Rect};
+    use crate::paint_surface::{PaintSurface, PathVerb};
+    use crate::style::Style;
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    /// Vertical margin (surface-native units) above and below the
+    /// active-tab chip fill — mirrors `gtk::tab_bar`'s pre-migration
+    /// `TAB_CHIP_INSET_Y`.
+    const TAB_CHIP_INSET_Y: f32 = 4.0;
+    /// Corner radius of the active-tab chip — mirrors `gtk::tab_bar`'s
+    /// pre-migration `TAB_CHIP_RADIUS`.
+    const TAB_CHIP_RADIUS: f32 = 4.0;
+    /// Height of the active-tab top-edge accent line — mirrors
+    /// `gtk::tab_bar`'s pre-migration `TAB_ACTIVE_BORDER_TOP_PX`.
+    const TAB_ACTIVE_BORDER_TOP: f32 = 1.0;
+    /// Gap between a tab's leading icon glyph and its label — mirrors
+    /// `gtk::tab_bar`'s own `TAB_ICON_GAP`.
+    const TAB_ICON_GAP: f32 = 6.0;
+    /// Padding, on every side, of the close-button hover backdrop
+    /// inside [`super::VisibleTab::close_bounds`].
+    const CLOSE_HOVER_PAD: f32 = 2.0;
+    /// Corner radius of the close-button hover backdrop.
+    const CLOSE_HOVER_RADIUS: f32 = 3.0;
+    /// Alpha (0.0..=1.0) of the close-button hover backdrop, painted in
+    /// `theme.foreground` — mirrors `gtk::tab_bar`'s pre-migration
+    /// `0.15` constant.
+    const CLOSE_HOVER_ALPHA: f32 = 0.15;
+
+    /// Live, per-frame interaction state [`paint`] reads. [`super::TabItem`]
+    /// carries no [`crate::types::WidgetId`] (every other
+    /// `*_with_state` painter in this crate keys hover/press off an id),
+    /// so hover/press/focus are reported by tab index instead — the same
+    /// convention `gtk::tab_bar::draw_tab_bar_icons_with_chrome_and_glyphs`'s
+    /// `hovered_tab`/`pressed_tab`/`hovered_close_tab` parameters already
+    /// use. Bundled into one `Copy` struct, rather than four loose `Option<usize>`
+    /// parameters, purely to keep [`paint`]'s own argument list short.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub(crate) struct TabBarPaintState {
+        /// Index of the tab whose whole body (not just its close glyph)
+        /// the pointer is over.
+        pub(crate) hovered_tab: Option<usize>,
+        /// Index of the tab whose whole body is currently pressed. Wins
+        /// over `hovered_tab` when both name the same tab — the same
+        /// pressed-over-hovered priority [`PressableVisual::resolve`]
+        /// gives every other interactive painter in this crate.
+        pub(crate) pressed_tab: Option<usize>,
+        /// Index of the tab whose close glyph the pointer is over —
+        /// tints just the glyph's own hover backdrop, independent of
+        /// `hovered_tab`/`pressed_tab`.
+        pub(crate) hovered_close_tab: Option<usize>,
+        /// Index of the keyboard-focused tab, mirroring
+        /// [`super::TabChrome::focused_index`].
+        pub(crate) focused_index: Option<usize>,
+    }
+
+    /// Centre a chevron pointing left (`pointing_left: true`) or right
+    /// inside `rect`, stroked in `color` — the scroll-arrow affordance
+    /// for [`TabBarLayout::scroll_left`]/[`TabBarLayout::scroll_right`].
+    /// No in-tree pixel backend paints a visible glyph here today (each
+    /// reserves the hit-region geometry and clips instead — see
+    /// `gtk::tab_bar`'s module doc), so this is new, not a port of an
+    /// existing per-backend shape.
+    fn paint_scroll_chevron(
+        surface: &mut dyn PaintSurface,
+        rect: Rect,
+        pointing_left: bool,
+        color: Color,
+    ) {
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return;
+        }
+        let cx = rect.x + rect.width / 2.0;
+        let cy = rect.y + rect.height / 2.0;
+        let half = (rect.width.min(rect.height) * 0.25).max(1.0);
+        let (tip_x, back_x) = if pointing_left {
+            (cx - half, cx + half)
+        } else {
+            (cx + half, cx - half)
+        };
+        surface.surface_draw_path(
+            &[
+                PathVerb::MoveTo(Point::new(back_x, cy - half)),
+                PathVerb::LineTo(Point::new(tip_x, cy)),
+                PathVerb::LineTo(Point::new(back_x, cy + half)),
+            ],
+            color,
+            1.5,
+        );
+    }
+
+    /// Paint a [`TabBar`] at its caller-resolved `layout` onto `surface`.
+    ///
+    /// # Visual contract
+    ///
+    /// - **Background:** the full bar rect fills with `theme.tab_bar_bg`.
+    /// - **Active tab:** an inset, rounded chip
+    ///   (`theme.tab_active_bg`) rather than a full-height square block;
+    ///   `bar.active_accent`, when set, paints a thin top-edge accent
+    ///   line on the chip's own inset top edge.
+    /// - **Whole-tab hover/pressed:** tints the tab's background toward
+    ///   `theme.list_hover_bg`/`theme.list_pressed_bg` — pressed wins —
+    ///   independent of the close glyph's own hover state below.
+    /// - **Label:** ellipsis-fitted via [`fit_tab_label`] into the space
+    ///   left after the leading icon (if any) and the close-button
+    ///   region (if any); italic when [`super::TabItem::is_preview`].
+    /// - **Icon:** [`tab_icon_at`]'s glyph, painted in its own `color`
+    ///   before the label, independent of the tab's fg colour.
+    /// - **Close/dirty glyph:** centred inside
+    ///   [`super::VisibleTab::close_bounds`] (see the module doc for why this
+    ///   is a deliberate, convention-agnostic centring rather than a
+    ///   fixed leading-gap offset); dirty tabs paint the dirty glyph
+    ///   unless the close glyph is hovered, in which case the close
+    ///   glyph (and its rounded hover backdrop) takes over.
+    /// - **Focus-visible ring:** a square stroke flush with
+    ///   `state.focused_index`'s own slot bounds, in
+    ///   `theme.focus_ring_color()`.
+    /// - **Scroll arrows:** a chevron centred in
+    ///   `layout.scroll_left`/`layout.scroll_right`, when present.
+    ///
+    /// `icons` follows [`tab_icon_at`]'s own convention: a slice shorter
+    /// than `bar.tabs` is read as "no icon" for the missing tail, and
+    /// `&[]` is always legal. `glyphs` overrides the close/dirty glyph
+    /// (see [`TabBarGlyphs`]); `nerd_fonts_enabled` resolves which half
+    /// of an override [`crate::types::Icon`] paints, mirroring
+    /// [`crate::Backend::nerd_fonts_enabled`]. `TabFrame::Brackets`
+    /// framing is not yet painted here — see the module doc.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint(
+        bar: &TabBar,
+        layout: &TabBarLayout,
+        icons: &[Option<TabIcon>],
+        glyphs: Option<&TabBarGlyphs>,
+        nerd_fonts_enabled: bool,
+        state: TabBarPaintState,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+    ) {
+        if layout.bar_width <= 0.0 || layout.bar_height <= 0.0 {
+            return;
+        }
+
+        surface.surface_fill_rect(
+            Rect::new(0.0, 0.0, layout.bar_width, layout.bar_height),
+            theme.tab_bar_bg,
+        );
+
+        let line_height = surface.surface_line_height();
+        let close_glyph_default = crate::codicon::CLOSE.to_string();
+        let dirty_glyph_default = crate::codicon::DIRTY.to_string();
+        let close_glyph: &str = glyphs
+            .and_then(TabBarGlyphs::close_glyph)
+            .map(|icon| icon.resolve(nerd_fonts_enabled))
+            .unwrap_or(&close_glyph_default);
+        let dirty_glyph: &str = glyphs
+            .and_then(TabBarGlyphs::dirty_glyph)
+            .map(|icon| icon.resolve(nerd_fonts_enabled))
+            .unwrap_or(&dirty_glyph_default);
+
+        for vt in &layout.visible_tabs {
+            let tab = &bar.tabs[vt.tab_idx];
+            let bounds = vt.bounds;
+            if bounds.width <= 0.0 || bounds.height <= 0.0 {
+                continue;
+            }
+
+            let is_tab_pressed = state.pressed_tab == Some(vt.tab_idx);
+            let is_tab_hovered = state.hovered_tab == Some(vt.tab_idx);
+            let tint = |base: Color| -> Color {
+                match PressableVisual::resolve(is_tab_pressed, false, is_tab_hovered) {
+                    PressableVisual::PressedOrActive => theme.list_pressed_bg(base),
+                    PressableVisual::Hovered => theme.list_hover_bg(base),
+                    PressableVisual::Resting => base,
+                }
+            };
+
+            let text_y = bounds.y + ((bounds.height - line_height) / 2.0).max(0.0);
+
+            if tab.is_active {
+                let chip = Rect::new(
+                    bounds.x,
+                    bounds.y + TAB_CHIP_INSET_Y,
+                    bounds.width,
+                    (bounds.height - 2.0 * TAB_CHIP_INSET_Y).max(0.0),
+                );
+                surface.surface_fill_rounded_rect(chip, TAB_CHIP_RADIUS, tint(theme.tab_active_bg));
+                if let Some(accent) = bar.active_accent {
+                    surface.surface_fill_rect(
+                        Rect::new(chip.x, chip.y, chip.width, TAB_ACTIVE_BORDER_TOP),
+                        accent,
+                    );
+                }
+            } else {
+                surface.surface_fill_rect(bounds, tint(theme.tab_bar_bg));
+            }
+
+            let fg = match (tab.is_active, tab.is_preview) {
+                (true, true) => theme.tab_preview_active_fg,
+                (true, false) => theme.tab_active_fg,
+                (false, true) => theme.tab_preview_inactive_fg,
+                (false, false) => theme.tab_inactive_fg,
+            };
+
+            let mut cursor_x = bounds.x + style.tab_padding_x;
+
+            if let Some(icon) = tab_icon_at(icons, vt.tab_idx) {
+                let (icon_w, _) = surface.surface_measure_text(&icon.glyph);
+                surface.surface_draw_icon_glyph(
+                    Rect::new(cursor_x, text_y, icon_w, line_height),
+                    &icon.glyph,
+                    icon.color,
+                );
+                cursor_x += icon_w + TAB_ICON_GAP;
+            }
+
+            let label_right_edge = match vt.close_bounds {
+                Some(cb) => cb.x,
+                None => bounds.x + bounds.width - style.tab_padding_x,
+            };
+            let label_budget = (label_right_edge - cursor_x).max(0.0);
+            let label = fit_tab_label(&tab.label, label_budget, 0.0, 0.0, |s| {
+                surface.surface_measure_text(s).0
+            });
+            let (label_w, _) = surface.surface_measure_text(&label);
+            surface.surface_draw_text_run_styled(
+                Rect::new(cursor_x, text_y, label_w.min(label_budget), line_height),
+                &label,
+                fg,
+                false,
+                tab.is_preview,
+                false,
+                1.0,
+            );
+
+            if let Some(cb) = vt.close_bounds {
+                let is_close_hovered = state.hovered_close_tab == Some(vt.tab_idx);
+                if is_close_hovered {
+                    let backdrop = Rect::new(
+                        cb.x + CLOSE_HOVER_PAD,
+                        text_y + CLOSE_HOVER_PAD,
+                        (cb.width - 2.0 * CLOSE_HOVER_PAD).max(0.0),
+                        (line_height - 2.0 * CLOSE_HOVER_PAD).max(0.0),
+                    );
+                    surface.surface_fill_rounded_rect(
+                        backdrop,
+                        CLOSE_HOVER_RADIUS,
+                        theme.foreground.with_alpha(CLOSE_HOVER_ALPHA as f64),
+                    );
+                }
+
+                let glyph = if tab.is_dirty && !is_close_hovered {
+                    dirty_glyph
+                } else {
+                    close_glyph
+                };
+                let close_fg = if tab.is_dirty || is_close_hovered {
+                    theme.foreground
+                } else if tab.is_active {
+                    theme.tab_inactive_fg
+                } else {
+                    theme.separator
+                };
+                let (glyph_w, _) = surface.surface_measure_text(glyph);
+                let glyph_x = cb.x + ((cb.width - glyph_w) / 2.0).max(0.0);
+                surface.surface_draw_icon_glyph(
+                    Rect::new(glyph_x, text_y, glyph_w, line_height),
+                    glyph,
+                    close_fg,
+                );
+            }
+        }
+
+        if let Some(focus_idx) = state.focused_index {
+            if let Some(vt) = layout
+                .visible_tabs
+                .iter()
+                .find(|vt| vt.tab_idx == focus_idx)
+            {
+                let ring_width = style.focus_ring_width.max(1.0);
+                let inset = ring_width / 2.0;
+                surface.surface_stroke_rect(
+                    Rect::new(
+                        vt.bounds.x + inset,
+                        vt.bounds.y + inset,
+                        (vt.bounds.width - ring_width).max(0.0),
+                        (vt.bounds.height - ring_width).max(0.0),
+                    ),
+                    theme.focus_ring_color(),
+                    ring_width,
+                );
+            }
+        }
+
+        for vs in &layout.visible_segments {
+            let seg = &bar.right_segments[vs.segment_idx];
+            let fg = if seg.is_active {
+                theme.tab_active_fg
+            } else {
+                theme.tab_inactive_fg
+            };
+            let text_y = vs.bounds.y + ((vs.bounds.height - line_height) / 2.0).max(0.0);
+            surface.surface_draw_text_run(
+                Rect::new(vs.bounds.x, text_y, vs.bounds.width, line_height),
+                &seg.text,
+                fg,
+            );
+        }
+
+        if let Some(rect) = layout.scroll_left {
+            paint_scroll_chevron(surface, rect, true, theme.tab_inactive_fg);
+        }
+        if let Some(rect) = layout.scroll_right {
+            paint_scroll_chevron(surface, rect, false, theme.tab_inactive_fg);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::tab_bar::{SegmentMeasure, TabItem, TabMeasure};
+        use crate::types::WidgetId;
+        use crate::Image;
+
+        /// Records every paint call this test suite inspects — enough to
+        /// assert each state's own fill/stroke/text-run colour without a
+        /// Cairo/Core Graphics/Direct2D host.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            rounded_fills: Vec<(Rect, f32, Color)>,
+            strokes: Vec<(Rect, Color, f32)>,
+            text_runs: Vec<(Rect, String, Color)>,
+            paths: Vec<(Vec<PathVerb>, Color, f32)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(300.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                14.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                7.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 7.0, 12.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+                self.rounded_fills.push((rect, radius, color));
+            }
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _sw: f32) {}
+            fn surface_draw_path(&mut self, verbs: &[PathVerb], color: Color, stroke_width: f32) {
+                self.paths.push((verbs.to_vec(), color, stroke_width));
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn tab(label: &str) -> TabItem {
+            TabItem {
+                label: label.to_string(),
+                is_active: false,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: true,
+            }
+        }
+
+        fn bar(tabs: Vec<TabItem>) -> TabBar {
+            TabBar {
+                id: WidgetId::new("tabbar:test"),
+                tabs,
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: true,
+                compact: false,
+            }
+        }
+
+        /// Fixed-width measurer standing in for a real Pango/DirectWrite/
+        /// Core Text measurement: each tab is `tab_w` surface-native
+        /// units wide with a 10-unit close region.
+        fn layout_for(
+            bar: &TabBar,
+            bar_width: f32,
+            scroll_arrow_width: f32,
+            tab_w: f32,
+        ) -> TabBarLayout {
+            bar.layout(
+                bar_width,
+                20.0,
+                scroll_arrow_width,
+                |_| TabMeasure::new(tab_w, if bar.show_tab_close { 10.0 } else { 0.0 }),
+                |_| SegmentMeasure::new(0.0),
+            )
+        }
+
+        #[test]
+        fn active_tab_fills_a_rounded_chip_in_tab_active_bg() {
+            let mut b = bar(vec![tab("main.rs")]);
+            b.tabs[0].is_active = true;
+            let layout = layout_for(&b, 100.0, 0.0, 60.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                TabBarPaintState::default(),
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            assert!(
+                surface
+                    .rounded_fills
+                    .iter()
+                    .any(|(_, _, c)| *c == theme.tab_active_bg),
+                "active tab must fill a rounded chip in tab_active_bg; rounded_fills were {:?}",
+                surface.rounded_fills,
+            );
+        }
+
+        /// A hovered (not pressed) inactive tab tints its background
+        /// toward `theme.list_hover_bg`, not the plain resting
+        /// `tab_bar_bg`.
+        #[test]
+        fn hovered_tab_tints_toward_list_hover_bg() {
+            let b = bar(vec![tab("a"), tab("b")]);
+            let layout = layout_for(&b, 100.0, 0.0, 20.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let state = TabBarPaintState {
+                hovered_tab: Some(1),
+                ..Default::default()
+            };
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                state,
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            let expected = theme.list_hover_bg(theme.tab_bar_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == expected),
+                "hovered_tab must tint toward list_hover_bg; fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// `pressed_tab` tints deeper than `hovered_tab` and wins when
+        /// both name the same tab — the same pressed-over-hovered
+        /// priority every other `_with_state` painter in this crate
+        /// gives.
+        #[test]
+        fn pressed_tab_tints_deeper_than_hovered_and_wins() {
+            let b = bar(vec![tab("a"), tab("b")]);
+            let layout = layout_for(&b, 100.0, 0.0, 20.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let state = TabBarPaintState {
+                hovered_tab: Some(1),
+                pressed_tab: Some(1),
+                ..Default::default()
+            };
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                state,
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            let expected = theme.list_pressed_bg(theme.tab_bar_bg);
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == expected),
+                "pressed_tab must win over hovered_tab and tint via list_pressed_bg; \
+                 fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        /// `state.focused_index` strokes a square ring, flush with that
+        /// tab's own slot bounds, in `theme.focus_ring_color()`.
+        #[test]
+        fn focused_index_strokes_a_ring_in_the_focus_ring_color() {
+            let b = bar(vec![tab("a"), tab("b")]);
+            let layout = layout_for(&b, 100.0, 0.0, 20.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let state = TabBarPaintState {
+                focused_index: Some(1),
+                ..Default::default()
+            };
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                state,
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            assert!(
+                surface
+                    .strokes
+                    .iter()
+                    .any(|(_, c, _)| *c == theme.focus_ring_color()),
+                "focused_index must stroke a ring in the focus-ring colour; \
+                 strokes were {:?}",
+                surface.strokes,
+            );
+        }
+
+        /// A dirty tab paints the dirty glyph (not the close glyph) as
+        /// an icon-glyph text run, when its close glyph isn't hovered.
+        #[test]
+        fn dirty_tab_paints_the_dirty_glyph_not_the_close_glyph() {
+            let mut b = bar(vec![tab("a")]);
+            b.tabs[0].is_dirty = true;
+            let layout = layout_for(&b, 100.0, 0.0, 60.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                TabBarPaintState::default(),
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            let dirty = crate::codicon::DIRTY.to_string();
+            let close = crate::codicon::CLOSE.to_string();
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == &dirty),
+                "a dirty tab must paint the dirty glyph; text runs were {:?}",
+                surface.text_runs,
+            );
+            assert!(
+                !surface.text_runs.iter().any(|(_, t, _)| t == &close),
+                "a dirty tab's close glyph must not also paint; text runs were {:?}",
+                surface.text_runs,
+            );
+        }
+
+        /// Hovering a dirty tab's close glyph overrides the dirty glyph
+        /// back to the close glyph and paints a rounded hover backdrop
+        /// behind it.
+        #[test]
+        fn hovered_close_glyph_overrides_dirty_and_paints_a_rounded_backdrop() {
+            let mut b = bar(vec![tab("a")]);
+            b.tabs[0].is_dirty = true;
+            let layout = layout_for(&b, 100.0, 0.0, 60.0);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let state = TabBarPaintState {
+                hovered_close_tab: Some(0),
+                ..Default::default()
+            };
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                state,
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            let close = crate::codicon::CLOSE.to_string();
+            let dirty = crate::codicon::DIRTY.to_string();
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == &close),
+                "a hovered close glyph must paint the close glyph, not the dirty \
+                 glyph; text runs were {:?}",
+                surface.text_runs,
+            );
+            assert!(!surface.text_runs.iter().any(|(_, t, _)| t == &dirty));
+            assert!(
+                surface
+                    .rounded_fills
+                    .iter()
+                    .any(|(_, _, c)| *c == theme.foreground.with_alpha(0.15)),
+                "a hovered close glyph must paint a rounded backdrop in \
+                 foreground @ 15% alpha; rounded_fills were {:?}",
+                surface.rounded_fills,
+            );
+        }
+
+        /// When the strip overflows, `layout.scroll_left`/`scroll_right`
+        /// each paint a chevron via `surface_draw_path` — the new
+        /// scroll-arrow affordance no in-tree pixel backend painted
+        /// before this shared painter existed.
+        #[test]
+        fn overflowing_strip_paints_both_scroll_chevrons() {
+            let mut b = bar((0..10).map(|i| tab(&format!("t{i}"))).collect());
+            b.tabs[5].is_active = true;
+            let layout = layout_for(&b, 30.0, 2.0, 10.0);
+            assert!(layout.scroll_left.is_some(), "expected a left scroll arrow");
+            assert!(
+                layout.scroll_right.is_some(),
+                "expected a right scroll arrow"
+            );
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                TabBarPaintState::default(),
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            assert_eq!(
+                surface.paths.len(),
+                2,
+                "both scroll arrows must paint a chevron path; paths were {:?}",
+                surface.paths,
+            );
+        }
+
+        /// A zero-size layout (e.g. a collapsed split with no width)
+        /// paints nothing rather than panicking on a negative/NaN rect.
+        #[test]
+        fn zero_size_layout_paints_nothing() {
+            let b = bar(vec![tab("a")]);
+            let layout = TabBarLayout {
+                bar_width: 0.0,
+                bar_height: 0.0,
+                visible_tabs: vec![],
+                visible_segments: vec![],
+                scroll_left: None,
+                scroll_right: None,
+                hit_regions: vec![],
+                resolved_scroll_offset: 0,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &b,
+                &layout,
+                &[],
+                None,
+                true,
+                TabBarPaintState::default(),
+                &mut surface,
+                &theme,
+                &Style::default(),
+            );
+
+            assert!(surface.fills.is_empty());
+            assert!(surface.rounded_fills.is_empty());
+        }
+    }
 }
 
 #[cfg(test)]
