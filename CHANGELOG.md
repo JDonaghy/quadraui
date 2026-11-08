@@ -222,7 +222,11 @@ only a push to `main` runs this workflow.
   `macos::tab_bar` already switch to), paints a 1-DIP active-tab accent
   line instead of 2-DIP, and paints the active tab as an inset,
   4-DIP-radius rounded chip instead of a square block filling the row
-  edge to edge — matching the GTK/macOS active-tab chrome pixel-for-pixel.
+  edge to edge — matching the GTK active-tab chrome, with the same
+  `macos::tab_bar` clamp that shrinks the chip's vertical inset on a row
+  no taller than the label's own line height so the chip never paints
+  shorter than the label it encloses. The Win-only hovered-close-glyph
+  lighten tint is unchanged.
 
 ## [0.9.0] - 2026-11-07
 ### Added
