@@ -30,18 +30,19 @@ pub fn tui_split_layout(split: &Split, area: Rect) -> SplitLayout {
     snap_divider_hit_region_to_painted_cell(layout, split.direction, split.id)
 }
 
-/// Rebuilds the divider + following-pane entries in `layout.hit_regions`
-/// so a TUI mouse click (always reported at an integer cell coordinate)
-/// lands on the exact cell `draw_split` paints the divider at —
-/// `[trunc(position), trunc(position) + thickness)` — instead of the
-/// continuous `[position, position + thickness)` band `Split::layout`
-/// computes. A fractional ratio (e.g. `0.5` over an odd `available`,
-/// landing on `39.5`) used to paint at the truncated cell `39` while the
-/// click region still started at `39.5`, so no integer cell ever hit it
-/// — dragging the divider silently did nothing. Only the *click*
-/// targets move here; `divider_bounds`/`first_bounds`/`second_bounds`
-/// (and `resolved_ratio`) keep `Split::layout`'s precise float values,
-/// so hosts positioning pane content see no change.
+/// Snaps the pane bounds and `layout.hit_regions` to the integer cell
+/// `draw_split` paints the divider at — `[trunc(position),
+/// trunc(position) + thickness)` — instead of the continuous
+/// `[position, position + thickness)` band `Split::layout` computes.
+///
+/// A TUI mouse click is always reported at an integer cell, and pane
+/// content is painted into whole cells, so with a fractional ratio
+/// (e.g. `0.5` over an odd `available`, landing on `39.5`) the float
+/// bounds would both miss the painted divider cell on click and let the
+/// first pane's content paint over it. After snapping, `first_bounds`
+/// ends exactly at the painted divider cell and `second_bounds` starts
+/// right after it. `divider_bounds` and `resolved_ratio` keep
+/// `Split::layout`'s precise float values.
 fn snap_divider_hit_region_to_painted_cell(
     mut layout: SplitLayout,
     direction: SplitDirection,
@@ -64,6 +65,8 @@ fn snap_divider_hit_region_to_painted_cell(
                 (second_right - (trunc_x + thickness)).max(0.0),
                 layout.second_bounds.height,
             );
+            layout.first_bounds.width = (trunc_x - layout.first_bounds.x).max(0.0);
+            layout.second_bounds = second_hit;
             layout.hit_regions = vec![
                 (divider_hit, SplitHit::Divider(id)),
                 (layout.first_bounds, SplitHit::FirstPane(id)),
@@ -86,6 +89,8 @@ fn snap_divider_hit_region_to_painted_cell(
                 layout.second_bounds.width,
                 (second_bottom - (trunc_y + thickness)).max(0.0),
             );
+            layout.first_bounds.height = (trunc_y - layout.first_bounds.y).max(0.0);
+            layout.second_bounds = second_hit;
             layout.hit_regions = vec![
                 (divider_hit, SplitHit::Divider(id)),
                 (layout.first_bounds, SplitHit::FirstPane(id)),
@@ -355,5 +360,19 @@ mod tests {
             SplitHit::SecondPane(split.id),
             "the cell just past the divider is the second pane, not a dead zone"
         );
+    }
+
+    /// Pane bounds abut the painted divider cell exactly, so content
+    /// painted into `first_bounds` can never cover the divider glyph.
+    #[test]
+    fn pane_bounds_abut_the_painted_divider_cell_for_a_half_cell_ratio() {
+        let area = Rect::new(0, 0, 20, 4); // available = 19, position = 9.5
+        let mut buf = Buffer::empty(area);
+        let layout = draw_split(&mut buf, area, &hsplit(0.5), &Theme::default());
+        assert_eq!(cell_char(&buf, 9, 0), '│');
+        assert_eq!(layout.first_bounds.x, 0.0);
+        assert_eq!(layout.first_bounds.width, 9.0);
+        assert_eq!(layout.second_bounds.x, 10.0);
+        assert_eq!(layout.second_bounds.width, 10.0);
     }
 }

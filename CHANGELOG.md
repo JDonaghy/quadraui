@@ -87,7 +87,10 @@ only a push to `main` runs this workflow.
   `Split::layout` computes), so a divider whose position lands on a
   fractional cell boundary (e.g. a `0.5` ratio over an odd `available`) is
   clickable at the exact cell it paints at instead of silently missing
-  every drag. `compose::tab_group` reads the new
+  every drag. Its `first_bounds`/`second_bounds` are snapped to the same
+  cell too (the first pane ends at the painted divider, the second starts
+  right after it), so pane content can't paint over the divider glyph.
+  `compose::tab_group` reads the new
   `SplitLayout::divider_hit_bounds()` for the same reason, since it
   hit-tests its cached divider rects by hand.
 - `compose::tab_group`'s `GroupLayout` divider numbering (`divider_idx` on
