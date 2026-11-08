@@ -59,6 +59,17 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `Backend::draw_switch_with_state`/`draw_radio_group_with_state` — the
+  `Switch`/`RadioGroup` twins of `Backend::draw_button_with_state`: each takes
+  an `&InteractionState` and defaults to forwarding to the plain
+  `draw_switch`/`draw_radio_group` (no backend breaks). The shared
+  `switch`/`radio_group::native_surface_paint::paint_with_state` helpers tint
+  the track/marker toward `Theme::button_hover_bg`/`button_pressed_bg` through
+  the same pressed-beats-hovered-beats-resting priority
+  `button::native_surface_paint::paint` and `ToolbarButton::Action`'s
+  pressed/active highlight already resolve — no backend wires real hover
+  painting through the new methods yet; that per-backend adoption is tracked
+  on the parent epic.
 - `FormController::field_rect` — resolves where a specific field painted
   inside a multi-field `Form`, in the same coordinate space as the `rect`
   passed to `render`/`handle`. A host anchors a `ComboBox`/`DatePicker`/

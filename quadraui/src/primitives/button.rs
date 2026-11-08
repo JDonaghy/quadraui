@@ -509,6 +509,7 @@ pub enum ButtonEvent {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{Button, ButtonIconPosition, ButtonLayout, ButtonMetrics, ButtonVariant};
+    use crate::backend::PressableVisual;
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
@@ -627,12 +628,12 @@ pub(crate) mod native_surface_paint {
         };
         let bg = if button.disabled {
             bg
-        } else if is_pressed {
-            theme.button_pressed_bg(bg)
-        } else if is_hovered {
-            theme.button_hover_bg(bg)
         } else {
-            bg
+            match PressableVisual::resolve(is_pressed, false, is_hovered) {
+                PressableVisual::PressedOrActive => theme.button_pressed_bg(bg),
+                PressableVisual::Hovered => theme.button_hover_bg(bg),
+                PressableVisual::Resting => bg,
+            }
         };
         surface.surface_fill_rounded_rect(rect, metrics.corner_radius, bg);
 
