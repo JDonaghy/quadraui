@@ -355,7 +355,7 @@ pub(crate) mod native_surface_paint {
             let switch = switch();
             let theme = Theme::default();
             let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(switch.id.clone()));
+            interaction.set_hovered(Some(switch.id));
             let mut surface = RecordingSurface::default();
 
             paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
@@ -371,7 +371,7 @@ pub(crate) mod native_surface_paint {
             let switch = switch();
             let theme = Theme::default();
             let mut interaction = InteractionState::new();
-            interaction.set_pressed(Some(switch.id.clone()));
+            interaction.set_pressed(Some(switch.id));
             let mut surface = RecordingSurface::default();
 
             paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
@@ -389,8 +389,8 @@ pub(crate) mod native_surface_paint {
             let switch = switch();
             let theme = Theme::default();
             let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(switch.id.clone()));
-            interaction.set_pressed(Some(switch.id.clone()));
+            interaction.set_hovered(Some(switch.id));
+            interaction.set_pressed(Some(switch.id));
             let mut surface = RecordingSurface::default();
 
             paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
@@ -410,7 +410,7 @@ pub(crate) mod native_surface_paint {
             switch.disabled = true;
             let theme = Theme::default();
             let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(switch.id.clone()));
+            interaction.set_hovered(Some(switch.id));
             let mut surface = RecordingSurface::default();
 
             paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
