@@ -116,6 +116,15 @@ only a push to `main` runs this workflow.
   trailing group alone (the buttons after a `ToolbarButton::Spacer`) is
   bigger than the bar, anchors it to the bar's leading edge instead of its
   trailing edge, so overflow clips its *last* item instead of its *first*.
+- `CompletionItem::resolved_icon`/`CompletionKind::default_icon` — every
+  completion now resolves to a real [`Icon`] (the item's own `icon` when
+  set, else a two-letter ASCII mnemonic per `kind`), and the shared
+  `primitives::completions::native_surface_paint::paint` helper (not yet
+  wired into any pixel backend — that per-backend adoption is tracked
+  separately) paints that icon, every `label` span, and right-aligned
+  `detail` onto a `PaintSurface`. `tui::draw_completions` gains the same
+  content on the cell grid: a kind-icon prefix, every label span instead
+  of only the first, and `detail`, which it previously dropped entirely.
 ### Changed
 - `ActivityBar::layout` now builds the `Toolbar` from the new `From` impl
   internally and delegates to `Toolbar::layout_with_options`
