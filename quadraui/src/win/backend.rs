@@ -5355,7 +5355,9 @@ impl Backend for WinBackend {
     }
 
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture.
+    /// attached yet" fallback posture. Passes `&self.current_theme` —
+    /// the same field `Backend::set_theme` writes — so the glyph's fg
+    /// colour tracks the live theme, not `Theme::default()`.
     fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
@@ -5363,7 +5365,13 @@ impl Backend for WinBackend {
             // `EditorClassPrimitive`-listed — same `chrome_dwrite`-
             // preferring swap as `Self::draw_palette`.
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            return super::spinner::draw_spinner(&surface.target, dwrite, rect, spinner);
+            return super::spinner::draw_spinner(
+                &surface.target,
+                dwrite,
+                rect,
+                spinner,
+                &self.current_theme,
+            );
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `spinner_layout` falls back to, and paint
@@ -10717,6 +10725,90 @@ mod tests {
             "varying only the chrome font size must repaint different pixels — \
              draw_spinner must paint its label through chrome_dwrite, not the \
              (unchanged) editor dwrite handle"
+        );
+    }
+
+    /// `Backend::set_theme` must reach `super::spinner::draw_spinner`, not
+    /// just be stored and ignored. A spinner's glyph is text (no solid-fill
+    /// region to probe pixel-exact like `set_theme_reaches_the_rasterisers`
+    /// does for the terminal divider), so this finds the most-inked pixel
+    /// (max colour distance from an unpainted background sample) and checks
+    /// it lands nearer the theme actually set on the backend than
+    /// `Theme::default()` — robust to anti-aliasing.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_spinner() {
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 220;
+        const H: u32 = 24;
+
+        let custom_fg = Color::rgb(30, 160, 230);
+        let default_fg = Theme::default().foreground;
+        assert_ne!(
+            custom_fg, default_fg,
+            "test fixture bug: the probe colour must differ from the default theme's, or a \
+             hardcoded `Theme::default()` would pass this test too"
+        );
+
+        let spinner = Spinner {
+            id: WidgetId::new("spinner"),
+            label: "Indexing…".to_string(),
+            frame_idx: 0,
+            accent: None,
+        };
+        // Rect offset from the surface's own origin so `(0, 0)` is a
+        // reliable unpainted background sample.
+        let rect = Rect::new(10.0, 4.0, 0.0, 0.0);
+
+        let most_inked = |theme: Theme| -> (u8, u8, u8) {
+            let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+            let mut backend = WinBackend::new();
+            backend
+                .attach_headless(surface.target().clone(), W, H)
+                .expect("attach headless surface");
+            backend.set_theme(theme);
+
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let _ = backend.draw_spinner(rect, &spinner);
+            backend.end_frame();
+
+            let bg = surface.pixel_at(0, 0);
+            let bg = (bg.r, bg.g, bg.b);
+            let mut best = bg;
+            let mut best_d = -1i32;
+            for y in 0..H {
+                for x in 0..W {
+                    let px = surface.pixel_at(x, y);
+                    let c = (px.r, px.g, px.b);
+                    let d = (c.0 as i32 - bg.0 as i32).pow(2)
+                        + (c.1 as i32 - bg.1 as i32).pow(2)
+                        + (c.2 as i32 - bg.2 as i32).pow(2);
+                    if d > best_d {
+                        best_d = d;
+                        best = c;
+                    }
+                }
+            }
+            best
+        };
+
+        let dist = |a: (u8, u8, u8), c: Color| {
+            let d = |x: u8, y: u8| (x as i32 - y as i32).pow(2);
+            d(a.0, c.r) + d(a.1, c.g) + d(a.2, c.b)
+        };
+
+        let custom_ink = most_inked(Theme {
+            foreground: custom_fg,
+            ..Theme::default()
+        });
+        assert!(
+            dist(custom_ink, custom_fg) < dist(custom_ink, default_fg),
+            "most-inked pixel {custom_ink:?} painted after `set_theme` with a non-default \
+             foreground should be closer to that theme's foreground {custom_fg:?} than to \
+             `Theme::default()`'s {default_fg:?}",
         );
     }
 

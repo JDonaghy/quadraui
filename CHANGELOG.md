@@ -124,6 +124,15 @@ only a push to `main` runs this workflow.
   three and matched on `Ok` now gets `Err(BackendError::Unsupported)`
   instead.
 ### Fixed
+- `win::draw_spinner` now paints the spinner glyph/label in the colour passed
+  in via its new `theme: &Theme` parameter, instead of always building a fresh
+  `Theme::default()` and ignoring dark/custom themes — matching
+  `gtk::draw_spinner`/`macos::spinner::draw_spinner`, which already took the
+  live theme. `WinBackend::draw_spinner` now passes `&self.current_theme`, the
+  same field `Backend::set_theme` writes.
+  **Downstream impact:** no consumer hits (`grep -rn draw_spinner
+  ~/src/coord-tui/src ~/src/vimcode/src` is empty); any in-tree caller goes
+  through `Backend::draw_spinner`, whose signature is unchanged.
 - `NamedKey::F(n)` for `n` above 12 (F13-F24) now stringifies to `"F13"`-`"F24"`
   everywhere instead of silently dropping out on some call sites: a single
   `NamedKey::name()` table in `quadraui::event` backs `accelerator::
