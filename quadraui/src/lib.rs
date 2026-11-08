@@ -107,14 +107,15 @@
 //! what a `0.x` release may change is D-019 in
 //! `quadraui/docs/decisions/DECISIONS.md`. 50 primitive modules
 //! shipped. The TUI and GTK backends have full feature parity and are
-//! battle-tested by vimcode (5000+ tests). The macOS backend implements the whole
-//! `Backend` trait and is built/tested for real on `macos-latest` CI. The
-//! Windows backend's window/event/platform-services infrastructure is
-//! real and CI-blocking on `windows-latest`, and every per-primitive
-//! rasteriser is shipped too, with no `todo!()` left in
-//! `src/win/backend.rs` — builds, tests and the cross-backend conformance
-//! matrix are all blocking on `windows-latest` CI. See the root
-//! `README.md`'s *Status* section for the specifics and issue links.
+//! battle-tested by vimcode (5000+ tests). The macOS backend
+//! implements the whole `Backend` trait and is built/tested for real
+//! on `macos-latest` CI. The Windows backend's window/event/platform-
+//! services infrastructure is real and CI-blocking on
+//! `windows-latest`, and every per-primitive rasteriser is shipped
+//! too, with no `todo!()` left in `src/win/backend.rs` — builds, tests
+//! and the cross-backend conformance matrix are all blocking on
+//! `windows-latest` CI. See the root `README.md`'s *Status* section
+//! for the specifics and issue links.
 //!
 //! ## Plugin invariants (briefly)
 //!
