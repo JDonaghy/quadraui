@@ -59,6 +59,75 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `SplitTree::Split` gains `first_min`/`second_min` (default `0.0`, set via
+  the new `SplitTree::with_min_sizes` builder — not a `split()` argument, so
+  existing call sites keep compiling) and now honours them in `layout()`
+  through the same proportional-relax formula `Split::layout` uses.
+  `Split::layout` is now a thin wrapper over `SplitTree::layout` applied to
+  a two-leaf tree, so the two primitives can never drift onto two different
+  relax formulas. `DragTarget::SplitDivider`/`UiEvent::SplitDividerDragged`
+  now document and test `Split` usage (`split_index` always `0`), not just
+  `SplitTree`. The `Split { .. }` variant is now `#[non_exhaustive]` —
+  construct it via `SplitTree::split()`, not a struct literal, so it can
+  keep gaining fields like `first_min`/`second_min` without that being
+  breaking for a downstream crate.
+- `SplitLayout::divider_hit_bounds()` — the divider's click/drag target
+  rect, distinct from `divider_bounds` on backends (TUI) that snap the
+  click target to an integer cell. Hosts that hit-test a cached
+  `SplitLayout` by hand instead of calling `SplitLayout::hit_test` should
+  read this field, not `divider_bounds`.
+### Changed
+- `Split`/`SplitTree`'s own accessibility role moved from `A11yRole::Group`
+  to `A11yRole::Splitter`.
+- `tui::split`'s divider paint now truncates its axis coordinate instead of
+  rounding, matching `tui::split_tree`'s convention so a fractional-ratio
+  divider paints at the same cell both rasterisers would resolve it to.
+  `tui_split_layout`'s returned `SplitLayout::hit_test` now resolves clicks
+  against that same truncated cell (not the untruncated float position
+  `Split::layout` computes), so a divider whose position lands on a
+  fractional cell boundary (e.g. a `0.5` ratio over an odd `available`) is
+  clickable at the exact cell it paints at instead of silently missing
+  every drag. Its `first_bounds`/`second_bounds` are snapped to the same
+  cell too (the first pane ends at the painted divider, the second starts
+  right after it), so pane content can't paint over the divider glyph.
+  `compose::tab_group` reads the new
+  `SplitLayout::divider_hit_bounds()` for the same reason, since it
+  hit-tests its cached divider rects by hand.
+- `compose::tab_group`'s `GroupLayout` divider numbering (`divider_idx` on
+  `TabGroupEvent::DividerResized`, and the index `handle_drag_start`/
+  `handle_drag_move` address) is now pre-order — this node, then `first`'s
+  dividers, then `second`'s — matching `SplitTree::layout`'s `split_index`
+  convention instead of the previous in-order ("first subtree, this node,
+  second subtree") numbering. Only observable for a tree with 3+ panes (2+
+  `Split` nodes); a single divider's index is unaffected.
+- `Form::spacing: FormSpacing` and `FormField::row_align: Option<RowAlign>`
+  (#2233): a form-wide padding inset (`FormSpacing::padding`, applied on
+  all four edges before any field lays out), a form-wide override for
+  every item-bearing field's inter-item gap (`FormSpacing::item_gap` —
+  `ToggleGroup`/`ButtonRow`/`SegmentedControl`/`Toolbar`), and a
+  `RowAlign` (`Start`/`Center`/`End`/`Stretch`) controlling how those
+  same fields' items pack within their row once `FieldKind::ButtonRow`
+  needs e.g. a dialog-footer's buttons flush right. `Form::layout` is
+  the one place `item_gap`/`row_align` resolve, so GTK/macOS/Win (which
+  already paint every row at `Form::layout`'s own `bounds`) and TUI's
+  item-bearing fields (whose `item_bounds` already carried the same
+  offset) pick those two up with no backend-specific code change.
+  `padding`'s *vertical* axis is the same story everywhere; its
+  *horizontal* axis needed one further TUI fix — `tui::form::draw_form`'s
+  plain (non-item) field rows positioned their label/control columns
+  from `area.x` directly rather than consulting `Form::layout`'s
+  per-row `bounds.x`, so `tui::form::build_row_ctx` now takes that
+  offset explicitly (`RowX`) and applies it to every column it
+  computes. A `Form` that never sets `spacing`/`row_align` lays out
+  bit-for-bit identically to before these fields existed on every
+  backend — ships with `examples/common/form_spacing.rs` +
+  `examples/tui_form_spacing.rs` and its `TuiDriver` test. **Breaking**
+  for any consumer constructing
+  `Form`/`FormField` via a full struct literal (not `..Default::default()`)
+  — `vimcode` (crates.io `0.1.x` pin) and `coord-tui` (pinned git rev)
+  both do; see rule 8's *New field on a public struct a consumer
+  constructs* row. `quadraui/src/primitives/form.rs`'s own module-doc
+  doctest and every in-tree construction site are updated in this PR.
 - `primitives::spinner::native_surface_paint::paint`,
   `primitives::command_center::native_surface_paint::paint`, and
   `primitives::form::native_surface_paint::paint_settings_chrome` — shared

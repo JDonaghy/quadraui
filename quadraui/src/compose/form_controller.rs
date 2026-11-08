@@ -547,6 +547,7 @@ impl FormController {
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             },
         }
     }
@@ -1617,6 +1618,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             })
             .collect()
     }
@@ -1633,6 +1635,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -1747,6 +1750,7 @@ mod tests {
                         tab_index: None,
                         control_width: None,
                         min_control_width: None,
+                        row_align: None,
                     },
                     text_field("email", "", None),
                 ],
@@ -1758,6 +1762,7 @@ mod tests {
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             }
         }
 
@@ -2604,6 +2609,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -2621,6 +2627,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -2638,6 +2645,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -2658,6 +2666,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -2701,6 +2710,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -2726,6 +2736,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -2742,6 +2753,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         });
         // The controller's own `has_focus` gates `KeyPressed`/`CharTyped`/
         // `ClipboardPaste` (not `Form.has_focus` above, which only
@@ -2913,6 +2925,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         });
 
         let ev2 = fc.handle_cached(&key_event(Key::Char('d'), Modifiers::default()), RECT);
@@ -2993,6 +3006,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             Some("name"),
         );
@@ -3051,6 +3065,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         });
 
         let rendered = fc.build_form(RECT, None);
@@ -3091,6 +3106,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let mut fc = controller_with(vec![field], Some("notes"));
         let ev = fc.handle_cached(&key_event(Key::Char('X'), Modifiers::default()), RECT);
@@ -3170,6 +3186,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let mut fc = controller_with(vec![field], Some("name"));
         // Must not panic. `EditOp::MoveRight` with `extend: false` drops
@@ -3230,6 +3247,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         });
 
         let ev2 = fc.handle_cached(
@@ -3349,6 +3367,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         });
 
         let ev = fc.handle_cached(
@@ -3473,6 +3492,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         });
 
         let form = fc.build_form(RECT, None);

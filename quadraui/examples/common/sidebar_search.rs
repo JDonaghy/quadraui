@@ -253,6 +253,7 @@ impl SidebarSearchApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("toggles"),
@@ -285,6 +286,7 @@ impl SidebarSearchApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("scope"),
@@ -302,6 +304,7 @@ impl SidebarSearchApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("password"),
@@ -326,6 +329,7 @@ impl SidebarSearchApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
             ],
             focused_field: self
@@ -339,6 +343,7 @@ impl SidebarSearchApp {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         self.sidebar.set_form(0, form);
     }

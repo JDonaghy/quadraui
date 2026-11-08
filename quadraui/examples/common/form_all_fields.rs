@@ -34,6 +34,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("line-numbers"),
@@ -48,6 +49,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("name"),
@@ -67,6 +69,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("save"),
@@ -81,6 +84,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("version"),
@@ -97,6 +101,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 // These four variants must render on all backends:
                 FormField {
@@ -117,6 +122,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("accent"),
@@ -133,6 +139,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("theme"),
@@ -153,6 +160,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("notes"),
@@ -172,6 +180,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 // ── Remaining variants ──────────────────────────────────
                 FormField {
@@ -192,6 +201,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("scope"),
@@ -209,6 +219,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("flags"),
@@ -229,6 +240,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("actions"),
@@ -251,6 +263,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("toolbar"),
@@ -278,6 +291,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("due-date"),
@@ -295,6 +309,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("fruit"),
@@ -317,6 +332,7 @@ impl FormAllFieldsApp {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
             ],
             focused_field: None,
@@ -327,6 +343,7 @@ impl FormAllFieldsApp {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 }

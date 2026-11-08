@@ -61,6 +61,7 @@
 //!         tab_index: None,
 //!         control_width: None,
 //!         min_control_width: None,
+//!     row_align: None,
 //!     }],
 //!     focused_field: None,
 //!     scroll_offset: 0,
@@ -70,6 +71,7 @@
 //!     label_width: None,
 //!     control_width: Default::default(),
 //!     min_control_width: None,
+//! spacing: Default::default(),
 //! };
 //!
 //! let mut rules = FormRules::default();
@@ -310,6 +312,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -337,6 +340,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -352,6 +356,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -459,6 +464,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let mut form = form_with(vec![field]);
         let mut rules = FormRules::default();

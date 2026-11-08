@@ -2870,6 +2870,7 @@ mod tests {
                         label_width: None,
                         control_width: Default::default(),
                         min_control_width: None,
+                        spacing: Default::default(),
                     }),
                     aux: None,
                     size: SectionSize::Weight(1.0),

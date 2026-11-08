@@ -104,6 +104,8 @@ mod form_groups;
 mod form_label_placement;
 #[path = "../examples/common/form_scroll.rs"]
 mod form_scroll;
+#[path = "../examples/common/form_spacing.rs"]
+mod form_spacing;
 #[path = "../examples/common/form_visibility.rs"]
 mod form_visibility;
 #[path = "../examples/common/frame_demo.rs"]
@@ -227,6 +229,7 @@ use form_dropdown::FormDropdownApp;
 use form_groups::FormGroupsApp;
 use form_label_placement::FormLabelPlacementApp;
 use form_scroll::FormScrollApp;
+use form_spacing::FormSpacingApp;
 use form_visibility::FormVisibilityApp;
 use frame_demo::FrameDemo;
 use full_chrome_demo::FullChromeDemo;
@@ -3105,6 +3108,34 @@ fn tab_group_drag_start_does_not_panic() {
     assert!(!driver.exited(), "mouse_up should not cause exit");
 }
 
+/// The default two-pane layout's root divider lands on a half-cell
+/// position at this driver width: `content width = 120`, divider
+/// thickness 1 → `available = 119`, `ratio = 0.5` → `position = 59.5`,
+/// which `tui::split::draw_split` paints at the truncated cell `59`.
+/// `TabGroupController::handle_drag_start` hit-tests
+/// `DividerInfo::divider_bounds` by hand (not through
+/// `SplitLayout::hit_test`), so it must use the backend's snapped click
+/// target rather than the raw unsnapped `59.5` position, or clicking the
+/// visible divider glyph at cell 59 would silently miss.
+#[test]
+fn tab_group_divider_drag_starts_at_the_half_cell_divider_s_painted_cell() {
+    let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
+
+    // Row 10 is inside the pane content area (below the row-0 tab strip,
+    // above the row-29 status bar), clear of any glyph text.
+    let divider_cell_x = 59.0;
+    let y = 10.0;
+
+    driver.mouse_down(divider_cell_x, y);
+    let after = driver.screen();
+    assert!(
+        after.contains("divider drag start"),
+        "clicking the painted divider cell (59) must start a drag:\n{after}"
+    );
+
+    driver.mouse_up(divider_cell_x, y);
+}
+
 #[test]
 fn palette_dual_mode_typing_in_input_mode_updates_query() {
     // Switch to Input mode, type a branch name, assert it appears in the
@@ -4564,15 +4595,16 @@ fn help_layer_demo_no_registered_help_still_dismisses_via_escape() {
 /// field.
 ///
 /// Clicks land on `find_bounds("│")`'s left edge, not its center like
-/// most tests in this file: `Split::layout`'s divider hit-region for a
-/// 0.5 ratio here is `[39.5, 40.5)`, but `tui/split.rs::draw_split` paints
-/// the glyph at `div.x.round()` = cell 40 (`[40.0, 41.0)`) — the two
-/// spans only overlap in `[40.0, 40.5)`. `find`'s usual cell-center
-/// coordinate (`40.5`) sits exactly on that boundary and resolves to
-/// `SecondPane`, not `Divider` — so a click there would silently miss the
-/// divider it just found painted. The left edge (`40.0`) is inside both
-/// spans regardless of the exact half-cell rounding, so it's the robust
-/// choice here.
+/// most tests in this file: an 80-wide area with a 1-cell divider gives
+/// `available = 79`, so a 0.5 ratio places the divider at the half-cell
+/// position `39.5`. `tui/split.rs::draw_split` paints the glyph at the
+/// truncated cell `39`, and the click target
+/// (`SplitLayout::divider_hit_bounds()`) is snapped to that same cell —
+/// `[39.0, 40.0)` — so either the left edge (`39.0`, used here) or the
+/// center (`39.5`) resolves to `Divider`. The left edge is kept as the
+/// click point because it is robust to either float->cell convention
+/// (truncation or rounding), not because it's the only one that works
+/// today.
 #[test]
 fn split_dragging_divider_moves_it_and_updates_ratio() {
     let mut driver = TuiDriver::new(SplitApp::new(), 80, 24);
@@ -10581,4 +10613,80 @@ fn codicon_tree_falls_back_to_plain_text_when_nerd_fonts_off() {
             "row label {label:?} should still be visible:\n{screen}"
         );
     }
+}
+
+// ─── FormSpacingApp: FormSpacing (padding/item_gap) + RowAlign ─────────
+//
+// `FormSpacing::padding` (2.0) insets the whole form; the footer
+// `ButtonRow`'s `row_align: Some(RowAlign::End)` pushes "Cancel"/"OK"
+// flush against the (padded) row's right edge instead of the left,
+// like every other `ButtonRow` demo in this crate.
+
+#[test]
+fn form_spacing_padding_insets_a_plain_field_on_every_edge() {
+    let driver = TuiDriver::new(FormSpacingApp::new(), 40, 10);
+    let name = driver
+        .find_bounds("Name")
+        .expect("the Name label is painted");
+    // Row 0: 2 rows of top padding. Column: 2 cells of left padding plus
+    // the form's own universal 1-cell label margin (see
+    // `tui_form_control_width`'s unpadded demo, where the same label
+    // starts at column 1).
+    assert_eq!(
+        (name.x, name.y),
+        (3.0, 2.0),
+        "Name label should sit 2 rows down and 3 columns in (2 padding + 1 margin):\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_spacing_padding_insets_the_control_columns_right_edge_too() {
+    let driver = TuiDriver::new(FormSpacingApp::new(), 40, 10);
+    let row = driver
+        .screen()
+        .lines()
+        .nth(2)
+        .unwrap_or_default()
+        .to_string();
+    // The Name/Email text inputs stretch to the row's right edge
+    // (`ControlWidth::Fill`, the default) — with 2 cells of right
+    // padding, that edge is column 37 (width 40, minus 2 padding,
+    // minus 1 for the closing `]` itself), not column 39.
+    assert_eq!(
+        row.chars().nth(37),
+        Some(']'),
+        "Fill's box should close 2 cells short of the unpadded right edge:\n{}",
+        driver.screen()
+    );
+    assert_eq!(
+        row.chars().nth(38),
+        Some(' '),
+        "the 2 padding columns themselves should be blank:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_spacing_row_align_end_pushes_the_button_row_to_the_padded_right_edge() {
+    let driver = TuiDriver::new(FormSpacingApp::new(), 40, 10);
+    let ok = driver
+        .find_bounds("[OK]")
+        .expect("the OK button is painted");
+    // Right content edge is column 38 (width 40 minus 2 padding); "[OK]"
+    // is 4 cells wide, so it starts at 34.
+    assert_eq!(
+        ok.x + ok.width,
+        38.0,
+        "OK's button box should be flush with the padded right edge:\n{}",
+        driver.screen()
+    );
+    let cancel = driver
+        .find_bounds("[Cancel]")
+        .expect("the Cancel button is painted");
+    assert!(
+        cancel.x < ok.x,
+        "Cancel should still sit to the left of OK:\n{}",
+        driver.screen()
+    );
 }
