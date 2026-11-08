@@ -1124,6 +1124,7 @@ pub(crate) mod native_surface_paint {
     use super::{
         action_text, valign_offset_y, Toolbar, ToolbarButton, ToolbarLayout, ToolbarPaintOptions,
     };
+    use crate::backend::PressableVisual;
     use crate::event::{Point, Rect};
     use crate::paint_surface::PaintSurface;
     use crate::primitives::button;
@@ -1223,13 +1224,12 @@ pub(crate) mod native_surface_paint {
                     }
 
                     // Highlight background: pressed/active > hovered > none.
-                    let highlight = if is_pressed || *is_active {
-                        Some(theme.selected_bg)
-                    } else if is_hovered {
-                        Some(theme.hover_bg)
-                    } else {
-                        None
-                    };
+                    let highlight =
+                        match PressableVisual::resolve(is_pressed, *is_active, is_hovered) {
+                            PressableVisual::PressedOrActive => Some(theme.selected_bg),
+                            PressableVisual::Hovered => Some(theme.hover_bg),
+                            PressableVisual::Resting => None,
+                        };
                     if let Some(bg) = highlight {
                         let inset = Rect::new(
                             item.x + 2.0,

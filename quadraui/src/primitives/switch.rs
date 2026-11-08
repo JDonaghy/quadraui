@@ -179,29 +179,62 @@ pub enum SwitchEvent {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{Switch, SwitchLayout};
+    use crate::backend::PressableVisual;
     use crate::event::Rect;
+    use crate::interaction::InteractionState;
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
     /// Paint a [`Switch`] into `rect` on `surface`, returning
-    /// [`SwitchLayout`] for host click dispatch.
+    /// [`SwitchLayout`] for host click dispatch. Identical to calling
+    /// [`paint_with_state`] with an empty [`InteractionState`] — no
+    /// hover/pressed tint — which is what every existing call site
+    /// (none of which track hover yet) keeps getting.
     pub(crate) fn paint(
         switch: &Switch,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         rect: Rect,
     ) -> SwitchLayout {
+        paint_with_state(switch, surface, theme, rect, &InteractionState::new())
+    }
+
+    /// [`paint`], additionally tinting the track toward
+    /// [`Theme::button_hover_bg`]/[`Theme::button_pressed_bg`] when
+    /// `interaction` reports [`Switch::id`] as hovered/pressed — the
+    /// same [`PressableVisual`] priority (pressed beats hovered beats
+    /// resting) [`crate::primitives::button::native_surface_paint::paint`]
+    /// already resolves for [`crate::Button`]. No backend calls this
+    /// yet (see [`crate::Backend::draw_switch_with_state`]); it exists
+    /// so a backend that starts resolving [`InteractionState`] for
+    /// `Switch` has one paint call site ready.
+    pub(crate) fn paint_with_state(
+        switch: &Switch,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        interaction: &InteractionState,
+    ) -> SwitchLayout {
         let layout = switch.layout(rect);
         if rect.width <= 0.0 || rect.height <= 0.0 {
             return layout;
         }
 
-        let track_color = if switch.disabled {
-            theme.surface_bg
-        } else if switch.value {
+        let resting_track = if switch.value {
             theme.accent_bg
         } else {
             theme.surface_bg
+        };
+        let track_color = if switch.disabled {
+            theme.surface_bg
+        } else {
+            let is_hovered = interaction.is_hovered(&switch.id);
+            let is_pressed = interaction.is_pressed(&switch.id);
+            match PressableVisual::resolve(is_pressed, false, is_hovered) {
+                PressableVisual::PressedOrActive => theme.button_pressed_bg(resting_track),
+                PressableVisual::Hovered => theme.button_hover_bg(resting_track),
+                PressableVisual::Resting => resting_track,
+            }
         };
         let radius = (rect.height / 2.0).max(0.0);
         surface.surface_fill_rounded_rect(rect, radius, track_color);
@@ -231,6 +264,174 @@ pub(crate) mod native_surface_paint {
         surface.surface_fill_rounded_rect(thumb_rect, thumb_diameter / 2.0, thumb_color);
 
         layout
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::{Point, Viewport};
+        use crate::types::{Color, WidgetId};
+        use crate::Image;
+
+        /// Records every fill/stroke call — enough to assert the
+        /// track's resting vs. hovered vs. pressed fill colour without
+        /// a Cairo/Core Graphics/Direct2D host.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, f32, Color)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+                self.fills.push((rect, radius, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _sw: f32) {}
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        const RECT: Rect = Rect::new(0.0, 0.0, 20.0, 10.0);
+
+        fn switch() -> Switch {
+            Switch::new(WidgetId::new("settings:wrap"))
+        }
+
+        /// The track's first (bottom-most, since it's pushed first)
+        /// fill colour — the track, not the thumb (pushed second).
+        fn track_fill(surface: &RecordingSurface) -> Color {
+            surface.fills.first().expect("track must paint a fill").2
+        }
+
+        #[test]
+        fn paint_matches_paint_with_state_against_an_empty_interaction() {
+            let switch = switch();
+            let theme = Theme::default();
+            let mut via_paint = RecordingSurface::default();
+            let mut via_with_state = RecordingSurface::default();
+
+            paint(&switch, &mut via_paint, &theme, RECT);
+            paint_with_state(
+                &switch,
+                &mut via_with_state,
+                &theme,
+                RECT,
+                &InteractionState::new(),
+            );
+
+            assert_eq!(via_paint.fills, via_with_state.fills);
+        }
+
+        #[test]
+        fn hovered_switch_tints_the_track_toward_button_hover_bg() {
+            let switch = switch();
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(switch.id.clone()));
+            let mut surface = RecordingSurface::default();
+
+            paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
+
+            assert_eq!(
+                track_fill(&surface),
+                theme.button_hover_bg(theme.surface_bg)
+            );
+        }
+
+        #[test]
+        fn pressed_switch_tints_the_track_toward_button_pressed_bg() {
+            let switch = switch();
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_pressed(Some(switch.id.clone()));
+            let mut surface = RecordingSurface::default();
+
+            paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
+
+            assert_eq!(
+                track_fill(&surface),
+                theme.button_pressed_bg(theme.surface_bg)
+            );
+        }
+
+        /// Pressed beats hovered — a switch can't be mid-press without
+        /// also being hovered, and the deeper pressed tint must win.
+        #[test]
+        fn pressed_and_hovered_resolves_to_the_pressed_tint() {
+            let switch = switch();
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(switch.id.clone()));
+            interaction.set_pressed(Some(switch.id.clone()));
+            let mut surface = RecordingSurface::default();
+
+            paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
+
+            assert_eq!(
+                track_fill(&surface),
+                theme.button_pressed_bg(theme.surface_bg)
+            );
+        }
+
+        /// A disabled switch must not tint even while reported hovered
+        /// — "disabled means inert" extends to the hover/pressed tint
+        /// too, not just click/key dispatch.
+        #[test]
+        fn disabled_switch_does_not_tint_when_hovered() {
+            let mut switch = switch();
+            switch.disabled = true;
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(switch.id.clone()));
+            let mut surface = RecordingSurface::default();
+
+            paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
+
+            assert_eq!(track_fill(&surface), theme.surface_bg);
+        }
+
+        /// Interaction state keyed by a different widget id must not
+        /// bleed into this switch's tint.
+        #[test]
+        fn unrelated_hovered_id_does_not_tint_the_track() {
+            let switch = switch();
+            let theme = Theme::default();
+            let mut interaction = InteractionState::new();
+            interaction.set_hovered(Some(WidgetId::new("some:other:widget")));
+            let mut surface = RecordingSurface::default();
+
+            paint_with_state(&switch, &mut surface, &theme, RECT, &interaction);
+
+            assert_eq!(track_fill(&surface), theme.surface_bg);
+        }
     }
 }
 
