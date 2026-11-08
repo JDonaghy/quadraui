@@ -65,19 +65,31 @@ only a push to `main` runs this workflow.
   through the same proportional-relax formula `Split::layout` uses.
   `Split::layout` is now a thin wrapper over `SplitTree::layout` applied to
   a two-leaf tree, so the two primitives can never drift onto two different
-  relax formulas. `Split`/`SplitTree`'s own accessibility role moved from
-  `A11yRole::Group` to `A11yRole::Splitter`; `DragTarget::SplitDivider`/
-  `UiEvent::SplitDividerDragged` now document and test `Split` usage
-  (`split_index` always `0`), not just `SplitTree`. `tui::split`'s divider
-  paint now truncates its axis coordinate instead of rounding, matching
-  `tui::split_tree`'s convention so a fractional-ratio divider paints at the
-  same cell both rasterisers would resolve it to. `tui_split_layout`'s
-  returned `SplitLayout::hit_test` now resolves clicks against that same
-  truncated cell (not the untruncated float position `Split::layout`
-  computes), so a divider whose position lands on a fractional cell
-  boundary (e.g. a `0.5` ratio over an odd `available`) is clickable at
-  the exact cell it paints at instead of silently missing every drag.
+  relax formulas. `DragTarget::SplitDivider`/`UiEvent::SplitDividerDragged`
+  now document and test `Split` usage (`split_index` always `0`), not just
+  `SplitTree`. The `Split { .. }` variant is now `#[non_exhaustive]` —
+  construct it via `SplitTree::split()`, not a struct literal, so it can
+  keep gaining fields like `first_min`/`second_min` without that being
+  breaking for a downstream crate.
+- `SplitLayout::divider_hit_bounds()` — the divider's click/drag target
+  rect, distinct from `divider_bounds` on backends (TUI) that snap the
+  click target to an integer cell. Hosts that hit-test a cached
+  `SplitLayout` by hand instead of calling `SplitLayout::hit_test` should
+  read this field, not `divider_bounds`.
 ### Changed
+- `Split`/`SplitTree`'s own accessibility role moved from `A11yRole::Group`
+  to `A11yRole::Splitter`.
+- `tui::split`'s divider paint now truncates its axis coordinate instead of
+  rounding, matching `tui::split_tree`'s convention so a fractional-ratio
+  divider paints at the same cell both rasterisers would resolve it to.
+  `tui_split_layout`'s returned `SplitLayout::hit_test` now resolves clicks
+  against that same truncated cell (not the untruncated float position
+  `Split::layout` computes), so a divider whose position lands on a
+  fractional cell boundary (e.g. a `0.5` ratio over an odd `available`) is
+  clickable at the exact cell it paints at instead of silently missing
+  every drag. `compose::tab_group` reads the new
+  `SplitLayout::divider_hit_bounds()` for the same reason, since it
+  hit-tests its cached divider rects by hand.
 - `compose::tab_group`'s `GroupLayout` divider numbering (`divider_idx` on
   `TabGroupEvent::DividerResized`, and the index `handle_drag_start`/
   `handle_drag_move` address) is now pre-order — this node, then `first`'s

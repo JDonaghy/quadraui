@@ -151,6 +151,17 @@ pub enum DragTarget {
     /// (`x` for [`SplitDirection::Horizontal`], `y` for
     /// [`SplitDirection::Vertical`] — matching
     /// [`crate::SplitTree::layout`]'s axis convention).
+    ///
+    /// This `ratio` is an approximation, not the exact inverse of
+    /// [`crate::SplitTree::layout`]'s placement formula: the layout
+    /// places the divider at
+    /// `axis_start + ratio * (axis_size - divider_thickness)`, one
+    /// divider-thickness short of `axis_size`. Feeding this event's
+    /// `new_ratio` straight back as the next frame's `ratio` therefore
+    /// under-shoots the cursor by up to one divider thickness (1 cell on
+    /// TUI; a few px on GTK) — usually imperceptible, since the error is
+    /// bounded by the thickness and corrects itself every frame the
+    /// cursor keeps moving.
     SplitDivider {
         tree: WidgetId,
         split_index: usize,

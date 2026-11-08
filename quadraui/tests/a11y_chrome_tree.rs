@@ -632,14 +632,12 @@ fn overlays_and_containers_report_their_own_structure() {
         })
         .with_surface(Surface::SplitTree {
             rect: rect(9.0, 10.0),
-            tree: SplitTree::Split {
-                direction: SplitDirection::Vertical,
-                ratio: 0.25,
-                first: Box::new(SplitTree::Leaf(WidgetId::new("editor"))),
-                second: Box::new(SplitTree::Leaf(WidgetId::new("terminal"))),
-                first_min: 0.0,
-                second_min: 0.0,
-            },
+            tree: SplitTree::split(
+                SplitDirection::Vertical,
+                0.25,
+                SplitTree::Leaf(WidgetId::new("editor")),
+                SplitTree::Leaf(WidgetId::new("terminal")),
+            ),
         })
         .with_surface(Surface::Tooltip {
             layout: tooltip.layout(
@@ -691,28 +689,22 @@ fn nested_split_of_splits_keeps_all_four_panes() {
     let snapshot = A11yScenario::new()
         .with_surface(Surface::SplitTree {
             rect: rect(0.0, 10.0),
-            tree: SplitTree::Split {
-                direction: SplitDirection::Horizontal,
-                ratio: 0.5,
-                first: Box::new(SplitTree::Split {
-                    direction: SplitDirection::Vertical,
-                    ratio: 0.5,
-                    first: Box::new(SplitTree::Leaf(WidgetId::new("top-left"))),
-                    second: Box::new(SplitTree::Leaf(WidgetId::new("bottom-left"))),
-                    first_min: 0.0,
-                    second_min: 0.0,
-                }),
-                second: Box::new(SplitTree::Split {
-                    direction: SplitDirection::Vertical,
-                    ratio: 0.5,
-                    first: Box::new(SplitTree::Leaf(WidgetId::new("top-right"))),
-                    second: Box::new(SplitTree::Leaf(WidgetId::new("bottom-right"))),
-                    first_min: 0.0,
-                    second_min: 0.0,
-                }),
-                first_min: 0.0,
-                second_min: 0.0,
-            },
+            tree: SplitTree::split(
+                SplitDirection::Horizontal,
+                0.5,
+                SplitTree::split(
+                    SplitDirection::Vertical,
+                    0.5,
+                    SplitTree::Leaf(WidgetId::new("top-left")),
+                    SplitTree::Leaf(WidgetId::new("bottom-left")),
+                ),
+                SplitTree::split(
+                    SplitDirection::Vertical,
+                    0.5,
+                    SplitTree::Leaf(WidgetId::new("top-right")),
+                    SplitTree::Leaf(WidgetId::new("bottom-right")),
+                ),
+            ),
         })
         .snapshot();
 

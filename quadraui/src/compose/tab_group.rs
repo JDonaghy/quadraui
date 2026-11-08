@@ -380,7 +380,10 @@ impl GroupLayout {
 
 /// Cached info about one divider from the last render pass.
 struct DividerInfo {
-    /// The thin strip that is the visual divider handle.
+    /// The divider's click/drag target — `SplitLayout::divider_hit_bounds()`,
+    /// not `SplitLayout::divider_bounds`, so `handle_drag_start`'s
+    /// hand-rolled hit test lands on the cell/pixel the divider is
+    /// actually painted at on every backend.
     divider_bounds: Rect,
     /// Orientation of this split.
     direction: SplitDirection,
@@ -1965,7 +1968,12 @@ fn layout_recursive(
             // Pre-order: this divider first, then first subtree's
             // dividers, then second subtree's.
             dividers.push(DividerInfo {
-                divider_bounds: sl.divider_bounds,
+                // `divider_hit_bounds()`, not `sl.divider_bounds`: this
+                // field is hit-tested by hand in `handle_drag_start`
+                // rather than through `SplitLayout::hit_test`, so it
+                // needs the backend's click target (snapped to the
+                // painted cell on TUI), not the unsnapped float position.
+                divider_bounds: sl.divider_hit_bounds(),
                 direction: *direction,
                 split_bounds: bounds,
                 ratio: *ratio,

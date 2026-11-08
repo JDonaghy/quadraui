@@ -121,6 +121,26 @@ impl SplitLayout {
         }
         SplitHit::Outside
     }
+
+    /// The divider's click/drag target rect, in the same backend-native
+    /// coordinate units as the rest of this layout.
+    ///
+    /// On backends that snap the click target to an integer grid (TUI's
+    /// `tui_split_layout`, via `snap_divider_hit_region_to_painted_cell`),
+    /// this differs from `divider_bounds`, which always keeps the
+    /// unsnapped float position for hosts positioning pane content.
+    /// Unaffected backends (GTK/win/macos pixel layouts) return the same
+    /// rect as `divider_bounds`. Hosts that hit-test the divider by hand
+    /// instead of calling [`SplitLayout::hit_test`] — e.g. to cache it
+    /// across frames for drag start — must use this, not `divider_bounds`,
+    /// or they can click a cell the divider isn't painted at.
+    ///
+    /// `hit_regions`'s first entry is always the divider (`Split::layout`
+    /// and every snapping variant push it first, for hit-test specificity
+    /// over the panes it sits between).
+    pub fn divider_hit_bounds(&self) -> Rect {
+        self.hit_regions[0].0
+    }
 }
 
 impl Split {
@@ -142,6 +162,11 @@ impl Split {
     /// `SplitTree::Split`, so the two primitives share one relax
     /// formula and can never drift apart.
     pub fn layout(&self, bounds: Rect, measure: SplitMeasure) -> SplitLayout {
+        // Both leaves share `self.id` — this transient tree is never
+        // inspected by id (only `leaves[0]`/`leaves[1]`/`dividers[0]`,
+        // read positionally below), so `SplitTree::leaf_ids()`'s
+        // identity invariant doesn't apply here. Don't "fix" this by
+        // minting distinct ids; `Split` has exactly one id to give both.
         let tree = SplitTree::split(
             self.direction,
             self.ratio,

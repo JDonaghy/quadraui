@@ -88,6 +88,15 @@ pub enum SplitTree {
     /// A single leaf — no further nesting at this position.
     Leaf(WidgetId),
     /// A split containing two sub-trees.
+    ///
+    /// `#[non_exhaustive]`: construct via [`SplitTree::split`] (then
+    /// [`SplitTree::with_min_sizes`] if needed), not a struct literal —
+    /// this lets the variant gain fields later (as `first_min`/
+    /// `second_min` did) without that being a breaking change for any
+    /// downstream crate matching or building one by hand. A same-crate
+    /// `match` may still destructure every named field directly; only
+    /// external construction and exhaustive matching are restricted.
+    #[non_exhaustive]
     Split {
         direction: SplitDirection,
         /// Ratio of space given to `first` (`0.0..=1.0`).
@@ -450,16 +459,13 @@ impl SplitTree {
 /// `first_min`/`second_min`: clamp `ratio * available` into
 /// `[first_min, available - second_min]` when both minimums fit, or —
 /// when the container is too small for both — split `available`
-/// proportionally between the two minimums instead. Shared by
-/// [`SplitTree::layout`] and [`crate::Split::layout`] (via
-/// [`SplitTree::Split{Leaf,Leaf}`](SplitTree::Split)) so the two
-/// primitives can never drift onto two different relax formulas.
-pub(crate) fn resolve_pane_size(
-    available: f32,
-    ratio: f32,
-    first_min: f32,
-    second_min: f32,
-) -> f32 {
+/// proportionally between the two minimums instead. The only pane-size
+/// relax formula in the crate: [`SplitTree::layout`] calls this
+/// directly, and [`crate::Split::layout`] shares it transitively by
+/// building a two-leaf [`SplitTree::Split`] and calling
+/// [`SplitTree::layout`] on it, so the two primitives can never drift
+/// onto two different relax formulas.
+fn resolve_pane_size(available: f32, ratio: f32, first_min: f32, second_min: f32) -> f32 {
     let first_raw = available * ratio;
     if first_min + second_min <= available {
         first_raw.max(first_min).min(available - second_min)
