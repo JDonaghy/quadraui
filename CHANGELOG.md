@@ -96,7 +96,9 @@ only a push to `main` runs this workflow.
   go through a new `primitives::row_stack` module instead of two field-
   identical, independently-maintained copies. Pure refactor — no behavior
   change; `TreePaintState`/`ListPaintState` keep their existing names,
-  fields, and builders.
+  fields, and builders. The docs that quote the primitive-module count
+  (root README, `lib.rs` crate doc, `canvas.rs`) now say 50 and name
+  `layout_metrics`/`row_stack` as shared-math modules rather than widgets.
 - `tui::services::TuiPlatformServices::open_url`/`open_url_result` now rejects
   any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
   `BackendError::Unsupported`, where it previously forwarded every input

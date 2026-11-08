@@ -4,9 +4,9 @@
 //! `scroll_offset` (optionally overridden by a pixel-precise `scroll_px`),
 //! clip the last visible row to the viewport, and expose a vertical
 //! `Scrollbar` whose thumb tracks the same scroll position. This module
-//! factors that shared arithmetic out of `tree.rs` / `list.rs` so a future
-//! row-stacking primitive gets it for free, and so the two existing ones
-//! can never drift out of sync on the underlying math.
+//! is the single home for that shared arithmetic, so `tree.rs` and
+//! `list.rs` cannot drift out of sync on it and a future row-stacking
+//! primitive gets it for free.
 //!
 //! What's *not* here: hit-region construction (`TreeView` splits a row
 //! into `Chevron`/`Row` zones; `ListView` doesn't), border/title insets
@@ -48,15 +48,14 @@ pub struct RowStackLayout<E> {
 /// at `y_end`, each positioned at `x` with width `width` and a height
 /// from `measure(i) -> (height, extra)`.
 ///
-/// Resolves `scroll_offset` vs. `scroll_px` exactly as
+/// Scroll resolution for both
 /// [`TreeView::layout_with_scroll_px`](crate::primitives::tree::TreeView::layout_with_scroll_px)
 /// and
-/// [`ListView::layout_with_scroll_px`](crate::primitives::list::ListView::layout_with_scroll_px)
-/// did inline before this extraction: `scroll_px` wins when set and
-/// usable (via [`resolve_scroll_px`]), using `measure(0).0` as the
-/// uniform row-height basis for the pixel conversion — read only when
-/// `scroll_px` is actually in play, since `measure` may do real
-/// text-measurement work on a GUI backend.
+/// [`ListView::layout_with_scroll_px`](crate::primitives::list::ListView::layout_with_scroll_px):
+/// `scroll_px` wins when set and usable (via [`resolve_scroll_px`]),
+/// using `measure(0).0` as the uniform row-height basis for the pixel
+/// conversion — read only when `scroll_px` is actually in play, since
+/// `measure` may do real text-measurement work on a GUI backend.
 ///
 /// The last visible row's `bounds.height` is clipped to whatever fits
 /// inside `y_end`; the loop still advances `y` by the row's *unclipped*
@@ -151,8 +150,7 @@ pub fn vscrollbar_thumb(
 ///
 /// [`crate::primitives::tree::TreePaintState`] and
 /// [`crate::primitives::list::ListPaintState`] are type aliases for this
-/// struct — the two were field-identical before this extraction, so
-/// aliasing them is not a behaviour change.
+/// struct: both primitives track exactly these three fields.
 ///
 /// `#[non_exhaustive]`: construct via [`Default::default`] plus the
 /// `with_*` builders, so a future field here is additive.
