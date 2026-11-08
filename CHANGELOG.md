@@ -97,6 +97,17 @@ only a push to `main` runs this workflow.
   convention instead of the previous in-order ("first subtree, this node,
   second subtree") numbering. Only observable for a tree with 3+ panes (2+
   `Split` nodes); a single divider's index is unaffected.
+- `primitives::spinner::native_surface_paint::paint`,
+  `primitives::command_center::native_surface_paint::paint`, and
+  `primitives::form::native_surface_paint::paint_settings_chrome` — shared
+  `PaintSurface` painters replacing the per-backend duplication each
+  primitive carried: `Spinner`'s braille frame table (now
+  `primitives::spinner::FRAMES`/`frame_glyph`, with `tui::spinner` the first
+  adopter), `CommandCenter`'s three disagreeing search-box looks (unified on
+  the rounded-fill-plus-icon "VS Code" style), and `Form`'s settings-panel
+  header/search-row chrome. No backend's `draw_spinner`/`draw_command_center`/
+  `draw_settings_chrome` routes through these yet — per-backend adoption
+  (gtk/macos/win) is tracked as follow-on issues.
 - `primitives::layout_metrics::pixel` gains the remaining pixel-tab-bar
   constants every backend already duplicated independently —
   `TAB_PAD_COMPACT`/`TAB_INNER_GAP_COMPACT`/`TAB_OUTER_GAP_COMPACT`,
