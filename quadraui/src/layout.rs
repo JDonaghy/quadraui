@@ -41,7 +41,12 @@ use serde::{Deserialize, Serialize};
 /// the same "which side, with overflow fallback" concept:
 /// `TooltipPlacement` (`Top`/`Bottom`/`Left`/`Right`), `PopupPlacement`
 /// (`Above`/`Below`), `CompletionsPlacement` (`Below`/`Above`), and
-/// `ContextMenuPlacement` (`AnchorPoint`/`Below`/`Above`).
+/// `ContextMenuPlacement` (`AnchorPoint`/`Below`/`Above`). Each of those
+/// four keeps its own public enum and method signature — consumers never
+/// see a `Side` — but `Tooltip::layout`, `RichTextPopup::layout`,
+/// `Completions::layout`, and `ContextMenu::layout`/`layout_at` all map
+/// their enum to a `Side` and delegate the actual flip/clamp geometry to
+/// [`Anchor::resolve`] internally, same as [`Float`](crate::Float).
 ///
 /// `Serialize`/`Deserialize`: [`Float`](crate::Float) is
 /// the first primitive to store an [`Anchor`] directly on a
