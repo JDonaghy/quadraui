@@ -24,7 +24,7 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   the Windows jump list). A new `UnsupportedError` exception (mirrors
   `quadraui-ffi`'s `QUI_ERR_UNSUPPORTED`) surfaces a backend with no
   implementation for one of these — the headless `TuiBackend` implements
-  only the power-save blocker and `login_item_enabled` for real — instead of
+  none of them for real — instead of
   a panic or a silent no-op. The void-returning methods among these
   (everything but `check_for_update`, `download_and_stage`,
   `begin_power_save_block`, `login_item_enabled`, and

@@ -485,9 +485,10 @@ impl GlobalShortcutId {
 /// [`crate::PlatformServices::register_global_shortcut`] override (Win32
 /// `RegisterHotKey`, Carbon/Cocoa `RegisterEventHotKey`, the
 /// `org.freedesktop.portal.GlobalShortcuts` XDG portal on GTK/Linux) is
-/// expected to wrap its native call around this registry, mirroring the
-/// way `tui::services::TuiPlatformServices::begin_power_save_block` wraps
-/// [`crate::power::BlockerId::next`] in `power.rs` — those are the epic's
+/// expected to wrap its native call around this registry, the same way a
+/// [`crate::PlatformServices::begin_power_save_block`] override is
+/// expected to wrap [`crate::power::BlockerId::next`] in `power.rs` —
+/// those are the epic's
 /// backend-specific follow-ons, out of scope here. TUI has no OS-wide
 /// hotkey of its own to register, so it inherits
 /// [`crate::PlatformServices::register_global_shortcut`]'s default

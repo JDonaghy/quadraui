@@ -4884,8 +4884,9 @@ pub trait PlatformServices {
     /// real inhibitor yet (`IOPMAssertionCreateWithName` on macOS,
     /// `SetThreadExecutionState` on Win-GUI, `org.freedesktop.login1`'s
     /// `Inhibit` call on GTK/Linux are separate, backend-specific
-    /// follow-ons). TUI overrides this with an honest no-op blocker — see
-    /// [`crate::tui::services::TuiPlatformServices::begin_power_save_block`].
+    /// follow-ons). TUI leaves this at the default: a terminal has no
+    /// inhibitor API of its own, and a [`BlockerId`] minted without ever
+    /// asking the OS to stay awake would not be a truthful `Ok`.
     fn begin_power_save_block(&self, kind: PowerSaveKind) -> ServiceResult<BlockerId> {
         let _ = kind;
         Err(BackendError::Unsupported)
@@ -5036,12 +5037,11 @@ pub trait PlatformServices {
     /// `app.getLoginItemSettings().openAtLogin`.
     ///
     /// Default: [`BackendError::Unsupported`], mirroring
-    /// [`Self::set_login_item`]'s default. TUI overrides this with an
-    /// honest no-op that always reports `false` rather than staying
-    /// `Unsupported` — see
-    /// [`crate::tui::services::TuiPlatformServices::login_item_enabled`]
-    /// and [`crate::login_item`]'s module doc for why the query and the
-    /// mutation get different defaults.
+    /// [`Self::set_login_item`]'s default. TUI leaves this at the default
+    /// too: a blanket `Ok(false)` would read as "this app is not
+    /// registered to start at login", which a terminal has no way to
+    /// actually know — a host or packaging step can still have registered
+    /// the binary out of band. See [`crate::login_item`]'s module doc.
     fn login_item_enabled(&self) -> ServiceResult<bool> {
         Err(BackendError::Unsupported)
     }
@@ -5055,11 +5055,8 @@ pub trait PlatformServices {
     /// (reserved names, invalid characters).
     ///
     /// Default: [`BackendError::Unsupported`] on every in-tree backend,
-    /// including TUI. Unlike [`Self::set_login_item`]/
-    /// [`Self::login_item_enabled`] — where TUI can answer
-    /// `login_item_enabled` honestly with `false` because a terminal
-    /// binary's own code path could never have created that registration —
-    /// there is no safe uniform default here on *any* backend: this
+    /// including TUI. There is no safe non-error default here on *any*
+    /// backend: this
     /// scheme may already be claimed by a different installation of this
     /// same app, a different app entirely, or nothing at all, and that
     /// fact lives in OS state (`LSSetDefaultHandlerForURLScheme`'s
@@ -5084,8 +5081,9 @@ pub trait PlatformServices {
     /// OS registration state this seam does not yet touch on any
     /// backend, and a blanket `false` would be actively misleading for a
     /// scheme a previous run, a packaging step, or a different app
-    /// already claimed — not merely incomplete, the way
-    /// [`Self::login_item_enabled`]'s TUI override is.
+    /// already claimed — the same reason
+    /// [`Self::login_item_enabled`] keeps its own `Unsupported` default
+    /// everywhere.
     fn is_default_protocol_client(&self, scheme: &str) -> ServiceResult<bool> {
         let _ = scheme;
         Err(BackendError::Unsupported)

@@ -18,14 +18,16 @@
 //
 // Every `QuiApp` method here resolves `quadraui::PlatformServices`/
 // `WindowControl`/`TrayService`/`Backend::set_cursor` off this app's own
-// headless `TuiBackend`. `TuiBackend` implements only
-// `beginPowerSaveBlock`/`endPowerSaveBlock` (a genuine, if no-op,
-// bookkeeping inhibitor) and `loginItemEnabled` (always reports `false`,
-// truthfully, since this backend itself never registers a login item) for
-// real; every other method here falls through to
+// headless `TuiBackend`, which implements none of the `PlatformServices`
+// methods here: a terminal owns no sleep inhibitor, login-item
+// registration, protocol registration, drag source, recent-documents list,
+// dock menu, jump list, or updater. Every such method falls through to
 // `BackendError::Unsupported` on this backend, surfaced as
 // `UnsupportedError`/`InternalError` rather than a panic or a silent no-op --
-// this file's main acceptance case.
+// this file's main acceptance case. Argument and handle validation in
+// `quadraui_binding_core` runs ahead of the service call, so a bad `kind`
+// string or an unknown handle still raises `InvalidDescriptorError`
+// instead.
 //
 // Run against a built addon, e.g.:
 //
@@ -78,14 +80,18 @@ test("applyOnQuit rejects an unknown handle", () => {
 
 // ─── Power-save blocker ─────────────────────────────────────────────────────
 //
-// The one real (non-degraded) `PlatformServices` implementation covered in
-// this file: `TuiBackend` genuinely tracks an inhibitor handle, it just
-// never calls out to the OS to back it with anything.
+// A terminal has no sleep-inhibitor API to call into, so `TuiBackend` keeps
+// the trait's `Unsupported` default here rather than minting a handle it
+// never backs with anything. Argument/handle validation still happens in
+// `quadraui_binding_core` ahead of the service call, so the two rejection
+// cases below are unaffected by that.
 
-test("beginPowerSaveBlock/endPowerSaveBlock round trip", () => {
+test("beginPowerSaveBlock raises UnsupportedError on TUI", () => {
   const app = new QuiApp(10, 10);
-  const handle = app.beginPowerSaveBlock("prevent_display_sleep");
-  app.endPowerSaveBlock(handle);
+  assert.throws(
+    () => app.beginPowerSaveBlock("prevent_display_sleep"),
+    (err: unknown) => err instanceof UnsupportedError,
+  );
 });
 
 test("beginPowerSaveBlock rejects an unknown kind", () => {
@@ -106,9 +112,12 @@ test("endPowerSaveBlock rejects an unknown handle", () => {
 
 // ─── Launch at login ────────────────────────────────────────────────────────
 
-test("loginItemEnabled reports false on TUI", () => {
+test("loginItemEnabled raises UnsupportedError on TUI", () => {
   const app = new QuiApp(10, 10);
-  assert.equal(app.loginItemEnabled(), false);
+  assert.throws(
+    () => app.loginItemEnabled(),
+    (err: unknown) => err instanceof UnsupportedError,
+  );
 });
 
 test("setLoginItem raises UnsupportedError on TUI", () => {
