@@ -59,6 +59,14 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `FormController::field_rect` — resolves where a specific field painted
+  inside a multi-field `Form`, in the same coordinate space as the `rect`
+  passed to `render`/`handle`. A host anchors a `ComboBox`/`DatePicker`/
+  `ColorPicker` popup overlay to that rect and calls `Backend::draw_combo_box`
+  (or the equivalent) directly, instead of approximating the field's
+  position — the whole-form rect only trivially equals one field's rect when
+  the form has exactly one field. Returns `None` when the field id isn't on
+  the stored form, or is scrolled out of the visible viewport.
 - `Toolbar::layout_with_options`/`ToolbarLayoutOptions`/`ToolbarOrientation` —
   a toolbar can now lay its buttons out top-to-bottom
   (`ToolbarOrientation::Vertical`) instead of only left-to-right; `Toolbar::layout`
