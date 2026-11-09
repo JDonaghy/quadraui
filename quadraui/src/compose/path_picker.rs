@@ -4,15 +4,19 @@
 //! Both pickers browse a filesystem tree with the same query/list/
 //! selection/scroll mechanics and the same key map; they differ only in
 //! *how* they walk the filesystem (directories only vs. files + directories,
-//! extension filters, the `"."` row) and in what `Enter` resolves to. This
-//! module owns the shared half so the two facades stay in lock-step instead
-//! of drifting apart one small fix at a time.
+//! extension filters, the `"."` row), in what `Enter` resolves to, and in
+//! whether the vim-style `-`/`j`/`k` shortcuts take priority over typing
+//! them (see [`classify_nav_key`]'s `vim_keys` parameter — off in
+//! `FilePickerController`'s Save mode, where the query *is* the
+//! destination filename). This module owns the shared half so the two
+//! facades stay in lock-step instead of drifting apart one small fix at a
+//! time.
 //!
 //! [`FolderPickerController`]: crate::compose::FolderPickerController
 //! [`FilePickerController`]: crate::compose::FilePickerController
 
 use std::cmp::Reverse;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{Key, Modifiers, NamedKey};
 
@@ -22,7 +26,8 @@ use crate::{Key, Modifiers, NamedKey};
 /// Both facades route every `KeyPressed` event through
 /// [`classify_nav_key`] and translate the result into their own
 /// `*PickerEvent`, so the key map itself — including the vim-style `j`/`k`/
-/// `-` shortcuts — can never drift between the two pickers again.
+/// `-` shortcuts, when enabled (see `classify_nav_key`'s `vim_keys`
+/// parameter) — can never drift between the two pickers again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NavKey {
     /// Dismiss the picker.
@@ -50,27 +55,36 @@ pub(crate) enum NavKey {
 /// vim-style shortcut instead of falling through `None` for an app-level
 /// accelerator.
 ///
-/// Trade-off (shared by both pickers): the vim shortcuts `-` (parent dir),
-/// `k` (up), and `j` (down) are matched *before* the generic
-/// `Key::Char(c) => Char(c)` arm. That means the query can never begin
-/// with — or contain — those three characters when typed through
-/// `handle()`; a consumer that needs typing-priority (e.g. filenames that
-/// routinely start with `j`/`k`/`-`) can call the state-mutation methods
-/// (`push_char`, `move_up`, …) directly instead of routing through
-/// `handle()`.
-pub(crate) fn classify_nav_key(key: &Key, modifiers: &Modifiers) -> Option<NavKey> {
+/// `vim_keys` controls whether the vim shortcuts `-` (parent dir), `k`
+/// (up), and `j` (down) are matched *before* the generic
+/// `Key::Char(c) => Char(c)` arm:
+///
+/// - `true` (`FolderPickerController`, and `FilePickerController` in
+///   [`FilePickerMode::Open`](crate::compose::FilePickerMode::Open)): the
+///   query can never begin with — or contain — those three characters
+///   when typed through `handle()`; a consumer that needs typing-priority
+///   anyway can call the state-mutation methods (`push_char`, `move_up`,
+///   …) directly instead of routing through `handle()`.
+/// - `false` (`FilePickerController` in
+///   [`FilePickerMode::Save`](crate::compose::FilePickerMode::Save)): `-`/
+///   `j`/`k` fall through to `Char` like any other printable character,
+///   because the query *is* the destination filename there and real
+///   filenames routinely contain all three (`my-notes.txt`, `journal.md`,
+///   `Makefile-k8s`). The arrow keys and `Up`/`Down` still navigate
+///   either way — only the vim letter/dash aliases are gated.
+pub(crate) fn classify_nav_key(key: &Key, modifiers: &Modifiers, vim_keys: bool) -> Option<NavKey> {
     let modified = modifiers.ctrl || modifiers.cmd;
     match key {
         Key::Named(NamedKey::Escape) => Some(NavKey::Escape),
         Key::Named(NamedKey::Enter) => Some(NavKey::Confirm),
 
         Key::Named(NamedKey::Up) => Some(NavKey::Up),
-        Key::Char('k') if !modified => Some(NavKey::Up),
+        Key::Char('k') if vim_keys && !modified => Some(NavKey::Up),
 
         Key::Named(NamedKey::Down) => Some(NavKey::Down),
-        Key::Char('j') if !modified => Some(NavKey::Down),
+        Key::Char('j') if vim_keys && !modified => Some(NavKey::Down),
 
-        Key::Char('-') if !modified => Some(NavKey::NavigateUp),
+        Key::Char('-') if vim_keys && !modified => Some(NavKey::NavigateUp),
 
         Key::Named(NamedKey::Backspace) => Some(NavKey::Backspace),
 
@@ -122,6 +136,44 @@ pub(crate) fn filter_entries(all: &[PathBuf], query: &str) -> Vec<PathBuf> {
         .take(CAP)
         .map(|(_, p)| p.clone())
         .collect()
+}
+
+/// Whether `entry` names a directory, preferring the file type the
+/// directory enumeration already handed us over a second trip to the
+/// filesystem.
+///
+/// Shared by both pickers' filesystem walks
+/// ([`crate::compose::file_picker::walk_file_entries_recursive`] and
+/// [`crate::compose::folder_picker::walk_dir_entries_recursive`]) so a
+/// transient stat failure is handled identically in both, rather than one
+/// walk getting the robustness fix below and the other silently dropping
+/// or misclassifying the entry.
+///
+/// # Why not just `path.is_dir()`
+///
+/// [`Path::is_dir`] issues a *fresh* `stat`/`GetFileAttributes` per entry
+/// and — because it returns `bool`, not `io::Result<bool>` — reports any
+/// failure as plain `false`. A directory that momentarily can't be
+/// stat'ed is therefore silently reclassified as *not a directory*: the
+/// file picker then runs it through its extension filter (which may drop
+/// the row entirely) and the folder picker drops it outright, either way
+/// costing the user the ability to navigate through that directory.
+/// Transient stat failures are routine on Windows, where an on-access
+/// virus scanner holds a brief exclusive handle on freshly created files
+/// and directories and unrelated opens come back
+/// `ERROR_SHARING_VIOLATION`.
+///
+/// [`std::fs::DirEntry::file_type`] answers from the data the directory
+/// read already returned, so on Windows (and Linux, and macOS) it costs
+/// no syscall at all and cannot fail for that reason. Its one documented
+/// gap is symlinks — it describes the *link*, never its target — so
+/// those alone fall through to the `is_dir()` probe, which follows the
+/// link the way both walks want.
+pub(crate) fn dir_entry_is_dir(entry: &std::fs::DirEntry, path: &Path) -> bool {
+    match entry.file_type() {
+        Ok(ft) if !ft.is_symlink() => ft.is_dir(),
+        _ => path.is_dir(),
+    }
 }
 
 /// Shared query/list/selection/scroll state for a filesystem-browsing
@@ -279,6 +331,16 @@ mod tests {
         assert_eq!(posix.unwrap(), windows.unwrap());
     }
 
+    /// An empty query scores `Some(100)` rather than `None` — harmless
+    /// only because [`filter_entries`]'s own empty-query fast path never
+    /// calls [`fuzzy_score_path`] in that case. Pinned so a future change
+    /// to either function notices if that invariant stops holding.
+    #[test]
+    fn fuzzy_score_empty_query_none() {
+        let s = fuzzy_score_path("anything", "");
+        assert!(s.is_some());
+    }
+
     #[test]
     fn fuzzy_score_kbs_matches_kube_system() {
         // Non-contiguous subsequence across a word boundary, the shape
@@ -332,11 +394,11 @@ mod tests {
     #[test]
     fn classify_escape_and_enter() {
         assert_eq!(
-            classify_nav_key(&Key::Named(NamedKey::Escape), &Modifiers::default()),
+            classify_nav_key(&Key::Named(NamedKey::Escape), &Modifiers::default(), true),
             Some(NavKey::Escape)
         );
         assert_eq!(
-            classify_nav_key(&Key::Named(NamedKey::Enter), &Modifiers::default()),
+            classify_nav_key(&Key::Named(NamedKey::Enter), &Modifiers::default(), true),
             Some(NavKey::Confirm)
         );
     }
@@ -344,16 +406,41 @@ mod tests {
     #[test]
     fn classify_vim_keys_map_to_navigation() {
         assert_eq!(
-            classify_nav_key(&Key::Char('j'), &Modifiers::default()),
+            classify_nav_key(&Key::Char('j'), &Modifiers::default(), true),
             Some(NavKey::Down)
         );
         assert_eq!(
-            classify_nav_key(&Key::Char('k'), &Modifiers::default()),
+            classify_nav_key(&Key::Char('k'), &Modifiers::default(), true),
             Some(NavKey::Up)
         );
         assert_eq!(
-            classify_nav_key(&Key::Char('-'), &Modifiers::default()),
+            classify_nav_key(&Key::Char('-'), &Modifiers::default(), true),
             Some(NavKey::NavigateUp)
+        );
+    }
+
+    /// With `vim_keys: false` (`FilePickerController` in Save mode), `-`/
+    /// `j`/`k` must fall through to `Char` so the query — the destination
+    /// filename — can contain them.
+    #[test]
+    fn classify_vim_keys_disabled_falls_through_to_char() {
+        assert_eq!(
+            classify_nav_key(&Key::Char('j'), &Modifiers::default(), false),
+            Some(NavKey::Char('j'))
+        );
+        assert_eq!(
+            classify_nav_key(&Key::Char('k'), &Modifiers::default(), false),
+            Some(NavKey::Char('k'))
+        );
+        assert_eq!(
+            classify_nav_key(&Key::Char('-'), &Modifiers::default(), false),
+            Some(NavKey::Char('-'))
+        );
+        // Named arrow keys still navigate even with vim keys disabled —
+        // only the letter/dash aliases are gated.
+        assert_eq!(
+            classify_nav_key(&Key::Named(NamedKey::Down), &Modifiers::default(), false),
+            Some(NavKey::Down)
         );
     }
 
@@ -363,13 +450,13 @@ mod tests {
             cmd: true,
             ..Default::default()
         };
-        assert_eq!(classify_nav_key(&Key::Char('j'), &modifiers), None);
+        assert_eq!(classify_nav_key(&Key::Char('j'), &modifiers, true), None);
     }
 
     #[test]
     fn classify_plain_char_falls_through_to_char() {
         assert_eq!(
-            classify_nav_key(&Key::Char('x'), &Modifiers::default()),
+            classify_nav_key(&Key::Char('x'), &Modifiers::default(), true),
             Some(NavKey::Char('x'))
         );
     }

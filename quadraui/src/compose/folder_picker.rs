@@ -57,7 +57,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::path_picker::{classify_nav_key, NavKey, PathPickerCore};
+use super::path_picker::{classify_nav_key, dir_entry_is_dir, NavKey, PathPickerCore};
 use crate::{
     Backend, Icon, Key, Modifiers, Palette, PaletteItem, Rect, StyledText, UiEvent, WidgetId,
 };
@@ -371,7 +371,9 @@ impl FolderPickerController {
     ///
     /// [`FilePickerController`]: crate::compose::FilePickerController
     fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> FolderPickerEvent {
-        match classify_nav_key(key, modifiers) {
+        // The folder picker's query is never a destination filename, so
+        // the vim shortcuts always take priority over typing them.
+        match classify_nav_key(key, modifiers, true) {
             Some(NavKey::Escape) => FolderPickerEvent::Cancelled,
 
             Some(NavKey::Confirm) => {
@@ -578,7 +580,7 @@ fn walk_dir_entries_recursive(
         if ignore_dirs.iter().any(|d| d == &name) {
             continue;
         }
-        if path.is_dir() {
+        if dir_entry_is_dir(&entry, &path) {
             if let Ok(rel) = path.strip_prefix(root) {
                 out.push(rel.to_path_buf());
             }
