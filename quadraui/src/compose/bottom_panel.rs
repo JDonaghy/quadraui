@@ -66,6 +66,9 @@
 //! — dragging it emits `AppShellEvent::BottomPanelResized`, which the
 //! shell runner maps to [`BottomPanelEvent::Resized`] for the app.
 
+use serde::ser::SerializeMap;
+use serde::{Serialize, Serializer};
+
 pub use crate::backend::BackendWidget;
 // This controller caches exactly what `Backend::draw_tab_bar` returns for
 // click dispatch — see `TabBarHits`'s own doc for its stability contract.
@@ -144,6 +147,31 @@ pub enum BottomPanelEvent {
     /// `AppShellEvent::BottomPanelResized`). Payload is the new panel
     /// height in the backend's native units (cells for TUI, pixels for GTK).
     Resized(f32),
+}
+
+/// Externally-tagged, one-entry-map shape: `{"TabActivated": "bp:terminal"}`,
+/// `{"MaximiseToggled": null}`, etc. Hand-written rather than derived for
+/// the same reason [`crate::compose::app_shell::AppShellEvent`]'s own impl
+/// is: `serde`'s default external tagging would serialize the unit variant
+/// [`BottomPanelEvent::MaximiseToggled`] as a bare string, not the
+/// dict-with-`null` shape a binding's own `on_bottom_panel_event` callback
+/// already observes. Written once here rather than once per binding — a
+/// binding reaches this via a generic `pythonize::pythonize`/
+/// `serde_json::to_value` call, not its own hand-rolled match.
+impl Serialize for BottomPanelEvent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(1))?;
+        match self {
+            BottomPanelEvent::TabActivated(id) => map.serialize_entry("TabActivated", id)?,
+            BottomPanelEvent::TabClosed(id) => map.serialize_entry("TabClosed", id)?,
+            BottomPanelEvent::MaximiseToggled => map.serialize_entry("MaximiseToggled", &())?,
+            BottomPanelEvent::Resized(height) => map.serialize_entry("Resized", height)?,
+        }
+        map.end()
+    }
 }
 
 /// Resolved panel regions for one rendered frame.
@@ -843,5 +871,36 @@ mod tests {
         backend.set_style(crate::Style::default().with_tab_height(50.0));
         let layout = ctrl.render(&mut backend, Rect::new(0.0, 0.0, 80.0, 24.0));
         assert_eq!(layout.tab_strip_bounds.height, 1.0);
+    }
+
+    /// Golden shape for every [`BottomPanelEvent`] variant's [`Serialize`]
+    /// impl — pins the externally-tagged, one-entry-map JSON a binding's
+    /// own `on_bottom_panel_event` dict/JSON payload must keep matching
+    /// byte-for-byte, the same pinning `app_shell`'s own golden test gives
+    /// [`crate::compose::app_shell::AppShellEvent`].
+    #[test]
+    fn bottom_panel_event_serializes_to_the_externally_tagged_dict_shape() {
+        let cases = [
+            (
+                BottomPanelEvent::TabActivated("bp:terminal".to_string()),
+                serde_json::json!({"TabActivated": "bp:terminal"}),
+            ),
+            (
+                BottomPanelEvent::TabClosed("bp:logs".to_string()),
+                serde_json::json!({"TabClosed": "bp:logs"}),
+            ),
+            (
+                BottomPanelEvent::MaximiseToggled,
+                serde_json::json!({"MaximiseToggled": null}),
+            ),
+            (
+                BottomPanelEvent::Resized(12.5),
+                serde_json::json!({"Resized": 12.5}),
+            ),
+        ];
+        for (event, expected) in cases {
+            let actual = serde_json::to_value(&event).expect("BottomPanelEvent always serializes");
+            assert_eq!(actual, expected, "{event:?}");
+        }
     }
 }

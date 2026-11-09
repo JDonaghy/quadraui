@@ -83,6 +83,13 @@ only a push to `main` runs this workflow.
   arithmetic. Every existing public accessor (`input_text`/
   `input_insert_char`/`input_insert_str`/`clear_input`/`input_has_focus`)
   keeps its signature.
+- `compose::app_shell::AppShellEvent` and `compose::bottom_panel::BottomPanelEvent`
+  now implement `Serialize` (hand-written, not `#[derive(Serialize)]`, so a
+  unit variant still serializes to `{"VariantName": null}` rather than
+  `serde`'s default bare-string external tagging — see each impl's own doc).
+  Lets a binding reach the externally-tagged dict/JSON shape a shell-event
+  callback expects via a generic `pythonize::pythonize`/`serde_json::to_value`
+  call instead of its own hand-rolled, binding-specific tagging function.
 ### Changed
 - `Split`/`SplitTree`'s own accessibility role moved from `A11yRole::Group`
   to `A11yRole::Splitter`.

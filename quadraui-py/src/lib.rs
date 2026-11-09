@@ -131,7 +131,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io;
-use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -186,15 +185,16 @@ use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
     add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction, caret_shape,
     clear_recent_documents, click_down_up_events, color_depth_name, decode_extra_primitive,
-    dialog_severity, draw_bands, end_power_save_block, font_role, is_default_protocol_client,
-    key_pressed_event, login_item_enabled, menu_for_surface, merge_overrides,
-    message_dialog_options_from_buttons, paint_layout, panic_message, pointer_shape,
-    remove_as_default_protocol_client, render_overlays, resolve_app_path,
+    dialog_severity, draw_bands, end_power_save_block, font_role, guarded as core_guarded,
+    is_default_protocol_client, key_pressed_event, login_item_enabled, menu_for_surface,
+    merge_overrides, message_dialog_options_from_buttons, paint_layout, pointer_shape,
+    record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
     set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
-    text_display_from_lines, theme_color_value, toast_corner, update_apply_on_quit,
-    update_check_for_update, update_download_and_stage, window_close_reaction, with_tray,
-    with_window, BindingHost, ErasedShellDriver, EventSink, HitDetail, InteractionEngine,
-    OverrideError, RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling,
+    take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
+    toast_corner, update_apply_on_quit, update_check_for_update, update_download_and_stage,
+    window_close_reaction, with_tray, with_window, BindingHost, ErasedShellDriver, EventSink,
+    GuardedFailure, HitDetail, InteractionEngine, OverrideError, RenderOutput, ServiceError,
+    UpdateInfoWire, WindowCloseHandling,
 };
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`)
@@ -603,16 +603,14 @@ fn reaction_from_window_close_return(
 }
 
 /// Records `err` into `pending_error`, but only if no earlier error in the
-/// same dispatch already claimed the slot. Without this, a handler raise
-/// (recorded first) followed by the render callback also raising while
-/// painting the same frame would have the render error silently clobber
-/// the handler's — the one a caller actually wants to see, since it is
-/// closer to the root cause.
+/// same dispatch already claimed the slot — [`record_pending_error`]'s
+/// "first error wins" contract. Without this, a handler raise (recorded
+/// first) followed by the render callback also raising while painting the
+/// same frame would have the render error silently clobber the handler's
+/// — the one a caller actually wants to see, since it is closer to the
+/// root cause.
 fn record_error(pending_error: &Rc<RefCell<Option<PyErr>>>, err: PyErr) {
-    let mut slot = pending_error.borrow_mut();
-    if slot.is_none() {
-        *slot = Some(err);
-    }
+    record_pending_error(&mut pending_error.borrow_mut(), err);
 }
 
 /// Decodes `QuiApp::show_message_dialog`'s `severity` string into a
@@ -969,16 +967,17 @@ struct ShellState {
     /// way, since that is `AppShell`'s own unconditional chrome paint, not
     /// part of [`crate::ShellApp::render_content`].
     render_content: Option<Py<PyAny>>,
-    /// Invoked with one pythonized `AppShellEvent` dict (see
-    /// [`app_shell_event_to_py`]) whenever [`crate::ShellApp::on_shell_event_ctx`]
-    /// fires — a panel switch, the sidebar being hidden/resized, the bottom
-    /// panel being resized/hidden, or a bottom-item (no-panel) activity-bar
-    /// click.
+    /// Invoked with one pythonized `AppShellEvent` dict (via
+    /// `pythonize::pythonize`, using `AppShellEvent`'s own `Serialize` impl)
+    /// whenever [`crate::ShellApp::on_shell_event_ctx`] fires — a panel
+    /// switch, the sidebar being hidden/resized, the bottom panel being
+    /// resized/hidden, or a bottom-item (no-panel) activity-bar click.
     on_shell_event: Option<Py<PyAny>>,
-    /// Invoked with one pythonized `BottomPanelEvent` dict (see
-    /// [`bottom_panel_event_to_py`]) whenever [`crate::ShellApp::on_bottom_panel_event`]
-    /// fires — a tab activated, a tab closed, maximise toggled, or a
-    /// drag-resize. Only ever fires when `run_shell`'s `config` included a
+    /// Invoked with one pythonized `BottomPanelEvent` dict (via
+    /// `pythonize::pythonize`, using `BottomPanelEvent`'s own `Serialize`
+    /// impl) whenever [`crate::ShellApp::on_bottom_panel_event`] fires — a
+    /// tab activated, a tab closed, maximise toggled, or a drag-resize.
+    /// Only ever fires when `run_shell`'s `config` included a
     /// `"bottom_panel"` entry.
     on_bottom_panel_event: Option<Py<PyAny>>,
     /// Set by any of the callbacks above when the Python callable they
@@ -989,71 +988,12 @@ struct ShellState {
 
 impl ShellState {
     /// Records `err` as this session's pending error, but only if no
-    /// earlier error already claimed the slot — mirrors [`record_error`]'s
-    /// "first error wins" contract for [`PyAppLogic::pending_error`].
+    /// earlier error already claimed the slot — [`record_pending_error`]'s
+    /// "first error wins" contract, mirroring [`record_error`]'s own use
+    /// of it for [`PyAppLogic::pending_error`].
     fn record_error(&mut self, err: PyErr) {
-        if self.pending_error.is_none() {
-            self.pending_error = Some(err);
-        }
+        record_pending_error(&mut self.pending_error, err);
     }
-}
-
-/// Pythonizes one [`AppShellEvent`] as an externally-tagged `dict`, e.g.
-/// `{"PanelChanged": {"panel_id": "panel:explorer"}}` or
-/// `{"SidebarHidden": None}` — the same shape `pythonize::pythonize` would
-/// give a `#[derive(Serialize)]` enum, hand-built here since `AppShellEvent`
-/// has no such derive upstream (see this module's "ShellApp /
-/// `QuiApp.run_shell`" doc for why this binding doesn't add one).
-fn app_shell_event_to_py<'py>(
-    py: Python<'py>,
-    event: &AppShellEvent,
-) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    match event {
-        AppShellEvent::PanelChanged { panel_id } => {
-            let inner = PyDict::new(py);
-            inner.set_item("panel_id", panel_id.as_str())?;
-            dict.set_item("PanelChanged", inner)?;
-        }
-        AppShellEvent::SidebarHidden => dict.set_item("SidebarHidden", py.None())?,
-        AppShellEvent::SidebarResized { new_width } => {
-            let inner = PyDict::new(py);
-            inner.set_item("new_width", new_width)?;
-            dict.set_item("SidebarResized", inner)?;
-        }
-        AppShellEvent::BottomPanelResized { new_height } => {
-            let inner = PyDict::new(py);
-            inner.set_item("new_height", new_height)?;
-            dict.set_item("BottomPanelResized", inner)?;
-        }
-        AppShellEvent::BottomPanelHidden => dict.set_item("BottomPanelHidden", py.None())?,
-        AppShellEvent::BottomItemClicked { id } => {
-            let inner = PyDict::new(py);
-            inner.set_item("id", id.as_str())?;
-            dict.set_item("BottomItemClicked", inner)?;
-        }
-        AppShellEvent::Consumed => dict.set_item("Consumed", py.None())?,
-        AppShellEvent::Ignored => dict.set_item("Ignored", py.None())?,
-    }
-    Ok(dict)
-}
-
-/// Pythonizes one [`BottomPanelEvent`] as an externally-tagged `dict`, e.g.
-/// `{"TabActivated": "bp:terminal"}` or `{"MaximiseToggled": None}` — see
-/// [`app_shell_event_to_py`]'s doc for why this is hand-built rather than
-/// derived.
-fn bottom_panel_event_to_py<'py>(
-    py: Python<'py>,
-    event: &BottomPanelEvent,
-) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    match event {
-        BottomPanelEvent::TabActivated(id) => dict.set_item("TabActivated", id)?,
-        BottomPanelEvent::TabClosed(id) => dict.set_item("TabClosed", id)?,
-        BottomPanelEvent::MaximiseToggled => dict.set_item("MaximiseToggled", py.None())?,
-        BottomPanelEvent::Resized(height) => dict.set_item("Resized", height)?,
-    }
-    Ok(dict)
 }
 
 /// `WidgetId` string `quadraui::compose::bottom_panel::BottomPanelController::build_tab_bar`
@@ -1141,10 +1081,14 @@ impl ShellApp for PyShellApp {
             return;
         };
         Python::attach(|py| {
-            let payload = match app_shell_event_to_py(py, event) {
+            let payload = match pythonize::pythonize(py, event) {
                 Ok(value) => value,
                 Err(err) => {
-                    self.state.borrow_mut().record_error(err);
+                    self.state
+                        .borrow_mut()
+                        .record_error(InternalError::new_err(format!(
+                            "failed to pythonize shell event: {err}"
+                        )));
                     return;
                 }
             };
@@ -1159,10 +1103,14 @@ impl ShellApp for PyShellApp {
             return;
         };
         Python::attach(|py| {
-            let payload = match bottom_panel_event_to_py(py, event) {
+            let payload = match pythonize::pythonize(py, event) {
                 Ok(value) => value,
                 Err(err) => {
-                    self.state.borrow_mut().record_error(err);
+                    self.state
+                        .borrow_mut()
+                        .record_error(InternalError::new_err(format!(
+                            "failed to pythonize bottom-panel event: {err}"
+                        )));
                     return;
                 }
             };
@@ -1203,10 +1151,7 @@ fn shell_config_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<ShellConfig> {
 /// Takes and returns this session's pending callback-raised error, if any
 /// — the `ShellState` counterpart to [`take_pending_error`].
 fn take_pending_shell_error(state: &Rc<RefCell<ShellState>>) -> PyResult<()> {
-    if let Some(err) = state.borrow_mut().pending_error.take() {
-        return Err(err);
-    }
-    Ok(())
+    core_take_pending_error(&mut state.borrow_mut().pending_error)
 }
 
 /// Headless [`ShellApp`]-backed app: an AppShell (activity bar + sidebar +
@@ -1253,17 +1198,16 @@ impl QuiShellApp {
     }
 
     /// Registers `callback` as the callable invoked with one pythonized
-    /// `AppShellEvent` dict (see [`app_shell_event_to_py`]) whenever a
-    /// panel switch, sidebar show/hide/resize, or bottom-panel resize/hide
-    /// occurs.
+    /// `AppShellEvent` dict whenever a panel switch, sidebar show/hide/
+    /// resize, or bottom-panel resize/hide occurs.
     fn set_on_shell_event(&mut self, callback: Py<PyAny>) {
         self.state.borrow_mut().on_shell_event = Some(callback);
     }
 
     /// Registers `callback` as the callable invoked with one pythonized
-    /// `BottomPanelEvent` dict (see [`bottom_panel_event_to_py`]) whenever
-    /// the bottom-panel tab strip is interacted with. Only ever fires when
-    /// this app's `config` included a `"bottom_panel"` entry.
+    /// `BottomPanelEvent` dict whenever the bottom-panel tab strip is
+    /// interacted with. Only ever fires when this app's `config` included a
+    /// `"bottom_panel"` entry.
     fn set_on_bottom_panel_event(&mut self, callback: Py<PyAny>) {
         self.state.borrow_mut().on_bottom_panel_event = Some(callback);
     }
@@ -1375,20 +1319,27 @@ impl QuiShellApp {
 
 impl QuiShellApp {
     /// Mirrors [`QuiApp::guarded`]: catches a Rust panic instead of letting
-    /// it unwind across the PyO3 boundary, poisoning this app on one.
+    /// it unwind across the PyO3 boundary, poisoning this app on one. A
+    /// thin wrapper over [`core_guarded`]; see that function's own doc for
+    /// the shared "catch panic, poison on panic, refuse once poisoned"
+    /// shape every binding's `guarded` builds on.
     fn guarded<T>(&mut self, body: impl FnOnce(&mut Self) -> PyResult<T>) -> PyResult<T> {
-        if self.poisoned {
-            return Err(PoisonedError::new_err(
-                "this QuiShellApp is poisoned by an earlier caught panic and can no longer be used",
-            ));
-        }
-        match panic::catch_unwind(AssertUnwindSafe(|| body(self))) {
-            Ok(result) => result,
-            Err(payload) => {
-                self.poisoned = true;
-                Err(PanicError::new_err(panic_message(&*payload)))
+        core_guarded(
+            self,
+            |s| s.poisoned,
+            |s| s.poisoned = true,
+            |_s| {},
+            |_s| {},
+            |failure| {
+                match failure {
+                GuardedFailure::Poisoned => PoisonedError::new_err(
+                    "this QuiShellApp is poisoned by an earlier caught panic and can no longer be used",
+                ),
+                GuardedFailure::Panic(msg) => PanicError::new_err(msg),
             }
-        }
+            },
+            body,
+        )
     }
 
     /// Mirrors [`QuiApp::step_once`], minus the `User`/waker path `run_shell`
@@ -5023,10 +4974,7 @@ fn ratatui_rgb(color: quadraui::tui::testing::Color) -> (u8, u8, u8) {
 /// `insert_*`, `slot_clear` — calls this right after rendering so a render
 /// callback's exception is never silently swallowed.
 fn take_pending_error(app: &mut PyAppLogic) -> PyResult<()> {
-    if let Some(err) = app.pending_error.borrow_mut().take() {
-        return Err(err);
-    }
-    Ok(())
+    core_take_pending_error(&mut app.pending_error.borrow_mut())
 }
 
 impl QuiApp {
@@ -5035,20 +4983,23 @@ impl QuiApp {
     /// unchanged; on a panic, poisons this app and raises `PanicError`. If
     /// this app is already poisoned (an earlier call panicked), raises
     /// `PoisonedError` without running `body` at all — mirrors
-    /// `quadraui-ffi`'s `with_app`/`boundary` pair.
+    /// `quadraui-ffi`'s `with_app`/`boundary` pair. A thin wrapper over
+    /// [`core_guarded`]; see that function's own doc for the shared shape.
     fn guarded<T>(&mut self, body: impl FnOnce(&mut Self) -> PyResult<T>) -> PyResult<T> {
-        if self.poisoned {
-            return Err(PoisonedError::new_err(
-                "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
-            ));
-        }
-        match panic::catch_unwind(AssertUnwindSafe(|| body(self))) {
-            Ok(result) => result,
-            Err(payload) => {
-                self.poisoned = true;
-                Err(PanicError::new_err(panic_message(&*payload)))
-            }
-        }
+        core_guarded(
+            self,
+            |s| s.poisoned,
+            |s| s.poisoned = true,
+            |_s| {},
+            |_s| {},
+            |failure| match failure {
+                GuardedFailure::Poisoned => PoisonedError::new_err(
+                    "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
+                ),
+                GuardedFailure::Panic(msg) => PanicError::new_err(msg),
+            },
+            body,
+        )
     }
 
     /// Returns this app's lazily constructed, lifetime-persistent

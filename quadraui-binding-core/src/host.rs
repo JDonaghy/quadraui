@@ -667,6 +667,98 @@ pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
+/// Why [`guarded`] returned early with an error instead of `body`'s own
+/// result — the one piece of information `to_err` needs to build that
+/// binding's own exception type (`PoisonedError`/`PanicError` in
+/// `quadraui-py`, their napi-rs equivalents in `quadraui-node`).
+pub enum GuardedFailure {
+    /// `state` was already poisoned by an earlier caught panic; `body`
+    /// never ran.
+    Poisoned,
+    /// `body` panicked; [`panic_message`]'s text for that panic.
+    Panic(String),
+}
+
+/// Runs `body` on `state`, catching a Rust panic instead of letting it
+/// unwind across the binding's own FFI boundary (PyO3, napi-rs, ...) and
+/// poisoning `state` on one — the "catch panic, poison on panic, refuse
+/// every call once poisoned" shape every binding's own `QuiApp::guarded`/
+/// `QuiShellApp::guarded` pair repeats (`quadraui-py`'s and
+/// `quadraui-node`'s alike), parameterized over that binding's own
+/// `state` type `S`, its own error type `E` (`PyErr`, napi-rs's `Error`,
+/// ...), and the small pieces that differ per call site: how `S` itself
+/// stores its poison flag (`is_poisoned`/`set_poisoned` — a plain `bool`
+/// field for every call site today, but this takes closures rather than
+/// assuming that shape so a future call site backed by a `Cell`/
+/// `AtomicBool` still fits), and how to build `E` from a [`GuardedFailure`]
+/// (a binding's own exception type, e.g.
+/// `PoisonedError::new_err(..)`/`PanicError::new_err(..)`).
+///
+/// `before`/`after` run immediately before/after the guarded `body` call —
+/// empty no-ops for a binding with nothing else to do there
+/// (`quadraui-py`'s `QuiApp`/`QuiShellApp`), or napi-rs's own
+/// "stash the live `Env`, flip a re-entrancy flag, run `body`, flip the
+/// flag back" shape (`quadraui-node`'s `QuiApp`/`QuiShellApp`) — `after`
+/// still runs even when `body` panics, since `before`/`after` bracket the
+/// `catch_unwind` call itself rather than running inside it. A binding's
+/// own re-entrancy check (`check_not_dispatching`-style) runs before this
+/// function is even called, since it must reject *without* touching the
+/// poison flag or running `before` at all.
+///
+/// On success, returns `body`'s result unchanged. If `state` is already
+/// poisoned, returns `to_err(GuardedFailure::Poisoned)` without calling
+/// `before`/`body`/`after` at all. On a caught panic, poisons `state` via
+/// `set_poisoned` and returns `to_err(GuardedFailure::Panic(..))`.
+pub fn guarded<S, T, E>(
+    state: &mut S,
+    is_poisoned: impl FnOnce(&S) -> bool,
+    set_poisoned: impl FnOnce(&mut S),
+    before: impl FnOnce(&mut S),
+    after: impl FnOnce(&mut S),
+    to_err: impl FnOnce(GuardedFailure) -> E,
+    body: impl FnOnce(&mut S) -> Result<T, E>,
+) -> Result<T, E> {
+    if is_poisoned(state) {
+        return Err(to_err(GuardedFailure::Poisoned));
+    }
+    before(state);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(state)));
+    after(state);
+    match result {
+        Ok(result) => result,
+        Err(payload) => {
+            set_poisoned(state);
+            Err(to_err(GuardedFailure::Panic(panic_message(&*payload))))
+        }
+    }
+}
+
+/// Records `err` into `slot`, but only if no earlier error already
+/// claimed it — "first error wins", so that (for example) a handler raise
+/// recorded first isn't silently clobbered by a render callback also
+/// raising while painting the same frame. The same first-wins contract
+/// every binding's own `pending_error`/`ShellState::record_error` already
+/// implements by hand, generalized over that binding's own error type
+/// `E` (`PyErr`, napi-rs's `Error`, ...) and wherever it stores the slot
+/// (a plain field, or the `Option<E>` a `Rc<RefCell<_>>`/`RefMut`
+/// dereferences to).
+pub fn record_pending_error<E>(slot: &mut Option<E>, err: E) {
+    if slot.is_none() {
+        *slot = Some(err);
+    }
+}
+
+/// Takes `slot`'s own pending error, if any, turning it into an `Err` the
+/// caller re-raises out of its own `step`/`run` — the `Result`-shaped
+/// counterpart of [`record_pending_error`]'s "first error wins" slot,
+/// generalized the same way.
+pub fn take_pending_error<E>(slot: &mut Option<E>) -> Result<(), E> {
+    match slot.take() {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
 /// A single-line [`TextDisplay`] descriptor per entry of `lines`, under
 /// `id` — the shape behind both a binding's own static bottom-panel-tab
 /// content and its `render_content`/`set_render_content` callback result.
@@ -1388,5 +1480,110 @@ mod tests {
              stay stuck believing a tooltip is open that the screen no \
              longer has"
         );
+    }
+
+    /// Minimal stand-in for a binding's own `QuiApp`/`QuiShellApp`: just a
+    /// poison flag and a counter [`guarded`]'s `before`/`after` hooks can
+    /// record calls into, proving both run around `body` (even when it
+    /// panics) and neither runs once poisoned.
+    #[derive(Default)]
+    struct FakeApp {
+        poisoned: bool,
+        before_after_calls: u32,
+    }
+
+    /// [`GuardedFailure`] -> `String` for every test below: `"poisoned"`
+    /// for [`GuardedFailure::Poisoned`], `"panic: <msg>"` for
+    /// [`GuardedFailure::Panic`].
+    fn fake_to_err(failure: GuardedFailure) -> String {
+        match failure {
+            GuardedFailure::Poisoned => "poisoned".to_string(),
+            GuardedFailure::Panic(msg) => format!("panic: {msg}"),
+        }
+    }
+
+    /// A successful `body` call returns its own result, with `state`
+    /// untouched (not poisoned) and both hooks having run exactly once.
+    #[test]
+    fn guarded_runs_before_and_after_around_a_successful_body() {
+        let mut app = FakeApp::default();
+        let result: Result<i32, String> = guarded(
+            &mut app,
+            |s| s.poisoned,
+            |s| s.poisoned = true,
+            |s| s.before_after_calls += 1,
+            |s| s.before_after_calls += 1,
+            fake_to_err,
+            |_s| Ok(42),
+        );
+        assert_eq!(result, Ok(42));
+        assert!(!app.poisoned);
+        assert_eq!(app.before_after_calls, 2);
+    }
+
+    /// A `body` that panics is caught, not propagated: [`guarded`] returns
+    /// `to_err`'s own `Err` and poisons `state`. `after` still runs (it
+    /// brackets the `catch_unwind` call, not the inside of it), but
+    /// `before` only ran once, for this one `body` call.
+    #[test]
+    fn guarded_catches_a_panic_and_poisons() {
+        let mut app = FakeApp::default();
+        let result: Result<i32, String> = guarded(
+            &mut app,
+            |s| s.poisoned,
+            |s| s.poisoned = true,
+            |s| s.before_after_calls += 1,
+            |s| s.before_after_calls += 1,
+            fake_to_err,
+            |_s| -> Result<i32, String> { panic!("boom") },
+        );
+        assert_eq!(result, Err("panic: boom".to_string()));
+        assert!(app.poisoned);
+        assert_eq!(app.before_after_calls, 2);
+    }
+
+    /// Once `state` is poisoned, a further [`guarded`] call rejects
+    /// immediately via `to_err(GuardedFailure::Poisoned)`, running neither
+    /// `before`/`after` nor `body` at all.
+    #[test]
+    fn guarded_rejects_without_running_body_once_poisoned() {
+        let mut app = FakeApp {
+            poisoned: true,
+            before_after_calls: 0,
+        };
+        let result: Result<i32, String> = guarded(
+            &mut app,
+            |s| s.poisoned,
+            |s| s.poisoned = true,
+            |s| s.before_after_calls += 1,
+            |s| s.before_after_calls += 1,
+            fake_to_err,
+            |_s| -> Result<i32, String> { panic!("must not run") },
+        );
+        assert_eq!(result, Err("poisoned".to_string()));
+        assert_eq!(app.before_after_calls, 0);
+    }
+
+    /// [`record_pending_error`]'s "first error wins": a second recorded
+    /// error never clobbers the first, the same contract every binding's
+    /// own hand-written `record_error` implements.
+    #[test]
+    fn record_pending_error_keeps_the_first_error() {
+        let mut slot: Option<String> = None;
+        record_pending_error(&mut slot, "first".to_string());
+        record_pending_error(&mut slot, "second".to_string());
+        assert_eq!(slot, Some("first".to_string()));
+    }
+
+    /// [`take_pending_error`] turns a recorded error into an `Err` and
+    /// empties the slot; with nothing recorded, it's a no-op `Ok(())`.
+    #[test]
+    fn take_pending_error_drains_the_slot_once() {
+        let mut slot: Option<String> = None;
+        assert_eq!(take_pending_error(&mut slot), Ok(()));
+
+        record_pending_error(&mut slot, "boom".to_string());
+        assert_eq!(take_pending_error(&mut slot), Err("boom".to_string()));
+        assert_eq!(take_pending_error(&mut slot), Ok(()));
     }
 }
