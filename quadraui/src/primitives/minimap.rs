@@ -110,6 +110,7 @@
 
 use crate::event::Rect;
 use crate::primitives::scrollbar::Scrollbar;
+use crate::text_util::char_cell_width;
 use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -1517,15 +1518,22 @@ impl Default for MinimapAtlasCache {
     }
 }
 
-/// Truncate `text` to at most `n` characters, on a char boundary. Never
-/// allocates — returns a borrowed slice. Shared by every backend's
-/// `ColumnBlocks`/`Characters` row paint so a pathologically long line
-/// costs no more to walk or shape than a short one (#667 pt. 2/3).
+/// Truncate `text` to at most `n` display cells ([`char_cell_width`]), on a
+/// char boundary. A wide glyph (CJK, emoji, ...) that would only partially
+/// fit is dropped whole rather than split. Never allocates — returns a
+/// borrowed slice. Shared by every backend's `ColumnBlocks`/`Characters` row
+/// paint so a pathologically long line costs no more to walk or shape than
+/// a short one (#667 pt. 2/3).
 pub fn truncate_to_columns(text: &str, n: usize) -> &str {
-    match text.char_indices().nth(n) {
-        Some((byte_idx, _)) => &text[..byte_idx],
-        None => text,
+    let mut cells = 0usize;
+    for (byte_idx, ch) in text.char_indices() {
+        let width = char_cell_width(ch) as usize;
+        if cells + width > n {
+            return &text[..byte_idx];
+        }
+        cells += width;
     }
+    text
 }
 
 /// The colour covering character column `col`, from a row's own span
@@ -2488,6 +2496,18 @@ mod tests {
         assert_eq!(truncate_to_columns("café", 3), "caf");
         assert_eq!(truncate_to_columns("ab", 10), "ab");
         assert_eq!(truncate_to_columns("", 5), "");
+    }
+
+    #[test]
+    fn truncate_to_columns_measures_display_width_not_char_count() {
+        // Each CJK glyph is 2 display cells; a half-fitting glyph is
+        // dropped whole rather than split.
+        assert_eq!(truncate_to_columns("日本語", 4), "日本");
+        assert_eq!(truncate_to_columns("日本語", 3), "日");
+        assert_eq!(truncate_to_columns("a日", 2), "a");
+        // A 2-cell emoji counts as 2, same as a CJK glyph.
+        assert_eq!(truncate_to_columns("a🎉b", 2), "a");
+        assert_eq!(truncate_to_columns("a🎉b", 3), "a🎉");
     }
 
     // `red()`/`blue()` helpers already defined above for the

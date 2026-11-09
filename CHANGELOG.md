@@ -486,6 +486,11 @@ only a push to `main` runs this workflow.
   the new edge-of-window tests in each primitive's module for the exact
   before/after geometry.
 ### Fixed
+- `primitives::minimap::truncate_to_columns` now caps by display width
+  (`text_util::char_cell_width`) instead of char count, dropping a wide
+  glyph (CJK, emoji) whole rather than letting it push the row past
+  `COLUMN_CAPACITY` cells. `aggregate_block_text`'s single-line path
+  inherits the fix through the same call; ASCII output is bit-identical.
 - The TUI `List` rasteriser (`tui::list::draw_list`) now measures and paints
   item text, icons, the selection prefix, the bordered title, and the
   right-aligned detail span by display cell (`text_util::char_cell_width`/
