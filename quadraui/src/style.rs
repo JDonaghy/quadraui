@@ -427,11 +427,15 @@ pub struct Style {
     /// of every other token in this struct: it gates *when* a tooltip
     /// appears, not how it's painted once shown.
     ///
-    /// **TUI story: no-op.** A terminal has no continuous pointer-motion
-    /// stream to time a hover delay against — `crate::tui`'s tooltip
-    /// treatment stays keyboard-focus-driven (shown immediately once a
-    /// widget has focus, same as before this field existed), so no TUI
-    /// rasteriser reads this token.
+    /// **TUI story:** no TUI *rasteriser* reads this token — `crate::tui`'s
+    /// own tooltip treatment stays keyboard-focus-driven (shown
+    /// immediately once a widget has focus), with no continuous
+    /// pointer-motion stream to time a hover delay against. It is read
+    /// at the host level, though: [`crate::compose::HoverTooltipTracker`]
+    /// is backend-neutral, and a binding's `BindingHost::drive_hover_tooltip`
+    /// runs it on the TUI backend the same as every other, so a
+    /// mouse-capable terminal's hover-driven tooltip does observe this
+    /// delay even though no `tui` rasteriser consults it directly.
     ///
     /// Default `500` — VS Code's own hover-card delay.
     #[serde(default = "default_tooltip_delay_ms")]
@@ -442,14 +446,15 @@ pub struct Style {
     /// it — the third dismissal path [`crate::compose::HoverTooltipTracker::tick_auto_dismiss`]
     /// implements, alongside pointer-leave and an explicit dismiss.
     ///
-    /// `0` disables auto-dismiss: a shown tooltip stays until the
-    /// pointer leaves or something else dismisses it, matching the
-    /// behaviour before this field existed. This is the default.
+    /// `0` disables auto-dismiss, and is the default: a shown tooltip
+    /// then stays until the pointer leaves or something else dismisses
+    /// it.
     ///
-    /// **TUI story: no-op**, for the same reason as
-    /// [`Self::tooltip_delay_ms`] — `crate::tui`'s tooltip treatment is
-    /// keyboard-focus-driven, not timer-driven, so no TUI rasteriser
-    /// reads this token.
+    /// **TUI story:** no TUI rasteriser reads this token, for the same
+    /// reason as [`Self::tooltip_delay_ms`] — but the host-level hover
+    /// driver, `BindingHost::drive_hover_tooltip` in `quadraui-binding-core`,
+    /// does, so a binding's mouse-capable TUI session still observes the
+    /// auto-dismiss timeout.
     #[serde(default = "default_tooltip_auto_dismiss_ms")]
     pub tooltip_auto_dismiss_ms: u64,
 }
