@@ -534,11 +534,9 @@ impl PyAppLogic {
 
     /// Drives [`Self::host`]'s hover-tooltip tracker for this dispatch —
     /// [`BindingHost::drive_hover_tooltip`] fed [`BindingHost::now_ms`]'s
-    /// own real wall clock (there is no fake one to inject from Python; a
-    /// test instead uses a short real [`Self::host`]-level
-    /// `tooltip_delay_ms` override, same as this crate's existing
-    /// `QuiAppWaker::post_after`/`wake_after` timer tests) and
-    /// [`Self::host`]'s own `style.tooltip_delay_ms`/`tooltip_auto_dismiss_ms`
+    /// own real wall clock, or a test-pinned value once `QuiApp.set_test_clock_ms`
+    /// has set [`BindingHost::test_clock_ms`] (see that field's own doc) —
+    /// and [`Self::host`]'s own `style.tooltip_delay_ms`/`tooltip_auto_dismiss_ms`
     /// (or the behaviour-preserving defaults when no style has been set).
     /// Called from both [`AppLogic::handle`] (so a hover change is noticed
     /// the same frame) and [`AppLogic::tick`] (so the delay still elapses
@@ -4367,6 +4365,24 @@ impl QuiApp {
             let (backend, app_logic) = app.driver.parts_mut();
             backend.set_nerd_font_fallback(family);
             app_logic.host.nerd_font_fallback = Some(family.to_string());
+            Ok(())
+        })
+    }
+
+    /// Test-oriented override for [`BindingHost::now_ms`] -- the headless
+    /// clock [`PyAppLogic::drive_hover_tooltip`] feeds
+    /// [`BindingHost::drive_hover_tooltip`]'s own `now_ms` parameter.
+    /// `ms=<int>` pins it to that absolute millisecond value until the next
+    /// call to this method; `ms=None` (the default) reverts to the real
+    /// wall clock. Lets a test drive the hover-tooltip delay and
+    /// auto-dismiss deadlines deterministically -- advancing past
+    /// `tooltip_delay_ms`/`tooltip_auto_dismiss_ms` by raising `ms` --
+    /// instead of a real `time.sleep`.
+    #[pyo3(signature = (ms=None))]
+    fn set_test_clock_ms(&mut self, ms: Option<u64>) -> PyResult<()> {
+        self.guarded(|app| {
+            let (_backend, app_logic) = app.driver.parts_mut();
+            app_logic.host.set_test_clock_ms(ms);
             Ok(())
         })
     }

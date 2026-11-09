@@ -714,7 +714,9 @@ impl NodeAppLogic {
 
     /// Drives [`Self::host`]'s hover-tooltip tracker for this dispatch —
     /// [`BindingHost::drive_hover_tooltip`] fed [`BindingHost::now_ms`]'s
-    /// own real wall clock and [`Self::host`]'s own
+    /// own real wall clock, or a test-pinned value once
+    /// `QuiApp.setTestClockMs` has set [`BindingHost::test_clock_ms`] (see
+    /// that field's own doc), and [`Self::host`]'s own
     /// `style.tooltip_delay_ms`/`tooltip_auto_dismiss_ms` (or the
     /// behaviour-preserving defaults when no style has been set) —
     /// mirrors `quadraui-py`'s own `PyAppLogic::drive_hover_tooltip`,
@@ -2411,6 +2413,23 @@ impl QuiApp {
         self.check_not_live()?;
         Ok(QuiAppActions {
             queue: Rc::clone(&self.driver.app().deferred_actions),
+        })
+    }
+
+    /// Test-oriented override for [`BindingHost::now_ms`] -- the headless
+    /// clock [`NodeAppLogic::drive_hover_tooltip`] feeds
+    /// [`BindingHost::drive_hover_tooltip`]'s own `now_ms` parameter.
+    /// `ms` pins it to that absolute millisecond value until the next call
+    /// to this method; omitting it (`undefined`) reverts to the real wall
+    /// clock. Lets a test drive the hover-tooltip delay and auto-dismiss
+    /// deadlines deterministically -- advancing past
+    /// `tooltipDelayMs`/`tooltipAutoDismissMs` by raising `ms` -- instead
+    /// of a real `setTimeout` wait.
+    #[napi(js_name = "setTestClockMs")]
+    pub fn set_test_clock_ms(&mut self, env: Env, ms: Option<u32>) -> Result<()> {
+        self.guarded(env, |app| {
+            app.driver.app().host.set_test_clock_ms(ms.map(u64::from));
+            Ok(())
         })
     }
 

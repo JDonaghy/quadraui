@@ -12,6 +12,12 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `QuiApp.set_test_clock_ms(ms)`: a test-oriented override for the
+  headless clock `drive_hover_tooltip` reads via
+  `quadraui_binding_core::BindingHost::now_ms`. Pins it to an absolute
+  millisecond value (`None` reverts to the real wall clock), so a test can
+  drive the hover-tooltip delay and auto-dismiss timeout deterministically
+  instead of a real `time.sleep`.
 - `QuiApp` platform-services methods, each a thin wrapper over the matching
   `quadraui_binding_core::services` function: `check_for_update`/
   `download_and_stage`/`apply_on_quit` (auto-update), `begin_power_save_block`/
