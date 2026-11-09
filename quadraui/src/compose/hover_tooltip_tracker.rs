@@ -241,6 +241,26 @@ impl<T: Clone + PartialEq> HoverTooltipTracker<T> {
             Phase::Idle | Phase::Visible { .. } => None,
         }
     }
+
+    /// Milliseconds until a [`Phase::Visible`] tooltip's
+    /// [`Self::tick_auto_dismiss`] timeout fires — the `Visible`-phase
+    /// sibling of [`Self::next_wake_ms`], for a host that wants the exact
+    /// `Reaction::RedrawAfter(Duration)` wake a shown tooltip needs to
+    /// hide itself on schedule, instead of waiting for some unrelated
+    /// event to call [`Self::tick_auto_dismiss`] again. `None` while idle
+    /// or still pending — callers that treat `timeout_ms == 0` as
+    /// "auto-dismiss disabled" (e.g. [`crate::Style::tooltip_auto_dismiss_ms`]'s
+    /// own default) should not call this at all rather than scheduling a
+    /// wake for a timeout that will never fire.
+    pub fn next_auto_dismiss_wake_ms(&self, now_ms: u64, timeout_ms: u64) -> Option<u64> {
+        match &self.phase {
+            Phase::Visible { since_ms, .. } => {
+                let deadline = since_ms.saturating_add(timeout_ms);
+                Some(deadline.saturating_sub(now_ms))
+            }
+            Phase::Idle | Phase::Pending { .. } => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -391,6 +411,24 @@ mod tests {
         t.on_hover(Some(WidgetId::new("a")), 0);
         t.tick(500, 500);
         assert_eq!(t.next_wake_ms(500, 500), None);
+    }
+
+    #[test]
+    fn next_auto_dismiss_wake_ms_is_none_while_idle_or_pending() {
+        let mut t: HoverTooltipTracker<WidgetId> = HoverTooltipTracker::new();
+        assert_eq!(t.next_auto_dismiss_wake_ms(0, 5_000), None);
+        t.on_hover(Some(WidgetId::new("a")), 0);
+        assert_eq!(t.next_auto_dismiss_wake_ms(0, 5_000), None);
+    }
+
+    #[test]
+    fn next_auto_dismiss_wake_ms_counts_down_to_the_timeout_while_visible() {
+        let mut t: HoverTooltipTracker<WidgetId> = HoverTooltipTracker::new();
+        t.on_hover(Some(WidgetId::new("a")), 0);
+        t.tick(500, 500);
+        assert_eq!(t.next_auto_dismiss_wake_ms(500, 5_000), Some(5_000));
+        assert_eq!(t.next_auto_dismiss_wake_ms(3_000, 5_000), Some(2_500));
+        assert_eq!(t.next_auto_dismiss_wake_ms(5_500, 5_000), Some(0));
     }
 
     #[test]

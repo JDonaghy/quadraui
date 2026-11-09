@@ -538,16 +538,27 @@ impl PyAppLogic {
     /// test instead uses a short real [`Self::host`]-level
     /// `tooltip_delay_ms` override, same as this crate's existing
     /// `QuiAppWaker::post_after`/`wake_after` timer tests) and
-    /// [`Self::host`]'s own `style.tooltip_delay_ms` (or the
-    /// behaviour-preserving default when no style has been set). Called
-    /// from both [`AppLogic::handle`] (so a hover change is noticed the
-    /// same frame) and [`AppLogic::tick`] (so the delay still elapses
+    /// [`Self::host`]'s own `style.tooltip_delay_ms`/`tooltip_auto_dismiss_ms`
+    /// (or the behaviour-preserving defaults when no style has been set).
+    /// Called from both [`AppLogic::handle`] (so a hover change is noticed
+    /// the same frame) and [`AppLogic::tick`] (so the delay still elapses
     /// with the pointer held still and no further event arriving).
-    fn drive_hover_tooltip(&mut self) -> Reaction {
+    ///
+    /// `backend` is forwarded to [`BindingHost::drive_hover_tooltip`] so
+    /// its own pending/auto-dismiss wake reaches `backend.request_frame_in`
+    /// directly, surviving even when this call's returned [`Reaction`]
+    /// gets merged away by a same-frame `Reaction::Redraw` from `handle`'s
+    /// own dispatch.
+    fn drive_hover_tooltip(&mut self, backend: &mut dyn Backend) -> Reaction {
         let now_ms = self.host.now_ms();
-        let delay_ms = self.host.style.unwrap_or_default().tooltip_delay_ms;
-        self.host
-            .drive_hover_tooltip(&mut self.engine, now_ms, delay_ms)
+        let style = self.host.style.unwrap_or_default();
+        self.host.drive_hover_tooltip(
+            &mut self.engine,
+            backend,
+            now_ms,
+            style.tooltip_delay_ms,
+            style.tooltip_auto_dismiss_ms,
+        )
     }
 }
 
@@ -758,7 +769,7 @@ impl AppLogic for PyAppLogic {
                 self.engine.handle(event, backend, &mut sink)
             }
         };
-        let reaction = reaction.merge(self.drive_hover_tooltip());
+        let reaction = reaction.merge(self.drive_hover_tooltip(backend));
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw
@@ -785,7 +796,7 @@ impl AppLogic for PyAppLogic {
                 })
             }
         };
-        let reaction = reaction.merge(self.drive_hover_tooltip());
+        let reaction = reaction.merge(self.drive_hover_tooltip(backend));
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw

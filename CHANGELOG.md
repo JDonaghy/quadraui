@@ -671,6 +671,28 @@ only a push to `main` runs this workflow.
   ~/src/coord-tui/src ~/src/vimcode/src` is empty — these were all
   private fields); `resolve_tab_drop`/`TabDragSource`/`TabDropInstruction`
   are still re-exported at the same `quadraui::compose::` path.
+### Added
+- `Style::tooltip_auto_dismiss_ms` — how long a hover-driven tooltip stays
+  visible before it hides itself even though the pointer never left its
+  anchor, wired through `BindingHost::drive_hover_tooltip`. Default `0`
+  disables auto-dismiss, matching prior behaviour. New builder
+  `Style::with_tooltip_auto_dismiss_ms`. `HoverTooltipTracker` gains
+  `next_auto_dismiss_wake_ms`, the `Visible`-phase sibling of
+  `next_wake_ms`.
+### Fixed
+- `BindingHost::drive_hover_tooltip` now schedules its pending-delay and
+  auto-dismiss wakes directly on `Backend::request_frame_in`, not only
+  through the returned `Reaction` — a same-frame `Reaction::Redraw` from
+  an unrelated hover-highlight repaint no longer swallows the deadline via
+  `Reaction::merge`, so a hover-driven tooltip appears at
+  `tooltip_delay_ms` rather than waiting for the coarser idle-poll
+  ceiling. Also guards the pending-to-visible transition on a painted
+  anchor actually existing, so a hovered id with no `PaintedHit::Button`
+  in the current frame's hit map no longer cycles through pending/
+  visible-unpainted/dismissed forever. `drive_hover_tooltip`'s signature
+  gains `backend: &mut dyn Backend` and `auto_dismiss_ms: u64` parameters
+  to support this — `quadraui-py`/`quadraui-node` updated at their one
+  call site each.
 
 ## [0.9.0] - 2026-11-07
 ### Added

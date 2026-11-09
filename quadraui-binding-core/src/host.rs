@@ -308,7 +308,8 @@ impl BindingHost {
     /// own module doc and [`HoverTooltipTracker`]'s "headless-clock
     /// contract" describe — [`Self::now_ms`] for a real wall clock, or a
     /// hand-picked counter in a test. `delay_ms` is normally
-    /// [`quadraui::Style::tooltip_delay_ms`].
+    /// [`quadraui::Style::tooltip_delay_ms`], `auto_dismiss_ms` normally
+    /// [`quadraui::Style::tooltip_auto_dismiss_ms`] (`0` disables it).
     ///
     /// Resyncs first: if [`Self::tooltip_tracker`] still thinks a tooltip
     /// is visible but `engine`'s own tooltip has already closed (e.g.
@@ -318,15 +319,38 @@ impl BindingHost {
     /// of believing a tooltip is still showing that the screen no longer
     /// has.
     ///
+    /// The pending-delay tick only promotes [`HoverTooltipTracker`] to
+    /// visible once [`Self::hover_anchor`] actually finds a painted rect
+    /// for the hovered id. Without that guard, a hovered id with no
+    /// anchor (not yet painted this frame, or no [`PaintedHit::Button`]
+    /// for it at all) would flip the tracker's own phase to visible with
+    /// nothing shown on screen; the next call's resync above would then
+    /// see `engine`'s tooltip still closed, dismiss the tracker, and
+    /// `on_hover` would re-arm it from scratch — pending, visible-but-
+    /// unpainted, dismissed, forever, for a pointer that never moved.
+    ///
+    /// Schedules every wake this call still needs — the pending-delay
+    /// deadline, and, while a tooltip is visible with `auto_dismiss_ms >
+    /// 0`, its auto-dismiss deadline — directly on `backend` via
+    /// [`Backend::request_frame_in`], not only through the returned
+    /// [`Reaction`]. A `Reaction::RedrawAfter` folded into a caller's own
+    /// `Reaction::Redraw` via [`Reaction::merge`] loses the deadline
+    /// (`Redraw` always wins); `request_frame_in` doesn't go through that
+    /// merge at all, so the wake survives even on the frame a hover
+    /// change *also* triggers an unrelated `Redraw`.
+    ///
     /// Returns the [`Reaction`] the caller should merge into its own:
-    /// [`Reaction::Redraw`] when a tooltip opened or closed this call,
-    /// [`Reaction::RedrawAfter`] (via [`HoverTooltipTracker::next_wake_ms`])
-    /// while one is still pending, [`Reaction::Continue`] otherwise.
+    /// [`Reaction::Redraw`] when a tooltip opened, closed, or
+    /// auto-dismissed this call, [`Reaction::RedrawAfter`] while one is
+    /// still pending or counting down to auto-dismiss, [`Reaction::Continue`]
+    /// otherwise.
     pub fn drive_hover_tooltip(
         &mut self,
         engine: &mut InteractionEngine,
+        backend: &mut dyn Backend,
         now_ms: u64,
         delay_ms: u64,
+        auto_dismiss_ms: u64,
     ) -> Reaction {
         if self.tooltip_tracker.visible_item().is_some() && !engine.tooltip_open() {
             self.tooltip_tracker.dismiss();
@@ -344,17 +368,38 @@ impl BindingHost {
             Reaction::Continue
         };
 
-        if self.tooltip_tracker.tick(delay_ms, now_ms) {
-            if let Some((id, text)) = hovered {
-                if let Some(anchor) = Self::hover_anchor(engine, id) {
-                    engine.show_tooltip(Tooltip::new(id, text), anchor);
-                    reaction = Reaction::Redraw;
-                }
+        let anchor = hovered
+            .as_ref()
+            .and_then(|(id, _)| Self::hover_anchor(engine, *id));
+        if anchor.is_some() && self.tooltip_tracker.tick(delay_ms, now_ms) {
+            if let (Some((id, text)), Some(anchor)) = (hovered, anchor) {
+                engine.show_tooltip(Tooltip::new(id, text), anchor);
+                reaction = Reaction::Redraw;
             }
         }
 
+        if auto_dismiss_ms > 0
+            && self
+                .tooltip_tracker
+                .tick_auto_dismiss(auto_dismiss_ms, now_ms)
+        {
+            engine.hide_tooltip();
+            reaction = Reaction::Redraw;
+        }
+
         if let Some(remaining_ms) = self.tooltip_tracker.next_wake_ms(now_ms, delay_ms) {
-            reaction = reaction.merge(Reaction::RedrawAfter(Duration::from_millis(remaining_ms)));
+            let wake = Duration::from_millis(remaining_ms);
+            backend.request_frame_in(wake);
+            reaction = reaction.merge(Reaction::RedrawAfter(wake));
+        } else if auto_dismiss_ms > 0 {
+            if let Some(remaining_ms) = self
+                .tooltip_tracker
+                .next_auto_dismiss_wake_ms(now_ms, auto_dismiss_ms)
+            {
+                let wake = Duration::from_millis(remaining_ms);
+                backend.request_frame_in(wake);
+                reaction = reaction.merge(Reaction::RedrawAfter(wake));
+            }
         }
 
         reaction
@@ -1082,9 +1127,10 @@ mod tests {
 
     use quadraui::backend::MessageDialogOptions;
     use quadraui::tui::testing::TuiDriver;
+    use quadraui::tui::TuiBackend;
     use quadraui::{
-        AppLogic, Backend, Button, ButtonMask, Point, Reaction, Rect, TextInput, Toast,
-        ToastSeverity, UiEvent,
+        AppLogic, Backend, Button, ButtonLayout, ButtonMask, Point, Reaction, Rect, TextInput,
+        Toast, ToastSeverity, UiEvent,
     };
 
     use super::*;
@@ -1304,15 +1350,37 @@ mod tests {
     /// `clock_ms` is a caller-driven millisecond counter, not a wall
     /// clock — the tracker's own "headless-clock contract" — so the test
     /// controls elapsed time exactly with no sleeping.
-    struct HoverHostLogic {
+    ///
+    /// Generic over the [`EventSink`] `S`: most tests use [`RecordingSink`]
+    /// (always `Continue`), but
+    /// [`drive_hover_tooltip_landing_frame_still_schedules_the_pending_wake_even_when_the_frame_also_redraws`]
+    /// needs a sink that mimics a real binding's handler returning `Redraw`
+    /// for the very `MouseEntered` that arms the pending tooltip — the
+    /// exact same-frame collision [`BindingHost::drive_hover_tooltip`]'s
+    /// own doc names.
+    struct HoverHostLogic<S: EventSink> {
         host: BindingHost,
         engine: InteractionEngine,
-        sink: RefCell<RecordingSink>,
+        sink: RefCell<S>,
         clock_ms: Rc<Cell<u64>>,
         delay_ms: u64,
+        auto_dismiss_ms: u64,
     }
 
-    impl AppLogic for HoverHostLogic {
+    impl Default for HoverHostLogic<RecordingSink> {
+        fn default() -> Self {
+            Self {
+                host: BindingHost::default(),
+                engine: InteractionEngine::default(),
+                sink: RefCell::new(RecordingSink),
+                clock_ms: Rc::new(Cell::new(0)),
+                delay_ms: 500,
+                auto_dismiss_ms: 0,
+            }
+        }
+    }
+
+    impl<S: EventSink> AppLogic for HoverHostLogic<S> {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
@@ -1332,16 +1400,24 @@ mod tests {
             let reaction = self
                 .engine
                 .handle(event, backend, &mut *self.sink.borrow_mut());
-            reaction.merge(
-                self.host
-                    .drive_hover_tooltip(&mut self.engine, now, self.delay_ms),
-            )
+            reaction.merge(self.host.drive_hover_tooltip(
+                &mut self.engine,
+                backend,
+                now,
+                self.delay_ms,
+                self.auto_dismiss_ms,
+            ))
         }
 
-        fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+        fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
             let now = self.clock_ms.get();
-            self.host
-                .drive_hover_tooltip(&mut self.engine, now, self.delay_ms)
+            self.host.drive_hover_tooltip(
+                &mut self.engine,
+                backend,
+                now,
+                self.delay_ms,
+                self.auto_dismiss_ms,
+            )
         }
     }
 
@@ -1368,6 +1444,7 @@ mod tests {
             sink: RefCell::new(RecordingSink),
             clock_ms: clock.clone(),
             delay_ms: DELAY_MS,
+            auto_dismiss_ms: 0,
         };
         let mut driver = TuiDriver::new(logic, 40, 20);
         driver.render();
@@ -1433,6 +1510,7 @@ mod tests {
             sink: RefCell::new(RecordingSink),
             clock_ms: clock.clone(),
             delay_ms: DELAY_MS,
+            auto_dismiss_ms: 0,
         };
         let mut driver = TuiDriver::new(logic, 40, 20);
         driver.render();
@@ -1480,6 +1558,226 @@ mod tests {
              stay stuck believing a tooltip is open that the screen no \
              longer has"
         );
+    }
+
+    /// A tooltip held visible past [`HoverHostLogic::auto_dismiss_ms`] with
+    /// the pointer never moving off it must still hide itself —
+    /// [`HoverTooltipTracker::tick_auto_dismiss`]'s own third dismissal
+    /// path, wired through [`BindingHost::drive_hover_tooltip`] via
+    /// [`quadraui::Style::tooltip_auto_dismiss_ms`].
+    #[test]
+    fn drive_hover_tooltip_auto_dismisses_after_the_timeout_with_the_pointer_held_still() {
+        const DELAY_MS: u64 = 500;
+        const AUTO_DISMISS_MS: u64 = 1_000;
+        let clock = Rc::new(Cell::new(0u64));
+        let mut button = Button::new(WidgetId::new("save"), "Save");
+        button.tooltip = Some("Save the file".to_string());
+        let logic = HoverHostLogic {
+            host: BindingHost {
+                button: Some(button),
+                ..BindingHost::default()
+            },
+            engine: InteractionEngine::default(),
+            sink: RefCell::new(RecordingSink),
+            clock_ms: clock.clone(),
+            delay_ms: DELAY_MS,
+            auto_dismiss_ms: AUTO_DISMISS_MS,
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+        driver.render();
+        let (x, y) = driver
+            .find("Save")
+            .expect("the button's own label must be painted");
+
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(x, y),
+            buttons: ButtonMask::default(),
+        });
+        clock.set(DELAY_MS);
+        driver.tick();
+        driver.render();
+        assert!(
+            driver.screen_contains("Save the file"),
+            "the tooltip must be showing before the auto-dismiss timeout"
+        );
+
+        // Held still, well short of the auto-dismiss deadline -- stays shown.
+        clock.set(DELAY_MS + AUTO_DISMISS_MS - 1);
+        driver.tick();
+        driver.render();
+        assert!(
+            driver.screen_contains("Save the file"),
+            "the tooltip must not hide before its own timeout elapses"
+        );
+
+        // The pointer never moved, but the auto-dismiss deadline has now
+        // passed -- the tooltip must hide itself with no further input.
+        clock.set(DELAY_MS + AUTO_DISMISS_MS);
+        driver.tick();
+        driver.render();
+        assert!(
+            !driver.screen_contains("Save the file"),
+            "a tooltip left open past tooltip_auto_dismiss_ms must hide \
+             itself even though the pointer never left its anchor"
+        );
+    }
+
+    /// Mimics a real binding's registered handler: returns [`Reaction::Redraw`]
+    /// for every `MouseEntered`/`MouseLeft` [`InteractionEngine::handle`]
+    /// synthesizes, the same way a Python/JS callback that repaints its own
+    /// hover-highlight state would — unlike [`RecordingSink`], which never
+    /// does, and so never reproduces the same-frame collision this module's
+    /// own test below exercises.
+    #[derive(Default)]
+    struct RedrawOnHoverChangeSink;
+
+    impl EventSink for RedrawOnHoverChangeSink {
+        fn dispatch(
+            &mut self,
+            event: &UiEvent,
+            _hit_detail: Option<&crate::hit::HitDetail>,
+        ) -> Reaction {
+            match event {
+                UiEvent::MouseEntered { .. } | UiEvent::MouseLeft { .. } => Reaction::Redraw,
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    /// Proves the fix for the exact collision [`BindingHost::drive_hover_tooltip`]'s
+    /// own doc names: the pointer landing on a button both arms the
+    /// pending-tooltip delay *and* triggers an unrelated `Redraw` (here,
+    /// [`RedrawOnHoverChangeSink`]'s hover-highlight repaint) on the very
+    /// same dispatch. Before the fix, [`Reaction::merge`] let that `Redraw`
+    /// swallow the pending delay's own `RedrawAfter`, so the tooltip only
+    /// ever showed once the backend's much coarser idle-poll ceiling
+    /// happened to notice. Scheduling the wake directly on `backend` (not
+    /// only through the returned [`Reaction`]) survives that merge.
+    #[test]
+    fn drive_hover_tooltip_landing_frame_still_schedules_the_pending_wake_even_when_the_frame_also_redraws(
+    ) {
+        const DELAY_MS: u64 = 500;
+        let clock = Rc::new(Cell::new(0u64));
+        let mut button = Button::new(WidgetId::new("save"), "Save");
+        button.tooltip = Some("Save the file".to_string());
+        let logic = HoverHostLogic {
+            host: BindingHost {
+                button: Some(button),
+                ..BindingHost::default()
+            },
+            engine: InteractionEngine::default(),
+            sink: RefCell::new(RedrawOnHoverChangeSink),
+            clock_ms: clock.clone(),
+            delay_ms: DELAY_MS,
+            auto_dismiss_ms: 0,
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+        driver.render();
+        let (x, y) = driver
+            .find("Save")
+            .expect("the button's own label must be painted");
+
+        let reaction = driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(x, y),
+            buttons: ButtonMask::default(),
+        });
+        assert_eq!(
+            reaction,
+            Reaction::Redraw,
+            "the landing frame's own hover-highlight repaint must still \
+             return Redraw -- that's the collision being tested, not an \
+             incidental setup detail"
+        );
+        assert!(
+            driver.backend().frame_requests() > 0,
+            "the pending tooltip's wake must be scheduled directly on the \
+             backend even though this frame's merged Reaction is Redraw, \
+             not Continue/RedrawAfter"
+        );
+        let armed = driver
+            .backend()
+            .pending_frame_delay()
+            .expect("a wake must be armed for the still-pending tooltip");
+        assert!(
+            armed <= Duration::from_millis(DELAY_MS),
+            "the armed wake must be no later than the remaining hover \
+             delay, got {armed:?}"
+        );
+    }
+
+    /// A hovered id with tooltip text but no [`PaintedHit::Button`] anchor
+    /// in this frame's hit map (a layout race, a mid-resize frame, or any
+    /// other reason `render` hasn't repainted it yet) must never reach
+    /// [`HoverTooltipTracker::visible_item`] — and, critically, repeated
+    /// calls must not cycle through pending/visible-unpainted/dismissed
+    /// forever for a pointer that never moved. Drives
+    /// [`BindingHost::drive_hover_tooltip`] directly against a hand-built
+    /// [`InteractionEngine`] rather than through [`HoverHostLogic`], so the
+    /// anchor can be removed independently of the hover itself (which only
+    /// [`UiEvent::MouseMoved`] re-dispatch would otherwise change).
+    #[test]
+    fn drive_hover_tooltip_never_reaches_visible_without_a_painted_anchor_and_does_not_oscillate() {
+        const DELAY_MS: u64 = 500;
+        let mut button = Button::new(WidgetId::new("save"), "Save");
+        button.tooltip = Some("Save the file".to_string());
+        let mut host = BindingHost {
+            button: Some(button),
+            ..BindingHost::default()
+        };
+        let mut engine = InteractionEngine::default();
+        let mut backend = TuiBackend::new();
+        let mut sink = RecordingSink;
+
+        let id = WidgetId::new("save");
+        engine.set_hits(vec![PaintedHit::Button {
+            id,
+            layout: ButtonLayout {
+                bounds: Rect::new(0.0, 0.0, 10.0, 1.0),
+            },
+        }]);
+        engine.handle(
+            UiEvent::MouseMoved {
+                position: Point::new(1.0, 0.0),
+                buttons: ButtonMask::default(),
+            },
+            &mut backend,
+            &mut sink,
+        );
+        assert_eq!(
+            engine.hovered().map(|(hovered_id, _)| hovered_id),
+            Some(id),
+            "the hover must land on the button while it's actually painted"
+        );
+
+        // The button's own paint vanishes from this frame's hit map while
+        // `engine`'s cached hover still points at it.
+        engine.set_hits(vec![]);
+
+        for n in 0..5u64 {
+            // Each call is well past the hover delay, so a painted anchor
+            // would have let `tick` flip to `Visible` on the very first
+            // one -- proving the guard, not just that not enough time
+            // passed.
+            let now_ms = DELAY_MS + n * DELAY_MS;
+            let reaction = host.drive_hover_tooltip(&mut engine, &mut backend, now_ms, DELAY_MS, 0);
+            assert_eq!(
+                host.tooltip_tracker.visible_item(),
+                None,
+                "call {n}: a hovered id with no painted anchor must never \
+                 show a tooltip"
+            );
+            assert!(
+                host.tooltip_tracker.is_pending(),
+                "call {n}: without an anchor the tracker must stay pending, \
+                 not cycle through dismiss/re-arm"
+            );
+            assert_ne!(
+                reaction,
+                Reaction::Redraw,
+                "call {n}: nothing actually changed on screen, so this must \
+                 not force a redraw"
+            );
+        }
     }
 
     /// Minimal stand-in for a binding's own `QuiApp`/`QuiShellApp`: just a
