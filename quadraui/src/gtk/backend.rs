@@ -5018,7 +5018,79 @@ impl Backend for GtkBackend {
             rect.height as f64,
             line_height,
         );
-        crate::primitives::panel::native_surface_paint::paint(panel, &layout, self, &theme);
+
+        // Paint the title bar through the mapped `SidebarPanel` + `Toolbar`
+        // header instead of `panel::native_surface_paint::paint`'s own
+        // title-bar painter — `Panel::header_toolbar` builds a header whose
+        // fitting-action count/order matches `layout.visible_actions`
+        // exactly (same `tb` + `action_button_width`), so the two layouts
+        // agree on where each action button sits. `layout` itself (this
+        // method's hit-test contract) stays `gtk_panel_layout(...)`,
+        // unaffected by the swap.
+        if let Some(tb) = layout.title_bar_bounds {
+            let measure = crate::primitives::panel::PanelMeasure {
+                title_bar_height: tb.height,
+                action_button_width: crate::primitives::layout_metrics::pixel::PANEL_ACTION_BUTTON,
+                content_padding: 0.0,
+            };
+            if let Some(header) = panel.header_toolbar(tb, measure) {
+                let sidebar = crate::primitives::sidebar_panel::SidebarPanel {
+                    id: panel.id,
+                    toolbar: Some(header),
+                    toolbar_height: Some(tb.height),
+                };
+                // The header toolbar's label/action text paints through
+                // `PaintSurface`, which draws with whatever font is live
+                // on the shared `pango_layout` — swap to `ui_font` the same
+                // way `Self::draw_sidebar_panel_interactive` does so panel
+                // chrome never leaks the editor font.
+                let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+                let saved_font = {
+                    let (_cr, pango_layout) = self
+                        .current_frame_refs()
+                        .expect("GtkBackend::draw_panel called outside enter_frame_scope");
+                    let saved = pango_layout.font_description();
+                    pango_layout.set_font_description(Some(&ui_font_desc));
+                    saved
+                };
+                crate::primitives::sidebar_panel::native_surface_paint::paint(
+                    &sidebar, self, &theme, tb, tb.height, None, None,
+                );
+
+                // `sidebar_panel::native_surface_paint`'s own active/hovered/
+                // pressed highlight (an inset rect in `theme.selected_bg`) is
+                // scoped to its own interactive chrome, not `Panel`'s
+                // `is_active` contract — `draw_panel` has no interaction
+                // state to feed it (`hovered`/`pressed` above are always
+                // `None`), so without this, a pinned `PanelAction::is_active`
+                // would silently stop painting the `accent_bg` fill
+                // `panel::native_surface_paint::paint` used to give it.
+                // Re-fill + redraw just the active actions' full button
+                // rects to keep that contract.
+                for va in &layout.visible_actions {
+                    let Some(action) = panel.actions.get(va.action_idx) else {
+                        continue;
+                    };
+                    if !action.is_active {
+                        continue;
+                    }
+                    self.surface_fill_rect(va.bounds, theme.accent_bg);
+                    let (gw, gh) = self.surface_measure_text(&action.icon);
+                    let glyph_x = va.bounds.x + (va.bounds.width - gw) / 2.0;
+                    self.surface_draw_icon_glyph(
+                        crate::event::Rect::new(glyph_x, va.bounds.y, gw, gh),
+                        &action.icon,
+                        theme.foreground,
+                    );
+                }
+
+                let (_cr, pango_layout) = self
+                    .current_frame_refs()
+                    .expect("GtkBackend::draw_panel called outside enter_frame_scope");
+                pango_layout.set_font_description(saved_font.as_ref());
+            }
+        }
+
         layout
     }
 
@@ -10689,6 +10761,184 @@ mod tests {
             "changing ui_font alone must visibly widen the painted \
              sidebar-panel toolbar action: default_ui_font={small_editor_width}, \
              ui_font_Sans_40={ui_font_width}"
+        );
+    }
+
+    /// `GtkBackend::draw_panel` paints its title bar through the mapped
+    /// `SidebarPanel` + `Toolbar` header (`Panel::header_toolbar`) rather
+    /// than `panel::native_surface_paint::paint`'s own painter, while
+    /// `draw_panel` still returns `gtk_panel_layout(...)` for hit-testing.
+    /// Pins the two paint↔layout agreements that migration depends on:
+    /// the title text paints inset from the title bar's left edge (not
+    /// flush against it), and each action glyph paints inside the exact
+    /// `visible_actions[i].bounds` rect the returned layout reports.
+    #[test]
+    fn gtk_backend_draw_panel_paints_title_inset_and_actions_in_bounds() {
+        const W: i32 = 300;
+        const H: i32 = 40;
+        let mut surface =
+            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                .expect("create ImageSurface");
+        let layout;
+        {
+            let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+            // `ImageSurface` starts fully transparent — paint an opaque
+            // white background first so "painted ink" below can be
+            // detected as "not white" rather than "not transparent".
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+
+            let mut backend = GtkBackend::new();
+            Backend::set_current_line_height(&mut backend, 20.0);
+            // White background/header_bg/separator so the title bar's own
+            // background fill is invisible against the page, and only the
+            // black foreground text/glyphs register as "ink" below.
+            backend.set_current_theme(crate::Theme {
+                background: crate::types::Color::rgb(255, 255, 255),
+                header_bg: crate::types::Color::rgb(255, 255, 255),
+                separator: crate::types::Color::rgb(255, 255, 255),
+                foreground: crate::types::Color::rgb(0, 0, 0),
+                ..crate::Theme::default()
+            });
+
+            let panel = crate::primitives::panel::Panel {
+                id: WidgetId::new("test:panel"),
+                title: Some(crate::types::StyledText::plain("Title")),
+                actions: vec![
+                    crate::primitives::panel::PanelAction {
+                        id: WidgetId::new("close"),
+                        icon: "×".into(),
+                        tooltip: String::new(),
+                        is_active: false,
+                    },
+                    crate::primitives::panel::PanelAction {
+                        id: WidgetId::new("max"),
+                        icon: "□".into(),
+                        tooltip: String::new(),
+                        is_active: false,
+                    },
+                ],
+                accent: None,
+                collapsed: false,
+            };
+            let rect = QRect::new(0.0, 0.0, W as f64 as f32, H as f64 as f32);
+
+            layout = backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_panel(rect, &panel));
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let is_ink = |x: usize, y: usize| {
+            let off = y * stride + x * 4;
+            !(data[off] == 255 && data[off + 1] == 255 && data[off + 2] == 255)
+        };
+
+        let tb = layout.title_bar_bounds.expect("title bar present");
+        let row_top = tb.y.round() as usize;
+        let row_bottom = (tb.y + tb.height).round() as usize;
+
+        let first_ink_col = (tb.x.round() as usize..W as usize)
+            .find(|&x| (row_top..row_bottom).any(|y| is_ink(x, y)))
+            .expect("title text must paint some ink in the title bar row");
+        assert!(
+            first_ink_col as f32 > tb.x,
+            "title text must be inset from the title bar's left edge: \
+             first_ink_col={first_ink_col}, tb.x={}",
+            tb.x
+        );
+
+        assert_eq!(
+            layout.visible_actions.len(),
+            2,
+            "both actions should fit in a 300px-wide title bar"
+        );
+        for va in &layout.visible_actions {
+            let x0 = va.bounds.x.round() as usize;
+            let x1 = (va.bounds.x + va.bounds.width).round() as usize;
+            let y0 = va.bounds.y.round() as usize;
+            let y1 = (va.bounds.y + va.bounds.height).round() as usize;
+            let has_ink = (x0..x1).any(|x| (y0..y1).any(|y| is_ink(x, y)));
+            assert!(
+                has_ink,
+                "action {:?} glyph must paint ink inside its own bounds {:?}",
+                va.id, va.bounds
+            );
+        }
+    }
+
+    /// `sidebar_panel::native_surface_paint`'s own active-state highlight
+    /// is a 2px-inset `theme.selected_bg` pill, not a full-bounds fill —
+    /// `GtkBackend::draw_panel` re-fills a `PanelAction::is_active` button's
+    /// *entire* bounds with `theme.accent_bg` afterward (there's no
+    /// interaction state to drive hover/press from `draw_panel`'s
+    /// non-interactive signature, so `is_active` is the only state left to
+    /// carry), keeping `panel::native_surface_paint::paint`'s old
+    /// full-rect-fill contract. Checked at the button's own corner pixel —
+    /// inside an inset pill's margin but inside a full-rect fill — so this
+    /// fails if the override regresses to the inset-only highlight.
+    #[test]
+    fn gtk_backend_draw_panel_is_active_action_fills_full_bounds_with_accent_bg() {
+        const W: i32 = 300;
+        const H: i32 = 40;
+        let accent_bg = crate::types::Color::rgb(10, 20, 200);
+        let mut surface =
+            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                .expect("create ImageSurface");
+        let layout;
+        {
+            let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+
+            let mut backend = GtkBackend::new();
+            Backend::set_current_line_height(&mut backend, 20.0);
+            backend.set_current_theme(crate::Theme {
+                background: crate::types::Color::rgb(255, 255, 255),
+                header_bg: crate::types::Color::rgb(255, 255, 255),
+                separator: crate::types::Color::rgb(255, 255, 255),
+                foreground: crate::types::Color::rgb(0, 0, 0),
+                accent_bg,
+                ..crate::Theme::default()
+            });
+
+            let panel = crate::primitives::panel::Panel {
+                id: WidgetId::new("test:panel"),
+                title: Some(crate::types::StyledText::plain("Title")),
+                actions: vec![crate::primitives::panel::PanelAction {
+                    id: WidgetId::new("pin"),
+                    icon: "*".into(),
+                    tooltip: String::new(),
+                    is_active: true,
+                }],
+                accent: None,
+                collapsed: false,
+            };
+            let rect = QRect::new(0.0, 0.0, W as f64 as f32, H as f64 as f32);
+
+            layout = backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_panel(rect, &panel));
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let pixel_rgb = |x: usize, y: usize| {
+            let off = y * stride + x * 4;
+            (data[off + 2], data[off + 1], data[off])
+        };
+
+        let va = &layout.visible_actions[0];
+        let corner_x = va.bounds.x.round() as usize;
+        let corner_y = va.bounds.y.round() as usize;
+        assert_eq!(
+            pixel_rgb(corner_x, corner_y),
+            (accent_bg.r, accent_bg.g, accent_bg.b),
+            "an is_active action's full bounds (down to its own corner) must \
+             fill with theme.accent_bg, not an inset pill"
         );
     }
 
