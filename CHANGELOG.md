@@ -97,7 +97,9 @@ only a push to `main` runs this workflow.
   `draw_dialog`/`tui_dialog_layout` and the GTK/macOS/Win
   `native_surface_paint::paint`/`a11y::chrome` plumbing all gained the
   new variant; existing single-`DialogTextInput`/`DialogInput::Toolbar`
-  dialogs are unaffected.
+  dialogs are unaffected. Demo: `examples/tui_form_dialog.rs`
+  (`examples/common/form_dialog_demo.rs`), with a `TuiDriver`
+  paint/focus/submit round-trip in `tests/tui_example_driver.rs`.
 - Item-level keyboard focus for `FieldKind::ButtonRow`/`ToggleGroup`/
   `Toolbar` form fields (#2250): `FormController` now tracks which item
   inside the focused field has keyboard focus (starting on the first

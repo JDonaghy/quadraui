@@ -100,6 +100,7 @@ pub enum FormDialogEvent {
 pub struct FormDialogController {
     id: WidgetId,
     title: StyledText,
+    body: Vec<StyledText>,
     severity: Option<DialogSeverity>,
     vertical_buttons: bool,
     buttons: Vec<DialogButton>,
@@ -119,6 +120,7 @@ impl FormDialogController {
         Self {
             id: WidgetId::new(id),
             title: StyledText::plain(title.into()),
+            body: Vec::new(),
             severity: None,
             vertical_buttons: false,
             buttons: Vec::new(),
@@ -147,6 +149,23 @@ impl FormDialogController {
     pub fn with_vertical_buttons(mut self, vertical: bool) -> Self {
         self.vertical_buttons = vertical;
         self
+    }
+
+    /// Set body text lines, rendered above the form (e.g. instructions,
+    /// or a status line a consumer updates after a submit). See
+    /// [`Dialog::body`]'s own "title → body → table → input → buttons"
+    /// layout order. Returns `self` for builder-style chaining.
+    pub fn with_body(mut self, body: Vec<StyledText>) -> Self {
+        self.body = body;
+        self
+    }
+
+    /// Replace the body text lines set via [`Self::with_body`] — unlike
+    /// that builder, callable after construction, for a status line a
+    /// consumer wants to update in response to its own `FormDialogEvent`
+    /// handling (e.g. "Created: …" after a submit).
+    pub fn set_body(&mut self, body: Vec<StyledText>) {
+        self.body = body;
     }
 
     /// Push a fresh `form` into the controller — call every frame with
@@ -195,7 +214,7 @@ impl FormDialogController {
         Dialog {
             id: self.id,
             title: self.title.clone(),
-            body: Vec::new(),
+            body: self.body.clone(),
             buttons: self.buttons.clone(),
             severity: self.severity,
             vertical_buttons: self.vertical_buttons,
@@ -230,7 +249,7 @@ impl FormDialogController {
         let measure = DialogMeasure {
             width: (viewport.width * 0.5).clamp(char_w * 30.0, char_w * 64.0),
             title_height: if has_title { lh } else { 0.0 },
-            body_height: 0.0,
+            body_height: lh * dialog.body.len() as f32,
             table_height: 0.0,
             input_height: if field_count > 0 {
                 lh * field_count as f32
@@ -618,6 +637,17 @@ mod tests {
             Some(DialogInput::Form(f)) => assert_eq!(f.fields.len(), 2),
             other => panic!("expected DialogInput::Form, got {:?}", other),
         }
+    }
+
+    /// `set_body` updates the rendered `Dialog::body` after construction
+    /// — a consumer uses this for a status line (e.g. "Created: …")
+    /// shown after a submit, without rebuilding the whole controller.
+    #[test]
+    fn set_body_updates_the_dialogs_body_text() {
+        let mut c = controller();
+        assert!(c.dialog().body.is_empty());
+        c.set_body(vec![StyledText::plain("Created: Alpha")]);
+        assert_eq!(c.dialog().body.len(), 1);
     }
 
     #[test]

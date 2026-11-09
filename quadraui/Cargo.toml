@@ -1162,6 +1162,11 @@ path = "examples/tui_form_date_picker.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "tui_form_dialog"
+path = "examples/tui_form_dialog.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "tui_chart"
 path = "examples/tui_chart.rs"
 required-features = ["tui"]
