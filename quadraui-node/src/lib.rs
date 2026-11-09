@@ -148,11 +148,11 @@
 //! kind-dispatched decoder in this crate uses -- `&serde_json::Value`
 //! implements `serde::Deserializer` directly, so no extra wrapper is
 //! needed) and builds the [`NodeShellApp`]/driver pair around it.
-//! `AppShellEvent`/`BottomPanelEvent` have no `Serialize` derive upstream
-//! (same reason `quadraui-py` hand-builds their Python dict shape), so
-//! [`app_shell_event_to_json`]/[`bottom_panel_event_to_json`] hand-build
-//! the same externally-tagged JSON shape [`encode_via_json`] would give a
-//! derived enum, then convert that through `Env::to_js_value` directly.
+//! `AppShellEvent`/`BottomPanelEvent` each have their own hand-written
+//! `Serialize` impl upstream (not derived -- see that impl's own doc for
+//! why), so this binding converts them through `serde_json::to_value` +
+//! `Env::to_js_value` directly, the same `encode_via_json` shape every
+//! other derived-`Serialize` enum in this file gets.
 //!
 //! **Live run loop (`startTui`/`startNative`) / waker.** [`QuiApp`]
 //! otherwise only ever drives a headless `quadraui::tui::testing::TuiDriver`.
@@ -249,7 +249,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::io;
-use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -297,14 +296,15 @@ use quadraui_binding_core::{
     add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction_for_render,
     caret_shape, clear_recent_documents, click_down_up_events, color_depth_name,
     decode_extra_primitive, decode_render_output, decode_shell_config, dialog_severity, draw_bands,
-    end_power_save_block, font_role, install_crash_handler, is_default_protocol_client,
-    key_pressed_event, login_item_enabled, menu_for_surface, merge_overrides,
-    message_dialog_options_from_buttons, paint_layout, panic_message, pointer_shape,
-    remove_as_default_protocol_client, render_overlays, resolve_app_path, set_app_identifier,
-    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
+    end_power_save_block, font_role, guarded as core_guarded, install_crash_handler,
+    is_default_protocol_client, key_pressed_event, login_item_enabled, menu_for_surface,
+    merge_overrides, message_dialog_options_from_buttons, paint_layout, pointer_shape,
+    record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
+    set_app_identifier, set_as_default_protocol_client, set_dock_menu, set_jump_list,
+    set_login_item, step_driver, take_pending_error as core_take_pending_error,
     text_display_from_lines, theme_color_value, toast_corner, update_apply_on_quit,
     update_check_for_update, update_download_and_stage, window_close_reaction, with_tray,
-    with_window, BindingHost, DecodeError, ErasedShellDriver, EventSink, HitDetail,
+    with_window, BindingHost, DecodeError, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
     InteractionEngine, OverrideError, RenderOutput, ServiceError, UpdateInfoWire,
     WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY,
     SLOT_TREE,
@@ -858,16 +858,14 @@ impl AppLogic for NodeAppLogic {
 
 /// Records `err` into `pending_error`, but only if no earlier error in the
 /// same dispatch already claimed the slot -- the napi-rs analog of
-/// `quadraui-py`'s own `record_error`. Without this, a handler raise
+/// `quadraui-py`'s own `record_error`, via [`record_pending_error`]'s
+/// shared "first error wins" contract. Without this, a handler raise
 /// (recorded first) followed by the render callback also raising while
 /// painting the same frame would have the render error silently clobber the
 /// handler's -- the one a caller actually wants to see, since it is closer
 /// to the root cause.
 fn record_error(pending_error: &Rc<RefCell<Option<Error>>>, err: Error) {
-    let mut slot = pending_error.borrow_mut();
-    if slot.is_none() {
-        *slot = Some(err);
-    }
+    record_pending_error(&mut pending_error.borrow_mut(), err);
 }
 
 /// Takes and re-raises any error a registered callback recorded during the
@@ -883,10 +881,7 @@ fn take_pending_error(app: &mut NodeAppLogic) -> Result<()> {
 /// whose own `NodeAppLogic` is reachable only through a [`NativeLiveState`]
 /// clone of this same cell, never the real [`NodeAppLogic`] itself.
 fn take_pending_error_cell(pending_error: &Rc<RefCell<Option<Error>>>) -> Result<()> {
-    if let Some(err) = pending_error.borrow_mut().take() {
-        return Err(err);
-    }
-    Ok(())
+    core_take_pending_error(&mut pending_error.borrow_mut())
 }
 
 /// Calls `callback` (borrowed back from its stored [`NodeCallback`] via
@@ -3206,22 +3201,23 @@ impl QuiApp {
     /// to call back into JS with -- see [`NodeAppLogic::env`]'s doc.
     fn guarded<T>(&mut self, env: Env, body: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         self.check_not_dispatching()?;
-        if self.poisoned {
-            return Err(poisoned_error(
-                "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
-            ));
-        }
-        self.set_active_env(env);
-        self.in_dispatch.set(true);
-        let result = panic::catch_unwind(AssertUnwindSafe(|| body(self)));
-        self.in_dispatch.set(false);
-        match result {
-            Ok(result) => result,
-            Err(payload) => {
-                self.poisoned = true;
-                Err(panic_error(panic_message(&*payload)))
-            }
-        }
+        core_guarded(
+            self,
+            |s| s.poisoned,
+            |s| s.poisoned = true,
+            |s| {
+                s.set_active_env(env);
+                s.in_dispatch.set(true);
+            },
+            |s| s.in_dispatch.set(false),
+            |failure| match failure {
+                GuardedFailure::Poisoned => poisoned_error(
+                    "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
+                ),
+                GuardedFailure::Panic(msg) => panic_error(msg),
+            },
+            body,
+        )
     }
 
     /// Dispatches the oldest queued event, or ticks if none is queued, then
@@ -3318,16 +3314,16 @@ struct ShellState {
     /// `None` paints nothing into the main content area -- the shell
     /// chrome still renders either way.
     render_content: Option<NodeCallback>,
-    /// Invoked with one JS-converted `AppShellEvent` payload (see
-    /// [`app_shell_event_to_json`]) whenever [`ShellApp::on_shell_event_ctx`]
-    /// fires -- a panel switch, the sidebar being hidden/resized, the
-    /// bottom panel being resized/hidden, or a bottom-item (no-panel)
-    /// activity-bar click.
+    /// Invoked with one JS-converted `AppShellEvent` payload (via
+    /// `Env::to_js_value`, using `AppShellEvent`'s own `Serialize` impl)
+    /// whenever [`ShellApp::on_shell_event_ctx`] fires -- a panel switch,
+    /// the sidebar being hidden/resized, the bottom panel being
+    /// resized/hidden, or a bottom-item (no-panel) activity-bar click.
     on_shell_event: Option<NodeCallback>,
-    /// Invoked with one JS-converted `BottomPanelEvent` payload (see
-    /// [`bottom_panel_event_to_json`]) whenever [`ShellApp::on_bottom_panel_event`]
-    /// fires. Only ever fires when this app's `config` included a
-    /// `"bottom_panel"` entry.
+    /// Invoked with one JS-converted `BottomPanelEvent` payload (via
+    /// `Env::to_js_value`, using `BottomPanelEvent`'s own `Serialize` impl)
+    /// whenever [`ShellApp::on_bottom_panel_event`] fires. Only ever fires
+    /// when this app's `config` included a `"bottom_panel"` entry.
     on_bottom_panel_event: Option<NodeCallback>,
     /// The live `Env` for whichever [`QuiShellApp`] method call is
     /// currently driving this app, set by [`QuiShellApp::guarded`] right
@@ -3346,53 +3342,13 @@ struct ShellState {
 
 impl ShellState {
     /// Records `err` as this session's pending error, but only if no
-    /// earlier error already claimed the slot -- mirrors the free
-    /// [`record_error`] function's "first error wins" contract, as a
-    /// method here since `ShellState` holds its `pending_error` as a plain
-    /// field rather than its own `Rc<RefCell<_>>`.
+    /// earlier error already claimed the slot -- [`record_pending_error`]'s
+    /// "first error wins" contract, mirroring the free [`record_error`]
+    /// function's own use of it. A method here (not a free function, like
+    /// [`record_error`]) since `ShellState` holds its `pending_error` as a
+    /// plain field rather than its own `Rc<RefCell<_>>`.
     fn record_error(&mut self, err: Error) {
-        if self.pending_error.is_none() {
-            self.pending_error = Some(err);
-        }
-    }
-}
-
-/// Converts one [`AppShellEvent`] into the externally-tagged JSON shape
-/// [`encode_via_json`] would give a `#[derive(Serialize)]` enum, e.g.
-/// `{"PanelChanged": {"panel_id": "panel:explorer"}}` or
-/// `{"SidebarHidden": null}` -- hand-built since `AppShellEvent` has no
-/// such derive upstream, mirrors `quadraui-py`'s own `app_shell_event_to_py`.
-fn app_shell_event_to_json(event: &AppShellEvent) -> JsonValue {
-    match event {
-        AppShellEvent::PanelChanged { panel_id } => {
-            serde_json::json!({"PanelChanged": {"panel_id": panel_id.as_str()}})
-        }
-        AppShellEvent::SidebarHidden => serde_json::json!({"SidebarHidden": null}),
-        AppShellEvent::SidebarResized { new_width } => {
-            serde_json::json!({"SidebarResized": {"new_width": new_width}})
-        }
-        AppShellEvent::BottomPanelResized { new_height } => {
-            serde_json::json!({"BottomPanelResized": {"new_height": new_height}})
-        }
-        AppShellEvent::BottomPanelHidden => serde_json::json!({"BottomPanelHidden": null}),
-        AppShellEvent::BottomItemClicked { id } => {
-            serde_json::json!({"BottomItemClicked": {"id": id.as_str()}})
-        }
-        AppShellEvent::Consumed => serde_json::json!({"Consumed": null}),
-        AppShellEvent::Ignored => serde_json::json!({"Ignored": null}),
-    }
-}
-
-/// Converts one [`BottomPanelEvent`] into the externally-tagged JSON shape,
-/// e.g. `{"TabActivated": "bp:terminal"}` or `{"MaximiseToggled": null}` --
-/// see [`app_shell_event_to_json`]'s doc for why this is hand-built rather
-/// than derived.
-fn bottom_panel_event_to_json(event: &BottomPanelEvent) -> JsonValue {
-    match event {
-        BottomPanelEvent::TabActivated(id) => serde_json::json!({"TabActivated": id}),
-        BottomPanelEvent::TabClosed(id) => serde_json::json!({"TabClosed": id}),
-        BottomPanelEvent::MaximiseToggled => serde_json::json!({"MaximiseToggled": null}),
-        BottomPanelEvent::Resized(height) => serde_json::json!({"Resized": height}),
+        record_pending_error(&mut self.pending_error, err);
     }
 }
 
@@ -3499,7 +3455,7 @@ impl ShellApp for NodeShellApp {
         let Some(func) = Self::callback(&self.state, |s| &s.on_shell_event, &env) else {
             return;
         };
-        let payload: Unknown<'static> = match env.to_js_value(&app_shell_event_to_json(event)) {
+        let payload: Unknown<'static> = match env.to_js_value(event) {
             Ok(value) => value,
             Err(err) => {
                 self.state.borrow_mut().record_error(err);
@@ -3518,7 +3474,7 @@ impl ShellApp for NodeShellApp {
         let Some(func) = Self::callback(&self.state, |s| &s.on_bottom_panel_event, &env) else {
             return;
         };
-        let payload: Unknown<'static> = match env.to_js_value(&bottom_panel_event_to_json(event)) {
+        let payload: Unknown<'static> = match env.to_js_value(event) {
             Ok(value) => value,
             Err(err) => {
                 self.state.borrow_mut().record_error(err);
@@ -3560,10 +3516,7 @@ impl ShellApp for NodeShellApp {
 /// Takes and returns this session's pending callback-raised error, if any
 /// -- the `ShellState` counterpart of [`take_pending_error`].
 fn take_pending_shell_error(state: &Rc<RefCell<ShellState>>) -> Result<()> {
-    if let Some(err) = state.borrow_mut().pending_error.take() {
-        return Err(err);
-    }
-    Ok(())
+    core_take_pending_error(&mut state.borrow_mut().pending_error)
 }
 
 /// Decodes `runShell`'s `config` object into a [`ShellConfig`] via the
@@ -3641,9 +3594,9 @@ impl QuiShellApp {
     }
 
     /// Registers `callback` as the callable invoked with one JS-converted
-    /// `AppShellEvent` payload (see [`app_shell_event_to_json`]) whenever a
-    /// panel switch, sidebar show/hide/resize, or bottom-panel resize/hide
-    /// occurs. Raises if called re-entrantly.
+    /// `AppShellEvent` payload whenever a panel switch, sidebar show/hide/
+    /// resize, or bottom-panel resize/hide occurs. Raises if called
+    /// re-entrantly.
     #[napi(js_name = "setOnShellEvent")]
     pub fn set_on_shell_event(
         &mut self,
@@ -3655,10 +3608,9 @@ impl QuiShellApp {
     }
 
     /// Registers `callback` as the callable invoked with one JS-converted
-    /// `BottomPanelEvent` payload (see [`bottom_panel_event_to_json`])
-    /// whenever the bottom-panel tab strip is interacted with. Only ever
-    /// fires when this app's `config` included a `"bottom_panel"` entry.
-    /// Raises if called re-entrantly.
+    /// `BottomPanelEvent` payload whenever the bottom-panel tab strip is
+    /// interacted with. Only ever fires when this app's `config` included
+    /// a `"bottom_panel"` entry. Raises if called re-entrantly.
     #[napi(js_name = "setOnBottomPanelEvent")]
     pub fn set_on_bottom_panel_event(
         &mut self,
@@ -3802,22 +3754,25 @@ impl QuiShellApp {
     /// callback `body` reaches has a live `Env` to call back into JS with.
     fn guarded<T>(&mut self, env: Env, body: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         self.check_not_dispatching()?;
-        if self.poisoned {
-            return Err(poisoned_error(
-                "this QuiShellApp is poisoned by an earlier caught panic and can no longer be used",
-            ));
-        }
-        self.state.borrow_mut().env = Some(env);
-        self.in_dispatch.set(true);
-        let result = panic::catch_unwind(AssertUnwindSafe(|| body(self)));
-        self.in_dispatch.set(false);
-        match result {
-            Ok(result) => result,
-            Err(payload) => {
-                self.poisoned = true;
-                Err(panic_error(panic_message(&*payload)))
+        core_guarded(
+            self,
+            |s| s.poisoned,
+            |s| s.poisoned = true,
+            |s| {
+                s.state.borrow_mut().env = Some(env);
+                s.in_dispatch.set(true);
+            },
+            |s| s.in_dispatch.set(false),
+            |failure| {
+                match failure {
+                GuardedFailure::Poisoned => poisoned_error(
+                    "this QuiShellApp is poisoned by an earlier caught panic and can no longer be used",
+                ),
+                GuardedFailure::Panic(msg) => panic_error(msg),
             }
-        }
+            },
+            body,
+        )
     }
 
     /// Mirrors [`QuiApp::step_once`], minus the `User`/waker path a
@@ -4355,59 +4310,66 @@ mod tests {
         assert!(matches!(output, RenderOutput::Tree(_)));
     }
 
-    /// [`app_shell_event_to_json`] gives every [`AppShellEvent`] variant
-    /// the same externally-tagged shape `quadraui-py`'s own
-    /// `app_shell_event_to_py` builds -- a struct-like variant's payload
-    /// nested under its tag, a unit variant tagged with `null`. Pure JSON
-    /// construction, so this needs no live napi `Env` and is covered here
-    /// rather than in `quadraui-node/tests/`.
+    /// [`AppShellEvent`]'s own `Serialize` impl gives every variant the
+    /// same externally-tagged shape `quadraui-py`'s identical impl does --
+    /// a struct-like variant's payload nested under its tag, a unit
+    /// variant tagged with `null`. Pure JSON construction, so this needs
+    /// no live napi `Env` and is covered here rather than in
+    /// `quadraui-node/tests/`; `quadraui`'s own
+    /// `app_shell_event_serializes_to_the_externally_tagged_dict_shape`
+    /// pins the same shape at the source.
     #[test]
     fn app_shell_event_to_json_tags_every_variant() {
         assert_eq!(
-            app_shell_event_to_json(&AppShellEvent::PanelChanged {
+            serde_json::to_value(AppShellEvent::PanelChanged {
                 panel_id: WidgetId::new("panel:files")
-            }),
+            })
+            .unwrap(),
             serde_json::json!({"PanelChanged": {"panel_id": "panel:files"}})
         );
         assert_eq!(
-            app_shell_event_to_json(&AppShellEvent::SidebarHidden),
+            serde_json::to_value(AppShellEvent::SidebarHidden).unwrap(),
             serde_json::json!({"SidebarHidden": null})
         );
         assert_eq!(
-            app_shell_event_to_json(&AppShellEvent::SidebarResized { new_width: 12.5 }),
+            serde_json::to_value(AppShellEvent::SidebarResized { new_width: 12.5 }).unwrap(),
             serde_json::json!({"SidebarResized": {"new_width": 12.5}})
         );
         assert_eq!(
-            app_shell_event_to_json(&AppShellEvent::BottomItemClicked {
+            serde_json::to_value(AppShellEvent::BottomItemClicked {
                 id: WidgetId::new("bottom:terminal")
-            }),
+            })
+            .unwrap(),
             serde_json::json!({"BottomItemClicked": {"id": "bottom:terminal"}})
         );
         assert_eq!(
-            app_shell_event_to_json(&AppShellEvent::Consumed),
+            serde_json::to_value(AppShellEvent::Consumed).unwrap(),
             serde_json::json!({"Consumed": null})
         );
     }
 
-    /// [`bottom_panel_event_to_json`] tags a payload-carrying variant with
-    /// its bare payload (no nested object), and a unit variant with
-    /// `null` -- mirrors `quadraui-py`'s own `bottom_panel_event_to_py`.
+    /// [`BottomPanelEvent`]'s own `Serialize` impl tags a payload-carrying
+    /// variant with its bare payload (no nested object), and a unit
+    /// variant with `null` -- mirrors `quadraui-py`'s identical impl;
+    /// `quadraui`'s own
+    /// `bottom_panel_event_serializes_to_the_externally_tagged_dict_shape`
+    /// pins the same shape at the source.
     #[test]
     fn bottom_panel_event_to_json_tags_every_variant() {
         assert_eq!(
-            bottom_panel_event_to_json(&BottomPanelEvent::TabActivated("bp:a".to_string())),
+            serde_json::to_value(BottomPanelEvent::TabActivated("bp:a".to_string())).unwrap(),
             serde_json::json!({"TabActivated": "bp:a"})
         );
         assert_eq!(
-            bottom_panel_event_to_json(&BottomPanelEvent::TabClosed("bp:b".to_string())),
+            serde_json::to_value(BottomPanelEvent::TabClosed("bp:b".to_string())).unwrap(),
             serde_json::json!({"TabClosed": "bp:b"})
         );
         assert_eq!(
-            bottom_panel_event_to_json(&BottomPanelEvent::MaximiseToggled),
+            serde_json::to_value(BottomPanelEvent::MaximiseToggled).unwrap(),
             serde_json::json!({"MaximiseToggled": null})
         );
         assert_eq!(
-            bottom_panel_event_to_json(&BottomPanelEvent::Resized(8.0)),
+            serde_json::to_value(BottomPanelEvent::Resized(8.0)).unwrap(),
             serde_json::json!({"Resized": 8.0})
         );
     }

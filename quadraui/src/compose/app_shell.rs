@@ -15,6 +15,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use serde::ser::SerializeMap;
+use serde::{Serialize, Serializer};
+
 use super::activity_bar_controller::ActivityBarKeyboard;
 use super::divider_drag::DividerDrag;
 use super::shell_layout;
@@ -121,6 +124,71 @@ pub enum AppShellEvent {
     BottomItemClicked { id: WidgetId },
     Consumed,
     Ignored,
+}
+
+/// Externally-tagged, one-entry-map shape: `{"PanelChanged": {"panel_id":
+/// "panel:explorer"}}`, `{"SidebarHidden": null}`, etc. — the same shape a
+/// plain `#[derive(Serialize)]` would give every variant here *except* the
+/// four unit variants, which `serde`'s own external tagging would instead
+/// serialize as a bare string (`"SidebarHidden"`, not `{"SidebarHidden":
+/// null}`). A binding's own `on_shell_event` callback already observes the
+/// dict-with-`null` shape (see `quadraui-py`'s and `quadraui-node`'s own
+/// shell tests), so this impl is hand-written rather than derived, to keep
+/// that wire shape unchanged. Written once here instead of once per binding
+/// — a binding reaches this via a generic `pythonize::pythonize`/
+/// `serde_json::to_value` call, not its own hand-rolled match.
+impl Serialize for AppShellEvent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        struct PanelChangedPayload {
+            panel_id: WidgetId,
+        }
+        #[derive(Serialize)]
+        struct SidebarResizedPayload {
+            new_width: f32,
+        }
+        #[derive(Serialize)]
+        struct BottomPanelResizedPayload {
+            new_height: f32,
+        }
+        #[derive(Serialize)]
+        struct BottomItemClickedPayload {
+            id: WidgetId,
+        }
+
+        let mut map = serializer.serialize_map(Some(1))?;
+        match self {
+            AppShellEvent::PanelChanged { panel_id } => map.serialize_entry(
+                "PanelChanged",
+                &PanelChangedPayload {
+                    panel_id: *panel_id,
+                },
+            )?,
+            AppShellEvent::SidebarHidden => map.serialize_entry("SidebarHidden", &())?,
+            AppShellEvent::SidebarResized { new_width } => map.serialize_entry(
+                "SidebarResized",
+                &SidebarResizedPayload {
+                    new_width: *new_width,
+                },
+            )?,
+            AppShellEvent::BottomPanelResized { new_height } => map.serialize_entry(
+                "BottomPanelResized",
+                &BottomPanelResizedPayload {
+                    new_height: *new_height,
+                },
+            )?,
+            AppShellEvent::BottomPanelHidden => map.serialize_entry("BottomPanelHidden", &())?,
+            AppShellEvent::BottomItemClicked { id } => {
+                map.serialize_entry("BottomItemClicked", &BottomItemClickedPayload { id: *id })?
+            }
+            AppShellEvent::Consumed => map.serialize_entry("Consumed", &())?,
+            AppShellEvent::Ignored => map.serialize_entry("Ignored", &())?,
+        }
+        map.end()
+    }
 }
 
 /// Layout bounds returned by [`AppShell::render`] and [`AppShell::layout`].
@@ -3328,5 +3396,55 @@ mod tests {
         assert_eq!(bands.len(), 1);
         assert_eq!(l.main_content_bounds.height, 0.0);
         assert!(bands[0].1.height > 0.0);
+    }
+
+    /// Golden shape for every [`AppShellEvent`] variant's [`Serialize`]
+    /// impl — the externally-tagged, one-entry-map JSON a binding's own
+    /// `on_shell_event` dict/JSON payload must keep matching byte-for-byte
+    /// (pins `quadraui-py`'s `test_run_shell.py` and `quadraui-node`'s
+    /// `shell.test.ts` expectations, which assert these exact shapes
+    /// through `pythonize`/`serde_json::to_value` rather than this crate's
+    /// own `Serialize` impl directly).
+    #[test]
+    fn app_shell_event_serializes_to_the_externally_tagged_dict_shape() {
+        let cases = [
+            (
+                AppShellEvent::PanelChanged {
+                    panel_id: WidgetId::new("panel:explorer"),
+                },
+                serde_json::json!({"PanelChanged": {"panel_id": "panel:explorer"}}),
+            ),
+            (
+                AppShellEvent::SidebarHidden,
+                serde_json::json!({"SidebarHidden": null}),
+            ),
+            (
+                AppShellEvent::SidebarResized { new_width: 42.0 },
+                serde_json::json!({"SidebarResized": {"new_width": 42.0}}),
+            ),
+            (
+                AppShellEvent::BottomPanelResized { new_height: 7.5 },
+                serde_json::json!({"BottomPanelResized": {"new_height": 7.5}}),
+            ),
+            (
+                AppShellEvent::BottomPanelHidden,
+                serde_json::json!({"BottomPanelHidden": null}),
+            ),
+            (
+                AppShellEvent::BottomItemClicked {
+                    id: WidgetId::new("bottom:logs"),
+                },
+                serde_json::json!({"BottomItemClicked": {"id": "bottom:logs"}}),
+            ),
+            (
+                AppShellEvent::Consumed,
+                serde_json::json!({"Consumed": null}),
+            ),
+            (AppShellEvent::Ignored, serde_json::json!({"Ignored": null})),
+        ];
+        for (event, expected) in cases {
+            let actual = serde_json::to_value(&event).expect("AppShellEvent always serializes");
+            assert_eq!(actual, expected, "{event:?}");
+        }
     }
 }
