@@ -513,7 +513,10 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
                 ..
             } = &event
             {
-                let bp_ev = ctrl_cell.borrow_mut().handle_click(position.x, position.y);
+                let bp_ev = ctrl_cell
+                    .borrow_mut()
+                    .handle_click_event(position.x, position.y)
+                    .into_event();
                 if let Some(bp_ev) = bp_ev {
                     // Auto-hide the panel once its last tab is closed.
                     if matches!(bp_ev, BottomPanelEvent::TabClosed(_))

@@ -16,11 +16,11 @@
 //! - `Enter`                      select first row of active section
 //! - `q` / `Esc`                  quit
 
+use quadraui::compose::Handled;
 use quadraui::{
     AppLogic, Backend, Color, Decoration, InteractionState, Key, NamedKey, NavigationMode,
     Reaction, Rect, ScrollMode, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
-    StatusBarAction, StatusBarInteraction, StatusBarSegment, StyledText, TreeRow, UiEvent,
-    WidgetId,
+    StatusBarInteraction, StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.5;
@@ -148,13 +148,13 @@ impl AppLogic for DebugSidebar {
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         let status_rect = Self::status_rect(backend);
-        match self.status_interaction.handle(&event, status_rect) {
-            StatusBarAction::Clicked(id) => {
+        match self.status_interaction.handle_event(&event, status_rect) {
+            Handled::Event(id) => {
                 self.last_action = format!("btn:{}", id.as_str());
                 return Reaction::Redraw;
             }
-            StatusBarAction::Redraw => return Reaction::Redraw,
-            StatusBarAction::Ignored => {}
+            Handled::Consumed => return Reaction::Redraw,
+            Handled::Ignored => {}
         }
 
         let rect = Self::sidebar_rect(backend);

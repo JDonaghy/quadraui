@@ -28,10 +28,11 @@
 //! they shift back down without losing the configured height.
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
+use quadraui::compose::Handled;
 use quadraui::{
     Backend, Color, ImageSource, InteractionState, Key, Modifiers, MouseButton, NamedKey,
     PointerShape, Reaction, Rect, ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar,
-    StatusBarAction, StatusBarInteraction, StatusBarSegment, UiEvent, WidgetId,
+    StatusBarInteraction, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// App icon — the same real PNG asset `image_app.rs`'s
@@ -299,16 +300,16 @@ impl ShellAppTrait for FullChromeDemo {
         // Title bar button row takes priority over the drag/
         // double-click-to-maximize gesture on the empty part of the
         // bar: a press that lands on minimize/maximize/close must not also
-        // start a window drag. `StatusBarInteraction::handle` only reacts
-        // to MouseMoved/MouseDown/MouseUp and is a no-op (`Ignored`) for
-        // every other event and for presses outside the button segments,
-        // so falling through to the existing title-bar-drag logic below is
-        // safe.
+        // start a window drag. `StatusBarInteraction::handle_event` only
+        // reacts to MouseMoved/MouseDown/MouseUp and is a no-op
+        // (`Handled::Ignored`) for every other event and for presses
+        // outside the button segments, so falling through to the existing
+        // title-bar-drag logic below is safe.
         if let Some(tb) = ctx.title_bar_bounds() {
-            match self.title_bar_interaction.handle(&event, tb) {
-                StatusBarAction::Clicked(id) => return self.handle_title_bar_button(backend, &id),
-                StatusBarAction::Redraw => return Reaction::Redraw,
-                StatusBarAction::Ignored => {}
+            match self.title_bar_interaction.handle_event(&event, tb) {
+                Handled::Event(id) => return self.handle_title_bar_button(backend, &id),
+                Handled::Consumed => return Reaction::Redraw,
+                Handled::Ignored => {}
             }
         }
 

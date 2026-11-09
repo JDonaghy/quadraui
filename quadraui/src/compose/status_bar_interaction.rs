@@ -1,8 +1,8 @@
 //! Lightweight hover/press state tracker for [`crate::StatusBar`].
 //!
 //! Consumers store a [`StatusBarInteraction`] alongside their status bar,
-//! call [`StatusBarInteraction::handle`] with each mouse event and the
-//! bar's rect, then read [`hovered_id`](StatusBarInteraction::hovered_id)
+//! call [`StatusBarInteraction::handle_event`] with each mouse event and
+//! the bar's rect, then read [`hovered_id`](StatusBarInteraction::hovered_id)
 //! and [`pressed_id`](StatusBarInteraction::pressed_id) when calling
 //! `Backend::draw_status_bar`.
 //!
@@ -11,6 +11,7 @@
 
 use std::cell::RefCell;
 
+use crate::compose::Handled;
 use crate::event::{MouseButton, Point, Rect, UiEvent};
 use crate::primitives::status_bar::{StatusBarHit, StatusBarLayout};
 use crate::types::WidgetId;
@@ -25,6 +26,10 @@ pub struct StatusBarInteraction {
 
 /// What happened after [`StatusBarInteraction::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[deprecated(
+    since = "0.9.0",
+    note = "use `StatusBarInteraction::handle_event`'s `Handled<WidgetId>` instead — `Redraw` is `Handled::Consumed`, `Ignored` is `Handled::Ignored`, `Clicked(id)` is `Handled::Event(id)`"
+)]
 pub enum StatusBarAction {
     /// A clickable segment was clicked (mouse-down + mouse-up on the same segment).
     Clicked(WidgetId),
@@ -55,16 +60,21 @@ impl StatusBarInteraction {
     }
 
     /// Process a mouse event relative to the status bar's rect.
-    /// Returns what action (if any) resulted.
-    pub fn handle(&mut self, event: &UiEvent, bar_rect: Rect) -> StatusBarAction {
+    ///
+    /// Returns [`Handled::Event`] with the clicked segment's id when a
+    /// clickable segment was clicked (mouse-down + mouse-up on the same
+    /// segment), [`Handled::Consumed`] when hover/press state changed
+    /// (caller should redraw), or [`Handled::Ignored`] when the event
+    /// wasn't relevant to the status bar.
+    pub fn handle_event(&mut self, event: &UiEvent, bar_rect: Rect) -> Handled<WidgetId> {
         match event {
             UiEvent::MouseMoved { position, .. } => {
                 let new_hover = self.hit_test(bar_rect, *position);
                 if new_hover != self.hovered {
                     self.hovered = new_hover;
-                    StatusBarAction::Redraw
+                    Handled::Consumed
                 } else {
-                    StatusBarAction::Ignored
+                    Handled::Ignored
                 }
             }
             UiEvent::MouseDown {
@@ -75,9 +85,9 @@ impl StatusBarInteraction {
                 let hit = self.hit_test(bar_rect, *position);
                 if hit.is_some() {
                     self.pressed = hit;
-                    StatusBarAction::Redraw
+                    Handled::Consumed
                 } else {
-                    StatusBarAction::Ignored
+                    Handled::Ignored
                 }
             }
             UiEvent::MouseUp {
@@ -89,16 +99,31 @@ impl StatusBarInteraction {
                 if let Some(ref pressed_id) = was_pressed {
                     let hit = self.hit_test(bar_rect, *position);
                     if hit.as_ref() == Some(pressed_id) {
-                        return StatusBarAction::Clicked(*pressed_id);
+                        return Handled::Event(*pressed_id);
                     }
                 }
                 if was_pressed.is_some() {
-                    StatusBarAction::Redraw
+                    Handled::Consumed
                 } else {
-                    StatusBarAction::Ignored
+                    Handled::Ignored
                 }
             }
-            _ => StatusBarAction::Ignored,
+            _ => Handled::Ignored,
+        }
+    }
+
+    /// Process a mouse event relative to the status bar's rect.
+    /// Returns what action (if any) resulted.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_event`, which returns `Handled<WidgetId>` instead of `StatusBarAction`"
+    )]
+    #[allow(deprecated)] // `StatusBarAction` is `#[deprecated]`; this method is its own shim.
+    pub fn handle(&mut self, event: &UiEvent, bar_rect: Rect) -> StatusBarAction {
+        match self.handle_event(event, bar_rect) {
+            Handled::Event(id) => StatusBarAction::Clicked(id),
+            Handled::Consumed => StatusBarAction::Redraw,
+            Handled::Ignored => StatusBarAction::Ignored,
         }
     }
 
@@ -155,8 +180,8 @@ mod tests {
             position: Point { x: 5.0, y: 100.5 },
             buttons: Default::default(),
         };
-        let action = sbi.handle(&ev, bar_rect());
-        assert_eq!(action, StatusBarAction::Redraw);
+        let action = sbi.handle_event(&ev, bar_rect());
+        assert_eq!(action, Handled::Consumed);
         assert_eq!(sbi.hovered_id(), Some(&WidgetId::new("run")));
     }
 
@@ -165,7 +190,7 @@ mod tests {
         let mut sbi = StatusBarInteraction::new();
         sbi.set_layout(test_layout());
         // Move into "run" first.
-        sbi.handle(
+        sbi.handle_event(
             &UiEvent::MouseMoved {
                 position: Point { x: 5.0, y: 100.5 },
                 buttons: Default::default(),
@@ -173,14 +198,14 @@ mod tests {
             bar_rect(),
         );
         // Move outside the bar.
-        let action = sbi.handle(
+        let action = sbi.handle_event(
             &UiEvent::MouseMoved {
                 position: Point { x: 5.0, y: 50.0 },
                 buttons: Default::default(),
             },
             bar_rect(),
         );
-        assert_eq!(action, StatusBarAction::Redraw);
+        assert_eq!(action, Handled::Consumed);
         assert_eq!(sbi.hovered_id(), None);
     }
 
@@ -190,7 +215,7 @@ mod tests {
         sbi.set_layout(test_layout());
         let rect = bar_rect();
         // Mouse down on "stop".
-        sbi.handle(
+        sbi.handle_event(
             &UiEvent::MouseDown {
                 button: MouseButton::Left,
                 position: Point { x: 15.0, y: 100.5 },
@@ -201,7 +226,7 @@ mod tests {
         );
         assert_eq!(sbi.pressed_id(), Some(&WidgetId::new("stop")));
         // Mouse up on same segment.
-        let action = sbi.handle(
+        let action = sbi.handle_event(
             &UiEvent::MouseUp {
                 button: MouseButton::Left,
                 position: Point { x: 15.0, y: 100.5 },
@@ -209,7 +234,7 @@ mod tests {
             },
             rect,
         );
-        assert_eq!(action, StatusBarAction::Clicked(WidgetId::new("stop")));
+        assert_eq!(action, Handled::Event(WidgetId::new("stop")));
         assert_eq!(sbi.pressed_id(), None);
     }
 
@@ -219,7 +244,7 @@ mod tests {
         sbi.set_layout(test_layout());
         let rect = bar_rect();
         // Mouse down on "run".
-        sbi.handle(
+        sbi.handle_event(
             &UiEvent::MouseDown {
                 button: MouseButton::Left,
                 position: Point { x: 5.0, y: 100.5 },
@@ -229,7 +254,7 @@ mod tests {
             rect,
         );
         // Mouse up outside any segment.
-        let action = sbi.handle(
+        let action = sbi.handle_event(
             &UiEvent::MouseUp {
                 button: MouseButton::Left,
                 position: Point { x: 50.0, y: 100.5 },
@@ -237,6 +262,32 @@ mod tests {
             },
             rect,
         );
-        assert_eq!(action, StatusBarAction::Redraw);
+        assert_eq!(action, Handled::Consumed);
+    }
+
+    #[test]
+    #[allow(deprecated)] // covers the `handle` shim kept for pre-`Handled` callers.
+    fn deprecated_handle_still_adapts_to_status_bar_action() {
+        let mut sbi = StatusBarInteraction::new();
+        sbi.set_layout(test_layout());
+        let rect = bar_rect();
+        sbi.handle(
+            &UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position: Point { x: 15.0, y: 100.5 },
+                modifiers: Default::default(),
+                widget: None,
+            },
+            rect,
+        );
+        let action = sbi.handle(
+            &UiEvent::MouseUp {
+                button: MouseButton::Left,
+                position: Point { x: 15.0, y: 100.5 },
+                widget: None,
+            },
+            rect,
+        );
+        assert_eq!(action, StatusBarAction::Clicked(WidgetId::new("stop")));
     }
 }

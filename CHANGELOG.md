@@ -59,6 +59,18 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `compose::Handled<E>` (#2174): shared "did you handle it" return type for
+  compose controller `handle_*` methods — `Event(E)` (a semantic payload to
+  route further), `Consumed` (internal state changed, redraw, nothing to
+  route), or `Ignored` (not this controller's event). Replaces the
+  per-controller spellings of the same three-way split (`StatusBarAction`
+  spelled `Consumed` as `Redraw`; `BottomPanelController::handle_click`
+  returned `Option<BottomPanelEvent>` with no way to tell "consumed, no
+  event" apart from "not mine"). `StatusBarInteraction::handle_event` and
+  `BottomPanelController::handle_click_event` are the first two controllers
+  migrated, added alongside their now-deprecated originals (see
+  `### Deprecated`); the remaining `compose` controllers migrate
+  incrementally in follow-up PRs under the same issue.
 - `quadraui-node`: `QuiApp.armWakeNotify`/`disarmWakeNotify` (#2238) register
   a threadsafe notifier `QuiAppWaker.post`/`wake`/`postAfter`/`wakeAfter`
   fires the instant they deliver, from whatever thread that happens on.
@@ -221,6 +233,22 @@ only a push to `main` runs this workflow.
   two-PR deprecation protocol, once every in-repo caller (including the
   `"panel"` wire node, whose removal/retargeting is its own breaking
   change) has migrated, not before a 0.10.0 bump.
+- `StatusBarInteraction::handle` / `StatusBarAction` (#2174): use
+  `StatusBarInteraction::handle_event`, which returns `Handled<WidgetId>`
+  instead. Every in-repo caller
+  (`examples/common/full_chrome_demo.rs`, `examples/common/multi_tree.rs`)
+  migrates in this PR; `handle`/`StatusBarAction` stay as a thin adapter
+  with their own tests still passing. Removal target: once `Handled<E>`
+  migration of the rest of `compose` lands and no caller needs the old
+  shape, not before a 0.10.0 bump.
+- `BottomPanelController::handle_click` (#2174): use `handle_click_event`,
+  which returns `Handled<BottomPanelEvent>` and — unlike the `Option` it
+  replaces — distinguishes a dead-space click inside the panel
+  (`Handled::Consumed`) from a click outside the panel entirely
+  (`Handled::Ignored`). The in-repo caller (`shell_adapter.rs`) migrates
+  in this PR; `handle_click` stays as a thin adapter with its own tests
+  still passing. Removal target: same as `StatusBarInteraction::handle`
+  above.
 
 ### Fixed
 - `FilePickerController` (#2172) now shares its query/list/selection/scroll

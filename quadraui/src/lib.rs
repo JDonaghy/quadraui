@@ -761,16 +761,21 @@ pub use compose::{
     ChatRole, ChatTurn, ContextMenuController, ContextMenuOutcome, DualModePaletteController,
     DualModePaletteEvent, FilePickerController, FilePickerEvent, FilePickerMode, FocusGroup,
     FocusRing, FolderPickerController, FolderPickerEvent, FormController, FormControllerEvent,
-    FormDialogController, FormDialogEvent, GroupLayout, HelpAction, HelpNote,
+    FormDialogController, FormDialogEvent, GroupLayout, Handled, HelpAction, HelpNote,
     HelpOverlayController, HelpOverlayEvent, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent,
     MenuSystem, MessageDialogController, MessageDialogEvent, NavigationMode, Pane, PaneDragRect,
     PaneTab, PanelDefinition, SectionKind, ShellPosition, SidebarEvent, SidebarPanelBody,
-    SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef, SidebarSystem, StatusBarAction,
+    SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef, SidebarSystem,
     StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout, ToastStackController,
     ToastStackEvent, ToolbarHoverTracker, TreeController, TreeControllerEvent, TreeHoverTracker,
     ViewHelp, WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout,
     PALETTE_CHROME_ROWS,
 };
+// `StatusBarAction` is `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
+// `Handled<WidgetId>` instead). Allow it here since `pub use` of a deprecated
+// item is itself a use site.
+#[allow(deprecated)]
+pub use compose::StatusBarAction;
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
     text_selection_line_range, DragState, DragTarget, ScrollSurface, SurfaceScrollbar, TextRegion,
