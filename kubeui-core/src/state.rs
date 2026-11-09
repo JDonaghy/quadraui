@@ -1,16 +1,22 @@
 //! Pure application state — no rendering, no event types.
 //!
-//! Backends own a single [`AppState`] instance and mutate it through
-//! [`crate::Action`] dispatched to [`crate::apply_action`]. Builders
-//! in [`crate::view`] turn the state into `quadraui` primitives that
-//! the backend rasterises.
+//! [`crate::KubeApp`] owns a single [`AppState`] instance and mutates
+//! it directly from `quadraui::AppLogic::handle`. Builders in
+//! [`crate::view`] turn the state into `quadraui` primitives that
+//! [`crate::KubeApp::render`] draws through the generic
+//! `quadraui::Backend` trait, so the same code runs on every backend.
+
+use quadraui::{
+    fuzzy_score, DualModePaletteController, Key, Modifiers, NamedKey, PaletteItem, StyledSpan,
+    StyledText, UiEvent,
+};
 
 use crate::k8s::ResourceItem;
 
 /// Top-level app state. Cloning is cheap-ish (Vec<ResourceItem> can
-/// be large but is rarely cloned outside tests). Mutation is through
-/// the [`crate::Action`] reducer; nothing in the rest of the crate
-/// holds a long-lived borrow.
+/// be large but is rarely cloned outside tests). Mutation happens
+/// through `quadraui::AppLogic::handle`; nothing in the rest of the
+/// crate holds a long-lived borrow.
 pub struct AppState {
     /// Kubeconfig context name (informational only — kube uses the
     /// default context until we add a switcher).
@@ -26,12 +32,12 @@ pub struct AppState {
     pub yaml_scroll: usize,
     /// Which pane consumes j/k. Tab cycles.
     pub focus: Focus,
-    /// Modal picker (namespace or resource kind). `Some` while open.
-    pub picker: Option<Picker>,
+    /// Modal namespace/kind picker. `Some` while open.
+    pub picker: Option<PickerOverlay>,
     /// Last status / error message — surfaced in the bottom bar.
     pub status: String,
-    /// Set by [`crate::apply_action`] when the user hits the quit
-    /// action. Backends check this in their event loop and exit.
+    /// Set from `quadraui::AppLogic::handle` when the user hits the
+    /// quit action. The runner's event loop exits once this is true.
     pub should_quit: bool,
 }
 
@@ -107,62 +113,234 @@ pub enum Focus {
     Yaml,
 }
 
-/// Modal list-picker state — filterable. See [`Self::visible_indices`]
-/// for the filter semantics.
-pub struct Picker {
-    pub title: String,
-    pub purpose: PickerPurpose,
-    pub items: Vec<String>,
-    pub query: String,
-    /// Index into the filtered view (`visible_indices()`), not the
-    /// original `items` Vec.
-    pub selected: usize,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PickerPurpose {
     Namespace,
     ResourceKind,
 }
 
-impl Picker {
-    /// Indices of `items` that match the current query, in original
-    /// order. Empty query → all indices. Match is case-insensitive
-    /// substring.
-    pub fn visible_indices(&self) -> Vec<usize> {
-        if self.query.is_empty() {
-            return (0..self.items.len()).collect();
+/// Modal namespace/kind picker — a thin wrapper around
+/// `quadraui::DualModePaletteController` that keeps the palette's
+/// filtered item list in sync with [`fuzzy_score`] matches against
+/// `source`.
+///
+/// `DualModePaletteController` filters nothing on its own (see its
+/// module doc: the app refilters and calls `set_items` in response to
+/// `QueryChanged`) — that refiltering is this type's whole job, so
+/// `source`'s original index survives query changes via `filtered`
+/// (`filtered[row]` is the index into `source` the controller's row
+/// `row` currently shows).
+pub struct PickerOverlay {
+    pub purpose: PickerPurpose,
+    /// Full, unfiltered candidate list (namespace names or resource
+    /// kind labels) in original order.
+    source: Vec<String>,
+    /// Index into `source` of the item the app currently has active —
+    /// marked with a `●` prefix so the user can see what they're
+    /// changing away from.
+    current_orig: Option<usize>,
+    /// `filtered[row]` is the `source` index the controller's row
+    /// `row` currently displays. Rebuilt by [`Self::refilter`].
+    filtered: Vec<usize>,
+    controller: DualModePaletteController,
+}
+
+/// Large enough that `DualModePaletteController::sync_scroll` never
+/// clamps `scroll_top` while a `PickerOverlay` seeds its initial
+/// selection — the real viewport-derived row count is only known at
+/// render/handle time, not at construction.
+const UNBOUNDED_ROWS: usize = usize::MAX;
+
+impl PickerOverlay {
+    pub fn new(
+        purpose: PickerPurpose,
+        title: impl Into<String>,
+        source: Vec<String>,
+        current_orig: Option<usize>,
+    ) -> Self {
+        let filtered: Vec<usize> = (0..source.len()).collect();
+        let items = build_items(&source, &filtered, current_orig);
+        let mut controller =
+            DualModePaletteController::new(title, None, items).with_id("kubeui_picker");
+        // Pre-select the currently active row so the user can press
+        // Enter immediately to close without changing anything —
+        // matches the old substring picker's pre-selected "current"
+        // marker.
+        if let Some(cur) = current_orig {
+            if let Some(row) = filtered.iter().position(|&i| i == cur) {
+                for _ in 0..row {
+                    controller.handle(&down_key_event(), UNBOUNDED_ROWS);
+                }
+            }
         }
-        let q = self.query.to_ascii_lowercase();
-        self.items
-            .iter()
-            .enumerate()
-            .filter(|(_, name)| name.to_ascii_lowercase().contains(&q))
-            .map(|(i, _)| i)
-            .collect()
+        Self {
+            purpose,
+            source,
+            current_orig,
+            filtered,
+            controller,
+        }
     }
 
-    /// Original index of the currently highlighted row, if any.
+    pub fn controller(&self) -> &DualModePaletteController {
+        &self.controller
+    }
+
+    pub fn controller_mut(&mut self) -> &mut DualModePaletteController {
+        &mut self.controller
+    }
+
+    /// Recompute the filtered item list from the controller's current
+    /// query text via `fuzzy_score`, then push the result into the
+    /// controller with `set_items`. Call after every
+    /// `DualModePaletteEvent::QueryChanged`.
+    ///
+    /// An empty query shows every candidate, unranked, in original
+    /// order — the fast path `fuzzy_score`'s own doc recommends for
+    /// "nothing typed yet" (scoring would just report everything as a
+    /// trivial match, so skip the sort instead of paying for one that
+    /// changes nothing).
+    pub fn refilter(&mut self) {
+        let query = self.controller.query().to_string();
+        let (filtered, positions): (Vec<usize>, Vec<Vec<usize>>) = if query.is_empty() {
+            (
+                (0..self.source.len()).collect(),
+                vec![Vec::new(); self.source.len()],
+            )
+        } else {
+            let q = query.to_lowercase();
+            let mut scored: Vec<(i32, usize, Vec<usize>)> = self
+                .source
+                .iter()
+                .enumerate()
+                .filter_map(|(i, s)| {
+                    fuzzy_score(&s.to_lowercase(), &q).map(|(score, pos)| (score, i, pos))
+                })
+                .collect();
+            scored.sort_by_key(|&(score, _, _)| std::cmp::Reverse(score));
+            let filtered = scored.iter().map(|&(_, i, _)| i).collect();
+            let positions = scored.into_iter().map(|(_, _, p)| p).collect();
+            (filtered, positions)
+        };
+        let items =
+            build_items_with_positions(&self.source, &filtered, &positions, self.current_orig);
+        self.filtered = filtered;
+        self.controller.set_items(items);
+    }
+
+    /// Original `source` index the controller's currently highlighted
+    /// row maps to, if any (empty filter result → `None`).
     pub fn selected_orig_index(&self) -> Option<usize> {
-        self.visible_indices().get(self.selected).copied()
+        self.filtered.get(self.controller.selected()).copied()
     }
 
-    pub fn move_down(&mut self) {
-        let n = self.visible_indices().len();
-        if n == 0 {
-            return;
+    /// Map a palette row index (as carried by
+    /// `DualModePaletteEvent::ItemConfirmed`) back to its `source`
+    /// index.
+    pub fn orig_index_of_row(&self, row: usize) -> Option<usize> {
+        self.filtered.get(row).copied()
+    }
+}
+
+fn down_key_event() -> UiEvent {
+    UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Down),
+        modifiers: Modifiers::default(),
+        repeat: false,
+    }
+}
+
+fn build_items(
+    source: &[String],
+    filtered: &[usize],
+    current_orig: Option<usize>,
+) -> Vec<PaletteItem> {
+    let empty = vec![Vec::new(); filtered.len()];
+    build_items_with_positions(source, filtered, &empty, current_orig)
+}
+
+/// Build the `PaletteItem` list for `filtered` rows. `positions[row]`
+/// is forwarded to `PaletteItem::match_positions` so backends can
+/// highlight why each row matched; the row mapping to `current_orig`
+/// (if any) gets a `●` marker prefix.
+fn build_items_with_positions(
+    source: &[String],
+    filtered: &[usize],
+    positions: &[Vec<usize>],
+    current_orig: Option<usize>,
+) -> Vec<PaletteItem> {
+    filtered
+        .iter()
+        .enumerate()
+        .map(|(row, &orig)| {
+            let is_current = current_orig == Some(orig);
+            let prefix = if is_current { "● " } else { "  " };
+            let text = format!("{prefix}{}", source[orig]);
+            // Match positions are byte offsets into `source[orig]`;
+            // shift them by the prefix's byte length so they still
+            // land on the right characters in the prefixed text.
+            let shift = prefix.len();
+            let match_positions = positions
+                .get(row)
+                .map(|p| p.iter().map(|&b| b + shift).collect())
+                .unwrap_or_default();
+            PaletteItem {
+                text: StyledText {
+                    spans: vec![StyledSpan::plain(text)],
+                },
+                detail: None,
+                icon: None,
+                match_positions,
+                depth: 0,
+                expandable: false,
+                expanded: false,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn namespaces() -> Vec<String> {
+        vec![
+            "default".into(),
+            "kube-system".into(),
+            "kube-public".into(),
+            "monitoring".into(),
+        ]
+    }
+
+    #[test]
+    fn fuzzy_query_matches_subsequence() {
+        let mut picker =
+            PickerOverlay::new(PickerPurpose::Namespace, "Namespace", namespaces(), Some(0));
+        for ch in "kbs".chars() {
+            picker.controller_mut().handle(
+                &UiEvent::KeyPressed {
+                    key: Key::Char(ch),
+                    modifiers: Modifiers::default(),
+                    repeat: false,
+                },
+                UNBOUNDED_ROWS,
+            );
+            picker.refilter();
         }
-        self.selected = (self.selected + 1).min(n - 1);
+        let top = picker.selected_orig_index().expect("a match for 'kbs'");
+        assert_eq!(picker.source[top], "kube-system");
     }
-    pub fn move_up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+
+    #[test]
+    fn empty_query_preserves_original_order() {
+        let picker = PickerOverlay::new(PickerPurpose::Namespace, "Namespace", namespaces(), None);
+        assert_eq!(picker.filtered, vec![0, 1, 2, 3]);
     }
-    pub fn type_char(&mut self, ch: char) {
-        self.query.push(ch);
-        self.selected = 0;
-    }
-    pub fn backspace(&mut self) {
-        self.query.pop();
-        self.selected = 0;
+
+    #[test]
+    fn construction_preselects_current_item() {
+        let picker =
+            PickerOverlay::new(PickerPurpose::Namespace, "Namespace", namespaces(), Some(2));
+        assert_eq!(picker.selected_orig_index(), Some(2));
     }
 }

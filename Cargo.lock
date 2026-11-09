@@ -2214,11 +2214,8 @@ name = "kubeui"
 version = "0.0.1"
 dependencies = [
  "anyhow",
- "crossterm",
  "kubeui-core",
  "quadraui",
- "ratatui",
- "tokio",
 ]
 
 [[package]]
@@ -2241,11 +2238,8 @@ name = "kubeui-gtk"
 version = "0.0.1"
 dependencies = [
  "anyhow",
- "gtk4",
  "kubeui-core",
- "pangocairo",
  "quadraui",
- "tokio",
 ]
 
 [[package]]
