@@ -170,6 +170,30 @@ impl PanelLayout {
 }
 
 impl Panel {
+    /// Count of actions, taken from the front of `self.actions`, that fit
+    /// as a contiguous run against `title_bar`'s trailing edge at
+    /// `action_button_width` each. An action that wouldn't fully fit is
+    /// dropped entirely (not partially clipped) — shared by
+    /// [`Self::layout`] (which hands only the fitting actions to
+    /// `Toolbar::layout_with_options`, since that clips a too-wide
+    /// trailing group instead of dropping items) and
+    /// [`Self::header_toolbar`] (which needs the identical count so its
+    /// mapped header never paints an action `Panel::layout` would have
+    /// dropped).
+    fn fitting_action_count(&self, title_bar: Rect, action_button_width: f32) -> usize {
+        let mut fit_count = 0usize;
+        let mut probe_right = title_bar.x + title_bar.width;
+        for _ in &self.actions {
+            let ax = probe_right - action_button_width;
+            if ax < title_bar.x {
+                break;
+            }
+            probe_right = ax;
+            fit_count += 1;
+        }
+        fit_count
+    }
+
     /// Compute chrome + content layout.
     ///
     /// # Arguments
@@ -196,21 +220,7 @@ impl Panel {
         // hand-rolling a second copy of it.
         let mut action_area_right = bounds.x + bounds.width;
         if let Some(tb) = title_bar_bounds {
-            // An action that wouldn't fully fit is dropped entirely (not
-            // partially clipped) — precompute how many of the actions, taken
-            // from the front of `self.actions`, fit before handing the
-            // trailing layout off to `Toolbar`, since `Toolbar::layout_with_options`
-            // clips a too-wide trailing group instead of dropping items.
-            let mut fit_count = 0usize;
-            let mut probe_right = action_area_right;
-            for _ in &self.actions {
-                let ax = probe_right - measure.action_button_width;
-                if ax < tb.x {
-                    break;
-                }
-                probe_right = ax;
-                fit_count += 1;
-            }
+            let fit_count = self.fitting_action_count(tb, measure.action_button_width);
 
             // `Toolbar`'s trailing group packs left-to-right in button order,
             // placing the first button leftmost within the group — the
@@ -311,6 +321,82 @@ impl Panel {
             hit_regions,
         }
     }
+
+    /// Map this panel's title bar onto an equivalent [`crate::SidebarPanel`]
+    /// header [`Toolbar`]: a title [`ToolbarButton::Label`], a
+    /// [`ToolbarButton::Spacer`], then one [`ToolbarButton::Action`] per
+    /// fitting [`PanelAction`], carrying its `id`, `icon` (as the
+    /// button's `label`), `tooltip` and `is_active`. `self.accent` maps
+    /// onto [`Toolbar::bg`].
+    ///
+    /// Action order matches [`Self::layout`]: the first action is
+    /// rightmost (buttons are pushed in reverse, since `Toolbar`'s
+    /// trailing group packs left-to-right, so the last button pushed —
+    /// `self.actions[0]` — ends up closest to the trailing edge). Only
+    /// actions `Self::layout` would keep (the same `fitting_action_count`
+    /// contiguous-from-the-front run) are included, so a caller that lays
+    /// this header out with a fixed-width [`ToolbarItemMeasure`] for
+    /// `Action` buttons gets rects identical to
+    /// `self.layout(bounds, measure).visible_actions`, in order — no
+    /// extra partially-clipped button for one `Self::layout` would have
+    /// dropped entirely.
+    ///
+    /// The title [`ToolbarButton::Label`] carries a leading space ahead
+    /// of the title text — `Toolbar`/`SidebarPanel` paint a `Label` flush
+    /// against the toolbar's leading edge, with no inset of its own, so
+    /// the leading space reproduces the one-cell/4px inset `Panel`'s own
+    /// chrome paints, the same trick `compose::help_layer` already uses
+    /// for its own `SidebarPanel` + `Toolbar` title.
+    ///
+    /// Returns `None` when there's no title bar to paint (`self.title`
+    /// is `None`, or `measure.title_bar_height <= 0.0`) — mirrors
+    /// [`PanelLayout::title_bar_bounds`]. Layout is unaffected by
+    /// `self.collapsed` — the title bar still paints when collapsed, same
+    /// as [`Self::layout`].
+    pub fn header_toolbar(&self, bounds: Rect, measure: PanelMeasure) -> Option<Toolbar> {
+        let title = self.title.as_ref()?;
+        if measure.title_bar_height <= 0.0 {
+            return None;
+        }
+        let tb = Rect::new(bounds.x, bounds.y, bounds.width, measure.title_bar_height);
+        let fit_count = self.fitting_action_count(tb, measure.action_button_width);
+        let order: Vec<usize> = (0..fit_count).rev().collect();
+
+        let mut buttons = vec![
+            ToolbarButton::Label {
+                text: format!(" {}", plain_text(title)),
+                fg: None,
+            },
+            ToolbarButton::Spacer,
+        ];
+        buttons.extend(order.iter().map(|&idx| {
+            let action = &self.actions[idx];
+            ToolbarButton::Action {
+                spec: None,
+                id: action.id,
+                label: action.icon.clone(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: action.is_active,
+                tooltip: action.tooltip.clone(),
+            }
+        }));
+
+        Some(Toolbar {
+            id: self.id,
+            buttons,
+            bg: self.accent,
+            focused_index: None,
+        })
+    }
+}
+
+/// Flatten a [`StyledText`]'s spans into a plain string — same idiom
+/// used throughout the crate wherever a declarative `StyledText` needs
+/// feeding into a plain-`String` field (e.g. [`ToolbarButton::Label::text`]).
+fn plain_text(t: &StyledText) -> String {
+    t.spans.iter().map(|s| s.text.as_str()).collect()
 }
 
 // Shared implementation for painting panel title bar and action buttons,
@@ -736,5 +822,142 @@ mod tests {
         }
         // Click outside.
         assert_eq!(layout.hit_test(500.0, 500.0), PanelHit::Outside);
+    }
+
+    // ── `header_toolbar` mapping ───────────────────────────────────────
+
+    use crate::primitives::toolbar::ToolbarLayoutOptions;
+    use std::collections::HashMap;
+
+    /// Build a panel with `action_count` actions (ids "a0".."aN") and
+    /// assert `panel.header_toolbar(bounds, measure)`, laid out with a
+    /// fixed-width measure for `Action` buttons, produces action rects
+    /// identical to `panel.layout(bounds, measure).visible_actions` —
+    /// same count, same bounds per id.
+    fn assert_header_matches_layout(bounds: Rect, measure: PanelMeasure, action_count: usize) {
+        let actions: Vec<PanelAction> = (0..action_count)
+            .map(|i| mk_panel_action(&format!("a{i}"), 'x'))
+            .collect();
+        let panel = Panel {
+            id: WidgetId::new("p"),
+            title: Some(StyledText::plain("Title")),
+            actions,
+            accent: Some(Color::rgb(10, 20, 30)),
+            collapsed: false,
+        };
+
+        let panel_layout = panel.layout(bounds, measure);
+        let header = panel
+            .header_toolbar(bounds, measure)
+            .expect("title present, title_bar_height > 0");
+
+        // Accent maps onto `Toolbar.bg`.
+        assert_eq!(header.bg, panel.accent);
+
+        // Title `Label` keeps the leading-space inset.
+        match &header.buttons[0] {
+            ToolbarButton::Label { text, .. } => assert_eq!(text, " Title"),
+            other => panic!("expected title Label first, got {other:?}"),
+        }
+        assert_eq!(header.buttons[1], ToolbarButton::Spacer);
+
+        let tb = panel_layout
+            .title_bar_bounds
+            .expect("title bar present when title is Some");
+        let header_layout = header.layout_with_options(
+            tb.x,
+            tb.y,
+            tb.width,
+            tb.height,
+            ToolbarLayoutOptions::default(),
+            |btn| match btn {
+                ToolbarButton::Action { .. } => {
+                    ToolbarItemMeasure::new(measure.action_button_width)
+                }
+                ToolbarButton::Label { text, .. } => {
+                    ToolbarItemMeasure::new(text.chars().count() as f32)
+                }
+                _ => ToolbarItemMeasure::new(0.0),
+            },
+        );
+
+        let mut header_action_bounds: HashMap<WidgetId, Rect> = HashMap::new();
+        for vis in &header_layout.visible_items {
+            if let ToolbarButton::Action { id, .. } = &header.buttons[vis.item_idx] {
+                header_action_bounds.insert(*id, vis.bounds);
+            }
+        }
+
+        assert_eq!(
+            header_action_bounds.len(),
+            panel_layout.visible_actions.len(),
+            "header paints exactly the actions Panel::layout kept, no more, no fewer"
+        );
+        for va in &panel_layout.visible_actions {
+            let hb = header_action_bounds
+                .get(&va.id)
+                .unwrap_or_else(|| panic!("action {:?} missing from header layout", va.id));
+            assert_eq!(*hb, va.bounds, "action {:?} bounds mismatch", va.id);
+        }
+    }
+
+    #[test]
+    fn header_toolbar_matches_layout_tui_measure() {
+        // TUI-shaped measure: 1 cell title bar, 3-cell action buttons.
+        let measure = PanelMeasure {
+            title_bar_height: 1.0,
+            action_button_width: 3.0,
+            content_padding: 0.0,
+        };
+        let bounds = Rect::new(0.0, 0.0, 10.0, 5.0);
+        // 0, 1, 2 actions all fit (<= 6 of the 10-wide title bar); 5
+        // actions overflow (15 > 10) and only the first 3 fit.
+        for action_count in [0, 1, 2, 5] {
+            assert_header_matches_layout(bounds, measure, action_count);
+        }
+    }
+
+    #[test]
+    fn header_toolbar_matches_layout_pixel_measure() {
+        // Pixel-shaped measure: 24px title bar, 24px action buttons.
+        let measure = PanelMeasure {
+            title_bar_height: 24.0,
+            action_button_width: 24.0,
+            content_padding: 0.0,
+        };
+        let bounds = Rect::new(0.0, 0.0, 80.0, 100.0);
+        // 0, 1, 2 actions fit (<= 48 of the 80-wide title bar); 5
+        // actions overflow (120 > 80) and only the first 3 fit.
+        for action_count in [0, 1, 2, 5] {
+            assert_header_matches_layout(bounds, measure, action_count);
+        }
+    }
+
+    #[test]
+    fn header_toolbar_none_without_title() {
+        let p = Panel {
+            id: WidgetId::new("p"),
+            title: None,
+            actions: vec![mk_panel_action("close", '×')],
+            accent: None,
+            collapsed: false,
+        };
+        let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+        assert!(p.header_toolbar(bounds, PanelMeasure::new(20.0)).is_none());
+    }
+
+    #[test]
+    fn header_toolbar_present_when_collapsed() {
+        // Mapping changes paint, not layout: a collapsed panel still
+        // has a title bar, so still maps to a header toolbar.
+        let p = Panel {
+            id: WidgetId::new("p"),
+            title: Some(StyledText::plain("Collapsed")),
+            actions: vec![],
+            accent: None,
+            collapsed: true,
+        };
+        let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+        assert!(p.header_toolbar(bounds, PanelMeasure::new(20.0)).is_some());
     }
 }

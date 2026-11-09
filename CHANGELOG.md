@@ -107,6 +107,17 @@ only a push to `main` runs this workflow.
   arithmetic. Every existing public accessor (`input_text`/
   `input_insert_char`/`input_insert_str`/`clear_input`/`input_has_focus`)
   keeps its signature.
+- `Panel::header_toolbar` (#2223): maps a `Panel`'s title bar onto an
+  equivalent `SidebarPanel` + `Toolbar` header — a title `Label` (keeping
+  `Panel`'s own leading-space inset), a `Spacer`, then one
+  `ToolbarButton::Action` per fitting `PanelAction`, in the same
+  "first action is rightmost" order `Panel::layout` uses, with `accent`
+  mapped onto `Toolbar.bg`. Only the actions `Panel::layout` would keep
+  are included, so laying this header out with a fixed-width
+  `ToolbarItemMeasure` for `Action` buttons produces rects identical to
+  `Panel::layout`'s own `visible_actions`, in order. Pure addition — no
+  backend painter switches over to it yet; `Panel`'s own TUI/GTK/macOS/Win
+  chrome painters are unchanged.
 - `compose::app_shell::AppShellEvent` and `compose::bottom_panel::BottomPanelEvent`
   now implement `Serialize` (hand-written, not `#[derive(Serialize)]`, so a
   unit variant still serializes to `{"VariantName": null}` rather than
