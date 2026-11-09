@@ -7811,6 +7811,62 @@ fn file_picker_app_save_mode_confirms_seeded_filename() {
     );
 }
 
+/// Open mode: `j`/`k` move the selection the same way `Down`/`Up` do,
+/// driven through the real example path (not just the controller's own
+/// unit tests) so the vim shortcuts unified with `FolderPickerController`
+/// are pinned end to end.
+#[test]
+fn file_picker_app_open_mode_vim_keys_navigate_and_confirm() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    std::fs::write(tmp.path().join("a.rs"), b"").expect("write file");
+    std::fs::write(tmp.path().join("b.rs"), b"").expect("write file");
+
+    let mut driver = TuiDriver::new(FilePickerApp::with_root(tmp.path()), 100, 30);
+    // Entries: [.., a.rs, b.rs] — 'j' twice lands on b.rs, 'k' once back
+    // onto a.rs.
+    driver.type_char('j');
+    driver.type_char('j');
+    driver.type_char('k');
+    driver.press_named(NamedKey::Enter);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("Opened:") && after.contains("a.rs"),
+        "'j'/'k' must navigate the selection in Open mode, confirming a.rs:\n{after}"
+    );
+}
+
+/// Save mode: `-`/`j`/`k` must type into the destination filename, not
+/// navigate — the query *is* the filename in this mode, so routing them
+/// as the vim shortcuts would make real filenames (`my-journal.md`)
+/// untypeable and `-` actively destructive (it would clear the query via
+/// `navigate_up`). Driven through the real example path, pinning the
+/// fix end to end rather than just at the controller's own unit level.
+#[test]
+fn file_picker_app_save_mode_vim_chars_type_into_filename() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let mut driver = TuiDriver::new(FilePickerApp::with_root(tmp.path()), 100, 30);
+
+    // Dismiss the initial Open-mode picker, then reopen in Save mode
+    // (seeded with "untitled.txt") and clear the seeded name.
+    driver.press_named(NamedKey::Escape);
+    driver.type_char('s');
+    for _ in 0.."untitled.txt".len() {
+        driver.press_named(NamedKey::Backspace);
+    }
+
+    for c in "my-journal.md".chars() {
+        driver.type_char(c);
+    }
+    driver.press_named(NamedKey::Enter);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("Saved:") && after.contains("my-journal.md"),
+        "'-'/'j'/'k' must type into the Save-mode filename, not navigate:\n{after}"
+    );
+}
+
 // ─── MessageDialogApp: compose::MessageDialogController demo ──
 //
 // Drives `MessageDialogController` directly — no `PlatformServices`

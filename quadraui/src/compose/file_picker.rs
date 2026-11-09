@@ -17,19 +17,29 @@
 //! by an app (no `PlatformServices` involved), and `crate::tui::services`'s
 //! own tests for the `PlatformServices`-level round trip.
 //!
-//! # Shares its key map with the folder picker
+//! # Shares its key map with the folder picker — mode-aware
 //!
 //! Key dispatch is routed through the same `classify_nav_key` both
-//! [`FolderPickerController`] uses, so `-`/`j`/`k` navigate (parent-dir/up/
-//! down) here too, matching, not diverging from, that picker's key map.
-//! The trade-off is the same one documented there: a filename typed
-//! through [`handle`](Self::handle) can never begin with — or contain —
-//! those three characters (this matters most in [`FilePickerMode::Save`],
-//! where the query *is* the destination name). A consumer that needs
-//! typing-priority can call [`push_char`](Self::push_char) directly
+//! [`FolderPickerController`] and this controller use, so the two never
+//! drift apart on the keys they *do* share. But the vim-style `-`/`j`/`k`
+//! shortcuts are gated by [`classify_nav_key`]'s `vim_keys` parameter,
+//! which this controller sets from [`mode`](Self::mode):
+//!
+//! - [`FilePickerMode::Open`]: `vim_keys` is `true` — `-`/`j`/`k` navigate
+//!   (parent-dir/up/down), matching the folder picker, because there is
+//!   nothing to type a name into.
+//! - [`FilePickerMode::Save`]: `vim_keys` is `false` — `-`/`j`/`k` type
+//!   into the query like any other character, because the query *is*
+//!   the destination filename there (see "Save-mode semantics" below)
+//!   and real filenames routinely contain all three (`my-notes.txt`,
+//!   `journal.md`, `Makefile-k8s`).
+//!
+//! A consumer that needs typing-priority in `Open` mode too (rather than
+//! switching mode) can call [`push_char`](Self::push_char) directly
 //! instead of routing through `handle()`.
 //!
 //! [`FolderPickerController`]: crate::compose::FolderPickerController
+//! [`classify_nav_key`]: super::path_picker::classify_nav_key
 //!
 //! # Save-mode semantics
 //!
@@ -66,7 +76,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::path_picker::{classify_nav_key, NavKey, PathPickerCore};
+use super::path_picker::{classify_nav_key, dir_entry_is_dir, NavKey, PathPickerCore};
 use crate::compose::folder_picker::{DEFAULT_IGNORE_DIRS, DEFAULT_MAX_DEPTH};
 use crate::{
     Backend, Icon, Key, Modifiers, Palette, PaletteItem, Rect, StyledText, UiEvent, WidgetId,
@@ -277,12 +287,17 @@ impl FilePickerController {
     }
 
     /// Key dispatch, shared with [`FolderPickerController`] via
-    /// [`classify_nav_key`] so the two pickers' key maps (including the
-    /// vim-style `-`/`j`/`k` shortcuts) can't drift apart.
+    /// [`classify_nav_key`] so the two pickers' key maps can't drift
+    /// apart; see the [module doc](self) for which modes the vim-style
+    /// `-`/`j`/`k` shortcuts are active in.
     ///
     /// [`FolderPickerController`]: crate::compose::FolderPickerController
     fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> FilePickerEvent {
-        match classify_nav_key(key, modifiers) {
+        // `Save` mode's query is the destination filename, so the vim
+        // shortcuts must not steal `-`/`j`/`k` from it — only `Open`
+        // mode, where there is nothing to type a name into, gets them.
+        let vim_keys = self.mode == FilePickerMode::Open;
+        match classify_nav_key(key, modifiers, vim_keys) {
             Some(NavKey::Escape) => FilePickerEvent::Cancelled,
             Some(NavKey::Confirm) => self.confirm_selection(),
             Some(NavKey::NavigateUp) => {
@@ -529,38 +544,6 @@ fn walk_file_entries_recursive(
                 out.push(rel.to_path_buf());
             }
         }
-    }
-}
-
-/// Whether `entry` names a directory, preferring the file type the
-/// directory enumeration already handed us over a second trip to the
-/// filesystem.
-///
-/// # Why not just `path.is_dir()`
-///
-/// [`Path::is_dir`] issues a *fresh* `stat`/`GetFileAttributes` per
-/// entry and — because it returns `bool`, not `io::Result<bool>` —
-/// reports any failure as plain `false`. A directory that momentarily
-/// can't be stat'ed is therefore silently reclassified as a *file*,
-/// which is not a harmless downgrade here: files run the
-/// [`extension_matches`] gauntlet, so an active extension filter drops
-/// the row entirely and the user loses the ability to navigate through
-/// that directory (the exact invariant
-/// `filters_restrict_files_not_dirs` pins). Transient stat failures are
-/// routine on Windows, where an on-access virus scanner holds a brief
-/// exclusive handle on freshly created files and directories and
-/// unrelated opens come back `ERROR_SHARING_VIOLATION`.
-///
-/// [`std::fs::DirEntry::file_type`] answers from the data the directory
-/// read already returned, so on Windows (and Linux, and macOS) it costs
-/// no syscall at all and cannot fail for that reason. Its one documented
-/// gap is symlinks — it describes the *link*, never its target — so
-/// those alone fall through to the `is_dir()` probe, which follows the
-/// link the way this walk wants.
-fn dir_entry_is_dir(entry: &std::fs::DirEntry, path: &Path) -> bool {
-    match entry.file_type() {
-        Ok(ft) if !ft.is_symlink() => ft.is_dir(),
-        _ => path.is_dir(),
     }
 }
 
@@ -863,7 +846,7 @@ mod tests {
         assert_eq!(picker.query(), "");
     }
 
-    // ── Shared vim-key navigation (unified with FolderPickerController) ─
+    // ── Open mode: shared vim-key navigation (unified with FolderPickerController) ─
 
     #[test]
     fn vim_j_and_k_move_selection_through_handle() {
@@ -902,6 +885,49 @@ mod tests {
         let result = picker.handle(&ev, 10);
         assert_eq!(result, FilePickerEvent::Consumed);
         assert_eq!(picker.root(), parent.path());
+    }
+
+    // ── Save mode: vim shortcuts disabled, typing wins ──────────────────
+
+    /// In `Save` mode, `-`/`j`/`k` must reach the query through the full
+    /// `handle()` path (not just `push_char` directly) — Save's query is
+    /// the destination filename, so routing them as navigation would make
+    /// `journal.md`, `my-notes.txt`, and `Makefile-k8s` untypeable and
+    /// `-` actively destructive (it would call `navigate_up`, which
+    /// clears the query the user had already typed).
+    #[test]
+    fn save_mode_vim_chars_type_into_query_through_handle() {
+        let tmp = scratch_dir_with(&[], &[]);
+        let mut picker = FilePickerController::new(FilePickerMode::Save, tmp.path(), vec![]);
+
+        for c in "my-journal.md".chars() {
+            let ev = UiEvent::KeyPressed {
+                key: Key::Char(c),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            };
+            assert_eq!(picker.handle(&ev, 10), FilePickerEvent::Consumed);
+        }
+
+        assert_eq!(picker.query(), "my-journal.md");
+        assert_eq!(picker.root(), tmp.path(), "must not have navigated up");
+    }
+
+    /// Named arrow keys still navigate the selection in Save mode — only
+    /// the vim letter/dash aliases are gated, not `Up`/`Down` themselves.
+    #[test]
+    fn save_mode_arrow_keys_still_navigate_selection() {
+        let tmp = scratch_dir_with(&["a.txt", "b.txt"], &[]);
+        let mut picker = FilePickerController::new(FilePickerMode::Save, tmp.path(), vec![]);
+        assert!(picker.filtered().len() >= 2);
+
+        let down = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Down),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        assert_eq!(picker.handle(&down, 10), FilePickerEvent::Consumed);
+        assert_eq!(picker.selected(), 1);
     }
 
     #[test]

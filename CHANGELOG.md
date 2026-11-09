@@ -226,11 +226,16 @@ only a push to `main` runs this workflow.
 - `FilePickerController` (#2172) now shares its query/list/selection/scroll
   state machine and key map with `FolderPickerController` via a new
   internal `PathPickerCore` (`compose/path_picker.rs`), closing the drift
-  between the two: `FilePickerController::handle` now routes the vim-style
-  `-`/`j`/`k` shortcuts the same way `FolderPickerController` does, gains a
-  public `navigate_up`, and `refilter` is `pub` on both (previously private
-  on `FilePickerController`). Public method signatures are otherwise
-  unchanged on both controllers.
+  between the two: `FilePickerController::handle` in
+  `FilePickerMode::Open` now routes the vim-style `-`/`j`/`k` shortcuts
+  the same way `FolderPickerController` does (see `### Changed` below for
+  the behavior consequence), gains a public `navigate_up`, and `refilter`
+  is `pub` on both (previously private on `FilePickerController`). Public
+  method signatures are otherwise unchanged on both controllers.
+  `FilePickerMode::Save` deliberately keeps its pre-existing behavior —
+  `-`/`j`/`k` type into the query unchanged, because the query *is* the
+  destination filename there — via `classify_nav_key`'s new `vim_keys`
+  parameter, gated on the picker's mode.
 - A `LabelPosition::Top`-resolved `FieldKind::RadioGroup`/`NumberInput`
   (#2251) now agrees between paint and click on TUI: `FormFieldMeasure`
   gains an `items_start_y` field so `Form::layout` skips its item/sub-row
@@ -241,6 +246,15 @@ only a push to `main` runs this workflow.
   painters also clamp their row count against the viewport's own bottom
   edge as a second, defensive guard.
 ### Changed
+- `FilePickerController::handle` (#2172) in `FilePickerMode::Open` now
+  intercepts `-`/`j`/`k` as vim-style navigation (parent-dir/up/down)
+  before they reach the query, unified with `FolderPickerController`'s
+  existing key map. Previously those three characters typed into the
+  Open-mode filter like any other character; a consumer-side filter
+  query that happened to start with or contain one of them now instead
+  triggers navigation. `FilePickerMode::Save` is unaffected — its query
+  doubles as the destination filename, so it keeps typing priority for
+  all three characters.
 - `GtkBackend::draw_panel` (#2225) paints a `Panel`'s title-bar background
   and title label through `Panel::header_toolbar`'s mapped `SidebarPanel` +
   `Toolbar` header (title `Label` only — its `Action` buttons are dropped

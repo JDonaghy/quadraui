@@ -1951,7 +1951,14 @@ impl PlatformServices for TuiPlatformServices {
     /// `opts.title`/`opts.initial_filename` don't apply to an *open*
     /// dialog and are ignored, matching
     /// [`crate::backend::FileDialogOptions`]'s own doc ("ignored by
-    /// `show_file_open_dialog`").
+    /// `show_file_open_dialog`"). Every key reaches
+    /// `FilePickerController::handle` first, which — in `Open` mode —
+    /// intercepts `-`, `j` and `k` as navigation before the generic
+    /// typing arm (see `FilePickerController`'s module doc), so a file
+    /// named e.g. `my-app.rs` can't be typed into the filter; arrow keys
+    /// still reach it. Unlike `Open`, [`Self::show_file_save_dialog`]
+    /// disables that interception so the destination filename can
+    /// contain those characters.
     fn show_file_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
         let root = opts
             .initial_dir
@@ -1982,7 +1989,12 @@ impl PlatformServices for TuiPlatformServices {
     /// [`Self::show_file_open_dialog`]'s doc for the shared shape.
     /// `opts.initial_filename` seeds the destination filename (the
     /// picker's query field — see `FilePickerController`'s module doc
-    /// for why the two are the same field in Save mode).
+    /// for why the two are the same field in Save mode). Unlike
+    /// [`Self::show_file_open_dialog`] and [`Self::show_folder_open_dialog`],
+    /// `-`/`j`/`k` are *not* intercepted as navigation here: the query
+    /// doubles as the destination filename, so those three characters
+    /// must type in unchanged (`journal.md`, `my-notes.txt`,
+    /// `Makefile-k8s`). Arrow keys still move the selection.
     fn show_file_save_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
         let root = opts
             .initial_dir
@@ -2022,9 +2034,9 @@ impl PlatformServices for TuiPlatformServices {
     /// `TuiBackend` — see the module doc's "Dialogs" section for why.
     /// Every key reaches `FolderPickerController::handle` first, which
     /// intercepts `-`, `j` and `k` as navigation before the generic
-    /// typing arm (see its `handle_key` preamble), so a folder named
-    /// e.g. `my-app` can't be typed into the filter — arrow keys still
-    /// reach it.
+    /// typing arm (see `classify_nav_key`'s doc in
+    /// `compose::path_picker`), so a folder named e.g. `my-app` can't be
+    /// typed into the filter — arrow keys still reach it.
     fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
         let root = opts
             .initial_dir
