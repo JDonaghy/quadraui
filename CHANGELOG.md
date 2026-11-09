@@ -91,6 +91,14 @@ only a push to `main` runs this workflow.
   callback expects via a generic `pythonize::pythonize`/`serde_json::to_value`
   call instead of its own hand-rolled, binding-specific tagging function.
 ### Changed
+- `a11y::tree`'s internal `role_name` helper (the snapshot-line role
+  spelling, e.g. `"text_input"`) is now derived from `A11yRole`'s own
+  `#[serde(rename_all = "snake_case")]` representation via a JSON
+  round-trip, instead of a separately hand-maintained match arm per
+  variant — the two names can no longer drift apart. No observable
+  change: the derived names are identical to the previous table, and
+  `accesskit::Role::from(A11yRole)` stays an explicit, independent
+  mapping.
 - `src/desktop.rs`'s backend-neutral OS-service plumbing (window-drag
   arming, the modal-pump re-entrancy guard, trash, the default-handler
   opener, notifications, clipboard error mapping, headless smoke-mode
