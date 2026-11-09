@@ -2,17 +2,16 @@
 // (`quadraui_binding_core::BindingHost::drive_hover_tooltip`): a `Button`'s
 // own `tooltip` text shows up as a real tooltip overlay once the pointer
 // has hovered it continuously for `tooltipDelayMs`, and hides again on
-// pointer leave or the next click -- with no JS-side wiring beyond
-// `insertButton`/`setHandler`/`pushEvent`/`step`, since the engine now
-// drives `HoverTooltipTracker` itself. Ports
-// `quadraui-py/tests/test_tooltips.py` to this binding.
+// pointer leave, the next click, or the auto-dismiss timeout -- with no
+// JS-side wiring beyond `insertButton`/`setHandler`/`pushEvent`/`step`,
+// since the *host* (`BindingHost::drive_hover_tooltip`) drives
+// `HoverTooltipTracker` itself. Ports `quadraui-py/tests/test_tooltips.py`
+// to this binding.
 //
-// `setStyle({ tooltip_delay_ms: ... })` is set to a small value and these
-// tests sleep past it with a real (but tiny) wait -- the same
-// "headless, no real timer, but a short real wait at the FFI boundary"
-// pattern this crate's own waker `_after` tests already use, since there
-// is no way from JS to inject a synthetic clock into the host's own
-// wall-clock-driven `now_ms()`.
+// `setTestClockMs` pins the headless clock `BindingHost::now_ms()` reads
+// to an absolute value this file picks, so every assertion below is
+// driven by an exact, deterministic millisecond count rather than a real
+// timer racing against `tooltipDelayMs`.
 //
 // Run against a built addon, e.g.:
 //
@@ -24,14 +23,10 @@ const assert = require("node:assert/strict");
 
 const { QuiApp } = require("../js/index.ts");
 
-// Small enough to keep this file fast, large enough that a single real
-// wait below comfortably clears it without flaking.
+// Small values are fine -- nothing here waits in real time, so the clock
+// jumps straight to whatever absolute millisecond each test needs.
 const DELAY_MS = 20;
-const SLEEP_MS = 100;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const AUTO_DISMISS_MS = 30;
 
 function locate(app: any, needle: string): [number, number] {
   const lines = app.screen().split("\n");
@@ -65,16 +60,20 @@ function click(app: any, row: number, col: number) {
   app.step();
 }
 
-function makeApp(): any {
+function makeApp(autoDismissMs = 0): any {
   const app = new QuiApp(40, 10);
   app.setHandler(() => undefined);
-  app.setStyle({ tooltip_delay_ms: DELAY_MS });
+  app.setStyle({
+    tooltip_delay_ms: DELAY_MS,
+    tooltip_auto_dismiss_ms: autoDismissMs,
+  });
+  app.setTestClockMs(0);
   app.insertButton({ id: "save", label: "Save", tooltip: "Save the file" });
   assert.ok(app.screenContains("Save"));
   return app;
 }
 
-test("tooltip appears only after the hover delay", async () => {
+test("tooltip appears only after the hover delay", () => {
   const app = makeApp();
   const [row, col] = locate(app, "Save");
 
@@ -83,20 +82,25 @@ test("tooltip appears only after the hover delay", async () => {
   moveTo(app, row, col);
   assert.ok(!app.screenContains("Save the file"));
 
+  // One millisecond short of the delay: still nothing.
+  app.setTestClockMs(DELAY_MS - 1);
+  app.step();
+  assert.ok(!app.screenContains("Save the file"));
+
   // No further event queued: the next `step()` ticks the app instead of
   // dispatching, which is what notices the delay has elapsed with the
   // pointer held still.
-  await sleep(SLEEP_MS);
+  app.setTestClockMs(DELAY_MS);
   app.step();
   assert.ok(app.screenContains("Save the file"));
 });
 
-test("tooltip hides on pointer leave", async () => {
+test("tooltip hides on pointer leave", () => {
   const app = makeApp();
   const [row, col] = locate(app, "Save");
 
   moveTo(app, row, col);
-  await sleep(SLEEP_MS);
+  app.setTestClockMs(DELAY_MS);
   app.step();
   assert.ok(app.screenContains("Save the file"));
 
@@ -107,12 +111,12 @@ test("tooltip hides on pointer leave", async () => {
   assert.ok(!app.screenContains("Save the file"));
 });
 
-test("tooltip hides on click then reappears if the pointer holds still", async () => {
+test("tooltip hides on click then reappears if the pointer holds still", () => {
   const app = makeApp();
   const [row, col] = locate(app, "Save");
 
   moveTo(app, row, col);
-  await sleep(SLEEP_MS);
+  app.setTestClockMs(DELAY_MS);
   app.step();
   assert.ok(app.screenContains("Save the file"));
 
@@ -124,25 +128,48 @@ test("tooltip hides on click then reappears if the pointer holds still", async (
   // Still hovering the very same button, unmoved: holding still past
   // another full delay re-shows it rather than leaving the tracker stuck
   // believing a tooltip only it still thinks is open.
-  await sleep(SLEEP_MS);
+  app.setTestClockMs(2 * DELAY_MS);
   app.step();
   assert.ok(app.screenContains("Save the file"));
 });
 
-test("a button with no tooltip never shows one", async () => {
+test("tooltip hides on auto-dismiss timeout", () => {
+  const app = makeApp(AUTO_DISMISS_MS);
+  const [row, col] = locate(app, "Save");
+
+  moveTo(app, row, col);
+  app.setTestClockMs(DELAY_MS);
+  app.step();
+  assert.ok(app.screenContains("Save the file"));
+
+  // One millisecond short of the auto-dismiss deadline: still showing.
+  app.setTestClockMs(DELAY_MS + AUTO_DISMISS_MS - 1);
+  app.step();
+  assert.ok(app.screenContains("Save the file"));
+
+  // At the deadline, with the pointer never having moved: it auto-hides.
+  app.setTestClockMs(DELAY_MS + AUTO_DISMISS_MS);
+  app.step();
+  assert.ok(!app.screenContains("Save the file"));
+});
+
+test("a button with no tooltip never shows one", () => {
   const app = new QuiApp(40, 10);
   app.setHandler(() => undefined);
   app.setStyle({ tooltip_delay_ms: DELAY_MS });
+  app.setTestClockMs(0);
   app.insertButton({ id: "plain", label: "Plain" });
   const [row, col] = locate(app, "Plain");
 
+  const before = app.screen();
+
   moveTo(app, row, col);
-  await sleep(SLEEP_MS);
+  app.setTestClockMs(DELAY_MS);
   app.step();
 
-  // Nothing to assert `screenContains` *for* here beyond "the button's
-  // own label is still the only thing painted" -- there is no tooltip
-  // text to check against, which is the point: a widget with no
-  // `tooltip` set never arms the tracker at all.
-  assert.ok(app.screenContains("Plain"));
+  // A widget with no `tooltip` set never arms the tracker at all, so the
+  // screen is pixel-for-pixel identical to before the hover -- not just
+  // "the button's own label still paints somewhere", which would also
+  // pass if a spurious tooltip appeared.
+  assert.equal(app.screen(), before);
 });

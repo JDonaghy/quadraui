@@ -135,6 +135,20 @@ pub struct BindingHost {
     /// struct-update literals outside this crate require every field
     /// visible — a binding should still read this only via [`Self::now_ms`].
     pub tooltip_clock: Cell<Option<Instant>>,
+    /// Test-oriented override for [`Self::now_ms`]: when set, `now_ms()`
+    /// returns this value directly instead of reading [`Self::tooltip_clock`]'s
+    /// real wall clock. `None` (the default) means "use the real clock" —
+    /// setting this never changes behaviour for a binding that never calls
+    /// [`Self::set_test_clock_ms`]. A binding exposes a thin wrapper around
+    /// [`Self::set_test_clock_ms`] on its own app object (e.g. Python's
+    /// `QuiApp.set_test_clock_ms`, Node's `QuiApp.setTestClockMs`) so a test
+    /// can drive [`Self::drive_hover_tooltip`]'s delay/auto-dismiss deadlines
+    /// deterministically — advancing past `tooltip_delay_ms`/
+    /// `tooltip_auto_dismiss_ms` by setting an absolute millisecond value,
+    /// the same headless-clock contract [`HoverTooltipTracker`]'s own module
+    /// doc and this crate's `#[cfg(test)]` module already use directly —
+    /// rather than sleeping past them in real wall-clock time.
+    pub test_clock_ms: Cell<Option<u64>>,
 }
 
 impl BindingHost {
@@ -251,18 +265,40 @@ impl BindingHost {
     /// to feed [`HoverTooltipTracker`] with, since there is no
     /// `Backend`-level clock method to read one from instead (see
     /// [`Self::tooltip_clock`]'s own doc for why the epoch starts here
-    /// rather than at construction). A caller that wants a fully
-    /// synthetic, no-real-time-elapses clock instead — the way this
-    /// crate's own tests and `quadraui::compose::HoverTooltipTracker`'s
-    /// module doc both demonstrate — calls [`Self::drive_hover_tooltip`]
-    /// with its own hand-picked `now_ms` rather than this method's value.
+    /// rather than at construction). Returns [`Self::test_clock_ms`]
+    /// directly instead, once a binding has set one via
+    /// [`Self::set_test_clock_ms`] — the real wall clock above is never
+    /// consulted again after that, so a test can drive deterministic
+    /// delay/auto-dismiss deadlines with no real sleep at all. A caller
+    /// that wants a fully synthetic, no-real-time-elapses clock without
+    /// going through [`Self::test_clock_ms`] at all — the way this crate's
+    /// own tests and `quadraui::compose::HoverTooltipTracker`'s module doc
+    /// both demonstrate — can still call [`Self::drive_hover_tooltip`]
+    /// directly with its own hand-picked `now_ms` rather than this
+    /// method's value.
     pub fn now_ms(&self) -> u64 {
+        if let Some(ms) = self.test_clock_ms.get() {
+            return ms;
+        }
         let epoch = self.tooltip_clock.get().unwrap_or_else(|| {
             let started = Instant::now();
             self.tooltip_clock.set(Some(started));
             started
         });
         epoch.elapsed().as_millis() as u64
+    }
+
+    /// Sets or clears [`Self::test_clock_ms`], the override
+    /// [`Self::now_ms`] returns once set. `Some(ms)` pins `now_ms()` to
+    /// `ms` until the next call to this method; `None` reverts to the real
+    /// wall clock (as if this had never been called). A binding's own app
+    /// object exposes a thin wrapper around this — e.g. Python's
+    /// `QuiApp.set_test_clock_ms`, Node's `QuiApp.setTestClockMs` — so a
+    /// test can advance the clock deterministically (set an increasing
+    /// absolute value) past `tooltip_delay_ms`/`tooltip_auto_dismiss_ms`
+    /// without a real sleep.
+    pub fn set_test_clock_ms(&self, ms: Option<u64>) {
+        self.test_clock_ms.set(ms);
     }
 
     /// The hover tooltip text for `id`, if any of this host's slots that
@@ -1958,5 +1994,27 @@ mod tests {
         record_pending_error(&mut slot, "boom".to_string());
         assert_eq!(take_pending_error(&mut slot), Err("boom".to_string()));
         assert_eq!(take_pending_error(&mut slot), Ok(()));
+    }
+
+    /// [`BindingHost::set_test_clock_ms`] pins [`BindingHost::now_ms`] to
+    /// an exact value, repeatedly, with no real time elapsing between
+    /// calls -- the seam a Python/Node test drives instead of a real
+    /// sleep. Clearing the override with `None` falls back to the real
+    /// wall clock, which is monotonic and non-zero once started.
+    #[test]
+    fn set_test_clock_ms_overrides_now_ms_until_cleared() {
+        let host = BindingHost::default();
+
+        host.set_test_clock_ms(Some(1_000));
+        assert_eq!(host.now_ms(), 1_000);
+        // Reading it again doesn't drift forward on its own, unlike the
+        // real wall clock -- it stays pinned until explicitly re-set.
+        assert_eq!(host.now_ms(), 1_000);
+
+        host.set_test_clock_ms(Some(5_000));
+        assert_eq!(host.now_ms(), 5_000);
+
+        host.set_test_clock_ms(None);
+        assert!(host.now_ms() < 5_000);
     }
 }
