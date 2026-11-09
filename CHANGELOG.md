@@ -538,6 +538,21 @@ only a push to `main` runs this workflow.
   popup anchored in a viewport too small to fit it on either side — see
   the new edge-of-window tests in each primitive's module for the exact
   before/after geometry.
+- `tui::panel::draw_panel` paints the title bar via `Panel::header_toolbar`'s
+  mapped `Toolbar` header (#2224): it lays the header out with the same
+  per-item measure `Panel::layout` uses internally (a fixed
+  `action_button_width` per action, the title `Label`'s own text width
+  otherwise), then paints each visible item by kind — `Label` as plain
+  text, `Action` as a single glyph centred in its button — instead of its
+  own hand-rolled title-text and action-button loops. Pixel output is
+  unchanged for a single-span title (the existing `tui::panel` test suite
+  passes unmodified) with one unavoidable divergence, now pinned by
+  `tui::panel::tests::multi_span_title_fg_is_flattened_to_theme_foreground`:
+  a multi-span `title` now paints every span in `theme.foreground`, since
+  `header_toolbar` flattens `title` to one plain-text `Label` with no
+  per-span color. `draw_panel`'s signature and its `PanelLayout` return
+  (still `tui_panel_layout`, independent of this painting seam) are
+  unchanged.
 ### Fixed
 - `primitives::minimap::truncate_to_columns` now caps by display width
   (`text_util::char_cell_width`) instead of char count, dropping a wide
