@@ -5148,6 +5148,22 @@ impl Backend for WinBackend {
 
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
+    ///
+    /// Paints the title bar's background + title label through the
+    /// mapped `SidebarPanel` + `Toolbar` header (via
+    /// [`crate::primitives::sidebar_panel::native_surface_paint::paint`])
+    /// instead of `panel::native_surface_paint::paint`'s own near-duplicate
+    /// title-bar painter — same shape as `GtkBackend::draw_panel`.
+    /// `header_toolbar`'s own `Action` buttons are dropped before the
+    /// header reaches the delegate (see the `truncate` below) and painted
+    /// directly against `layout.visible_actions` instead:
+    /// `header_toolbar`'s actions are measured by `Toolbar`'s
+    /// text-width-based `measure_button`, not
+    /// `PanelMeasure::action_button_width`, so letting the delegate paint
+    /// them too could land each glyph at a different rect than this
+    /// method's own hit-test bounds for anything wider than a single
+    /// narrow glyph. The returned layout stays `win_panel_layout(...)`
+    /// (this method's hit-test contract), unaffected either way.
     fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
@@ -5156,7 +5172,85 @@ impl Backend for WinBackend {
             // `self.current_theme` is the live theme `Backend::set_theme`
             // writes, same as `draw_toast_overlay` above.
             let theme = self.current_theme;
-            crate::primitives::panel::native_surface_paint::paint(panel, &layout, self, &theme);
+
+            if let Some(tb) = layout.title_bar_bounds {
+                let measure = crate::primitives::panel::PanelMeasure {
+                    title_bar_height: tb.height,
+                    action_button_width:
+                        crate::primitives::layout_metrics::pixel::PANEL_ACTION_BUTTON,
+                    content_padding: 0.0,
+                };
+                if let Some(mut header) = panel.header_toolbar(tb, measure) {
+                    // Keep only the title `Label` + its trailing `Spacer`
+                    // — `header_toolbar` always appends `Action` buttons
+                    // after those two (see its own doc), and this method
+                    // paints actions itself below.
+                    header.buttons.truncate(2);
+
+                    // `header_toolbar` leaves `Label::fg` as `None`
+                    // (painted as `theme.muted_fg` by the delegate) and
+                    // maps `bg` from `panel.accent` alone (painted as
+                    // `theme.header_bg` by the delegate when `None`) —
+                    // resolve both explicitly so the title text colour
+                    // and title-bar background keep matching
+                    // `panel::native_surface_paint::paint`'s
+                    // `theme.foreground` / `panel.accent.unwrap_or(theme.separator)`
+                    // contract exactly.
+                    let bar_bg = panel.accent.unwrap_or(theme.separator);
+                    header.bg = Some(bar_bg);
+                    if let Some(crate::primitives::toolbar::ToolbarButton::Label { fg, .. }) =
+                        header.buttons.first_mut()
+                    {
+                        *fg = Some(theme.foreground);
+                    }
+
+                    let sidebar = crate::primitives::sidebar_panel::SidebarPanel {
+                        id: panel.id,
+                        toolbar: Some(header),
+                        toolbar_height: Some(tb.height),
+                    };
+                    // `Self::surface_draw_text_run`/`surface_measure_text`
+                    // already resolve `chrome_dwrite` by default (see
+                    // those methods' own docs), so no per-call adapter is
+                    // needed around this call.
+                    crate::primitives::sidebar_panel::native_surface_paint::paint(
+                        &sidebar, self, &theme, tb, tb.height, None, None,
+                    );
+
+                    // Paint every action button directly against this
+                    // method's own hit-test rects (`layout.visible_actions`),
+                    // filled with `theme.accent_bg` when `is_active` else
+                    // the title bar's own colour, glyph top-aligned at
+                    // `va.bounds.y` and centred horizontally —
+                    // unclamped, matching
+                    // `panel::native_surface_paint::paint`'s own
+                    // centring (see that module's doc for the named
+                    // win-vs-gtk/macos divergence this preserves). Drawn
+                    // through `surface_draw_icon_glyph` so an app-chosen
+                    // codicon/nerd-font `PanelAction::icon` resolves
+                    // through the same icon-font fallback this crate's
+                    // other chrome glyphs use.
+                    for va in &layout.visible_actions {
+                        let Some(action) = panel.actions.get(va.action_idx) else {
+                            continue;
+                        };
+                        let action_bg = if action.is_active {
+                            theme.accent_bg
+                        } else {
+                            bar_bg
+                        };
+                        self.surface_fill_rect(va.bounds, action_bg);
+                        let (gw, gh) = self.surface_measure_text(&action.icon);
+                        let glyph_x = va.bounds.x + (va.bounds.width - gw) / 2.0;
+                        self.surface_draw_icon_glyph(
+                            crate::event::Rect::new(glyph_x, va.bounds.y, gw, gh),
+                            &action.icon,
+                            theme.foreground,
+                        );
+                    }
+                }
+            }
+
             return layout;
         }
         // No surface/DWrite yet — return the real (pure-geometry) layout
@@ -9538,8 +9632,9 @@ mod tests {
             .title_bar_bounds
             .expect("panel has a title, so a title bar is reserved");
         // Sample near the title bar's right edge, not its horizontal
-        // centre: `paint`'s title text starts at `tb.x + 4.0` and
-        // "Terminal" is wide enough on a real Windows font to reach
+        // centre: the title's mapped `Toolbar::Label` carries a leading
+        // space (see `Panel::header_toolbar`'s doc) ahead of "Terminal",
+        // which is itself wide enough on a real Windows font to reach
         // past the centre of this 100-DIP-wide panel, so a centre
         // sample lands on anti-aliased glyph ink (a blend of
         // `theme.foreground` and the fill) rather than the solid
@@ -9553,6 +9648,102 @@ mod tests {
             (px.r, px.g, px.b),
             (custom_separator.r, custom_separator.g, custom_separator.b),
             "panel title-bar background must reflect the live theme, not `Theme::default()`",
+        );
+    }
+
+    /// `draw_panel`'s title paints inset from the title bar's left edge
+    /// — `Panel::header_toolbar`'s leading space ahead of the title text
+    /// reproduces the one-cell/4px inset the title-bar painter it
+    /// replaces hardcoded as `tb.x + 4.0` — and every action glyph's
+    /// painted ink stays inside its own `visible_actions[i].bounds`,
+    /// the same rects `PanelLayout::hit_test` resolves clicks against.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn draw_panel_paints_title_inset_and_actions_within_their_bounds() {
+        use crate::primitives::panel::{Panel, PanelAction};
+        use crate::theme::Theme;
+        use crate::types::{StyledText, WidgetId};
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 200;
+        const H: u32 = 60;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let panel = Panel {
+            id: WidgetId::new("panel"),
+            title: Some(StyledText::plain("Explorer")),
+            actions: vec![PanelAction {
+                id: WidgetId::new("panel:close"),
+                icon: "\u{d7}".into(),
+                tooltip: "Close".into(),
+                is_active: false,
+            }],
+            accent: None,
+            collapsed: false,
+        };
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = backend.draw_panel(rect, &panel);
+        backend.end_frame();
+
+        let theme = Theme::default();
+        let tb = layout
+            .title_bar_bounds
+            .expect("panel has a title, so a title bar is reserved");
+        let title_bg = theme.separator; // no accent on this panel
+
+        // Title: the leftmost column whose pixel differs from the bar's
+        // own fill is where the title's glyph ink starts. It must sit
+        // strictly right of `tb.x` — the leading-space inset.
+        let row_y = (tb.y + tb.height / 2.0) as u32;
+        let first_ink_x = (tb.x as u32..(tb.x + tb.width) as u32)
+            .find(|&x| {
+                let px = surface.pixel_at(x, row_y);
+                (px.r, px.g, px.b) != (title_bg.r, title_bg.g, title_bg.b)
+            })
+            .expect("title text must paint some ink");
+        assert!(
+            first_ink_x as f32 > tb.x,
+            "title ink must start inset from the title bar's left edge, \
+             got first ink at x={first_ink_x} vs tb.x={}",
+            tb.x,
+        );
+
+        // Action: scan a small window around (not across the whole bar,
+        // so this never trips on the title's own ink far to the left)
+        // `visible_actions[0].bounds` for ink, at every row the button
+        // spans. Every ink pixel found must fall within the bounds'
+        // own x-range.
+        let va = &layout.visible_actions[0];
+        let margin = 10.0_f32.min(va.bounds.x);
+        let x_start = (va.bounds.x - margin).max(0.0) as u32;
+        let x_end = ((va.bounds.x + va.bounds.width + margin).min(W as f32)) as u32;
+        let y_start = va.bounds.y as u32;
+        let y_end = (va.bounds.y + va.bounds.height) as u32;
+        let mut found_action_ink = false;
+        for x in x_start..x_end {
+            for y in y_start..y_end {
+                let px = surface.pixel_at(x, y);
+                if (px.r, px.g, px.b) != (title_bg.r, title_bg.g, title_bg.b) {
+                    found_action_ink = true;
+                    assert!(
+                        x as f32 >= va.bounds.x && (x as f32) < va.bounds.x + va.bounds.width,
+                        "action glyph ink at x={x} must fall inside \
+                         visible_actions[0].bounds ({:?}), not bleed outside it",
+                        va.bounds,
+                    );
+                }
+            }
+        }
+        assert!(
+            found_action_ink,
+            "action glyph must paint some ink inside visible_actions[0].bounds"
         );
     }
 
