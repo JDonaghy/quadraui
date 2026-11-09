@@ -7,20 +7,42 @@
 //! reading each one's *existing* background before repainting its
 //! glyph/foreground so the focused widget's own content keeps showing
 //! through underneath the ring.
+//!
+//! A one-row-tall `rect` (e.g. a `Form` `ButtonRow`/`ToggleGroup` item —
+//! see `compose::form_controller`'s "Item-level keyboard focus" doc
+//! section) has no interior left for side walls once a top border is
+//! drawn, so the box would consume the entire row and erase its label.
+//! [`draw_focus_ring`] special-cases that height with an underline
+//! instead — decorating the row's existing content rather than
+//! overwriting it with border glyphs.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect as RRect;
-use ratatui::style::Color as RatatuiColor;
+use ratatui::style::{Color as RatatuiColor, Modifier};
 
 use super::{ratatui_color, set_cell};
 use crate::theme::Theme;
 
 /// Paint the focus ring around `rect`. No-op if `rect` is degenerate
-/// (zero width or height).
+/// (zero width or height). A one-row-tall `rect` gets an underline
+/// instead of a box — see this module's doc.
 pub fn draw_focus_ring(buf: &mut Buffer, rect: RRect, theme: &Theme) {
     let fg = ratatui_color(theme.accent_fg);
     let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
     if w == 0 || h == 0 {
+        return;
+    }
+
+    if h == 1 {
+        let area = buf.area;
+        for col in 0..w {
+            let cx = x + col;
+            if cx >= area.x && y >= area.y && cx < area.x + area.width && y < area.y + area.height {
+                let cell = &mut buf[(cx, y)];
+                cell.modifier |= Modifier::UNDERLINED;
+                cell.underline_color = fg;
+            }
+        }
         return;
     }
 
@@ -101,6 +123,27 @@ mod tests {
         assert_eq!(buf[(5, 3)].symbol(), "╯");
         assert_eq!(buf[(2, 1)].symbol(), "─");
         assert_eq!(buf[(1, 2)].symbol(), "│");
+    }
+
+    #[test]
+    fn one_row_tall_rect_underlines_instead_of_drawing_a_box() {
+        let theme = Theme::default();
+        let bg = RatatuiColor::Rgb(10, 20, 30);
+        let mut buf = filled_buffer(10, 5, bg);
+        draw_focus_ring(&mut buf, RRect::new(1, 1, 5, 1), &theme);
+
+        // The row's existing glyph/background survive — only the
+        // modifier/underline colour change, unlike the boxed case where
+        // border glyphs overwrite the cell's symbol outright.
+        for x in 1..6u16 {
+            assert_eq!(buf[(x, 1)].symbol(), "x");
+            assert_eq!(buf[(x, 1)].bg, bg);
+            assert!(buf[(x, 1)].modifier.contains(Modifier::UNDERLINED));
+            assert_eq!(buf[(x, 1)].underline_color, ratatui_color(theme.accent_fg));
+        }
+        // Rows above/below the one-row rect are untouched.
+        assert!(!buf[(2, 0)].modifier.contains(Modifier::UNDERLINED));
+        assert!(!buf[(2, 2)].modifier.contains(Modifier::UNDERLINED));
     }
 
     #[test]

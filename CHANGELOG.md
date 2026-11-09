@@ -59,6 +59,18 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- Item-level keyboard focus for `FieldKind::ButtonRow`/`ToggleGroup`/
+  `Toolbar` form fields (#2250): `FormController` now tracks which item
+  inside the focused field has keyboard focus (starting on the first
+  enabled item, reseeded on every Tab/Shift-Tab/BackTab move, never
+  written onto `Form` itself). `Left`/`Right` move it, skipping disabled
+  items without wrapping; `Enter`/Space activate it, emitting the same
+  `FormEvent::ButtonClicked`/`ToggleChanged`/`ToolbarButtonClicked` a
+  mouse click on that item already does. Every backend paints a focus
+  ring on the item via the existing `Backend::draw_focus_ring` — TUI's
+  rasteriser now underlines a one-row-tall ring instead of drawing a
+  destructive full-width box. No new public API; `Form`/`FormField`/
+  `ButtonRowItem`/`ToggleGroupItem` are unchanged.
 - `ToolbarRailStyle` (#2220): a `#[non_exhaustive]` sidecar for a
   `Toolbar` used as a vertical rail, carrying the paint state
   `ActivityBar`'s painters use that a plain `Toolbar` has no field for
