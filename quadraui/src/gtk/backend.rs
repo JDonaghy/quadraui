@@ -5076,12 +5076,14 @@ impl Backend for GtkBackend {
 
                 // Paint every action button directly against this
                 // method's own hit-test rects (`layout.visible_actions`),
-                // matching `panel::native_surface_paint::paint`'s
-                // contract: filled with `theme.accent_bg` when
-                // `is_active` else the title bar's own colour, glyph
-                // centred horizontally (unclamped) and top-aligned at
-                // `va.bounds.y`, drawn through `surface_draw_icon_glyph`
-                // so an app-chosen codicon/nerd-font `PanelAction::icon`
+                // filled with `theme.accent_bg` when `is_active` else the
+                // title bar's own colour, glyph top-aligned at
+                // `va.bounds.y` and centred horizontally — left-aligned
+                // instead when the measured text is wider than the
+                // button, and clipped to `va.bounds`, so an oversized
+                // icon never bleeds into the title or a neighbouring
+                // action. Drawn through `surface_draw_icon_glyph` so an
+                // app-chosen codicon/nerd-font `PanelAction::icon`
                 // resolves through the same icon-font fallback this
                 // crate's other chrome glyphs use.
                 for va in &layout.visible_actions {
@@ -5095,12 +5097,14 @@ impl Backend for GtkBackend {
                     };
                     self.surface_fill_rect(va.bounds, action_bg);
                     let (gw, gh) = self.surface_measure_text(&action.icon);
-                    let glyph_x = va.bounds.x + (va.bounds.width - gw) / 2.0;
+                    let glyph_x = va.bounds.x + ((va.bounds.width - gw) / 2.0).max(0.0);
+                    self.surface_push_clip(va.bounds);
                     self.surface_draw_icon_glyph(
                         crate::event::Rect::new(glyph_x, va.bounds.y, gw, gh),
                         &action.icon,
                         theme.foreground,
                     );
+                    self.surface_pop_clip();
                 }
             }
         }
@@ -10793,8 +10797,9 @@ mod tests {
     /// including trailing-space advance) plus padding, not from
     /// `PanelMeasure::action_button_width` — the trailing spaces inflate
     /// that text-measured width well past the glyph's own rendered ink
-    /// width without pushing the glyph itself outside its fixed-width
-    /// bounds, so a measurer that sized action buttons that way (rather
+    /// width (with wide UI fonts, past the 24px button itself, which
+    /// `draw_panel` absorbs by left-aligning and clipping the glyph to its
+    /// bounds), so a measurer that sized action buttons that way (rather
     /// than painting them directly against `visible_actions` the way
     /// `draw_panel` does) would shift the whole trailing action group
     /// left of `visible_actions`' own bounds, straight into this gap.

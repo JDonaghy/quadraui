@@ -140,10 +140,12 @@ only a push to `main` runs this workflow.
   `measure_button`, not `PanelMeasure::action_button_width`, so routing
   them through the delegate too would land each glyph at a different rect
   than `visible_actions[i].bounds` for an icon wider than a single narrow
-  glyph; each glyph is centred horizontally (unclamped) and top-aligned,
-  filled with `theme.accent_bg` when `is_active` else the title bar's own
-  colour, matching `panel::native_surface_paint::paint`'s contract
-  exactly. The title `Label`'s `fg` and the header `Toolbar`'s `bg` are
+  glyph; each button is filled with `theme.accent_bg` when `is_active`
+  else the title bar's own colour, and its glyph is top-aligned and
+  centred horizontally. A glyph wider than its button is left-aligned and
+  clipped to `visible_actions[i].bounds` instead of overflowing both
+  edges, so it can no longer bleed into the title or a neighbouring
+  action (`panel::native_surface_paint::paint` centres it unclamped). The title `Label`'s `fg` and the header `Toolbar`'s `bg` are
   both resolved explicitly at the call site (`theme.foreground`,
   `panel.accent.unwrap_or(theme.separator)`) so the title text colour and
   title-bar background also keep matching that contract. One visible
