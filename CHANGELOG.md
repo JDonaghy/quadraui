@@ -115,6 +115,12 @@ only a push to `main` runs this workflow.
   callback expects via a generic `pythonize::pythonize`/`serde_json::to_value`
   call instead of its own hand-rolled, binding-specific tagging function.
 ### Changed
+- `tui::multi_section_view`'s section-header rasteriser derives a
+  `HeaderAction`'s glyph text (and `SectionAux::Toolbar`'s action glyphs)
+  via `primitives::toolbar::action_text`, the same derivation the
+  gtk/macos/win `native_surface_paint` path already uses, instead of
+  hand-iterating `icon.fallback`. Rendered output is unchanged; no public
+  API change.
 - `activity_bar::native_surface_paint::paint`'s body is now a thin seam:
   build the `Toolbar` + `ToolbarRailStyle` pair via
   `ActivityBar::to_toolbar_parts`, lay it out with the same options
