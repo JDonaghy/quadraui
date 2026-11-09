@@ -275,7 +275,37 @@ only a push to `main` runs this workflow.
   painted a visible scroll affordance before this). Not yet wired into
   `gtk::tab_bar`/`macos::tab_bar`/`win::tab_bar` — each per-backend
   migration is tracked separately.
+- `backend::normalize_filter_extension`/`normalize_filters` — the one
+  canonicalization (`".rs"`/`"rs"`/`"RS"` all mean the same filter,
+  `"*"` passed through unchanged) every `FileDialogOptions::filters`
+  reader should run its extensions through;
+  `compose::file_picker::extension_matches` is the first adopter.
+  `backend::notification_request_id` derives the id a backend's native
+  notification channel dedupes/replaces on, in a namespace a
+  caller-supplied `Notification::tag` can never collide with; `tui::
+  services::TuiPlatformServices::send_notification` adopts it for its
+  `notify-send` fallback leg's replace hint. `backend::ServiceKind`/
+  `PlatformServices::supports` — a `false`-by-default capability query
+  for the 16 of 37 `PlatformServices` methods with no real
+  implementation on any backend today; per-backend truthful adoption is
+  follow-on work. `crate::testing::NullPlatformServices`/
+  `NullClipboard` — the one shared `PlatformServices` test double,
+  replacing three near-identical private copies.
 ### Changed
+- `PlatformServices::send_notification` now returns
+  `ServiceResult<()>` instead of `()` (**breaking** — every
+  implementation and call site updates in this PR): `Err` means the
+  call is known to have failed to reach any notification channel at
+  all (no window to parent a GTK notification to); `Ok(())` otherwise,
+  including a backend's existing silent-no-op degrade.
+  `compose::notification::notify_or_toast` now falls back to its
+  in-canvas `Toast` degrade when the native send itself fails, not just
+  when the backend has no native channel at all. `tui::services::
+  TuiPlatformServices::send_notification` sends exactly one
+  notification per call now (the OSC 9/777 escape leg through a single
+  writer, falling back to a native `osascript`/`notify-send` spawn only
+  when that write didn't even reach a target) instead of up to three
+  independent legs firing unconditionally.
 - `FocusRing` is now a thin wrapper over `FocusManager` instead of
   `FocusGroup` — adding only the `:focus-visible` bookkeeping on top of
   the same `WidgetId`-keyed focus owner every backend's Tab/Shift+Tab

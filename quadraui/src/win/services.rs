@@ -572,7 +572,7 @@ impl PlatformServices for WinPlatformServices {
     /// needs the owning `HWND` [`Self::set_window`] stores, so a call made
     /// from inside `AppLogic::setup`, before any window exists, still
     /// produces nothing if AUMID registration also failed.
-    fn send_notification(&self, n: Notification) {
+    fn send_notification(&self, n: Notification) -> ServiceResult<()> {
         #[cfg(target_os = "windows")]
         {
             let aumid = self.aumid.borrow().clone();
@@ -595,6 +595,7 @@ impl PlatformServices for WinPlatformServices {
         {
             let _ = n;
         }
+        Ok(())
     }
 
     fn open_url(&self, url: &str) {
@@ -3002,7 +3003,7 @@ mod tests {
         assert!(svc
             .show_folder_open_dialog(FileDialogOptions::default())
             .is_none());
-        svc.send_notification(Notification::new("t", "b"));
+        let _ = svc.send_notification(Notification::new("t", "b"));
         assert!(svc
             .show_message_dialog(MessageDialogOptions {
                 title: "t".to_string(),

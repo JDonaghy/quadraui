@@ -4541,11 +4541,69 @@ pub trait BackendWidget: Send + 'static {
     fn render(&self, backend: &mut dyn Backend, rect: Rect);
 }
 
+/// One [`PlatformServices`] capability, for [`PlatformServices::supports`].
+///
+/// `PlatformServices` is a trait object behind [`Backend::services`], with
+/// no [`BackendCaps`] bit of its own to answer "does this backend really
+/// implement X, or just fall through to the trait's `Unsupported`
+/// default" — 16 of this trait's 37 methods have no real implementation
+/// on any in-tree backend today, all silently sharing the same
+/// `Err(BackendError::Unsupported)` default a caller can't tell apart
+/// from "this backend overrode it and *still* couldn't do it this time".
+/// `#[non_exhaustive]`: a future `PlatformServices` method earns its own
+/// variant here without that being a breaking change to every match on
+/// this enum.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServiceKind {
+    FileOpenDialog,
+    FileSaveDialog,
+    FolderOpenDialog,
+    MessageDialog,
+    Notifications,
+    OpenUrl,
+    RevealInFileManager,
+    OpenPath,
+    MoveToTrash,
+    RestoreFromTrash,
+    Beep,
+    SystemTheme,
+    AppPath,
+    Displays,
+    CursorScreenPoint,
+    OnBattery,
+    ThermalState,
+    PowerSaveBlock,
+    GlobalShortcuts,
+    DragOut,
+    LoginItem,
+    DefaultProtocolClient,
+    RecentDocuments,
+    DockMenu,
+    JumpList,
+    Keyring,
+}
+
 /// Platform services the backend exposes to apps: clipboard, file
 /// dialogs, message/alert dialogs, notifications, URL opening, and the
 /// OS credential store ([`Self::secret_store`]).
 pub trait PlatformServices {
     fn clipboard(&self) -> &dyn Clipboard;
+
+    /// Whether this backend answers `kind` with a real platform-backed
+    /// implementation, rather than silently relying on this trait's own
+    /// no-op/`Unsupported` default — see [`ServiceKind`]'s doc for why
+    /// that distinction has nowhere else to live.
+    ///
+    /// Default: `false` for every kind, matching "no in-tree backend has
+    /// overridden this method yet" — the same starting point every other
+    /// defaulted method on this trait answers from. A backend earns a
+    /// `true` by overriding this *and* genuinely implementing `kind`'s
+    /// method; per-backend adoption (mapping every kind truthfully) is
+    /// follow-on work, not required for this seam to exist and compile.
+    fn supports(&self, _kind: ServiceKind) -> bool {
+        false
+    }
 
     /// Show a native file-open dialog (blocking). Returns `None` if the
     /// user cancelled. TUI backends have no native dialog to show;
@@ -4611,7 +4669,19 @@ pub trait PlatformServices {
     /// emit the event rather than faking it (`macos::services`'s
     /// `send_notification` doc explains why, and what a real
     /// implementation there would need).
-    fn send_notification(&self, n: Notification);
+    ///
+    /// Returns `Err` when this call is known to have failed to reach any
+    /// notification channel at all (no window to parent a GTK
+    /// notification to, a Win toast/balloon that couldn't be created);
+    /// `Ok(())` otherwise — including on a backend that silently degrades
+    /// to a no-op, which is still every caller's existing expectation
+    /// (see [`crate::compose::notification::notify_or_toast`], the one
+    /// caller that actually branches on this). `Err` here is a strictly
+    /// stronger signal than `Ok`, never the other way round, so no
+    /// existing caller that ignored the old infallible return needs to
+    /// change for correctness — only one that wants to notice failure
+    /// does.
+    fn send_notification(&self, n: Notification) -> ServiceResult<()>;
 
     /// Open a URL in the platform's default browser.
     fn open_url(&self, url: &str);
@@ -5737,6 +5807,78 @@ pub struct FileDialogOptions {
     pub filters: Vec<(String, Vec<String>)>,
 }
 
+/// Canonicalize one [`FileDialogOptions::filters`] extension: lowercase,
+/// no leading `.`, `"*"` passed through unchanged.
+///
+/// Every backend that maps `filters` onto a native filter widget owns a
+/// slightly different reading of the same `Vec<(String, Vec<String>)>` —
+/// GTK's `gtk4::FileFilter::add_suffix` and Win's extension match take
+/// the extension literally, so a caller-supplied `".rs"` (leading dot)
+/// never matches a real `foo.rs`, while the in-canvas TUI picker's own
+/// comparison already trims the dot and lowercases first. This is the
+/// one normalization every reader should run an extension through
+/// before comparing or handing it to a native API, so `".rs"`, `"rs"`,
+/// and `"RS"` all mean the same filter everywhere.
+pub fn normalize_filter_extension(ext: &str) -> String {
+    if ext == "*" {
+        return "*".to_string();
+    }
+    ext.trim_start_matches('.').to_lowercase()
+}
+
+/// Run every extension in `filters` through [`normalize_filter_extension`],
+/// keeping each filter's display name untouched.
+pub fn normalize_filters(filters: &[(String, Vec<String>)]) -> Vec<(String, Vec<String>)> {
+    filters
+        .iter()
+        .map(|(name, exts)| {
+            (
+                name.clone(),
+                exts.iter().map(|e| normalize_filter_extension(e)).collect(),
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod filter_normalization_tests {
+    use super::*;
+
+    #[test]
+    fn strips_a_single_leading_dot_and_lowercases() {
+        assert_eq!(normalize_filter_extension(".rs"), "rs");
+        assert_eq!(normalize_filter_extension("RS"), "rs");
+        assert_eq!(normalize_filter_extension("rs"), "rs");
+    }
+
+    #[test]
+    fn wildcard_passes_through_unchanged() {
+        assert_eq!(normalize_filter_extension("*"), "*");
+    }
+
+    #[test]
+    fn normalize_filters_keeps_display_names_and_normalizes_every_extension() {
+        let filters = vec![
+            (
+                "Rust files".to_string(),
+                vec![".rs".to_string(), "RS".to_string()],
+            ),
+            ("Everything".to_string(), vec!["*".to_string()]),
+        ];
+        let normalized = normalize_filters(&filters);
+        assert_eq!(
+            normalized,
+            vec![
+                (
+                    "Rust files".to_string(),
+                    vec!["rs".to_string(), "rs".to_string()]
+                ),
+                ("Everything".to_string(), vec!["*".to_string()]),
+            ]
+        );
+    }
+}
+
 /// Options for [`PlatformServices::show_message_dialog`]. Produced from
 /// a [`Dialog`] descriptor by
 /// [`crate::primitives::dialog::native_dialog_options`], or built
@@ -6435,65 +6577,18 @@ mod service_default_tests {
     //! [`PlatformServices::begin_drag_out`], [`PlatformServices::
     //! set_login_item`], [`PlatformServices::login_item_enabled`],
     //! [`PlatformServices::set_as_default_protocol_client`],
-    //! [`PlatformServices::is_default_protocol_client`], and
-    //! [`PlatformServices::remove_as_default_protocol_client`] — a
-    //! minimal fake that overrides only the methods with no default of
-    //! its own (same "stands in for a backend that hasn't touched this
-    //! surface at all" reasoning [`clipboard_default_tests`] already
-    //! documents for [`Clipboard`]'s defaulted methods) stands in for "no
-    //! in-tree backend overrides this yet", which is exactly today's
-    //! state per each method's own doc.
+    //! [`PlatformServices::is_default_protocol_client`],
+    //! [`PlatformServices::remove_as_default_protocol_client`], and
+    //! [`PlatformServices::supports`] — [`crate::testing::
+    //! NullPlatformServices`] stands in for "no in-tree backend overrides
+    //! this yet", which is exactly today's state per each method's own
+    //! doc.
     use super::*;
-
-    #[derive(Default)]
-    struct FakeNoopClipboard;
-
-    impl Clipboard for FakeNoopClipboard {
-        fn read_text(&self) -> Option<String> {
-            None
-        }
-
-        fn write_text(&self, _text: &str) {}
-    }
-
-    #[derive(Default)]
-    struct FakePlatformServices {
-        clipboard: FakeNoopClipboard,
-    }
-
-    impl PlatformServices for FakePlatformServices {
-        fn clipboard(&self) -> &dyn Clipboard {
-            &self.clipboard
-        }
-
-        fn show_file_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
-            None
-        }
-
-        fn show_file_save_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
-            None
-        }
-
-        fn show_folder_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
-            None
-        }
-
-        fn show_message_dialog(&self, _opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
-            None
-        }
-
-        fn send_notification(&self, _n: Notification) {}
-
-        fn open_url(&self, _url: &str) {}
-
-        fn platform_name(&self) -> &'static str {
-            "fake"
-        }
-    }
+    use crate::testing::NullPlatformServices;
 
     #[test]
     fn begin_drag_out_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         let payload = DragOutPayload::new().with_files([PathBuf::from("/tmp/a.txt")]);
         assert_eq!(
             services.begin_drag_out(payload),
@@ -6502,8 +6597,15 @@ mod service_default_tests {
     }
 
     #[test]
+    fn supports_defaults_to_false_for_every_kind() {
+        let services = NullPlatformServices::default();
+        assert!(!services.supports(ServiceKind::Notifications));
+        assert!(!services.supports(ServiceKind::FileOpenDialog));
+    }
+
+    #[test]
     fn set_login_item_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.set_login_item(true, LoginItemOptions::default()),
             Err(BackendError::Unsupported)
@@ -6512,7 +6614,7 @@ mod service_default_tests {
 
     #[test]
     fn login_item_enabled_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.login_item_enabled(),
             Err(BackendError::Unsupported)
@@ -6521,7 +6623,7 @@ mod service_default_tests {
 
     #[test]
     fn set_as_default_protocol_client_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.set_as_default_protocol_client("myapp"),
             Err(BackendError::Unsupported)
@@ -6530,7 +6632,7 @@ mod service_default_tests {
 
     #[test]
     fn is_default_protocol_client_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.is_default_protocol_client("myapp"),
             Err(BackendError::Unsupported)
@@ -6539,7 +6641,7 @@ mod service_default_tests {
 
     #[test]
     fn remove_as_default_protocol_client_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.remove_as_default_protocol_client("myapp"),
             Err(BackendError::Unsupported)
@@ -6548,7 +6650,7 @@ mod service_default_tests {
 
     #[test]
     fn add_recent_document_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.add_recent_document(Path::new("/tmp/report.pdf")),
             Err(BackendError::Unsupported)
@@ -6557,7 +6659,7 @@ mod service_default_tests {
 
     #[test]
     fn clear_recent_documents_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.clear_recent_documents(),
             Err(BackendError::Unsupported)
@@ -6566,7 +6668,7 @@ mod service_default_tests {
 
     #[test]
     fn set_dock_menu_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         let menu = ContextMenu {
             id: WidgetId::new("dock-menu"),
             items: Vec::new(),
@@ -6582,7 +6684,7 @@ mod service_default_tests {
 
     #[test]
     fn set_jump_list_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         let items = [JumpListItem::new().with_title("Recent project")];
         assert_eq!(
             services.set_jump_list(&items),

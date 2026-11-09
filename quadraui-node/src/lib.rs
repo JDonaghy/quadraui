@@ -1142,7 +1142,12 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app: &mut NodeAppLogic) -> 
                 app.engine.show_toast(toast, corner);
             }
             DeferredAction::Notification(notification) => {
-                backend.services().send_notification(notification);
+                if let Err(err) = service_result(
+                    "send_notification",
+                    backend.services().send_notification(notification),
+                ) {
+                    record_error(&app.pending_error, err);
+                }
             }
             DeferredAction::OpenPath(path) => {
                 if let Err(err) = service_result("open_path", backend.services().open_path(&path)) {

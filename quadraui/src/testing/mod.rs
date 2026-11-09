@@ -772,6 +772,127 @@ fn empty_tab_bar_layout() -> crate::TabBarLayout {
     }
 }
 
+// ── NullPlatformServices ────────────────────────────────────────────────
+//
+// Three near-identical private doubles repeated this same "something to
+// hand `Backend::services()`, nothing real behind it" shape:
+// `FakePlatformServices` in `backend.rs`'s own test module,
+// `MockServices` backing `tui::backend`'s test-only `MockBackend`, and
+// `compose::menu_system`'s test-only `MockBackend::services`, which
+// didn't even have a double and `unimplemented!()`ed instead. This is
+// that double, promoted once — the same "named, not duplicated" move
+// [`RecordingBackend`]'s own module comment above describes for
+// `Backend` itself.
+
+/// A [`crate::backend::Clipboard`] that reads nothing and discards
+/// everything written to it — the degenerate clipboard
+/// [`NullPlatformServices::clipboard`] hands back.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NullClipboard;
+
+impl crate::backend::Clipboard for NullClipboard {
+    fn read_text(&self) -> Option<String> {
+        None
+    }
+
+    fn write_text(&self, _text: &str) {}
+}
+
+/// A [`crate::backend::PlatformServices`] that does nothing and reports
+/// no results from any dialog/notification call — the one shared
+/// fixture a test hands [`crate::Backend::services`] when it needs
+/// *some* `PlatformServices` to return but never drives a real platform
+/// call through it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NullPlatformServices {
+    clipboard: NullClipboard,
+}
+
+impl NullPlatformServices {
+    /// A fresh double — equivalent to [`Default::default`], spelled out
+    /// for call sites that prefer a constructor to a trait method.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl crate::backend::PlatformServices for NullPlatformServices {
+    fn clipboard(&self) -> &dyn crate::backend::Clipboard {
+        &self.clipboard
+    }
+
+    fn show_file_open_dialog(
+        &self,
+        _opts: crate::backend::FileDialogOptions,
+    ) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    fn show_file_save_dialog(
+        &self,
+        _opts: crate::backend::FileDialogOptions,
+    ) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    fn show_folder_open_dialog(
+        &self,
+        _opts: crate::backend::FileDialogOptions,
+    ) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    fn show_message_dialog(
+        &self,
+        _opts: crate::backend::MessageDialogOptions,
+    ) -> Option<crate::backend::MessageDialogChoice> {
+        None
+    }
+
+    fn send_notification(
+        &self,
+        _n: crate::backend::Notification,
+    ) -> crate::backend::ServiceResult<()> {
+        Ok(())
+    }
+
+    fn open_url(&self, _url: &str) {}
+
+    fn platform_name(&self) -> &'static str {
+        "null"
+    }
+}
+
+#[cfg(test)]
+mod null_platform_services_tests {
+    use super::NullPlatformServices;
+    use crate::backend::PlatformServices;
+
+    #[test]
+    fn clipboard_reads_nothing_and_discards_writes() {
+        let services = NullPlatformServices::new();
+        services.clipboard().write_text("anything");
+        assert_eq!(services.clipboard().read_text(), None);
+    }
+
+    #[test]
+    fn every_dialog_reports_no_result() {
+        let services = NullPlatformServices::new();
+        assert_eq!(services.show_file_open_dialog(Default::default()), None);
+        assert_eq!(services.show_file_save_dialog(Default::default()), None);
+        assert_eq!(services.show_folder_open_dialog(Default::default()), None);
+    }
+
+    #[test]
+    fn send_notification_reports_success() {
+        let services = NullPlatformServices::new();
+        assert_eq!(
+            services.send_notification(crate::backend::Notification::new("t", "b")),
+            Ok(())
+        );
+    }
+}
+
 impl crate::backend::sealed::Sealed for RecordingBackend {}
 
 impl crate::Backend for RecordingBackend {

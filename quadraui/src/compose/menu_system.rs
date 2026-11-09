@@ -955,6 +955,7 @@ mod tests {
         /// a platform-owned menu bar has in-window (macOS, by default).
         native_menu_bar: bool,
         invalidation_log: crate::backend::InvalidationLog,
+        services: crate::testing::NullPlatformServices,
     }
 
     impl MockBackend {
@@ -965,6 +966,7 @@ mod tests {
                 focus: crate::focus::FocusManager::new(),
                 native_menu_bar: false,
                 invalidation_log: crate::backend::InvalidationLog::new(),
+                services: crate::testing::NullPlatformServices::new(),
             }
         }
 
@@ -1033,7 +1035,7 @@ mod tests {
         }
         fn draw_focus_ring(&mut self, _r: Rect) {}
         fn services(&self) -> &dyn crate::backend::PlatformServices {
-            unimplemented!()
+            &self.services
         }
         fn backend_caps(&self) -> crate::backend::BackendCaps {
             crate::backend::BackendCaps {

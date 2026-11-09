@@ -20,11 +20,14 @@ use crate::types::WidgetId;
 /// own [`crate::primitives::toast::ToastOverlay`] instead.
 ///
 /// Returns `None` when `n` was sent natively — there is nothing left for
-/// the caller to do. Returns `Some(item)` on the degrade path; the
-/// caller decides the toast's corner, stacking, and dismiss timing (this
-/// helper builds the descriptor, not the stack it lives in — same split
-/// [`crate::primitives::toast`]'s own module doc describes between the
-/// primitive and the app-owned lifecycle).
+/// the caller to do. Returns `Some(item)` on the degrade path — either
+/// because `backend` has no native channel at all, or because it has one
+/// but this particular send failed — so a caller always gets a visible
+/// toast rather than a silently dropped notification. On the degrade
+/// path, the caller decides the toast's corner, stacking, and dismiss
+/// timing (this helper builds the descriptor, not the stack it lives
+/// in — same split [`crate::primitives::toast`]'s own module doc
+/// describes between the primitive and the app-owned lifecycle).
 ///
 /// ## What survives the degrade
 ///
@@ -41,8 +44,9 @@ use crate::types::WidgetId;
 /// to suppress) and paints with the app's own chrome, not a
 /// caller-supplied icon.
 pub fn notify_or_toast(backend: &dyn Backend, n: Notification) -> Option<Toast> {
-    if backend.backend_caps().notifications {
-        backend.services().send_notification(n);
+    if backend.backend_caps().notifications
+        && backend.services().send_notification(n.clone()).is_ok()
+    {
         return None;
     }
     let id = match n.tag() {
