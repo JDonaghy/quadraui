@@ -2237,7 +2237,6 @@ dependencies = [
 name = "kubeui-gtk"
 version = "0.0.1"
 dependencies = [
- "anyhow",
  "kubeui-core",
  "quadraui",
 ]

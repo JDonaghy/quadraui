@@ -7,8 +7,8 @@
 //! `quadraui::Backend` trait, so the same code runs on every backend.
 
 use quadraui::{
-    fuzzy_score, DualModePaletteController, Key, Modifiers, NamedKey, PaletteItem, StyledSpan,
-    StyledText, UiEvent,
+    fuzzy_score, Backend, Key, Modifiers, NamedKey, Palette, PaletteHit, PaletteItem, PaletteMode,
+    Point, Rect, StyledSpan, StyledText, WidgetId,
 };
 
 use crate::k8s::ResourceItem;
@@ -36,9 +36,6 @@ pub struct AppState {
     pub picker: Option<PickerOverlay>,
     /// Last status / error message — surfaced in the bottom bar.
     pub status: String,
-    /// Set from `quadraui::AppLogic::handle` when the user hits the
-    /// quit action. The runner's event loop exits once this is true.
-    pub should_quit: bool,
 }
 
 impl AppState {
@@ -60,7 +57,6 @@ impl AppState {
             focus: Focus::Resources,
             picker: None,
             status: "Press r to load.".to_string(),
-            should_quit: false,
         }
     }
 
@@ -119,19 +115,46 @@ pub enum PickerPurpose {
     ResourceKind,
 }
 
-/// Modal namespace/kind picker — a thin wrapper around
-/// `quadraui::DualModePaletteController` that keeps the palette's
-/// filtered item list in sync with [`fuzzy_score`] matches against
-/// `source`.
+/// What happened after [`PickerOverlay::handle_key`] or
+/// [`PickerOverlay::handle_mouse`] processed an event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerOutcome {
+    /// The user confirmed a row. `orig` is the index into `source`.
+    Confirmed { orig: usize },
+    /// The picker was dismissed (`Escape`, or a click outside the
+    /// popup).
+    Cancelled,
+    /// Internal state changed (query, selection, or scroll) —
+    /// caller should redraw.
+    Changed,
+    /// The event wasn't relevant to the picker.
+    Ignored,
+}
+
+/// Modal namespace/kind picker.
 ///
-/// `DualModePaletteController` filters nothing on its own (see its
-/// module doc: the app refilters and calls `set_items` in response to
-/// `QueryChanged`) — that refiltering is this type's whole job, so
-/// `source`'s original index survives query changes via `filtered`
-/// (`filtered[row]` is the index into `source` the controller's row
-/// `row` currently shows).
+/// `quadraui::DualModePaletteController` can't back this: its `List`
+/// mode reserves `j`/`k` for vim-style selection *before* the
+/// generic "append to query" arm ever sees them, so a fuzzy filter
+/// over names that contain `j`/`k` (every `kube-*` namespace, the
+/// canonical case this picker exists for) can never receive those
+/// characters as text. Its `Input` mode has the opposite problem — it
+/// accepts every character into the query, but hides the item list
+/// entirely. Neither mode is "a plain search box over a filtered
+/// list", so this type owns its own query/selection/scroll state
+/// instead, and renders through the same `quadraui::Palette`
+/// primitive and `Backend::draw_palette`/`Backend::palette_layout`
+/// the controller uses internally — it just drives the state machine
+/// itself rather than through the controller's key dispatch.
+///
+/// `filtered[row]` is the `source` index that displayed row `row`
+/// currently maps to; it's recomputed by [`Self::refilter`] against
+/// [`fuzzy_score`] every time the query changes, so `source`'s
+/// original index survives filtering.
 pub struct PickerOverlay {
     pub purpose: PickerPurpose,
+    /// Palette title (e.g. `"Namespace"`).
+    title: String,
     /// Full, unfiltered candidate list (namespace names or resource
     /// kind labels) in original order.
     source: Vec<String>,
@@ -139,17 +162,20 @@ pub struct PickerOverlay {
     /// marked with a `●` prefix so the user can see what they're
     /// changing away from.
     current_orig: Option<usize>,
-    /// `filtered[row]` is the `source` index the controller's row
-    /// `row` currently displays. Rebuilt by [`Self::refilter`].
+    /// `filtered[row]` is the `source` index that row `row` currently
+    /// displays. Rebuilt by [`Self::refilter`].
     filtered: Vec<usize>,
-    controller: DualModePaletteController,
+    /// Rendered items for `filtered`, rebuilt alongside it.
+    items: Vec<PaletteItem>,
+    /// Search query text. Editing only ever appends/removes at the
+    /// end (no mid-string cursor) — a search box, not a full text
+    /// field.
+    query: String,
+    /// Index into `filtered`/`items` of the highlighted row.
+    selected: usize,
+    /// First visible row index (scroll offset into `items`).
+    scroll_top: usize,
 }
-
-/// Large enough that `DualModePaletteController::sync_scroll` never
-/// clamps `scroll_top` while a `PickerOverlay` seeds its initial
-/// selection — the real viewport-derived row count is only known at
-/// render/handle time, not at construction.
-const UNBOUNDED_ROWS: usize = usize::MAX;
 
 impl PickerOverlay {
     pub fn new(
@@ -160,55 +186,194 @@ impl PickerOverlay {
     ) -> Self {
         let filtered: Vec<usize> = (0..source.len()).collect();
         let items = build_items(&source, &filtered, current_orig);
-        let mut controller =
-            DualModePaletteController::new(title, None, items).with_id("kubeui_picker");
         // Pre-select the currently active row so the user can press
-        // Enter immediately to close without changing anything —
-        // matches the old substring picker's pre-selected "current"
-        // marker.
-        if let Some(cur) = current_orig {
-            if let Some(row) = filtered.iter().position(|&i| i == cur) {
-                for _ in 0..row {
-                    controller.handle(&down_key_event(), UNBOUNDED_ROWS);
-                }
-            }
-        }
+        // Enter immediately to close without changing anything.
+        let selected = current_orig
+            .and_then(|cur| filtered.iter().position(|&i| i == cur))
+            .unwrap_or(0);
         Self {
             purpose,
+            title: title.into(),
             source,
             current_orig,
             filtered,
-            controller,
+            items,
+            query: String::new(),
+            selected,
+            scroll_top: 0,
         }
     }
 
-    pub fn controller(&self) -> &DualModePaletteController {
-        &self.controller
+    pub fn query(&self) -> &str {
+        &self.query
     }
 
-    pub fn controller_mut(&mut self) -> &mut DualModePaletteController {
-        &mut self.controller
+    pub fn selected(&self) -> usize {
+        self.selected
     }
 
-    /// Recompute the filtered item list from the controller's current
-    /// query text via `fuzzy_score`, then push the result into the
-    /// controller with `set_items`. Call after every
-    /// `DualModePaletteEvent::QueryChanged`.
+    /// Original `source` index the currently highlighted row maps
+    /// to, if any (empty filter result → `None`).
+    pub fn selected_orig_index(&self) -> Option<usize> {
+        self.filtered.get(self.selected).copied()
+    }
+
+    /// Build the `Palette` descriptor for the current state. Public
+    /// so `KubeApp::render` can paint it directly through
+    /// `Backend::draw_palette` without going through a controller.
+    pub fn build_palette(&self) -> Palette {
+        Palette {
+            id: WidgetId::new("kubeui_picker"),
+            title: self.title.clone(),
+            query: self.query.clone(),
+            query_cursor: self.query.len(),
+            items: self.items.clone(),
+            selected_idx: self.selected,
+            scroll_offset: self.scroll_top,
+            total_count: self.source.len(),
+            has_focus: true,
+            show_query: true,
+            create_label: None,
+            preview: None,
+            mode: PaletteMode::List,
+        }
+    }
+
+    /// Clamp `scroll_top` so `selected` is visible within
+    /// `visible_rows` rows. `visible_rows` is always a real,
+    /// render-derived count (never a sentinel), so this never risks
+    /// the `scroll_top + visible_rows` overflow a `usize::MAX`
+    /// placeholder would invite.
+    pub fn sync_scroll(&mut self, visible_rows: usize) {
+        if visible_rows == 0 {
+            return;
+        }
+        if self.selected < self.scroll_top {
+            self.scroll_top = self.selected;
+        }
+        if self.selected >= self.scroll_top + visible_rows {
+            self.scroll_top = self.selected + 1 - visible_rows;
+        }
+    }
+
+    /// Drive the state machine with a keyboard event. `visible_rows`
+    /// is the number of list rows that fit inside the palette chrome
+    /// (see `quadraui::PALETTE_CHROME_ROWS`).
+    pub fn handle_key(
+        &mut self,
+        key: &Key,
+        modifiers: &Modifiers,
+        visible_rows: usize,
+    ) -> PickerOutcome {
+        // `cmd` is treated the same as `ctrl` — every backend delivers
+        // a Cmd-modified letter as a plain `Key::Char` with the
+        // modifier set, not a dedicated key variant.
+        let modified = modifiers.ctrl || modifiers.cmd;
+
+        match key {
+            Key::Named(NamedKey::Escape) => PickerOutcome::Cancelled,
+
+            Key::Named(NamedKey::Enter) => match self.selected_orig_index() {
+                Some(orig) => PickerOutcome::Confirmed { orig },
+                None => PickerOutcome::Ignored,
+            },
+
+            Key::Named(NamedKey::Up) => {
+                self.move_selection(-1, visible_rows);
+                PickerOutcome::Changed
+            }
+            Key::Named(NamedKey::Down) => {
+                self.move_selection(1, visible_rows);
+                PickerOutcome::Changed
+            }
+
+            Key::Named(NamedKey::Backspace) if !modified => {
+                if self.query.pop().is_some() {
+                    self.refilter();
+                    self.sync_scroll(visible_rows);
+                    PickerOutcome::Changed
+                } else {
+                    PickerOutcome::Ignored
+                }
+            }
+
+            // Printable characters — including `j`/`k` — always
+            // append to the query. There is no vim-nav shortcut here;
+            // arrow keys cover selection.
+            Key::Char(c) if !modified => {
+                self.query.push(*c);
+                self.refilter();
+                self.sync_scroll(visible_rows);
+                PickerOutcome::Changed
+            }
+
+            _ => PickerOutcome::Ignored,
+        }
+    }
+
+    /// Drive the state machine with a left-click. `position` is
+    /// absolute (surface-native); `rect` is the same popup rect
+    /// `KubeApp::render` painted this frame. A click outside `rect`
+    /// dismisses the picker (mirrors clicking off any modal); a click
+    /// on a row selects it (matches arrow-key selection — confirming
+    /// still requires `Enter`).
+    pub fn handle_mouse(
+        &mut self,
+        position: Point,
+        rect: Rect,
+        backend: &dyn Backend,
+        visible_rows: usize,
+    ) -> PickerOutcome {
+        let inside = position.x >= rect.x
+            && position.x < rect.x + rect.width
+            && position.y >= rect.y
+            && position.y < rect.y + rect.height;
+        if !inside {
+            return PickerOutcome::Cancelled;
+        }
+
+        let palette = self.build_palette();
+        let layout = backend.palette_layout(rect, &palette);
+        match layout.hit_test(position.x - rect.x, position.y - rect.y) {
+            PaletteHit::Item(idx) if idx < self.items.len() => {
+                self.selected = idx;
+                self.sync_scroll(visible_rows);
+                PickerOutcome::Changed
+            }
+            _ => PickerOutcome::Ignored,
+        }
+    }
+
+    fn move_selection(&mut self, delta: isize, visible_rows: usize) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        let len = self.filtered.len() as isize;
+        let next = (self.selected as isize + delta).clamp(0, len - 1);
+        self.selected = next as usize;
+        self.sync_scroll(visible_rows);
+    }
+
+    /// Recompute the filtered item list from `query` via
+    /// [`fuzzy_score`], resetting selection and scroll — a query edit
+    /// always starts the user back at the top match.
     ///
     /// An empty query shows every candidate, unranked, in original
     /// order — the fast path `fuzzy_score`'s own doc recommends for
     /// "nothing typed yet" (scoring would just report everything as a
     /// trivial match, so skip the sort instead of paying for one that
     /// changes nothing).
-    pub fn refilter(&mut self) {
-        let query = self.controller.query().to_string();
-        let (filtered, positions): (Vec<usize>, Vec<Vec<usize>>) = if query.is_empty() {
+    fn refilter(&mut self) {
+        let (filtered, positions): (Vec<usize>, Vec<Vec<usize>>) = if self.query.is_empty() {
             (
                 (0..self.source.len()).collect(),
                 vec![Vec::new(); self.source.len()],
             )
         } else {
-            let q = query.to_lowercase();
+            // RFC1123 names are ASCII, so lowercasing both sides for
+            // matching keeps byte offsets into the lowercased string
+            // valid as offsets into the original `source[orig]` too.
+            let q = self.query.to_lowercase();
             let mut scored: Vec<(i32, usize, Vec<usize>)> = self
                 .source
                 .iter()
@@ -222,31 +387,11 @@ impl PickerOverlay {
             let positions = scored.into_iter().map(|(_, _, p)| p).collect();
             (filtered, positions)
         };
-        let items =
+        self.items =
             build_items_with_positions(&self.source, &filtered, &positions, self.current_orig);
         self.filtered = filtered;
-        self.controller.set_items(items);
-    }
-
-    /// Original `source` index the controller's currently highlighted
-    /// row maps to, if any (empty filter result → `None`).
-    pub fn selected_orig_index(&self) -> Option<usize> {
-        self.filtered.get(self.controller.selected()).copied()
-    }
-
-    /// Map a palette row index (as carried by
-    /// `DualModePaletteEvent::ItemConfirmed`) back to its `source`
-    /// index.
-    pub fn orig_index_of_row(&self, row: usize) -> Option<usize> {
-        self.filtered.get(row).copied()
-    }
-}
-
-fn down_key_event() -> UiEvent {
-    UiEvent::KeyPressed {
-        key: Key::Named(NamedKey::Down),
-        modifiers: Modifiers::default(),
-        repeat: false,
+        self.selected = 0;
+        self.scroll_top = 0;
     }
 }
 
@@ -312,21 +457,26 @@ mod tests {
         ]
     }
 
+    const ROWS: usize = 10;
+
+    fn type_char(picker: &mut PickerOverlay, ch: char) {
+        let outcome = picker.handle_key(&Key::Char(ch), &Modifiers::default(), ROWS);
+        assert_eq!(outcome, PickerOutcome::Changed);
+    }
+
+    /// Reproduces the issue's own acceptance example: typing the
+    /// literal characters `k`, `b`, `s` — including the two vim-nav
+    /// letters `DualModePaletteController`'s List mode would have
+    /// swallowed as selection moves — must land in the query text
+    /// verbatim and fuzzy-match `kube-system`.
     #[test]
-    fn fuzzy_query_matches_subsequence() {
+    fn fuzzy_query_matches_subsequence_including_j_and_k() {
         let mut picker =
             PickerOverlay::new(PickerPurpose::Namespace, "Namespace", namespaces(), Some(0));
         for ch in "kbs".chars() {
-            picker.controller_mut().handle(
-                &UiEvent::KeyPressed {
-                    key: Key::Char(ch),
-                    modifiers: Modifiers::default(),
-                    repeat: false,
-                },
-                UNBOUNDED_ROWS,
-            );
-            picker.refilter();
+            type_char(&mut picker, ch);
         }
+        assert_eq!(picker.query(), "kbs");
         let top = picker.selected_orig_index().expect("a match for 'kbs'");
         assert_eq!(picker.source[top], "kube-system");
     }
@@ -342,5 +492,32 @@ mod tests {
         let picker =
             PickerOverlay::new(PickerPurpose::Namespace, "Namespace", namespaces(), Some(2));
         assert_eq!(picker.selected_orig_index(), Some(2));
+    }
+
+    #[test]
+    fn up_down_arrows_move_selection_without_touching_query() {
+        let mut picker =
+            PickerOverlay::new(PickerPurpose::Namespace, "Namespace", namespaces(), Some(0));
+        let outcome = picker.handle_key(&Key::Named(NamedKey::Down), &Modifiers::default(), ROWS);
+        assert_eq!(outcome, PickerOutcome::Changed);
+        assert_eq!(picker.selected(), 1);
+        assert_eq!(picker.query(), "");
+    }
+
+    #[test]
+    fn enter_confirms_the_selected_row() {
+        let mut picker =
+            PickerOverlay::new(PickerPurpose::Namespace, "Namespace", namespaces(), Some(0));
+        picker.handle_key(&Key::Named(NamedKey::Down), &Modifiers::default(), ROWS);
+        let outcome = picker.handle_key(&Key::Named(NamedKey::Enter), &Modifiers::default(), ROWS);
+        assert_eq!(outcome, PickerOutcome::Confirmed { orig: 1 });
+    }
+
+    #[test]
+    fn escape_cancels() {
+        let mut picker =
+            PickerOverlay::new(PickerPurpose::Namespace, "Namespace", namespaces(), Some(0));
+        let outcome = picker.handle_key(&Key::Named(NamedKey::Escape), &Modifiers::default(), ROWS);
+        assert_eq!(outcome, PickerOutcome::Cancelled);
     }
 }

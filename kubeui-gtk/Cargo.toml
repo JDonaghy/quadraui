@@ -19,4 +19,3 @@ path = "src/main.rs"
 # `KubeApp`, in `kubeui-core`).
 quadraui = { path = "../quadraui", features = ["gtk"] }
 kubeui-core = { path = "../kubeui-core" }
-anyhow = "1.0"
