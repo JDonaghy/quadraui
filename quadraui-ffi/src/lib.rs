@@ -383,7 +383,8 @@ impl PoisonableHandle for QuiRtApp {
 /// the panic boundary. A caught panic poisons the handle: the panic may have
 /// unwound out of the middle of a dispatch or a repaint, leaving the driver
 /// half-updated, and the only safe thing a host can still do with it is call
-/// `H::FREE_FN`.
+/// [`qui_app_free`] or [`qui_rt_app_free`] (`H::FREE_FN`, resolved for
+/// whichever of the two `H` is).
 ///
 /// # Safety
 /// `app` must be either null or a live pointer from the matching handle's
@@ -726,6 +727,23 @@ unsafe fn insert_descriptor(
             );
         }
 
+        // Parse to a `Value` first — `serde_json::from_str::<Value>` runs
+        // the same `de.end()` trailing-data check as the old
+        // `from_str::<$ty>` did, so `{"label":"A"} }}}` or two concatenated
+        // objects are still rejected here rather than silently accepted by
+        // a `Deserializer` that only consumes the first value. Every other
+        // `decode_value` caller in `quadraui-binding-core` hands it an
+        // already-fully-parsed `Value` for the same reason.
+        let value: serde_json::Value = match serde_json::from_str(text) {
+            Ok(value) => value,
+            Err(err) => {
+                return fail_i64(
+                    QUI_ERR_INVALID_JSON,
+                    format!("{name}: invalid {label} JSON: {err}"),
+                )
+            }
+        };
+
         // One arm per slot rather than a generic helper: each slot stores
         // into its own named `BindingHost` field, so there's no single
         // `field: Option<T>` to be generic over even though the decode
@@ -733,17 +751,13 @@ unsafe fn insert_descriptor(
         // every other binding's fixed-slot descriptor decode.
         macro_rules! decode_into {
             ($ty:ty, $field:ident) => {
-                match quadraui_binding_core::decode_value::<$ty, _>(
-                    label,
-                    &mut serde_json::Deserializer::from_str(text),
-                ) {
+                match quadraui_binding_core::decode_value::<$ty, _>(label, &value) {
                     Ok(decoded) => app.driver.app_mut().host.$field = Some(decoded),
-                    Err(err) => {
-                        return fail_i64(
-                            QUI_ERR_INVALID_JSON,
-                            format!("{name}: invalid {label} JSON: {err}"),
-                        )
-                    }
+                    // `decode_value`'s error already reads "{label}: invalid
+                    // descriptor: {err}", so this doesn't repeat "{label}"
+                    // itself — just the entry point name for a host grepping
+                    // `qui_last_error()`.
+                    Err(err) => return fail_i64(QUI_ERR_INVALID_JSON, format!("{name}: {err}")),
                 }
             };
         }
@@ -944,14 +958,18 @@ pub unsafe extern "C" fn qui_push_event(app: *mut QuiApp, json: *const u8, json_
             Ok(text) => text,
             Err(code) => return code,
         };
-        let event: UiEvent = match serde_json::from_str(text) {
-            Ok(event) => event,
+        let value: serde_json::Value = match serde_json::from_str(text) {
+            Ok(value) => value,
             Err(err) => {
                 return fail(
                     QUI_ERR_INVALID_JSON,
                     format!("{NAME}: invalid UiEvent JSON: {err}"),
                 )
             }
+        };
+        let event: UiEvent = match quadraui_binding_core::decode_value("UiEvent", &value) {
+            Ok(event) => event,
+            Err(err) => return fail(QUI_ERR_INVALID_JSON, format!("{NAME}: {err}")),
         };
         app.pending_events.push_back(event);
         QUI_OK
@@ -1603,14 +1621,18 @@ pub unsafe extern "C" fn qui_rt_list_insert(
             Ok(text) => text,
             Err(code) => return i64::from(code),
         };
-        let list: ListView = match serde_json::from_str(text) {
-            Ok(list) => list,
+        let value: serde_json::Value = match serde_json::from_str(text) {
+            Ok(value) => value,
             Err(err) => {
                 return fail_i64(
                     QUI_ERR_INVALID_JSON,
                     format!("{NAME}: json does not decode to a ListView: {err}"),
                 );
             }
+        };
+        let list: ListView = match quadraui_binding_core::decode_value("ListView", &value) {
+            Ok(list) => list,
+            Err(err) => return fail_i64(QUI_ERR_INVALID_JSON, format!("{NAME}: {err}")),
         };
         let rt_app = app.runner.app_mut();
         let handle = rt_app.store.insert(list);
@@ -1650,14 +1672,18 @@ pub unsafe extern "C" fn qui_rt_list_update(
             Ok(text) => text,
             Err(code) => return code,
         };
-        let list: ListView = match serde_json::from_str(text) {
-            Ok(list) => list,
+        let value: serde_json::Value = match serde_json::from_str(text) {
+            Ok(value) => value,
             Err(err) => {
                 return fail(
                     QUI_ERR_INVALID_JSON,
                     format!("{NAME}: json does not decode to a ListView: {err}"),
                 );
             }
+        };
+        let list: ListView = match quadraui_binding_core::decode_value("ListView", &value) {
+            Ok(list) => list,
+            Err(err) => return fail(QUI_ERR_INVALID_JSON, format!("{NAME}: {err}")),
         };
         let rt_app = app.runner.app_mut();
         let Ok(index) = usize::try_from(handle_id) else {
@@ -1890,6 +1916,29 @@ mod tests {
 
             let message = take_last_error();
             assert!(message.contains("invalid Button JSON"));
+
+            qui_app_free(app);
+        }
+    }
+
+    /// `qui_<name>_insert` rejects trailing garbage after an otherwise
+    /// valid JSON value — the same `de.end()` check every JSON parser
+    /// does, and the one a host hits by passing a `json_len` that overruns
+    /// the actual payload (an over-measured or non-NUL-terminated buffer).
+    #[test]
+    fn trailing_garbage_after_json_is_rejected() {
+        unsafe {
+            let app = qui_app_new(10, 3, no_op_vtable());
+
+            let trailing = br#"{"label":"A"} }}}"#;
+            let inserted = qui_button_insert(app, trailing.as_ptr(), trailing.len());
+            assert_eq!(inserted, i64::from(QUI_ERR_INVALID_JSON));
+            assert_eq!(qui_last_error_code(), QUI_ERR_INVALID_JSON);
+            assert!(take_last_error().contains("invalid Button JSON"));
+
+            let concatenated = br#"{"label":"A"}{"label":"B"}"#;
+            let inserted = qui_button_insert(app, concatenated.as_ptr(), concatenated.len());
+            assert_eq!(inserted, i64::from(QUI_ERR_INVALID_JSON));
 
             qui_app_free(app);
         }
