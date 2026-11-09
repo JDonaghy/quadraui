@@ -124,14 +124,20 @@
 //! ## Notifications
 //!
 //! Exactly one delivery leg reaches the user per [`Self::send_notification`]
-//! call, tried in order, each a fallback for the one before it rather
-//! than all firing unconditionally — a caller firing several
-//! notifications no longer sees several independent popups stack up for
-//! each one.
+//! call — which one is decided by [`terminal_renders_notification_osc`], a
+//! `$TERM`/`$TERM_PROGRAM` allow-list of terminals actually known to render
+//! the OSC 9/777 escapes below, not by whether a write merely *succeeded*.
+//! A write to `/dev/tty` or stdout succeeds on almost any terminal with a
+//! controlling tty regardless of whether that terminal renders the escape
+//! it was handed, so gating on write success alone would silently stop
+//! delivering to the (large) set of terminals — stock macOS Terminal.app,
+//! xterm, most VTE forks — that have a writable tty but no OSC 9/777
+//! support, with [`Self::send_notification`] still reporting `Ok(())`.
 //!
-//! 1. **OSC 9 / OSC 777** ([`emit_notification_osc`]) — two terminal
-//!    escape sequences a capable terminal renders as a native
-//!    notification with no desktop session involved at all: OSC 9
+//! 1. **OSC 9 / OSC 777** ([`emit_notification_osc`]), only when
+//!    [`terminal_renders_notification_osc`] recognizes the current
+//!    terminal — two escape sequences a capable terminal renders as a
+//!    native notification with no desktop session involved at all: OSC 9
 //!    (iTerm2's "Growl-style" extension, also understood by kitty and
 //!    WezTerm) and OSC 777 (rxvt-unicode's `notify` extension, also
 //!    understood by several VTE-based terminals). Written to exactly one
@@ -144,8 +150,9 @@
 //!    escapes into a capable-but-not-bulletproof terminal, the same class
 //!    of bug issue #969's review caught in `open_url_via`'s OSC 8
 //!    fallback.
-//! 2. **Native command-line notifier** — only tried when the escape leg's
-//!    write itself failed (no `/dev/tty`, stdout not writable):
+//! 2. **Native command-line notifier** — tried whenever step 1 wasn't:
+//!    the terminal isn't on the allow-list, or it is but the escape
+//!    write itself still failed (no `/dev/tty`, stdout not writable):
 //!    [`crate::desktop::tui_macos_notify_command`] (`osascript -e
 //!    'display notification …'` on macOS, built from
 //!    [`crate::desktop::display_notification_script`] — shared text with
@@ -161,8 +168,9 @@
 //!    builders — same shape as [`crate::desktop::reveal_in_file_manager`]'s
 //!    per-platform commands below — specifically so a test can assert on
 //!    the constructed argv without spawning anything. Neither exists as
-//!    a stock Windows Terminal fallback: OSC 9 is natively supported
-//!    there, so the escape leg alone already covers it.
+//!    a stock Windows Terminal fallback: Windows Terminal sets
+//!    `$WT_SESSION`, which [`terminal_renders_notification_osc`] also
+//!    recognizes, so the escape leg alone already covers it.
 //!
 //! The native leg is itself silent on failure (tool absent, no display) —
 //! a caller with no way to distinguish "delivered" from "silently
@@ -612,18 +620,97 @@ fn emit_notification_osc_to(title: &str, body: &str, writer: &mut dyn std::io::W
         .is_ok()
 }
 
+/// Terminals known to actually render the OSC 9/777 notification escapes
+/// [`emit_notification_osc`] writes, recognized by `$TERM_PROGRAM` (set by
+/// the terminal application itself), `$WT_SESSION` (Windows Terminal), or
+/// a `$TERM` substring — the capability signal
+/// [`TuiPlatformServices::send_notification`] gates its escape leg on,
+/// replacing the unsound "did the write succeed" check the module doc's
+/// "Notifications" section used to rely on: a write to `/dev/tty` or
+/// stdout succeeds on essentially any terminal with a controlling tty,
+/// whether or not that terminal renders the escape it was handed, so write
+/// success alone could never distinguish "delivered" from "silently
+/// ignored by a terminal that doesn't understand OSC 9/777".
+///
+/// Conservative by design — false negatives (an unrecognized but
+/// genuinely capable terminal falls back to the native notifier instead
+/// of the escape) just mean one working leg instead of a slightly
+/// cheaper one, never zero delivery; false positives (an unrecognized
+/// terminal wrongly on this list) would mean a silently dropped
+/// notification, so new entries need an actual terminal's own
+/// documentation confirming OSC 9/777 support, not a guess.
+fn terminal_renders_notification_osc() -> bool {
+    terminal_renders_notification_osc_for(
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+        std::env::var("TERM").ok().as_deref(),
+        std::env::var_os("WT_SESSION").is_some(),
+    )
+}
+
+/// Pure decision [`terminal_renders_notification_osc`] delegates to —
+/// split out so a test can drive every combination without touching
+/// process-wide environment variables.
+fn terminal_renders_notification_osc_for(
+    term_program: Option<&str>,
+    term: Option<&str>,
+    windows_terminal_session: bool,
+) -> bool {
+    if windows_terminal_session {
+        // Windows Terminal natively renders OSC 9; this is the module
+        // doc's "no stock Windows Terminal fallback needed" case.
+        return true;
+    }
+    if matches!(term_program, Some("iTerm.app") | Some("WezTerm")) {
+        return true;
+    }
+    if let Some(term) = term {
+        if term.contains("kitty") || term.contains("rxvt") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether [`TuiPlatformServices::send_notification`] should spawn its
+/// native command-line notifier leg, given
+/// [`terminal_renders_notification_osc`]'s verdict and whether the escape
+/// leg's write actually reached a target. The native leg is the sole
+/// delivery attempt when the terminal isn't on the OSC allow-list at all,
+/// and the fallback when it is but the write itself still failed (no
+/// `/dev/tty`, stdout not writable) — never both legs when the escape
+/// write both reached a target *and* the terminal is known to render it.
+fn should_spawn_native_notifier(terminal_renders_osc: bool, escape_write_succeeded: bool) -> bool {
+    !terminal_renders_osc || !escape_write_succeeded
+}
+
+/// Pure glue from a [`Notification`] to the `(request_id, title, body)`
+/// triple [`TuiPlatformServices::send_notification`]'s non-macOS Unix
+/// native leg hands [`crate::desktop::tui_notify_send_command`] — split
+/// out so a test can assert `n.tag()` actually reaches the replace hint
+/// without spawning `notify-send`. `request_id` is always computed (never
+/// `None`), both for a tagged notification (the `"tag:"`-namespaced id)
+/// and an untagged one (the `"auto:"`-namespaced counter) — giving
+/// [`crate::desktop::notification_request_id`]'s auto-id branch a real
+/// call site instead of only its own unit test.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn notify_send_args(n: &Notification) -> (String, String, String) {
+    let request_id = crate::desktop::notification_request_id(n.tag());
+    (request_id, n.title.clone(), n.body.clone())
+}
+
 /// Emit both notification OSC sequences for `n` through exactly one
-/// writer — the first leg of [`TuiPlatformServices::send_notification`];
-/// see the module doc's "Notifications" section. On Unix, `/dev/tty` is
-/// tried first (reaches the real terminal even when stdout is redirected
-/// to a file or pipe); stdout otherwise. `title`/`body` are run through
-/// [`strip_control_chars`] first (unlike [`open_url_via`]'s OSC 8
-/// fallback, which rejects the whole write when a control character is
-/// present, this degrade has no fallback of its own to reject *into* —
-/// stripping keeps the notification visible instead of silently dropping
-/// it entirely). Returns whether the write reached a target at all, so
-/// the caller can fall back to the native command-line leg only when it
-/// didn't.
+/// writer — the first leg of [`TuiPlatformServices::send_notification`],
+/// only attempted at all when [`terminal_renders_notification_osc`]
+/// recognizes the current terminal; see the module doc's "Notifications"
+/// section. On Unix, `/dev/tty` is tried first (reaches the real terminal
+/// even when stdout is redirected to a file or pipe); stdout otherwise.
+/// `title`/`body` are run through [`strip_control_chars`] first (unlike
+/// [`open_url_via`]'s OSC 8 fallback, which rejects the whole write when a
+/// control character is present, this degrade has no fallback of its own
+/// to reject *into* — stripping keeps the notification visible instead of
+/// silently dropping it entirely). Returns whether the write reached a
+/// target at all, so the caller can fall back to the native command-line
+/// leg only when it didn't.
 fn emit_notification_osc(n: &Notification) -> bool {
     let title = strip_control_chars(&n.title);
     let body = strip_control_chars(&n.body);
@@ -1534,10 +1621,11 @@ mod notification_osc_tests {
     }
 
     /// Acceptance bar: a title/body carrying a raw control character must
-    /// never reach the OSC sequences unstripped — this pins that
-    /// [`emit_notification_osc`]'s production call site actually runs both
-    /// through [`strip_control_chars`] first, via the pure sequence builders
-    /// directly (same as the OSC 8 leg's control-character guard).
+    /// never reach the OSC sequences unstripped. Drives
+    /// [`strip_control_chars`] and the pure sequence builders directly
+    /// (same as the OSC 8 leg's control-character guard) — a test on the
+    /// building blocks [`emit_notification_osc`] composes in that same
+    /// order, not an end-to-end capture of its actual output.
     #[test]
     fn stripped_title_and_body_never_carry_a_raw_escape_into_the_sequence() {
         let title = strip_control_chars("t\x1b]0;pwned\x07itle");
@@ -1553,10 +1641,14 @@ mod notification_osc_tests {
         assert_eq!(osc777.matches('\x1b').count(), 1, "{osc777:?}");
     }
 
-    /// Acceptance bar: `send_notification` writes real OSC 9/777 bytes to
-    /// the test process's stdout as a side effect — harmless side effect.
-    /// Doesn't assert a visible notification appeared; only that the call
-    /// doesn't panic and returns.
+    /// Acceptance bar: `send_notification` reaches one of its two legs
+    /// (writing OSC 9/777 bytes to the test process's stdout/`/dev/tty`,
+    /// or — on an unrecognized terminal, which is what a non-interactive
+    /// test process almost always is — spawning the native
+    /// `osascript`/`notify-send` command, itself silent on failure) as a
+    /// side effect — harmless either way. Doesn't assert a visible
+    /// notification appeared; only that the call doesn't panic and
+    /// returns.
     #[test]
     fn send_notification_does_not_panic() {
         let services = TuiPlatformServices::new();
@@ -1566,21 +1658,100 @@ mod notification_osc_tests {
         ));
     }
 
-    /// Acceptance bar: a tagged call and an untagged call must not
-    /// observably differ in whether they succeed — both reach at least
-    /// the OSC escape leg (stdout is always writable in a test process),
-    /// so both report `Ok(())`.
+    /// [`terminal_renders_notification_osc_for`]'s allow-list, pinned
+    /// independently of the real process environment: Windows Terminal,
+    /// iTerm2, WezTerm, kitty and rxvt-derived terminals render the OSC
+    /// escapes; a plain/unset `$TERM` and `$TERM_PROGRAM` — the shape
+    /// almost every CI runner and headless test process presents — don't.
     #[test]
-    fn send_notification_honours_tag_without_changing_the_result() {
-        let services = TuiPlatformServices::new();
+    fn terminal_allowlist_recognizes_known_capable_terminals_and_nothing_else() {
+        assert!(terminal_renders_notification_osc_for(None, None, true));
+        assert!(terminal_renders_notification_osc_for(
+            Some("iTerm.app"),
+            None,
+            false
+        ));
+        assert!(terminal_renders_notification_osc_for(
+            Some("WezTerm"),
+            None,
+            false
+        ));
+        assert!(terminal_renders_notification_osc_for(
+            None,
+            Some("xterm-kitty"),
+            false
+        ));
+        assert!(terminal_renders_notification_osc_for(
+            None,
+            Some("rxvt-unicode-256color"),
+            false
+        ));
+        assert!(!terminal_renders_notification_osc_for(
+            Some("Apple_Terminal"),
+            Some("xterm-256color"),
+            false
+        ));
+        assert!(!terminal_renders_notification_osc_for(None, None, false));
+        assert!(!terminal_renders_notification_osc_for(
+            None,
+            Some("xterm"),
+            false
+        ));
+    }
+
+    /// Acceptance bar: exactly one delivery leg fires per call — pinning
+    /// the decision [`should_spawn_native_notifier`] makes, the one
+    /// `send_notification` itself defers to, for every reachable
+    /// combination of "is the terminal on the OSC allow-list" and "did
+    /// the escape write reach a target".
+    #[test]
+    fn exactly_one_leg_is_chosen_for_every_capability_and_write_outcome() {
+        // Unrecognized terminal: the escape leg is never even attempted
+        // (`send_notification` short-circuits on `terminal_renders_osc &&`
+        // before calling `emit_notification_osc` at all), so the native
+        // leg is the sole leg — never both, never neither.
+        assert!(should_spawn_native_notifier(false, false));
+
+        // Recognized terminal, write succeeded: `send_notification`
+        // returns `Ok(())` straight from that branch without ever
+        // consulting this function, but pin the decision anyway — a
+        // capable terminal whose write worked must not *also* get a
+        // native popup stacked on top of the one it already rendered.
+        assert!(!should_spawn_native_notifier(true, true));
+
+        // Recognized terminal, write failed (no `/dev/tty`, stdout not
+        // writable): the native leg is the fallback, so delivery survives
+        // a broken escape channel on an otherwise-capable terminal.
+        assert!(should_spawn_native_notifier(true, false));
+    }
+
+    /// [`notify_send_args`] threads [`Notification::tag`] into the
+    /// `notify-send` replace-hint id end-to-end — the glue the blocking
+    /// review found only the pure [`crate::desktop::tui_notify_send_command`]
+    /// builder covered, not the `Notification` -> id translation feeding it.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn notify_send_args_threads_the_tag_into_the_request_id() {
+        let (request_id, title, body) =
+            notify_send_args(&Notification::new("t", "b").with_tag("build-status"));
         assert_eq!(
-            services.send_notification(Notification::new("t", "b").with_tag("build-status")),
-            Ok(())
+            request_id,
+            crate::desktop::notification_request_id(Some("build-status"))
         );
-        assert_eq!(
-            services.send_notification(Notification::new("t", "b")),
-            Ok(())
-        );
+        assert_eq!(title, "t");
+        assert_eq!(body, "b");
+    }
+
+    /// An untagged notification still gets a real, distinct request id
+    /// each time (the `"auto:"` branch) rather than `None` — the replace
+    /// hint `notify-send` receives, so two untagged notifications never
+    /// collide with each other even without a caller-supplied tag.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn notify_send_args_without_a_tag_still_gets_a_unique_request_id() {
+        let (first, ..) = notify_send_args(&Notification::new("t", "b"));
+        let (second, ..) = notify_send_args(&Notification::new("t", "b"));
+        assert_ne!(first, second);
     }
 }
 
@@ -1894,29 +2065,33 @@ impl PlatformServices for TuiPlatformServices {
 
     /// A genuine best-effort degrade — see the module doc's
     /// "Notifications" section for the full story. Exactly one leg
-    /// delivers per call: the OSC 9/777 escape leg
-    /// ([`emit_notification_osc`]) first, and only when that write
-    /// didn't even reach a target does the native `osascript`/
-    /// `notify-send` command-line notifier fire as a fallback —
-    /// `n.tag()` carries into the `notify-send` leg via
-    /// [`crate::desktop::notification_request_id`] as its replace hint.
+    /// delivers per call, chosen by [`terminal_renders_notification_osc`]
+    /// rather than by whether a write merely succeeded: the OSC 9/777
+    /// escape leg ([`emit_notification_osc`]) when the current terminal
+    /// is on that allow-list, the native `osascript`/`notify-send`
+    /// command-line notifier otherwise — including as a fallback when the
+    /// terminal is on the allow-list but the escape write itself still
+    /// didn't reach a target. `n.tag()` carries into the `notify-send` leg
+    /// via [`notify_send_args`]/[`crate::desktop::notification_request_id`]
+    /// as its replace hint.
     fn send_notification(&self, n: Notification) -> ServiceResult<()> {
-        if emit_notification_osc(&n) {
+        let terminal_renders_osc = terminal_renders_notification_osc();
+        let escape_write_succeeded = terminal_renders_osc && emit_notification_osc(&n);
+        if escape_write_succeeded {
             return Ok(());
         }
-        #[cfg(target_os = "macos")]
-        {
-            let _ =
-                crate::desktop::tui_macos_notify_command(&n.title, &n.body, n.is_silent()).spawn();
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            let request_id = n
-                .tag()
-                .map(|_| crate::desktop::notification_request_id(n.tag()));
-            let _ =
-                crate::desktop::tui_notify_send_command(&n.title, &n.body, request_id.as_deref())
+        if should_spawn_native_notifier(terminal_renders_osc, escape_write_succeeded) {
+            #[cfg(target_os = "macos")]
+            {
+                let _ = crate::desktop::tui_macos_notify_command(&n.title, &n.body, n.is_silent())
                     .spawn();
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                let (request_id, title, body) = notify_send_args(&n);
+                let _ = crate::desktop::tui_notify_send_command(&title, &body, Some(&request_id))
+                    .spawn();
+            }
         }
         Ok(())
     }
