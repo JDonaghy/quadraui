@@ -59,6 +59,18 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `quadraui-node`: `QuiApp.armWakeNotify`/`disarmWakeNotify` (#2238) register
+  a threadsafe notifier `QuiAppWaker.post`/`wake`/`postAfter`/`wakeAfter`
+  fires the instant they deliver, from whatever thread that happens on.
+  `js/index.ts`'s new `run(app, fallbackIntervalMs?)` arms it to step a live
+  `startTui`/`startNative` session wake-driven instead of on a fixed
+  interval: zero `step()` calls while idle with no pending waker/timer work,
+  versus `pump`'s one every tick regardless. `run` becomes the recommended
+  default entry point; `pump` stays exported as the documented fallback for
+  a session that needs every real native keypress/click observed at a
+  steady cadence (real native input doesn't flow through the wake notify —
+  `run`'s `fallbackIntervalMs` safety net, 250ms by default, is the
+  trade-off until a backend exposes a way to wait on that without polling).
 - `FieldKind::NumberInput(NumberInput)` and `FieldKind::RadioGroup(RadioGroup)`
   (#2251): `Form` can now host the standalone `NumberInput` (#1446) and
   `RadioGroup` (#1436) primitives as field kinds, following the
