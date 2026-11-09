@@ -105,6 +105,18 @@ only a push to `main` runs this workflow.
   callback expects via a generic `pythonize::pythonize`/`serde_json::to_value`
   call instead of its own hand-rolled, binding-specific tagging function.
 ### Changed
+- `activity_bar::native_surface_paint::paint`'s body is now a thin seam:
+  build the `Toolbar` + `ToolbarRailStyle` pair via
+  `ActivityBar::to_toolbar_parts`, lay it out with the same options
+  `ActivityBar::layout` uses, paint through the new
+  `toolbar::native_surface_paint::paint_rail` (honouring `ToolbarRailStyle`'s
+  active-row fill, leading-edge accent, keyboard-selection fill and
+  trailing separator), and translate the result back via
+  `ActivityBar::row_hits_from_toolbar_layout`. The bespoke per-row paint
+  loop is gone; `paint`'s signature, `Vec<ActivityBarRowHit>` return, and
+  pixel output are unchanged, so every gtk/macos/win `draw_activity_bar`
+  caller is unaffected. Both `paint` and `paint_rail` stay `pub(crate)` —
+  no public API change.
 - `a11y::tree`'s internal `role_name` helper (the snapshot-line role
   spelling, e.g. `"text_input"`) is now derived from `A11yRole`'s own
   `#[serde(rename_all = "snake_case")]` representation via a JSON
