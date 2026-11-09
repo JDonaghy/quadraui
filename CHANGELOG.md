@@ -84,6 +84,24 @@ only a push to `main` runs this workflow.
   `input_insert_char`/`input_insert_str`/`clear_input`/`input_has_focus`)
   keeps its signature.
 ### Changed
+- `src/desktop.rs`'s backend-neutral OS-service plumbing (window-drag
+  arming, the modal-pump re-entrancy guard, trash, the default-handler
+  opener, notifications, clipboard error mapping, headless smoke-mode
+  predicates, the paste-keypress predicate, the `PointerShape` enum-walk
+  scaffold, caught-panic reporting) moved into `src/platform/{window_drag,
+  modal_pump, trash, open_with, open_url, reveal, notifications, clipboard,
+  smoke, paste, pointer_shape, panic_report}.rs`, one file per concern.
+  `desktop` is now a thin facade re-exporting every `platform` item at its
+  historical `crate::desktop::X` path — internal-only, no observable
+  behavior change. Four of `open_with`/`reveal`/`notifications`'s
+  `#[cfg_attr(not(..), allow(dead_code))]` dead-code allows on
+  platform-gated helpers (`shell_execute_reports_success`,
+  `windows_explorer_select_parameters`, `encode_windows_segment`,
+  `file_uri_from_windows_path_str`) are now real `#[cfg(any(.., test))]`
+  gates; two more (`encoded_image_extension`, `materialize_notification_icon`)
+  had a redundant allow removed outright. `wide_nul_terminated`'s stays —
+  `win::services` imports it unconditionally outside any `cfg(windows)`
+  guard, so tightening its gate would break that call site.
 - `Split`/`SplitTree`'s own accessibility role moved from `A11yRole::Group`
   to `A11yRole::Splitter`.
 - `tui::split`'s divider paint now truncates its axis coordinate instead of
