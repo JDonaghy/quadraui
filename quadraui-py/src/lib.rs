@@ -101,7 +101,8 @@
 //! escape hatch for the overlay/OS-call/window-control methods this
 //! module doc's "cannot call back into `QuiApp`" note above otherwise
 //! rules out from inside a handler: `show_message_dialog`,
-//! `show_context_menu`, `show_toast`, `show_tooltip`, `send_notification`,
+//! `show_context_menu`, `show_toast`, `show_tooltip`, `hide_tooltip`,
+//! `send_notification`,
 //! `open_path`, `reveal_in_file_manager`, `move_to_trash`,
 //! `restore_from_trash`, `set_title`, `set_document_edited`,
 //! `set_represented_filename`, `set_tray_icon`, `set_tray_tooltip`,
@@ -386,7 +387,7 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 /// validated, waiting for [`flush_deferred_actions`] to apply it. Each
 /// variant mirrors one of the `QuiApp` methods [`QuiAppActions`]'s own
 /// doc names (`show_message_dialog`, `show_context_menu`, `show_toast`,
-/// `show_tooltip`, `send_notification`, `open_path`,
+/// `show_tooltip`, `hide_tooltip`, `send_notification`, `open_path`,
 /// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
 /// `set_title`, `set_document_edited`, `set_represented_filename`,
 /// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
@@ -394,6 +395,12 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 /// matching `QuiApp` method passes to the same underlying
 /// `quadraui`/`quadraui_binding_core` call, so applying one is a direct call
 /// with no further decoding or validation left to do.
+///
+/// [`DeferredAction::HideTooltip`] is the one variant with no matching
+/// `QuiApp` method argument to carry — `QuiApp::hide_tooltip` itself takes
+/// none — so it stores nothing; [`flush_deferred_actions`] applies it via
+/// the same [`InteractionEngine::hide_tooltip`] call `QuiApp::hide_tooltip`
+/// makes directly.
 ///
 /// `Theme`'s overrides are one exception: unlike `QuiApp::set_theme`,
 /// [`QuiAppActions::set_theme`] has no live backend to merge onto at queue
@@ -418,6 +425,7 @@ enum DeferredAction {
     ContextMenu(Vec<ContextMenuItem>, Point),
     Toast(Toast, ToastCorner),
     Tooltip(Tooltip, Rect),
+    HideTooltip,
     Notification(Notification),
     OpenPath(PathBuf),
     RevealInFileManager(PathBuf),
@@ -1615,7 +1623,8 @@ impl QuiAppWaker {
 /// A handle, returned by [`QuiApp::actions`], that queues exactly the
 /// overlay/OS-call/window-control methods `QuiApp` itself restricts to
 /// top-level script code — `show_message_dialog`, `show_context_menu`,
-/// `show_toast`, `show_tooltip`, `send_notification`, `open_path`,
+/// `show_toast`, `show_tooltip`, `hide_tooltip`, `send_notification`,
+/// `open_path`,
 /// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
 /// `set_title`, `set_document_edited`, `set_represented_filename`,
 /// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
@@ -1726,6 +1735,22 @@ impl QuiAppActions {
         self.queue
             .borrow_mut()
             .push_back(DeferredAction::Tooltip(tooltip, anchor));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::HideTooltip`] — no arguments, same as
+    /// `QuiApp::hide_tooltip`. For a tooltip source with no `Button` to
+    /// carry it (a toolbar action's own `tooltip`, or a tree/data-table
+    /// row), the handler is the only thing that knows when to dismiss it —
+    /// typically on the hit-tested `MouseLeft` for the widget it showed on
+    /// `MouseEntered`. Calling `app.hide_tooltip()` straight from inside
+    /// that same handler would hit the same "already borrowed" wall
+    /// [`Self::show_tooltip`]'s own doc describes; this queues the exact
+    /// same engine call instead.
+    fn hide_tooltip(&self) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::HideTooltip);
         Ok(())
     }
 
@@ -2044,6 +2069,9 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
             }
             DeferredAction::Tooltip(tooltip, anchor) => {
                 app_logic.engine.show_tooltip(tooltip, anchor);
+            }
+            DeferredAction::HideTooltip => {
+                app_logic.engine.hide_tooltip();
             }
             DeferredAction::Notification(notification) => {
                 if let Err(err) = backend.services().send_notification(notification) {
@@ -2464,7 +2492,8 @@ impl QuiApp {
 
     /// Returns a [`QuiAppActions`] handle: an object a registered event
     /// handler can call `show_message_dialog`/`show_context_menu`/
-    /// `show_toast`/`show_tooltip`/`send_notification`/`open_path`/
+    /// `show_toast`/`show_tooltip`/`hide_tooltip`/`send_notification`/
+    /// `open_path`/
     /// `reveal_in_file_manager`/`move_to_trash`/`restore_from_trash` on
     /// instead of this `QuiApp` itself, since the handler already holds
     /// this app's one mutable borrow for the whole dispatch that invoked
