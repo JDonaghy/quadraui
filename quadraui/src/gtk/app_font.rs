@@ -79,6 +79,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 /// Register `bytes` (raw TTF/OTF/TTC data) as an application font for the
 /// lifetime of this process — with Fontconfig (`FcConfigAppFontAddFile`)
@@ -106,6 +107,28 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// reporting success there would reproduce the exact silent-tofu state
 /// this function exists to prevent.
 pub(crate) fn register_font_from_memory(bytes: &[u8]) -> Option<Vec<String>> {
+    // Serialises every call against every other: `register_with_fontconfig`
+    // below reads `FcFontSet.nfont`/`.fonts` as raw struct fields straight
+    // off Fontconfig's live `FcSetApplication` set (see its own doc), with
+    // no locking of its own — `FcConfigAppFontAddFile` only guarantees the
+    // mutation itself is safe to call concurrently, not that the fontset it
+    // mutates stays stable for a second thread's unsynchronised read
+    // in-between. `GtkBackend::new` calls this (via `ensure_codicon_registered`)
+    // from essentially every GTK test, and `app_font::tests` calls it again
+    // directly for its own fixture (via `registered_icon_font_names`) —
+    // each guarded by its own, independent `OnceLock`, so nothing stops
+    // both "first calls" landing on two different OS test threads at the
+    // same moment. Without this lock that's a genuine data race on
+    // Fontconfig's internal `fonts` array (one thread's `FcConfigAppFontAddFile`
+    // can reallocate it while another is mid-iteration reading stale
+    // pointers out of it in `new_app_font_family_names`) — intermittent,
+    // and only reproduces on a build where real rendering also drives
+    // Fontconfig concurrently (Linux's `PangoFcFontMap`; macOS's
+    // `PangoCoreTextFontMap` never touches Fontconfig for shaping, so the
+    // same race is latent but silent there).
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let path = create_temp_font_file(bytes)?;
 
     let names = register_with_fontconfig(&path);
@@ -820,6 +843,40 @@ mod tests {
                  should parse",
             )
         })
+    }
+
+    /// Regression guard for the data race `register_font_from_memory`'s own
+    /// doc describes: two independent `OnceLock`-guarded call sites
+    /// (`ensure_codicon_registered` and this file's
+    /// `registered_icon_font_names`) each call this function exactly once,
+    /// but nothing previously stopped those two "first calls" landing on
+    /// different OS test threads at the same moment and racing
+    /// `register_with_fontconfig`'s unsynchronised raw `FcFontSet` reads —
+    /// an intermittent SIGSEGV in CI with no failing test (the crash kills
+    /// the whole process). `registered_icon_font_names`'s own `OnceLock`
+    /// can't exercise that race directly (concurrent callers of one
+    /// `OnceLock` block on each other), so this spawns several real OS
+    /// threads that each call [`register_font_from_memory`] directly,
+    /// bypassing every `OnceLock`, forcing genuinely concurrent
+    /// `FcConfigAppFontAddFile` calls against the same process-wide
+    /// `FcConfig`. Every call must still resolve the real fixture; if the
+    /// internal lock this test guards against regresses, this either
+    /// crashes the process or panics, not just fails an assertion.
+    #[test]
+    fn register_font_from_memory_is_safe_under_concurrent_callers() {
+        let threads: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(|| register_font_from_memory(ICON_FONT_BYTES)))
+            .collect();
+        for t in threads {
+            let names = t
+                .join()
+                .expect("register_font_from_memory must not panic under concurrent callers")
+                .expect("a real font must register even when called concurrently");
+            assert!(
+                !names.is_empty(),
+                "a real font must resolve at least one family name"
+            );
+        }
     }
 
     /// A real, parseable font must always register on every platform.

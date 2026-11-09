@@ -236,6 +236,15 @@ only a push to `main` runs this workflow.
   `-`/`j`/`k` type into the query unchanged, because the query *is* the
   destination filename there — via `classify_nav_key`'s new `vim_keys`
   parameter, gated on the picker's mode.
+- `gtk::app_font::register_font_from_memory` (#2284) now serialises its
+  Fontconfig registration behind a process-wide `Mutex`: two independent
+  `OnceLock`-guarded call sites (`GtkBackend::new`'s codicon registration and
+  the test suite's own icon-font fixture) could land their "first call" on
+  two different OS test threads at once, racing the unsynchronised raw
+  `FcFontSet` reads `register_with_fontconfig` does against Fontconfig's
+  live `FcSetApplication` set — an intermittent, un-attributable SIGSEGV
+  partway through the `gtk` CI job's lib tests. The lock serialises every
+  call against every other, closing that race.
 - A `LabelPosition::Top`-resolved `FieldKind::RadioGroup`/`NumberInput`
   (#2251) now agrees between paint and click on TUI: `FormFieldMeasure`
   gains an `items_start_y` field so `Form::layout` skips its item/sub-row
