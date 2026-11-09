@@ -121,13 +121,11 @@
 // that type alias's own doc), and for the `exit_requested: Rc<Cell<bool>>`
 // `run_native`'s real `target_os = "macos"` arm and its `#[cfg(test)]`
 // coverage for the downgrade `NativeExitPolicy` (aliased below as
-// `NativeAppLogic`) performs on that feature -- genuinely unused on a
-// `macos`/`win`-feature, non-native-`target_os` build (e.g.
-// `cargo check --features macos` on Linux), which `run_native`'s own
-// non-native arm exists to keep buildable without ever opening a real
-// window.
+// `NativeAppLogic`) performs on that feature. Used unconditionally
+// whenever this feature gate is active, including the non-native-`target_os`
+// typecheck arms, since `CapturedWaker` itself is defined and referenced at
+// that same gate.
 #[cfg(any(feature = "macos", feature = "win"))]
-#[allow(unused_imports)]
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1557,16 +1555,19 @@ struct QuiApp {
     /// starts, rather than only to the dormant headless driver (`run_tui`
     /// blocks the Python thread that calls it and `QuiApp` is `unsendable`,
     /// so there is no reachable way to call `waker()` *during* the call —
-    /// only before it). `run_native` swaps this the same way: on `gtk`, to
-    /// `GtkRunner::waker()`, read right after construction; on `macos`/
-    /// `win`, to the one closure [`PyAppLogic::setup`] captured into
+    /// only before or after it). `run_native` swaps this the same way: on
+    /// `gtk`, to `GtkRunner::waker()`, read right after construction; on
+    /// `macos`/`win`, to the one closure [`PyAppLogic::setup`] captured into
     /// [`PyAppLogic::captured_waker`] while building the real
     /// `MacRunner`/`WinRunner` (neither exposes a post-construction
-    /// accessor the way `GtkRunner` does). Either way, a `QuiAppWaker`
-    /// obtained before, during, or after `run_native` is called delivers
-    /// straight into the live native loop for as long as the window is
-    /// open, and is swapped back to the dormant headless driver once
-    /// `run_native` returns — see [`RestoreWakerOnDrop`]'s doc for why
+    /// accessor the way `GtkRunner` does) — and only when `setup` actually
+    /// ran and captured one; if `captured_waker.take()` comes back `None`
+    /// (e.g. construction failed before `setup` was reached), this field is
+    /// left untouched and no restore is scheduled. Either way, a
+    /// `QuiAppWaker` obtained before or after `run_native` is called
+    /// delivers straight into the live native loop for as long as the
+    /// window is open, and is swapped back to the dormant headless driver
+    /// once `run_native` returns — see [`RestoreWakerOnDrop`]'s doc for why
     /// that swap-back runs even if the pump loop panics.
     ///
     /// A `Mutex` rather than a bare field: [`QuiAppWaker`] must be
@@ -2699,6 +2700,15 @@ impl QuiApp {
     /// `py.check_signals()` call between waits so a Ctrl-C at the
     /// controlling terminal still raises `KeyboardInterrupt` promptly
     /// instead of only being noticed once the window closes on its own.
+    /// Window construction itself — `GtkRunner::new_with`'s GTK/GApplication
+    /// registration and display round trips, `WinRunner::new_with`'s
+    /// `create_window` — runs with the GIL still held, before that release:
+    /// a deliberate trade for being able to read the live backend's waker
+    /// (`GtkRunner::waker()`, or the one `setup` stashes into
+    /// `PyAppLogic::captured_waker` on `macos`/`win`) back out and swap it
+    /// onto this `QuiApp`'s shared waker before the pump loop starts, at
+    /// the cost of blocking every other Python thread for the window's
+    /// open latency.
     /// On GTK, when that happens, `GtkRunner::request_exit()` tears the
     /// window down before the loop returns, so a Ctrl-C closes the window
     /// rather than leaving it open with a dead event loop behind it;
@@ -2952,10 +2962,19 @@ impl QuiApp {
                     current_waker: &app.current_waker,
                     previous: Some(previous),
                 });
-                let wrapped = AssertUngil((runner, loop_error));
+                // `exit_requested` is bundled into the same `AssertUngil`
+                // tuple as `runner`/`loop_error` rather than captured
+                // directly: it is an `Rc<Cell<bool>>`, which is neither
+                // `Send` nor `Sync`, so a bare capture would make this
+                // closure not `Send` and therefore not `Ungil` (the trait
+                // `Python::detach` requires with the `nightly` feature off,
+                // which is this crate's only configuration) — an `E0277` on
+                // every build of this arm. `loop_error`'s own doc on this
+                // wrapper, two arms up, is the precedent.
+                let wrapped = AssertUngil((runner, loop_error, exit_requested));
                 py.detach(move || {
                     let wrapped = wrapped;
-                    let (mut runner, loop_error) = wrapped.0;
+                    let (mut runner, loop_error, exit_requested) = wrapped.0;
                     let poll_interval = std::time::Duration::from_millis(50);
                     loop {
                         if runner.pump(poll_interval) == quadraui::macos::StepOutcome::Exited {
@@ -3056,10 +3075,25 @@ impl QuiApp {
                 // its closure keeps execution on the exact same calling
                 // thread either way, and nothing else on it touches a
                 // `WinRunner` until that closure returns.
-                let runner = unsafe {
+                let runner = match unsafe {
                     quadraui::win::WinRunner::new_with(NativeAppLogic { inner: app_logic }, &config)
-                }
-                .map_err(|err| InternalError::new_err(format!("run_native: {err}")))?;
+                } {
+                    Ok(runner) => runner,
+                    Err(err) => {
+                        // `new_with` calls `create_window`, which calls
+                        // `app.setup()` synchronously before it can ever
+                        // produce this `Err` — a real Python exception
+                        // raised from `setup` may already be sitting in
+                        // `native_error` by the time construction fails.
+                        // Prefer surfacing that over the generic
+                        // construction-failure message, same as the
+                        // post-`py.detach` check below.
+                        if let Some(err) = native_error.borrow_mut().take() {
+                            return Err(err);
+                        }
+                        return Err(InternalError::new_err(format!("run_native: {err}")));
+                    }
+                };
                 // Built before `py.detach` below (not inside its closure)
                 // specifically so this call can read `captured_waker` back
                 // and swap it onto `app.current_waker` for the pump loop's
@@ -5797,6 +5831,34 @@ mod tests {
                 Reaction::Redraw,
                 "applying a deferred action must still force a repaint even \
                 though the handler itself returned no explicit reaction"
+            );
+        });
+    }
+
+    /// On `macos`/`win`, `PyAppLogic::setup` stashes the live backend's
+    /// `Backend::waker` into `captured_waker` so `run_native`'s real arms
+    /// can read it straight back out, once `GtkRunner`-equivalent
+    /// construction (`MacRunner::new`/`WinRunner::new_with`) returns, and
+    /// swap it onto `QuiApp::current_waker` for the pump loop's whole
+    /// duration -- see that field's own doc. Driven through `TuiDriver::new`
+    /// purely as a headless `AppLogic` harness here, since it calls
+    /// `setup` exactly the way every real runner does; no real window or
+    /// `target_os` gate is involved, so this pins the capture itself on
+    /// every host, including the Linux CI leg that only ever typechecks
+    /// this feature's non-native arm.
+    #[cfg(any(feature = "macos", feature = "win"))]
+    #[test]
+    fn setup_captures_waker_for_run_native_to_read_back() {
+        Python::attach(|_py| {
+            let app_logic = PyAppLogic::default();
+            let captured_waker = app_logic.captured_waker.clone();
+            let _driver = TuiDriver::new(app_logic, 10, 10);
+
+            assert!(
+                captured_waker.take().is_some(),
+                "setup must stash a waker for run_native's macos/win arms \
+                to read back and swap onto QuiApp::current_waker before \
+                its pump loop starts"
             );
         });
     }

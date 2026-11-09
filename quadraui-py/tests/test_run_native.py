@@ -129,31 +129,43 @@ def test_run_native_waker_post_delivers_promptly_while_window_is_open(tmp_path):
     # dormant headless driver `run_native` moved the handler's whole
     # `PyAppLogic` out of -- a post into the latter would never be
     # observed at all, since nothing is left registered on that empty
-    # headless driver to see it, even after the window closes. A
-    # background thread posts partway through the smoke window (well
-    # before the smoke timeout destroys it), and the handler -- running
-    # inside the live GTK loop -- records it immediately.
+    # headless driver to see it, even after the window closes.
+    #
+    # The background thread posts repeatedly (every 50ms) rather than once
+    # after a single fixed delay: a lone early post risks landing before
+    # `run_native` has swapped `QuiApp.waker()` onto the live `GtkRunner`
+    # (currently that swap happens before the GIL is ever released for
+    # this script's background thread to run at all, but this test should
+    # not depend on that construction-ordering detail holding forever).
+    # Posting throughout the whole smoke window guarantees at least one
+    # post lands after the swap however that timing shifts, so a window
+    # that actually delivers the event still passes deterministically.
     env = dict(os.environ)
     env["QUADRAUI_GTK_SMOKE_MS"] = "600"
 
     body = (
         "import threading\n"
-        "import time\n"
         "from quadraui import QuiApp, NoDisplayError\n"
         "app = QuiApp(40, 20)\n"
         'app.insert_button({"id": "demo:ok", "label": "OK", "focused": True})\n'
         "seen = []\n"
         "app.set_handler(lambda event: seen.append(event))\n"
         "waker = app.waker()\n"
+        "stop = threading.Event()\n"
         "def background():\n"
-        "    time.sleep(0.2)\n"
-        '    waker.post("from-background-thread")\n'
-        "threading.Thread(target=background).start()\n"
+        "    while not stop.wait(0.05):\n"
+        '        waker.post("from-background-thread")\n'
+        "thread = threading.Thread(target=background)\n"
+        "thread.start()\n"
         "try:\n"
         '    app.run_native(title="quadraui run_native waker test")\n'
         "except NoDisplayError as exc:\n"
+        "    stop.set()\n"
+        "    thread.join()\n"
         "    print(f'NO_DISPLAY_RAISED:{exc}')\n"
         "    raise SystemExit(0)\n"
+        "stop.set()\n"
+        "thread.join()\n"
         'print("USER_EVENT_SEEN" if any(\n'
         '    isinstance(e, dict) and e.get("User") == "from-background-thread"\n'
         "    for e in seen\n"
