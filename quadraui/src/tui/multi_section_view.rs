@@ -20,6 +20,7 @@ use crate::primitives::multi_section_view::{
     Axis, EmptyBody, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
     SectionBody, SectionHeader, SectionMeasure,
 };
+use crate::primitives::toolbar::action_text;
 use crate::text_util::char_cell_width;
 use crate::theme::Theme;
 use crate::types::StyledText;
@@ -191,17 +192,20 @@ fn paint_header(
         }
     }
 
-    // Reserve the trailing slot for action buttons (right-to-left).
+    // Reserve the trailing slot for action buttons (right-to-left). The
+    // glyph text comes from `action_text`, the same derivation the
+    // pixel-surface rasterisers use, not a hand-rolled format.
     let mut right_cursor = right;
     for action in header.actions.iter().rev() {
-        let glyph_chars = action.icon.fallback.chars().count() as i32;
+        let glyph = action_text(&action.icon.fallback, None, None);
+        let glyph_chars = glyph.chars().count() as i32;
         let action_w = glyph_chars.max(1) + 1; // glyph + 1 space pad
         if right_cursor - action_w < col {
             break;
         }
         let icon_x = right_cursor - action_w + 1; // skip the trailing space
         let action_fg = if action.enabled { fg } else { dim };
-        for (x, ch) in (icon_x..).zip(action.icon.fallback.chars()) {
+        for (x, ch) in (icon_x..).zip(glyph.chars()) {
             if x >= right_cursor {
                 break;
             }
@@ -300,7 +304,8 @@ fn paint_aux(buf: &mut Buffer, bounds: QRect, aux: &SectionAux, theme: &Theme) {
             let mut col = left;
             for a in actions {
                 let action_fg = if a.enabled { fg } else { dim };
-                for ch in a.icon.fallback.chars() {
+                let glyph = action_text(&a.icon.fallback, None, None);
+                for ch in glyph.chars() {
                     if col >= right {
                         break;
                     }
