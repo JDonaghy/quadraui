@@ -159,6 +159,18 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   for now, and raising `InternalError` until an in-tree backend implements
   a real OS hotkey call.
 
+### Fixed
+
+- `QuiApp.run_native()` now swaps `QuiApp.waker()`'s shared cell onto the
+  live `GtkRunner`/`MacRunner`/`WinRunner` backend's own waker for as long
+  as the native window is open, restoring it once `run_native` returns —
+  mirroring `run_tui`'s existing swap. Previously, a `QuiAppWaker.post`/
+  `.wake`/`.post_after`/`.wake_after` call made while a native window was
+  open queued into the dormant headless driver instead, where it was never
+  observed: `run_native` moves the whole handler-carrying `PyAppLogic` into
+  the native window, leaving nothing registered on the headless driver to
+  read that queue back.
+
 ### Changed
 
 - A `list` event dict can now carry an `"ItemDoubleClicked"` key (double
