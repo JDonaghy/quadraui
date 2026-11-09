@@ -118,6 +118,57 @@
 //! - A disabled focused `ComboBox` does not intercept its keys at all,
 //!   the same as a disabled `DatePicker`.
 //!
+//! ## Item-level keyboard focus
+//!
+//! `FieldKind::ButtonRow` / `ToggleGroup` / `Toolbar` each pack more than
+//! one clickable item under a single field id — mouse clicks already
+//! resolve to the individual item via [`form_click_event`], but keyboard
+//! focus only ever named the *field*, with no way to reach any item past
+//! the first without a mouse. `self.item_focus` fixes that: an index into
+//! [`crate::primitives::form::focusable_items`]'s enumeration of the
+//! focused field's items, owned by the controller the same way
+//! `text_edit`/`date_edit` are — never by the app, and never written onto
+//! `Form` itself (see `primitives/form.rs`'s "Item-level keyboard focus"
+//! doc note for why: a per-item focus flag doesn't belong on the
+//! declarative descriptor any more than a text cursor does).
+//!
+//! - While the focused field is one of the three kinds above and isn't
+//!   disabled, `Left`/`Right` move `item_focus` by one, skipping any
+//!   disabled item, **without wrapping** — Left at the first enabled item
+//!   (or Right at the last) is a no-op, unlike [`Self::move_focus`]'s
+//!   field-to-field wrap. `Enter`/Space activate the item currently
+//!   named by `item_focus`, emitting the same event a mouse click on that
+//!   item already does (`FormEvent::ButtonClicked`/`ToggleChanged`/
+//!   `ToolbarButtonClicked` — see [`Self::activate_item_event`]).
+//! - [`Self::move_focus`] (Tab/Shift-Tab/BackTab) reseeds `item_focus` to
+//!   the newly-focused field's first enabled item (`None` if it has none,
+//!   or isn't one of the three kinds), and clears it when focus leaves —
+//!   mirroring how it already reseeds `text_edit`/`date_edit`. Tab/
+//!   BackTab never step *into* an item — they keep moving between fields
+//!   only, the same traversal every other field kind already gets.
+//! - [`Self::current_item_focus`] is the single reader both
+//!   [`Self::handle_item_row_key`] and [`Self::render`]'s focus-ring
+//!   overlay call: if `item_focus` is stale (a different field is
+//!   focused, or its index has run past a shorter item list — e.g. after
+//!   a `set_form` push that shrank it) it falls back to the first
+//!   enabled item rather than panicking or silently focusing nothing, so
+//!   a direct `focused_field` assignment that skips `move_focus`
+//!   entirely (an app-constructed `Form`, or a test) still gets a sane
+//!   starting item the first time a key/render touches it.
+//! - Painting reuses [`Backend::draw_focus_ring`] — the same chrome
+//!   `Button`/`TextInput` already draw their own ring through — rather
+//!   than growing `primitives/form.rs`'s painters with a bespoke
+//!   per-item indicator. [`Self::render`] resolves the focused item's
+//!   on-screen rect via [`Backend::form_layout`]'s `item_bounds` (the
+//!   same lookup [`Self::field_rect`] already does for a whole field)
+//!   and calls `draw_focus_ring` on it once, after `draw_form` paints the
+//!   row — a no-op while nothing is item-focused.
+//! - Mouse clicks on an item are unchanged: [`Self::click_inner`] still
+//!   resolves straight to the clicked item's `FormEvent` via
+//!   `form_click_event`, without touching `item_focus` at all. The next
+//!   keystroke still resolves a sane item through the fallback above
+//!   rather than one left stale from a previous keyboard session.
+//!
 //! ## Declarative validation
 //!
 //! [`FormController::set_rules`] attaches a [`crate::validation::FormRules`]
@@ -154,7 +205,7 @@
 use crate::primitives::combo_box::ComboBoxEvent;
 use crate::primitives::date_picker::{CalendarDate, DatePickerEvent};
 use crate::primitives::form::{
-    FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
+    focusable_items, FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
 };
 use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
 use crate::primitives::text_input::{EditOp, TextEditor, TextInput};
@@ -204,6 +255,24 @@ struct DateEditState {
     visible_month: CalendarDate,
 }
 
+/// Which item inside the focused `ButtonRow`/`ToggleGroup`/`Toolbar`
+/// field currently holds keyboard item-focus — see this module's
+/// "Item-level keyboard focus" doc section. `item_idx` indexes into
+/// [`crate::primitives::form::focusable_items`]'s enumeration of
+/// `field_id`'s items, not into the field's items directly (they're the
+/// same order, but going through that one shared enumeration keeps this
+/// state from drifting out of sync with [`FormController::current_item_focus`]'s
+/// own reading of it).
+struct ItemFocusState {
+    field_id: WidgetId,
+    item_idx: usize,
+}
+
+/// [`FormController::current_item_focus`]'s return shape: the focused
+/// field's id, the focused item's index into `focusable_items`'s
+/// enumeration, and that enumeration itself.
+type ItemFocusLookup = (WidgetId, usize, Vec<(WidgetId, bool)>);
+
 pub struct FormController {
     id: String,
     form: Option<Form>,
@@ -213,6 +282,7 @@ pub struct FormController {
     cached_lh: Option<f32>,
     text_edit: Option<TextEditState>,
     date_edit: Option<DateEditState>,
+    item_focus: Option<ItemFocusState>,
     rules: FormRules,
     visibility: FormVisibility,
 }
@@ -228,6 +298,7 @@ impl FormController {
             cached_lh: None,
             text_edit: None,
             date_edit: None,
+            item_focus: None,
             rules: FormRules::default(),
             visibility: FormVisibility::default(),
         }
@@ -331,6 +402,7 @@ impl FormController {
         let theme = backend.theme();
         let form = self.build_form(form_rect, Some(&theme));
         backend.draw_form(form_rect, &form);
+        self.draw_item_focus_ring(backend, form_rect, &form);
         if let Some(sb_rect) = sb_rect {
             let sb = build_scrollbar_lh(
                 &self.id,
@@ -608,6 +680,17 @@ impl FormController {
                     return result;
                 }
             }
+            // `ButtonRow`/`ToggleGroup`/`Toolbar` item focus — see this
+            // module's "Item-level keyboard focus" doc section.
+            // `handle_item_row_key` returns `None` for every key it
+            // doesn't claim (Tab/BackTab among them), which falls
+            // through to the match below exactly like an unclaimed
+            // combo-box/dropdown key does.
+            if self.focused_field_is_enabled_item_row() {
+                if let Some(result) = self.handle_item_row_key(key) {
+                    return result;
+                }
+            }
         }
         match key {
             Key::Named(NamedKey::Tab) if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd => {
@@ -874,6 +957,139 @@ impl FormController {
         ))
     }
 
+    /// Whether the currently-focused field is a non-disabled
+    /// `ButtonRow`/`ToggleGroup`/`Toolbar` with at least one *enabled*
+    /// item — gates `handle_key`'s Left/Right/Enter/Space interception.
+    /// Mirrors [`Self::focused_field_is_enabled_dropdown`]; an
+    /// all-disabled item list excludes itself the same way an empty
+    /// `options` list does there, so those keys fall through to the
+    /// generic dispatch rather than being swallowed with nothing
+    /// reachable to move to or activate.
+    fn focused_field_is_enabled_item_row(&self) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let Some(focused_id) = &form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| &f.id == focused_id)
+            .is_some_and(|f| {
+                !f.disabled
+                    && focusable_items(&f.kind).is_some_and(|items| items.iter().any(|(_, en)| *en))
+            })
+    }
+
+    /// The focused field's current item-focus: its id, the index into
+    /// [`focusable_items`]'s enumeration, and that enumeration itself.
+    /// Reads `self.item_focus` when it still names this field at a
+    /// still-valid index, otherwise falls back to the first enabled item
+    /// — see this module's "Item-level keyboard focus" doc section for
+    /// why a stale/missing cache falls back instead of focusing nothing.
+    /// `None` when there's no focused field, it's disabled, it isn't one
+    /// of the three item-bearing kinds, or every one of its items is
+    /// disabled.
+    fn current_item_focus(&self, form: &Form) -> Option<ItemFocusLookup> {
+        let focused_id = form.focused_field?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+        if field.disabled {
+            return None;
+        }
+        let items = focusable_items(&field.kind)?;
+        let idx = match &self.item_focus {
+            Some(s)
+                if s.field_id == focused_id && items.get(s.item_idx).is_some_and(|(_, en)| *en) =>
+            {
+                s.item_idx
+            }
+            _ => first_enabled_item_idx(&items)?,
+        };
+        Some((focused_id, idx, items))
+    }
+
+    /// Left/Right move the focused field's item-focus by one, skipping
+    /// any disabled item, without wrapping; Enter/Space activate the
+    /// item `self.item_focus` currently names. Any other key (including
+    /// Left at the first enabled item, or Right at the last) returns
+    /// `None`, which `handle_key` falls through to its generic dispatch
+    /// — a no-op there, since none of the three item-bearing kinds have
+    /// editable text.
+    fn handle_item_row_key(&mut self, key: &Key) -> Option<FormControllerEvent> {
+        let form = self.form.as_ref()?;
+        let (focused_id, cur_idx, items) = self.current_item_focus(form)?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+
+        match key {
+            Key::Named(NamedKey::Left) => {
+                let new_idx = prev_enabled_item_idx(&items, cur_idx)?;
+                self.item_focus = Some(ItemFocusState {
+                    field_id: focused_id,
+                    item_idx: new_idx,
+                });
+                Some(FormControllerEvent::Consumed)
+            }
+            Key::Named(NamedKey::Right) => {
+                let new_idx = next_enabled_item_idx(&items, cur_idx)?;
+                self.item_focus = Some(ItemFocusState {
+                    field_id: focused_id,
+                    item_idx: new_idx,
+                });
+                Some(FormControllerEvent::Consumed)
+            }
+            Key::Named(NamedKey::Enter) | Key::Char(' ') => {
+                self.item_focus = Some(ItemFocusState {
+                    field_id: focused_id,
+                    item_idx: cur_idx,
+                });
+                let (item_id, _) = items[cur_idx];
+                Some(FormControllerEvent::FormAction(activate_item_event(
+                    field, item_id,
+                )))
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolve the focused item's on-screen rect (if any — see
+    /// [`Self::current_item_focus`]) via `backend.form_layout`'s
+    /// `item_bounds`, the same per-item geometry
+    /// [`crate::primitives::form::form_click_event`]'s caller already
+    /// hit-tests against, and paint it through
+    /// [`Backend::draw_focus_ring`] — see this module's "Item-level
+    /// keyboard focus" doc section for why painting goes through that
+    /// shared chrome primitive instead of `primitives/form.rs`'s own
+    /// painters. Called by [`Self::render`] right after `draw_form`; a
+    /// no-op while `!self.has_focus` or nothing is item-focused.
+    fn draw_item_focus_ring(&self, backend: &mut dyn Backend, form_rect: Rect, form: &Form) {
+        if !self.has_focus {
+            return;
+        }
+        let Some((focused_id, idx, items)) = self.current_item_focus(form) else {
+            return;
+        };
+        let Some((item_id, _)) = items.get(idx).copied() else {
+            return;
+        };
+        let layout = backend.form_layout(form_rect, form);
+        let Some(vf) = layout.visible_fields.iter().find(|vf| {
+            form.fields
+                .get(vf.field_idx)
+                .is_some_and(|f| f.id == focused_id)
+        }) else {
+            return;
+        };
+        let Some((_, item_rect)) = vf.item_bounds.iter().find(|(id, _)| *id == item_id) else {
+            return;
+        };
+        backend.draw_focus_ring(Rect::new(
+            form_rect.x + item_rect.x,
+            form_rect.y + item_rect.y,
+            item_rect.width,
+            item_rect.height,
+        ));
+    }
+
     /// Move focus to the next/previous non-`Label`, non-`ReadOnly`,
     /// non-disabled field, wrapping around, and scroll it into view.
     /// Emits [`FormEvent::FocusChanged`] — the app persists the new
@@ -947,12 +1163,26 @@ impl FormController {
                     }),
                     _ => None,
                 });
+        // Reseed item-focus to the newly-focused field's first enabled
+        // item (see this module's "Item-level keyboard focus" doc
+        // section) — `None` both clears a stale index left over from
+        // the field being left, and leaves it cleared for a field that
+        // isn't one of the three item-bearing kinds.
+        let new_item_focus = field_idx
+            .and_then(|i| form.fields.get(i))
+            .and_then(|f| focusable_items(&f.kind))
+            .and_then(|items| first_enabled_item_idx(&items))
+            .map(|item_idx| ItemFocusState {
+                field_id: id,
+                item_idx,
+            });
 
         if let Some(field_idx) = field_idx {
             self.scroll_to_field(field_idx, viewport_rows);
         }
         self.text_edit = new_text_edit;
         self.date_edit = new_date_edit;
+        self.item_focus = new_item_focus;
         FormControllerEvent::FormAction(FormEvent::FocusChanged { id })
     }
 
@@ -1202,6 +1432,68 @@ pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent 
         }
     }
     FormEvent::FocusChanged { id: *clicked_id }
+}
+
+// ── Item-level keyboard focus helpers ─────────────────────────────────
+//
+// See `FormController`'s "Item-level keyboard focus" doc section.
+
+/// The first enabled item's index in `items` (as enumerated by
+/// [`focusable_items`]), or `None` if every item is disabled.
+fn first_enabled_item_idx(items: &[(WidgetId, bool)]) -> Option<usize> {
+    items.iter().position(|(_, enabled)| *enabled)
+}
+
+/// The nearest enabled item's index *before* `cur`, or `None` if `cur`
+/// is already the first enabled item — the "no wrap" half of Left's
+/// contract (see this module's "Item-level keyboard focus" doc section).
+fn prev_enabled_item_idx(items: &[(WidgetId, bool)], cur: usize) -> Option<usize> {
+    items[..cur]
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, (_, enabled))| *enabled)
+        .map(|(i, _)| i)
+}
+
+/// The nearest enabled item's index *after* `cur`, or `None` if `cur` is
+/// already the last enabled item — the "no wrap" half of Right's
+/// contract (see this module's "Item-level keyboard focus" doc section).
+fn next_enabled_item_idx(items: &[(WidgetId, bool)], cur: usize) -> Option<usize> {
+    items
+        .iter()
+        .enumerate()
+        .skip(cur + 1)
+        .find(|(_, (_, enabled))| *enabled)
+        .map(|(i, _)| i)
+}
+
+/// The `FormEvent` a mouse click on this item already emits via
+/// [`form_click_event`] — reused by [`FormController::handle_item_row_key`]
+/// so Enter/Space activates the keyboard-focused item identically to a
+/// click on it. `field.kind` must be one of the three kinds
+/// [`focusable_items`] recognizes (every caller already established that
+/// via [`FormController::current_item_focus`]/
+/// [`FormController::focused_field_is_enabled_item_row`]).
+fn activate_item_event(field: &crate::primitives::form::FormField, item_id: WidgetId) -> FormEvent {
+    match &field.kind {
+        FieldKind::ButtonRow { .. } => FormEvent::ButtonClicked { id: item_id },
+        FieldKind::ToggleGroup { toggles } => {
+            let value = toggles
+                .iter()
+                .find(|t| t.id == item_id)
+                .map(|t| !t.value)
+                .unwrap_or(true);
+            FormEvent::ToggleChanged { id: item_id, value }
+        }
+        FieldKind::Toolbar(_) => FormEvent::ToolbarButtonClicked {
+            field_id: field.id,
+            button_id: item_id,
+        },
+        _ => unreachable!(
+            "activate_item_event is only called for a field focusable_items recognized"
+        ),
+    }
 }
 
 // ── Keyboard editing helpers ──────────────────────────────────────────
@@ -1600,7 +1892,7 @@ impl crate::primitives::layout_metrics::TextMeasure for CharWidthMeasure {
 mod tests {
     use super::*;
     use crate::primitives::combo_box::ComboBox;
-    use crate::primitives::form::{FieldKind, FormField};
+    use crate::primitives::form::{FieldKind, FormField, ToggleGroupItem};
     use crate::types::StyledText;
 
     fn make_fields(n: usize) -> Vec<FormField> {
@@ -3916,6 +4208,661 @@ mod tests {
                 assert_eq!(*selected_idx, 0, "selection must not have changed")
             }
             other => panic!("expected Dropdown, got {other:?}"),
+        }
+    }
+
+    // ── Item-level keyboard focus ──────────────────────────────────────
+    //
+    // See this module's "Item-level keyboard focus" doc section.
+
+    fn button_row_field(id: &str, buttons: &[(&str, bool)]) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::default(),
+            kind: FieldKind::ButtonRow {
+                buttons: buttons
+                    .iter()
+                    .map(|(bid, disabled)| crate::primitives::form::ButtonRowItem {
+                        id: WidgetId::new(*bid),
+                        label: (*bid).to_string(),
+                        disabled: *disabled,
+                        icon: None,
+                        spec: None,
+                    })
+                    .collect(),
+            },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        }
+    }
+
+    fn toggle_group_field(id: &str, toggles: &[(&str, bool)]) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::default(),
+            kind: FieldKind::ToggleGroup {
+                toggles: toggles
+                    .iter()
+                    .map(|(tid, value)| ToggleGroupItem {
+                        id: WidgetId::new(*tid),
+                        label: (*tid).to_string(),
+                        value: *value,
+                    })
+                    .collect(),
+            },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        }
+    }
+
+    fn toolbar_field(id: &str, buttons: &[(&str, bool)]) -> FormField {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::default(),
+            kind: FieldKind::Toolbar(Toolbar {
+                id: WidgetId::new(format!("{id}-toolbar")),
+                buttons: buttons
+                    .iter()
+                    .map(|(bid, enabled)| ToolbarButton::Action {
+                        spec: None,
+                        id: WidgetId::new(*bid),
+                        label: (*bid).to_string(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: *enabled,
+                        is_active: false,
+                        tooltip: String::new(),
+                    })
+                    .collect(),
+                bg: None,
+                focused_index: None,
+            }),
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        }
+    }
+
+    #[test]
+    fn right_then_enter_activates_the_second_button_in_a_button_row() {
+        let mut fc = controller_with(
+            vec![button_row_field("row", &[("a", false), ("b", false)])],
+            Some("row"),
+        );
+        let moved = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(moved, FormControllerEvent::Consumed);
+        let activated = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            activated,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("b")
+            })
+        );
+    }
+
+    #[test]
+    fn space_also_activates_the_focused_button() {
+        let mut fc = controller_with(
+            vec![button_row_field("row", &[("a", false), ("b", false)])],
+            Some("row"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Char(' '), Modifiers::default()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("a")
+            }),
+            "Space activates the first (default-focused) item without a prior Right"
+        );
+    }
+
+    #[test]
+    fn disabled_first_button_item_focus_starts_on_the_second() {
+        let mut fc = controller_with(
+            vec![button_row_field("row", &[("a", true), ("b", false)])],
+            Some("row"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("b")
+            }),
+            "item-focus must skip the disabled first button and default to \
+             the second, with no prior Right keypress needed"
+        );
+    }
+
+    #[test]
+    fn right_skips_a_disabled_middle_button() {
+        let mut fc = controller_with(
+            vec![button_row_field(
+                "row",
+                &[("a", false), ("b", true), ("c", false)],
+            )],
+            Some("row"),
+        );
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("c")
+            }),
+            "Right from 'a' must land on 'c', skipping disabled 'b'"
+        );
+    }
+
+    #[test]
+    fn right_at_the_last_enabled_item_is_a_noop() {
+        let mut fc = controller_with(
+            vec![button_row_field("row", &[("a", false), ("b", false)])],
+            Some("row"),
+        );
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::Ignored,
+            "no wrap: Right at the last item stays put"
+        );
+        let activated = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            activated,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("b")
+            }),
+            "item-focus is still on 'b', not pushed past it"
+        );
+    }
+
+    #[test]
+    fn left_at_the_first_enabled_item_is_a_noop() {
+        let mut fc = controller_with(
+            vec![button_row_field("row", &[("a", false), ("b", false)])],
+            Some("row"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Left), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::Ignored,
+            "no wrap: Left at the first item stays put"
+        );
+    }
+
+    #[test]
+    fn ctrl_modified_right_falls_through_instead_of_moving_item_focus() {
+        let mut fc = controller_with(
+            vec![button_row_field("row", &[("a", false), ("b", false)])],
+            Some("row"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Named(NamedKey::Right), ctrl()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::Ignored,
+            "Ctrl+Right is a host accelerator candidate, not item navigation"
+        );
+        let activated = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            activated,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("a")
+            }),
+            "item-focus must still be on the first item — Ctrl+Right never moved it"
+        );
+    }
+
+    #[test]
+    fn disabled_button_row_field_ignores_item_navigation_keys() {
+        let mut fc = controller_with(
+            vec![FormField {
+                disabled: true,
+                ..button_row_field("row", &[("a", false), ("b", false)])
+            }],
+            Some("row"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn tab_moves_focus_away_from_a_button_row_normally() {
+        let mut fc = controller_with(
+            vec![
+                button_row_field("row", &[("a", false), ("b", false)]),
+                toggle_field("t", false),
+            ],
+            Some("row"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("t")
+            }),
+            "Tab moves between fields, never into an item"
+        );
+    }
+
+    #[test]
+    fn tab_into_a_button_row_seeds_item_focus_on_the_first_enabled_item() {
+        let mut fc = controller_with(
+            vec![
+                toggle_field("t", false),
+                button_row_field("row", &[("a", true), ("b", false)]),
+            ],
+            Some("t"),
+        );
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        // `move_focus` only emits `FocusChanged` — the app persists the new
+        // `focused_field` itself (this module's "Keyboard editing" doc
+        // section) — so push it back before the next keystroke.
+        fc.set_form(Form {
+            focused_field: Some(WidgetId::new("row")),
+            ..make_form_with(vec![
+                toggle_field("t", false),
+                button_row_field("row", &[("a", true), ("b", false)]),
+            ])
+        });
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("b")
+            }),
+            "Tab onto the row must seed item-focus on 'b', skipping disabled 'a'"
+        );
+    }
+
+    #[test]
+    fn item_focus_resets_when_leaving_and_returning_to_a_toggle_group() {
+        let fields = || {
+            vec![
+                toggle_group_field("toggles", &[("x", false), ("y", false)]),
+                toggle_field("t", false),
+            ]
+        };
+        let mut fc = controller_with(fields(), Some("toggles"));
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        // Tab away, then Tab back (BackTab), round-tripping through the app
+        // persisting `focused_field` the same way `tab_into_a_button_row_...`
+        // above does.
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        fc.set_form(Form {
+            focused_field: Some(WidgetId::new("t")),
+            ..make_form_with(fields())
+        });
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::BackTab), Modifiers::default()),
+            RECT,
+        );
+        fc.set_form(Form {
+            focused_field: Some(WidgetId::new("toggles")),
+            ..make_form_with(fields())
+        });
+
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ToggleChanged {
+                id: WidgetId::new("x"),
+                value: true,
+            }),
+            "returning to the toggle group must reset item-focus to the \
+             first item, not resume at 'y' from before Tab left"
+        );
+    }
+
+    #[test]
+    fn right_then_enter_activates_the_second_toggle_in_a_toggle_group() {
+        let mut fc = controller_with(
+            vec![toggle_group_field("toggles", &[("x", true), ("y", false)])],
+            Some("toggles"),
+        );
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ToggleChanged {
+                id: WidgetId::new("y"),
+                value: true,
+            }),
+            "activating 'y' must flip its own value, not 'x's"
+        );
+    }
+
+    #[test]
+    fn enter_activates_the_focused_toolbar_button() {
+        let mut fc = controller_with(
+            vec![toolbar_field("tb", &[("reset", true), ("export", true)])],
+            Some("tb"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ToolbarButtonClicked {
+                field_id: WidgetId::new("tb"),
+                button_id: WidgetId::new("reset"),
+            })
+        );
+    }
+
+    #[test]
+    fn right_skips_a_disabled_toolbar_button() {
+        let mut fc = controller_with(
+            vec![toolbar_field(
+                "tb",
+                &[("reset", true), ("broken", false), ("export", true)],
+            )],
+            Some("tb"),
+        );
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ToolbarButtonClicked {
+                field_id: WidgetId::new("tb"),
+                button_id: WidgetId::new("export"),
+            }),
+            "Right from 'reset' must land on 'export', skipping the \
+             disabled ('enabled: false') 'broken' button"
+        );
+    }
+
+    #[test]
+    fn mouse_click_on_an_item_does_not_touch_item_focus_state() {
+        // Mouse behaviour is unchanged: `form_click_event` resolves a click
+        // straight to the clicked item's event without going through
+        // `item_focus` at all.
+        let form = make_form_with(vec![button_row_field("row", &[("a", false), ("b", false)])]);
+        let ev = form_click_event(&form, &WidgetId::new("b"));
+        assert_eq!(
+            ev,
+            FormEvent::ButtonClicked {
+                id: WidgetId::new("b")
+            }
+        );
+    }
+
+    fn make_form_with(fields: Vec<FormField>) -> Form {
+        Form {
+            id: WidgetId::new("form"),
+            fields,
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        }
+    }
+
+    // ── Item-level keyboard focus: painted focus ring ───────────────────
+    //
+    // Drives a real backend through a minimal `AppLogic` wrapper — see
+    // `field_rect_tests`'s doc comment above for why a hand-rolled
+    // `Backend` mock won't do: `RecordingBackend::form_layout` is
+    // `unimplemented!()`, so the ring's rect (resolved via
+    // `Backend::form_layout`'s `item_bounds`, same as
+    // `Self::draw_item_focus_ring`'s doc describes) needs a backend with
+    // a real layout algorithm. `ItemFocusRingApp` is backend-agnostic
+    // (it only ever sees `&mut dyn Backend`), shared by the TUI and GTK
+    // driver tests below it — the two backends disagree on what a
+    // "reasonable" rect looks like (cells vs. device pixels), so each
+    // picks its own.
+    #[cfg(any(feature = "tui", feature = "gtk"))]
+    struct ItemFocusRingApp {
+        fc: FormController,
+        rect: Rect,
+    }
+
+    #[cfg(any(feature = "tui", feature = "gtk"))]
+    impl ItemFocusRingApp {
+        fn new(buttons: &[(&str, bool)], rect: Rect) -> Self {
+            let mut fc = FormController::new("row-fc".into());
+            fc.set_form(Form {
+                focused_field: Some(WidgetId::new("row")),
+                ..make_form_with(vec![button_row_field("row", buttons)])
+            });
+            fc.set_has_focus(true);
+            Self { fc, rect }
+        }
+    }
+
+    #[cfg(any(feature = "tui", feature = "gtk"))]
+    impl crate::runner::AppLogic for ItemFocusRingApp {
+        type AreaId = ();
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            self.fc.render(backend, self.rect);
+        }
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> crate::runner::Reaction {
+            self.fc.handle(&event, backend, self.rect);
+            crate::runner::Reaction::Redraw
+        }
+    }
+
+    #[cfg(feature = "tui")]
+    mod item_focus_ring_tui_tests {
+        use super::*;
+        use crate::tui::testing::{Modifier, TuiDriver};
+
+        const ITEM_ROW_RECT: Rect = Rect::new(0.0, 0.0, 40.0, 3.0);
+
+        fn driver(buttons: &[(&str, bool)]) -> TuiDriver<ItemFocusRingApp> {
+            TuiDriver::new(ItemFocusRingApp::new(buttons, ITEM_ROW_RECT), 40, 3)
+        }
+
+        fn underlined_at(driver: &TuiDriver<ItemFocusRingApp>, needle: &str) -> bool {
+            let bounds = driver
+                .find_bounds(needle)
+                .unwrap_or_else(|| panic!("{needle:?} not painted on screen"));
+            driver
+                .style_at(bounds.x as u16, bounds.y as u16)
+                .is_some_and(|s| s.modifiers.contains(Modifier::UNDERLINED))
+        }
+
+        #[test]
+        fn the_ring_starts_on_the_first_enabled_button() {
+            let driver = driver(&[("Connect", false), ("Cancel", false)]);
+            assert!(underlined_at(&driver, "Connect"));
+            assert!(!underlined_at(&driver, "Cancel"));
+        }
+
+        #[test]
+        fn right_moves_the_ring_to_the_second_button() {
+            let mut driver = driver(&[("Connect", false), ("Cancel", false)]);
+            driver.press_named(NamedKey::Right);
+            assert!(
+                !underlined_at(&driver, "Connect"),
+                "the ring must leave the first button"
+            );
+            assert!(
+                underlined_at(&driver, "Cancel"),
+                "the ring must land on the second button"
+            );
+        }
+
+        #[test]
+        fn disabled_first_button_the_ring_starts_on_the_second() {
+            let driver = driver(&[("Connect", true), ("Cancel", false)]);
+            assert!(!underlined_at(&driver, "Connect"));
+            assert!(underlined_at(&driver, "Cancel"));
+        }
+    }
+
+    // GTK: `Backend::draw_focus_ring` strokes the exact rect it's given
+    // (`GtkBackend::draw_focus_ring`, via `surface_stroke_rect`) rather
+    // than TUI's border-box/underline special case, so — unlike the TUI
+    // tests above — this samples pixel colour instead of a cell
+    // modifier: `theme.accent_fg` at the stroke's edge when the ring
+    // paints there, the row's own background otherwise.
+    #[cfg(feature = "gtk")]
+    mod item_focus_ring_gtk_tests {
+        use super::*;
+        use crate::gtk::testing::GtkDriver;
+
+        const ITEM_ROW_RECT: Rect = Rect::new(0.0, 0.0, 400.0, 120.0);
+
+        fn driver(buttons: &[(&str, bool)]) -> GtkDriver<ItemFocusRingApp> {
+            GtkDriver::new(ItemFocusRingApp::new(buttons, ITEM_ROW_RECT), 400, 120)
+        }
+
+        /// `needle`'s item's own rect (not its text glyph's, which sits
+        /// well inside the item's padded background) — the same
+        /// `Backend::form_layout` lookup `FormController::draw_item_focus_ring`
+        /// uses, so the sample point agrees with what the ring actually
+        /// outlines.
+        fn item_rect(driver: &GtkDriver<ItemFocusRingApp>, item_id: &str) -> Rect {
+            let app = driver.app();
+            let form = app.fc.form().expect("form set").clone();
+            let layout = driver.backend().form_layout(app.rect, &form);
+            let vf = layout
+                .visible_fields
+                .iter()
+                .find(|vf| form.fields[vf.field_idx].id == WidgetId::new("row"))
+                .expect("row field painted");
+            let (_, r) = vf
+                .item_bounds
+                .iter()
+                .find(|(id, _)| id.as_str() == item_id)
+                .unwrap_or_else(|| panic!("item {item_id:?} not in item_bounds"));
+            Rect::new(app.rect.x + r.x, app.rect.y + r.y, r.width, r.height)
+        }
+
+        /// Sample one pixel on the stroke along `item_id`'s left edge —
+        /// `focus_ring_width` defaults to 2.0px (`Style::default`), and
+        /// `GtkBackend::draw_focus_ring` strokes centred on the rect's
+        /// own edge, so the rect's left-edge column, vertically centred,
+        /// lands solidly inside the stroke band when the ring painted
+        /// there.
+        fn ring_painted_at(driver: &mut GtkDriver<ItemFocusRingApp>, item_id: &str) -> bool {
+            let r = item_rect(driver, item_id);
+            let theme = driver.backend().theme();
+            let accent = (theme.accent_fg.r, theme.accent_fg.g, theme.accent_fg.b);
+            let x = r.x.round().max(0.0) as i32;
+            let y = (r.y + r.height / 2.0).round() as i32;
+            driver.pixel(x, y) == accent
+        }
+
+        #[test]
+        fn the_ring_starts_on_the_first_enabled_button() {
+            let mut driver = driver(&[("Connect", false), ("Cancel", false)]);
+            assert!(ring_painted_at(&mut driver, "Connect"));
+            assert!(!ring_painted_at(&mut driver, "Cancel"));
+        }
+
+        #[test]
+        fn right_moves_the_ring_to_the_second_button() {
+            let mut driver = driver(&[("Connect", false), ("Cancel", false)]);
+            driver.press_named(NamedKey::Right);
+            assert!(
+                !ring_painted_at(&mut driver, "Connect"),
+                "the ring must leave the first button"
+            );
+            assert!(
+                ring_painted_at(&mut driver, "Cancel"),
+                "the ring must land on the second button"
+            );
+        }
+
+        #[test]
+        fn disabled_first_button_the_ring_starts_on_the_second() {
+            let mut driver = driver(&[("Connect", true), ("Cancel", false)]);
+            assert!(!ring_painted_at(&mut driver, "Connect"));
+            assert!(ring_painted_at(&mut driver, "Cancel"));
         }
     }
 }

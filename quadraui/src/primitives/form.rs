@@ -56,6 +56,16 @@
 //! mutate `Form.focused_field` itself (the description stays app-owned,
 //! per this module's first paragraph).
 //!
+//! `ToggleGroup` / `ButtonRow` / `Toolbar` carry more than one clickable
+//! item under a single field id. Tab/Shift-Tab still only move
+//! `focused_field` between *fields*, never into one of these items —
+//! item-level keyboard focus (Left/Right move it, Enter/Space activate
+//! it) is a `FormController`-owned index, not a property of this
+//! declarative `Form`/`FormField` shape; see
+//! [`crate::compose::form_controller::FormController`]'s "Item-level
+//! keyboard focus" doc section. [`focusable_items`] enumerates each of
+//! the three kinds' navigable items for that controller logic.
+//!
 //! No measurement-dependent state — fields are uniform-height per
 //! backend.
 
@@ -610,6 +620,42 @@ impl ButtonRowItem {
             None,
             self.disabled,
         )
+    }
+}
+
+/// The keyboard-focus-navigable items inside an item-bearing `FieldKind`
+/// (`ButtonRow`, `ToggleGroup`, `Toolbar`) — each item's `WidgetId` paired
+/// with whether it can currently receive item focus (`false` for a
+/// disabled `ButtonRowItem`, or a `Toolbar`'s `ToolbarButton::Action` with
+/// `enabled: false`; a `ToggleGroupItem` has no per-item disablement, so
+/// every one of its entries is always enabled). `None` for every other
+/// `FieldKind`, or for an item-bearing kind whose item list is empty.
+///
+/// Shared by [`crate::compose::form_controller::FormController`]'s
+/// item-level keyboard focus (Left/Right move it, skipping disabled
+/// items with no wrap; Enter/Space activate it) — see that module's
+/// "Item-level keyboard focus" doc section — so the three kinds' items
+/// are enumerated in one place instead of three near-duplicate matches.
+pub(crate) fn focusable_items(kind: &FieldKind) -> Option<Vec<(WidgetId, bool)>> {
+    let items: Vec<(WidgetId, bool)> = match kind {
+        FieldKind::ButtonRow { buttons } => buttons.iter().map(|b| (b.id, !b.disabled)).collect(),
+        FieldKind::ToggleGroup { toggles } => toggles.iter().map(|t| (t.id, true)).collect(),
+        FieldKind::Toolbar(toolbar) => toolbar
+            .buttons
+            .iter()
+            .filter_map(|btn| match btn {
+                crate::primitives::toolbar::ToolbarButton::Action { id, enabled, .. } => {
+                    Some((*id, *enabled))
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => return None,
+    };
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
     }
 }
 
