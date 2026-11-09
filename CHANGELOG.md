@@ -126,6 +126,23 @@ only a push to `main` runs this workflow.
   callback expects via a generic `pythonize::pythonize`/`serde_json::to_value`
   call instead of its own hand-rolled, binding-specific tagging function.
 ### Changed
+- `GtkBackend::draw_panel` (#2225) paints a `Panel`'s title bar through
+  `Panel::header_toolbar`'s mapped `SidebarPanel` + `Toolbar` header,
+  routed through `sidebar_panel::native_surface_paint::paint`, instead of
+  `panel::native_surface_paint::paint`'s own near-duplicate title-bar
+  painter — macOS and Windows still call the latter until their own
+  seam issues land. `draw_panel`'s returned `PanelLayout` is unaffected
+  (still `gtk_panel_layout(...)`); the title keeps its leading inset and
+  each action glyph still paints inside its own `visible_actions[i].bounds`.
+  `GtkBackend::draw_panel` re-fills a `PanelAction::is_active` button's
+  full bounds with `theme.accent_bg` after the delegate paints, since
+  `sidebar_panel::native_surface_paint`'s own active-state highlight is a
+  2px-inset `theme.selected_bg` pill scoped to its own interactive chrome
+  (`draw_panel` has no `InteractionState` to drive hover/press from, so
+  `is_active` is the only state it feeds through). One visible difference
+  is disclosed, not pinned against: the title text is now vertically
+  centred in the title bar (matching `SidebarPanel`'s `Label` convention)
+  rather than top-aligned as `panel::native_surface_paint::paint` drew it.
 - `tui::multi_section_view`'s section-header rasteriser derives a
   `HeaderAction`'s glyph text (and `SectionAux::Toolbar`'s action glyphs)
   via `primitives::toolbar::action_text`, the same derivation the

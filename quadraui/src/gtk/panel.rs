@@ -1,10 +1,13 @@
 //! GTK rasteriser for [`crate::Panel`].
 //!
-//! Painting is handled by the shared
-//! [`crate::primitives::panel::native_surface_paint::paint`].
+//! Painting goes through `GtkBackend::draw_panel`, which maps the
+//! title bar onto a [`crate::SidebarPanel`] + [`crate::Toolbar`] header
+//! (via [`Panel::header_toolbar`][crate::primitives::panel::Panel::header_toolbar])
+//! and paints it with
+//! [`crate::primitives::sidebar_panel::native_surface_paint::paint`].
 //! This module provides [`gtk_panel_layout`] for computing pixel-unit
-//! layout without painting, used by `GtkBackend::panel_layout` for
-//! hit-test queries.
+//! layout without painting, used by `GtkBackend::panel_layout` (and as
+//! `draw_panel`'s own hit-test return value) for hit-test queries.
 
 use crate::primitives::layout_metrics::pixel_panel_layout;
 use crate::primitives::panel::{Panel, PanelLayout};
