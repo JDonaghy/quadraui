@@ -7,6 +7,13 @@ hides again on pointer leave, the next click, or the auto-dismiss timeout
 `insert_button`/`set_handler`/`push_event`/`step`, since the *host*
 (`BindingHost::drive_hover_tooltip`) drives `HoverTooltipTracker` itself.
 
+Most of this file drives `insert_button`'s static slot
+(`BindingHost::button`). `test_tooltip_appears_via_a_render_callback_layout_tree_leaf`
+drives the same contract through `set_render`'s layout-tree path instead --
+a `Button` leaf painted by `paint_leaf`/`paint_layout` rather than
+`BindingHost::button` -- since `BindingHost::hover_tooltip_text` resolves
+both the same way.
+
 `set_test_clock_ms` pins the headless clock `BindingHost::now_ms()` reads
 to an absolute value this file picks, so every assertion below is driven
 by an exact, deterministic millisecond count rather than a real
@@ -173,3 +180,61 @@ def test_a_button_with_no_tooltip_never_shows_one():
     # "the button's own label still paints somewhere", which would also
     # pass if a spurious tooltip appeared.
     assert app.screen() == before
+
+
+def test_tooltip_appears_via_a_render_callback_layout_tree_leaf():
+    # Same contract as `test_tooltip_appears_only_after_the_hover_delay`,
+    # but the button reaches the screen through `set_render`'s layout-tree
+    # path (two `Button` leaves inside a `"row"`) instead of
+    # `insert_button`'s static `BindingHost.button` slot. A leaf must be
+    # wrapped in a container key (here `"row"`) to decode as a layout tree
+    # at all -- a bare `{"id": ..., "button": {...}}` dict decodes as the
+    # flat six-slot shape instead, see `quadraui_binding_core::wire::is_layout_tree`.
+    # The second, tooltip-less leaf gives the pointer somewhere to "leave"
+    # to -- a lone leaf in a `"row"` fills the whole viewport, leaving no
+    # position outside its own bounds.
+    app = QuiApp(40, 10)
+    app.set_handler(lambda event: None)
+    app.set_style({"tooltip_delay_ms": DELAY_MS, "tooltip_auto_dismiss_ms": 0})
+    app.set_test_clock_ms(0)
+
+    def render():
+        return {
+            "row": [
+                {
+                    "id": "leaf:save",
+                    "button": {
+                        "id": "save",
+                        "label": "Save",
+                        "tooltip": "Save the file",
+                    },
+                },
+                {
+                    "id": "leaf:other",
+                    "button": {"id": "other", "label": "Other"},
+                },
+            ]
+        }
+
+    app.set_render(render)
+    assert app.screen_contains("Save")
+    row, col = _locate(app, "Save")
+
+    # Landing on the leaf is not enough by itself.
+    _move_to(app, row, col)
+    assert not app.screen_contains("Save the file")
+
+    # Holding still past the delay shows it, resolved from this leaf's own
+    # tree-address id (`"leaf:save"`), not `"save"` -- the descriptor's own
+    # embedded `Button.id` -- since the host's `leaf_tooltips` map is keyed
+    # by the former.
+    app.set_test_clock_ms(DELAY_MS)
+    app.step()
+    assert app.screen_contains("Save the file")
+
+    # Moving onto the second leaf, which carries no tooltip, hides the
+    # first leaf's tooltip immediately, same contract as the static-slot
+    # path above.
+    other_row, other_col = _locate(app, "Other")
+    _move_to(app, other_row, other_col)
+    assert not app.screen_contains("Save the file")

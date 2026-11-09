@@ -24,7 +24,7 @@
 //! A napi leaf under `MacRunner` hits the identical hazard, which is why
 //! this lives here rather than back in `quadraui-py`.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -125,6 +125,20 @@ pub struct BindingHost {
     /// a native backend's own hover-driven test does directly against
     /// `Backend`.
     pub tooltip_tracker: HoverTooltipTracker<WidgetId>,
+    /// Tree-address id -> tooltip text for every layout-tree `Button` leaf
+    /// a binding's own `render` painted through `crate::render::paint_layout`
+    /// this frame, via `crate::render::collect_leaf_tooltips`. Replaced
+    /// wholesale by [`Self::set_leaf_tooltips`] each render; consulted by
+    /// [`Self::hover_tooltip_text`] as the layout-tree counterpart of
+    /// [`Self::button`]'s direct slot read. A binding whose render never
+    /// paints a layout tree at all (or paints only via [`Self::render_refs`]'s
+    /// six fixed slots) leaves this empty forever, so
+    /// [`Self::hover_tooltip_text`] falls through to [`Self::button`]
+    /// exactly as before this field existed. A [`RefCell`] (not a plain
+    /// field) because `AppLogic::render` takes `&self`, not `&mut self` --
+    /// the same reason [`Self::tooltip_clock`]/[`Self::test_clock_ms`]
+    /// below are `Cell`s rather than plain fields.
+    pub leaf_tooltips: RefCell<HashMap<WidgetId, String>>,
     /// Wall-clock epoch [`Self::now_ms`] measures from, lazily set on its
     /// first call rather than at construction — a host is typically built
     /// well before its first frame (a binding constructs its `App` before
@@ -301,17 +315,33 @@ impl BindingHost {
         self.test_clock_ms.set(ms);
     }
 
-    /// The hover tooltip text for `id`, if any of this host's slots that
-    /// carry one names it — today, only [`Self::button`]'s own
-    /// `Button::tooltip`. [`Self::drive_hover_tooltip`] uses this to
-    /// decide whether a hovered widget has anything to show at all before
-    /// arming [`Self::tooltip_tracker`] for it; a widget with no tooltip
-    /// text never starts the delay.
+    /// The hover tooltip text for `id`: first [`Self::button`]'s own
+    /// `Button::tooltip` (matched by that slot's own `Button::id`), then
+    /// [`Self::leaf_tooltips`] (matched by tree-address id) -- the
+    /// layout-tree leaf a render callback painted through
+    /// `crate::render::paint_layout`. [`Self::drive_hover_tooltip`] uses
+    /// this to decide whether a hovered widget has anything to show at
+    /// all before arming [`Self::tooltip_tracker`] for it; a widget with
+    /// no tooltip text in either source never starts the delay.
     pub fn hover_tooltip_text(&self, id: WidgetId) -> Option<String> {
         self.button
             .as_ref()
             .filter(|button| button.id == id)
             .and_then(|button| button.tooltip.clone())
+            .or_else(|| self.leaf_tooltips.borrow().get(&id).cloned())
+    }
+
+    /// Replaces [`Self::leaf_tooltips`] wholesale with `tooltips` --
+    /// typically `crate::render::collect_leaf_tooltips`'s own return
+    /// value, walked fresh from the layout tree a render callback just
+    /// returned. A binding calls this once per render, right after
+    /// painting via `crate::render::paint_layout`, so
+    /// [`Self::hover_tooltip_text`] resolves against this frame's tree,
+    /// not a stale one from before the tree's shape changed. Takes
+    /// `&self` (not `&mut self`), like [`Self::set_test_clock_ms`] --
+    /// `AppLogic::render` only ever gets `&self`.
+    pub fn set_leaf_tooltips(&self, tooltips: HashMap<WidgetId, String>) {
+        *self.leaf_tooltips.borrow_mut() = tooltips;
     }
 
     /// This host's most recently painted bounds for `id`, read from
@@ -1202,7 +1232,8 @@ mod tests {
 
     use super::*;
     use crate::engine::EventSink;
-    use crate::render::draw_bands;
+    use crate::layout::{LayoutContainer, LayoutLeaf, LayoutNode, LeafDescriptor, Spacing};
+    use crate::render::{collect_leaf_tooltips, draw_bands, paint_layout};
 
     #[derive(Default)]
     struct RecordingSink;
@@ -1889,6 +1920,228 @@ mod tests {
                  skip the wake entirely instead"
             );
         }
+    }
+
+    /// A minimal [`AppLogic`] whose `render` paints a layout tree through
+    /// [`crate::render::paint_layout`] -- not [`BindingHost::render_refs`]'s
+    /// six fixed slots -- and refreshes [`BindingHost::leaf_tooltips`] from
+    /// it every frame via [`crate::render::collect_leaf_tooltips`], the
+    /// same two calls `quadraui-py`'s own `PyAppLogic::render` makes for
+    /// its `RenderOutput::Tree` path.
+    struct TreeHoverHostLogic<S: EventSink> {
+        host: BindingHost,
+        engine: InteractionEngine,
+        sink: RefCell<S>,
+        clock_ms: Rc<Cell<u64>>,
+        delay_ms: u64,
+        tree: LayoutNode,
+    }
+
+    impl<S: EventSink> AppLogic for TreeHoverHostLogic<S> {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            paint_layout(backend, area, &self.tree, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            let mut leaf_tooltips = HashMap::new();
+            collect_leaf_tooltips(&self.tree, &mut leaf_tooltips);
+            self.host.set_leaf_tooltips(leaf_tooltips);
+            render_overlays(&self.engine, backend, hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            let now = self.clock_ms.get();
+            let reaction = self
+                .engine
+                .handle(event, backend, &mut *self.sink.borrow_mut());
+            reaction.merge(self.host.drive_hover_tooltip(
+                &mut self.engine,
+                backend,
+                now,
+                self.delay_ms,
+                0,
+            ))
+        }
+
+        fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
+            let now = self.clock_ms.get();
+            self.host
+                .drive_hover_tooltip(&mut self.engine, backend, now, self.delay_ms, 0)
+        }
+    }
+
+    /// A `Button` leaf reached through a layout tree (not
+    /// [`BindingHost::button`]'s own static slot) still shows its own
+    /// `Button::tooltip` once hovered continuously for `delay_ms` --
+    /// anchored to that exact leaf's own painted bounds, since the second
+    /// leaf alongside it never arms a tooltip at all (its own `tooltip` is
+    /// `None`) -- and hides the instant the pointer moves onto that second,
+    /// tooltip-less leaf.
+    #[test]
+    fn drive_hover_tooltip_shows_a_layout_tree_leaf_tooltip_after_delay_anchored_to_its_bounds_and_hides_on_leave(
+    ) {
+        const DELAY_MS: u64 = 500;
+        let clock = Rc::new(Cell::new(0u64));
+        let mut save_button = Button::new(WidgetId::new("save"), "Save");
+        save_button.tooltip = Some("Save the file".to_string());
+        let other_button = Button::new(WidgetId::new("other"), "Other");
+        let tree = LayoutNode::Row(LayoutContainer {
+            children: vec![
+                LayoutNode::Leaf(LayoutLeaf {
+                    id: "leaf:save".to_string(),
+                    descriptor: LeafDescriptor::Button(save_button),
+                    scroll_px: None,
+                }),
+                LayoutNode::Leaf(LayoutLeaf {
+                    id: "leaf:other".to_string(),
+                    descriptor: LeafDescriptor::Button(other_button),
+                    scroll_px: None,
+                }),
+            ],
+            spacing: Spacing::default(),
+        });
+        let logic = TreeHoverHostLogic {
+            host: BindingHost::default(),
+            engine: InteractionEngine::default(),
+            sink: RefCell::new(RecordingSink),
+            clock_ms: clock.clone(),
+            delay_ms: DELAY_MS,
+            tree,
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+        driver.render();
+        let (x, y) = driver
+            .find("Save")
+            .expect("the leaf's own label must be painted");
+
+        // The pointer lands on the leaf -- still pending, no tooltip yet.
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(x, y),
+            buttons: ButtonMask::default(),
+        });
+        driver.render();
+        assert!(
+            !driver.screen_contains("Save the file"),
+            "the tooltip must not show the instant the pointer lands"
+        );
+
+        // The delay elapses with no further pointer movement.
+        clock.set(DELAY_MS);
+        driver.tick();
+        assert!(
+            driver.screen_contains("Save the file"),
+            "the tooltip must show once the hover delay has elapsed, \
+             resolved by this leaf's own tree-address id even though it \
+             was painted through `paint_layout`, not `BindingHost::button`"
+        );
+
+        // The pointer moves onto the second leaf, which carries no
+        // tooltip at all -- the first leaf's tooltip must hide
+        // immediately, proving the shown tooltip was anchored to the
+        // first leaf's own painted bounds rather than some global state.
+        let (ox, oy) = driver
+            .find("Other")
+            .expect("the second leaf's own label must be painted");
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(ox, oy),
+            buttons: ButtonMask::default(),
+        });
+        driver.render();
+        assert!(
+            !driver.screen_contains("Save the file"),
+            "the tooltip must hide as soon as the pointer leaves its anchor"
+        );
+    }
+
+    /// Two layout-tree leaves whose `Button` descriptors share the exact
+    /// same `Button::id` ("shared") still resolve their own, independent
+    /// tooltip text -- [`BindingHost::leaf_tooltips`] is keyed by each
+    /// leaf's own tree-address id (`"leaf:alpha"`/`"leaf:bravo"`), not the
+    /// descriptor's embedded (here, duplicated) `Button::id`.
+    #[test]
+    fn drive_hover_tooltip_resolves_each_leaf_independently_when_descriptors_share_an_id() {
+        const DELAY_MS: u64 = 500;
+        let clock = Rc::new(Cell::new(0u64));
+        let shared_id = WidgetId::new("shared");
+        let mut alpha = Button::new(shared_id, "Alpha");
+        alpha.tooltip = Some("Tooltip for Alpha".to_string());
+        let mut bravo = Button::new(shared_id, "Bravo");
+        bravo.tooltip = Some("Tooltip for Bravo".to_string());
+        let tree = LayoutNode::Row(LayoutContainer {
+            children: vec![
+                LayoutNode::Leaf(LayoutLeaf {
+                    id: "leaf:alpha".to_string(),
+                    descriptor: LeafDescriptor::Button(alpha),
+                    scroll_px: None,
+                }),
+                LayoutNode::Leaf(LayoutLeaf {
+                    id: "leaf:bravo".to_string(),
+                    descriptor: LeafDescriptor::Button(bravo),
+                    scroll_px: None,
+                }),
+            ],
+            spacing: Spacing::default(),
+        });
+        let logic = TreeHoverHostLogic {
+            host: BindingHost::default(),
+            engine: InteractionEngine::default(),
+            sink: RefCell::new(RecordingSink),
+            clock_ms: clock.clone(),
+            delay_ms: DELAY_MS,
+            tree,
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+        driver.render();
+
+        let (ax, ay) = driver
+            .find("Alpha")
+            .expect("the first leaf's own label must be painted");
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(ax, ay),
+            buttons: ButtonMask::default(),
+        });
+        clock.set(DELAY_MS);
+        driver.tick();
+        assert!(
+            driver.screen_contains("Tooltip for Alpha"),
+            "the first leaf's own tooltip must show"
+        );
+        assert!(
+            !driver.screen_contains("Tooltip for Bravo"),
+            "the second leaf's tooltip must not show while hovering the first"
+        );
+
+        let (bx, by) = driver
+            .find("Bravo")
+            .expect("the second leaf's own label must be painted");
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(bx, by),
+            buttons: ButtonMask::default(),
+        });
+        driver.render();
+        assert!(
+            !driver.screen_contains("Tooltip for Alpha"),
+            "moving onto the second leaf must hide the first leaf's tooltip immediately"
+        );
+
+        clock.set(2 * DELAY_MS);
+        driver.tick();
+        assert!(
+            driver.screen_contains("Tooltip for Bravo"),
+            "the second leaf's own tooltip must show once its own delay has elapsed"
+        );
+        assert!(
+            !driver.screen_contains("Tooltip for Alpha"),
+            "the first leaf's tooltip must stay hidden"
+        );
     }
 
     /// Minimal stand-in for a binding's own `QuiApp`/`QuiShellApp`: just a

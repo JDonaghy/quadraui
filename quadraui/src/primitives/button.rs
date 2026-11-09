@@ -194,9 +194,14 @@ pub struct Button {
     /// the text" contract [`crate::primitives::activity_bar::ActivityItem::tooltip`]
     /// already documents.
     ///
-    /// **TUI story: no-op.** [`Button`] has no hover UI on a terminal —
-    /// `crate::tui::button`'s rasteriser never reads this field, the
-    /// same as `ActivityItem::tooltip`'s own TUI story.
+    /// **TUI story: shown by a host's own hover driving, not by
+    /// `crate::tui::button`'s rasteriser directly.** `crate::tui::button`
+    /// itself never reads this field — the same as `ActivityItem::tooltip`'s
+    /// own TUI story — but a host built on `quadraui-binding-core`'s
+    /// `BindingHost::drive_hover_tooltip` paints a real hovered tooltip on
+    /// the TUI backend from it, for a `Button` reached either through
+    /// `BindingHost::button` or through a layout-tree leaf painted by
+    /// `paint_leaf`/`paint_layout`.
     #[serde(default)]
     pub tooltip: Option<String>,
     /// Optional icon painted alongside [`Button::label`], at

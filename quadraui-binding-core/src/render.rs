@@ -773,6 +773,53 @@ pub fn draw_tree_with_scrollbar_and_state(
     (content_rect, Some(scrollbar), viewport_rows)
 }
 
+/// Walks `node`'s layout tree collecting the tree-address `id` ->
+/// `Button::tooltip` text of every `Button` leaf that sets one — the
+/// layout-tree counterpart of a `BindingHost`'s own `button` slot read.
+/// [`paint_leaf`] keys a layout-tree leaf's [`PaintedHit::Button`] by this
+/// same tree-address id (not the descriptor's own embedded `Button::id`,
+/// which a render callback may leave at its default and reuse across
+/// leaves — see [`paint_leaf`]'s own doc), so a binding that paints
+/// through [`paint_layout`] calls this once per render and feeds the
+/// result to `crate::host::BindingHost::set_leaf_tooltips`: one
+/// `crate::host::BindingHost::hover_tooltip_text` lookup then resolves a
+/// hovered id from either paint path. A tab not currently selected still
+/// contributes its own leaves here even though [`paint_layout`] never
+/// paints them — harmless, since no [`PaintedHit`] for an unpainted leaf
+/// ever exists for [`crate::host::BindingHost::hover_anchor`] to find.
+pub fn collect_leaf_tooltips(node: &LayoutNode, out: &mut HashMap<WidgetId, String>) {
+    match node {
+        LayoutNode::Row(container) | LayoutNode::Column(container) => {
+            for child in &container.children {
+                collect_leaf_tooltips(child, out);
+            }
+        }
+        LayoutNode::Leaf(leaf) => {
+            if let LeafDescriptor::Button(button) = &leaf.descriptor {
+                if let Some(tooltip) = &button.tooltip {
+                    out.insert(WidgetId::new(leaf.id.clone()), tooltip.clone());
+                }
+            }
+        }
+        LayoutNode::Split(split) => {
+            collect_leaf_tooltips(&split.first, out);
+            collect_leaf_tooltips(&split.second, out);
+        }
+        LayoutNode::Tabs(tabs) => {
+            for entry in &tabs.entries {
+                collect_leaf_tooltips(&entry.content, out);
+            }
+        }
+        LayoutNode::Panel(panel_node) => collect_leaf_tooltips(&panel_node.content, out),
+        LayoutNode::SidebarPanel(sidebar_node) => collect_leaf_tooltips(&sidebar_node.content, out),
+        LayoutNode::SplitTree(split_tree) => {
+            for leaf in &split_tree.leaves {
+                collect_leaf_tooltips(leaf, out);
+            }
+        }
+    }
+}
+
 /// Paints one leaf's descriptor into the whole `area` its container gave
 /// it. Appends a [`PaintedHit`] for it, keyed by the leaf's own tree-address
 /// `id` (not the descriptor's embedded `id`, which a render callback may
