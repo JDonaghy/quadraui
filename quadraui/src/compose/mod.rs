@@ -17,6 +17,10 @@
 //! - [`FolderPickerController`] — cross-backend directory-browsing modal.
 //! - [`FilePickerController`] — cross-backend file open/save modal.
 //! - [`MessageDialogController`] — cross-backend message/alert-box driver.
+//! - [`FormDialogController`] — a [`crate::primitives::dialog::Dialog`]
+//!   hosting a multi-field [`crate::primitives::form::Form`]
+//!   (`DialogInput::Form`), with Tab/Shift+Tab handed off between the
+//!   form's fields and the dialog's buttons.
 //! - [`DualModePaletteController`] — Palette that toggles between text-input
 //!   mode (free-text confirm) and list/search mode (item selection).
 //! - [`ChatController`] — chat overlay with scrollable transcript + multi-line
@@ -65,6 +69,7 @@ pub mod focus_group;
 pub mod focus_ring;
 pub mod folder_picker;
 pub mod form_controller;
+pub mod form_dialog;
 pub mod help_layer;
 pub mod hover_tooltip_tracker;
 pub mod markdown;
@@ -99,6 +104,7 @@ pub use focus_group::FocusGroup;
 pub use focus_ring::FocusRing;
 pub use folder_picker::{FolderPickerController, FolderPickerEvent, PALETTE_CHROME_ROWS};
 pub use form_controller::{FormController, FormControllerEvent};
+pub use form_dialog::{FormDialogController, FormDialogEvent};
 pub use help_layer::{
     filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote,
     HelpOverlayController, HelpOverlayEvent, HelpRegistry, ViewHelp,

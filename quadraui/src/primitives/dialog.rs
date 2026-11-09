@@ -29,6 +29,7 @@
 
 use crate::backend::{MessageDialogButton, MessageDialogOptions};
 use crate::event::Rect;
+use crate::primitives::form::Form;
 use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::{Toolbar, ToolbarHit, ToolbarItemMeasure, ToolbarLayout};
 use crate::types::{Color, StyledText, WidgetId};
@@ -203,6 +204,13 @@ pub struct Dialog {
     /// - [`DialogInput::Toolbar`] — horizontal action strip; used when
     ///   the dialog wants an inline action bar (e.g. "Preview / Skip /
     ///   Apply") in addition to the modal OK/Cancel buttons.
+    /// - [`DialogInput::Form`] — a multi-field [`Form`] (e.g. Name +
+    ///   Description); used when a single [`DialogTextInput`] isn't
+    ///   enough. Rendered and driven through
+    ///   [`crate::compose::form_dialog::FormDialogController`], which
+    ///   composes this `Dialog` with a [`crate::compose::FormController`]
+    ///   so Tab/Shift-Tab traverse the form's fields and then the
+    ///   button row.
     ///
     /// Apps own the value; interactions resolve via [`DialogLayout::hit_test`]
     /// / [`DialogHit`].
@@ -222,6 +230,15 @@ pub enum DialogInput {
     /// `draw_toolbar` equivalent inside the body slot. Clicks resolve as
     /// [`DialogHit::BodyToolbarButton`].
     Toolbar(Toolbar),
+    /// A multi-field form (e.g. Name + Description), for dialogs that need
+    /// more than one input. Not painted inline by `Dialog`'s own backend
+    /// rasterisers (mirrors [`Self::Toolbar`]'s "not painted
+    /// here" contract) — [`crate::compose::form_dialog::FormDialogController`]
+    /// paints it separately via [`crate::Backend::draw_form`], the same
+    /// cross-backend path every other `Form` host uses, and owns the
+    /// Tab/Shift-Tab focus hand-off between the form's fields and this
+    /// dialog's buttons.
+    Form(Form),
 }
 
 /// Single-line text input embedded in a dialog body slot.
@@ -645,10 +662,12 @@ impl Dialog {
             0.0
         };
         let body_h = self.body.len() as f32 * line_height;
-        let input_h = if self.input.is_some() {
-            line_height
-        } else {
-            0.0
+        // A `Form` input needs one row per field, not the single row
+        // every other `DialogInput` variant occupies.
+        let input_h = match &self.input {
+            Some(DialogInput::Form(form)) => line_height * form.fields.len().max(1) as f32,
+            Some(_) => line_height,
+            None => 0.0,
         };
 
         let min_w = char_width * 30.0; // ≈ 30 char-widths
@@ -2203,5 +2222,101 @@ mod tests {
         };
 
         assert_eq!(btn.resolved_button_spec(), explicit);
+    }
+
+    // ── DialogInput::Form ──────────────────────────────────────────────
+
+    fn two_field_form() -> crate::primitives::form::Form {
+        use crate::primitives::form::{FieldKind, FormField};
+        crate::primitives::form::Form {
+            id: WidgetId::new("form:create_milestone"),
+            fields: vec![
+                FormField {
+                    id: WidgetId::new("field:name"),
+                    label: StyledText::plain("Name"),
+                    kind: FieldKind::TextInput {
+                        value: String::new(),
+                        placeholder: String::new(),
+                        cursor: None,
+                        selection_anchor: None,
+                    },
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
+                    row_align: None,
+                },
+                FormField {
+                    id: WidgetId::new("field:description"),
+                    label: StyledText::plain("Description"),
+                    kind: FieldKind::TextArea {
+                        value: String::new(),
+                        placeholder: String::new(),
+                        cursor: None,
+                        visible_rows: 3,
+                    },
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
+                    row_align: None,
+                },
+            ],
+            focused_field: Some(WidgetId::new("field:name")),
+            scroll_offset: 0,
+            has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        }
+    }
+
+    #[test]
+    fn serde_dialog_form_round_trip() {
+        let input = DialogInput::Form(two_field_form());
+        let json = serde_json::to_string(&input).unwrap();
+        let back: DialogInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(input, back);
+    }
+
+    /// A `Form` input reserves one row per field, not a single row like
+    /// every other `DialogInput` variant.
+    #[test]
+    fn measure_generic_sizes_input_height_per_form_field() {
+        let d = base_dialog(Some(DialogInput::Form(two_field_form())));
+        let measure = d.measure_generic(1.0, 1.0, viewport(), 0.0);
+        assert_eq!(measure.input_height, 2.0);
+    }
+
+    /// `layout` reserves `input_bounds` tall enough for every field when
+    /// fed a `Form`-sized `DialogMeasure::input_height`, and does not set
+    /// `body_toolbar_layout` (that's only for `DialogInput::Toolbar`).
+    #[test]
+    fn layout_form_variant_reserves_input_bounds_for_every_field() {
+        let d = base_dialog(Some(DialogInput::Form(two_field_form())));
+        let measure = DialogMeasure {
+            input_height: 2.0,
+            ..measure_no_input()
+        };
+        let layout = d.layout(viewport(), measure, no_measure);
+        let input_bounds = layout.input_bounds.expect("input bounds present");
+        assert_eq!(input_bounds.height, 2.0);
+        assert!(
+            layout.body_toolbar_layout.is_none(),
+            "body_toolbar_layout should be None for Form variant"
+        );
     }
 }
