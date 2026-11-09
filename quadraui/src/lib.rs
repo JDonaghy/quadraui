@@ -449,11 +449,19 @@ pub mod shell_adapter;
 ))]
 mod runtime;
 
-// Shared, backend-neutral desktop-interaction plumbing: window-drag
-// arm/threshold/commit, modal-pump re-entrancy guard, headless smoke-mode
-// predicates, PointerShape enum-walk scaffold. Compiled unconditionally —
-// no toolkit dependency of its own — so a brand-new backend gets it for
-// free. See `desktop`'s module doc and `BACKEND.md` §10.
+// Shared, backend-neutral desktop/OS-service plumbing: window-drag
+// arm/threshold/commit, modal-pump re-entrancy guard, trash, the
+// default-handler opener, notifications, clipboard error mapping, headless
+// smoke-mode predicates, PointerShape enum-walk scaffold, caught-panic
+// reporting. Compiled unconditionally — no toolkit dependency of its own —
+// so a brand-new backend gets it for free. See `platform`'s module doc and
+// `BACKEND.md` §10.
+mod platform;
+
+// Facade re-exporting every `platform` item at its historical
+// `crate::desktop::X` path, so every existing call site across
+// `gtk`/`macos`/`win`/`tui` keeps compiling unchanged. See `desktop`'s
+// module doc.
 mod desktop;
 
 // Shared text-selection state machine: the region registry plus active-selection
