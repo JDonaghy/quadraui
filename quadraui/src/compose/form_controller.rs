@@ -4712,10 +4712,18 @@ mod tests {
     #[cfg(any(feature = "tui", feature = "gtk"))]
     impl ItemFocusRingApp {
         fn new(buttons: &[(&str, bool)], rect: Rect) -> Self {
+            Self::with_field(button_row_field("row", buttons), rect)
+        }
+
+        fn new_toolbar(buttons: &[(&str, bool)], rect: Rect) -> Self {
+            Self::with_field(toolbar_field("row", buttons), rect)
+        }
+
+        fn with_field(field: FormField, rect: Rect) -> Self {
             let mut fc = FormController::new("row-fc".into());
             fc.set_form(Form {
                 focused_field: Some(WidgetId::new("row")),
-                ..make_form_with(vec![button_row_field("row", buttons)])
+                ..make_form_with(vec![field])
             });
             fc.set_has_focus(true);
             Self { fc, rect }
@@ -4780,6 +4788,25 @@ mod tests {
             let driver = driver(&[("Connect", true), ("Cancel", false)]);
             assert!(!underlined_at(&driver, "Connect"));
             assert!(underlined_at(&driver, "Cancel"));
+        }
+
+        #[test]
+        fn right_moves_the_ring_between_toolbar_buttons_too() {
+            let mut driver = TuiDriver::new(
+                ItemFocusRingApp::new_toolbar(&[("Reset", true), ("Export", true)], ITEM_ROW_RECT),
+                40,
+                3,
+            );
+            assert!(underlined_at(&driver, "Reset"));
+            driver.press_named(NamedKey::Right);
+            assert!(
+                !underlined_at(&driver, "Reset"),
+                "the ring must leave the first toolbar button"
+            );
+            assert!(
+                underlined_at(&driver, "Export"),
+                "the ring must land on the second toolbar button"
+            );
         }
     }
 
@@ -4863,6 +4890,25 @@ mod tests {
             let mut driver = driver(&[("Connect", true), ("Cancel", false)]);
             assert!(!ring_painted_at(&mut driver, "Connect"));
             assert!(ring_painted_at(&mut driver, "Cancel"));
+        }
+
+        #[test]
+        fn right_moves_the_ring_between_toolbar_buttons_too() {
+            let mut driver = GtkDriver::new(
+                ItemFocusRingApp::new_toolbar(&[("Reset", true), ("Export", true)], ITEM_ROW_RECT),
+                400,
+                120,
+            );
+            assert!(ring_painted_at(&mut driver, "Reset"));
+            driver.press_named(NamedKey::Right);
+            assert!(
+                !ring_painted_at(&mut driver, "Reset"),
+                "the ring must leave the first toolbar button"
+            );
+            assert!(
+                ring_painted_at(&mut driver, "Export"),
+                "the ring must land on the second toolbar button"
+            );
         }
     }
 }
