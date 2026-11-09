@@ -11,8 +11,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color as RatatuiColor;
 
-use super::{draw_styled_text, ratatui_color, set_cell};
+use super::{draw_styled_text, ratatui_color, set_cell, set_cell_wide};
 use crate::primitives::list::{ListItemMeasure, ListView, ListViewLayout};
+use crate::text_util::{char_cell_width, display_width};
 use crate::theme::Theme;
 use crate::types::{Decoration, StyledText};
 
@@ -213,12 +214,19 @@ pub fn draw_list_with_scroll_px(
         if let Some(ref title) = list.title {
             let title_text: String = title.spans.iter().map(|s| s.text.as_str()).collect();
             let label = format!(" {} ", title_text.trim());
-            for (i, ch) in label.chars().enumerate() {
-                let cx = area.x + 2 + i as u16;
-                if cx + 1 >= area.x + area.width {
+            let mut vcol: u16 = 0;
+            for ch in label.chars() {
+                let w = char_cell_width(ch);
+                let cx = area.x + 2 + vcol;
+                if cx + w >= area.x + area.width {
                     break;
                 }
-                set_cell(buf, cx, top_y, ch, title_fg, row_bg);
+                if w == 2 {
+                    set_cell_wide(buf, cx, top_y, ch, title_fg, row_bg);
+                } else {
+                    set_cell(buf, cx, top_y, ch, title_fg, row_bg);
+                }
+                vcol += w;
             }
         }
         if area.height >= 2 {
@@ -287,9 +295,11 @@ pub fn draw_list_with_scroll_px(
             set_cell(buf, x, y, ' ', decoration_fg, bg);
         }
 
-        // `vcol` is the virtual column index within the full item content
-        // (prefix + icon + text). Characters at vcol < h_scroll are skipped;
-        // at vcol >= h_scroll they map to buf col (vcol - h_scroll).
+        // `vcol` is the virtual display-cell offset within the full item
+        // content (prefix + icon + text) — a CJK/emoji glyph advances it
+        // by 2, matching `char_cell_width`, not 1 per `char`. Content
+        // whose full width sits before `h_scroll` is skipped; the rest
+        // maps to buf col (vcol - h_scroll). See `put_char_scrolled`.
         let mut vcol: usize = 0;
 
         // Selection prefix "▶ " (selected) or "  " (not selected).
@@ -366,12 +376,31 @@ pub fn draw_list_with_scroll_px(
             && vcol_after_text > h_scroll + item_w as usize
             && text_start_vcol < h_scroll + item_w as usize
         {
-            let ellipsis_x = item_x + item_w - 1;
+            let last_col = item_x + item_w - 1;
+            // `last_col` may be the empty *continuation* cell of a wide
+            // glyph `render_spans_scrolled` already painted one column
+            // to its left — writing `…` straight into it would either
+            // get swallowed or leave a half-painted glyph next to the
+            // ellipsis. Detect that case (empty symbol) and back up to
+            // overwrite the glyph's own cell instead, clearing its
+            // now-stale continuation.
+            let last_is_continuation = buf
+                .cell((last_col, y))
+                .map(|c| c.symbol().is_empty())
+                .unwrap_or(false);
+            let ellipsis_x = if last_is_continuation && last_col > item_x {
+                last_col - 1
+            } else {
+                last_col
+            };
             let (ellipsis_fg, ellipsis_bg) = buf
                 .cell((ellipsis_x, y))
                 .map(|existing| (existing.fg, existing.bg))
                 .unwrap_or((decoration_fg, bg));
             set_cell(buf, ellipsis_x, y, '…', ellipsis_fg, ellipsis_bg);
+            if ellipsis_x != last_col {
+                set_cell(buf, last_col, y, ' ', ellipsis_fg, ellipsis_bg);
+            }
         }
 
         // Buffer column past the last text character (clamped to item_w).
@@ -385,7 +414,7 @@ pub fn draw_list_with_scroll_px(
         // Detail text — right-aligned and pinned to the visible viewport
         // (does not scroll with h_scroll, so it remains readable at all offsets).
         if let Some(ref detail) = item.detail {
-            let detail_w: usize = detail.spans.iter().map(|s| s.text.chars().count()).sum();
+            let detail_w: usize = detail.spans.iter().map(|s| display_width(&s.text)).sum();
             let start = (item_w as usize).saturating_sub(detail_w + 1);
             if start > text_buf_col_end + 1 {
                 draw_styled_text(
@@ -434,12 +463,19 @@ pub fn draw_list_with_scroll_px(
 
 // ── Private rendering helpers ─────────────────────────────────────────────
 
-/// Write a single character at virtual column `vcol` within a horizontally-
-/// scrolled item row. Characters whose `vcol < h_scroll` are silently
-/// dropped; the rest are mapped to buffer column `vcol - h_scroll` inside
-/// the item's `[item_x, item_x + item_w)` band.
+/// Write a single character at virtual column `vcol` (a **display-cell**
+/// offset, not a char index — see [`char_cell_width`]) within a
+/// horizontally-scrolled item row. Characters whose full width is
+/// `vcol < h_scroll` are silently dropped; the rest are mapped to buffer
+/// column `vcol - h_scroll` inside the item's `[item_x, item_x + item_w)`
+/// band.
 ///
-/// Returns `vcol + 1` so callers can do `vcol = put_char_scrolled(...)`.
+/// A double-width glyph straddling either edge — `h_scroll`'s left edge
+/// or the item's right edge — is never half-painted: the visible half is
+/// blanked instead, matching [`set_cell_wide`]'s all-or-nothing contract.
+///
+/// Returns `vcol + char_cell_width(ch)` so callers can do
+/// `vcol = put_char_scrolled(...)`.
 #[allow(clippy::too_many_arguments)]
 fn put_char_scrolled(
     buf: &mut Buffer,
@@ -452,13 +488,37 @@ fn put_char_scrolled(
     fg: RatatuiColor,
     bg: RatatuiColor,
 ) -> usize {
-    if vcol >= h_scroll {
-        let buf_col = (vcol - h_scroll) as u16;
-        if buf_col < item_w {
-            set_cell(buf, item_x + buf_col, y, ch, fg, bg);
-        }
+    let w = char_cell_width(ch) as usize;
+    if vcol + w <= h_scroll {
+        // Entirely scrolled off past the left edge.
+        return vcol + w;
     }
-    vcol + 1
+    if vcol < h_scroll {
+        // Straddles `h_scroll`'s left edge: only the glyph's trailing
+        // half would land at buffer column 0. Blank it rather than
+        // paint half a glyph.
+        if item_w > 0 {
+            set_cell(buf, item_x, y, ' ', fg, bg);
+        }
+        return vcol + w;
+    }
+    let buf_col = (vcol - h_scroll) as u16;
+    if buf_col >= item_w {
+        // Entirely past the item's right edge.
+        return vcol + w;
+    }
+    if w == 2 {
+        if buf_col + 1 < item_w {
+            set_cell_wide(buf, item_x + buf_col, y, ch, fg, bg);
+        } else {
+            // Straddles the item's right edge: only the glyph's leading
+            // half fits. Blank it rather than paint half a glyph.
+            set_cell(buf, item_x + buf_col, y, ' ', fg, bg);
+        }
+    } else {
+        set_cell(buf, item_x + buf_col, y, ch, fg, bg);
+    }
+    vcol + w
 }
 
 /// Render a [`StyledText`]'s spans starting at virtual column `vcol`,
@@ -1086,6 +1146,184 @@ mod tests {
             row.trim_end().ends_with('…'),
             "overlong row text must end in an ellipsis, got {row:?}"
         );
+    }
+
+    // ── Wide-glyph (CJK/emoji) display-cell tests ──────────────────────────
+
+    /// A 6-cell item band leaves room for exactly two whole 2-cell CJK
+    /// glyphs after the 2-cell unfocused prefix. The third glyph sits
+    /// entirely past the item's own right edge, so the clamp overwrites
+    /// the second glyph with `…` and never paints a half glyph or a
+    /// character past `item_x + item_w`.
+    #[test]
+    fn wide_glyph_item_paints_whole_glyphs_and_ellipsizes_within_item_band() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+        // Sentinel just past the item band — draw_list must never touch it.
+        buf[(6u16, 0u16)].set_char('Z');
+        let list = ListView {
+            id: WidgetId::new("list"),
+            title: None,
+            items: vec![item("日本語日本語", Decoration::Normal)],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: false,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 6, 1),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        // Prefix "  " at cols 0,1; whole glyphs land at even columns 2
+        // and (pre-clamp) 4, each followed by an empty continuation cell.
+        assert_eq!(cell_char(&buf, 2, 0), '日');
+        assert_eq!(buf[(3u16, 0u16)].symbol(), "");
+        // The clamp lands on the second glyph's continuation cell (col 5),
+        // so it backs up and overwrites the glyph's own cell (col 4) with
+        // `…`, clearing the now-stale continuation.
+        assert_eq!(cell_char(&buf, 4, 0), '…');
+        assert_eq!(buf[(5u16, 0u16)].symbol(), " ");
+        // Nothing painted at or past item_x + item_w (= 6).
+        assert_eq!(cell_char(&buf, 6, 0), 'Z');
+    }
+
+    /// Mirrors `tree.rs`'s
+    /// `ellipsis_overwrite_backs_up_off_a_wide_glyphs_continuation_cell`:
+    /// when the item-width clamp boundary lands exactly on the
+    /// continuation cell of a wide glyph, the ellipsis must overwrite the
+    /// glyph's own cell (clearing the continuation to a blank), never the
+    /// continuation cell alone.
+    #[test]
+    fn ellipsis_overwrite_backs_up_off_a_wide_glyphs_continuation_cell() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+        let list = ListView {
+            id: WidgetId::new("list"),
+            title: None,
+            // Unfocused prefix "  " (2 cells) + 3 ascii fillers reach col
+            // 5; "字" (2 cells) then occupies cols 5-6 exactly — col 6 is
+            // the item's own last column at item_w=7 — before the
+            // trailing "X" is pushed entirely past the right edge.
+            items: vec![item("aaa字X", Decoration::Normal)],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: false,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 7, 1),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        assert_eq!(
+            cell_char(&buf, 5, 0),
+            '…',
+            "the ellipsis must overwrite the wide glyph's own cell"
+        );
+        assert_eq!(
+            buf[(6u16, 0u16)].symbol(),
+            " ",
+            "the glyph's now-stale continuation cell must be cleared to a blank cell"
+        );
+        // The ascii filler before the glyph is undisturbed by the backed-up
+        // overwrite.
+        assert_eq!(cell_char(&buf, 4, 0), 'a');
+    }
+
+    /// Detail text is measured and right-aligned by **display width**
+    /// (`text_util::display_width`), not `chars().count()` — a 2-char CJK
+    /// detail is 4 display cells, not 2; the latter would place it two
+    /// columns too far right.
+    #[test]
+    fn detail_right_aligned_by_display_width_for_cjk() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        let list = ListView {
+            id: WidgetId::new("list"),
+            title: None,
+            items: vec![ListItem {
+                text: StyledText {
+                    spans: vec![StyledSpan::plain("hi")],
+                },
+                detail: Some(StyledText {
+                    spans: vec![StyledSpan::plain("新着")],
+                }),
+                icon: None,
+                decoration: Decoration::Normal,
+            }],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: false,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        // display_width("新着") == 4 → start = item_w(20) - 4 - 1 = 15.
+        assert_eq!(cell_char(&buf, 15, 0), '新');
+        assert_eq!(buf[(16u16, 0u16)].symbol(), "");
+        assert_eq!(cell_char(&buf, 17, 0), '着');
+        assert_eq!(buf[(18u16, 0u16)].symbol(), "");
+    }
+
+    /// A 2-cell CJK glyph whose virtual column straddles `h_scroll`'s left
+    /// edge must never be half-painted: the visible half is blanked
+    /// instead of showing a stray leading/trailing byte of the glyph.
+    #[test]
+    fn hscroll_wide_glyph_straddling_left_edge_paints_no_half_glyph() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        let list = ListView {
+            id: WidgetId::new("list"),
+            title: None,
+            // Unfocused prefix "  " (vcol 0,1) + "AB" (vcol 2,3) + "日"
+            // (vcol 4..6, a 2-cell glyph) + "CD" (vcol 6,7). h_scroll=5
+            // lands in the middle of "日"'s 2-cell span.
+            items: vec![item("AB日CD", Decoration::Normal)],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: false,
+            bordered: false,
+            h_scroll: 5,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        draw_list(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &list,
+            &Theme::default(),
+            false,
+        );
+
+        assert_eq!(
+            cell_char(&buf, 0, 0),
+            ' ',
+            "glyph straddling h_scroll's left edge must be blanked, not half-painted"
+        );
+        assert_eq!(
+            cell_char(&buf, 1, 0),
+            'C',
+            "first fully-visible char after the blanked straddle"
+        );
+        assert_eq!(cell_char(&buf, 2, 0), 'D');
     }
 }
 

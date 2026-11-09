@@ -486,6 +486,18 @@ only a push to `main` runs this workflow.
   the new edge-of-window tests in each primitive's module for the exact
   before/after geometry.
 ### Fixed
+- The TUI `List` rasteriser (`tui::list::draw_list`) now measures and paints
+  item text, icons, the selection prefix, the bordered title, and the
+  right-aligned detail span by display cell (`text_util::char_cell_width`/
+  `display_width`) instead of one buffer cell per `char`, matching the move
+  `DataTable`/`MenuBar`/chat wrap/`Toast`/`Tree` already made. A CJK/emoji
+  glyph now occupies two cells instead of colliding with its neighbour; the
+  item-width ellipsis overwrite backs up off a wide glyph's continuation
+  cell the same way `Tree`'s rasteriser does; and a wide glyph straddling
+  either `h_scroll`'s left edge or the item's right edge is blanked instead
+  of half-painted. ASCII output is bit-identical. `ListView::h_scroll` and
+  `ListView::max_content_width` are now documented as display-cell units
+  (no field added, no signature changed).
 - `win::draw_spinner` now paints the spinner glyph/label in the colour passed
   in via its new `theme: &Theme` parameter, instead of always building a fresh
   `Theme::default()` and ignoring dark/custom themes — matching

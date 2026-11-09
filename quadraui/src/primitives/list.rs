@@ -92,17 +92,21 @@ pub struct ListView {
     /// header+rows layout used by quickfix and other inline panels.
     #[serde(default)]
     pub bordered: bool,
-    /// Horizontal scroll offset in chars (number of content columns to skip
-    /// from the left before rendering). Default `0` = no scroll.
-    /// The caller increments / decrements this in response
-    /// to Left / Right key events.
+    /// Horizontal scroll offset in **display cells** (terminal columns —
+    /// a CJK/emoji glyph counts as 2, matching
+    /// [`crate::text_util::char_cell_width`]), not characters. Number of
+    /// content columns to skip from the left before rendering. Default
+    /// `0` = no scroll. The caller increments / decrements this in
+    /// response to Left / Right key events.
     #[serde(default)]
     pub h_scroll: usize,
-    /// Total width (in chars) of the widest item row, including the 2-char
-    /// selection prefix, any icon, and the main text. When
-    /// `max_content_width > visible_area_width` the TUI rasteriser reserves
-    /// the bottom row of the list area for a horizontal scrollbar.
-    /// `None` = caller hasn't measured content; no scrollbar shown.
+    /// Total width (in **display cells**, not characters — see
+    /// [`crate::text_util::char_cell_width`]) of the widest item row,
+    /// including the 2-cell selection prefix, any icon, and the main
+    /// text. When `max_content_width > visible_area_width` the TUI
+    /// rasteriser reserves the bottom row of the list area for a
+    /// horizontal scrollbar. `None` = caller hasn't measured content; no
+    /// scrollbar shown.
     #[serde(default)]
     pub max_content_width: Option<usize>,
     /// When `true`, backends reserve the rightmost column of the list area
