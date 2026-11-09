@@ -75,11 +75,14 @@ only a push to `main` runs this workflow.
   `number_input`/`radio_group`'s shared `native_surface_paint::paint` for
   GTK/macOS/Win) rather than a second, form-only paint path — `RadioGroup`'s
   row is therefore allowed to span one sub-row per option, the first
-  `FieldKind` to do so (see `FormFieldMeasure::vertical`, a new field
-  defaulting to `false` for every existing item-bearing kind). This is a
-  breaking addition to the non-`#[non_exhaustive]` `FieldKind`/`FormEvent`
-  enums, the same shape #1773/#1689 (`ComboBox`/`DatePicker`) already
-  shipped — a downstream exhaustive match on either enum needs a new arm.
+  `FieldKind` to do so (see `FormFieldMeasure::vertical` and
+  `FormFieldMeasure::items_start_y`, both new fields defaulting to `false`/
+  `0.0` for every existing item-bearing kind; `FormFieldMeasure` itself is
+  now `#[non_exhaustive]`, so a future field add here stays additive).
+  This is a breaking addition to the non-`#[non_exhaustive]`
+  `FieldKind`/`FormEvent` enums, the same shape #1773/#1689
+  (`ComboBox`/`DatePicker`) already shipped — a downstream exhaustive
+  match on either enum needs a new arm.
 - Item-level keyboard focus for `FieldKind::ButtonRow`/`ToggleGroup`/
   `Toolbar` form fields (#2250): `FormController` now tracks which item
   inside the focused field has keyboard focus (starting on the first
@@ -158,6 +161,16 @@ only a push to `main` runs this workflow.
   Lets a binding reach the externally-tagged dict/JSON shape a shell-event
   callback expects via a generic `pythonize::pythonize`/`serde_json::to_value`
   call instead of its own hand-rolled, binding-specific tagging function.
+### Fixed
+- A `LabelPosition::Top`-resolved `FieldKind::RadioGroup`/`NumberInput`
+  (#2251) now agrees between paint and click on TUI: `FormFieldMeasure`
+  gains an `items_start_y` field so `Form::layout` skips its item/sub-row
+  stack past the row's own reserved label line instead of starting it at
+  the label's row, and clamps each item's height to the row's own clipped
+  bottom edge so a partially scrolled-off `RadioGroup` never hands a
+  painter a rect past its row. `tui::form`'s `NumberInput`/`RadioGroup`
+  painters also clamp their row count against the viewport's own bottom
+  edge as a second, defensive guard.
 ### Changed
 - `GtkBackend::draw_panel` (#2225) paints a `Panel`'s title-bar background
   and title label through `Panel::header_toolbar`'s mapped `SidebarPanel` +
