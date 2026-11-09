@@ -75,6 +75,7 @@ mod shell_layout;
 pub mod sidebar_panel_body;
 pub mod sidebar_system;
 pub mod status_bar_interaction;
+mod tab_drag;
 pub mod tab_group;
 pub mod toast_stack;
 pub mod toolbar_hover_tracker;
@@ -110,9 +111,9 @@ pub use sidebar_system::{
     NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,
 };
 pub use status_bar_interaction::{StatusBarAction, StatusBarInteraction};
+pub use tab_drag::{resolve_tab_drop, TabDragSource, TabDropInstruction};
 pub use tab_group::{
-    resolve_tab_drop, GroupLayout, Pane, PaneDragRect, PaneTab, TabDragSource, TabDropInstruction,
-    TabGroupController, TabGroupEvent, TabGroupLayout,
+    GroupLayout, Pane, PaneDragRect, PaneTab, TabGroupController, TabGroupEvent, TabGroupLayout,
 };
 pub use toast_stack::{ToastStackController, ToastStackEvent};
 pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker, TreeHoverTracker};
