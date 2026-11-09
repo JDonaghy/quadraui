@@ -83,6 +83,21 @@ only a push to `main` runs this workflow.
   `FieldKind`/`FormEvent` enums, the same shape #1773/#1689
   (`ComboBox`/`DatePicker`) already shipped — a downstream exhaustive
   match on either enum needs a new arm.
+- `DialogInput::Form(Form)` (#328): lets a `Dialog` host a multi-field
+  `Form` (e.g. Name + Description) instead of a single
+  `DialogTextInput`. `Dialog::layout`/`measure_generic`/
+  `measure_generic_measured` size the input slot to one row per field;
+  the new `compose::FormDialogController` composes the `Dialog`
+  primitive with the existing `FormController` and owns the Tab/
+  Shift-Tab hand-off between the form's fields and the dialog's
+  buttons (stepping past either end cycles into the other), Left/
+  Right button cycling, Enter-activates-the-focused-button, and
+  Escape-always-resolves-to-cancel/default, mirroring
+  `MessageDialogController`'s own keyboard model. TUI's
+  `draw_dialog`/`tui_dialog_layout` and the GTK/macOS/Win
+  `native_surface_paint::paint`/`a11y::chrome` plumbing all gained the
+  new variant; existing single-`DialogTextInput`/`DialogInput::Toolbar`
+  dialogs are unaffected.
 - Item-level keyboard focus for `FieldKind::ButtonRow`/`ToggleGroup`/
   `Toolbar` form fields (#2250): `FormController` now tracks which item
   inside the focused field has keyboard focus (starting on the first

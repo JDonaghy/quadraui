@@ -459,6 +459,11 @@ impl A11yPrimitive for Dialog {
                     A11yChild::new("input", bar.a11y_info()).with_children(bar.a11y_children()),
                 );
             }
+            Some(DialogInput::Form(form)) => {
+                children.push(
+                    A11yChild::new("input", form.a11y_info()).with_children(form.a11y_children()),
+                );
+            }
             None => {}
         }
         let total = self.buttons.len();
