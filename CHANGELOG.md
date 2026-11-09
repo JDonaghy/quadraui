@@ -620,6 +620,27 @@ only a push to `main` runs this workflow.
   per-span color. `draw_panel`'s signature and its `PanelLayout` return
   (still `tui_panel_layout`, independent of this painting seam) are
   unchanged.
+- `MacBackend::draw_panel` paints the title bar through the mapped
+  `SidebarPanel` + `Toolbar` header (#2226): it builds the header via
+  `Panel::header_toolbar` with the same fixed `action_button_width`
+  `mac_panel_layout` uses for hit-testing, then paints it with
+  `sidebar_panel::native_surface_paint::paint` instead of
+  `panel::native_surface_paint::paint`'s own near-duplicate title-bar
+  painter. `draw_panel` keeps returning `mac_panel_layout(...)` for
+  hit-testing, so paint and hit-test action-button positions still
+  agree. A `PanelAction::is_active` button's full bounds is re-filled
+  with `theme.accent_bg` after the delegate paints, since
+  `sidebar_panel`'s own active-state highlight is a 2px-inset
+  `selected_bg` pill scoped to its own interactive chrome; an unaccented
+  panel's title bar background is pinned to `theme.separator` the same
+  way, since `header_toolbar` otherwise leaves `Toolbar::bg` at
+  `sidebar_panel`'s own `theme.header_bg` default. Two new
+  `macos::panel` tests pin the title's left-inset and each action
+  glyph's pixels landing inside its own `visible_actions[i].bounds`, and
+  the `is_active` full-rect `accent_bg` fill; every existing
+  `macos::panel` test passes unmodified. GTK and Windows still call
+  `panel::native_surface_paint::paint` until their own seam issues land
+  (that module stays, per scope).
 ### Fixed
 - `primitives::minimap::truncate_to_columns` now caps by display width
   (`text_util::char_cell_width`) instead of char count, dropping a wide
