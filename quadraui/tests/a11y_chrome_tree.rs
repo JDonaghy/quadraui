@@ -12,12 +12,16 @@ use quadraui::testing::a11y::A11yScenario;
 use quadraui::{
     compute_find_replace_hit_regions, ActivityBar, ActivityItem, Color, CommandCenter, CommandLine,
     ContextMenu, ContextMenuItem, ContextMenuItemMeasure, Dialog, DialogButton, DialogMeasure,
-    DropOverlay, FieldKind, FindReplacePanel, Form, FormField, Icon, MenuBar, MenuBarItem, Panel,
-    PanelAction, ProgressBar, Rect, RichTextLink, RichTextPopup, RichTextPopupMeasure, Scrollbar,
-    Spinner, Split, SplitDirection, SplitTree, StatusBar, StatusBarSegment, StyledText, Surface,
-    TabBar, TabBarSegment, TabItem, Toast, ToastCorner, ToastOverlay, ToastSeverity,
-    ToolbarItemMeasure, Tooltip, TooltipMeasure, ValidationState, WidgetId, FR_PANEL_WIDTH,
+    DropOverlay, FieldKind, FindReplacePanel, Form, FormField, Icon, MenuBar, MenuBarItem,
+    ProgressBar, Rect, RichTextLink, RichTextPopup, RichTextPopupMeasure, Scrollbar, Spinner,
+    Split, SplitDirection, SplitTree, StatusBar, StatusBarSegment, StyledText, Surface, TabBar,
+    TabBarSegment, TabItem, Toast, ToastCorner, ToastOverlay, ToastSeverity, ToolbarItemMeasure,
+    Tooltip, TooltipMeasure, ValidationState, WidgetId, FR_PANEL_WIDTH,
 };
+// `Panel`/`PanelAction` are `#[deprecated]` (issue #2229); imported separately
+// so the allow stays scoped to the one `Surface::Panel` a11y case below.
+#[allow(deprecated)]
+use quadraui::{Panel, PanelAction};
 
 const VIEWPORT: Rect = Rect {
     x: 0.0,
@@ -608,6 +612,25 @@ fn overlays_and_containers_report_their_own_structure() {
         fg: None,
         bg: None,
     };
+    // `Panel`/`PanelAction` are `#[deprecated]` (issue #2229); `Surface::Panel`
+    // keeps its own a11y coverage until the two-PR removal lands, matching the
+    // `#[allow(deprecated)]` plumbing already in `frame.rs` and `testing/mod.rs`.
+    #[allow(deprecated)]
+    let panel_surface = Surface::Panel {
+        rect: rect(1.0, 8.0),
+        panel: Panel {
+            id: WidgetId::new("panel"),
+            title: Some(StyledText::plain("Problems")),
+            actions: vec![PanelAction {
+                id: WidgetId::new("panel:filter"),
+                icon: "⚑".to_string(),
+                tooltip: "Filter".to_string(),
+                is_active: true,
+            }],
+            accent: None,
+            collapsed: true,
+        },
+    };
     let snapshot = A11yScenario::new()
         .with_surface(Surface::Spinner {
             rect: rect(0.0, 1.0),
@@ -618,21 +641,7 @@ fn overlays_and_containers_report_their_own_structure() {
                 accent: None,
             },
         })
-        .with_surface(Surface::Panel {
-            rect: rect(1.0, 8.0),
-            panel: Panel {
-                id: WidgetId::new("panel"),
-                title: Some(StyledText::plain("Problems")),
-                actions: vec![PanelAction {
-                    id: WidgetId::new("panel:filter"),
-                    icon: "⚑".to_string(),
-                    tooltip: "Filter".to_string(),
-                    is_active: true,
-                }],
-                accent: None,
-                collapsed: true,
-            },
-        })
+        .with_surface(panel_surface)
         .with_surface(Surface::SplitTree {
             rect: rect(9.0, 10.0),
             tree: SplitTree::split(

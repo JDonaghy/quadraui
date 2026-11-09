@@ -37,16 +37,20 @@ use quadraui::{
     EditorStyledSpan, FieldKind, FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField,
     Image, ImageFit, ImageSource, InteractionState, ListItem, ListView, MenuBar, MenuBarItem,
     MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette,
-    PaletteItem, PaletteMode, Panel, PipelineStage, PipelineView, PopupPlacement, ProgressBar,
-    RadioGroup, RadioOption, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis,
-    ScrollMode, Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series,
-    Side, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus, StatusBar,
+    PaletteItem, PaletteMode, PipelineStage, PipelineView, PopupPlacement, ProgressBar, RadioGroup,
+    RadioOption, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode,
+    Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side,
+    SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus, StatusBar,
     StatusBarSegment, StyledSpan, StyledText, Switch, TabBar, TabChrome, TabFrame, TabIcon,
     TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, Toast, ToastCorner,
     ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarPaintOptions,
     ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
     TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
+// `Panel` is `#[deprecated]` (issue #2229); imported separately so the allow
+// stays scoped to the one `draw_panel` back-compat case below.
+#[allow(deprecated)]
+use quadraui::Panel;
 
 use super::runner::{DriverFactory, DynDriver};
 
@@ -1402,6 +1406,11 @@ pub const CASES: &[Case] = &[
         method: "draw_panel",
         needle: Some("c0panl"),
         paint: |b, area| {
+            // `Panel` is `#[deprecated]` (issue #2229); `draw_panel` itself
+            // is not yet removed, so this row keeps proving the backend
+            // trait method still paints its argument until PR 2 of the
+            // two-PR deprecation protocol drops both.
+            #[allow(deprecated)]
             let panel = Panel {
                 id: id("panel"),
                 title: Some(StyledText::plain("c0panl")),
@@ -1409,6 +1418,7 @@ pub const CASES: &[Case] = &[
                 accent: None,
                 collapsed: false,
             };
+            #[allow(deprecated)]
             let _ = b.draw_panel(area, &panel);
         },
     },
