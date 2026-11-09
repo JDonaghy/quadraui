@@ -1,41 +1,39 @@
 //! Pure functions that turn [`crate::AppState`] into `quadraui`
-//! primitives. Backends call these once per frame, then rasterise
-//! the returned primitives.
+//! primitives. [`crate::KubeApp::render`] calls these once per frame,
+//! then rasterises the returned primitives through the generic
+//! `quadraui::Backend` trait.
 //!
 //! All geometry is in abstract f32 units (cells for TUI, pixels for
-//! GTK). Backends supply the viewport size in their native unit and
-//! convert as needed when drawing.
+//! GTK) — `Backend` converts as needed per backend.
+//!
+//! Colours are read from a `quadraui::Theme` rather than hardcoded, so
+//! swapping in `Theme::light_default()` (or a VS Code theme loaded via
+//! `Theme::from_vscode_json`) re-colours every pane here without
+//! touching this file.
 
+use quadraui::primitives::board::badge_fg_color;
 use quadraui::{
-    Color, ContextMenu, ContextMenuItem, ContextMenuPlacement, Decoration, ListItem, ListView,
-    Rect, StatusBar, StatusBarSegment, StatusSegmentMeasure, StatusSegmentSide, StyledSpan,
-    StyledText, TextDisplay, TextDisplayLine, WidgetId,
+    BadgeStatus, Color, Decoration, ListItem, ListView, StatusBar, StatusBarSegment, StyledSpan,
+    StyledText, TextDisplay, TextDisplayLine, Theme, WidgetId,
 };
 
-use crate::state::{AppState, Focus, Picker, PickerPurpose, ResourceKind};
+use crate::state::{AppState, Focus};
 
 /// Build the `ListView` primitive for the resource list pane.
-pub fn build_list(state: &AppState) -> ListView {
+pub fn build_list(state: &AppState, theme: &Theme) -> ListView {
     let items: Vec<ListItem> = state
         .resources
         .iter()
         .map(|r| ListItem {
             text: StyledText {
-                spans: vec![StyledSpan {
-                    text: r.name.clone(),
-                    fg: None,
-                    bg: None,
-                    bold: false,
-                    italic: false,
-                    underline: false,
-                }],
+                spans: vec![StyledSpan::plain(r.name.clone())],
             },
             icon: None,
             detail: Some(StyledText {
                 spans: vec![
                     StyledSpan {
                         text: r.status.clone(),
-                        fg: Some(status_color(&r.status)),
+                        fg: Some(status_color(&r.status, theme)),
                         bg: None,
                         bold: false,
                         italic: false,
@@ -66,7 +64,7 @@ pub fn build_list(state: &AppState) -> ListView {
         title: Some(StyledText {
             spans: vec![StyledSpan {
                 text: title_text,
-                fg: Some(Color::rgb(160, 200, 240)),
+                fg: Some(theme.title_fg),
                 bg: None,
                 bold: true,
                 italic: false,
@@ -85,28 +83,28 @@ pub fn build_list(state: &AppState) -> ListView {
 }
 
 /// Build the `StatusBar` primitive. Segments carry `action_id`s so
-/// each backend's click handler can route via
-/// [`StatusBar::resolve_click`] without duplicating segment math.
-pub fn build_status_bar(state: &AppState) -> StatusBar {
-    let bar_bg = Color::rgb(40, 40, 60);
+/// the click handler can route via `StatusBar::layout`/`hit_test`
+/// without duplicating segment math.
+pub fn build_status_bar(state: &AppState, theme: &Theme) -> StatusBar {
+    let bar_bg = theme.header_bg;
     let left = vec![
         StatusBarSegment {
             text: format!(" {} ", state.context),
-            fg: Color::rgb(180, 180, 200),
+            fg: theme.muted_fg,
             bg: bar_bg,
             bold: true,
             action_id: Some(WidgetId::new("status:context")),
         },
         StatusBarSegment {
             text: format!(" {} ", state.current_namespace()),
-            fg: Color::rgb(140, 220, 180),
+            fg: theme.accent_fg,
             bg: bar_bg,
             bold: false,
             action_id: Some(WidgetId::new("status:namespace")),
         },
         StatusBarSegment {
             text: format!(" {} ", state.kind.label()),
-            fg: Color::rgb(220, 200, 140),
+            fg: theme.header_fg,
             bg: bar_bg,
             bold: false,
             action_id: Some(WidgetId::new("status:kind")),
@@ -114,7 +112,7 @@ pub fn build_status_bar(state: &AppState) -> StatusBar {
     ];
     let right = vec![StatusBarSegment {
         text: format!(" {} ", state.status),
-        fg: Color::rgb(200, 200, 200),
+        fg: theme.foreground,
         bg: bar_bg,
         bold: false,
         action_id: None,
@@ -129,16 +127,16 @@ pub fn build_status_bar(state: &AppState) -> StatusBar {
 /// Build the `TextDisplay` primitive for the YAML pane.
 ///
 /// Each YAML line becomes a `TextDisplayLine` with two styled spans:
-/// the `key:` prefix in `key_fg` and the trailing value in the default
-/// `fg`. Lines without a `:` render plainly in the default `fg`.
-/// `scroll_offset` is forwarded so backends can clamp it via the
-/// primitive's layout.
+/// the `key:` prefix in `theme.accent_fg` and the trailing value in
+/// the default `fg`. Lines without a `:` render plainly in the
+/// default `fg`. `scroll_offset` is forwarded so backends can clamp
+/// it via the primitive's layout.
 ///
 /// The pane title (e.g. `" YAML"` / `" YAML  ◀ j/k"`) stays bespoke
-/// in each binary because it's a single-row decoration that depends
-/// on app focus state and shouldn't scroll with the body.
-pub fn build_yaml_view(state: &AppState) -> TextDisplay {
-    let key_fg = Color::rgb(140, 200, 240);
+/// here because it's a single-row decoration that depends on app
+/// focus state and shouldn't scroll with the body.
+pub fn build_yaml_view(state: &AppState, theme: &Theme) -> TextDisplay {
+    let key_fg = theme.accent_fg;
     let has_focus = matches!(state.focus, Focus::Yaml);
     let lines: Vec<TextDisplayLine> = state
         .yaml_for_selected()
@@ -171,11 +169,10 @@ pub fn build_yaml_view(state: &AppState) -> TextDisplay {
         })
         .collect();
     let title_text = if has_focus { " YAML  ◀ j/k" } else { " YAML" };
-    let title_fg = if has_focus {
-        Color::rgb(255, 220, 140)
-    } else {
-        key_fg
-    };
+    // Focused pane gets the fuzzy-match highlight colour — already
+    // the theme's "draw attention to this" tone — so focus reads the
+    // same way regardless of which `Theme` the app is running.
+    let title_fg = if has_focus { theme.match_fg } else { key_fg };
     TextDisplay {
         id: WidgetId::new("yaml"),
         lines,
@@ -198,153 +195,56 @@ pub fn build_yaml_view(state: &AppState) -> TextDisplay {
     }
 }
 
-/// Build the [`ContextMenu`] primitive for an open picker. Items are
-/// filtered by the picker's current query, with a `* ` prefix marking
-/// the row that's "current" in the app (the namespace or kind the app
-/// is on now). Placement is `Above` so the menu pops up over its
-/// status-bar trigger like a real dropdown — the rasteriser auto-flips
-/// to `Below` if the viewport is too short above.
-///
-/// Item ids are `picker:{orig_idx}` so the click handler can decode
-/// which original index the user activated, even after query filtering
-/// reorders the visible rows.
-pub fn build_picker_menu(picker: &Picker, current_orig_idx: Option<usize>) -> ContextMenu {
-    let visible = picker.visible_indices();
-    let items: Vec<ContextMenuItem> = visible
-        .iter()
-        .map(|&orig| {
-            let name = &picker.items[orig];
-            let is_current = current_orig_idx == Some(orig);
-            let prefix = if is_current { "* " } else { "  " };
-            ContextMenuItem {
-                id: Some(WidgetId::new(format!("picker:{orig}"))),
-                label: StyledText {
-                    spans: vec![StyledSpan {
-                        text: format!("{prefix}{name}"),
-                        fg: None,
-                        bg: None,
-                        bold: is_current,
-                        italic: false,
-                        underline: false,
-                    }],
-                },
-                ..Default::default()
-            }
-        })
-        .collect();
-    ContextMenu {
-        id: WidgetId::new("picker"),
-        items,
-        selected_idx: picker.selected,
-        bg: None,
-        placement: ContextMenuPlacement::Above,
-    }
-}
-
-/// Decode a picker `ContextMenuHit::Item` id (e.g. `"picker:7"`) back
-/// to the original item index. Returns `None` for ids that aren't
-/// picker rows.
-pub fn decode_picker_hit_id(id: &str) -> Option<usize> {
-    id.strip_prefix("picker:").and_then(|s| s.parse().ok())
-}
-
-/// Width of the picker dropdown menu in the viewport's unit (cells for
-/// TUI, pixels for GTK). Sized to fit the longest label + 4 cells of
-/// breathing room (matching the old `picker_bounds` heuristic).
-pub fn picker_menu_width(picker: &Picker, viewport: Rect, cell_w: f32) -> f32 {
-    let max_label = picker
-        .items
-        .iter()
-        .map(|s| s.chars().count())
-        .max()
-        .unwrap_or(20)
-        .max(20);
-    // 4 cells: 2 borders + 2 padding.
-    let w_cells = (max_label + 4) as f32;
-    (w_cells * cell_w).min(viewport.width - 4.0 * cell_w)
-}
-
-/// Surface the picker dropdown is laid out in: `viewport` inset on all
-/// four sides by `border_inset` so the chrome the rasteriser paints
-/// outside the menu's item region still has room on-screen.
-///
-/// `border_inset` comes from `quadraui::Backend::context_menu_border_inset`
-/// — 1 cell on TUI, where the box border sits outside the item region,
-/// and 0 on pixel backends, which draw their chrome inside it. Paint and
-/// hit-test must pass the same value, or a click lands on the wrong row.
-pub fn picker_menu_viewport(viewport: Rect, border_inset: f32) -> Rect {
-    Rect::new(
-        viewport.x + border_inset,
-        viewport.y + border_inset,
-        (viewport.width - border_inset * 2.0).max(0.0),
-        (viewport.height - border_inset * 2.0).max(0.0),
-    )
-}
-
-/// Anchor rect for the open picker — the status-bar segment that
-/// triggered it. Returns coordinates in the viewport's unit (cells for
-/// TUI, pixels for GTK), assuming the status bar sits at the bottom
-/// row of `viewport` with height `cell_h`.
-///
-/// Returns `None` if no picker is open or the status-bar segment
-/// couldn't be located (shouldn't happen — `build_status_bar` always
-/// emits the namespace and kind segments).
-pub fn picker_anchor(state: &AppState, viewport: Rect, cell_w: f32, cell_h: f32) -> Option<Rect> {
-    let purpose = state.picker.as_ref()?.purpose;
-    let target = match purpose {
-        PickerPurpose::Namespace => "status:namespace",
-        PickerPurpose::ResourceKind => "status:kind",
-    };
-    let bar = build_status_bar(state);
-    let bar_y = viewport.y + viewport.height - cell_h;
-    let layout = bar.layout(viewport.width, cell_h, 2.0 * cell_w, |seg| {
-        StatusSegmentMeasure::new(seg.text.chars().count() as f32 * cell_w)
-    });
-    for vis in &layout.visible_segments {
-        let seg = match vis.side {
-            StatusSegmentSide::Left => &bar.left_segments[vis.segment_idx],
-            StatusSegmentSide::Right => &bar.right_segments[vis.segment_idx],
-        };
-        if seg
-            .action_id
-            .as_ref()
-            .map(|id| id.as_str() == target)
-            .unwrap_or(false)
-        {
-            return Some(Rect::new(
-                vis.bounds.x + viewport.x,
-                bar_y,
-                vis.bounds.width,
-                cell_h,
-            ));
-        }
-    }
-    None
-}
-
-/// Pre-selected row index when opening a picker — so the `* ` marker
-/// in [`build_picker`] lands on the right row. Returned as
-/// `Option<usize>` because `ResourceKind::ALL.position(…)` could
-/// theoretically return `None` (won't in practice).
-pub fn picker_current_index(state: &AppState, purpose: PickerPurpose) -> Option<usize> {
-    match purpose {
-        PickerPurpose::Namespace => Some(state.current_ns),
-        PickerPurpose::ResourceKind => ResourceKind::ALL.iter().position(|k| *k == state.kind),
-    }
-}
-
-/// Heuristic colour for a status string. Covers the strings each
-/// kind emits today plus a sensible default.
-pub fn status_color(s: &str) -> Color {
+/// Heuristic colour for a status string, read off `theme`'s badge
+/// tokens rather than hardcoded RGB — covers the strings each
+/// resource kind emits today plus a sensible default. Mirrors
+/// `BadgeStatus`'s pass/running/warning/blocked vocabulary:
+/// - `Running`/`Succeeded`/`Active` → `Passed` (green)
+/// - `Pending`/`ContainerCreating` → `Running` (in progress)
+/// - `Failed`/`CrashLoopBackOff`/`Error` → `Blocked` (red)
+/// - a `ready/total` ratio → `Passed` when equal, `Warning` otherwise
+/// - anything else (e.g. a Service's `ClusterIP`/`NodePort`/…) is
+///   informational, not a pass/fail state, so it reads from
+///   `theme.link_fg` directly rather than forcing it through
+///   `BadgeStatus`.
+pub fn status_color(s: &str, theme: &Theme) -> Color {
     match s {
-        "Running" | "Succeeded" | "Active" => Color::rgb(140, 220, 140),
-        "Pending" | "ContainerCreating" => Color::rgb(220, 200, 120),
-        "Failed" | "CrashLoopBackOff" | "Error" => Color::rgb(220, 120, 120),
-        "ClusterIP" | "NodePort" | "LoadBalancer" | "ExternalName" => Color::rgb(160, 200, 240),
+        "Running" | "Succeeded" | "Active" => badge_fg_color(BadgeStatus::Passed, theme),
+        "Pending" | "ContainerCreating" => badge_fg_color(BadgeStatus::Running, theme),
+        "Failed" | "CrashLoopBackOff" | "Error" => badge_fg_color(BadgeStatus::Blocked, theme),
+        "ClusterIP" | "NodePort" | "LoadBalancer" | "ExternalName" => theme.link_fg,
         s if s.contains('/') => match s.split_once('/') {
-            Some((a, b)) if a == b => Color::rgb(140, 220, 140),
-            _ => Color::rgb(220, 200, 120),
+            Some((a, b)) if a == b => badge_fg_color(BadgeStatus::Passed, theme),
+            _ => badge_fg_color(BadgeStatus::Warning, theme),
         },
-        _ => Color::rgb(180, 180, 180),
+        _ => theme.muted_fg,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_color_tracks_theme_badge_tokens() {
+        let theme = Theme::default();
+        assert_eq!(
+            status_color("Running", &theme),
+            badge_fg_color(BadgeStatus::Passed, &theme)
+        );
+        assert_eq!(
+            status_color("CrashLoopBackOff", &theme),
+            badge_fg_color(BadgeStatus::Blocked, &theme)
+        );
+    }
+
+    #[test]
+    fn status_color_differs_between_dark_and_light_themes() {
+        let dark = Theme::default();
+        let light = Theme::light_default();
+        assert_ne!(
+            status_color("Running", &dark),
+            status_color("Running", &light)
+        );
     }
 }

@@ -12,15 +12,12 @@ name = "kubeui"
 path = "src/main.rs"
 
 [dependencies]
+# `quadraui::tui::run` drives `kubeui_core::KubeApp`; it owns terminal
+# setup/teardown, the crossterm event loop, and ratatui rasterisers —
+# this binary has no direct ratatui/crossterm/tokio dependency of its
+# own (the `tokio::Runtime` the k8s client needs is owned inside
+# `KubeApp`, in `kubeui-core`).
 quadraui = { path = "../quadraui", features = ["tui"] }
 kubeui-core = { path = "../kubeui-core" }
 
-# Async runtime — owned here so the reducer's k8s `block_on` calls
-# happen on this binary's runtime.
-tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time", "sync"] }
-
 anyhow = "1.0"
-
-# TUI backend
-ratatui = "0.30"
-crossterm = "0.29"
