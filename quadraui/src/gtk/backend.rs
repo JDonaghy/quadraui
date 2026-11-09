@@ -5019,62 +5019,81 @@ impl Backend for GtkBackend {
             line_height,
         );
 
-        // Paint the title bar through the mapped `SidebarPanel` + `Toolbar`
-        // header instead of `panel::native_surface_paint::paint`'s own
-        // title-bar painter — `Panel::header_toolbar` builds a header whose
-        // fitting-action count/order matches `layout.visible_actions`
-        // exactly (same `tb` + `action_button_width`), so the two layouts
-        // agree on where each action button sits. `layout` itself (this
-        // method's hit-test contract) stays `gtk_panel_layout(...)`,
-        // unaffected by the swap.
+        // Paint the title bar's background + title label through the mapped
+        // `SidebarPanel` + `Toolbar` header instead of
+        // `panel::native_surface_paint::paint`'s own title-bar painter.
+        // `header_toolbar`'s own `Action` buttons are dropped before the
+        // header reaches the delegate (see the `truncate` below) and
+        // painted directly against `layout.visible_actions` instead —
+        // `header_toolbar`'s actions are measured by `Toolbar`'s
+        // text-width-based `measure_button`, not
+        // `PanelMeasure::action_button_width`, so letting the delegate
+        // paint them too would land each glyph at a different rect than
+        // this method's own hit-test bounds for anything wider than a
+        // single narrow glyph. `layout` itself (this method's hit-test
+        // contract) stays `gtk_panel_layout(...)`, unaffected either way.
         if let Some(tb) = layout.title_bar_bounds {
             let measure = crate::primitives::panel::PanelMeasure {
                 title_bar_height: tb.height,
                 action_button_width: crate::primitives::layout_metrics::pixel::PANEL_ACTION_BUTTON,
                 content_padding: 0.0,
             };
-            if let Some(header) = panel.header_toolbar(tb, measure) {
+            if let Some(mut header) = panel.header_toolbar(tb, measure) {
+                // Keep only the title `Label` + its trailing `Spacer` —
+                // `header_toolbar` always appends `Action` buttons after
+                // those two (see its own doc), and this method paints
+                // actions itself below.
+                header.buttons.truncate(2);
+
+                // `header_toolbar` leaves `Label::fg` as `None` (painted
+                // as `theme.muted_fg` by the delegate) and maps `bg` from
+                // `panel.accent` alone (painted as `theme.header_bg` by
+                // the delegate when `None`) — resolve both explicitly so
+                // the title text colour and title-bar background keep
+                // matching `panel::native_surface_paint::paint`'s
+                // `theme.foreground` / `panel.accent.unwrap_or(theme.separator)`
+                // contract exactly.
+                let bar_bg = panel.accent.unwrap_or(theme.separator);
+                header.bg = Some(bar_bg);
+                if let Some(crate::primitives::toolbar::ToolbarButton::Label { fg, .. }) =
+                    header.buttons.first_mut()
+                {
+                    *fg = Some(theme.foreground);
+                }
+
                 let sidebar = crate::primitives::sidebar_panel::SidebarPanel {
                     id: panel.id,
                     toolbar: Some(header),
                     toolbar_height: Some(tb.height),
                 };
-                // The header toolbar's label/action text paints through
-                // `PaintSurface`, which draws with whatever font is live
-                // on the shared `pango_layout` — swap to `ui_font` the same
-                // way `Self::draw_sidebar_panel_interactive` does so panel
-                // chrome never leaks the editor font.
-                let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-                let saved_font = {
-                    let (_cr, pango_layout) = self
-                        .current_frame_refs()
-                        .expect("GtkBackend::draw_panel called outside enter_frame_scope");
-                    let saved = pango_layout.font_description();
-                    pango_layout.set_font_description(Some(&ui_font_desc));
-                    saved
-                };
+                // `Self`'s own `PaintSurface::surface_draw_text_run` /
+                // `surface_measure_text` already force `ui_font` themselves
+                // (see those methods' own docs), so no explicit font
+                // save/swap/restore is needed around this call.
                 crate::primitives::sidebar_panel::native_surface_paint::paint(
                     &sidebar, self, &theme, tb, tb.height, None, None,
                 );
 
-                // `sidebar_panel::native_surface_paint`'s own active/hovered/
-                // pressed highlight (an inset rect in `theme.selected_bg`) is
-                // scoped to its own interactive chrome, not `Panel`'s
-                // `is_active` contract — `draw_panel` has no interaction
-                // state to feed it (`hovered`/`pressed` above are always
-                // `None`), so without this, a pinned `PanelAction::is_active`
-                // would silently stop painting the `accent_bg` fill
-                // `panel::native_surface_paint::paint` used to give it.
-                // Re-fill + redraw just the active actions' full button
-                // rects to keep that contract.
+                // Paint every action button directly against this
+                // method's own hit-test rects (`layout.visible_actions`),
+                // matching `panel::native_surface_paint::paint`'s
+                // contract: filled with `theme.accent_bg` when
+                // `is_active` else the title bar's own colour, glyph
+                // centred horizontally (unclamped) and top-aligned at
+                // `va.bounds.y`, drawn through `surface_draw_icon_glyph`
+                // so an app-chosen codicon/nerd-font `PanelAction::icon`
+                // resolves through the same icon-font fallback this
+                // crate's other chrome glyphs use.
                 for va in &layout.visible_actions {
                     let Some(action) = panel.actions.get(va.action_idx) else {
                         continue;
                     };
-                    if !action.is_active {
-                        continue;
-                    }
-                    self.surface_fill_rect(va.bounds, theme.accent_bg);
+                    let action_bg = if action.is_active {
+                        theme.accent_bg
+                    } else {
+                        bar_bg
+                    };
+                    self.surface_fill_rect(va.bounds, action_bg);
                     let (gw, gh) = self.surface_measure_text(&action.icon);
                     let glyph_x = va.bounds.x + (va.bounds.width - gw) / 2.0;
                     self.surface_draw_icon_glyph(
@@ -5083,11 +5102,6 @@ impl Backend for GtkBackend {
                         theme.foreground,
                     );
                 }
-
-                let (_cr, pango_layout) = self
-                    .current_frame_refs()
-                    .expect("GtkBackend::draw_panel called outside enter_frame_scope");
-                pango_layout.set_font_description(saved_font.as_ref());
             }
         }
 
@@ -10768,10 +10782,22 @@ mod tests {
     /// `SidebarPanel` + `Toolbar` header (`Panel::header_toolbar`) rather
     /// than `panel::native_surface_paint::paint`'s own painter, while
     /// `draw_panel` still returns `gtk_panel_layout(...)` for hit-testing.
-    /// Pins the two paint↔layout agreements that migration depends on:
-    /// the title text paints inset from the title bar's left edge (not
-    /// flush against it), and each action glyph paints inside the exact
-    /// `visible_actions[i].bounds` rect the returned layout reports.
+    /// Pins the paint↔layout agreements that migration depends on: the
+    /// title text paints inset from the title bar's left edge (not flush
+    /// against it); each action glyph paints inside the exact
+    /// `visible_actions[i].bounds` rect the returned layout reports; and
+    /// no ink paints in the gap between the title text and the first
+    /// action's own bounds. That last check is why each action's `icon`
+    /// carries trailing spaces: `Toolbar`'s own `measure_button` sizes an
+    /// `Action` button from the *text width* of `icon` (`action_text`,
+    /// including trailing-space advance) plus padding, not from
+    /// `PanelMeasure::action_button_width` — the trailing spaces inflate
+    /// that text-measured width well past the glyph's own rendered ink
+    /// width without pushing the glyph itself outside its fixed-width
+    /// bounds, so a measurer that sized action buttons that way (rather
+    /// than painting them directly against `visible_actions` the way
+    /// `draw_panel` does) would shift the whole trailing action group
+    /// left of `visible_actions`' own bounds, straight into this gap.
     #[test]
     fn gtk_backend_draw_panel_paints_title_inset_and_actions_in_bounds() {
         const W: i32 = 300;
@@ -10805,17 +10831,17 @@ mod tests {
 
             let panel = crate::primitives::panel::Panel {
                 id: WidgetId::new("test:panel"),
-                title: Some(crate::types::StyledText::plain("Title")),
+                title: Some(crate::types::StyledText::plain("T")),
                 actions: vec![
                     crate::primitives::panel::PanelAction {
                         id: WidgetId::new("close"),
-                        icon: "×".into(),
+                        icon: "i     ".into(),
                         tooltip: String::new(),
                         is_active: false,
                     },
                     crate::primitives::panel::PanelAction {
                         id: WidgetId::new("max"),
-                        icon: "□".into(),
+                        icon: "i     ".into(),
                         tooltip: String::new(),
                         is_active: false,
                     },
@@ -10823,7 +10849,7 @@ mod tests {
                 accent: None,
                 collapsed: false,
             };
-            let rect = QRect::new(0.0, 0.0, W as f64 as f32, H as f64 as f32);
+            let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
 
             layout = backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_panel(rect, &panel));
         }
@@ -10855,6 +10881,29 @@ mod tests {
             2,
             "both actions should fit in a 300px-wide title bar"
         );
+
+        // `Panel::layout` positions the first action rightmost (its own
+        // doc), so the leftmost edge of the action group is the minimum
+        // `bounds.x` across `visible_actions`, not `visible_actions[0]`.
+        let leftmost_action_x = layout
+            .visible_actions
+            .iter()
+            .map(|va| va.bounds.x)
+            .fold(f32::INFINITY, f32::min)
+            .round() as usize;
+        // Comfortably past the single-char title's own glyph, comfortably
+        // before the action group — any ink found here can only be a
+        // mis-measured action button bleeding left of its own bounds.
+        let gap_start = (tb.x.round() as usize + 20).min(leftmost_action_x);
+        for x in gap_start..leftmost_action_x {
+            assert!(
+                (row_top..row_bottom).all(|y| !is_ink(x, y)),
+                "no ink expected in the gap between the title and the \
+                 first action's own bounds at column {x} \
+                 (leftmost_action_x={leftmost_action_x})"
+            );
+        }
+
         for va in &layout.visible_actions {
             let x0 = va.bounds.x.round() as usize;
             let x1 = (va.bounds.x + va.bounds.width).round() as usize;
@@ -10918,27 +10967,202 @@ mod tests {
                 accent: None,
                 collapsed: false,
             };
-            let rect = QRect::new(0.0, 0.0, W as f64 as f32, H as f64 as f32);
+            let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
 
             layout = backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_panel(rect, &panel));
         }
 
         surface.flush();
-        let stride = surface.stride() as usize;
-        let data = surface.data().expect("surface data");
-        let pixel_rgb = |x: usize, y: usize| {
-            let off = y * stride + x * 4;
-            (data[off + 2], data[off + 1], data[off])
-        };
 
         let va = &layout.visible_actions[0];
-        let corner_x = va.bounds.x.round() as usize;
-        let corner_y = va.bounds.y.round() as usize;
+        let corner_x = va.bounds.x.round() as i32;
+        let corner_y = va.bounds.y.round() as i32;
         assert_eq!(
-            pixel_rgb(corner_x, corner_y),
+            pixel_argb(&mut surface, corner_x, corner_y),
             (accent_bg.r, accent_bg.g, accent_bg.b),
             "an is_active action's full bounds (down to its own corner) must \
              fill with theme.accent_bg, not an inset pill"
+        );
+    }
+
+    /// `header_toolbar` leaves a title `Label`'s `fg` as `None` (which
+    /// `sidebar_panel::native_surface_paint`'s `Label` arm resolves to
+    /// `theme.muted_fg`) and maps the header `Toolbar`'s `bg` from
+    /// `panel.accent` alone (`None` here, which that same delegate
+    /// resolves to `theme.header_bg`). `GtkBackend::draw_panel` sets both
+    /// explicitly at the call site instead, so the title text colour and
+    /// title-bar background keep matching
+    /// `panel::native_surface_paint::paint`'s `theme.foreground` /
+    /// `theme.separator` contract exactly.
+    #[test]
+    fn gtk_backend_draw_panel_title_colours_match_panel_native_surface_paint() {
+        const W: i32 = 300;
+        const H: i32 = 40;
+        let foreground = crate::types::Color::rgb(10, 10, 10);
+        let muted_fg = crate::types::Color::rgb(130, 130, 130);
+        let header_bg = crate::types::Color::rgb(90, 90, 90);
+        let separator = crate::types::Color::rgb(40, 40, 40);
+        let mut surface =
+            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                .expect("create ImageSurface");
+        let layout;
+        {
+            let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+
+            let mut backend = GtkBackend::new();
+            Backend::set_current_line_height(&mut backend, 20.0);
+            backend.set_current_theme(crate::Theme {
+                background: crate::types::Color::rgb(255, 255, 255),
+                foreground,
+                muted_fg,
+                header_bg,
+                separator,
+                ..crate::Theme::default()
+            });
+
+            let panel = crate::primitives::panel::Panel {
+                id: WidgetId::new("test:panel"),
+                title: Some(crate::types::StyledText::plain("T")),
+                actions: vec![],
+                accent: None,
+                collapsed: false,
+            };
+            let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+            layout = backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_panel(rect, &panel));
+        }
+
+        surface.flush();
+        let tb = layout.title_bar_bounds.expect("title bar present");
+
+        // Background: sample a point in the title bar clear of the
+        // single-char title's own glyph — must resolve to
+        // `theme.separator`, not `theme.header_bg`.
+        let bg_x = (tb.x + tb.width - 5.0).round() as i32;
+        let bg_y = (tb.y + tb.height / 2.0).round() as i32;
+        assert_eq!(
+            pixel_argb(&mut surface, bg_x, bg_y),
+            (separator.r, separator.g, separator.b),
+            "title-bar background with no accent must resolve to \
+             theme.separator, not theme.header_bg"
+        );
+
+        // Title text colour: the darkest pixel near the title's own
+        // glyph must sit closer to `theme.foreground` than
+        // `theme.muted_fg` — exact equality would be fragile against
+        // anti-aliased glyph edges, so this compares distances instead.
+        let row_top = tb.y.round() as i32;
+        let row_bottom = (tb.y + tb.height).round() as i32;
+        let text_x_start = tb.x.round() as i32;
+        let text_x_end = text_x_start + 20;
+        let mut darkest: Option<(u8, u8, u8)> = None;
+        let mut darkest_sum = i32::MAX;
+        for x in text_x_start..text_x_end {
+            for y in row_top..row_bottom {
+                let (r, g, b) = pixel_argb(&mut surface, x, y);
+                let sum = r as i32 + g as i32 + b as i32;
+                if sum < darkest_sum {
+                    darkest_sum = sum;
+                    darkest = Some((r, g, b));
+                }
+            }
+        }
+        let (r, g, b) = darkest.expect("title text must paint some ink");
+        let dist_to = |c: crate::types::Color| {
+            (r as i32 - c.r as i32).abs()
+                + (g as i32 - c.g as i32).abs()
+                + (b as i32 - c.b as i32).abs()
+        };
+        assert!(
+            dist_to(foreground) < dist_to(muted_fg),
+            "title text's darkest pixel {:?} must be closer to \
+             theme.foreground {:?} than theme.muted_fg {:?}",
+            (r, g, b),
+            foreground,
+            muted_fg
+        );
+    }
+
+    /// Disclosed-and-pinned divergence (`CHANGELOG.md`): the title label
+    /// now paints vertically centred in the title bar, not top-aligned
+    /// the way `panel::native_surface_paint::paint` drew it. Uses a title
+    /// bar much taller than the title glyph so top-aligned vs. centred
+    /// land at clearly different rows.
+    #[test]
+    fn gtk_backend_draw_panel_title_label_is_vertically_centered() {
+        const W: i32 = 300;
+        const H: i32 = 60;
+        let mut surface =
+            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                .expect("create ImageSurface");
+        let layout;
+        {
+            let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+
+            let mut backend = GtkBackend::new();
+            // A title bar height far taller than the title glyph makes
+            // top-aligned vs. vertically-centred land at clearly
+            // different rows.
+            Backend::set_current_line_height(&mut backend, 50.0);
+            backend.set_current_theme(crate::Theme {
+                background: crate::types::Color::rgb(255, 255, 255),
+                header_bg: crate::types::Color::rgb(255, 255, 255),
+                separator: crate::types::Color::rgb(255, 255, 255),
+                foreground: crate::types::Color::rgb(0, 0, 0),
+                ..crate::Theme::default()
+            });
+
+            let panel = crate::primitives::panel::Panel {
+                id: WidgetId::new("test:panel"),
+                title: Some(crate::types::StyledText::plain("T")),
+                actions: vec![],
+                accent: None,
+                collapsed: false,
+            };
+            let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+            layout = backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_panel(rect, &panel));
+        }
+
+        surface.flush();
+        let tb = layout.title_bar_bounds.expect("title bar present");
+        let row_top = tb.y.round() as i32;
+        let row_bottom = (tb.y + tb.height).round() as i32;
+        let text_x_start = tb.x.round() as i32;
+        let text_x_end = text_x_start + 20;
+        let mut is_ink = |x: i32, y: i32| pixel_argb(&mut surface, x, y) != (255, 255, 255);
+
+        let mut first_ink_row = None;
+        let mut last_ink_row = None;
+        for y in row_top..row_bottom {
+            if (text_x_start..text_x_end).any(|x| is_ink(x, y)) {
+                first_ink_row.get_or_insert(y);
+                last_ink_row = Some(y);
+            }
+        }
+        let first_ink_row = first_ink_row.expect("title text must paint some ink");
+        let last_ink_row = last_ink_row.expect("title text must paint some ink");
+
+        assert!(
+            first_ink_row > row_top + 5,
+            "title text must not be top-aligned flush against the title \
+             bar's top edge: first_ink_row={first_ink_row}, row_top={row_top}"
+        );
+
+        let text_mid = (first_ink_row + last_ink_row) as f32 / 2.0;
+        let bar_mid = tb.y + tb.height / 2.0;
+        assert!(
+            (text_mid - bar_mid).abs() < 4.0,
+            "title text must be vertically centred in the title bar: \
+             text_mid={text_mid}, bar_mid={bar_mid}"
         );
     }
 
