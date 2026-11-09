@@ -622,23 +622,41 @@ only a push to `main` runs this workflow.
   unchanged.
 - `MacBackend::draw_panel` paints the title bar through the mapped
   `SidebarPanel` + `Toolbar` header (#2226): it builds the header via
-  `Panel::header_toolbar` with the same fixed `action_button_width`
-  `mac_panel_layout` uses for hit-testing, then paints it with
-  `sidebar_panel::native_surface_paint::paint` instead of
+  `Panel::header_toolbar` and paints the title label and the title-bar
+  background with `sidebar_panel::native_surface_paint::paint` instead of
   `panel::native_surface_paint::paint`'s own near-duplicate title-bar
-  painter. `draw_panel` keeps returning `mac_panel_layout(...)` for
-  hit-testing, so paint and hit-test action-button positions still
-  agree. A `PanelAction::is_active` button's full bounds is re-filled
-  with `theme.accent_bg` after the delegate paints, since
-  `sidebar_panel`'s own active-state highlight is a 2px-inset
-  `selected_bg` pill scoped to its own interactive chrome; an unaccented
-  panel's title bar background is pinned to `theme.separator` the same
-  way, since `header_toolbar` otherwise leaves `Toolbar::bg` at
-  `sidebar_panel`'s own `theme.header_bg` default. Two new
-  `macos::panel` tests pin the title's left-inset and each action
-  glyph's pixels landing inside its own `visible_actions[i].bounds`, and
-  the `is_active` full-rect `accent_bg` fill; every existing
-  `macos::panel` test passes unmodified. GTK and Windows still call
+  painter. `header_toolbar`'s mapped `Toolbar::Label` keeps
+  `theme.foreground` (set explicitly, since `sidebar_panel` otherwise
+  resolves an unset `fg` to `theme.muted_fg`). Action buttons are
+  stripped out of the mapped header and painted directly against
+  `mac_panel_layout`'s fixed-width `visible_actions[i].bounds` instead of
+  being delegated too: `sidebar_panel::native_surface_paint::paint`
+  measures each `Action` button by its own label width
+  (`toolbar::measure_button`), which only agrees with
+  `mac_panel_layout`'s fixed `PANEL_ACTION_BUTTON` width for glyphs that
+  happen to measure exactly that wide, so delegating action paint as
+  well would let a glyph's painted pixels drift outside its own
+  hit-test rect for other glyphs. `draw_panel` keeps returning
+  `mac_panel_layout(...)` for hit-testing, so paint and hit-test
+  action-button positions always agree, by construction, regardless of
+  glyph width. A `PanelAction::is_active` button's full bounds fills
+  with `theme.accent_bg`, every other action's with the title bar's own
+  background, both painted with the icon-glyph verb
+  (`surface_draw_icon_glyph`), the same as before this seam existed; an
+  unaccented panel's title bar background is pinned to `theme.separator`
+  the same way, since `header_toolbar` otherwise leaves `Toolbar::bg` at
+  `sidebar_panel`'s own `theme.header_bg` default. Action glyphs stay
+  top-aligned at `visible_actions[i].bounds.y`, so there is no
+  vertical-alignment change for them; the title label's vertical
+  alignment does change from top-aligned to `sidebar_panel`'s own
+  vertically-centred `Label` paint, with no visible delta while the
+  title bar height matches the chrome line height, as before. Four new
+  `macos::panel` tests pin the title's left-inset, the title's painted
+  colour (`theme.foreground`, not `theme.muted_fg`), each action glyph's
+  pixels landing inside its own fixed-width `visible_actions[i].bounds`
+  — including with differently-sized action icon strings — and the
+  `is_active` full-rect `accent_bg` fill; every existing `macos::panel`
+  test passes unmodified. GTK and Windows still call
   `panel::native_surface_paint::paint` until their own seam issues land
   (that module stays, per scope).
 ### Fixed

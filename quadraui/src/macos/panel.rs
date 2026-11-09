@@ -243,9 +243,23 @@ mod tests {
         };
 
         let tb = layout.title_bar_bounds.expect("title bar present");
+        assert_eq!(
+            layout.visible_actions.len(),
+            2,
+            "both actions should fit in a {W}px-wide title bar"
+        );
+        // Bound the ink scan to the title body, left of the leftmost
+        // action button — scanning the whole row would let the first
+        // action glyph (not the title) be the "first ink" found, which
+        // would pass even if the title painted nothing at all.
+        let title_body_right = layout
+            .visible_actions
+            .iter()
+            .map(|va| va.bounds.x)
+            .fold(f32::INFINITY, f32::min);
         let row_top = tb.y.round() as u32;
         let row_bottom = (tb.y + tb.height).round() as u32;
-        let first_ink_col = (tb.x.round() as u32..W)
+        let first_ink_col = (tb.x.round() as u32..title_body_right.round() as u32)
             .find(|&x| (row_top..row_bottom).any(|y| is_ink(x, y)))
             .expect("title text must paint some ink in the title bar row");
         assert!(
@@ -253,12 +267,6 @@ mod tests {
             "title text must be inset from the title bar's left edge: \
              first_ink_col={first_ink_col}, tb.x={}",
             tb.x
-        );
-
-        assert_eq!(
-            layout.visible_actions.len(),
-            2,
-            "both actions should fit in a {W}px-wide title bar"
         );
         for va in &layout.visible_actions {
             let x0 = va.bounds.x.round() as u32;
@@ -269,6 +277,132 @@ mod tests {
             assert!(
                 has_ink,
                 "action {:?} glyph must paint ink inside its own bounds {:?}",
+                va.id, va.bounds,
+            );
+        }
+    }
+
+    /// Pins the title's painted colour to `theme.foreground`, not the
+    /// `sidebar_panel::ToolbarButton::Label` default of `theme.muted_fg`
+    /// — `MacBackend::draw_panel` sets the mapped label's `fg` explicitly
+    /// so the title keeps the contrast `panel::native_surface_paint::
+    /// paint` drew it with.
+    #[test]
+    fn draw_panel_title_paints_theme_foreground() {
+        let background = Color::rgb(255, 255, 255);
+        let foreground = Color::rgb(10, 200, 10);
+        let muted_fg = Color::rgb(120, 122, 135);
+        let theme = Theme {
+            background,
+            header_bg: background,
+            separator: background,
+            foreground,
+            muted_fg,
+            ..Theme::default()
+        };
+        let panel = sample_panel();
+        let (surface, layout) = paint_via_backend_with_theme(&panel, theme);
+
+        let tb = layout.title_bar_bounds.expect("title bar present");
+        let title_body_right = layout
+            .visible_actions
+            .iter()
+            .map(|va| va.bounds.x)
+            .fold(f32::INFINITY, f32::min);
+        let row_top = tb.y.round() as u32;
+        let row_bottom = (tb.y + tb.height).round() as u32;
+
+        let mut found_fg = false;
+        let mut found_muted = false;
+        for x in (tb.x.round() as u32)..(title_body_right.round() as u32) {
+            for y in row_top..row_bottom {
+                let (r, g, b, _) = surface.pixel(x, y);
+                if (r, g, b) == (foreground.r, foreground.g, foreground.b) {
+                    found_fg = true;
+                }
+                if (r, g, b) == (muted_fg.r, muted_fg.g, muted_fg.b) {
+                    found_muted = true;
+                }
+            }
+        }
+        assert!(
+            found_fg,
+            "title text must paint in theme.foreground somewhere in the title body"
+        );
+        assert!(
+            !found_muted,
+            "title text must not fall back to theme.muted_fg"
+        );
+    }
+
+    /// Each action button's hit-test rect (`mac_panel_layout`'s fixed
+    /// `PANEL_ACTION_BUTTON`-wide slot) must stay the slot the matching
+    /// glyph actually paints into, even when the actions' icon strings
+    /// measure to different widths — `draw_panel` paints action glyphs
+    /// directly against `layout.visible_actions[i].bounds` rather than
+    /// through `sidebar_panel::native_surface_paint::paint`'s own
+    /// label-width-based measure, so the two can never drift apart the
+    /// way they would if action paint were delegated too.
+    #[test]
+    fn draw_panel_action_glyphs_stay_in_fixed_width_bounds_with_differing_widths() {
+        let white = Color::rgb(255, 255, 255);
+        let theme = Theme {
+            background: white,
+            header_bg: white,
+            separator: white,
+            foreground: Color::rgb(0, 0, 0),
+            ..Theme::default()
+        };
+        let mut panel = sample_panel();
+        panel.actions = vec![
+            PanelAction {
+                id: WidgetId::new("a0"),
+                icon: "×".into(),
+                tooltip: String::new(),
+                is_active: false,
+            },
+            PanelAction {
+                id: WidgetId::new("a1"),
+                icon: "settings".into(),
+                tooltip: String::new(),
+                is_active: false,
+            },
+            PanelAction {
+                id: WidgetId::new("a2"),
+                icon: "□".into(),
+                tooltip: String::new(),
+                is_active: false,
+            },
+            PanelAction {
+                id: WidgetId::new("a3"),
+                icon: "w".into(),
+                tooltip: String::new(),
+                is_active: false,
+            },
+        ];
+        let (surface, layout) = paint_via_backend_with_theme(&panel, theme);
+
+        let is_ink = |x: u32, y: u32| {
+            let (r, g, b, _) = surface.pixel(x, y);
+            !(r == 255 && g == 255 && b == 255)
+        };
+
+        assert_eq!(layout.visible_actions.len(), 4);
+        for va in &layout.visible_actions {
+            assert_eq!(
+                va.bounds.width,
+                crate::primitives::layout_metrics::pixel::PANEL_ACTION_BUTTON,
+                "action {:?} must keep the fixed PANEL_ACTION_BUTTON width",
+                va.id,
+            );
+            let x0 = va.bounds.x.round() as u32;
+            let x1 = (va.bounds.x + va.bounds.width).round() as u32;
+            let y0 = va.bounds.y.round() as u32;
+            let y1 = (va.bounds.y + va.bounds.height).round() as u32;
+            let has_ink = (x0..x1).any(|x| (y0..y1).any(|y| is_ink(x, y)));
+            assert!(
+                has_ink,
+                "action {:?} glyph must paint ink inside its own hit-test bounds {:?}",
                 va.id, va.bounds,
             );
         }
