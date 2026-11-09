@@ -73,6 +73,16 @@ only a push to `main` runs this workflow.
   painter returns today. No field added to `Toolbar`, `ToolbarPaintOptions`,
   `ActivityBar`, `ActivityItem`, or `ActivityBarStyle`; no painter reads
   the new sidecar yet.
+- `tui::toolbar::draw_toolbar_with_rail_style` (#2222): the first painter
+  to read `ToolbarRailStyle` — a vertical-rail `Toolbar` paint entry point
+  honouring its active-row fill, leading-edge accent glyph, keyboard-
+  selection fill (or `Modifier::REVERSED` fallback), and trailing-edge
+  separator column. `tui::activity_bar::draw_activity_bar_with_style`'s
+  body is now a thin seam-mapping wrapper around it (via
+  `ActivityBar::to_toolbar_parts` and `ActivityBar::row_hits_from_toolbar_layout`)
+  instead of its own ~145-line bespoke cell painter; `draw_activity_bar`/
+  `draw_activity_bar_with_style` keep their exact signatures and
+  `Vec<ActivityBarRowHit>` return.
 - `SplitTree::Split` gains `first_min`/`second_min` (default `0.0`, set via
   the new `SplitTree::with_min_sizes` builder — not a `split()` argument, so
   existing call sites keep compiling) and now honours them in `layout()`
