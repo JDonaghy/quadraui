@@ -153,6 +153,30 @@ only a push to `main` runs this workflow.
   vertically centred in the title bar (matching `SidebarPanel`'s `Label`
   convention) rather than top-aligned as `panel::native_surface_paint::paint`
   drew it.
+- `WinBackend::draw_panel` (#2227) paints a `Panel`'s title-bar background
+  and title label through the same `Panel::header_toolbar`-mapped
+  `SidebarPanel` + `Toolbar` header `GtkBackend::draw_panel` (#2225) uses,
+  routed through `sidebar_panel::native_surface_paint::paint`, instead of
+  `panel::native_surface_paint::paint`'s own near-duplicate title-bar
+  painter — macOS still calls the latter until its own seam issue lands.
+  `draw_panel`'s returned `PanelLayout` is unaffected (still
+  `win_panel_layout(...)`, agreeing with `panel_layout`'s no-surface path).
+  Action buttons are painted directly against that same `PanelLayout`'s
+  `visible_actions` rects, for the same width-agreement reason #2225's
+  entry above gives; each button is filled with `theme.accent_bg` when
+  `is_active` else the title bar's own colour, and its glyph is top-aligned
+  and centred horizontally unclamped — unchanged from
+  `panel::native_surface_paint::paint`'s own contract, since
+  `win_panel_layout`'s fixed-width action buttons never hit the
+  text-measured-overflow case #2225 clipped for GTK's own header-toolbar
+  measurer. The title `Label`'s `fg` and the header `Toolbar`'s `bg` are
+  both resolved explicitly at the call site (`theme.foreground`,
+  `panel.accent.unwrap_or(theme.separator)`) so the title text colour and
+  title-bar background also keep matching that contract. One visible
+  difference is disclosed and pinned by a test: the title text is now
+  vertically centred in the title bar (matching `SidebarPanel`'s `Label`
+  convention) rather than top-aligned as `panel::native_surface_paint::paint`
+  drew it.
 - `tui::multi_section_view`'s section-header rasteriser derives a
   `HeaderAction`'s glyph text (and `SectionAux::Toolbar`'s action glyphs)
   via `primitives::toolbar::action_text`, the same derivation the

@@ -1,9 +1,10 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::Panel`].
 //!
-//! Painting is implemented in the shared
-//! [`crate::primitives::panel::native_surface_paint::paint`] — see that fn's doc
-//! for details. This module carries [`win_panel_layout`] for pure layout
-//! queries needed by `WinBackend::panel_layout`.
+//! `WinBackend::draw_panel` paints the title bar through the mapped
+//! `SidebarPanel` + `Toolbar` header — see that method's own doc. This
+//! module carries [`win_panel_layout`] for the pure layout queries
+//! `WinBackend::panel_layout` and `draw_panel`'s own no-surface fallback
+//! need.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod panel;` and `backend.rs`'s module
@@ -12,9 +13,8 @@
 //!
 //! # Theme
 //!
-//! `WinBackend::draw_panel` passes `&self.current_theme` to the shared
-//! [`crate::primitives::panel::native_surface_paint::paint`] — the same
-//! live theme `Backend::set_theme` writes, the same shape
+//! `WinBackend::draw_panel` passes `&self.current_theme` to the delegate
+//! — the same live theme `Backend::set_theme` writes, the same shape
 //! `win::status_bar`'s module doc documents.
 
 #[cfg(test)]
