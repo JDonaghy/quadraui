@@ -44,6 +44,25 @@
 use crate::event::Rect;
 use crate::types::WidgetId;
 
+/// Wrap `current + delta` into `0..n`, the one index-cycling arithmetic
+/// every Tab/Shift+Tab-style stepper in this crate shares — [`FocusManager`],
+/// [`crate::compose::focus_group::FocusGroup`], and the menu/workspace/
+/// dialog/toast/form controllers that step a bounded index with wrap-around.
+///
+/// `delta` may be negative (Shift+Tab) or larger than `n` in magnitude;
+/// both wrap correctly. `n == 0` has no valid index to land on, so it
+/// returns `0` rather than panicking — callers with an empty collection
+/// should check that before stepping it, as every call site above already
+/// does.
+pub fn cycle_index(current: usize, delta: isize, n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let n = n as isize;
+    let current = current as isize;
+    (current + delta).rem_euclid(n) as usize
+}
+
 // Focus-ring stroke width is not a constant in this module: it is the
 // app-overridable [`crate::Style::focus_ring_width`] token (native
 // units — GTK/macOS/Win-GUI pixels), which every `PaintSurface`-backed
@@ -117,20 +136,20 @@ impl FocusManager {
         self.step(-1)
     }
 
-    fn step(&mut self, dir: i32) -> bool {
+    fn step(&mut self, dir: isize) -> bool {
         if self.tab_order.is_empty() {
             return self.set_focus(None);
         }
-        let len = self.tab_order.len() as i32;
+        let len = self.tab_order.len();
         let next_idx = match &self.focused {
             None if dir >= 0 => 0,
             None => len - 1,
             Some(cur) => {
-                let idx = self.tab_order.iter().position(|w| w == cur).unwrap_or(0) as i32;
-                (idx + dir).rem_euclid(len)
+                let idx = self.tab_order.iter().position(|w| w == cur).unwrap_or(0);
+                cycle_index(idx, dir, len)
             }
         };
-        let next = self.tab_order[next_idx as usize];
+        let next = self.tab_order[next_idx];
         self.set_focus(Some(next))
     }
 
@@ -271,6 +290,32 @@ mod tests {
         fm.set_focus(Some(WidgetId::new("a")));
         assert!(fm.is_focused(&WidgetId::new("a")));
         assert!(!fm.is_focused(&WidgetId::new("b")));
+    }
+
+    #[test]
+    fn cycle_index_empty_returns_zero() {
+        assert_eq!(cycle_index(0, 1, 0), 0);
+        assert_eq!(cycle_index(5, -3, 0), 0);
+    }
+
+    #[test]
+    fn cycle_index_single_stays_at_zero() {
+        assert_eq!(cycle_index(0, 1, 1), 0);
+        assert_eq!(cycle_index(0, -1, 1), 0);
+        assert_eq!(cycle_index(0, 42, 1), 0);
+    }
+
+    #[test]
+    fn cycle_index_wraps_forward_and_backward() {
+        assert_eq!(cycle_index(2, 1, 3), 0);
+        assert_eq!(cycle_index(0, -1, 3), 2);
+    }
+
+    #[test]
+    fn cycle_index_handles_negative_and_large_deltas() {
+        assert_eq!(cycle_index(1, -5, 3), 2);
+        assert_eq!(cycle_index(0, 7, 3), 1);
+        assert_eq!(cycle_index(2, -2, 5), 0);
     }
 
     #[test]

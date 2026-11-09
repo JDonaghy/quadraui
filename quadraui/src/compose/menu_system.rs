@@ -881,12 +881,12 @@ impl MenuSystem {
     }
 
     fn next_enabled_menu(&self, from: usize, delta: isize) -> usize {
-        let n = self.menus.len() as isize;
-        let mut idx = from as isize;
-        for _ in 0..self.menus.len() {
-            idx = (idx + delta).rem_euclid(n);
-            if !self.menus[idx as usize].disabled {
-                return idx as usize;
+        let n = self.menus.len();
+        let mut idx = from;
+        for _ in 0..n {
+            idx = crate::focus::cycle_index(idx, delta, n);
+            if !self.menus[idx].disabled {
+                return idx;
             }
         }
         from

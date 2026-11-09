@@ -17,22 +17,24 @@
 //! assert_eq!(ring.current(), Some(&WidgetId::new("replace")));
 //! ```
 //!
-//! # Relationship to [`FocusGroup`]
+//! # Relationship to [`FocusManager`] and [`FocusGroup`](super::focus_group::FocusGroup)
 //!
-//! Both types cycle a "current" position with wrap-around.
-//! `FocusRing` is a thin [`WidgetId`]-keyed shim over a
-//! [`FocusGroup`] — the cycling itself has exactly one implementation,
-//! in [`FocusGroup::cycle`]. The two types exist separately
-//! because their call sites need different keys: `FocusRing` suits a
-//! fixed list of named widgets (form fields looked up by the
-//! [`WidgetId`] a hit-test returns — see `examples/common/form_groups.rs`),
-//! while `FocusGroup` suits a dynamically-resized run of anonymous
-//! regions indexed 0..N (sidebar sections, tab-group panes — see
+//! `FocusRing` is a thin wrapper over [`FocusManager`] — the same
+//! `WidgetId`-keyed focus owner every backend's Tab/Shift+Tab intercept
+//! drives — adding only [`Self::is_focus_visible`]'s `:focus-visible`
+//! bookkeeping on top. The index-wrapping arithmetic itself lives in one
+//! place, [`crate::focus::cycle_index`], which `FocusManager::step` calls
+//! too, so there is exactly one cycling implementation under both.
+//!
+//! [`FocusGroup`](super::focus_group::FocusGroup) exists separately for call sites with no natural
+//! `WidgetId` to key by: a dynamically-resized run of anonymous regions
+//! indexed `0..N` (sidebar sections, tab-group panes — see
 //! [`crate::compose::sidebar_system`] / [`crate::compose::tab_group`]),
-//! where there's no natural `WidgetId` to key by and the count changes
-//! at runtime as sections/panes are added or removed.
+//! where the count changes at runtime as sections/panes are added or
+//! removed. It is also a thin wrapper over [`crate::focus::cycle_index`].
 
-use super::focus_group::FocusGroup;
+use crate::event::Rect;
+use crate::focus::FocusManager;
 use crate::types::WidgetId;
 
 /// Manages Tab/Shift+Tab cycling through a fixed list of focusable widgets.
@@ -60,7 +62,7 @@ use crate::types::WidgetId;
 #[derive(Debug, Clone)]
 pub struct FocusRing {
     items: Vec<WidgetId>,
-    group: FocusGroup,
+    manager: FocusManager,
     focus_visible: bool,
 }
 
@@ -71,13 +73,22 @@ impl FocusRing {
     /// reached by keyboard). Pass an empty vec for no focus.
     pub fn new(ids: Vec<impl Into<WidgetId>>) -> Self {
         let items: Vec<WidgetId> = ids.into_iter().map(Into::into).collect();
-        let mut group = FocusGroup::new(items.len());
-        if !items.is_empty() {
-            group.set_active(Some(0));
+        let mut manager = FocusManager::new();
+        // `FocusManager::sync_tab_order` only reads the id half of each
+        // pair (see its doc) — the rects exist purely to satisfy its
+        // signature, which is built for real on-screen tab stops; a ring
+        // has no geometry of its own.
+        let stops: Vec<(WidgetId, Rect)> = items
+            .iter()
+            .map(|id| (*id, Rect::new(0.0, 0.0, 0.0, 0.0)))
+            .collect();
+        manager.sync_tab_order(&stops);
+        if let Some(first) = items.first() {
+            manager.set_focus(Some(*first));
         }
         Self {
             items,
-            group,
+            manager,
             focus_visible: true,
         }
     }
@@ -86,8 +97,8 @@ impl FocusRing {
     /// focus-visible. No-op if nothing is currently focused (empty ring,
     /// or focus was [`Self::clear`]ed).
     pub fn advance(&mut self) {
-        if self.group.active().is_some() {
-            self.group.cycle(1);
+        if self.manager.focused().is_some() {
+            self.manager.focus_next();
             self.focus_visible = true;
         }
     }
@@ -96,8 +107,8 @@ impl FocusRing {
     /// focus-visible. No-op if nothing is currently focused (empty ring,
     /// or focus was [`Self::clear`]ed).
     pub fn retreat(&mut self) {
-        if self.group.active().is_some() {
-            self.group.cycle(-1);
+        if self.manager.focused().is_some() {
+            self.manager.focus_prev();
             self.focus_visible = true;
         }
     }
@@ -110,22 +121,22 @@ impl FocusRing {
     /// e.g. restoring focus after a dialog closes) should call
     /// [`Self::set_focus_visible`] immediately after.
     pub fn set(&mut self, id: &WidgetId) {
-        if let Some(idx) = self.items.iter().position(|item| item == id) {
-            self.group.set_active(Some(idx));
+        if self.items.iter().any(|item| item == id) {
+            self.manager.set_focus(Some(*id));
             self.focus_visible = false;
         }
     }
 
     /// Clear focus (nothing focused).
     pub fn clear(&mut self) {
-        self.group.set_active(None);
+        self.manager.clear();
     }
 
     /// Focus the first item, and mark the ring focus-visible. No-op if
     /// empty.
     pub fn focus_first(&mut self) {
-        if !self.items.is_empty() {
-            self.group.set_active(Some(0));
+        if let Some(first) = self.items.first() {
+            self.manager.set_focus(Some(*first));
             self.focus_visible = true;
         }
     }
@@ -148,17 +159,18 @@ impl FocusRing {
 
     /// The currently focused widget ID, or `None` if nothing is focused.
     pub fn current(&self) -> Option<&WidgetId> {
-        self.group.active().and_then(|i| self.items.get(i))
+        self.manager.focused()
     }
 
     /// The index of the currently focused item.
     pub fn current_index(&self) -> Option<usize> {
-        self.group.active()
+        self.current()
+            .and_then(|id| self.items.iter().position(|item| item == id))
     }
 
     /// Whether the given ID is currently focused.
     pub fn is_focused(&self, id: &WidgetId) -> bool {
-        self.current() == Some(id)
+        self.manager.is_focused(id)
     }
 
     /// The number of items in the ring.

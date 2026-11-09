@@ -1954,6 +1954,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             })
             .collect();
         let form = quadraui::Form {
@@ -1967,6 +1968,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
 
         let logic = FormLogic {

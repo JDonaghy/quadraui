@@ -76,6 +76,13 @@ only a push to `main` runs this workflow.
   click target to an integer cell. Hosts that hit-test a cached
   `SplitLayout` by hand instead of calling `SplitLayout::hit_test` should
   read this field, not `divider_bounds`.
+- `ChatController`'s input box now has `Shift+Arrow`/`Shift+Home`/
+  `Shift+End` selection and `Ctrl+Left`/`Right`/`Backspace`/`Delete` word
+  ops, same as `FormController`'s text fields — the input now routes every
+  edit through a `TextEditor` instead of hand-rolled byte-offset
+  arithmetic. Every existing public accessor (`input_text`/
+  `input_insert_char`/`input_insert_str`/`clear_input`/`input_has_focus`)
+  keeps its signature.
 ### Changed
 - `Split`/`SplitTree`'s own accessibility role moved from `A11yRole::Group`
   to `A11yRole::Splitter`.
@@ -100,6 +107,34 @@ only a push to `main` runs this workflow.
   convention instead of the previous in-order ("first subtree, this node,
   second subtree") numbering. Only observable for a tree with 3+ panes (2+
   `Split` nodes); a single divider's index is unaffected.
+- `Form::spacing: FormSpacing` and `FormField::row_align: Option<RowAlign>`
+  (#2233): a form-wide padding inset (`FormSpacing::padding`, applied on
+  all four edges before any field lays out), a form-wide override for
+  every item-bearing field's inter-item gap (`FormSpacing::item_gap` —
+  `ToggleGroup`/`ButtonRow`/`SegmentedControl`/`Toolbar`), and a
+  `RowAlign` (`Start`/`Center`/`End`/`Stretch`) controlling how those
+  same fields' items pack within their row once `FieldKind::ButtonRow`
+  needs e.g. a dialog-footer's buttons flush right. `Form::layout` is
+  the one place `item_gap`/`row_align` resolve, so GTK/macOS/Win (which
+  already paint every row at `Form::layout`'s own `bounds`) and TUI's
+  item-bearing fields (whose `item_bounds` already carried the same
+  offset) pick those two up with no backend-specific code change.
+  `padding`'s *vertical* axis is the same story everywhere; its
+  *horizontal* axis needed one further TUI fix — `tui::form::draw_form`'s
+  plain (non-item) field rows positioned their label/control columns
+  from `area.x` directly rather than consulting `Form::layout`'s
+  per-row `bounds.x`, so `tui::form::build_row_ctx` now takes that
+  offset explicitly (`RowX`) and applies it to every column it
+  computes. A `Form` that never sets `spacing`/`row_align` lays out
+  bit-for-bit identically to before these fields existed on every
+  backend — ships with `examples/common/form_spacing.rs` +
+  `examples/tui_form_spacing.rs` and its `TuiDriver` test. **Breaking**
+  for any consumer constructing
+  `Form`/`FormField` via a full struct literal (not `..Default::default()`)
+  — `vimcode` (crates.io `0.1.x` pin) and `coord-tui` (pinned git rev)
+  both do; see rule 8's *New field on a public struct a consumer
+  constructs* row. `quadraui/src/primitives/form.rs`'s own module-doc
+  doctest and every in-tree construction site are updated in this PR.
 - `primitives::spinner::native_surface_paint::paint`,
   `primitives::command_center::native_surface_paint::paint`, and
   `primitives::form::native_surface_paint::paint_settings_chrome` — shared
@@ -111,6 +146,13 @@ only a push to `main` runs this workflow.
   header/search-row chrome. No backend's `draw_spinner`/`draw_command_center`/
   `draw_settings_chrome` routes through these yet — per-backend adoption
   (gtk/macos/win) is tracked as follow-on issues.
+- `focus::cycle_index(current, delta, n)` — the one wrap-around index
+  arithmetic every Tab/Shift+Tab-style stepper in the crate now shares
+  (`FocusManager::step`, `FocusGroup::cycle`, and the menu/workspace/
+  message-dialog/toast-stack/form-controller cyclers that each used to
+  carry their own `rem_euclid`/modulo expression). `n == 0` returns `0`
+  instead of panicking.
+
 - `primitives::layout_metrics::pixel` gains the remaining pixel-tab-bar
   constants every backend already duplicated independently —
   `TAB_PAD_COMPACT`/`TAB_INNER_GAP_COMPACT`/`TAB_OUTER_GAP_COMPACT`,
@@ -197,7 +239,23 @@ only a push to `main` runs this workflow.
   shared macOS/Windows `native_surface_paint::paint` still do their own
   independent `rows.iter().skip(scroll_top)` walk; migrating them onto
   this layout is follow-up work.
+- `primitives::tab_bar::native_surface_paint::paint` — a shared `&mut dyn
+  PaintSurface` painter for `TabBar`, written against an already-resolved
+  `TabBarLayout`: background, the active tab's rounded chip + top accent,
+  whole-tab hover/pressed tint, a focus-visible ring, the ellipsis-fitted
+  label (italic for preview tabs), a leading icon, the close/dirty glyph
+  (centred inside `VisibleTab::close_bounds` rather than assuming either
+  backend's own leading-gap convention), and new scroll-arrow chevrons for
+  `TabBarLayout::scroll_left`/`scroll_right` (no in-tree pixel backend
+  painted a visible scroll affordance before this). Not yet wired into
+  `gtk::tab_bar`/`macos::tab_bar`/`win::tab_bar` — each per-backend
+  migration is tracked separately.
 ### Changed
+- `FocusRing` is now a thin wrapper over `FocusManager` instead of
+  `FocusGroup` — adding only the `:focus-visible` bookkeeping on top of
+  the same `WidgetId`-keyed focus owner every backend's Tab/Shift+Tab
+  intercept already drives. Pure internal refactor: `FocusRing`'s public
+  API and every existing test are unchanged.
 - `TabBarHits` is no longer `#[deprecated]`. It stays the stable return
   type of `Backend::draw_tab_bar`/`tab_bar_layout` and their icon/chrome
   twins; `TabBarLayout` is a parallel, unit-agnostic addition
