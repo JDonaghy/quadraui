@@ -253,9 +253,61 @@ fn tui_form_layout_with_label_width(
                     .collect();
                 FormFieldMeasure::with_items(1.0 + extra_row, start_x, 1.0, items)
             }
+            // Unlike every compact `FieldKind` above, `NumberInput`'s row
+            // reuses the real standalone `tui::draw_number_input` box
+            // painter (see `draw_field_number_input`), which needs room
+            // for a top border, a content line, and a bottom border — 3
+            // cells, not 1. The whole control is a single item (carrying
+            // the *field's* own id, not a synthetic one) purely so its
+            // on-screen rect is available via `VisibleFormField::item_bounds`
+            // for click routing, mirroring how `FormController` resolves
+            // every other item-bearing kind's clicks.
+            FieldKind::NumberInput(number) => {
+                let start_x = field_items_start_x(form, field, left_label_width, 1);
+                let width = (number_input_display_text(number).chars().count() + 2 + 3) as f32;
+                let items = vec![FormItemMeasure {
+                    id: field.id,
+                    width,
+                }];
+                FormFieldMeasure::with_items(3.0 + extra_row, start_x, 0.0, items)
+            }
+            // `RadioGroup` is the one `FieldKind` whose row spans one
+            // sub-row per option (see `FormFieldMeasure::vertical`'s doc)
+            // instead of staying a single compact row — there is no popup
+            // to keep collapsed, so the real `RadioOption`s are always on
+            // screen. Each item carries its *option's* own id, resolving
+            // a click straight to `form_click_event`'s existing
+            // `FieldKind::RadioGroup` arm the same way a `ToggleGroup`
+            // item's click already does.
+            FieldKind::RadioGroup(group) => {
+                let start_x = field_items_start_x(form, field, left_label_width, 1);
+                let items: Vec<FormItemMeasure> = group
+                    .options
+                    .iter()
+                    .map(|o| FormItemMeasure {
+                        id: o.id,
+                        width: 1.0,
+                    })
+                    .collect();
+                let rows = group.options.len().max(1) as f32;
+                FormFieldMeasure::with_vertical_items(rows + extra_row, start_x, items)
+            }
             _ => FormFieldMeasure::new(1.0 + extra_row),
         }
     })
+}
+
+/// The text currently shown in `number`: the in-progress
+/// [`crate::primitives::number_input::NumberInput::draft`] verbatim when
+/// one is pending, otherwise `value` formatted to `precision` decimal
+/// places — mirrors [`crate::tui::number_input`]'s own private copy (that
+/// module isn't reachable from here without duplicating this one-liner,
+/// since both are plain private helpers in sibling modules).
+fn number_input_display_text(number: &crate::primitives::number_input::NumberInput) -> String {
+    match &number.draft {
+        Some(draft) => draft.clone(),
+        None => format!("{:.*}", number.precision as usize, number.value),
+    }
 }
 
 /// A row's horizontal content span within `area`, in cells — `offset`
@@ -409,6 +461,10 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                 options,
                 selected_idx,
             } => draw_field_segmented_control(buf, &ctx, visible_field, options, *selected_idx),
+            FieldKind::NumberInput(number) => {
+                draw_field_number_input(buf, &ctx, visible_field, number)
+            }
+            FieldKind::RadioGroup(group) => draw_field_radio_group(buf, &ctx, visible_field, group),
         }
 
         paint_validation_indicator(buf, area, row_x.offset, input_y, ctx.row_bg, field, theme);
@@ -1203,6 +1259,107 @@ fn draw_field_combo_box(
             set_cell(buf, area.x + col as u16, y, '\u{25BE}', dim_fg, row_bg);
         }
     }
+}
+
+/// Renders the embedded [`crate::primitives::number_input::NumberInput`]
+/// through the real [`crate::tui::draw_number_input`] rasteriser — the
+/// bordered box plus stepper buttons, not a compact summary, since
+/// (unlike `DatePicker`/`ComboBox`) there is no popup to keep collapsed.
+/// `visible_field.item_bounds`'s single entry (populated by
+/// `tui_form_layout_with_label_width`'s `FieldKind::NumberInput` arm) is
+/// the control's on-screen rect — the same lookup `FormController`'s click
+/// routing uses, so paint and click always agree.
+fn draw_field_number_input(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    visible_field: &crate::primitives::form::VisibleFormField,
+    number: &crate::primitives::number_input::NumberInput,
+) {
+    let RowCtx {
+        area,
+        y,
+        default_fg,
+        row_bg,
+        theme,
+        ..
+    } = *ctx;
+
+    let Some((_, item_rect)) = visible_field.item_bounds.first() else {
+        return;
+    };
+    let rows = item_rect.height.round().max(1.0) as u16;
+    // Row 0 was already cleared by `build_row_ctx`'s single-row fill;
+    // clear the rest of the control's rows here, the same pattern
+    // `draw_field_text_area` uses for its own multi-row field.
+    for r in 1..rows {
+        let row_y = y + r;
+        if row_y >= area.y + area.height {
+            break;
+        }
+        for x in area.x..area.x + area.width {
+            set_cell(buf, x, row_y, ' ', default_fg, row_bg);
+        }
+    }
+
+    let abs_x = area.x as f32 + item_rect.x;
+    let rect = crate::event::Rect::new(abs_x, y as f32, item_rect.width, rows as f32);
+    let layout = number.layout(rect);
+    super::draw_number_input(buf, number, &layout, theme);
+}
+
+/// Renders the embedded [`crate::primitives::radio_group::RadioGroup`]
+/// through the real [`crate::tui::draw_radio_group`] rasteriser, one row
+/// per option — `visible_field.item_bounds` (populated by
+/// `tui_form_layout_with_label_width`'s `FieldKind::RadioGroup` arm, one
+/// entry per [`crate::primitives::radio_group::RadioOption`]) gives the
+/// control's on-screen rect via its first entry; `FormController`'s click
+/// routing resolves a click straight to the clicked option's own entry.
+fn draw_field_radio_group(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    visible_field: &crate::primitives::form::VisibleFormField,
+    group: &crate::primitives::radio_group::RadioGroup,
+) {
+    let RowCtx {
+        area,
+        y,
+        default_fg,
+        row_bg,
+        theme,
+        is_focused,
+        ..
+    } = *ctx;
+
+    if visible_field.item_bounds.is_empty() {
+        return;
+    }
+    let rows = visible_field.item_bounds.len() as u16;
+    // Row 0 was already cleared by `build_row_ctx`'s single-row fill;
+    // clear the remaining option rows here.
+    for r in 1..rows {
+        let row_y = y + r;
+        if row_y >= area.y + area.height {
+            break;
+        }
+        for x in area.x..area.x + area.width {
+            set_cell(buf, x, row_y, ' ', default_fg, row_bg);
+        }
+    }
+
+    // While this row is focused, the embedded group's own `focused` flag
+    // drives the selected option's marker colour (see
+    // `tui::radio_group::draw_radio_group`) — the app isn't expected to
+    // mirror `Form::focused_field` onto the embedded primitive itself,
+    // the same contract `FormController`'s `ComboBox`/`DatePicker`
+    // handling already documents.
+    let mut group = group.clone();
+    group.focused = is_focused;
+
+    let (_, first_rect) = &visible_field.item_bounds[0];
+    let abs_x = (area.x as f32 + first_rect.x).round() as u16;
+    let width = first_rect.width.round() as u16;
+    let radio_area = Rect::new(abs_x, y, width, rows);
+    super::draw_radio_group(buf, radio_area, &group, theme);
 }
 
 fn draw_field_toolbar(
@@ -2941,6 +3098,126 @@ mod tests {
         let json = serde_json::to_string(&ev).unwrap();
         let back: FormEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(ev, back);
+    }
+
+    // ── FieldKind::NumberInput paint round-trip ───────────────────────────
+
+    use crate::primitives::number_input::NumberInput;
+    use crate::primitives::radio_group::{RadioGroup, RadioOption};
+
+    fn make_number_input_form(number: NumberInput) -> Form {
+        Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("volume"),
+                label: label("Volume"),
+                kind: FieldKind::NumberInput(number),
+                hint: label(""),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        }
+    }
+
+    /// `FieldKind::NumberInput` paints through the real
+    /// `tui::draw_number_input` box rasteriser — a bordered control with
+    /// stepper glyphs, not a compact one-cell summary like `DatePicker`/
+    /// `ComboBox` — and reserves the 3 cell rows that box needs.
+    #[test]
+    fn number_input_field_paints_bordered_box_with_steppers() {
+        let mut number = NumberInput::new(WidgetId::new("volume"), 0.0, 100.0);
+        number.value = 42.0;
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        let f = make_number_input_form(number);
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let rows: Vec<String> = (0..3)
+            .map(|y| (0..40).map(|x| cell_char(&buf, x, y)).collect())
+            .collect();
+        assert!(
+            rows.iter().any(|r| r.contains('4') && r.contains('2')),
+            "committed value must be painted; rows: {rows:?}"
+        );
+        assert!(rows.iter().any(|r| r.contains('+')));
+        assert!(rows.iter().any(|r| r.contains('-')));
+    }
+
+    // ── FieldKind::RadioGroup paint round-trip ────────────────────────────
+
+    fn make_radio_group_form(group: RadioGroup) -> Form {
+        Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("theme"),
+                label: label("Theme"),
+                kind: FieldKind::RadioGroup(group),
+                hint: label(""),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        }
+    }
+
+    /// `FieldKind::RadioGroup` paints every option on its own row through
+    /// the real `tui::draw_radio_group` rasteriser — unlike every other
+    /// field kind, the row is allowed to span more than one cell tall
+    /// (see `FormFieldMeasure::vertical`'s doc).
+    #[test]
+    fn radio_group_field_paints_one_row_per_option() {
+        let mut group = RadioGroup::new(
+            WidgetId::new("theme"),
+            vec![
+                RadioOption::new(WidgetId::new("theme:light"), "Light"),
+                RadioOption::new(WidgetId::new("theme:dark"), "Dark"),
+            ],
+        );
+        group.selected = Some(1);
+        let area = Rect::new(0, 0, 40, 2);
+        let mut buf = Buffer::empty(area);
+        let f = make_radio_group_form(group);
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let row0: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        let row1: String = (0..40).map(|x| cell_char(&buf, x, 1)).collect();
+        assert!(row0.contains("Light"), "row 0: {row0:?}");
+        assert!(row1.contains("Dark"), "row 1: {row1:?}");
+        assert!(
+            row1.contains('\u{2022}'),
+            "selected option's marker should paint; row 1: {row1:?}"
+        );
     }
 
     // ── CJK label paint↔measure agreement ───────────────────────────────

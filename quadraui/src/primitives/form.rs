@@ -48,6 +48,21 @@
 //!   responsible for painting the open dropdown overlay itself, mirroring
 //!   `ColorPicker`'s popup contract, since `Form` doesn't grow the row to
 //!   show it.
+//! - `NumberInput` — unlike `DatePicker`/`ComboBox` above, render the
+//!   embedded control's own real layout (bordered text area plus stepper
+//!   buttons) through its existing standalone rasteriser, not a compact
+//!   summary; a consumer going through `FormController` gets Up/Down
+//!   stepping, typed-digit drafting, and Enter-to-commit (clamped/rounded
+//!   to `[min, max]`/`precision`) for free, emitting
+//!   `FormEvent::NumberChanged`/`NumberDraftChanged`/`NumberCommitted`/
+//!   `NumberCancelled`.
+//! - `RadioGroup` — the one `FieldKind` whose row spans one sub-row per
+//!   option rather than staying a single `row_h` (see
+//!   `crate::primitives::layout_metrics::form_field_measure`'s doc),
+//!   rendered through the embedded group's own existing standalone
+//!   rasteriser; a consumer going through `FormController` gets Up/Down/
+//!   Left/Right cursor movement (wrapping, skipping disabled options) for
+//!   free, emitting `FormEvent::RadioChanged`.
 //!
 //! Tab / Shift-Tab move `focused_field` forward/backward through
 //! interactive fields (skip `Label`, skip disabled fields); emit
@@ -574,6 +589,52 @@ pub enum FieldKind {
     /// language-server choice, font family, git branch, command palette
     /// style pickers.
     ComboBox(crate::primitives::combo_box::ComboBox),
+    /// A bounded [`crate::primitives::number_input::NumberInput`] embedded
+    /// as a single field row: a text area showing the current value (or
+    /// in-progress draft) plus stacked increment/decrement stepper
+    /// buttons. Unlike [`FieldKind::DatePicker`]/[`FieldKind::ComboBox`],
+    /// the row paints the embedded control's own layout via
+    /// [`crate::primitives::number_input::NumberInput::layout`] rather
+    /// than a compact summary — there is no popup to keep collapsed, so
+    /// reusing the real control (through the same `FormLayout::item_bounds`
+    /// mechanism [`FieldKind::ToggleGroup`]/[`FieldKind::ButtonRow`] use for
+    /// their own items) avoids a second, form-only paint path.
+    ///
+    /// A consumer going through
+    /// [`crate::compose::form_controller::FormController`] gets Up/Down
+    /// stepping, typed-digit drafting, and Enter-to-commit for free: the
+    /// controller calls the embedded input's own
+    /// [`crate::primitives::number_input::NumberInput::handle_key`] and
+    /// [`crate::primitives::number_input::NumberInput::click`], translating
+    /// the result into `FormEvent::NumberChanged`, `NumberDraftChanged`,
+    /// `NumberCommitted`, or `NumberCancelled`.
+    ///
+    /// Use for anything numeric with stepper affordances: font size, tab
+    /// width, a scroll/cursor-blink rate, a connection timeout.
+    NumberInput(crate::primitives::number_input::NumberInput),
+    /// A [`crate::primitives::radio_group::RadioGroup`] embedded as a
+    /// field whose row spans one sub-row per option (unlike every other
+    /// `FieldKind`, which stays a single row — see
+    /// [`crate::primitives::layout_metrics::form_field_measure`]'s doc),
+    /// painted through the embedded group's own
+    /// [`crate::primitives::radio_group::RadioGroup::layout`] and backend
+    /// rasteriser rather than a second paint path. Each option's hit
+    /// region carries the *option's* `WidgetId` (via `FormLayout::item_bounds`,
+    /// the same mechanism [`FieldKind::ToggleGroup`] uses for its own
+    /// items), so a click resolves straight to the clicked option.
+    ///
+    /// A consumer going through
+    /// [`crate::compose::form_controller::FormController`] gets Up/Down/
+    /// Left/Right cursor movement (wrapping, skipping disabled options)
+    /// for free: the controller calls the embedded group's own
+    /// [`crate::primitives::radio_group::RadioGroup::handle_key`]/
+    /// [`crate::primitives::radio_group::RadioGroup::select`] and
+    /// translates the result into `FormEvent::RadioChanged`.
+    ///
+    /// Use for a short, always-visible set of mutually exclusive choices
+    /// where every option should stay on screen (contrast
+    /// [`FieldKind::Dropdown`], which collapses them behind a popup).
+    RadioGroup(crate::primitives::radio_group::RadioGroup),
 }
 
 /// One toggle in a [`FieldKind::ToggleGroup`].
@@ -683,16 +744,31 @@ fn password_default_mask() -> char {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormFieldMeasure {
     pub height: f32,
-    /// Per-item widths for `ToggleGroup` / `ButtonRow` fields. The
-    /// layout uses these to compute per-item hit regions. Empty for
-    /// other field kinds.
+    /// Per-item extents for `ToggleGroup` / `ButtonRow` / `SegmentedControl`
+    /// / `Toolbar` / `NumberInput` / `RadioGroup` fields. The layout uses
+    /// these to compute per-item hit regions. Empty for other field kinds.
+    /// [`FormItemMeasure::width`] is each item's extent along the packing
+    /// axis — horizontal (left-to-right) unless [`Self::vertical`] is set,
+    /// in which case it's each item's *height* (every field this crate
+    /// ships stacks same-height rows, so no separate height field exists).
     pub item_measures: Vec<FormItemMeasure>,
     /// X offset where items start (after label + padding). Only used
     /// when `item_measures` is non-empty.
     pub items_start_x: f32,
     /// Gap between items (cells for TUI, pixels for GTK). Only used
-    /// when `item_measures` is non-empty.
+    /// when `item_measures` is non-empty and [`Self::vertical`] is `false`
+    /// — a vertical stack (`FieldKind::RadioGroup`) packs its rows
+    /// edge-to-edge, the same no-gap convention
+    /// [`crate::primitives::radio_group::RadioGroup::layout`] itself uses.
     pub item_gap: f32,
+    /// When `true`, [`Form::layout`] stacks `item_measures` top-to-bottom
+    /// at `items_start_x` (each spanning the row's full remaining width)
+    /// instead of left-to-right at the row's own height — the shape
+    /// [`FieldKind::RadioGroup`] needs (one sub-row per option) and no
+    /// other field kind does today. `false` (the default via
+    /// [`Self::new`]/[`Self::with_items`]) reproduces every existing
+    /// item-bearing kind's horizontal packing unchanged.
+    pub vertical: bool,
 }
 
 impl FormFieldMeasure {
@@ -702,6 +778,7 @@ impl FormFieldMeasure {
             item_measures: Vec::new(),
             items_start_x: 0.0,
             item_gap: 0.0,
+            vertical: false,
         }
     }
 
@@ -716,11 +793,32 @@ impl FormFieldMeasure {
             item_measures: items,
             items_start_x,
             item_gap,
+            vertical: false,
+        }
+    }
+
+    /// Like [`Self::with_items`], but stacked top-to-bottom — see
+    /// [`Self::vertical`]'s doc. `items_start_x` is still the shared
+    /// label-column-relative start column every other field honours;
+    /// each item spans from there to the row's right edge.
+    pub fn with_vertical_items(
+        height: f32,
+        items_start_x: f32,
+        items: Vec<FormItemMeasure>,
+    ) -> Self {
+        Self {
+            height,
+            item_measures: items,
+            items_start_x,
+            item_gap: 0.0,
+            vertical: true,
         }
     }
 }
 
-/// Width of one item inside a `ToggleGroup` or `ButtonRow`.
+/// Extent of one item inside an item-bearing [`FieldKind`] along its
+/// packing axis — width for a horizontal kind, height for a vertical one
+/// (see [`FormFieldMeasure::vertical`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormItemMeasure {
     pub id: WidgetId,
@@ -882,6 +980,7 @@ impl Form {
             items_start_x: f32,
             item_gap: f32,
             row_align: RowAlign,
+            vertical: bool,
         }
         let mut rows: Vec<Row> = Vec::new();
         let mut y = 0.0_f32;
@@ -906,6 +1005,7 @@ impl Form {
                 // item-bearing field's own backend-supplied gap.
                 item_gap: self.spacing.item_gap.unwrap_or(m.item_gap),
                 row_align: self.resolved_row_align(&self.fields[i]),
+                vertical: m.vertical,
             });
         }
 
@@ -921,7 +1021,23 @@ impl Form {
             let id = self.fields[row.idx].id;
 
             let mut item_bounds = Vec::new();
-            if !row.item_measures.is_empty() {
+            if !row.item_measures.is_empty() && row.vertical {
+                // `FieldKind::RadioGroup`'s shape: stack items top-to-bottom
+                // at `items_start_x`, each spanning the row's full
+                // remaining width — no `RowAlign`/gap math, since a
+                // vertical stack has no horizontal slack to distribute and
+                // packs its rows edge-to-edge (see
+                // `FormFieldMeasure::vertical`'s doc).
+                let item_x = content_x + row.items_start_x;
+                let item_w = (content_width - row.items_start_x).max(0.0);
+                let mut item_y = content_y + y;
+                for item in &row.item_measures {
+                    let item_rect = Rect::new(item_x, item_y, item_w, item.width);
+                    hit_regions.push((item_rect, FormHit::Field(item.id)));
+                    item_bounds.push((item.id, item_rect));
+                    item_y += item.width;
+                }
+            } else if !row.item_measures.is_empty() {
                 let widths: Vec<f32> = row.item_measures.iter().map(|item| item.width).collect();
                 // Slack between the items' own packed width and the
                 // row's available width (from `items_start_x` to the
@@ -1075,6 +1191,8 @@ mod native_surface_paint {
     // Windows painted `hover_bg` at full row height).
     use crate::paint_geometry::selected_item_fill;
     use crate::primitives::button;
+    use crate::primitives::number_input;
+    use crate::primitives::radio_group;
     use crate::style::Style;
     use crate::text_util::snap_to_char_boundary;
     use crate::theme::Theme;
@@ -1933,6 +2051,45 @@ mod native_surface_paint {
                                 "\u{25BE}",
                                 theme.muted_fg,
                             );
+                        }
+                    }
+                    FieldKind::NumberInput(number) => {
+                        // `vf.item_bounds`'s single entry (populated by the
+                        // backend's `FieldKind::NumberInput` measure arm —
+                        // see e.g. `tui::form::tui_form_layout_with_label_width`'s
+                        // pixel-measurer twin in `layout_metrics.rs`) is the
+                        // control's on-screen rect; reuse it rather than
+                        // re-deriving `control_start` here, so paint and
+                        // click (`FormController`'s click routing reads the
+                        // same `item_bounds`) always agree.
+                        if let Some((_, item_rect)) = vf.item_bounds.first() {
+                            let r = translate(item_rect, origin);
+                            if r.width > 0.0 && r.height > 0.0 {
+                                let n_layout = number.layout(r);
+                                number_input::native_surface_paint::paint(
+                                    number, &n_layout, surface, theme,
+                                );
+                            }
+                        }
+                    }
+                    FieldKind::RadioGroup(group) => {
+                        // One `vf.item_bounds` entry per
+                        // `RadioOption` (see this field kind's measure
+                        // arm) — every entry shares the same x/width, so
+                        // the first one gives the control's column and
+                        // the entry count gives the per-option row
+                        // height's divisor.
+                        if let Some((_, first)) = vf.item_bounds.first() {
+                            let r = translate(first, origin);
+                            let n = vf.item_bounds.len() as f32;
+                            if r.width > 0.0 && r.height > 0.0 && n > 0.0 {
+                                let mut g = group.clone();
+                                g.focused = is_focused;
+                                let full_rect = Rect::new(r.x, r.y, r.width, r.height * n);
+                                radio_group::native_surface_paint::paint(
+                                    &g, surface, theme, full_rect, r.height,
+                                );
+                            }
                         }
                     }
                 }
@@ -3860,6 +4017,72 @@ mod native_surface_paint {
                  longer one within the shared End-aligned column",
             );
         }
+
+        // ── FieldKind::NumberInput / FieldKind::RadioGroup paint ──────
+
+        use crate::primitives::number_input::NumberInput;
+        use crate::primitives::radio_group::{RadioGroup, RadioOption};
+
+        /// `FieldKind::NumberInput` paints through the real
+        /// `number_input::native_surface_paint::paint`, not a second,
+        /// form-only representation: the formatted value and both
+        /// stepper glyphs must show up in the recorded surface calls.
+        #[test]
+        fn number_input_field_paints_through_the_shared_number_input_painter() {
+            let number = NumberInput::new(WidgetId::new("volume"), 0.0, 100.0);
+            let form = one_field_form("volume", FieldKind::NumberInput(number));
+            let (surface, _) = paint_recorded(&form);
+
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "0"),
+                "the committed value must be drawn: {:?}",
+                surface.text_runs
+            );
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "+"));
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "-"));
+        }
+
+        /// An in-progress `draft` overrides the displayed value — the
+        /// embedded `NumberInput`'s own contract, not a form-specific
+        /// rule.
+        #[test]
+        fn number_input_field_shows_draft_instead_of_committed_value() {
+            let mut number = NumberInput::new(WidgetId::new("volume"), 0.0, 100.0);
+            number.draft = Some("4".into());
+            let form = one_field_form("volume", FieldKind::NumberInput(number));
+            let (surface, _) = paint_recorded(&form);
+
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "4"));
+            assert!(!surface.text_runs.iter().any(|(_, t, _)| t == "0"));
+        }
+
+        /// `FieldKind::RadioGroup` paints every option through the real
+        /// `radio_group::native_surface_paint::paint`, one row each, with
+        /// the selected option filled (not just stroked).
+        #[test]
+        fn radio_group_field_paints_one_row_per_option() {
+            let mut group = RadioGroup::new(
+                WidgetId::new("theme"),
+                vec![
+                    RadioOption::new(WidgetId::new("theme:light"), "Light"),
+                    RadioOption::new(WidgetId::new("theme:dark"), "Dark"),
+                ],
+            );
+            group.selected = Some(1);
+            let form = one_field_form("theme", FieldKind::RadioGroup(group));
+            let (surface, flayout) = paint_recorded(&form);
+
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Light"));
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Dark"));
+
+            // Two options stack into two separate `item_bounds` rows at
+            // the same x, different y — not a single collapsed row like
+            // `DatePicker`/`ComboBox`.
+            let items = &flayout.visible_fields[0].item_bounds;
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].1.x, items[1].1.x);
+            assert!(items[1].1.y > items[0].1.y);
+        }
     }
 }
 
@@ -3949,6 +4172,36 @@ pub enum FormEvent {
     /// this event means setting `text = committed.clone()` and `open =
     /// false` on the `ComboBox`.
     ComboBoxCancelled { id: WidgetId },
+    /// A `NumberInput` field's committed value changed via a stepper
+    /// click, a wheel notch, or arrow-key stepping — immediate, not
+    /// waiting for a confirm step. `id` is the **`FormField`'s** id, not
+    /// the embedded `NumberInput`'s own id, the same `id: focused_id`
+    /// shape [`Self::DateChanged`] uses.
+    NumberChanged { id: WidgetId, value: f64 },
+    /// A `NumberInput` field's in-progress typed draft changed. Fires on
+    /// every keystroke that modifies it, mirroring
+    /// [`Self::TextInputChanged`]'s "fires every keystroke" shape. `id`
+    /// is the `FormField`'s id, as with [`Self::NumberChanged`].
+    NumberDraftChanged { id: WidgetId, draft: String },
+    /// A `NumberInput` field's typed draft was confirmed (Enter):
+    /// parsed, clamped to `[min, max]`, and rounded to the embedded
+    /// input's `precision`. Mirrors [`Self::TextInputCommitted`]'s
+    /// "fires once, on confirm" shape rather than
+    /// [`Self::NumberDraftChanged`]'s "fires every keystroke" shape.
+    /// `id` is the `FormField`'s id, as with [`Self::NumberChanged`].
+    NumberCommitted { id: WidgetId, value: f64 },
+    /// A `NumberInput` field's in-progress typed draft was cancelled
+    /// (Escape), discarded without touching the committed value. `id`
+    /// is the `FormField`'s id, as with [`Self::NumberChanged`].
+    /// Applying this event means clearing the embedded `NumberInput`'s
+    /// `draft`.
+    NumberCancelled { id: WidgetId },
+    /// A `RadioGroup` field's selection changed, via either the arrow
+    /// keys or a click on one of its options. `id` is the **`FormField`'s**
+    /// id, not the embedded `RadioGroup`'s own id, the same shape
+    /// [`Self::NumberChanged`] uses; `selected` is the chosen option's
+    /// index into the embedded group's `options`.
+    RadioChanged { id: WidgetId, selected: usize },
 }
 
 #[cfg(test)]
