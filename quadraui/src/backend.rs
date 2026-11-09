@@ -4556,31 +4556,64 @@ pub trait BackendWidget: Send + 'static {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ServiceKind {
+    /// Guards [`PlatformServices::show_file_open_dialog`].
     FileOpenDialog,
+    /// Guards [`PlatformServices::show_file_save_dialog`].
     FileSaveDialog,
+    /// Guards [`PlatformServices::show_folder_open_dialog`].
     FolderOpenDialog,
+    /// Guards [`PlatformServices::show_message_dialog`].
     MessageDialog,
+    /// Guards [`PlatformServices::send_notification`].
     Notifications,
+    /// Guards [`PlatformServices::open_url`] / [`PlatformServices::open_url_result`].
     OpenUrl,
+    /// Guards [`PlatformServices::reveal_in_file_manager`].
     RevealInFileManager,
+    /// Guards [`PlatformServices::open_path`].
     OpenPath,
+    /// Guards [`PlatformServices::move_to_trash`].
     MoveToTrash,
+    /// Guards [`PlatformServices::restore_from_trash`].
     RestoreFromTrash,
+    /// Guards [`PlatformServices::beep`].
     Beep,
+    /// Guards [`PlatformServices::system_theme`].
     SystemTheme,
+    /// Guards [`PlatformServices::app_path`].
     AppPath,
+    /// Guards [`PlatformServices::displays`].
     Displays,
+    /// Guards [`PlatformServices::cursor_screen_point`].
     CursorScreenPoint,
+    /// Guards [`PlatformServices::on_battery`].
     OnBattery,
+    /// Guards [`PlatformServices::thermal_state`].
     ThermalState,
+    /// Guards the [`PlatformServices::begin_power_save_block`] /
+    /// [`PlatformServices::end_power_save_block`] pair.
     PowerSaveBlock,
+    /// Guards the [`PlatformServices::register_global_shortcut`] /
+    /// [`PlatformServices::unregister_global_shortcut`] /
+    /// [`PlatformServices::unregister_all_global_shortcuts`] trio.
     GlobalShortcuts,
+    /// Guards [`PlatformServices::begin_drag_out`].
     DragOut,
+    /// Guards the [`PlatformServices::set_login_item`] /
+    /// [`PlatformServices::login_item_enabled`] pair.
     LoginItem,
+    /// Guards the [`PlatformServices::set_as_default_protocol_client`] /
+    /// [`PlatformServices::is_default_protocol_client`] /
+    /// [`PlatformServices::remove_as_default_protocol_client`] trio.
     DefaultProtocolClient,
+    /// Guards the [`PlatformServices::add_recent_document`] /
+    /// [`PlatformServices::clear_recent_documents`] pair.
     RecentDocuments,
+    /// Guards [`PlatformServices::set_dock_menu`].
     DockMenu,
+    /// Guards [`PlatformServices::set_jump_list`].
     JumpList,
+    /// Guards [`PlatformServices::secret_store`].
     Keyring,
 }
 
@@ -4670,17 +4703,22 @@ pub trait PlatformServices {
     /// `send_notification` doc explains why, and what a real
     /// implementation there would need).
     ///
-    /// Returns `Err` when this call is known to have failed to reach any
-    /// notification channel at all (no window to parent a GTK
-    /// notification to, a Win toast/balloon that couldn't be created);
-    /// `Ok(())` otherwise — including on a backend that silently degrades
-    /// to a no-op, which is still every caller's existing expectation
-    /// (see [`crate::compose::notification::notify_or_toast`], the one
-    /// caller that actually branches on this). `Err` here is a strictly
-    /// stronger signal than `Ok`, never the other way round, so no
-    /// existing caller that ignored the old infallible return needs to
-    /// change for correctness — only one that wants to notice failure
-    /// does.
+    /// `Err` is the contract for "this call is known to have failed to
+    /// reach any notification channel at all" (no window to parent a GTK
+    /// notification to; a Win toast/balloon that couldn't be created);
+    /// `Ok(())` covers both "delivered" and a backend that hasn't
+    /// adopted that signal yet and still silently degrades to a no-op —
+    /// which is still every existing caller's expectation (see
+    /// [`crate::compose::notification::notify_or_toast`], the one caller
+    /// that actually branches on this). `Err` here is a strictly stronger
+    /// signal than `Ok`, never the other way round, so no existing caller
+    /// that ignored the old infallible return needs to change for
+    /// correctness — only one that wants to notice failure does. Not
+    /// every in-tree backend emits `Err` for every failure mode it could
+    /// in principle detect yet (see each backend's own
+    /// `send_notification` doc for what it actually reports) —
+    /// per-backend adoption of the full failure contract is follow-on
+    /// work, same as [`Self::supports`]'s per-backend truthfulness.
     fn send_notification(&self, n: Notification) -> ServiceResult<()>;
 
     /// Open a URL in the platform's default browser.
@@ -5845,10 +5883,14 @@ mod filter_normalization_tests {
     use super::*;
 
     #[test]
-    fn strips_a_single_leading_dot_and_lowercases() {
+    fn strips_leading_dots_and_lowercases() {
         assert_eq!(normalize_filter_extension(".rs"), "rs");
         assert_eq!(normalize_filter_extension("RS"), "rs");
         assert_eq!(normalize_filter_extension("rs"), "rs");
+        // `trim_start_matches('.')` strips every leading dot, not just
+        // one — pin the multi-dot case explicitly rather than leaving it
+        // an unstated side effect of the single-dot examples above.
+        assert_eq!(normalize_filter_extension("..rs"), "rs");
     }
 
     #[test]

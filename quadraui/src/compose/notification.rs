@@ -86,12 +86,12 @@ mod tests {
 
     #[test]
     fn no_native_notifications_degrades_to_some() {
-        // `RecordingBackend::backend_caps()` is always `BackendCaps::empty()`
-        // (notifications: false), so this only ever exercises the degrade
-        // path — the native-send path (`backend.services().send_notification`)
-        // is covered by `gtk::services`'s own tests against a real GTK
-        // backend, which is the only backend that reports
-        // `notifications: true` today.
+        // A fresh `RecordingBackend::new()` reports `BackendCaps::empty()`
+        // (notifications: false), so this exercises the "backend has no
+        // native channel at all" degrade path. See
+        // `native_send_success_skips_the_toast_degrade` and
+        // `native_send_failure_still_degrades_to_toast` below for the
+        // `notifications: true` branch.
         let backend = RecordingBackend::new();
         assert!(!backend.backend_caps().notifications);
         let result = notify_or_toast(&backend, Notification::new("t", "b"));
@@ -114,6 +114,34 @@ mod tests {
             item.actions.first().map(|a| a.id.clone()),
             Some(WidgetId::new("open-problems"))
         );
+    }
+
+    /// A backend reporting `backend_caps().notifications == true` whose
+    /// native send actually succeeds gets `None` back — there is nothing
+    /// left for the caller to show, confirming the native-send branch at
+    /// `notify_or_toast`'s top really is reachable from a test in this
+    /// crate rather than only from GTK's own suite.
+    #[test]
+    fn native_send_success_skips_the_toast_degrade() {
+        let backend = RecordingBackend::with_notifications_capable();
+        assert!(backend.backend_caps().notifications);
+        let result = notify_or_toast(&backend, Notification::new("t", "b"));
+        assert!(result.is_none());
+    }
+
+    /// A backend reporting `notifications: true` whose native send
+    /// *fails* still degrades to a `Toast` — the headline behaviour change
+    /// this issue's `send_notification -> ServiceResult<()>` signature
+    /// exists to enable: capability alone is no longer enough to tell the
+    /// caller "nothing more to do".
+    #[test]
+    fn native_send_failure_still_degrades_to_toast() {
+        use crate::backend::BackendError;
+
+        let backend =
+            RecordingBackend::with_notification_send_result(Err(BackendError::Unsupported));
+        let result = notify_or_toast(&backend, Notification::new("t", "b"));
+        assert!(result.is_some());
     }
 
     #[test]

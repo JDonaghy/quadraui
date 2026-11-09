@@ -710,6 +710,21 @@ pub struct RecordingBackend {
     /// what sequence, the same "record, don't rasterise" trade `calls`
     /// makes for `draw_*`.
     pub cursor_calls: Vec<crate::PointerShape>,
+    /// Backs [`Backend::backend_caps`]'s `notifications` bit — `false` by
+    /// default, matching every other test's long-standing expectation that
+    /// `backend_caps()` on a fresh recorder is `BackendCaps::empty()`. Set
+    /// via [`Self::with_notifications_capable`] for a test that needs
+    /// [`crate::compose::notification::notify_or_toast`] to take its
+    /// native-send branch instead of degrading straight to a `Toast`.
+    pub notifications_capable: bool,
+    /// What [`Self`]'s [`crate::backend::PlatformServices::send_notification`]
+    /// implementation returns — `Ok(())` by default. Set via
+    /// [`Self::with_notification_send_result`] to simulate a backend whose
+    /// native send failed, exercising [`notify_or_toast`]'s degrade-on-`Err`
+    /// path.
+    ///
+    /// [`notify_or_toast`]: crate::compose::notification::notify_or_toast
+    pub notification_send_result: Result<(), crate::backend::BackendError>,
 }
 
 impl Default for RecordingBackend {
@@ -728,6 +743,8 @@ impl Default for RecordingBackend {
             focus: crate::focus::FocusManager::new(),
             invalidation_log: crate::backend::InvalidationLog::new(),
             cursor_calls: Vec::new(),
+            notifications_capable: false,
+            notification_send_result: Ok(()),
         }
     }
 }
@@ -750,8 +767,103 @@ impl RecordingBackend {
         }
     }
 
+    /// A recorder reporting `BackendCaps { notifications: true, .. }`, so
+    /// [`crate::compose::notification::notify_or_toast`] takes its
+    /// native-send branch and calls into [`Self`]'s own
+    /// [`crate::backend::PlatformServices::send_notification`] rather than
+    /// degrading straight to a `Toast`.
+    pub fn with_notifications_capable() -> Self {
+        Self {
+            notifications_capable: true,
+            ..Self::default()
+        }
+    }
+
+    /// Same as [`Self::with_notifications_capable`], additionally setting
+    /// what `send_notification` reports back — pass `Err(..)` to simulate a
+    /// native send that failed despite the backend being capable.
+    pub fn with_notification_send_result(result: Result<(), crate::backend::BackendError>) -> Self {
+        Self {
+            notifications_capable: true,
+            notification_send_result: result,
+            ..Self::default()
+        }
+    }
+
     fn record(&mut self, name: &'static str) {
         self.calls.push(name);
+    }
+}
+
+impl crate::backend::PlatformServices for RecordingBackend {
+    fn clipboard(&self) -> &dyn crate::backend::Clipboard {
+        unimplemented!(
+            "RecordingBackend has no Clipboard — drive a real backend \
+             (quadraui::tui::testing::TuiDriver) if your test needs one"
+        )
+    }
+
+    fn show_file_open_dialog(
+        &self,
+        _opts: crate::backend::FileDialogOptions,
+    ) -> Option<std::path::PathBuf> {
+        unimplemented!(
+            "RecordingBackend has no file dialogs — drive a real backend \
+             (quadraui::tui::testing::TuiDriver) if your test needs one"
+        )
+    }
+
+    fn show_file_save_dialog(
+        &self,
+        _opts: crate::backend::FileDialogOptions,
+    ) -> Option<std::path::PathBuf> {
+        unimplemented!(
+            "RecordingBackend has no file dialogs — drive a real backend \
+             (quadraui::tui::testing::TuiDriver) if your test needs one"
+        )
+    }
+
+    fn show_folder_open_dialog(
+        &self,
+        _opts: crate::backend::FileDialogOptions,
+    ) -> Option<std::path::PathBuf> {
+        unimplemented!(
+            "RecordingBackend has no file dialogs — drive a real backend \
+             (quadraui::tui::testing::TuiDriver) if your test needs one"
+        )
+    }
+
+    fn show_message_dialog(
+        &self,
+        _opts: crate::backend::MessageDialogOptions,
+    ) -> Option<crate::backend::MessageDialogChoice> {
+        unimplemented!(
+            "RecordingBackend has no message dialogs — drive a real backend \
+             (quadraui::tui::testing::TuiDriver) if your test needs one"
+        )
+    }
+
+    /// Reports [`Self::notification_send_result`] — the one
+    /// `PlatformServices` method [`Self::with_notifications_capable`]
+    /// exists to make genuinely callable rather than
+    /// `unimplemented!()`-guarded, since it's the only one
+    /// [`crate::compose::notification::notify_or_toast`]'s tests drive.
+    fn send_notification(
+        &self,
+        _n: crate::backend::Notification,
+    ) -> crate::backend::ServiceResult<()> {
+        self.notification_send_result.clone()
+    }
+
+    fn open_url(&self, _url: &str) {
+        unimplemented!(
+            "RecordingBackend has no URL opener — drive a real backend \
+             (quadraui::tui::testing::TuiDriver) if your test needs one"
+        )
+    }
+
+    fn platform_name(&self) -> &'static str {
+        "recording"
     }
 }
 
@@ -951,13 +1063,13 @@ impl crate::Backend for RecordingBackend {
         )
     }
     fn services(&self) -> &dyn crate::backend::PlatformServices {
-        unimplemented!(
-            "RecordingBackend has no PlatformServices — drive a real backend \
-             (quadraui::tui::testing::TuiDriver) if your test needs one"
-        )
+        self
     }
     fn backend_caps(&self) -> crate::backend::BackendCaps {
-        crate::backend::BackendCaps::empty()
+        crate::backend::BackendCaps {
+            notifications: self.notifications_capable,
+            ..crate::backend::BackendCaps::empty()
+        }
     }
     fn line_height(&self) -> f32 {
         self.line_height

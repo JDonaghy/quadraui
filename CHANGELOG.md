@@ -273,11 +273,14 @@ only a push to `main` runs this workflow.
   `"*"` passed through unchanged) every `FileDialogOptions::filters`
   reader should run its extensions through;
   `compose::file_picker::extension_matches` is the first adopter.
-  `backend::notification_request_id` derives the id a backend's native
+  `crate::desktop::notification_request_id` (defined in
+  `platform/notifications.rs`; `pub(crate)`, not public API, reached only
+  through the private `desktop` module) derives the id a backend's native
   notification channel dedupes/replaces on, in a namespace a
   caller-supplied `Notification::tag` can never collide with; `tui::
   services::TuiPlatformServices::send_notification` adopts it for its
-  `notify-send` fallback leg's replace hint. `backend::ServiceKind`/
+  `notify-send` leg's replace hint, for both the tagged and untagged
+  case. `backend::ServiceKind`/
   `PlatformServices::supports` — a `false`-by-default capability query
   for the 16 of 37 `PlatformServices` methods with no real
   implementation on any backend today; per-backend truthful adoption is
@@ -287,18 +290,30 @@ only a push to `main` runs this workflow.
 ### Changed
 - `PlatformServices::send_notification` now returns
   `ServiceResult<()>` instead of `()` (**breaking** — every
-  implementation and call site updates in this PR): `Err` means the
-  call is known to have failed to reach any notification channel at
-  all (no window to parent a GTK notification to); `Ok(())` otherwise,
-  including a backend's existing silent-no-op degrade.
-  `compose::notification::notify_or_toast` now falls back to its
-  in-canvas `Toast` degrade when the native send itself fails, not just
-  when the backend has no native channel at all. `tui::services::
-  TuiPlatformServices::send_notification` sends exactly one
-  notification per call now (the OSC 9/777 escape leg through a single
-  writer, falling back to a native `osascript`/`notify-send` spawn only
-  when that write didn't even reach a target) instead of up to three
-  independent legs firing unconditionally.
+  implementation and call site updates in this PR, including
+  `quadraui-node`'s `sendNotification` and `quadraui-py`'s
+  `send_notification` bindings, which now throw/raise on failure instead
+  of silently swallowing it): `Err` means the call is known to have
+  failed to reach any notification channel at all (no window to parent
+  a GTK notification to); `Ok(())` otherwise, including a backend's
+  existing silent-no-op degrade. `compose::notification::notify_or_toast`
+  now falls back to its in-canvas `Toast` degrade when the native send
+  itself fails, not just when the backend has no native channel at all.
+  `tui::services::TuiPlatformServices::send_notification` sends exactly
+  one notification per call now, chosen by whether the current terminal
+  is on an allow-list of terminals known to actually render the OSC
+  9/777 escapes (`$TERM`/`$TERM_PROGRAM`/`$WT_SESSION`) rather than by
+  whether a write merely succeeded — a write to a controlling tty
+  succeeds on most terminals regardless of whether they render the
+  escape, so the old "write succeeded" gate meant terminals outside that
+  allow-list (stock macOS Terminal.app, xterm, most VTE forks) got zero
+  notifications where they used to get an `osascript`/`notify-send`
+  popup. The escape leg fires on an allow-listed terminal; the native
+  `osascript`/`notify-send` command-line notifier fires otherwise,
+  including as a fallback when the terminal is allow-listed but the
+  escape write itself still didn't reach a target — one leg per call
+  either way, never the up-to-three independent legs that used to fire
+  unconditionally.
 - `FocusRing` is now a thin wrapper over `FocusManager` instead of
   `FocusGroup` — adding only the `:focus-visible` bookkeeping on top of
   the same `WidgetId`-keyed focus owner every backend's Tab/Shift+Tab

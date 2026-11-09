@@ -13,10 +13,10 @@
 /// either, the same guarantee GTK's own `NEXT_NOTIFICATION_ID` counter
 /// gives today.
 ///
-/// Only `tui::services`'s non-macOS Unix `notify-send` fallback leg calls
-/// this today — GTK/macOS/Win adopting it for their own native
-/// notification ids is follow-on work — so this is dead code on every
-/// other platform/feature combination.
+/// Only `tui::services`'s non-macOS Unix `notify-send` leg calls this
+/// today, for both the tagged and untagged branch — GTK/macOS/Win
+/// adopting it for their own native notification ids is follow-on work —
+/// so this is dead code on every other platform/feature combination.
 #[cfg_attr(
     not(all(unix, not(target_os = "macos"), feature = "tui")),
     allow(dead_code)
@@ -330,17 +330,18 @@ pub(crate) fn tui_macos_notify_command(
 /// extra `notify-send` flags) without a live notification-daemon
 /// session.
 ///
-/// `request_id` — [`notification_request_id`]'s output, when the
-/// originating [`crate::backend::Notification`] carried a
-/// [`crate::backend::Notification::tag`] — becomes `notify-send`'s `-h
-/// string:x-canonical-private-synchronous:<id>` hint, placed before
-/// `title`/`body` so it reads as a flag rather than a third positional
-/// argument. Several notification daemons (dunst, GNOME Shell) collapse
-/// a later notification sharing that hint into the earlier one instead
-/// of stacking a second popup — the same tag-addressable replace
-/// semantics GTK's `gio::Application::send_notification` id already
-/// gives natively. `None` omits the flag entirely, matching today's
-/// untagged call shape.
+/// `request_id` — [`notification_request_id`]'s output — becomes
+/// `notify-send`'s `-h string:x-canonical-private-synchronous:<id>` hint,
+/// placed before `title`/`body` so it reads as a flag rather than a third
+/// positional argument. Several notification daemons (dunst, GNOME Shell)
+/// collapse a later notification sharing that hint into the earlier one
+/// instead of stacking a second popup — the same tag-addressable replace
+/// semantics GTK's `gio::Application::send_notification` id already gives
+/// natively. The production call site ([`crate::tui::services`]'s
+/// `notify_send_args`) always passes `Some`, computing a fresh `"auto:"`
+/// id even for an untagged [`crate::backend::Notification`] so two
+/// back-to-back untagged sends don't collide; `None` stays supported here
+/// for a caller that genuinely wants no replace hint at all.
 #[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
 pub(crate) fn tui_notify_send_command(
     title: &str,

@@ -592,7 +592,12 @@ fn dir_entry_is_dir(entry: &std::fs::DirEntry, path: &Path) -> bool {
 /// [`crate::backend::normalize_filter_extension`] every backend's own
 /// filter mapping runs its extensions through, so `".rs"`, `"rs"`, and
 /// `"RS"` all mean the same filter here too), or a filter must carry the
-/// wildcard `"*"`.
+/// wildcard `"*"`. The wildcard check runs on the *normalized* filter
+/// entry, not the raw string a caller wrote, so `".*"` is a wildcard here
+/// too — [`crate::backend::normalize_filter_extension`] strips every
+/// leading dot before comparing, and a literal `".*"` extension would
+/// never match a real file's extension (`Path::extension` never returns
+/// `"*"`) otherwise.
 fn extension_matches(filters: &[(String, Vec<String>)], name: &str) -> bool {
     if filters.is_empty() {
         return true;
@@ -1000,6 +1005,18 @@ mod tests {
         assert!(!extension_matches(
             &[("Rust".to_string(), vec!["rs".to_string()])],
             "main.txt"
+        ));
+    }
+
+    /// `".*"` is a wildcard too, not just the bare `"*"` — the normalized
+    /// comparison in [`extension_matches`] strips its leading dot before
+    /// checking for the wildcard, so a filter written either way accepts
+    /// everything.
+    #[test]
+    fn extension_matches_treats_a_dotted_wildcard_as_a_wildcard_too() {
+        assert!(extension_matches(
+            &[("Any".to_string(), vec![".*".to_string()])],
+            "whatever.zzz"
         ));
     }
 }
