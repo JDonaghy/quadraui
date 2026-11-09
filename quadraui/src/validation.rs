@@ -131,13 +131,14 @@ impl Severity {
 ///
 /// Only [`FieldKind`] variants that carry a plain scalar value feed one of
 /// these: `Toggle` (bool), `TextInput`/`TextArea`/`PasswordInput` (string),
-/// `Slider` (number), `Dropdown`/`SegmentedControl` (number, the selected
-/// index), and `ComboBox` (string, the *committed* value — not the
-/// in-progress `text` buffer, so a field mid-edit still validates against
-/// its last confirmed value). Every other kind (`Label`, `Button`,
-/// `ReadOnly`, `ColorPicker`, `ToggleGroup`, `ButtonRow`, `Toolbar`,
-/// `DatePicker`) has no value [`validate`] can extract, so it always
-/// evaluates as
+/// `Slider`/`NumberInput` (number), `Dropdown`/`SegmentedControl` (number,
+/// the selected index), `RadioGroup` (number, the selected option's index,
+/// or `Null` when nothing is selected yet), and `ComboBox` (string, the
+/// *committed* value — not the in-progress `text` buffer, so a field
+/// mid-edit still validates against its last confirmed value). Every other
+/// kind (`Label`, `Button`, `ReadOnly`, `ColorPicker`, `ToggleGroup`,
+/// `ButtonRow`, `Toolbar`, `DatePicker`) has no value [`validate`] can
+/// extract, so it always evaluates as
 /// [`crate::expr::Value::Null`] — fine for [`Validator::Expr`] (which can
 /// still read every *other* field), but [`Validator::Required`] against one
 /// of those kinds always fails and should not be declared.
@@ -253,6 +254,11 @@ fn field_value(kind: &FieldKind) -> Value {
         FieldKind::Dropdown { selected_idx, .. }
         | FieldKind::SegmentedControl { selected_idx, .. } => Value::Number(*selected_idx as f64),
         FieldKind::ComboBox(combo) => Value::String(combo.committed.clone()),
+        FieldKind::NumberInput(number) => Value::Number(number.value),
+        FieldKind::RadioGroup(group) => match group.selected {
+            Some(idx) => Value::Number(idx as f64),
+            None => Value::Null,
+        },
         _ => Value::Null,
     }
 }
@@ -476,6 +482,90 @@ mod tests {
         assert_eq!(
             form.fields[0].validation,
             Some(ValidationState::Error("Too low".to_string()))
+        );
+    }
+
+    #[test]
+    fn min_on_number_input() {
+        use crate::primitives::number_input::NumberInput;
+
+        let mut number = NumberInput::new(WidgetId::new("f:qty"), 0.0, 100.0);
+        number.value = 0.0;
+        let field = FormField {
+            id: WidgetId::new("f:qty"),
+            label: StyledText::plain("Qty"),
+            kind: FieldKind::NumberInput(number),
+            hint: StyledText::plain(""),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        };
+        let mut form = form_with(vec![field]);
+        let mut rules = FormRules::default();
+        rules.fields.insert(
+            "f:qty".to_string(),
+            vec![rule(Validator::Min(1.0), "Too low")],
+        );
+        validate(&mut form, &rules);
+        assert_eq!(
+            form.fields[0].validation,
+            Some(ValidationState::Error("Too low".to_string()))
+        );
+    }
+
+    #[test]
+    fn required_on_radio_group_fails_until_an_option_is_selected() {
+        use crate::primitives::radio_group::{RadioGroup, RadioOption};
+
+        let group = RadioGroup::new(
+            WidgetId::new("f:theme"),
+            vec![
+                RadioOption::new(WidgetId::new("theme:light"), "Light"),
+                RadioOption::new(WidgetId::new("theme:dark"), "Dark"),
+            ],
+        );
+        let field = FormField {
+            id: WidgetId::new("f:theme"),
+            label: StyledText::plain("Theme"),
+            kind: FieldKind::RadioGroup(group),
+            hint: StyledText::plain(""),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        };
+        let mut form = form_with(vec![field]);
+        let mut rules = FormRules::default();
+        rules.fields.insert(
+            "f:theme".to_string(),
+            vec![rule(Validator::Required, "Pick a theme")],
+        );
+        validate(&mut form, &rules);
+        assert_eq!(
+            form.fields[0].validation,
+            Some(ValidationState::Error("Pick a theme".to_string())),
+            "an unselected RadioGroup must evaluate as absent, not silently pass"
+        );
+
+        let FieldKind::RadioGroup(group) = &mut form.fields[0].kind else {
+            unreachable!()
+        };
+        group.selected = Some(1);
+        validate(&mut form, &rules);
+        assert_eq!(
+            form.fields[0].validation, None,
+            "selecting an option clears the Required failure"
         );
     }
 

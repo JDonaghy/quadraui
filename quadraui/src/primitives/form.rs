@@ -741,7 +741,14 @@ fn password_default_mask() -> char {
 // not layout, so it stays backend-owned: the layout just places rows.
 
 /// Per-field measurement supplied by the backend.
+///
+/// `#[non_exhaustive]`: every field is set through [`Self::new`]/
+/// [`Self::with_items`]/[`Self::with_vertical_items`]/
+/// [`Self::with_items_start_y`] rather than a struct literal, so a future
+/// field add here stays additive for a consumer building a `Backend`
+/// impl instead of becoming a breaking change.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct FormFieldMeasure {
     pub height: f32,
     /// Per-item extents for `ToggleGroup` / `ButtonRow` / `SegmentedControl`
@@ -755,6 +762,17 @@ pub struct FormFieldMeasure {
     /// X offset where items start (after label + padding). Only used
     /// when `item_measures` is non-empty.
     pub items_start_x: f32,
+    /// Y offset where items start, measured from the row's own top edge
+    /// — nonzero only for a field whose label resolves to
+    /// [`LabelPosition::Top`], in which case it equals the reserved
+    /// label-row height so the control/option stack starts *below* the
+    /// label line instead of underneath it. [`Form::layout`] both shifts
+    /// `item_measures`' rects down by this amount and shrinks their
+    /// available height by it, so a clipped row's items never overlap
+    /// the label and never extend past the row's own clipped bottom
+    /// edge. Set via [`Self::with_items_start_y`]; `0.0` (the default)
+    /// reproduces every existing item-bearing kind's behavior unchanged.
+    pub items_start_y: f32,
     /// Gap between items (cells for TUI, pixels for GTK). Only used
     /// when `item_measures` is non-empty and [`Self::vertical`] is `false`
     /// — a vertical stack (`FieldKind::RadioGroup`) packs its rows
@@ -777,6 +795,7 @@ impl FormFieldMeasure {
             height,
             item_measures: Vec::new(),
             items_start_x: 0.0,
+            items_start_y: 0.0,
             item_gap: 0.0,
             vertical: false,
         }
@@ -792,6 +811,7 @@ impl FormFieldMeasure {
             height,
             item_measures: items,
             items_start_x,
+            items_start_y: 0.0,
             item_gap,
             vertical: false,
         }
@@ -810,9 +830,19 @@ impl FormFieldMeasure {
             height,
             item_measures: items,
             items_start_x,
+            items_start_y: 0.0,
             item_gap: 0.0,
             vertical: true,
         }
+    }
+
+    /// Shift [`Self::item_measures`] down by `items_start_y` — see that
+    /// field's doc. Chains onto [`Self::with_items`]/
+    /// [`Self::with_vertical_items`]; a no-op left at the default `0.0`
+    /// for every kind that doesn't reserve a label row above its items.
+    pub fn with_items_start_y(mut self, items_start_y: f32) -> Self {
+        self.items_start_y = items_start_y;
+        self
     }
 }
 
@@ -978,6 +1008,7 @@ impl Form {
             clipped_height: f32,
             item_measures: Vec<FormItemMeasure>,
             items_start_x: f32,
+            items_start_y: f32,
             item_gap: f32,
             row_align: RowAlign,
             vertical: bool,
@@ -1001,6 +1032,7 @@ impl Form {
                 clipped_height,
                 item_measures: m.item_measures,
                 items_start_x: m.items_start_x,
+                items_start_y: m.items_start_y,
                 // `FormSpacing::item_gap`, when set, overrides every
                 // item-bearing field's own backend-supplied gap.
                 item_gap: self.spacing.item_gap.unwrap_or(m.item_gap),
@@ -1027,12 +1059,21 @@ impl Form {
                 // remaining width — no `RowAlign`/gap math, since a
                 // vertical stack has no horizontal slack to distribute and
                 // packs its rows edge-to-edge (see
-                // `FormFieldMeasure::vertical`'s doc).
+                // `FormFieldMeasure::vertical`'s doc). `items_start_y`
+                // (see its doc) skips past a `Top`-resolved label's own
+                // line, and `row_bottom` stops the stack at the row's own
+                // clipped bottom edge so a partially scrolled-off group
+                // never hands a backend painter a rect past its row.
                 let item_x = content_x + row.items_start_x;
                 let item_w = (content_width - row.items_start_x).max(0.0);
-                let mut item_y = content_y + y;
+                let row_bottom = content_y + y + row.clipped_height;
+                let mut item_y = content_y + y + row.items_start_y;
                 for item in &row.item_measures {
-                    let item_rect = Rect::new(item_x, item_y, item_w, item.width);
+                    let item_h = item.width.min((row_bottom - item_y).max(0.0));
+                    if item_h <= 0.0 {
+                        break;
+                    }
+                    let item_rect = Rect::new(item_x, item_y, item_w, item_h);
                     hit_regions.push((item_rect, FormHit::Field(item.id)));
                     item_bounds.push((item.id, item_rect));
                     item_y += item.width;
@@ -1066,9 +1107,16 @@ impl Form {
                     row.item_gap + extra_gap,
                     &widths,
                 );
+                // `items_start_y` (see its doc) skips past a
+                // `Top`-resolved label's own line and shrinks the
+                // available height to match, so an item like
+                // `FieldKind::NumberInput`'s control rect is exactly the
+                // control's own height rather than the row's — which
+                // would include the label line on top of it.
+                let item_y = content_y + y + row.items_start_y;
+                let item_h = (row.clipped_height - row.items_start_y).max(0.0);
                 for (item, item_x) in row.item_measures.iter().zip(item_xs) {
-                    let item_rect =
-                        Rect::new(item_x, content_y + y, item.width, row.clipped_height);
+                    let item_rect = Rect::new(item_x, item_y, item.width, item_h);
                     hit_regions.push((item_rect, FormHit::Field(item.id)));
                     item_bounds.push((item.id, item_rect));
                 }
@@ -4173,10 +4221,10 @@ pub enum FormEvent {
     /// false` on the `ComboBox`.
     ComboBoxCancelled { id: WidgetId },
     /// A `NumberInput` field's committed value changed via a stepper
-    /// click, a wheel notch, or arrow-key stepping — immediate, not
-    /// waiting for a confirm step. `id` is the **`FormField`'s** id, not
-    /// the embedded `NumberInput`'s own id, the same `id: focused_id`
-    /// shape [`Self::DateChanged`] uses.
+    /// click or arrow-key stepping — immediate, not waiting for a
+    /// confirm step. `id` is the **`FormField`'s** id, not the embedded
+    /// `NumberInput`'s own id, the same `id: focused_id` shape
+    /// [`Self::DateChanged`] uses.
     NumberChanged { id: WidgetId, value: f64 },
     /// A `NumberInput` field's in-progress typed draft changed. Fires on
     /// every keystroke that modifies it, mirroring

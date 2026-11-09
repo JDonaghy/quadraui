@@ -4775,6 +4775,54 @@ mod tests {
         );
     }
 
+    /// A real `MouseDown`, routed through `Form::layout`/`hit_test` via
+    /// `TuiBackend` (not `form_click_event` called directly, which
+    /// bypasses layout entirely) — a `LabelPosition::Top`-resolved
+    /// `RadioGroup`'s painted "Light" row must select "Light", not the
+    /// option one row below it (see `tui_form_layout_with_label_width`'s
+    /// `FieldKind::RadioGroup` arm and `items_start_y` on
+    /// `FormFieldMeasure`).
+    #[test]
+    #[cfg(feature = "tui")]
+    fn click_on_a_top_labelled_radio_groups_painted_row_selects_the_right_option() {
+        use crate::primitives::form::LabelPosition;
+        use crate::tui::TuiBackend;
+
+        let mut field = radio_group_field("g", radio_group(Some(0)), false);
+        field.label = StyledText::plain("Theme");
+        field.label_position = Some(LabelPosition::Top);
+        let mut fc = controller_with(vec![field], None);
+        let mut backend = TuiBackend::new();
+        let rect = Rect::new(0.0, 0.0, 40.0, 10.0);
+
+        // Row 0 of the field's own bounds is the label ("Theme"); row 1
+        // is "Light" (the first, currently-selected option); row 2 is
+        // "Dark".
+        let field_rect = fc.field_rect(WidgetId::new("g"), &backend, rect).unwrap();
+        let light_y = field_rect.y + 1.0;
+        let ev = fc.handle(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point {
+                    x: field_rect.x + 1.0,
+                    y: light_y + 0.5,
+                },
+                modifiers: Default::default(),
+            },
+            &mut backend,
+            rect,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::RadioChanged {
+                id: WidgetId::new("g"),
+                selected: 0,
+            }),
+            "a click on the row painted \"Light\" must select \"Light\" (index 0), not \"Dark\""
+        );
+    }
+
     // ── Dropdown routing ───────────────────────────────────────────
 
     #[test]

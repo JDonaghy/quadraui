@@ -270,6 +270,7 @@ fn tui_form_layout_with_label_width(
                     width,
                 }];
                 FormFieldMeasure::with_items(3.0 + extra_row, start_x, 0.0, items)
+                    .with_items_start_y(extra_row)
             }
             // `RadioGroup` is the one `FieldKind` whose row spans one
             // sub-row per option (see `FormFieldMeasure::vertical`'s doc)
@@ -291,6 +292,7 @@ fn tui_form_layout_with_label_width(
                     .collect();
                 let rows = group.options.len().max(1) as f32;
                 FormFieldMeasure::with_vertical_items(rows + extra_row, start_x, items)
+                    .with_items_start_y(extra_row)
             }
             _ => FormFieldMeasure::new(1.0 + extra_row),
         }
@@ -1287,7 +1289,19 @@ fn draw_field_number_input(
     let Some((_, item_rect)) = visible_field.item_bounds.first() else {
         return;
     };
-    let rows = item_rect.height.round().max(1.0) as u16;
+    // `item_rect.height` is already the control's own height, not the
+    // row's — see `tui_form_layout_with_label_width`'s `NumberInput` arm
+    // and `items_start_y`'s doc on `FormFieldMeasure`. Clamp against
+    // `area`'s own bottom edge too, so a control whose row got clipped
+    // by scrolling never paints past the viewport.
+    let rows = item_rect
+        .height
+        .round()
+        .max(1.0)
+        .min((area.y + area.height).saturating_sub(y) as f32) as u16;
+    if rows == 0 {
+        return;
+    }
     // Row 0 was already cleared by `build_row_ctx`'s single-row fill;
     // clear the rest of the control's rows here, the same pattern
     // `draw_field_text_area` uses for its own multi-row field.
@@ -1333,7 +1347,15 @@ fn draw_field_radio_group(
     if visible_field.item_bounds.is_empty() {
         return;
     }
-    let rows = visible_field.item_bounds.len() as u16;
+    // `item_bounds` is already clipped to the row's own clipped bottom
+    // edge by `Form::layout` (see `items_start_y`'s doc), so this is a
+    // second, defensive clamp against `area`'s own bottom edge rather
+    // than the only one.
+    let rows =
+        (visible_field.item_bounds.len() as u16).min((area.y + area.height).saturating_sub(y));
+    if rows == 0 {
+        return;
+    }
     // Row 0 was already cleared by `build_row_ctx`'s single-row fill;
     // clear the remaining option rows here.
     for r in 1..rows {
@@ -3159,6 +3181,52 @@ mod tests {
         assert!(rows.iter().any(|r| r.contains('-')));
     }
 
+    /// A `LabelPosition::Top`-resolved `NumberInput` reserves one extra
+    /// row above the control for the label line (`extra_row`), but the
+    /// control itself is still exactly 3 rows tall — not 3 + `extra_row`
+    /// — so it ends exactly at the end of its own field row and never
+    /// overdraws into the next field's row.
+    #[test]
+    fn number_input_with_top_label_control_box_is_exactly_three_rows() {
+        let mut number = NumberInput::new(WidgetId::new("volume"), 0.0, 100.0);
+        number.value = 42.0;
+        let mut top_field = field("volume", "Volume", FieldKind::NumberInput(number));
+        top_field.label_position = Some(LabelPosition::Top);
+        let after = field("after", "After", FieldKind::Toggle { value: false });
+        let f = Form {
+            id: WidgetId::new("f"),
+            fields: vec![top_field, after],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        };
+        // Row 0: label. Rows 1-3: the 3-row control. Row 4: the next field.
+        let area = Rect::new(0, 0, 30, 5);
+        let mut buf = Buffer::empty(area);
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let layout = tui_form_layout(&f, area);
+        let vis = &layout.visible_fields[0];
+        let (_, item_rect) = vis.item_bounds.first().expect("NumberInput has one item");
+        assert_eq!(item_rect.y, 1.0, "control starts right after the label row");
+        assert_eq!(
+            item_rect.height, 3.0,
+            "control height must be fixed at 3 rows, not the row's full height"
+        );
+
+        // Row 4 belongs to the "After" field, not the NumberInput's
+        // bordered box — it must not have been cleared/overdrawn by
+        // `draw_field_number_input`.
+        let row4: String = (0..30).map(|x| cell_char(&buf, x, 4)).collect();
+        assert!(row4.contains("After"), "row 4 (next field): {row4:?}");
+    }
+
     // ── FieldKind::RadioGroup paint round-trip ────────────────────────────
 
     fn make_radio_group_form(group: RadioGroup) -> Form {
@@ -3217,6 +3285,72 @@ mod tests {
         assert!(
             row1.contains('\u{2022}'),
             "selected option's marker should paint; row 1: {row1:?}"
+        );
+    }
+
+    /// A `LabelPosition::Top`-resolved `RadioGroup` reserves one extra
+    /// row above its options for the label line (`extra_row`, see
+    /// `tui_form_layout_with_label_width`'s doc). Each option's painted
+    /// row must agree with its own hit region — before `items_start_y`
+    /// existed, the hit regions started at the row's top (the label's
+    /// own line), one row above where `draw_field_radio_group` actually
+    /// painted each option, so a click on the row showing "Light"
+    /// resolved to "Dark" instead.
+    #[test]
+    fn radio_group_with_top_label_paints_and_hit_tests_agree() {
+        use crate::primitives::form::FormHit;
+
+        let mut group = RadioGroup::new(
+            WidgetId::new("theme"),
+            vec![
+                RadioOption::new(WidgetId::new("theme:light"), "Light"),
+                RadioOption::new(WidgetId::new("theme:dark"), "Dark"),
+            ],
+        );
+        group.selected = Some(1);
+        let mut f = make_radio_group_form(group);
+        f.fields[0].label_position = Some(LabelPosition::Top);
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let row0: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        let row1: String = (0..40).map(|x| cell_char(&buf, x, 1)).collect();
+        let row2: String = (0..40).map(|x| cell_char(&buf, x, 2)).collect();
+        assert!(row0.contains("Theme"), "row 0 (label): {row0:?}");
+        assert!(row1.contains("Light"), "row 1: {row1:?}");
+        assert!(row2.contains("Dark"), "row 2: {row2:?}");
+
+        let layout = tui_form_layout(&f, area);
+        let vis = &layout.visible_fields[0];
+        assert_eq!(
+            vis.item_bounds.len(),
+            2,
+            "both options must get a hit region: {:?}",
+            vis.item_bounds
+        );
+        let (light_id, light_rect) = &vis.item_bounds[0];
+        let (dark_id, dark_rect) = &vis.item_bounds[1];
+        assert_eq!(light_id, &WidgetId::new("theme:light"));
+        assert_eq!(dark_id, &WidgetId::new("theme:dark"));
+        assert_eq!(
+            light_rect.y, 1.0,
+            "\"Light\"'s hit region must start on row 1, not the label row"
+        );
+        assert_eq!(
+            dark_rect.y, 2.0,
+            "\"Dark\"'s hit region must start on row 2"
+        );
+
+        assert_eq!(
+            layout.hit_test(light_rect.x + 1.0, light_rect.y + 0.5),
+            FormHit::Field(WidgetId::new("theme:light")),
+            "a click on the row painted \"Light\" must resolve to \"Light\""
+        );
+        assert_eq!(
+            layout.hit_test(dark_rect.x + 1.0, dark_rect.y + 0.5),
+            FormHit::Field(WidgetId::new("theme:dark")),
+            "a click on the row painted \"Dark\" must resolve to \"Dark\""
         );
     }
 
