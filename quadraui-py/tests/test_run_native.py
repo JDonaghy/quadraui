@@ -123,6 +123,53 @@ def test_run_native_opens_and_runs_handler_until_smoke_timeout(tmp_path):
     assert "NO_WINDOW_CLOSE" in result.stdout, result.stdout
 
 
+def test_run_native_waker_post_delivers_promptly_while_window_is_open(tmp_path):
+    # `QuiApp.waker()`'s shared cell must point at the real `GtkRunner`'s
+    # own backend for the whole time `run_native` is running, not the
+    # dormant headless driver `run_native` moved the handler's whole
+    # `PyAppLogic` out of -- a post into the latter would never be
+    # observed at all, since nothing is left registered on that empty
+    # headless driver to see it, even after the window closes. A
+    # background thread posts partway through the smoke window (well
+    # before the smoke timeout destroys it), and the handler -- running
+    # inside the live GTK loop -- records it immediately.
+    env = dict(os.environ)
+    env["QUADRAUI_GTK_SMOKE_MS"] = "600"
+
+    body = (
+        "import threading\n"
+        "import time\n"
+        "from quadraui import QuiApp, NoDisplayError\n"
+        "app = QuiApp(40, 20)\n"
+        'app.insert_button({"id": "demo:ok", "label": "OK", "focused": True})\n'
+        "seen = []\n"
+        "app.set_handler(lambda event: seen.append(event))\n"
+        "waker = app.waker()\n"
+        "def background():\n"
+        "    time.sleep(0.2)\n"
+        '    waker.post("from-background-thread")\n'
+        "threading.Thread(target=background).start()\n"
+        "try:\n"
+        '    app.run_native(title="quadraui run_native waker test")\n'
+        "except NoDisplayError as exc:\n"
+        "    print(f'NO_DISPLAY_RAISED:{exc}')\n"
+        "    raise SystemExit(0)\n"
+        'print("USER_EVENT_SEEN" if any(\n'
+        '    isinstance(e, dict) and e.get("User") == "from-background-thread"\n'
+        "    for e in seen\n"
+        ') else "USER_EVENT_NOT_SEEN")\n'
+    )
+    result = _run_script(tmp_path, "run_waker_live.py", body, env)
+
+    _skip_if_no_display(result)
+    if result.returncode != 0:
+        pytest.fail(
+            f"run_native script failed unexpectedly: rc={result.returncode} "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+    assert "USER_EVENT_SEEN" in result.stdout, result.stdout
+
+
 def test_run_native_propagates_tick_handler_exception(tmp_path):
     # The smoke timeout above forces the window closed with
     # `window.destroy()` directly, bypassing the app's own `WindowClose`
