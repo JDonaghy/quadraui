@@ -587,9 +587,12 @@ fn dir_entry_is_dir(entry: &std::fs::DirEntry, path: &Path) -> bool {
 }
 
 /// Whether `name` passes `filters` — an empty `filters` list accepts
-/// everything; otherwise `name`'s extension (case-insensitive, without
-/// the leading `.`) must match at least one extension in at least one
-/// filter, or a filter must carry the wildcard `"*"`.
+/// everything; otherwise `name`'s extension must match at least one
+/// extension in at least one filter (via the same
+/// [`crate::backend::normalize_filter_extension`] every backend's own
+/// filter mapping runs its extensions through, so `".rs"`, `"rs"`, and
+/// `"RS"` all mean the same filter here too), or a filter must carry the
+/// wildcard `"*"`.
 fn extension_matches(filters: &[(String, Vec<String>)], name: &str) -> bool {
     if filters.is_empty() {
         return true;
@@ -597,11 +600,13 @@ fn extension_matches(filters: &[(String, Vec<String>)], name: &str) -> bool {
     let ext = Path::new(name)
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+        .map(crate::backend::normalize_filter_extension)
+        .unwrap_or_default();
     filters.iter().any(|(_, exts)| {
-        exts.iter()
-            .any(|e| e == "*" || e.trim_start_matches('.').to_lowercase() == ext)
+        exts.iter().any(|e| {
+            let e = crate::backend::normalize_filter_extension(e);
+            e == "*" || e == ext
+        })
     })
 }
 

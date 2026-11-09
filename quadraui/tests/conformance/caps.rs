@@ -1139,6 +1139,10 @@ pub enum ServiceHonesty {
 /// already guards against on the `Backend` side.
 pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
     ("clipboard", ServiceHonesty::Delegates("Clipboard")),
+    // `supports` returns `bool` directly and has a default body — there
+    // is no further "unsupported" signal for a method whose whole job
+    // is reporting one.
+    ("supports", ServiceHonesty::AlwaysReal),
     (
         "show_file_open_dialog",
         ServiceHonesty::CapBacked("file_dialogs"),
@@ -1155,10 +1159,13 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
         "show_message_dialog",
         ServiceHonesty::CapBacked("native_dialogs"),
     ),
-    (
-        "send_notification",
-        ServiceHonesty::CapBacked("notifications"),
-    ),
+    // `send_notification` returns `ServiceResult<()>` directly — same
+    // reasoning as `open_url_result`/`system_theme`: the `Result` type
+    // itself already carries the "failed to reach any channel" signal.
+    // `BackendCaps::notifications` still exists and still matters (it
+    // gates `compose::notification::notify_or_toast`'s automatic native-
+    // vs-toast choice), just not as this method's own honesty story.
+    ("send_notification", ServiceHonesty::AlwaysReal),
     ("open_url", ServiceHonesty::ResultTwin("open_url_result")),
     // The twin itself already returns a typed `ServiceResult` — there is
     // nothing further to report absence of.

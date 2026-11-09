@@ -2074,7 +2074,12 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
                 app_logic.engine.show_tooltip(tooltip, anchor);
             }
             DeferredAction::Notification(notification) => {
-                backend.services().send_notification(notification);
+                if let Err(err) = backend.services().send_notification(notification) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("send_notification: {err:?}")),
+                    );
+                }
             }
             DeferredAction::OpenPath(path) => {
                 if let Err(err) = backend.services().open_path(&path) {
@@ -4569,10 +4574,11 @@ impl QuiApp {
     /// Dispatches a system notification --
     /// [`quadraui::PlatformServices::send_notification`]. On the headless
     /// `TuiBackend` this is a genuine best-effort degrade (an OSC 9/777
-    /// escape sequence plus a native `osascript`/`notify-send` spawn where
-    /// available), not a no-op -- see `quadraui::tui::services`'s module
-    /// doc's "Notifications" section. Fire-and-forget: there is no return
-    /// value to assert on, and no error this binding can observe.
+    /// escape sequence, falling back to a native `osascript`/`notify-send`
+    /// spawn only when that write didn't even reach a terminal), not a
+    /// no-op -- see `quadraui::tui::services`'s module doc's
+    /// "Notifications" section. Raises [`InternalError`] when this call is
+    /// known to have failed to reach any notification channel at all.
     #[pyo3(signature = (title, body, urgent=false, silent=false, tag=None))]
     fn send_notification(
         &mut self,
@@ -4588,8 +4594,10 @@ impl QuiApp {
                 n = n.with_tag(tag);
             }
             n.urgent = urgent;
-            app.driver.backend().services().send_notification(n);
-            Ok(())
+            service_result(
+                "send_notification",
+                app.driver.backend().services().send_notification(n),
+            )
         })
     }
 

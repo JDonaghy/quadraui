@@ -151,9 +151,10 @@ impl QuiApp {
     /// Dispatches a system notification --
     /// [`quadraui::PlatformServices::send_notification`]. On the headless
     /// `TuiBackend` this is a genuine best-effort degrade (an OSC 9/777
-    /// escape sequence plus a native `osascript`/`notify-send` spawn where
-    /// available), not a no-op. Fire-and-forget: there is no return value
-    /// to assert on, and no error this binding can observe.
+    /// escape sequence, falling back to a native `osascript`/`notify-send`
+    /// spawn only when that write didn't even reach a terminal), not a
+    /// no-op. Raises when this call is known to have failed to reach any
+    /// notification channel at all.
     #[napi(js_name = "sendNotification")]
     pub fn send_notification(
         &mut self,
@@ -171,8 +172,10 @@ impl QuiApp {
                 n = n.with_tag(tag);
             }
             n.urgent = urgent.unwrap_or(false);
-            app.driver.backend().services().send_notification(n);
-            Ok(())
+            service_result(
+                "sendNotification",
+                app.driver.backend().services().send_notification(n),
+            )
         })
     }
 

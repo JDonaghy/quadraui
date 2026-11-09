@@ -1,3 +1,40 @@
+/// Derive the id a backend's native notification channel dedupes/replaces
+/// on from [`crate::backend::Notification::tag`] — the single place every
+/// `send_notification` implementation computes this, instead of each
+/// backend inventing its own namespacing (GTK's own counter-based
+/// fallback id can collide with a caller-supplied tag when the two
+/// happen to produce the same string).
+///
+/// `Some(tag)` and the generated fallback for `None` live in disjoint
+/// string spaces — `"tag:"` vs `"auto:"` prefixes — so no caller-chosen
+/// tag can ever collide with an auto-generated id, however it's spelled.
+/// The auto-generated half increments a process-wide counter, so two
+/// back-to-back untagged notifications never collide with each other
+/// either, the same guarantee GTK's own `NEXT_NOTIFICATION_ID` counter
+/// gives today.
+///
+/// Only `tui::services`'s non-macOS Unix `notify-send` fallback leg calls
+/// this today — GTK/macOS/Win adopting it for their own native
+/// notification ids is follow-on work — so this is dead code on every
+/// other platform/feature combination.
+#[cfg_attr(
+    not(all(unix, not(target_os = "macos"), feature = "tui")),
+    allow(dead_code)
+)]
+pub(crate) fn notification_request_id(tag: Option<&str>) -> String {
+    match tag {
+        Some(tag) => format!("quadraui-notification-tag:{tag}"),
+        None => {
+            static NEXT_AUTO_ID: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "quadraui-notification-auto:{}",
+                NEXT_AUTO_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
+    }
+}
+
 /// Escape `"` and `\` so a string can be embedded inside an AppleScript
 /// double-quoted string literal. Shared by [`display_notification_script`]
 /// below — `macos::services::MacPlatformServices::send_notification`'s
@@ -292,9 +329,29 @@ pub(crate) fn tui_macos_notify_command(
 /// shell-concatenated, so a body containing spaces can't be mistaken for
 /// extra `notify-send` flags) without a live notification-daemon
 /// session.
+///
+/// `request_id` — [`notification_request_id`]'s output, when the
+/// originating [`crate::backend::Notification`] carried a
+/// [`crate::backend::Notification::tag`] — becomes `notify-send`'s `-h
+/// string:x-canonical-private-synchronous:<id>` hint, placed before
+/// `title`/`body` so it reads as a flag rather than a third positional
+/// argument. Several notification daemons (dunst, GNOME Shell) collapse
+/// a later notification sharing that hint into the earlier one instead
+/// of stacking a second popup — the same tag-addressable replace
+/// semantics GTK's `gio::Application::send_notification` id already
+/// gives natively. `None` omits the flag entirely, matching today's
+/// untagged call shape.
 #[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
-pub(crate) fn tui_notify_send_command(title: &str, body: &str) -> std::process::Command {
+pub(crate) fn tui_notify_send_command(
+    title: &str,
+    body: &str,
+    request_id: Option<&str>,
+) -> std::process::Command {
     let mut cmd = std::process::Command::new("notify-send");
+    if let Some(id) = request_id {
+        cmd.arg("-h")
+            .arg(format!("string:x-canonical-private-synchronous:{id}"));
+    }
     cmd.arg(title).arg(body);
     cmd
 }
@@ -335,7 +392,7 @@ mod tui_send_notification_command_tests {
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn tui_notify_send_command_passes_title_and_body_as_separate_args() {
-        let cmd = tui_notify_send_command("Build failed", "3 errors");
+        let cmd = tui_notify_send_command("Build failed", "3 errors", None);
         assert_eq!(cmd.get_program(), "notify-send");
         assert_eq!(
             cmd.get_args().collect::<Vec<_>>(),
@@ -349,11 +406,58 @@ mod tui_send_notification_command_tests {
         // A body containing something that looks like a flag must stay
         // its own argv entry, never get shell-concatenated with the
         // title into something `notify-send` could misparse.
-        let cmd = tui_notify_send_command("t", "--urgency=critical");
+        let cmd = tui_notify_send_command("t", "--urgency=critical", None);
         assert_eq!(
             cmd.get_args().collect::<Vec<_>>(),
             ["t", "--urgency=critical"]
         );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn tui_notify_send_command_with_a_request_id_adds_the_replace_hint_before_title_and_body() {
+        let cmd = tui_notify_send_command("t", "b", Some("quadraui-notification-tag:build"));
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            [
+                "-h",
+                "string:x-canonical-private-synchronous:quadraui-notification-tag:build",
+                "t",
+                "b",
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod notification_request_id_tests {
+    use super::notification_request_id;
+
+    #[test]
+    fn tagged_ids_carry_the_tag_verbatim_in_their_own_namespace() {
+        let id = notification_request_id(Some("build-status"));
+        assert_eq!(id, "quadraui-notification-tag:build-status");
+    }
+
+    #[test]
+    fn untagged_ids_never_collide_with_each_other() {
+        let a = notification_request_id(None);
+        let b = notification_request_id(None);
+        assert_ne!(a, b);
+        assert!(a.starts_with("quadraui-notification-auto:"));
+        assert!(b.starts_with("quadraui-notification-auto:"));
+    }
+
+    #[test]
+    fn tagged_and_auto_namespaces_never_collide() {
+        // However an auto id's counter value is spelled, the
+        // `"tag:"`/`"auto:"` prefixes keep the two spaces disjoint — a
+        // caller cannot choose a tag that collides with a
+        // never-tagged call's generated id.
+        let tagged = notification_request_id(Some("auto:0"));
+        let auto = notification_request_id(None);
+        assert_ne!(tagged, auto);
+        assert!(tagged.starts_with("quadraui-notification-tag:"));
     }
 }
 

@@ -492,12 +492,12 @@ impl PlatformServices for GtkPlatformServices {
     /// directly in a unit test) — the same "nothing to parent this to
     /// yet" degrade `show_file_open_dialog` et al. already have via
     /// `self.window.borrow().clone()`.
-    fn send_notification(&self, n: Notification) {
+    fn send_notification(&self, n: Notification) -> ServiceResult<()> {
         let Some(window) = self.window.borrow().clone() else {
-            return;
+            return Err(BackendError::Unsupported);
         };
         let Some(app) = window.application() else {
-            return;
+            return Err(BackendError::Unsupported);
         };
         self.ensure_notification_action(&app);
 
@@ -545,6 +545,7 @@ impl PlatformServices for GtkPlatformServices {
             }
         };
         app.send_notification(Some(notif_id), &notification);
+        Ok(())
     }
 
     fn open_url(&self, url: &str) {
@@ -1795,7 +1796,10 @@ mod tests {
     #[test]
     fn send_notification_without_a_window_is_a_no_op() {
         let services = GtkPlatformServices::new();
-        services.send_notification(Notification::new("t", "b"));
+        assert_eq!(
+            services.send_notification(Notification::new("t", "b")),
+            Err(BackendError::Unsupported)
+        );
         // The early-return path taken above never touches `window` —
         // assert it's still exactly what `new()` left it as, so a
         // future refactor that accidentally starts constructing a

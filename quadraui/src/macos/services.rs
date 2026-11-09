@@ -782,16 +782,17 @@ impl PlatformServices for MacPlatformServices {
     /// itself is unit-testable without a live mac; only the
     /// `Command::spawn` below needs one. Shared with `tui::services` for
     /// its own macOS notification fallback leg.
-    fn send_notification(&self, n: Notification) {
+    fn send_notification(&self, n: Notification) -> ServiceResult<()> {
         let bundle_identifier = NSBundle::mainBundle()
             .bundleIdentifier()
             .map(|s| s.to_string());
         if should_use_notification_center(bundle_identifier.as_deref()) {
             self.send_notification_via_notification_center(&n);
-            return;
+            return Ok(());
         }
         let script = crate::desktop::display_notification_script(&n.title, &n.body, n.is_silent());
         let _ = Command::new("osascript").arg("-e").arg(&script).spawn();
+        Ok(())
     }
 
     fn open_url(&self, url: &str) {

@@ -147,15 +147,18 @@ impl AppLogic for PlatformServicesDemo {
                 key: Key::Char('n'),
                 ..
             } => {
-                backend.services().send_notification(
+                let sent = backend.services().send_notification(
                     Notification::new("quadraui", "#1789 platform services demo")
                         .with_tag("win-platform-services-demo")
                         .with_action(WidgetId::new("show"), "Show"),
                 );
-                eprintln!(
-                    "notification fired — click it (or its \"Show\" button) in Action \
-                     Center to see NotificationActivated reported here"
-                );
+                match sent {
+                    Ok(()) => eprintln!(
+                        "notification fired — click it (or its \"Show\" button) in Action \
+                         Center to see NotificationActivated reported here"
+                    ),
+                    Err(err) => eprintln!("notification failed: {err:?}"),
+                }
                 Reaction::Continue
             }
             UiEvent::NotificationActivated { tag, action } => {

@@ -123,34 +123,29 @@
 //!
 //! ## Notifications
 //!
-//! `send_notification` used to be `fn send_notification(&self, _n:
-//! Notification) {}` — a silent, undetectable no-op (`notifications` was
-//! never declared in [`TuiBackend::backend_caps`], so a caller checking
-//! that flag first would at least know not to trust it, but any caller
-//! that skipped the check got nothing with no signal at all). Two
-//! independent, best-effort legs now run on every call, mirroring
-//! [`TuiClipboard::write_text`]'s "every leg best-effort, run
-//! independently" posture rather than trying to pick one:
-//! this crate has no synchronous way to ask a terminal "do you support
-//! OSC 9?", so guessing which single leg to use would just be trading one
-//! silent failure mode for another.
+//! Exactly one delivery leg reaches the user per [`Self::send_notification`]
+//! call, tried in order, each a fallback for the one before it rather
+//! than all firing unconditionally — a caller firing several
+//! notifications no longer sees several independent popups stack up for
+//! each one.
 //!
 //! 1. **OSC 9 / OSC 777** ([`emit_notification_osc`]) — two terminal
 //!    escape sequences a capable terminal renders as a native
 //!    notification with no desktop session involved at all: OSC 9
 //!    (iTerm2's "Growl-style" extension, also understood by kitty and
 //!    WezTerm) and OSC 777 (rxvt-unicode's `notify` extension, also
-//!    understood by several VTE-based terminals). Both are written to
-//!    stdout and, on Unix, `/dev/tty`, the same dual-write reliability
-//!    reasoning [`TuiClipboard::write_text`]'s OSC 52 leg already uses.
-//!    `n`'s title/body are stripped of raw control characters first
-//!    ([`strip_control_chars`]) — an attacker- or content-derived title
-//!    containing another `ESC` could otherwise break out of the intended
-//!    sequence and inject arbitrary further escapes into a
-//!    capable-but-not-bulletproof terminal, the same class of bug issue
-//!    #969's review caught in `open_url_via`'s OSC 8 fallback.
-//! 2. **Native command-line notifier** — a desktop-level fallback for a
-//!    terminal that renders neither OSC escape:
+//!    understood by several VTE-based terminals). Written to exactly one
+//!    target — `/dev/tty` on Unix when it opens (reaches the real
+//!    terminal even when stdout is redirected to a file or pipe),
+//!    otherwise stdout. `n`'s title/body are stripped of raw control
+//!    characters first ([`strip_control_chars`]) — an attacker- or
+//!    content-derived title containing another `ESC` could otherwise
+//!    break out of the intended sequence and inject arbitrary further
+//!    escapes into a capable-but-not-bulletproof terminal, the same class
+//!    of bug issue #969's review caught in `open_url_via`'s OSC 8
+//!    fallback.
+//! 2. **Native command-line notifier** — only tried when the escape leg's
+//!    write itself failed (no `/dev/tty`, stdout not writable):
 //!    [`crate::desktop::tui_macos_notify_command`] (`osascript -e
 //!    'display notification …'` on macOS, built from
 //!    [`crate::desktop::display_notification_script`] — shared text with
@@ -159,26 +154,26 @@
 //!    shape and why only `n.is_silent()` of #955's four `Notification`
 //!    fields has anywhere to go) or
 //!    [`crate::desktop::tui_notify_send_command`] (`notify-send` on
-//!    Linux/BSD). Both are split into pure, unspawned command builders —
-//!    same shape as [`crate::desktop::reveal_in_file_manager`]'s
+//!    Linux/BSD, threading [`Notification::tag`] through
+//!    [`crate::desktop::notification_request_id`] as the
+//!    `x-canonical-private-synchronous` replace hint — see that
+//!    function's doc). Both are split into pure, unspawned command
+//!    builders — same shape as [`crate::desktop::reveal_in_file_manager`]'s
 //!    per-platform commands below — specifically so a test can assert on
 //!    the constructed argv without spawning anything. Neither exists as
 //!    a stock Windows Terminal fallback: OSC 9 is natively supported
 //!    there, so the escape leg alone already covers it.
 //!
-//! Both legs are silent on failure (tool absent, no display, terminal
-//! doesn't understand the escape) — a caller with no way to distinguish
-//! "delivered" from "silently dropped" is exactly [`Self::send_notification`]'s
-//! pre-existing, unavoidable contract (the trait method returns `()`,
-//! see `BackendCaps::notifications`'s own doc for what the capability
-//! flag *does* promise instead), not a regression this issue introduces.
-//! A terminal on a desktop session showing neither the OSC render nor a
-//! native notifier is the one genuinely headless case this can't reach —
-//! there is no further fallback to earn an honest `Unsupported` from,
-//! since `send_notification`'s bare-`()` signature has nowhere to carry
-//! one (see [`BackendCaps::notifications`]'s doc, and
-//! `tests/conformance/caps.rs`'s `PLATFORM_SERVICE_CONTRACTS` entry for
-//! why that's this method's honesty story rather than a `_result` twin).
+//! The native leg is itself silent on failure (tool absent, no display) —
+//! a caller with no way to distinguish "delivered" from "silently
+//! dropped" once both legs have been tried is
+//! [`Self::send_notification`]'s honest ceiling on a terminal with
+//! neither facility, not a regression this degrade introduces. `Err` is
+//! reserved for a write that didn't even reach a writable target; a
+//! terminal that silently ignores a well-formed escape it doesn't
+//! understand still gets `Ok(())` — the same "no further fallback to
+//! earn an honest `Unsupported` from" reasoning `BackendCaps::notifications`'s
+//! own doc gives for why this capability bit stays `false` regardless.
 //!
 //! **`TuiBackend::backend_caps().notifications` stays `false`** despite
 //! this real implementation — see that method's doc
@@ -617,38 +612,29 @@ fn emit_notification_osc_to(title: &str, body: &str, writer: &mut dyn std::io::W
         .is_ok()
 }
 
-/// Emit both notification OSC sequences for `n` to stdout and (Unix)
-/// `/dev/tty` — the first leg of
-/// [`TuiPlatformServices::send_notification`]; see the
-/// module doc's "Notifications" section. `title`/`body` are run through
+/// Emit both notification OSC sequences for `n` through exactly one
+/// writer — the first leg of [`TuiPlatformServices::send_notification`];
+/// see the module doc's "Notifications" section. On Unix, `/dev/tty` is
+/// tried first (reaches the real terminal even when stdout is redirected
+/// to a file or pipe); stdout otherwise. `title`/`body` are run through
 /// [`strip_control_chars`] first (unlike [`open_url_via`]'s OSC 8
 /// fallback, which rejects the whole write when a control character is
 /// present, this degrade has no fallback of its own to reject *into* —
 /// stripping keeps the notification visible instead of silently dropping
-/// it entirely).
-fn emit_notification_osc(n: &Notification) {
+/// it entirely). Returns whether the write reached a target at all, so
+/// the caller can fall back to the native command-line leg only when it
+/// didn't.
+fn emit_notification_osc(n: &Notification) -> bool {
     let title = strip_control_chars(&n.title);
     let body = strip_control_chars(&n.body);
-    let _ = emit_notification_osc_to(&title, &body, &mut std::io::stdout());
-    emit_notification_osc_to_tty(&title, &body);
-}
-
-/// The `/dev/tty` half of [`emit_notification_osc`], as a
-/// `cfg`-overloaded pair (the same shape [`emit_osc8_hyperlink_to_tty`]
-/// uses) rather than an inline `#[cfg(unix)]` block — see that
-/// function's doc for the `unused_mut`-on-Windows trap this shape avoids.
-#[cfg(unix)]
-fn emit_notification_osc_to_tty(title: &str, body: &str) {
-    if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
-        let _ = emit_notification_osc_to(title, body, &mut tty);
+    #[cfg(unix)]
+    {
+        if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+            return emit_notification_osc_to(&title, &body, &mut tty);
+        }
     }
+    emit_notification_osc_to(&title, &body, &mut std::io::stdout())
 }
-
-/// Non-Unix: there is no `/dev/tty` to write a second copy to, so the
-/// stdout leg in [`emit_notification_osc`] stands alone. See the `unix`
-/// overload of this same function (above) for the shared doc.
-#[cfg(not(unix))]
-fn emit_notification_osc_to_tty(_title: &str, _body: &str) {}
 
 // ── Native clipboard tool fallback ──────────────────────────────────────────────
 
@@ -1574,10 +1560,27 @@ mod notification_osc_tests {
     #[test]
     fn send_notification_does_not_panic() {
         let services = TuiPlatformServices::new();
-        services.send_notification(Notification::new(
+        let _ = services.send_notification(Notification::new(
             "quadraui#1092",
             "send_notification smoke test",
         ));
+    }
+
+    /// Acceptance bar: a tagged call and an untagged call must not
+    /// observably differ in whether they succeed — both reach at least
+    /// the OSC escape leg (stdout is always writable in a test process),
+    /// so both report `Ok(())`.
+    #[test]
+    fn send_notification_honours_tag_without_changing_the_result() {
+        let services = TuiPlatformServices::new();
+        assert_eq!(
+            services.send_notification(Notification::new("t", "b").with_tag("build-status")),
+            Ok(())
+        );
+        assert_eq!(
+            services.send_notification(Notification::new("t", "b")),
+            Ok(())
+        );
     }
 }
 
@@ -1889,15 +1892,18 @@ impl PlatformServices for TuiPlatformServices {
         )
     }
 
-    /// A genuine best-effort degrade — see the module
-    /// doc's "Notifications" section for the full two-leg story
-    /// ([`emit_notification_osc`]'s OSC 9/777 escape leg, plus a native
-    /// `osascript`/`notify-send` command-line notifier fallback). Both
-    /// legs are independent and best-effort; this always attempts both
-    /// rather than trying to detect which one a given terminal actually
-    /// renders.
-    fn send_notification(&self, n: Notification) {
-        emit_notification_osc(&n);
+    /// A genuine best-effort degrade — see the module doc's
+    /// "Notifications" section for the full story. Exactly one leg
+    /// delivers per call: the OSC 9/777 escape leg
+    /// ([`emit_notification_osc`]) first, and only when that write
+    /// didn't even reach a target does the native `osascript`/
+    /// `notify-send` command-line notifier fire as a fallback —
+    /// `n.tag()` carries into the `notify-send` leg via
+    /// [`crate::desktop::notification_request_id`] as its replace hint.
+    fn send_notification(&self, n: Notification) -> ServiceResult<()> {
+        if emit_notification_osc(&n) {
+            return Ok(());
+        }
         #[cfg(target_os = "macos")]
         {
             let _ =
@@ -1905,8 +1911,14 @@ impl PlatformServices for TuiPlatformServices {
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            let _ = crate::desktop::tui_notify_send_command(&n.title, &n.body).spawn();
+            let request_id = n
+                .tag()
+                .map(|_| crate::desktop::notification_request_id(n.tag()));
+            let _ =
+                crate::desktop::tui_notify_send_command(&n.title, &n.body, request_id.as_deref())
+                    .spawn();
         }
+        Ok(())
     }
 
     /// Infallible wrapper over [`Self::open_url_result`], discarding its
