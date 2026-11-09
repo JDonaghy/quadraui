@@ -268,7 +268,7 @@ use quadraui::{
     AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps, BottomPanelEvent, Button,
     ContextMenuItem, DataTable, DialogButton, FloatMeasure, ImageSource, ListView, Notification,
     Point, PointerShape, Reaction, Rect, RgbaImage, ShellApp, ShellConfig, ShellContext, TabBar,
-    TextDisplay, Toast, ToastCorner, TreeView, UiEvent, UserPayload, WidgetId,
+    TextDisplay, Toast, ToastCorner, Tooltip, TreeView, UiEvent, UserPayload, WidgetId,
 };
 #[cfg(test)]
 use quadraui_binding_core::callback_reaction;
@@ -577,11 +577,16 @@ fn request_exit_before_drop(live: &mut LiveRunner) {
 /// still does its own items decode at flush time, same as every other
 /// variant's matching `QuiApp` method does synchronously -- see
 /// `quadraui-py`'s `test_deferred_actions.py` module doc for why that one
-/// exception exists.
+/// exception exists. [`Self::HideTooltip`] carries no argument at all --
+/// `QuiApp::hideTooltip` itself takes none -- so [`flush_deferred_actions`]
+/// applies it via the same [`InteractionEngine::hide_tooltip`] call that
+/// method makes directly.
 enum DeferredAction {
     MessageDialog(quadraui::MessageDialogOptions),
     ContextMenu(Vec<ContextMenuItem>, Point),
     Toast(Toast, ToastCorner),
+    Tooltip(Tooltip, Rect),
+    HideTooltip,
     Notification(Notification),
     OpenPath(PathBuf),
     RevealInFileManager(PathBuf),
@@ -1151,6 +1156,12 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app: &mut NodeAppLogic) -> 
             }
             DeferredAction::Toast(toast, corner) => {
                 app.engine.show_toast(toast, corner);
+            }
+            DeferredAction::Tooltip(tooltip, anchor) => {
+                app.engine.show_tooltip(tooltip, anchor);
+            }
+            DeferredAction::HideTooltip => {
+                app.engine.hide_tooltip();
             }
             DeferredAction::Notification(notification) => {
                 if let Err(err) = service_result(
@@ -1788,6 +1799,36 @@ impl QuiAppActions {
         self.queue
             .borrow_mut()
             .push_back(DeferredAction::Toast(toast, corner));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::Tooltip`] -- same arguments, same
+    /// decoding, as `QuiApp.showTooltip`. `tooltip` decodes as a plain
+    /// object shaped like [`Tooltip`]; `anchor` as a plain
+    /// `{x, y, width, height}` object.
+    #[napi(js_name = "showTooltip")]
+    pub fn show_tooltip(&self, env: Env, tooltip: Unknown, anchor: Unknown) -> Result<()> {
+        let tooltip: Tooltip = decode_direct(env, "showTooltip", tooltip)?;
+        let anchor: Rect = decode_direct(env, "showTooltip", anchor)?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Tooltip(tooltip, anchor));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::HideTooltip`] -- no arguments, same as
+    /// `QuiApp.hideTooltip`. For a tooltip source with no `Button` to carry
+    /// it (a toolbar action's own `tooltip`, or a tree/data-table row), the
+    /// handler is the only thing that knows when to dismiss it -- typically
+    /// on the hit-tested `MouseLeft` for the widget it showed on
+    /// `MouseEntered`. Calling `app.hideTooltip()` straight from inside that
+    /// same handler would raise `ReentrantCallError`; this queues the exact
+    /// same engine call instead.
+    #[napi(js_name = "hideTooltip")]
+    pub fn hide_tooltip(&self) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::HideTooltip);
         Ok(())
     }
 

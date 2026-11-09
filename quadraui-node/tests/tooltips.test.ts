@@ -13,6 +13,15 @@
 // driven by an exact, deterministic millisecond count rather than a real
 // timer racing against `tooltipDelayMs`.
 //
+// "handler shows and hides its own tooltip via actions" covers the other
+// half of the contract: a tooltip source with no `Button.tooltip` to
+// carry it (a toolbar action, or a tree/data-table row) has no
+// host-driven tooltip at all, so the handler itself shows/hides one from
+// the hit-tested `MouseEntered`/`MouseLeft` it already gets, via
+// `QuiApp.actions()`'s `showTooltip`/`hideTooltip` -- the only way to do
+// either from inside a handler, since a direct `app.showTooltip`/
+// `app.hideTooltip()` call there raises `ReentrantCallError`.
+//
 // Run against a built addon, e.g.:
 //
 //     npm run build:debug
@@ -172,4 +181,43 @@ test("a button with no tooltip never shows one", () => {
   // "the button's own label still paints somewhere", which would also
   // pass if a spurious tooltip appeared.
   assert.equal(app.screen(), before);
+});
+
+test("handler shows and hides its own tooltip via actions", () => {
+  // The button below carries no `tooltip` field at all, so
+  // `BindingHost.hoverTooltipText` resolves nothing for it and the
+  // host's own `driveHoverTooltip` never shows anything here -- the same
+  // situation a toolbar action's own `tooltip`, or a tree/data-table row
+  // with no `Button` to carry one, is in. Every assertion below is driven
+  // entirely by the handler's own `actions.showTooltip`/
+  // `actions.hideTooltip` calls on the hit-tested `MouseEntered`/
+  // `MouseLeft` it gets for the button.
+  const app = new QuiApp(40, 10);
+  const actions = app.actions();
+
+  app.setHandler((event: any) => {
+    if ("MouseEntered" in event) {
+      actions.showTooltip(
+        { id: "tip:act", text: "Row action" },
+        { x: 0, y: 2, width: 10, height: 1 },
+      );
+    } else if ("MouseLeft" in event) {
+      actions.hideTooltip();
+    }
+  });
+  app.insertButton({ id: "act", label: "Act" });
+  const [row, col] = locate(app, "Act");
+
+  // Entering the button dispatches the hit-tested `MouseEntered`; the
+  // handler queues `showTooltip` from inside it, since a direct
+  // `app.showTooltip(...)` call there would raise `ReentrantCallError`.
+  moveTo(app, row, col);
+  assert.ok(app.screenContains("Row action"));
+
+  // Leaving dispatches the matching `MouseLeft`; the handler's
+  // `actions.hideTooltip()` call dismisses it immediately -- there is no
+  // `Button.tooltip` for the host's own auto-hide to lean on here, so
+  // without this the tooltip would stay on screen forever.
+  moveTo(app, 9, 39);
+  assert.ok(!app.screenContains("Row action"));
 });

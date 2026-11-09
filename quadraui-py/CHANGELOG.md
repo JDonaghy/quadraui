@@ -12,6 +12,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `QuiAppActions.hide_tooltip()` — the deferred counterpart of
+  `QuiApp.hide_tooltip`, for a handler that shows its own tooltip from a
+  source with no `Button` to carry it (a toolbar action's own `tooltip`,
+  or a tree/data-table row) and needs to dismiss it again from inside
+  that same handler — typically on the hit-tested `MouseLeft` for the
+  widget it showed the tooltip on `MouseEntered` for. Calling
+  `app.hide_tooltip()` directly from there raises "already borrowed", the
+  same wall `QuiAppActions.show_tooltip` already works around.
 - `QuiApp.set_test_clock_ms(ms)`: a test-oriented override for the
   headless clock `drive_hover_tooltip` reads via
   `quadraui_binding_core::BindingHost::now_ms`. Pins it to an absolute

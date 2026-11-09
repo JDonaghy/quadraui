@@ -14,6 +14,15 @@ a `Button` leaf painted by `paint_leaf`/`paint_layout` rather than
 `BindingHost::button` -- since `BindingHost::hover_tooltip_text` resolves
 both the same way.
 
+`test_handler_shows_and_hides_its_own_tooltip_via_actions` covers the other
+half of the contract: a tooltip source with no `Button.tooltip` to carry it
+(a toolbar action, or a tree/data-table row) has no host-driven tooltip at
+all, so the handler itself shows/hides one from the hit-tested
+`MouseEntered`/`MouseLeft` it already gets, via `QuiApp.actions()`'s
+`show_tooltip`/`hide_tooltip` -- the only way to do either from inside a
+handler, since a direct `app.show_tooltip`/`app.hide_tooltip` call there
+hits the same "already borrowed" wall `test_deferred_actions.py` describes.
+
 `set_test_clock_ms` pins the headless clock `BindingHost::now_ms()` reads
 to an absolute value this file picks, so every assertion below is driven
 by an exact, deterministic millisecond count rather than a real
@@ -238,3 +247,42 @@ def test_tooltip_appears_via_a_render_callback_layout_tree_leaf():
     other_row, other_col = _locate(app, "Other")
     _move_to(app, other_row, other_col)
     assert not app.screen_contains("Save the file")
+
+
+def test_handler_shows_and_hides_its_own_tooltip_via_actions():
+    # The button below carries no `tooltip` field at all, so
+    # `BindingHost.hover_tooltip_text` resolves nothing for it and the
+    # host's own `drive_hover_tooltip` never shows anything here -- the
+    # same situation a toolbar action's own `tooltip`, or a tree/data-table
+    # row with no `Button` to carry one, is in. Every assertion below is
+    # driven entirely by the handler's own `actions.show_tooltip`/
+    # `actions.hide_tooltip` calls on the hit-tested `MouseEntered`/
+    # `MouseLeft` it gets for the button.
+    app = QuiApp(40, 10)
+    actions = app.actions()
+
+    def on_event(event):
+        if "MouseEntered" in event:
+            actions.show_tooltip(
+                {"id": "tip:act", "text": "Row action"}, (0.0, 2.0, 10.0, 1.0)
+            )
+        elif "MouseLeft" in event:
+            actions.hide_tooltip()
+
+    app.set_handler(on_event)
+    app.insert_button({"id": "act", "label": "Act"})
+    row, col = _locate(app, "Act")
+
+    # Entering the button dispatches the hit-tested `MouseEntered`; the
+    # handler queues `show_tooltip` from inside it, same "already
+    # borrowed" wall `test_deferred_actions.py` describes for a direct
+    # `app.show_tooltip(...)` call from there.
+    _move_to(app, row, col)
+    assert app.screen_contains("Row action")
+
+    # Leaving dispatches the matching `MouseLeft`; the handler's
+    # `actions.hide_tooltip()` call dismisses it immediately -- there is
+    # no `Button.tooltip` for the host's own auto-hide to lean on here, so
+    # without this the tooltip would stay on screen forever.
+    _move_to(app, 9, 39)
+    assert not app.screen_contains("Row action")
