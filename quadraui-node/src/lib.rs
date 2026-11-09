@@ -714,18 +714,27 @@ impl NodeAppLogic {
 
     /// Drives [`Self::host`]'s hover-tooltip tracker for this dispatch —
     /// [`BindingHost::drive_hover_tooltip`] fed [`BindingHost::now_ms`]'s
-    /// own real wall clock and [`Self::host`]'s own `style.tooltip_delay_ms`
-    /// (or the behaviour-preserving default when no style has been set) —
-    /// mirrors `quadraui-py`'s own `PyAppLogic::drive_hover_tooltip`.
+    /// own real wall clock and [`Self::host`]'s own
+    /// `style.tooltip_delay_ms`/`tooltip_auto_dismiss_ms` (or the
+    /// behaviour-preserving defaults when no style has been set) —
+    /// mirrors `quadraui-py`'s own `PyAppLogic::drive_hover_tooltip`,
+    /// including forwarding `backend` so the pending/auto-dismiss wake
+    /// reaches `backend.request_frame_in` directly rather than only
+    /// through the returned [`Reaction`].
     /// Called from both [`AppLogic::handle`] (so a hover change is
     /// noticed the same frame) and [`AppLogic::tick`] (so the delay still
     /// elapses with the pointer held still and no further event
     /// arriving).
-    fn drive_hover_tooltip(&mut self) -> Reaction {
+    fn drive_hover_tooltip(&mut self, backend: &mut dyn Backend) -> Reaction {
         let now_ms = self.host.now_ms();
-        let delay_ms = self.host.style.unwrap_or_default().tooltip_delay_ms;
-        self.host
-            .drive_hover_tooltip(&mut self.engine, now_ms, delay_ms)
+        let style = self.host.style.unwrap_or_default();
+        self.host.drive_hover_tooltip(
+            &mut self.engine,
+            backend,
+            now_ms,
+            style.tooltip_delay_ms,
+            style.tooltip_auto_dismiss_ms,
+        )
     }
 }
 
@@ -819,7 +828,7 @@ impl AppLogic for NodeAppLogic {
             }
             _ => Reaction::Continue,
         };
-        let reaction = reaction.merge(self.drive_hover_tooltip());
+        let reaction = reaction.merge(self.drive_hover_tooltip(backend));
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw
@@ -846,7 +855,7 @@ impl AppLogic for NodeAppLogic {
             }
             _ => Reaction::Continue,
         };
-        let reaction = reaction.merge(self.drive_hover_tooltip());
+        let reaction = reaction.merge(self.drive_hover_tooltip(backend));
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw
