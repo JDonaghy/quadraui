@@ -1208,7 +1208,8 @@ fn item_cursor_positions(origin_x: f32, _bar_height: f32, widths: &[f32]) -> Vec
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{
-        action_text, valign_offset_y, Toolbar, ToolbarButton, ToolbarLayout, ToolbarPaintOptions,
+        action_text, valign_offset_y, Toolbar, ToolbarButton, ToolbarItemKind, ToolbarLayout,
+        ToolbarPaintOptions, ToolbarRailStyle,
     };
     use crate::backend::PressableVisual;
     use crate::event::{Point, Rect};
@@ -1380,6 +1381,128 @@ pub(crate) mod native_surface_paint {
                 // own doc.
                 ToolbarButton::Spacer => {}
             }
+        }
+    }
+
+    /// Paint a [`Toolbar`] laid out as a vertical rail (the shape
+    /// [`crate::primitives::activity_bar::ActivityBar::to_toolbar_parts`]
+    /// builds) onto `surface`, honouring `rail_style`'s active-row fill,
+    /// leading-edge accent, keyboard-selection fill and trailing
+    /// separator — paint state a plain [`Toolbar`] / [`ToolbarPaintOptions`]
+    /// has no field for (see [`ToolbarRailStyle`]'s own doc for why).
+    ///
+    /// Only [`ToolbarButton::Action`] rows paint (a `Spacer` row is
+    /// skipped). Each row fills, in order — a later layer visually wins
+    /// over an earlier one when more than one applies to the same row:
+    ///
+    /// 1. `rail_style.active_bg`, when the row's `is_active`.
+    /// 2. The hover tint (`bar_bg.lighten(0.10)`), when `hovered_id`
+    ///    matches the row's id.
+    /// 3. The keyboard-selection fill — `rail_style.selection_bg`, or
+    ///    `bar_bg.lighten(0.20)` when unset — when `bar.focused_index`
+    ///    matches the row's flat button index.
+    /// 4. `rail_style.active_accent`, a 2px leading-edge strip, when the
+    ///    row's `is_active`.
+    ///
+    /// Then the row's icon (`ToolbarButton::Action::icon`) paints
+    /// centred in the full row, in `theme.foreground` when active,
+    /// hovered or selected, `theme.inactive_fg` otherwise.
+    ///
+    /// This function reads no other paint-state from `bar` — it is
+    /// additive to [`paint`], which never reads `rail_style` and is
+    /// unaffected by this function existing.
+    pub(crate) fn paint_rail(
+        bar: &Toolbar,
+        rail_style: &ToolbarRailStyle,
+        layout: &ToolbarLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        hovered_id: Option<&WidgetId>,
+    ) {
+        let bounds = layout.bar_bounds;
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return;
+        }
+
+        let bar_bg = bar.bg.unwrap_or(theme.header_bg);
+        surface.surface_fill_rect(bounds, bar_bg);
+
+        if let Some(sep) = rail_style.trailing_separator {
+            surface.surface_fill_rect(
+                Rect::new(bounds.x + bounds.width - 1.0, bounds.y, 1.0, bounds.height),
+                sep,
+            );
+        }
+
+        for vis in &layout.visible_items {
+            if vis.kind != ToolbarItemKind::Action || vis.bounds.height <= 0.0 {
+                continue;
+            }
+            let (id, icon, is_active) = match &bar.buttons[vis.item_idx] {
+                ToolbarButton::Action {
+                    id,
+                    icon,
+                    is_active,
+                    ..
+                } => (id, icon, *is_active),
+                _ => continue,
+            };
+
+            let row = Rect::new(bounds.x, vis.bounds.y, bounds.width, vis.bounds.height);
+            let is_hovered = hovered_id == Some(id);
+            let is_selected = bar.focused_index == Some(vis.item_idx);
+
+            // Active-row fill — lowest priority, painted first so
+            // hover/selection tints below still win.
+            if is_active {
+                if let Some(bg) = rail_style.active_bg {
+                    surface.surface_fill_rect(row, bg);
+                }
+            }
+
+            // Hover tint — painted before selection so the brighter
+            // selection tint always wins when a row is both hovered and
+            // keyboard-selected.
+            if is_hovered {
+                surface.surface_fill_rect(row, bar_bg.lighten(0.10));
+            }
+
+            // Keyboard-selection highlight.
+            if is_selected {
+                let sel_bg = rail_style
+                    .selection_bg
+                    .unwrap_or_else(|| bar_bg.lighten(0.20));
+                surface.surface_fill_rect(row, sel_bg);
+            }
+
+            // Leading-edge accent line — only when the rail opts in via
+            // `active_accent`; `None` paints zero accent pixels.
+            if is_active {
+                if let Some(accent) = rail_style.active_accent {
+                    surface.surface_fill_rect(
+                        Rect::new(bounds.x, vis.bounds.y, 2.0, vis.bounds.height),
+                        accent,
+                    );
+                }
+            }
+
+            let icon_str = icon.as_deref().unwrap_or("");
+            let (iw, ih) = surface.surface_measure_text(icon_str);
+            let fg = if is_active || is_hovered || is_selected {
+                theme.foreground
+            } else {
+                theme.inactive_fg
+            };
+            surface.surface_draw_text_run(
+                Rect::new(
+                    bounds.x + (bounds.width - iw) / 2.0,
+                    vis.bounds.y + (vis.bounds.height - ih) / 2.0,
+                    iw.max(0.0),
+                    ih.max(0.0),
+                ),
+                icon_str,
+                fg,
+            );
         }
     }
 
