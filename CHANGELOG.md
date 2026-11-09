@@ -245,6 +245,28 @@ only a push to `main` runs this workflow.
   live `FcSetApplication` set — an intermittent, un-attributable SIGSEGV
   partway through the `gtk` CI job's lib tests. The lock serialises every
   call against every other, closing that race.
+- The `gtk` CI job's lib tests no longer intermittently `SIGSEGV` partway
+  through the run with no failing test (#2284). Root cause: Pango's
+  process-global default font map (`pango_cairo_font_map_get_default()`)
+  is not thread-safe, but Rust's default test harness runs every `#[test]`
+  fn on its own OS thread, and almost every GTK paint/round-trip test
+  shapes real text against that same shared font map. Two fixes, both
+  reproduced and verified against a real Linux GTK build (dellserver):
+  `gtk::app_font::register_font_from_memory` now serialises its Fontconfig
+  registration (and the font-map invalidation it triggers) behind a
+  process-wide `Mutex` — two independent `OnceLock`-guarded call sites
+  (`GtkBackend::new`'s codicon registration and the test suite's own
+  icon-font fixture) could otherwise land their "first call" on two
+  different OS threads at once, racing the unsynchronised raw `FcFontSet`
+  reads `register_with_fontconfig` does against Fontconfig's live
+  `FcSetApplication` set; and a new `#[cfg(test)]`-only `gtk::TEST_RENDER_LOCK`
+  serialises `GtkBackend::enter_frame_scope` (the choke point nearly every
+  paint test runs real text shaping through) and
+  `gtk::testing::GtkDriver::new`/`dispatch` (which measure hit regions via
+  the stored Pango context outside a frame scope) against each other and
+  against the font-registration path. Zero cost to real apps — gated
+  entirely behind `#[cfg(test)]`, and GTK's own glib main loop only ever
+  renders from one thread in production.
 - A `LabelPosition::Top`-resolved `FieldKind::RadioGroup`/`NumberInput`
   (#2251) now agrees between paint and click on TUI: `FormFieldMeasure`
   gains an `items_start_y` field so `Form::layout` skips its item/sub-row

@@ -140,6 +140,15 @@ impl<A: AppLogic> GtkDriver<A> {
         // click landed correctly in a real window. Seeding it here makes
         // the harness measure clicks the way production does.
         {
+            // See `super::TEST_RENDER_LOCK`'s doc: this touches the same
+            // process-global Pango font map `GtkBackend::enter_frame_scope`
+            // guards — without the same lock here, a concurrently-running
+            // test's paint could race this seeding step.
+            #[cfg(test)]
+            let _test_render_guard = super::TEST_RENDER_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+
             let cr = Context::new(&surface).expect("Context::new on headless ImageSurface");
             let pctx = pangocairo::functions::create_context(&cr);
             pctx.set_font_description(&pangocairo::pango::FontDescription::from_string("Sans 11"));
@@ -208,6 +217,16 @@ impl<A: AppLogic> GtkDriver<A> {
             return Reaction::Exit;
         }
         let outcome = {
+            // Click/hover routing measures hit regions via the stored
+            // Pango context *outside* `enter_frame_scope` (see
+            // `Self::new`'s doc on why) — same process-global font map
+            // `super::TEST_RENDER_LOCK` guards there, so this path needs
+            // the same lock.
+            #[cfg(test)]
+            let _test_render_guard = super::TEST_RENDER_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+
             let (backend, app) = self.core.parts_mut();
             dispatch_event(event, backend, app)
         };
