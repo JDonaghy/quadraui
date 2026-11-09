@@ -127,7 +127,6 @@
 #[allow(unused_imports)]
 use std::cell::Cell;
 use std::cell::RefCell;
-#[cfg(test)]
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io;
@@ -184,17 +183,17 @@ use quadraui_binding_core::tree_scroll_state;
 use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
     add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction, caret_shape,
-    clear_recent_documents, click_down_up_events, color_depth_name, decode_extra_primitive,
-    dialog_severity, draw_bands, end_power_save_block, font_role, guarded as core_guarded,
-    is_default_protocol_client, key_pressed_event, login_item_enabled, menu_for_surface,
-    merge_overrides, message_dialog_options_from_buttons, paint_layout, pointer_shape,
-    record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
-    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
-    take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
-    toast_corner, update_apply_on_quit, update_check_for_update, update_download_and_stage,
-    window_close_reaction, with_tray, with_window, BindingHost, ErasedShellDriver, EventSink,
-    GuardedFailure, HitDetail, InteractionEngine, OverrideError, RenderOutput, ServiceError,
-    UpdateInfoWire, WindowCloseHandling,
+    clear_recent_documents, click_down_up_events, collect_leaf_tooltips, color_depth_name,
+    decode_extra_primitive, dialog_severity, draw_bands, end_power_save_block, font_role,
+    guarded as core_guarded, is_default_protocol_client, key_pressed_event, login_item_enabled,
+    menu_for_surface, merge_overrides, message_dialog_options_from_buttons, paint_layout,
+    pointer_shape, record_pending_error, remove_as_default_protocol_client, render_overlays,
+    resolve_app_path, set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item,
+    step_driver, take_pending_error as core_take_pending_error, text_display_from_lines,
+    theme_color_value, toast_corner, update_apply_on_quit, update_check_for_update,
+    update_download_and_stage, window_close_reaction, with_tray, with_window, BindingHost,
+    ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, OverrideError,
+    RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling,
 };
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`)
@@ -715,17 +714,30 @@ impl AppLogic for PyAppLogic {
                 &mut hits,
                 &chrome_interaction,
             );
+            // No render callback: nothing painted through `paint_layout`
+            // this frame, so there is no layout-tree leaf tooltip to
+            // resolve -- clears out anything a previously registered
+            // callback's tree may have left behind.
+            self.host.set_leaf_tooltips(HashMap::new());
             render_overlays(&self.engine, backend, hits);
             return;
         };
         match render_output_from_callback(callback, &self.pending_error) {
             Some(RenderOutput::Flat(frame)) => {
-                draw_bands(backend, frame.as_refs(), &mut hits, &chrome_interaction)
+                draw_bands(backend, frame.as_refs(), &mut hits, &chrome_interaction);
+                self.host.set_leaf_tooltips(HashMap::new());
             }
             Some(RenderOutput::Tree(node)) => {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
                 paint_layout(backend, area, &node, &mut hits, &chrome_interaction);
+                // Refreshed every render so a hovered layout-tree button's
+                // tooltip resolves against this frame's tree, keyed by
+                // each leaf's own tree-address id -- see
+                // `collect_leaf_tooltips`'s own doc.
+                let mut leaf_tooltips = HashMap::new();
+                collect_leaf_tooltips(&node, &mut leaf_tooltips);
+                self.host.set_leaf_tooltips(leaf_tooltips);
             }
             None => {}
         }

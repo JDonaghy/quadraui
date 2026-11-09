@@ -77,8 +77,9 @@ def test_insert_button_decodes_variant_icon_and_tooltip_from_a_plain_dict():
     # `variant: Danger` colours the label text in `Theme.error_fg` on
     # TUI -- there is no dedicated `danger_fg` field, the label
     # foreground *is* the intent colour (see `tui::button`'s module
-    # doc). `tooltip` is a documented TUI no-op (no hover UI on a
-    # terminal), so it has nothing further to assert on here.
+    # doc). `tooltip` only shows once the pointer hovers it for
+    # `tooltip_delay_ms` (see `test_tooltips.py`), so there is nothing
+    # further to assert on it from this one-shot decode-and-paint check.
     row, col = _locate(app, "Delete")
     label_fg, _ = app.cell_colors(col, row)
     assert label_fg == _rgb(app.theme()["error_fg"])

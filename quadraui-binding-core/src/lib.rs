@@ -85,7 +85,10 @@ pub use host::{
 pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
 pub use layout::{LayoutPanel, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry};
 pub use layout::{LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS};
-pub use render::{draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf, split_rects};
+pub use render::{
+    collect_leaf_tooltips, draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf,
+    split_rects,
+};
 pub use render::{split_rects_with_gap, tree_viewport_rows, RenderFrame, RenderRefs};
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
 pub use services::{
