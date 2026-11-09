@@ -30,9 +30,10 @@
 
 use crate::event::Rect;
 use crate::primitives::toolbar::{
-    Toolbar, ToolbarButton, ToolbarItemKind, ToolbarItemMeasure, ToolbarLayoutOptions,
-    ToolbarOrientation,
+    Toolbar, ToolbarButton, ToolbarItemKind, ToolbarItemMeasure, ToolbarLayout,
+    ToolbarLayoutOptions, ToolbarOrientation, ToolbarRailStyle,
 };
+use crate::theme::Theme;
 use crate::types::{Color, Icon, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -188,15 +189,158 @@ impl From<&ActivityBar> for Toolbar {
 }
 
 fn activity_item_to_toolbar_button(item: &ActivityItem) -> ToolbarButton {
+    activity_item_to_toolbar_button_with_icon(item, item.icon.fallback.clone())
+}
+
+fn activity_item_to_toolbar_button_with_icon(item: &ActivityItem, icon: String) -> ToolbarButton {
     ToolbarButton::Action {
         id: item.id,
         label: String::new(),
-        icon: Some(item.icon.fallback.clone()),
+        icon: Some(icon),
         key_hint: None,
         enabled: true,
         is_active: item.is_active,
         tooltip: item.tooltip.clone(),
         spec: None,
+    }
+}
+
+/// Paint-state-preserving twin of `impl From<&ActivityBar> for Toolbar`:
+/// the same `top_items`, `Spacer`, `bottom_items` button order and
+/// `focused_index` derivation, plus the paint state that conversion drops
+/// — returned as a [`ToolbarRailStyle`] sidecar rather than new fields on
+/// `Toolbar`/`ActivityBar*` (see that type's own doc for why).
+///
+/// Unlike `From`, which always bakes in `item.icon.fallback`, each item's
+/// icon here is chosen by `nerd_fonts_enabled` — `item.icon.glyph` when
+/// `true`, `item.icon.fallback` when `false` — the same choice
+/// `native_surface_paint::paint` makes per item today.
+///
+/// Mapping:
+/// - `style.active_bg` → [`ToolbarRailStyle::active_bg`].
+/// - `self.active_accent` → [`ToolbarRailStyle::active_accent`].
+/// - `self.selection_bg` → [`ToolbarRailStyle::selection_bg`].
+/// - `theme.separator` → [`ToolbarRailStyle::trailing_separator`]
+///   (unconditional — every activity-bar rasteriser paints this column
+///   today, so there is no "unset" case to preserve).
+/// - the returned `Toolbar`'s `bg` is `theme.tab_bar_bg` (the activity
+///   bar's own chrome background), not `None` like the plain `From`
+///   conversion — a Toolbar-rail painter that reads `bg` directly gets
+///   the right colour without also needing `theme` passed in separately.
+///
+/// `From<&ActivityBar> for Toolbar` is unchanged and keeps its own
+/// `bg: None` / fallback-icon-only behaviour, because
+/// [`ActivityBar::layout`] depends on it for geometry only — layout never
+/// reads `bg` or any icon string.
+///
+/// No painter reads the returned `ToolbarRailStyle` yet; this method only
+/// carries the state across the conversion boundary.
+impl ActivityBar {
+    pub fn to_toolbar_parts(
+        &self,
+        style: &ActivityBarStyle,
+        theme: &Theme,
+        nerd_fonts_enabled: bool,
+    ) -> (Toolbar, ToolbarRailStyle) {
+        let mut buttons = Vec::with_capacity(self.top_items.len() + 1 + self.bottom_items.len());
+        let mut focused_index = None;
+        let icon_of = |item: &ActivityItem| -> String {
+            if nerd_fonts_enabled {
+                item.icon.glyph.clone()
+            } else {
+                item.icon.fallback.clone()
+            }
+        };
+        for item in &self.top_items {
+            if item.is_keyboard_selected {
+                focused_index = Some(buttons.len());
+            }
+            buttons.push(activity_item_to_toolbar_button_with_icon(
+                item,
+                icon_of(item),
+            ));
+        }
+        buttons.push(ToolbarButton::Spacer);
+        for item in &self.bottom_items {
+            if item.is_keyboard_selected {
+                focused_index = Some(buttons.len());
+            }
+            buttons.push(activity_item_to_toolbar_button_with_icon(
+                item,
+                icon_of(item),
+            ));
+        }
+
+        let toolbar = Toolbar::new(self.id)
+            .with_buttons(buttons)
+            .with_focused_index(focused_index)
+            .with_bg(theme.tab_bar_bg);
+
+        let mut rail_style = ToolbarRailStyle::new().with_trailing_separator(theme.separator);
+        if let Some(active_bg) = style.active_bg {
+            rail_style = rail_style.with_active_bg(active_bg);
+        }
+        if let Some(accent) = self.active_accent {
+            rail_style = rail_style.with_active_accent(accent);
+        }
+        if let Some(selection_bg) = self.selection_bg {
+            rail_style = rail_style.with_selection_bg(selection_bg);
+        }
+
+        (toolbar, rail_style)
+    }
+
+    /// Turn a vertical [`ToolbarLayout`] — built from this bar's own
+    /// [`Self::to_toolbar_parts`] `Toolbar`, via
+    /// [`Toolbar::layout_with_options`] with
+    /// [`ToolbarOrientation::Vertical`] and
+    /// [`ToolbarLayoutOptions::with_pin_trailing_overflow_to_origin`] set,
+    /// at origin `(0.0, 0.0)` — into the row-hit list a
+    /// `draw_activity_bar`-shaped painter returns today.
+    ///
+    /// Order and coordinate space match
+    /// [`native_surface_paint::paint`]'s own return value exactly:
+    /// **bottom-pinned items first (in order), then top-pinned (in
+    /// order)** — the same order [`Self::layout`]'s own
+    /// `ActivityBarLayout::visible_items` uses — and `y_start`/`y_end`
+    /// bar-relative (first row at `0.0`), which only holds when the
+    /// caller's `ToolbarLayout` was itself built at origin `(0.0, 0.0)`.
+    /// Skips non-`Action` items and zero-height clipped items, same as
+    /// [`Self::layout`].
+    pub fn row_hits_from_toolbar_layout(
+        &self,
+        toolbar_layout: &ToolbarLayout,
+    ) -> Vec<ActivityBarRowHit> {
+        let top_len = self.top_items.len();
+        let mut top = Vec::new();
+        let mut bottom = Vec::new();
+
+        for vis in &toolbar_layout.visible_items {
+            if vis.kind != ToolbarItemKind::Action || vis.bounds.height <= 0.0 {
+                continue;
+            }
+            let item = if vis.item_idx < top_len {
+                &self.top_items[vis.item_idx]
+            } else {
+                &self.bottom_items[vis.item_idx - top_len - 1]
+            };
+            let hit = ActivityBarRowHit {
+                y_start: vis.bounds.y,
+                y_end: vis.bounds.y + vis.bounds.height,
+                id: item.id,
+                tooltip: item.tooltip.clone(),
+            };
+            if vis.item_idx < top_len {
+                top.push(hit);
+            } else {
+                bottom.push(hit);
+            }
+        }
+
+        let mut out = Vec::with_capacity(top.len() + bottom.len());
+        out.extend(bottom);
+        out.extend(top);
+        out
     }
 }
 
@@ -896,6 +1040,271 @@ mod tests {
         };
         let toolbar: Toolbar = (&bar).into();
         assert_eq!(toolbar.focused_index, None);
+    }
+
+    // ── `ActivityBar::to_toolbar_parts` ─────────────────────────────────
+
+    fn make_activity_item_with_icons(id: &str, glyph: char, fallback: char) -> ActivityItem {
+        ActivityItem {
+            id: WidgetId::new(id),
+            icon: Icon::new(glyph.to_string(), fallback.to_string()),
+            tooltip: String::new(),
+            is_active: false,
+            is_keyboard_selected: false,
+        }
+    }
+
+    #[test]
+    fn to_toolbar_parts_maps_active_bg_set() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new().with_active_bg(Color::rgb(1, 2, 3));
+        let theme = Theme::default();
+        let (_toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(rail_style.active_bg, Some(Color::rgb(1, 2, 3)));
+    }
+
+    #[test]
+    fn to_toolbar_parts_maps_active_bg_unset() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (_toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(rail_style.active_bg, None);
+    }
+
+    #[test]
+    fn to_toolbar_parts_maps_active_accent_set() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: Some(Color::rgb(4, 5, 6)),
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (_toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(rail_style.active_accent, Some(Color::rgb(4, 5, 6)));
+    }
+
+    #[test]
+    fn to_toolbar_parts_maps_active_accent_unset() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (_toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(rail_style.active_accent, None);
+    }
+
+    #[test]
+    fn to_toolbar_parts_maps_selection_bg_set() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: Some(Color::rgb(7, 8, 9)),
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (_toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(rail_style.selection_bg, Some(Color::rgb(7, 8, 9)));
+    }
+
+    #[test]
+    fn to_toolbar_parts_maps_selection_bg_unset() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (_toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(rail_style.selection_bg, None);
+    }
+
+    #[test]
+    fn to_toolbar_parts_bg_is_theme_tab_bar_bg_and_separator_is_trailing() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(toolbar.bg, Some(theme.tab_bar_bg));
+        assert_eq!(rail_style.trailing_separator, Some(theme.separator));
+    }
+
+    #[test]
+    fn to_toolbar_parts_icon_is_glyph_when_nerd_fonts_enabled() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item_with_icons("activity:explorer", 'G', 'F')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (toolbar, _rail_style) = bar.to_toolbar_parts(&style, &theme, true);
+        match &toolbar.buttons[0] {
+            ToolbarButton::Action { icon, .. } => {
+                assert_eq!(icon.as_deref(), Some("G"));
+            }
+            other => panic!("expected Action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_toolbar_parts_icon_is_fallback_when_nerd_fonts_disabled() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item_with_icons("activity:explorer", 'G', 'F')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (toolbar, _rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        match &toolbar.buttons[0] {
+            ToolbarButton::Action { icon, .. } => {
+                assert_eq!(icon.as_deref(), Some("F"));
+            }
+            other => panic!("expected Action, got {other:?}"),
+        }
+    }
+
+    // ── `ActivityBar::row_hits_from_toolbar_layout` ─────────────────────
+
+    /// Builds the expected `ActivityBarRowHit` list the same way
+    /// `native_surface_paint::paint` would, directly off
+    /// [`ActivityBar::layout`]'s own `visible_items` (already
+    /// bottom-then-top ordered), so this test doesn't depend on any
+    /// pixel/native-surface feature being enabled.
+    fn expected_row_hits(
+        bar: &ActivityBar,
+        layout: &ActivityBarLayout,
+    ) -> Vec<(f32, f32, WidgetId, String)> {
+        layout
+            .visible_items
+            .iter()
+            .map(|vi| {
+                let item = match vi.side {
+                    ActivitySide::Top => &bar.top_items[vi.item_idx],
+                    ActivitySide::Bottom => &bar.bottom_items[vi.item_idx],
+                };
+                (
+                    vi.bounds.y,
+                    vi.bounds.y + vi.bounds.height,
+                    item.id,
+                    item.tooltip.clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn actual_row_hits(
+        bar: &ActivityBar,
+        width: f32,
+        height: f32,
+        item_height: f32,
+    ) -> Vec<(f32, f32, WidgetId, String)> {
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (toolbar, _rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        let toolbar_layout = toolbar.layout_with_options(
+            0.0,
+            0.0,
+            width,
+            height,
+            ToolbarLayoutOptions::new()
+                .with_orientation(ToolbarOrientation::Vertical)
+                .with_pin_trailing_overflow_to_origin(true),
+            |_btn| ToolbarItemMeasure::new(item_height),
+        );
+        bar.row_hits_from_toolbar_layout(&toolbar_layout)
+            .into_iter()
+            .map(|hit| (hit.y_start, hit.y_end, hit.id, hit.tooltip))
+            .collect()
+    }
+
+    #[test]
+    fn row_hits_from_toolbar_layout_matches_layout_for_top_and_bottom_bar() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![
+                make_activity_item("activity:explorer", 'E'),
+                make_activity_item("activity:search", 'S'),
+            ],
+            bottom_items: vec![make_activity_item("activity:settings", 'G')],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(3.0, 10.0, 1.0);
+        assert_eq!(
+            expected_row_hits(&bar, &layout),
+            actual_row_hits(&bar, 3.0, 10.0, 1.0)
+        );
+    }
+
+    /// Same bottom-overflow case as
+    /// `activity_bar_layout_bottom_overflow_drops_last_item_not_first`:
+    /// the row-hit helper must drop the same (last) item `ActivityBar::layout`
+    /// drops, not re-derive a different overflow policy of its own.
+    #[test]
+    fn row_hits_from_toolbar_layout_matches_layout_on_bottom_overflow() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![],
+            bottom_items: vec![
+                make_activity_item("bot:0", '0'),
+                make_activity_item("bot:1", '1'),
+                make_activity_item("bot:2", '2'),
+            ],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(3.0, 2.0, 1.0);
+        let expected = expected_row_hits(&bar, &layout);
+        assert_eq!(expected.len(), 2, "only 2 of 3 items fit");
+        assert_eq!(expected, actual_row_hits(&bar, 3.0, 2.0, 1.0));
     }
 
     /// [`ActivityBar::layout`] delegates its geometry to

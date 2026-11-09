@@ -59,6 +59,20 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `ToolbarRailStyle` (#2220): a `#[non_exhaustive]` sidecar for a
+  `Toolbar` used as a vertical rail, carrying the paint state
+  `ActivityBar`'s painters use that a plain `Toolbar` has no field for
+  (active-row fill, leading-edge active accent, keyboard-selection fill,
+  trailing-edge separator colour). `ActivityBar::to_toolbar_parts` builds
+  one alongside the equivalent `Toolbar`, mapping `ActivityBarStyle::active_bg`
+  / `ActivityBar::active_accent` / `ActivityBar::selection_bg` /
+  `theme.separator` onto it and choosing each item's glyph vs fallback
+  icon by `nerd_fonts_enabled`; `ActivityBar::row_hits_from_toolbar_layout`
+  turns a vertical `ToolbarLayout` built from that `Toolbar` back into the
+  bar-relative `Vec<ActivityBarRowHit>` a `draw_activity_bar`-shaped
+  painter returns today. No field added to `Toolbar`, `ToolbarPaintOptions`,
+  `ActivityBar`, `ActivityItem`, or `ActivityBarStyle`; no painter reads
+  the new sidecar yet.
 - `SplitTree::Split` gains `first_min`/`second_min` (default `0.0`, set via
   the new `SplitTree::with_min_sizes` builder — not a `split()` argument, so
   existing call sites keep compiling) and now honours them in `layout()`

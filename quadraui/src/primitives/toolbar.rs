@@ -177,6 +177,92 @@ pub struct ToolbarPaintOptions {
     pub valign: ToolbarVAlign,
 }
 
+/// Per-call paint-state sidecar for a [`Toolbar`] used as a vertical rail
+/// (the shape [`crate::primitives::activity_bar::ActivityBar`] converts
+/// into via
+/// [`ActivityBar::to_toolbar_parts`](crate::primitives::activity_bar::ActivityBar::to_toolbar_parts)).
+///
+/// `Toolbar`'s own painters only know `theme.selected_bg` (pressed/active)
+/// and `theme.hover_bg` (hover) — a plain horizontal toolbar has no concept
+/// of a row fill, a leading-edge accent line, a separate keyboard-selection
+/// fill, or a trailing-edge separator column. Those four are
+/// `ActivityBar`-only paint state today (`ActivityBarStyle::active_bg`,
+/// `ActivityBar::active_accent`, `ActivityBar::selection_bg`, and the
+/// right-edge `theme.separator` column every activity-bar rasteriser
+/// paints). This sidecar carries that state alongside a rail-shaped
+/// `Toolbar` so a future Toolbar-rail painter can honour it without a
+/// field on `Toolbar` or [`ToolbarPaintOptions`] itself — same sidecar
+/// pattern as [`crate::TooltipChrome`] / [`crate::TabChrome`].
+///
+/// Every field is `None` by default, meaning "no override" — this issue
+/// adds the carrier only; no painter reads it yet, so a `Default` value
+/// changes nothing about how a `Toolbar` paints today.
+///
+/// `#[non_exhaustive]`: a future rail knob (e.g. a corner radius) is
+/// additive rather than breaking. Construct with [`Self::new`] /
+/// [`Self::default`] and the `with_*` builders; fields stay `pub` for
+/// reading.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct ToolbarRailStyle {
+    /// Background fill colour for the active item's row — the Toolbar-rail
+    /// equivalent of `ActivityBarStyle::active_bg`. `None` = no fill.
+    #[serde(default)]
+    pub active_bg: Option<Color>,
+    /// Colour of the leading-edge accent line/chip on active items — the
+    /// Toolbar-rail equivalent of `ActivityBar::active_accent`. `None` =
+    /// no accent rendering.
+    #[serde(default)]
+    pub active_accent: Option<Color>,
+    /// Background fill colour for keyboard-selected items — the
+    /// Toolbar-rail equivalent of `ActivityBar::selection_bg`. `None` =
+    /// a future painter falls back to its own default tint.
+    #[serde(default)]
+    pub selection_bg: Option<Color>,
+    /// Colour of the trailing-edge separator column — the Toolbar-rail
+    /// equivalent of the `theme.separator` column every activity-bar
+    /// rasteriser paints at the bar's right edge. `None` = no separator
+    /// painted.
+    #[serde(default)]
+    pub trailing_separator: Option<Color>,
+}
+
+impl ToolbarRailStyle {
+    /// Style with no overrides — identical to [`Self::default`], provided
+    /// for symmetry with [`crate::primitives::activity_bar::ActivityBarStyle::new`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set [`Self::active_bg`].
+    #[must_use]
+    pub fn with_active_bg(mut self, color: Color) -> Self {
+        self.active_bg = Some(color);
+        self
+    }
+
+    /// Set [`Self::active_accent`].
+    #[must_use]
+    pub fn with_active_accent(mut self, color: Color) -> Self {
+        self.active_accent = Some(color);
+        self
+    }
+
+    /// Set [`Self::selection_bg`].
+    #[must_use]
+    pub fn with_selection_bg(mut self, color: Color) -> Self {
+        self.selection_bg = Some(color);
+        self
+    }
+
+    /// Set [`Self::trailing_separator`].
+    #[must_use]
+    pub fn with_trailing_separator(mut self, color: Color) -> Self {
+        self.trailing_separator = Some(color);
+        self
+    }
+}
+
 /// Main-axis direction a [`Toolbar`] lays its buttons out along, passed to
 /// [`Toolbar::layout_with_options`].
 ///
@@ -2518,5 +2604,55 @@ mod tests {
             .resolved_button_spec(),
             None
         );
+    }
+
+    // ── `ToolbarRailStyle` ───────────────────────────────────────────────
+
+    #[test]
+    fn toolbar_rail_style_default_is_all_none() {
+        let style = ToolbarRailStyle::default();
+        assert_eq!(style, ToolbarRailStyle::new());
+        assert_eq!(style.active_bg, None);
+        assert_eq!(style.active_accent, None);
+        assert_eq!(style.selection_bg, None);
+        assert_eq!(style.trailing_separator, None);
+    }
+
+    #[test]
+    fn toolbar_rail_style_builders_set_each_field_independently() {
+        let active_bg = Color::rgb(10, 20, 30);
+        let accent = Color::rgb(40, 50, 60);
+        let selection_bg = Color::rgb(70, 80, 90);
+        let separator = Color::rgb(100, 110, 120);
+
+        let style = ToolbarRailStyle::new()
+            .with_active_bg(active_bg)
+            .with_active_accent(accent)
+            .with_selection_bg(selection_bg)
+            .with_trailing_separator(separator);
+
+        assert_eq!(style.active_bg, Some(active_bg));
+        assert_eq!(style.active_accent, Some(accent));
+        assert_eq!(style.selection_bg, Some(selection_bg));
+        assert_eq!(style.trailing_separator, Some(separator));
+    }
+
+    /// `ToolbarRailStyle` round-trips through serde, and a payload with no
+    /// keys at all (as if serialized before the type existed) still
+    /// deserializes, defaulting every field to `None` — same contract
+    /// [`crate::primitives::activity_bar::ActivityBarStyle`] documents for
+    /// itself.
+    #[test]
+    fn toolbar_rail_style_roundtrip_and_defaults_for_old_payloads() {
+        let style = ToolbarRailStyle::new()
+            .with_active_bg(Color::rgb(1, 2, 3))
+            .with_trailing_separator(Color::rgb(4, 5, 6));
+        let json = serde_json::to_string(&style).unwrap();
+        let back: ToolbarRailStyle = serde_json::from_str(&json).unwrap();
+        assert_eq!(style, back);
+
+        let old_json = "{}";
+        let defaulted: ToolbarRailStyle = serde_json::from_str(old_json).unwrap();
+        assert_eq!(defaulted, ToolbarRailStyle::default());
     }
 }
