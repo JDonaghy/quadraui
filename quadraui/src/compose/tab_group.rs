@@ -133,6 +133,7 @@
 //! created; `Top`/`Bottom` edges create a **vertical** split.
 
 use crate::backend::BackendWidget;
+use crate::compose::divider_drag::DividerDrag;
 use crate::compose::focus_group::FocusGroup;
 use crate::event::Rect;
 use crate::primitives::drop_zone::{
@@ -900,7 +901,7 @@ pub struct TabGroupController {
 
     // ── Interaction state ───────────────────────────────────────────
     /// Index of the divider currently being dragged, if any.
-    dragging_divider: Option<usize>,
+    dragging_divider: DividerDrag<usize>,
     /// In-progress tab drag, if any (mutually exclusive with `dragging_divider`).
     dragging_tab: Option<TabDragState>,
 }
@@ -949,7 +950,7 @@ impl TabGroupController {
             last_bounds: None,
             last_pane_hits: (0..1).map(|_| None).collect(),
             last_dividers: vec![],
-            dragging_divider: None,
+            dragging_divider: DividerDrag::none(),
             dragging_tab: None,
         }
     }
@@ -1026,7 +1027,7 @@ impl TabGroupController {
             last_bounds: None,
             last_pane_hits: (0..n).map(|_| None).collect(),
             last_dividers: vec![],
-            dragging_divider: None,
+            dragging_divider: DividerDrag::none(),
             dragging_tab: None,
         })
     }
@@ -1400,7 +1401,7 @@ impl TabGroupController {
         for (i, info) in self.last_dividers.iter().enumerate() {
             let d = &info.divider_bounds;
             if x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height {
-                self.dragging_divider = Some(i);
+                self.dragging_divider.begin(i);
                 return true;
             }
         }
@@ -1415,7 +1416,7 @@ impl TabGroupController {
     /// longer needed — the controller uses the cached split bounds from the
     /// last render instead.
     pub fn handle_drag_move(&mut self, x: f32, y: f32, _bounds: Rect) -> Option<TabGroupEvent> {
-        let div_idx = self.dragging_divider?;
+        let div_idx = self.dragging_divider.get()?;
         let info = self.last_dividers.get(div_idx)?;
 
         // Compute new ratio from cursor position relative to the split's own bounds.
@@ -1452,7 +1453,7 @@ impl TabGroupController {
 
     /// End any active divider drag.
     pub fn handle_drag_end(&mut self) {
-        self.dragging_divider = None;
+        self.dragging_divider.end();
     }
 
     // ── DropZone integration ────────────────────────────────────────
@@ -1603,7 +1604,7 @@ impl TabGroupController {
             for (tab_idx, range) in hits.slot_positions.iter().enumerate() {
                 if in_range(*range) {
                     if let Some(tab) = self.panes[pane_idx].tabs.get(tab_idx) {
-                        self.dragging_divider = None;
+                        self.dragging_divider.end();
                         self.dragging_tab = Some(TabDragState {
                             source_pane_idx: pane_idx,
                             tab_id: tab.id.clone(),
@@ -2584,7 +2585,7 @@ mod tests {
             ratio: 0.5,
         }];
         assert!(ctrl.handle_drag_start(40.5, 10.0));
-        assert_eq!(ctrl.dragging_divider, Some(0));
+        assert_eq!(ctrl.dragging_divider.get(), Some(0));
     }
 
     #[test]
@@ -2676,7 +2677,7 @@ mod tests {
 
         // Drag divider 0 (the root) — only the root ratio should move.
         ctrl.handle_drag_start(50.5, 5.0);
-        assert_eq!(ctrl.dragging_divider, Some(0));
+        assert_eq!(ctrl.dragging_divider.get(), Some(0));
         let ev = ctrl.handle_drag_move(30.0, 5.0, Rect::new(0.0, 0.0, 100.0, 20.0));
         assert_eq!(ev, Some(TabGroupEvent::DividerResized { divider_idx: 0 }));
         let (root, nested) = ratios(&ctrl.layout);
@@ -2692,7 +2693,7 @@ mod tests {
 
         // Drag divider 1 (the nested split) — only the nested ratio moves.
         ctrl.handle_drag_start(51.5, 10.5);
-        assert_eq!(ctrl.dragging_divider, Some(1));
+        assert_eq!(ctrl.dragging_divider.get(), Some(1));
         let ev = ctrl.handle_drag_move(51.0, 15.0, Rect::new(51.0, 0.0, 49.0, 20.0));
         assert_eq!(ev, Some(TabGroupEvent::DividerResized { divider_idx: 1 }));
         let (root_after, nested_after) = ratios(&ctrl.layout);
@@ -2709,9 +2710,9 @@ mod tests {
     #[test]
     fn drag_end_clears_drag_state() {
         let mut ctrl = make_group();
-        ctrl.dragging_divider = Some(0);
+        ctrl.dragging_divider.begin(0);
         ctrl.handle_drag_end();
-        assert_eq!(ctrl.dragging_divider, None);
+        assert_eq!(ctrl.dragging_divider.get(), None);
     }
 
     // ── drop_group_rects ──────────────────────────────────────────────────────

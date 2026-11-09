@@ -15,6 +15,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use super::divider_drag::DividerDrag;
+use super::shell_layout;
 use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit, ActivityItem};
 use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
 use crate::types::{Color, Icon, WidgetId};
@@ -186,7 +188,7 @@ pub struct AppShell {
     /// icons.
     activity_bar_width_px: Option<f32>,
     position: ShellPosition,
-    drag_offset: Option<f32>,
+    drag_offset: DividerDrag<f32>,
     hovered_activity_idx: Option<usize>,
     // ── Chrome slot config ───────────────────────────────────────
     has_title_bar: bool,
@@ -229,7 +231,7 @@ pub struct AppShell {
     /// command line span the whole window and the activity bar/sidebar
     /// stop above them.
     status_bar_under_main_column: bool,
-    bottom_panel_drag_offset: Option<f32>,
+    bottom_panel_drag_offset: DividerDrag<f32>,
     /// Independently-gated bottom bands, stacked bottom-up
     /// below the legacy single bottom-panel drawer. Empty by default —
     /// see [`BottomBand`]'s doc for the stacking order and the
@@ -313,7 +315,7 @@ impl AppShell {
             activity_bar_width: 4.0,
             activity_bar_width_px: None,
             position: ShellPosition::Left,
-            drag_offset: None,
+            drag_offset: DividerDrag::none(),
             hovered_activity_idx: None,
             has_title_bar: false,
             title_bar_height_lh: 1.5,
@@ -327,7 +329,7 @@ impl AppShell {
             has_status_bar: false,
             status_bar_height_px: None,
             status_bar_under_main_column: false,
-            bottom_panel_drag_offset: None,
+            bottom_panel_drag_offset: DividerDrag::none(),
             bottom_bands: Vec::new(),
             cached_bottom_band_bounds: RefCell::new(Vec::new()),
             cached_activity_hits: RefCell::new(Vec::new()),
@@ -1214,7 +1216,7 @@ impl AppShell {
                 if let Some(div) = layout.divider_bounds {
                     if contains(div, p) {
                         let center_x = div.x + div.width / 2.0;
-                        self.drag_offset = Some(p.x - center_x);
+                        self.drag_offset.begin(p.x - center_x);
                         return AppShellEvent::Consumed;
                     }
                 }
@@ -1226,7 +1228,7 @@ impl AppShell {
                     let grip_h = backend.snap_height(lh * 0.5).max(1.0);
                     let grip = Rect::new(bp.x, bp.y - grip_h, bp.width, grip_h);
                     if contains(grip, p) {
-                        self.bottom_panel_drag_offset = Some(p.y - bp.y);
+                        self.bottom_panel_drag_offset.begin(p.y - bp.y);
                         return AppShellEvent::Consumed;
                     }
                 }
@@ -1273,7 +1275,7 @@ impl AppShell {
                         right: _,
                     },
             } => {
-                if let Some(offset) = self.drag_offset {
+                if let Some(offset) = self.drag_offset.get() {
                     let ab_edge = match self.position {
                         ShellPosition::Left => {
                             layout.activity_bar_bounds.x + layout.activity_bar_bounds.width
@@ -1291,7 +1293,7 @@ impl AppShell {
                         new_width: clamped * lh,
                     };
                 }
-                if let Some(offset) = self.bottom_panel_drag_offset {
+                if let Some(offset) = self.bottom_panel_drag_offset.get() {
                     let bottom_edge = area.y + area.height;
                     let new_native = bottom_edge - (position.y - offset);
                     let status_lh = if self.has_status_bar { 1.0 } else { 0.0 };
@@ -1319,10 +1321,10 @@ impl AppShell {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.drag_offset.take().is_some() {
+                if self.drag_offset.end() {
                     return AppShellEvent::Consumed;
                 }
-                if self.bottom_panel_drag_offset.take().is_some() {
+                if self.bottom_panel_drag_offset.end() {
                     return AppShellEvent::Consumed;
                 }
                 AppShellEvent::Ignored
@@ -1342,6 +1344,12 @@ impl AppShell {
     /// [`Self::render`]/[`Self::handle`] pass `backend.snap_height`
     /// directly — the two agree because both apply the same
     /// above-one-line-height threshold.
+    ///
+    /// The actual carve lives in [`shell_layout::compute_layout`] as a
+    /// function of a read-only [`shell_layout::ShellLayoutConfig`]
+    /// snapshot rather than `&Self` — this wrapper builds that snapshot
+    /// and threads the resolved bottom-band bounds back into
+    /// `cached_bottom_band_bounds`.
     fn compute_layout(
         &self,
         area: Rect,
@@ -1349,341 +1357,33 @@ impl AppShell {
         style: &Style,
         snap: &dyn Fn(f32) -> f32,
     ) -> AppShellLayout {
-        // `activity_bar_width_px`, `title_bar_min_px` and
-        // `status_bar_height_px` are literal screen pixels. On a cell grid
-        // (TUI), `line_height` is architecturally always exactly `1.0` — one
-        // character cell, never a real pixel measurement — so a "48px"
-        // override would silently become "48 columns". Suppress the three
-        // px fields on that backend so the line-height-multiple fields
-        // (`activity_bar_width`, `title_bar_height_lh`, and the implicit
-        // `snap(lh)` status-bar fallback) keep driving TUI's layout instead.
-        //
-        // The same threshold also picks the *unset-override* defaults for
-        // `status_h`, `ab_w` and `header_h` below: a pixel backend (GUI)
-        // defaults to the matching VS Code `Style` chrome metric instead of
-        // a `line_height` multiple, while TUI's cell grid keeps the
-        // pre-existing `snap(lh)`/`activity_bar_width`-multiple behaviour
-        // (`Style`'s own tokens are a documented no-op there — see that
-        // module's "Where each token maps on TUI").
-        let is_cell_grid = line_height <= 1.0;
-        let activity_bar_width_px = self.activity_bar_width_px.filter(|_| !is_cell_grid);
-        let title_bar_min_px = self.title_bar_min_px.filter(|_| !is_cell_grid);
-        let status_bar_height_px = self.status_bar_height_px.filter(|_| !is_cell_grid);
-
-        let lh = line_height.max(1.0);
-
-        // ── Vertical carve: title bar (top), then status/cmd/bottom (bottom) ──
-
-        let mut band_y = area.y;
-        let mut band_h = area.height;
-
-        let title_bar_bounds = if self.has_title_bar {
-            let h = snap(self.title_bar_height_lh * lh).max(title_bar_min_px.unwrap_or(0.0));
-            let r = Rect::new(area.x, band_y, area.width, h);
-            band_y += h;
-            band_h -= h;
-            Some(r)
-        } else {
-            None
+        let cfg = shell_layout::ShellLayoutConfig {
+            activity_bar_width_px: self.activity_bar_width_px,
+            title_bar_min_px: self.title_bar_min_px,
+            status_bar_height_px: self.status_bar_height_px,
+            has_title_bar: self.has_title_bar,
+            title_bar_height_lh: self.title_bar_height_lh,
+            has_status_bar: self.has_status_bar,
+            status_bar_under_main_column: self.status_bar_under_main_column,
+            has_command_line: self.has_command_line,
+            has_bottom_panel: self.has_bottom_panel,
+            bottom_panel_visible: self.bottom_panel_visible,
+            bottom_panel_height_lh: self.bottom_panel_height_lh,
+            min_bottom_panel_height_lh: self.min_bottom_panel_height_lh,
+            max_bottom_panel_height_lh: self.max_bottom_panel_height_lh,
+            bottom_bands: &self.bottom_bands,
+            sidebar_visible: self.sidebar_visible,
+            panels_empty: self.panels.is_empty(),
+            position: self.position,
+            activity_bar_width: self.activity_bar_width,
+            sidebar_width: self.sidebar_width,
+            min_sidebar_width: self.min_sidebar_width,
+            max_sidebar_width: self.max_sidebar_width,
         };
-
-        let status_h = if self.has_status_bar {
-            status_bar_height_px.unwrap_or_else(|| {
-                if is_cell_grid {
-                    snap(lh)
-                } else {
-                    // Floored at `lh`, never shrunk below it — a chrome
-                    // font taller than the VS Code default must not be
-                    // clipped against a fixed strip.
-                    snap(lh.max(style.status_bar_height))
-                }
-            })
-        } else {
-            0.0
-        };
-        let cmd_h = if self.has_command_line { snap(lh) } else { 0.0 };
-
-        // Default carve: the status bar and command line consume height
-        // from the shared band before the activity bar/sidebar/main split
-        // below, full window width — so those columns stop above them.
-        // Opted into `status_bar_under_main_column`, the band stays full
-        // height here (the activity bar and sidebar run to the area's
-        // bottom edge) and the two bars are instead carved from each
-        // branch's own main-column rect below, via `carve_status_chrome`.
-        let (status_bar_bounds, command_line_bounds) = if self.status_bar_under_main_column {
-            (None, None)
-        } else {
-            band_h -= status_h;
-            let sb = self
-                .has_status_bar
-                .then(|| Rect::new(area.x, band_y + band_h, area.width, status_h));
-            band_h -= cmd_h;
-            let cl = self
-                .has_command_line
-                .then(|| Rect::new(area.x, band_y + band_h, area.width, cmd_h));
-            (sb, cl)
-        };
-
-        // Bottom panel height — computed here but *not* subtracted from the
-        // band. The panel docks only under main content (full width minus the
-        // sidebar), so it is carved from the main column after the horizontal
-        // split below. The sidebar and activity bar run the full band height.
-        // In `status_bar_under_main_column` mode `band_h` has not yet lost
-        // the status bar/command line height either (that happens per-branch
-        // below), so the 60%-of-band clamp is sized against what the main
-        // column will actually have left, not the taller shared band.
-        let main_column_h = (band_h
-            - if self.status_bar_under_main_column {
-                status_h + cmd_h
-            } else {
-                0.0
-            })
-        .max(0.0);
-        let bottom_panel_h = if self.has_bottom_panel && self.bottom_panel_visible {
-            let h = snap(
-                self.bottom_panel_height_lh.clamp(
-                    self.min_bottom_panel_height_lh,
-                    self.max_bottom_panel_height_lh,
-                ) * lh,
-            );
-            Some(h.min(main_column_h * 0.6))
-        } else {
-            None
-        };
-
-        let band_h = band_h.max(0.0);
-
-        // Carve the status bar then the command line from the bottom of a
-        // main-column rect — used only in `status_bar_under_main_column`
-        // mode. In the default mode those bars were already removed from
-        // `band_h` above, at full window width, before this rect existed.
-        let carve_status_chrome = |main: Rect| -> (Rect, Option<Rect>, Option<Rect>) {
-            let mut remaining = main;
-            let status = if self.has_status_bar {
-                let h = status_h.min(remaining.height);
-                let above_h = (remaining.height - h).max(0.0);
-                let rect = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
-                remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
-                Some(rect)
-            } else {
-                None
-            };
-            let cmd = if self.has_command_line {
-                let h = cmd_h.min(remaining.height);
-                let above_h = (remaining.height - h).max(0.0);
-                let rect = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
-                remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
-                Some(rect)
-            } else {
-                None
-            };
-            (remaining, status, cmd)
-        };
-
-        // Split a main-column rect into (content_above, bottom_panel + N
-        // bottom_bands). Bottom bands are carved first, stacked
-        // bottom-up flush against `main`'s bottom edge in list order (index
-        // 0 lowest); the legacy single bottom-panel drawer is then carved
-        // from what remains, so it always sits directly above every band —
-        // i.e. it behaves as one more, implicit band on top of the list.
-        let carve_bottom_chrome = |main: Rect| -> (Rect, Vec<(WidgetId, Rect)>, Option<Rect>) {
-            let mut remaining = main;
-            let mut band_bounds = Vec::new();
-            for band in &self.bottom_bands {
-                if !band.visible {
-                    continue;
-                }
-                let h = snap(band.height_lh * lh).clamp(0.0, remaining.height);
-                let above_h = (remaining.height - h).max(0.0);
-                let rect = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
-                remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
-                band_bounds.push((band.id, rect));
-            }
-            let bottom_panel_bounds = match bottom_panel_h {
-                Some(h) => {
-                    let h = h.min(remaining.height);
-                    let above_h = (remaining.height - h).max(0.0);
-                    let panel = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
-                    remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
-                    Some(panel)
-                }
-                None => None,
-            };
-            (remaining, band_bounds, bottom_panel_bounds)
-        };
-
-        // Combine the two carves above into the one step every branch below
-        // runs on its own `main_bounds` rect: in `status_bar_under_main_column`
-        // mode this carves the status bar and command line from the main
-        // column first, then the bottom bands/panel above them, so the full
-        // bottom-up stack (status bar, command line, bands, panel) lives
-        // entirely within the main column; otherwise the status bar and
-        // command line bounds computed above (full window width) pass
-        // through untouched and only the bottom bands/panel are carved here.
-        // (remaining main column, status bar bounds, command line bounds,
-        // bottom band bounds, bottom panel bounds).
-        type MainColumnChrome = (
-            Rect,
-            Option<Rect>,
-            Option<Rect>,
-            Vec<(WidgetId, Rect)>,
-            Option<Rect>,
-        );
-        let finish_main_column = |main: Rect| -> MainColumnChrome {
-            let (main, status, cmd) = if self.status_bar_under_main_column {
-                carve_status_chrome(main)
-            } else {
-                (main, status_bar_bounds, command_line_bounds)
-            };
-            let (main, bands, panel) = carve_bottom_chrome(main);
-            (main, status, cmd, bands, panel)
-        };
-
-        // ── Horizontal carve: activity bar + sidebar + divider + main ──
-        //
-        // Band widths (`ab_w`, `sidebar_w`, `divider_w`, `main_w`) are still
-        // decided by hand — they depend on clamping/min/max rules that are
-        // AppShell's own policy, not a layout concern. Once the widths are
-        // known, turning them into left-to-right x-positions is exactly the
-        // one-dimensional packing `crate::flex::pack_1d` already does for
-        // `Toolbar` and `Form` (same shared engine, see those modules), so
-        // `row_x_positions` delegates to it under the `layout` feature.
-
-        let ab_w = activity_bar_width_px.unwrap_or_else(|| {
-            if is_cell_grid {
-                snap(self.activity_bar_width * lh)
-            } else {
-                snap(style.activity_bar_width)
-            }
-        });
-        let divider_w = snap(lh * 0.25).clamp(1.0, 4.0);
-
-        if !self.sidebar_visible || self.panels.is_empty() {
-            let main_w = (area.width - ab_w).max(0.0);
-            let (ab_bounds, main_bounds) = match self.position {
-                ShellPosition::Left => {
-                    let x = row_x_positions(area.x, &[ab_w, main_w]);
-                    (
-                        Rect::new(x[0], band_y, ab_w, band_h),
-                        Rect::new(x[1], band_y, main_w, band_h),
-                    )
-                }
-                ShellPosition::Right => {
-                    let x = row_x_positions(area.x, &[main_w, ab_w]);
-                    (
-                        Rect::new(x[1], band_y, ab_w, band_h),
-                        Rect::new(x[0], band_y, main_w, band_h),
-                    )
-                }
-            };
-            let (
-                main_bounds,
-                status_bar_bounds,
-                command_line_bounds,
-                bottom_band_bounds,
-                bottom_panel_bounds,
-            ) = finish_main_column(main_bounds);
-            *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
-            return AppShellLayout {
-                window_bounds: area,
-                title_bar_bounds,
-                activity_bar_bounds: ab_bounds,
-                sidebar_header_bounds: None,
-                sidebar_content_bounds: None,
-                divider_bounds: None,
-                main_content_bounds: main_bounds,
-                bottom_panel_bounds,
-                command_line_bounds,
-                status_bar_bounds,
-            };
-        }
-
-        let sidebar_w = snap(
-            self.sidebar_width
-                .clamp(self.min_sidebar_width, self.max_sidebar_width)
-                * lh,
-        );
-        let remaining = (area.width - ab_w - divider_w).max(0.0);
-        let sidebar_w = sidebar_w.min(remaining * 0.8);
-        // The sidebar header strip (e.g. "EXPLORER") paints through the
-        // same chrome rendering as a tab strip, so a pixel backend sizes
-        // it off `Style::tab_height` instead of the raw chrome line
-        // height — floored at `lh` so a chrome font taller than the
-        // token isn't clipped; TUI's cell grid keeps the one-row default.
-        let header_h = if is_cell_grid {
-            lh
-        } else {
-            snap(lh.max(style.tab_height))
-        };
-
-        let main_w = (area.width - ab_w - sidebar_w - divider_w).max(0.0);
-
-        match self.position {
-            ShellPosition::Left => {
-                let x = row_x_positions(area.x, &[ab_w, sidebar_w, divider_w, main_w]);
-                let ab_bounds = Rect::new(x[0], band_y, ab_w, band_h);
-                let sidebar_x = x[1];
-                let header_bounds = Rect::new(sidebar_x, band_y, sidebar_w, header_h);
-                let content_y = band_y + header_h;
-                let content_h = (band_h - header_h).max(0.0);
-                let content_bounds = Rect::new(sidebar_x, content_y, sidebar_w, content_h);
-                let div_bounds = Rect::new(x[2], band_y, divider_w, band_h);
-                let main_bounds = Rect::new(x[3], band_y, main_w, band_h);
-                let (
-                    main_bounds,
-                    status_bar_bounds,
-                    command_line_bounds,
-                    bottom_band_bounds,
-                    bottom_panel_bounds,
-                ) = finish_main_column(main_bounds);
-                *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
-
-                AppShellLayout {
-                    window_bounds: area,
-                    title_bar_bounds,
-                    activity_bar_bounds: ab_bounds,
-                    sidebar_header_bounds: Some(header_bounds),
-                    sidebar_content_bounds: Some(content_bounds),
-                    divider_bounds: Some(div_bounds),
-                    main_content_bounds: main_bounds,
-                    bottom_panel_bounds,
-                    command_line_bounds,
-                    status_bar_bounds,
-                }
-            }
-            ShellPosition::Right => {
-                let x = row_x_positions(area.x, &[main_w, divider_w, sidebar_w, ab_w]);
-                let ab_bounds = Rect::new(x[3], band_y, ab_w, band_h);
-                let sidebar_x = x[2];
-                let header_bounds = Rect::new(sidebar_x, band_y, sidebar_w, header_h);
-                let content_y = band_y + header_h;
-                let content_h = (band_h - header_h).max(0.0);
-                let content_bounds = Rect::new(sidebar_x, content_y, sidebar_w, content_h);
-                let div_bounds = Rect::new(x[1], band_y, divider_w, band_h);
-                let main_bounds = Rect::new(x[0], band_y, main_w, band_h);
-                let (
-                    main_bounds,
-                    status_bar_bounds,
-                    command_line_bounds,
-                    bottom_band_bounds,
-                    bottom_panel_bounds,
-                ) = finish_main_column(main_bounds);
-                *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
-
-                AppShellLayout {
-                    window_bounds: area,
-                    title_bar_bounds,
-                    activity_bar_bounds: ab_bounds,
-                    sidebar_header_bounds: Some(header_bounds),
-                    sidebar_content_bounds: Some(content_bounds),
-                    divider_bounds: Some(div_bounds),
-                    main_content_bounds: main_bounds,
-                    bottom_panel_bounds,
-                    command_line_bounds,
-                    status_bar_bounds,
-                }
-            }
-        }
+        let (layout, bottom_band_bounds) =
+            shell_layout::compute_layout(&cfg, area, line_height, style, snap);
+        *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
+        layout
     }
 
     fn handle_activity_click(&mut self, clicked_id: &WidgetId) -> AppShellEvent {
@@ -1747,29 +1447,6 @@ impl AppShell {
             self.hovered_activity_idx = None;
         }
     }
-}
-
-/// Compute each chrome band's left edge, left-to-right starting at
-/// `origin`, with no gap between consecutive bands, never shrinking.
-///
-/// With the `layout` feature this runs through [`crate::flex`]'s shared
-/// flexbox engine — the same one `Toolbar` and `Form` pack their rows
-/// through. Without it, the same arithmetic is done by hand.
-#[cfg(feature = "layout")]
-fn row_x_positions(origin: f32, sizes: &[f32]) -> Vec<f32> {
-    crate::flex::pack_1d(crate::flex::FlexDirection::Row, origin, sizes, 0.0, 0.0)
-}
-
-/// Same contract as the `layout`-feature arm above, computed by hand.
-#[cfg(not(feature = "layout"))]
-fn row_x_positions(origin: f32, sizes: &[f32]) -> Vec<f32> {
-    let mut x = origin;
-    let mut xs = Vec::with_capacity(sizes.len());
-    for &s in sizes {
-        xs.push(x);
-        x += s;
-    }
-    xs
 }
 
 fn contains(rect: Rect, point: Point) -> bool {
@@ -2780,7 +2457,7 @@ mod tests {
         let div = l.divider_bounds.unwrap();
         let _center = div.x + div.width / 2.0;
 
-        s.drag_offset = Some(0.0);
+        s.drag_offset.begin(0.0);
         let ab_right = l.activity_bar_bounds.x + l.activity_bar_bounds.width;
         let target_width = 40.0;
         let mouse_x = ab_right + target_width;
@@ -2804,7 +2481,7 @@ mod tests {
     #[test]
     fn resize_drag_clamps_to_min() {
         let mut s = shell();
-        s.drag_offset = Some(0.0);
+        s.drag_offset.begin(0.0);
         let ev = s.handle(
             &UiEvent::MouseMoved {
                 position: Point::new(s.activity_bar_width + 1.0, 5.0),
@@ -2824,7 +2501,7 @@ mod tests {
     #[test]
     fn mouse_up_ends_drag() {
         let mut s = shell();
-        s.drag_offset = Some(0.0);
+        s.drag_offset.begin(0.0);
         let ev = s.handle(
             &UiEvent::MouseUp {
                 button: MouseButton::Left,
@@ -2835,7 +2512,7 @@ mod tests {
             area(),
         );
         assert_eq!(ev, AppShellEvent::Consumed);
-        assert!(s.drag_offset.is_none());
+        assert!(!s.drag_offset.is_dragging());
     }
 
     // ── Dynamic panel registration ──────────────────────────────────
@@ -3454,7 +3131,7 @@ mod tests {
     #[test]
     fn bottom_panel_resize_drag() {
         let mut s = full_chrome_shell();
-        s.bottom_panel_drag_offset = Some(0.0);
+        s.bottom_panel_drag_offset.begin(0.0);
         let ev = s.handle(
             &UiEvent::MouseMoved {
                 position: Point::new(40.0, 18.0),
