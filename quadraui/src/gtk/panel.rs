@@ -18,11 +18,15 @@
 //! value) for hit-test queries.
 
 use crate::primitives::layout_metrics::pixel_panel_layout;
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead); this
+// whole module is `Panel`'s own GTK rasteriser plumbing.
+#[allow(deprecated)]
 use crate::primitives::panel::{Panel, PanelLayout};
 
 /// Compute the GTK pixel-unit layout for a [`Panel`] without painting.
 /// Shares its action-button width with `mac_panel_layout` /
 /// `win_panel_layout` via [`pixel_panel_layout`].
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; this fn is its own plumbing.
 pub fn gtk_panel_layout(
     panel: &Panel,
     x: f64,
@@ -42,6 +46,7 @@ pub fn gtk_panel_layout(
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // `Panel`/`PanelAction` are `#[deprecated]`; these tests cover their GTK rasteriser directly.
 mod tests {
     use super::*;
     use crate::primitives::panel::{Panel, PanelAction, PanelHit};

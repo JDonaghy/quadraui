@@ -36,6 +36,9 @@ use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux, SectionBody,
     SectionMeasure,
 };
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
+// `pixel_panel_layout` is this type's own shared layout plumbing.
+#[allow(deprecated)]
 use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout, PipelineViewMeasure};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout, ProgressBarMeasure};
@@ -899,6 +902,7 @@ pub fn pixel_board_layout(model: &BoardModel, x: f32, y: f32, w: f32, h: f32) ->
 
 /// Compute a [`Panel`]'s layout. `content_padding` is always `0.0`
 /// today — no backend passes a non-zero value.
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; this fn is its own plumbing.
 pub fn pixel_panel_layout(
     panel: &Panel,
     x: f32,

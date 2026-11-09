@@ -80,6 +80,9 @@ use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
+// `MacBackend::draw_panel`/`panel_layout` are this type's own plumbing.
+#[allow(deprecated)]
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::radio_group::{
@@ -4289,6 +4292,7 @@ impl Backend for MacBackend {
             rect.height as f64,
         )
     }
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
     fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout {
         let theme = self.current_theme;
         let line_height = self.current_line_height;
@@ -4381,6 +4385,7 @@ impl Backend for MacBackend {
 
         layout
     }
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
     fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout {
         super::panel::mac_panel_layout(
             panel,

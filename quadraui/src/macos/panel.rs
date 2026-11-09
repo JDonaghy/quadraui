@@ -13,6 +13,9 @@
 use core_text::font::CTFont;
 
 use crate::primitives::layout_metrics::pixel_panel_layout;
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead); this
+// whole module is `Panel`'s own macOS rasteriser plumbing.
+#[allow(deprecated)]
 use crate::primitives::panel::{Panel, PanelLayout};
 #[cfg(test)]
 use crate::theme::Theme;
@@ -20,6 +23,7 @@ use crate::theme::Theme;
 /// Compute the macOS pixel-unit layout for a [`Panel`] without painting.
 /// Shares its action-button width with `gtk_panel_layout` /
 /// `win_panel_layout` via [`pixel_panel_layout`].
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; this fn is its own plumbing.
 pub fn mac_panel_layout(
     panel: &Panel,
     x: f64,
@@ -39,6 +43,7 @@ pub fn mac_panel_layout(
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // `Panel`/`PanelAction` are `#[deprecated]`; these tests cover their macOS rasteriser directly.
 mod tests {
     use super::super::headless::BitmapSurface;
     use super::super::text::make_font;

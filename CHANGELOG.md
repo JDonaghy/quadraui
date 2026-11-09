@@ -58,6 +58,30 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Deprecated
+- `Panel`/`PanelAction` (#2229): use [`SidebarPanel`] with a [`Toolbar`]
+  header instead — a `Label` title, a `Spacer`, then right-aligned
+  `Action` buttons reproduce the same title-bar-plus-actions shape
+  `Panel::header_toolbar` already maps onto. Every backend
+  (`tui`/`gtk`/`macos`/`win`) already paints `Panel`'s chrome through
+  that mapping (#2223–#2227), so this PR only adds the
+  `#[deprecated(since = "0.9.0", ...)]` attribute and migrates every
+  in-repo caller (`examples/common/panel_app.rs`, the
+  `tui_panel`/`gtk_panel`/`macos_panel`/`win_panel` examples, and
+  `quadraui-gallery`'s "Panel" demo) onto `SidebarPanel` + `Toolbar`
+  directly. `primitives::panel::native_surface_paint` (crate-private,
+  no public API impact) is deleted — no backend painter has called it
+  since those PRs landed. Plumbing that exists only to carry `Panel`
+  (the `Backend::draw_panel`/`panel_layout` trait methods, `frame.rs`'s
+  `Surface`/`OwnedContent::Panel` variants, the `a11y` impl, the
+  `RecordingBackend`/test-double impls, the crate-root/prelude
+  re-exports, and `quadraui-binding-core`'s `"panel"` wire/layout node)
+  keeps `Panel` behind a narrowly-scoped `#[allow(deprecated)]` — none
+  of that is removed by this PR. Removal target: PR 2 of issue #2229's
+  two-PR deprecation protocol, once every in-repo caller (including the
+  `"panel"` wire node, whose removal/retargeting is its own breaking
+  change) has migrated, not before a 0.10.0 bump.
+
 ### Added
 - `quadraui-node`: `QuiApp.armWakeNotify`/`disarmWakeNotify` (#2238) register
   a threadsafe notifier `QuiAppWaker.post`/`wake`/`postAfter`/`wakeAfter`

@@ -1,6 +1,7 @@
-//! Panel `AppLogic` + `quadraui::gtk::run` example.
+//! `SidebarPanel` + `Toolbar` `AppLogic` + `quadraui::gtk::run` example.
 //!
-//! Panel with title bar, close/maximize actions, content area.
+//! Reproduces the `Panel` title-bar shape (title, close/maximize
+//! actions, content area) with `SidebarPanel` + `Toolbar`.
 //! Press `c` to toggle collapsed, `q` to quit.
 //!
 //! ```sh

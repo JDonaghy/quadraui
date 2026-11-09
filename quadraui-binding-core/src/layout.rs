@@ -9,6 +9,10 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
+// `LayoutNode::Panel`/`LayoutPanel` are this type's own wire-decode plumbing
+// — the `"panel"` wire node itself is a separate breaking change.
+#[allow(deprecated)]
 use quadraui::{
     Button, DataTable, ListView, Panel, Rect, SidebarPanel, Split, SplitTree, TabBar, TextDisplay,
     TreeView,
@@ -31,6 +35,8 @@ pub enum LayoutNode {
     Leaf(LayoutLeaf),
     Split(LayoutSplit),
     Tabs(LayoutTabs),
+    #[allow(deprecated)]
+    // `LayoutPanel` carries `#[deprecated]` `Panel`; this variant is its own plumbing.
     Panel(LayoutPanel),
     SidebarPanel(LayoutSidebarPanel),
     SplitTree(LayoutSplitTree),
@@ -279,6 +285,7 @@ pub struct LayoutTabEntry {
 /// `0.0` — a `"panel"` node decodes `"gap"` as an error instead, see
 /// `crate::wire::spacing_from_value`), inset around the whole panel
 /// (chrome and content both) before the chrome is painted.
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; this struct is its own plumbing.
 pub struct LayoutPanel {
     pub panel: Panel,
     pub content: Box<LayoutNode>,
@@ -403,6 +410,7 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
                 }
                 Ok(())
             }
+            #[allow(deprecated)] // `Panel` is `#[deprecated]`.
             LayoutNode::Panel(panel_node) => {
                 let id = panel_node.panel.id.as_str().to_owned();
                 if !seen.insert(id.clone()) {

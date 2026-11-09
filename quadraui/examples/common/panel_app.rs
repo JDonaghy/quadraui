@@ -1,8 +1,10 @@
 //! Backend-agnostic app code for the panel example
 //! ([`tui_panel`] / [`gtk_panel`]).
 //!
-//! [`PanelApp`] demonstrates a [`Panel`] with a title bar, close and
-//! maximize action buttons, and a content area showing selectable text.
+//! [`PanelApp`] demonstrates a [`SidebarPanel`] with a [`Toolbar`] header
+//! (title label, close and maximize action buttons) and a content area
+//! showing selectable text — the `Panel` title-bar shape, reproduced
+//! with `SidebarPanel` + `Toolbar`.
 //!
 //! Controls:
 //! - click-drag content area   select text (TUI: line-wise highlight)
@@ -15,8 +17,8 @@
 //! - q / Esc                   quit
 
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Panel, PanelAction, PanelHit,
-    Reaction, Rect, StatusBar, StatusBarSegment, StyledSpan, StyledText, TextRegion, UiEvent,
+    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, SidebarPanel,
+    SidebarPanelHit, StatusBar, StatusBarSegment, TextRegion, Toolbar, ToolbarButton, UiEvent,
     WidgetId,
 };
 
@@ -43,28 +45,47 @@ impl PanelApp {
         }
     }
 
-    fn panel(&self) -> Panel {
-        Panel {
-            id: WidgetId::new("demo-panel"),
-            title: Some(StyledText {
-                spans: vec![StyledSpan::plain("Demo Panel")],
-            }),
-            actions: vec![
-                PanelAction {
-                    id: WidgetId::new("close"),
-                    icon: "×".into(),
-                    tooltip: "Close".into(),
-                    is_active: false,
+    /// The panel's header toolbar: a title label, a spacer, then the
+    /// maximize and close actions — close last so it lands rightmost,
+    /// matching the old `Panel::actions` convention (first action is
+    /// rightmost).
+    fn toolbar(&self) -> Toolbar {
+        Toolbar::new(WidgetId::new("demo-panel:toolbar"))
+            .with_buttons(vec![
+                ToolbarButton::Label {
+                    text: " Demo Panel".into(),
+                    fg: None,
                 },
-                PanelAction {
+                ToolbarButton::Spacer,
+                ToolbarButton::Action {
+                    spec: None,
                     id: WidgetId::new("maximize"),
-                    icon: if self.collapsed { "+" } else { "□" }.into(),
-                    tooltip: if self.collapsed { "Expand" } else { "Maximize" }.into(),
+                    label: if self.collapsed { "+" } else { "□" }.into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
                     is_active: self.collapsed,
+                    tooltip: if self.collapsed { "Expand" } else { "Maximize" }.into(),
                 },
-            ],
-            accent: Some(Color::rgb(40, 80, 120)),
-            collapsed: self.collapsed,
+                ToolbarButton::Action {
+                    spec: None,
+                    id: WidgetId::new("close"),
+                    label: "×".into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: "Close".into(),
+                },
+            ])
+            .with_bg(Color::rgb(40, 80, 120))
+    }
+
+    fn panel(&self) -> SidebarPanel {
+        SidebarPanel {
+            id: WidgetId::new("demo-panel"),
+            toolbar: Some(self.toolbar()),
+            toolbar_height: None,
         }
     }
 
@@ -136,9 +157,14 @@ impl AppLogic for PanelApp {
         let lh = backend.line_height();
         let panel_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);
         let panel = self.panel();
-        let layout = backend.draw_panel(panel_rect, &panel);
+        let layout =
+            backend.draw_sidebar_panel_interactive(panel_rect, &panel, &InteractionState::new());
 
-        let content_bounds = self.fill_content(backend, layout.content_bounds);
+        let content_bounds = if self.collapsed {
+            Rect::new(layout.content_bounds.x, layout.content_bounds.y, 0.0, 0.0)
+        } else {
+            self.fill_content(backend, layout.content_bounds)
+        };
         // Register the selectable text region. Pass `lines` so pixel-based
         // backends (GTK, macOS) can extract the selected substring at Ctrl-C
         // time. TUI ignores `lines` and reads cells from its ratatui buffer.
@@ -207,12 +233,12 @@ impl AppLogic for PanelApp {
                 let lh = backend.line_height();
                 let panel_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);
                 let panel = self.panel();
-                let layout = backend.panel_layout(panel_rect, &panel);
+                let layout = backend.sidebar_panel_layout(panel_rect, &panel);
                 match layout.hit_test(position.x, position.y) {
-                    PanelHit::Action(id) if id.as_str() == "close" => {
+                    SidebarPanelHit::ToolbarButton(id) if id.as_str() == "close" => {
                         return Reaction::Exit;
                     }
-                    PanelHit::Action(id) if id.as_str() == "maximize" => {
+                    SidebarPanelHit::ToolbarButton(id) if id.as_str() == "maximize" => {
                         self.collapsed = !self.collapsed;
                         self.last_message = if self.collapsed {
                             "Collapsed".into()
@@ -220,7 +246,7 @@ impl AppLogic for PanelApp {
                             "Expanded".into()
                         };
                     }
-                    PanelHit::TitleBar(_) => {
+                    SidebarPanelHit::ToolbarEmpty => {
                         self.last_message = "Title bar clicked".into();
                     }
                     _ => {}

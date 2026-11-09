@@ -60,6 +60,9 @@ pub use crate::compose::{AppShellLayout, FormController, FormControllerEvent, Pa
 // has; this list is deliberately not exhaustive.
 pub use crate::primitives::form::{FieldKind, Form, FormField, FormLayout};
 pub use crate::primitives::list::{ListItem, ListView, ListViewLayout};
+// `Panel`/`PanelAction` are `#[deprecated]` (use `SidebarPanel` + `Toolbar`
+// instead); `pub use` of a deprecated item is itself a use site.
+#[allow(deprecated)]
 pub use crate::primitives::panel::{Panel, PanelAction, PanelLayout};
 pub use crate::primitives::split::{Split, SplitDirection, SplitLayout};
 pub use crate::primitives::status_bar::{StatusBar, StatusBarLayout, StatusBarSegment};
