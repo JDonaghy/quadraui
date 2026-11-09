@@ -9608,6 +9608,7 @@ mod tests {
     /// rather than a hardcoded `Theme::default()`.
     #[cfg(target_os = "windows")]
     #[test]
+    #[allow(deprecated)] // constructs the deprecated `Panel`
     fn set_theme_reaches_the_panel() {
         use crate::primitives::panel::Panel;
         use crate::theme::Theme;
@@ -9678,6 +9679,7 @@ mod tests {
     /// the same rects `PanelLayout::hit_test` resolves clicks against.
     #[cfg(target_os = "windows")]
     #[test]
+    #[allow(deprecated)] // constructs the deprecated `Panel`/`PanelAction`
     fn draw_panel_paints_title_inset_and_actions_within_their_bounds() {
         use crate::primitives::panel::{Panel, PanelAction};
         use crate::theme::Theme;
@@ -9783,6 +9785,7 @@ mod tests {
     /// `gtk_backend_draw_panel_title_label_is_vertically_centered`.
     #[cfg(target_os = "windows")]
     #[test]
+    #[allow(deprecated)] // constructs the deprecated `Panel`
     fn draw_panel_paints_title_vertically_centered() {
         use crate::primitives::panel::Panel;
         use crate::theme::Theme;
@@ -10987,6 +10990,7 @@ mod tests {
     /// per-call-site change needed, unlike `draw_palette` above.
     #[cfg(target_os = "windows")]
     #[test]
+    #[allow(deprecated)] // constructs the deprecated `Panel`
     fn win_backend_draw_panel_paints_title_in_the_chrome_fonts_size() {
         let panel = Panel {
             id: WidgetId::new("panel"),
@@ -12778,6 +12782,7 @@ mod tests {
         }
     }
 
+    #[allow(deprecated)] // constructs the deprecated `Panel`
     fn sample_panel() -> Panel {
         Panel {
             id: WidgetId::new("panel"),

@@ -1889,10 +1889,12 @@ mod tests {
                 panic!("Panel's {:?} variant should have a path", entry.variant)
             });
             let svg = fs::read_to_string(dir.path().join(path)).expect("read captured SVG");
-            // `Panel::title` always paints — even collapsed (see
-            // `collapsed_panel_still_paints_title_bar_chrome` in
-            // `quadraui/src/primitives/panel.rs`) — so "Demo Panel" shows
-            // on every one of the three variants. `BottomPanelDemo` never
+            // The title bar always paints — even collapsed (see
+            // `header_toolbar_present_when_collapsed` in
+            // `quadraui/src/primitives/panel.rs`, which pins that a
+            // collapsed panel still maps to a header `Toolbar`) — so
+            // "Demo Panel" shows on every one of the three variants.
+            // `BottomPanelDemo` never
             // paints that string, so finding it here proves the click
             // actually landed on `PanelDemo`'s own row, not on
             // `BottomPanelDemo`'s whose name collides with it as a

@@ -47,8 +47,8 @@ use quadraui::{
     ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
     TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
-// `Panel` is `#[deprecated]` (issue #2229); imported separately so the allow
-// stays scoped to the one `draw_panel` back-compat case below.
+// `Panel` is `#[deprecated]`; imported separately so the allow stays
+// scoped to the one `draw_panel` back-compat case below.
 #[allow(deprecated)]
 use quadraui::Panel;
 
@@ -1406,10 +1406,10 @@ pub const CASES: &[Case] = &[
         method: "draw_panel",
         needle: Some("c0panl"),
         paint: |b, area| {
-            // `Panel` is `#[deprecated]` (issue #2229); `draw_panel` itself
-            // is not yet removed, so this row keeps proving the backend
-            // trait method still paints its argument until PR 2 of the
-            // two-PR deprecation protocol drops both.
+            // `Panel` is `#[deprecated]`; `draw_panel` itself is not yet
+            // removed, so this row keeps proving the backend trait method
+            // still paints its argument until the follow-up removal PR
+            // drops both.
             #[allow(deprecated)]
             let panel = Panel {
                 id: id("panel"),

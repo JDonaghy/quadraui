@@ -1896,14 +1896,15 @@ fn panel_maximize_button_click_toggles_collapsed() {
     );
 }
 
-/// `tui::panel::draw_panel` paints the title bar via `Panel::header_toolbar`'s
-/// mapped `Toolbar` header rather than its own hand-rolled title/action
-/// loops (#2224). Pins the two visible effects of that seam: the title still
-/// sits exactly one cell right of the panel's own left edge (the same x the
-/// status bar's flush-left leading space paints at — both rects start at
-/// `viewport.x == 0` in `PanelApp::render`), and every painted action glyph
-/// still resolves through `PanelHit::Action` for its own id, not some other
-/// action's.
+/// `PanelApp` paints its title bar through a `SidebarPanel` with a
+/// `Toolbar` header (a `Label` title, a `Spacer`, then the close/maximize
+/// `Action` buttons) — the same shape `Panel::header_toolbar` maps a
+/// deprecated `Panel` onto. Pins the two visible effects of that shape: the
+/// title still sits exactly one cell right of the panel's own left edge
+/// (the same x the status bar's flush-left leading space paints at — both
+/// rects start at `viewport.x == 0` in `PanelApp::render`), and every
+/// painted action glyph still resolves through `SidebarPanelHit::ToolbarButton`
+/// for its own id, not some other action's.
 #[test]
 fn panel_title_inset_and_action_glyphs_resolve_through_header_toolbar_seam() {
     let mut driver = TuiDriver::new(PanelApp::new(), 80, 24);
@@ -1925,8 +1926,9 @@ fn panel_title_inset_and_action_glyphs_resolve_through_header_toolbar_seam() {
         driver.screen()
     );
 
-    // Clicking the maximize glyph resolves to PanelHit::Action("maximize"),
-    // toggling collapsed state — not PanelHit::Action("close")'s Exit.
+    // Clicking the maximize glyph resolves to
+    // SidebarPanelHit::ToolbarButton("maximize"), toggling collapsed state —
+    // not SidebarPanelHit::ToolbarButton("close")'s Exit.
     let (mx, my) = driver
         .find("□")
         .unwrap_or_else(|| panic!("maximize action glyph not painted:\n{}", driver.screen()));
@@ -1935,12 +1937,13 @@ fn panel_title_inset_and_action_glyphs_resolve_through_header_toolbar_seam() {
     let collapsed_screen = driver.screen();
     assert!(
         collapsed_screen.contains("Collapsed"),
-        "clicking the maximize glyph should resolve to PanelHit::Action(\"maximize\"):\n{collapsed_screen}"
+        "clicking the maximize glyph should resolve to SidebarPanelHit::ToolbarButton(\"maximize\"):\n{collapsed_screen}"
     );
 
     // Re-expand via the now-repainted "+" glyph, then click the close glyph —
-    // it must resolve to PanelHit::Action("close") (Reaction::Exit), proving
-    // the two action glyphs hit-test to their own distinct ids.
+    // it must resolve to SidebarPanelHit::ToolbarButton("close")
+    // (Reaction::Exit), proving the two action glyphs hit-test to their own
+    // distinct ids.
     let (ex, ey) = driver
         .find("+")
         .unwrap_or_else(|| panic!("expand action glyph not painted:\n{collapsed_screen}"));
@@ -1953,7 +1956,7 @@ fn panel_title_inset_and_action_glyphs_resolve_through_header_toolbar_seam() {
     assert_eq!(
         reaction,
         Reaction::Exit,
-        "clicking the close glyph should resolve to PanelHit::Action(\"close\")"
+        "clicking the close glyph should resolve to SidebarPanelHit::ToolbarButton(\"close\")"
     );
 }
 

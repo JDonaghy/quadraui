@@ -237,7 +237,7 @@ mod tests {
         let mut demo = PanelDemo::new();
         assert!(!demo.collapsed[0]);
         let maximize = WidgetId::new("gallery:panel:maximize");
-        assert!(demo.dispatch_action(0, SidebarPanelHit::ToolbarButton(maximize.clone())));
+        assert!(demo.dispatch_action(0, SidebarPanelHit::ToolbarButton(maximize)));
         assert!(demo.collapsed[0]);
         assert!(demo.dispatch_action(0, SidebarPanelHit::ToolbarButton(maximize)));
         assert!(!demo.collapsed[0]);

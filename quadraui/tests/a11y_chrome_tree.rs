@@ -18,8 +18,8 @@ use quadraui::{
     TabBarSegment, TabItem, Toast, ToastCorner, ToastOverlay, ToastSeverity, ToolbarItemMeasure,
     Tooltip, TooltipMeasure, ValidationState, WidgetId, FR_PANEL_WIDTH,
 };
-// `Panel`/`PanelAction` are `#[deprecated]` (issue #2229); imported separately
-// so the allow stays scoped to the one `Surface::Panel` a11y case below.
+// `Panel`/`PanelAction` are `#[deprecated]`; imported separately so the
+// allow stays scoped to the one `Surface::Panel` a11y case below.
 #[allow(deprecated)]
 use quadraui::{Panel, PanelAction};
 
@@ -612,8 +612,8 @@ fn overlays_and_containers_report_their_own_structure() {
         fg: None,
         bg: None,
     };
-    // `Panel`/`PanelAction` are `#[deprecated]` (issue #2229); `Surface::Panel`
-    // keeps its own a11y coverage until the two-PR removal lands, matching the
+    // `Panel`/`PanelAction` are `#[deprecated]`; `Surface::Panel` keeps its
+    // own a11y coverage until the two-PR removal lands, matching the
     // `#[allow(deprecated)]` plumbing already in `frame.rs` and `testing/mod.rs`.
     #[allow(deprecated)]
     let panel_surface = Surface::Panel {

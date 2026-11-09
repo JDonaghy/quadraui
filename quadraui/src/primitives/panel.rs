@@ -421,11 +421,15 @@ mod tests {
     // ── Panel primitive tests ─────────────────────────────────────────
 
     fn mk_panel_action(id: &str, icon: char) -> PanelAction {
+        mk_panel_action_with_active(id, icon, false)
+    }
+
+    fn mk_panel_action_with_active(id: &str, icon: char, is_active: bool) -> PanelAction {
         PanelAction {
             id: WidgetId::new(id),
             icon: icon.to_string(),
             tooltip: String::new(),
-            is_active: false,
+            is_active,
         }
     }
 
@@ -538,8 +542,11 @@ mod tests {
     /// identical to `panel.layout(bounds, measure).visible_actions` —
     /// same count, same bounds per id.
     fn assert_header_matches_layout(bounds: Rect, measure: PanelMeasure, action_count: usize) {
+        // Alternate `is_active` per action so the mapping onto
+        // `ToolbarButton::Action::is_active` below is actually exercised
+        // in both directions, not just the all-`false` default.
         let actions: Vec<PanelAction> = (0..action_count)
-            .map(|i| mk_panel_action(&format!("a{i}"), 'x'))
+            .map(|i| mk_panel_action_with_active(&format!("a{i}"), 'x', i % 2 == 0))
             .collect();
         let panel = Panel {
             id: WidgetId::new("p"),
@@ -563,6 +570,31 @@ mod tests {
             other => panic!("expected title Label first, got {other:?}"),
         }
         assert_eq!(header.buttons[1], ToolbarButton::Spacer);
+
+        // `PanelAction::is_active` must survive the mapping onto
+        // `ToolbarButton::Action::is_active` unchanged, for every action
+        // that actually fits (`panel_layout.visible_actions` — not every
+        // source action, some of which may be dropped for width).
+        for va in &panel_layout.visible_actions {
+            let source = panel
+                .actions
+                .iter()
+                .find(|a| a.id == va.id)
+                .unwrap_or_else(|| panic!("visible action {:?} not in panel.actions", va.id));
+            let mapped = header
+                .buttons
+                .iter()
+                .find_map(|b| match b {
+                    ToolbarButton::Action { id, is_active, .. } if *id == va.id => Some(*is_active),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("action {:?} missing from header buttons", va.id));
+            assert_eq!(
+                mapped, source.is_active,
+                "action {:?}: is_active must map through unchanged",
+                va.id
+            );
+        }
 
         let tb = panel_layout
             .title_bar_bounds
