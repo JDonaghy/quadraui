@@ -1,36 +1,42 @@
 name: quadraui-ffi
 
 # Deliberately its own workflow file, not a job bolted onto ci.yml's
-# always-on `tui`/`gtk` jobs (#2183, epic #2179). `quadraui-ffi` is a
-# parked spike (`quadraui/docs/decisions/BINDING_STRATEGY.md`, 2026-11-01:
-# `py` stays PyO3, `node` stays napi-rs; a C ABI waits for a C-only
-# consumer) carrying ~2,300 test LOC, unrelated to whether this crate or
-# the `quadraui-binding-core` crate it leafs over has actually changed.
+# always-on `tui`/`gtk` jobs. `quadraui-ffi` is a parked spike
+# (`quadraui/docs/decisions/BINDING_STRATEGY.md`, 2026-11-01: `py` stays
+# PyO3, `node` stays napi-rs; a C ABI waits for a C-only consumer) carrying
+# ~2,300 test LOC, unrelated to whether this crate or the
+# `quadraui-binding-core` crate it leafs over has actually changed.
 # `ci.yml`'s `tui`/`gtk` jobs exclude `quadraui-ffi` from their
 # `cargo {build,test,clippy} --workspace` steps (`--exclude quadraui-ffi`);
 # this workflow's `paths`-filtered `ffi` job is the only place its
 # build/test/clippy run — same shape `macos.yml` and
 # `quadraui-node-build.yml` already use for their own narrowly-scoped
-# crates.
+# crates. `quadraui/src/**`/`quadraui/Cargo.toml` are in the `paths:` list
+# too (`quadraui-node-build.yml`'s own pattern over the same
+# `quadraui-binding-core` leaf), so a change to the shared `quadraui`
+# crate itself — not just the two leaf crates — still triggers this.
 #
-#   * A PR touching neither `quadraui-ffi/**` nor `quadraui-binding-core/**`
-#     (nor this workflow file) gets NO check here at all — not a passing
-#     one, not a failing one, none.
-#   * A PR touching either gets a real build + test (including
+#   * A PR touching none of those paths (nor this workflow file) gets NO
+#     check here at all — not a passing one, not a failing one, none.
+#   * A PR touching any of them gets a real build + test (including
 #     `tests/header_up_to_date.rs`, the cbindgen-generated-header drift
-#     check) + clippy pass.
+#     check) + clippy pass, on both Linux and Windows.
 on:
   push:
     branches: [main, develop]
     paths:
       - "quadraui-ffi/**"
       - "quadraui-binding-core/**"
+      - "quadraui/src/**"
+      - "quadraui/Cargo.toml"
       - ".github/workflows/ffi.yml"
   pull_request:
     branches: [main, develop]
     paths:
       - "quadraui-ffi/**"
       - "quadraui-binding-core/**"
+      - "quadraui/src/**"
+      - "quadraui/Cargo.toml"
       - ".github/workflows/ffi.yml"
   workflow_dispatch: {}
 
@@ -43,14 +49,14 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
 
 jobs:
   bump-shape:
-    # A release's bump PR (`release-X.Y.Z` -> `develop`) only ever touches
-    # `quadraui/Cargo.toml`/`quadraui/src/lib.rs` — none of the `paths:`
-    # entries above — so it can never actually trigger this workflow via a
-    # real content change; this guard only matters if `workflow_dispatch`
-    # or a manual re-run fires it anyway. Same detector `ci.yml`'s own
+    # A release's bump PR (`release-X.Y.Z` -> `develop`) touches
+    # `quadraui/Cargo.toml` — one of the `paths:` entries above, added so
+    # this job is actually reachable via a real content change instead of
+    # only `workflow_dispatch`/a manual re-run. Same detector `ci.yml`'s own
     # `bump-shape` job uses (`tools/changelog_check.py --print-bump-shape`),
     # duplicated here rather than shared via a reusable workflow because
     # each caller needs this as one job inside its own workflow run so its
@@ -78,8 +84,8 @@ jobs:
             "${{ github.event.pull_request.head.sha }}"
 
   ffi:
-    name: quadraui-ffi (build, test, clippy)
-    runs-on: ubuntu-latest
+    name: quadraui-ffi (build, test, clippy) — ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     needs: bump-shape
     # Skipped on a bump-shaped PR — see `bump-shape`'s own comment above.
     # `!cancelled()` is load-bearing: without it, the default `if:
@@ -87,7 +93,26 @@ jobs:
     # `workflow_dispatch`, where `bump-shape` itself never runs.
     if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
     timeout-minutes: 20
+    strategy:
+      # One platform failing must not cancel the other, same as `ci.yml`'s
+      # `tui` matrix: `quadraui-ffi` only enables quadraui's `tui` feature,
+      # so it gets the same real Windows build/test/clippy that feature
+      # already gets there — a `cdylib`/`staticlib` crate with a
+      # cbindgen-generated header is the one coverage (DLL export shape,
+      # `c_char` signedness) you least want to drop.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
+      # MUST precede actions/checkout — see `ci.yml`'s `tui` job for why
+      # (CRLF rewriting + legacy MAX_PATH, both silent failure modes once
+      # the working tree is already on disk).
+      - name: Configure git for Windows (line endings + long paths)
+        if: runner.os == 'Windows'
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+          git config --system core.longpaths true
       - uses: actions/checkout@v4
       # Toolchain is pinned in rust-toolchain.toml (see its header comment
       # for why); rustup's own override resolution honors that file
@@ -102,7 +127,10 @@ jobs:
       # `include/quadraui_ffi.h` drifts from what cbindgen would regenerate
       # from this crate's `#[no_mangle]` surface — the same
       # regenerate-and-diff-check shape `ci.yml`'s `tui` job uses for the
-      # TERMINAL_MATRIX block in README.md.
+      # TERMINAL_MATRIX block in README.md. The workflow-level
+      # `RUSTFLAGS: "-D warnings"` applies to this and the step below too,
+      # so a warning anywhere in this crate's ~2,300 LOC of `#[cfg(test)]`
+      # code fails the build the same as one in its ~520 LOC of impl code.
       - name: Test (quadraui-ffi)
         run: cargo test -p quadraui-ffi
       - name: Clippy (quadraui-ffi)
