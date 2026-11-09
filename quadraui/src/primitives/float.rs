@@ -274,7 +274,7 @@ pub(crate) mod native_surface_paint {
     /// Paint a [`Float`]'s chrome (background fill + optional border
     /// stroke) at `layout.bounds`. Content is NOT painted — the host
     /// draws into `layout.content_bounds`, same contract as
-    /// `primitives::panel::native_surface_paint::paint`.
+    /// `Backend::draw_panel`.
     pub(crate) fn paint(
         float: &Float,
         layout: &FloatLayout,
