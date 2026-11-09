@@ -4300,7 +4300,74 @@ impl Backend for MacBackend {
             rect.height as f64,
             line_height,
         );
-        crate::primitives::panel::native_surface_paint::paint(panel, &layout, self, &theme);
+
+        // Paint the title bar through the mapped `SidebarPanel` +
+        // `Toolbar` header instead of `panel::native_surface_paint::
+        // paint`'s own title-bar painter — `Panel::header_toolbar`
+        // builds a header whose fitting-action count/order matches
+        // `layout.visible_actions` exactly (same `tb` +
+        // `action_button_width`), so the two layouts agree on where
+        // each action button sits. `layout` itself (this method's
+        // hit-test contract) stays `mac_panel_layout(...)`, unaffected
+        // by the swap. Mirrors the GTK migration (`GtkBackend::
+        // draw_panel`); `self` already resolves text through
+        // `chrome_font` for every non-editor-class primitive, so no
+        // font-scope swap is needed here the way GTK's pango layout
+        // needs one.
+        if let Some(tb) = layout.title_bar_bounds {
+            let measure = crate::primitives::panel::PanelMeasure {
+                title_bar_height: tb.height,
+                action_button_width: crate::primitives::layout_metrics::pixel::PANEL_ACTION_BUTTON,
+                content_padding: 0.0,
+            };
+            if let Some(mut header) = panel.header_toolbar(tb, measure) {
+                // `header_toolbar` maps `panel.accent` straight onto
+                // `Toolbar::bg`, leaving it `None` (backend-picked
+                // default) when `panel.accent` is unset. `panel::
+                // native_surface_paint::paint`'s own contract instead
+                // fell back to `theme.separator` in that case — pin
+                // that default explicitly so an unaccented panel's
+                // title bar keeps its separator-coloured background
+                // rather than `sidebar_panel`'s own `theme.header_bg`
+                // default.
+                header.bg = Some(panel.accent.unwrap_or(theme.separator));
+                let sidebar = crate::primitives::sidebar_panel::SidebarPanel {
+                    id: panel.id,
+                    toolbar: Some(header),
+                    toolbar_height: Some(tb.height),
+                };
+                crate::primitives::sidebar_panel::native_surface_paint::paint(
+                    &sidebar, self, &theme, tb, tb.height, None, None,
+                );
+
+                // `sidebar_panel::native_surface_paint`'s own active/
+                // hovered/pressed highlight (an inset rect in
+                // `theme.selected_bg`) is scoped to its own interactive
+                // chrome, not `Panel`'s `is_active` contract — `draw_panel`
+                // has no interaction state to feed it (`hovered`/`pressed`
+                // above are always `None`), so a pinned `PanelAction::
+                // is_active` needs its own full-rect `accent_bg` fill.
+                // Re-fill + redraw just the active actions' full button
+                // rects to keep that contract.
+                for va in &layout.visible_actions {
+                    let Some(action) = panel.actions.get(va.action_idx) else {
+                        continue;
+                    };
+                    if !action.is_active {
+                        continue;
+                    }
+                    self.surface_fill_rect(va.bounds, theme.accent_bg);
+                    let (gw, gh) = self.surface_measure_text(&action.icon);
+                    let glyph_x = va.bounds.x + (va.bounds.width - gw) / 2.0;
+                    self.surface_draw_icon_glyph(
+                        Rect::new(glyph_x, va.bounds.y, gw, gh),
+                        &action.icon,
+                        theme.foreground,
+                    );
+                }
+            }
+        }
+
         layout
     }
     fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout {
