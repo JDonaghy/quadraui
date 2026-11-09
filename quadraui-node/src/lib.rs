@@ -231,20 +231,31 @@
 //! the wrapped `JsonValue` via `UserPayload::downcast_ref` and delivering
 //! `{"User": value}` to the registered handler.
 //!
-//! No `ThreadsafeFunction` is needed to deliver a wake promptly: `TuiBackend`'s
-//! own `waker()` doc already spells out the embedding contract every host
-//! (this one included) gets for free -- a background post lands in a
-//! plain queue `poll_events`/`wait_events` drain unconditionally, with no
-//! way to interrupt an in-progress blocking wait early, so "prompt" means
-//! "observed on the next `step()` call" and a host that wants tighter
-//! latency keeps its own poll cadence short rather than relying on an
-//! early wake. [`QuiAppWaker::post_after`]/`::wake_after` spawn their own
-//! background thread purely to delay *when* the same already-thread-safe
-//! waker closure is called, reusing it rather than adding a second,
-//! TSFN-based notification path whose only addressable gain -- shaving the
-//! few milliseconds between that thread waking and the JS-side `pump`
-//! loop's next tick -- is already covered by `pump`'s own `intervalMs`
-//! knob.
+//! **Wake-driven stepping (`armWakeNotify`/`js/index.ts`'s `run`).**
+//! [`QuiApp::arm_wake_notify`] registers a no-argument [`ThreadsafeFunction`]
+//! that [`QuiAppWaker::post`]/`::wake`/`::post_after`/`::wake_after` each
+//! fire (via [`QuiAppWaker::notify`]) right after delivering into the plain
+//! queue `poll_events`/`wait_events` already drain -- the `uv_async_send`
+//! analog this module's own doc once argued was unnecessary, back when the
+//! only addressable gain was shaving a few milliseconds off a short poll
+//! cadence. `js/index.ts`'s `run` arms this once per live session and calls
+//! `step()` the instant it fires instead of polling on a fixed interval, so
+//! a session with no pending waker/timer work makes zero `step()` calls
+//! between wakes rather than one every `pump` tick. This covers two of the
+//! three wake sources a live session can have -- a background thread's
+//! `waker()` post, and a `postAfter`/`wake_after` timer, both already
+//! funneled through this same closure -- but not the third: real native
+//! input (a keypress, a mouse click) arriving on an idle `startNative`
+//! window. No backend exposes a poll-able OS handle a background thread
+//! could wait on without owning the window (`GtkRunner`/`MacRunner`/
+//! `WinRunner` are thread-affine, and moving one to a dedicated non-JS
+//! thread would still need every `AppLogic` callback it drives to cross
+//! back to the JS thread, which is a bigger seam than one `Backend` trait
+//! method); `run` falls back to a long-period safety-net poll for that case
+//! until a backend grows one. [`QuiAppWaker::post_after`]/`::wake_after`
+//! still spawn their own background thread purely to delay *when* the
+//! same already-thread-safe waker closure (and the notify alongside it) is
+//! called, reusing both rather than building a separate delay mechanism.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -256,6 +267,7 @@ use std::thread;
 use std::time::Duration;
 
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
 use serde::de::DeserializeOwned;
@@ -341,6 +353,32 @@ type NodeCallback = FunctionRef<Unknown<'static>, Unknown<'static>>;
 /// held for the instant of a clone or a swap, never across a call into the
 /// wrapped closure itself.
 type SharedWaker = Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>;
+
+/// The threadsafe function [`QuiApp::arm_wake_notify`] registers, called
+/// with no arguments every time [`QuiAppWaker::notify`] runs -- shared
+/// (like [`SharedWaker`]) between every [`QuiAppWaker`] handle this app
+/// hands out, so arming it once covers every handle regardless of which
+/// one a background thread happens to call `post`/`wake`/`postAfter`/
+/// `wakeAfter` through. `None` until `arm_wake_notify` is called, and
+/// again after `disarm_wake_notify` or this app being dropped (dropping
+/// the last `Arc<WakeNotifyFn>` releases its underlying
+/// `napi_threadsafe_function`, unblocking the event loop it was keeping
+/// alive). An `Arc` around the `ThreadsafeFunction` itself, not a bare
+/// value: `ThreadsafeFunction` has no public way to construct a second
+/// handle to the same underlying call target outside this crate, so
+/// every clone of this cell's content needs to share the one instance
+/// `arm_wake_notify` built.
+type WakeNotify = Arc<Mutex<Option<Arc<WakeNotifyFn>>>>;
+
+/// The exact `ThreadsafeFunction` instantiation [`QuiApp::arm_wake_notify`]
+/// builds -- `CalleeHandled = false` (the `build_threadsafe_function`
+/// builder's own default, unlike [`ThreadsafeFunction`]'s bare-type
+/// default of `true`) is spelled out explicitly here rather than left
+/// implicit, since the two callers on [`QuiAppWaker`] (an infallible,
+/// no-payload "please step soon" ping) need [`ThreadsafeFunction::call`]'s
+/// `CalleeHandled = false` overload, which takes `T` directly rather than
+/// `Result<T, ErrorStatus>`.
+type WakeNotifyFn = ThreadsafeFunction<(), (), (), Status, false>;
 
 /// A single [`Backend::waker`] closure, captured once by
 /// [`NodeAppLogic::setup`] and read back exactly once by
@@ -2109,9 +2147,12 @@ impl QuiAppActions {
 /// exit is simply never observed -- there is no receiver left to drain
 /// it). Ordinary `Send + Sync` Rust state (`SharedWaker` is
 /// `Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>`), unlike `QuiApp`
-/// itself, which napi-rs pins to the thread that created it.
+/// itself, which napi-rs pins to the thread that created it. The second
+/// field mirrors [`QuiApp::wake_notify`] the same way the first mirrors
+/// [`QuiApp::current_waker`] -- see this module's doc's "Wake-driven
+/// stepping" section.
 #[napi]
-pub struct QuiAppWaker(SharedWaker);
+pub struct QuiAppWaker(SharedWaker, WakeNotify);
 
 impl QuiAppWaker {
     /// Delivers `value` (already materialized into a `Send`-safe
@@ -2120,10 +2161,26 @@ impl QuiAppWaker {
     /// decode step calls into, and this crate's own background-thread test
     /// coverage calls directly, with no live napi `Env` needed (see
     /// [`Self::post`]'s doc for why a raw JS value can't cross this
-    /// boundary at all).
+    /// boundary at all). Calls [`Self::notify`] afterwards, same as every
+    /// other wake path on this type.
     fn post_value(&self, value: JsonValue) {
         let waker = self.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
         waker(UserPayload::new(value));
+        self.notify();
+    }
+
+    /// Fires the threadsafe function [`QuiApp::arm_wake_notify`] registered
+    /// (if any), with no arguments, in non-blocking mode -- queues the call
+    /// without waiting for it to actually run on the JS thread, which is
+    /// what lets this be called from this method's own background-thread
+    /// callers (`post_after`/`wake_after`'s spawned sleep-then-wake thread)
+    /// with no risk of deadlocking against a JS thread that is itself
+    /// blocked waiting on something this background thread would otherwise
+    /// need to produce first.
+    fn notify(&self) {
+        if let Some(tsfn) = self.1.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            tsfn.call((), ThreadsafeFunctionCallMode::NonBlocking);
+        }
     }
 }
 
@@ -2170,10 +2227,14 @@ impl QuiAppWaker {
         let value = to_descriptor_value(value)
             .map_err(|detail| invalid_descriptor_error(format!("postAfter: {detail}")))?;
         let shared = Arc::clone(&self.0);
+        let notify = Arc::clone(&self.1);
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(u64::from(delay_ms)));
             let waker = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
             waker(UserPayload::new(value));
+            if let Some(tsfn) = notify.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                tsfn.call((), ThreadsafeFunctionCallMode::NonBlocking);
+            }
         });
         Ok(())
     }
@@ -2183,10 +2244,14 @@ impl QuiAppWaker {
     #[napi(js_name = "wakeAfter")]
     pub fn wake_after(&self, delay_ms: u32) {
         let shared = Arc::clone(&self.0);
+        let notify = Arc::clone(&self.1);
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(u64::from(delay_ms)));
             let waker = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
             waker(UserPayload::new(JsonValue::Null));
+            if let Some(tsfn) = notify.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                tsfn.call((), ThreadsafeFunctionCallMode::NonBlocking);
+            }
         });
     }
 }
@@ -2255,6 +2320,10 @@ pub struct QuiApp {
     /// that live runner's own backend's waker for the duration of its
     /// session. See [`SharedWaker`]'s own doc.
     current_waker: SharedWaker,
+    /// The threadsafe function [`Self::arm_wake_notify`] registers, shared
+    /// with every [`QuiAppWaker`] handle [`Self::waker`] has ever returned
+    /// -- see [`WakeNotify`]'s own doc.
+    wake_notify: WakeNotify,
 }
 
 #[napi]
@@ -2274,7 +2343,37 @@ impl QuiApp {
             live: None,
             live_exited: Cell::new(false),
             current_waker,
+            wake_notify: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// Registers `callback` as a threadsafe, no-argument notifier
+    /// [`QuiAppWaker::notify`] fires every time a handle this app's
+    /// [`Self::waker`] has ever returned delivers a post/wake/postAfter/
+    /// wakeAfter, from whatever thread that happened on -- see this
+    /// module's doc's "Wake-driven stepping" section. `js/index.ts`'s `run`
+    /// arms this once per live session to call `step()` promptly instead of
+    /// polling on a fixed interval.
+    ///
+    /// Replaces any callback a previous call armed; there is only ever one
+    /// slot. Does **not** raise `LiveRunnerActiveError` while a live
+    /// session is running (unlike most configuration methods) -- arming
+    /// this is exactly what a live session's own run loop needs to do
+    /// right after `startTui`/`startNative` returns.
+    #[napi(js_name = "armWakeNotify")]
+    pub fn arm_wake_notify(&self, callback: Function<'_, (), ()>) -> Result<()> {
+        let tsfn = callback.build_threadsafe_function::<()>().build()?;
+        *self.wake_notify.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(tsfn));
+        Ok(())
+    }
+
+    /// Clears whatever callback [`Self::arm_wake_notify`] last registered, if
+    /// any -- a harmless no-op if none is armed. Releases the underlying
+    /// `napi_threadsafe_function` (once every [`QuiAppWaker`] clone holding
+    /// it is also dropped), unblocking the event loop it was keeping alive.
+    #[napi(js_name = "disarmWakeNotify")]
+    pub fn disarm_wake_notify(&self) {
+        *self.wake_notify.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Resizes the underlying cell grid to `width`x`height`. Raises if
@@ -3065,7 +3164,10 @@ impl QuiApp {
                 "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
             ));
         }
-        Ok(QuiAppWaker(Arc::clone(&self.current_waker)))
+        Ok(QuiAppWaker(
+            Arc::clone(&self.current_waker),
+            Arc::clone(&self.wake_notify),
+        ))
     }
 
     /// Which native *feature* (if any) this build was compiled with -- `gtk`

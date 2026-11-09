@@ -344,10 +344,10 @@ export interface PumpHandle {
 }
 
 /**
- * Drives `app.step()` repeatedly on a timer, cooperatively yielding to the
- * rest of Node's event loop between calls instead of looping synchronously
- * -- the JS-side half of the non-blocking run-loop contract `startTui`/
- * `startNative`/`step` establish on the Rust side (see
+ * Drives `app.step()` repeatedly on a fixed timer, cooperatively yielding to
+ * the rest of Node's event loop between calls instead of looping
+ * synchronously -- the JS-side half of the non-blocking run-loop contract
+ * `startTui`/`startNative`/`step` establish on the Rust side (see
  * `quadraui-node/src/lib.rs`'s module doc's "Live run loop" section).
  * `step()` itself never blocks (`startTui`/`startNative` each move this app
  * onto a non-blocking runner `step()`, and the headless path was always
@@ -356,6 +356,17 @@ export interface PumpHandle {
  * calling `step()` forever would. Works unchanged for a `startNative`
  * session -- it drives the same `step()`/`stopLive()` surface as a
  * `startTui` one.
+ *
+ * {@link run} is the default entry point now -- it drives the same
+ * `step()`/`stopLive()` surface wake-driven instead of on a fixed interval,
+ * so an idle session makes far fewer `step()` calls. `pump` stays exported
+ * as the documented fallback for two cases `run` doesn't (yet) cover as
+ * well: a session that needs every real native keypress/click observed at
+ * the full `intervalMs` cadence regardless of idle-CPU cost (see `run`'s own
+ * doc for why its `fallbackIntervalMs` default trades that latency away by
+ * default), and a caller that wants `step()` called at a perfectly steady
+ * cadence with no dependency on `armWakeNotify`/`disarmWakeNotify` existing
+ * on `app` at all.
  *
  * Stops automatically once `step()` reports the app has exited (returns
  * `false`), or earlier if the returned handle's `stop()` is called.
@@ -398,3 +409,88 @@ exports.pump = pump;
 
 /** The type of {@link pump} -- lets a TS consumer `import type { PumpFn }` to name it, since `pump` itself is exported only at runtime (see this file's own doc comment on why this module has no runtime `export`). */
 export type PumpFn = typeof pump;
+
+/** An `app` {@link run} can drive -- `pump`'s own app shape plus the two native-side hooks `run` arms/disarms (see `quadraui-node/src/lib.rs`'s module doc's "Wake-driven stepping" section for what fires the armed callback). */
+export interface RunnableApp {
+  step(): boolean;
+  stopLive?(): boolean;
+  armWakeNotify(callback: () => void): void;
+  disarmWakeNotify(): void;
+}
+
+/** A handle returned by {@link run}: stops the wake-driven loop it started. Calling `stop()` more than once, or after the loop already stopped itself (because `step()` reported the app exited), is a harmless no-op. */
+export interface RunHandle {
+  stop(): void;
+}
+
+/**
+ * Drives `app.step()` wake-driven instead of on a fixed interval -- the
+ * default entry point `startTui`/`startNative` sessions should reach for
+ * instead of `pump` (see that function's own doc for when `pump` is still
+ * the better choice). Arms `app`'s native `armWakeNotify` hook with a
+ * callback that calls `step()` immediately, so a background thread's
+ * `waker().post()`/`.wake()`/`.postAfter()`/`.wakeAfter()` is observed the
+ * instant it fires rather than on `pump`'s next interval tick, and a session
+ * with no pending waker/timer work in between makes zero `step()` calls at
+ * all -- unlike `pump`, which calls `step()` on every tick regardless of
+ * whether there is anything to do.
+ *
+ * That wake-notify hook only covers two of the three things a live session
+ * can be waiting on -- a background thread's wake, and a scheduled
+ * `postAfter`/`wakeAfter` timer -- not real native input (a keypress, a
+ * click) arriving on an idle `startNative` window: no backend today exposes
+ * a way to observe that without the window's own thread polling for it (see
+ * `quadraui-node/src/lib.rs`'s module doc's "Wake-driven stepping" section).
+ * `fallbackIntervalMs` is this function's safety net for that gap -- `step()`
+ * is also called on this plain timer, same as `pump`'s own `intervalMs`,
+ * just at a much coarser default cadence (250ms instead of 16ms) since most
+ * of what it is covering for is genuinely rare compared to a waker/timer
+ * wake. A session whose real native input latency matters more than its
+ * idle CPU cost should pass a smaller `fallbackIntervalMs` (or use `pump`
+ * directly) until a backend grows a real wake primitive for native input.
+ *
+ * Calls `step()` once immediately (synchronously, before this function
+ * returns) so the first frame renders without waiting on either the wake
+ * notify or the fallback timer. Stops automatically once `step()` reports
+ * the app has exited, or earlier if the returned handle's `stop()` is
+ * called -- either way disarms the wake-notify hook and clears the fallback
+ * timer. On `step()` throwing, mirrors `pump`'s own cleanup-then-rethrow
+ * contract (see that function's own doc) exactly.
+ */
+function run(app: RunnableApp, fallbackIntervalMs = 250): RunHandle {
+  let stopped = false;
+  let fallback: ReturnType<typeof setInterval> | undefined;
+
+  const stop = (): void => {
+    if (stopped) return;
+    stopped = true;
+    if (fallback !== undefined) {
+      clearInterval(fallback);
+      fallback = undefined;
+    }
+    app.disarmWakeNotify();
+  };
+
+  const stepOnce = (): void => {
+    if (stopped) return;
+    try {
+      if (!app.step()) {
+        stop();
+      }
+    } catch (err) {
+      stop();
+      app.stopLive?.();
+      throw err;
+    }
+  };
+
+  app.armWakeNotify(stepOnce);
+  fallback = setInterval(stepOnce, fallbackIntervalMs);
+  stepOnce();
+
+  return { stop };
+}
+exports.run = run;
+
+/** The type of {@link run} -- lets a TS consumer `import type { RunFn }` to name it, since `run` itself is exported only at runtime (see this file's own doc comment on why this module has no runtime `export`). */
+export type RunFn = typeof run;
