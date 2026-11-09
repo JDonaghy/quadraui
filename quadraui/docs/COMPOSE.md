@@ -336,6 +336,50 @@ arm of its own for it.
 
 ---
 
+## `FormDialogController` — `src/compose/form_dialog.rs`
+
+**Owns:** a modal `Dialog` hosting a multi-field `Form` in its
+`DialogInput::Form` slot, plus the one piece neither primitive has
+alone: keyboard focus moving back and forth between the form's fields
+and the dialog's buttons. Field editing, validation and visibility are
+delegated to a `FormController`, so an embedded form behaves exactly
+like a full-page one. Push field data per frame via `set_form`, call
+`render` + `handle`.
+
+**Events (`FormDialogEvent`):** `ButtonClicked(WidgetId)` (a click, or
+Enter/Escape resolving to a button), `FormAction(FormEvent)` (field-level
+change/submit/focus from the embedded `Form`), `Consumed`, `Ignored`.
+
+**Keyboard model:** Tab / Shift+Tab traverse the form's focusable fields
+first, then step onto the first button (or, going backwards, the last)
+— one cyclic order across both widgets. Left / Right cycle among the
+buttons once a button has focus, mirroring `MessageDialogController`.
+Enter activates the focused button, or is forwarded to the form when no
+button has focus. Escape always resolves to the dialog's cancel button,
+falling back to its default button. Unlike a bare `FormController`
+consumer, this controller applies `FormEvent::FocusChanged` to its own
+stored form — a dialog is a self-contained modal — while still bubbling
+the event up as `FormAction`.
+
+**Smallest wiring:**
+
+```ignore
+let mut dialog = FormDialogController::new("create_milestone", "Create milestone")
+    .with_buttons(vec![cancel_button, create_button]);
+dialog.set_form(my_form_descriptor);
+dialog.render(backend);
+match dialog.handle(&event, backend) {
+    FormDialogEvent::ButtonClicked(id) if id.as_str() == "create" => submit(),
+    FormDialogEvent::FormAction(ev) => apply_field_change(ev),
+    _ => {}
+}
+```
+
+**Example:** `examples/tui_form_dialog.rs`
+(`examples/common/form_dialog_demo.rs`).
+
+---
+
 ## `HelpRegistry` / `HelpOverlayController` — `src/compose/help_layer.rs`
 
 **Owns:** a context-sensitive `?`-triggered help overlay (#431), split

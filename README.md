@@ -245,6 +245,7 @@ machines, so an app matches on semantic events (`MenuEvent::Activated`,
 | `SidebarPanelBody` | The standard layers of a sidebar panel body, composed. |
 | `TreeController` | A keyboard-navigable tree: selection, expand/collapse, scroll-follow. |
 | `FormController` | A form's focus, editing and validation. |
+| `FormDialogController` | A modal dialog hosting a multi-field form: field editing plus focus hand-off to the dialog's buttons. |
 | `DualModePaletteController` | A command palette that switches between modes. |
 | `ChatController` | A chat overlay: transcript plus input. |
 | `FilePickerController` / `FolderPickerController` | In-app file and folder pickers for backends without a native dialog. |
