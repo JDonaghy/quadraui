@@ -577,6 +577,22 @@ only a push to `main` runs this workflow.
   `primitives::text_input::native_surface_paint::paint` above.
   `grep -rn 'draw_text_input|CURSOR_W_DIP' ~/src/coord-tui/src
   ~/src/vimcode/src` finds no hit.
+### Changed
+- `AppShell`'s layout carve, activity-bar keyboard model, and
+  `TabGroupController`'s tab-drag resolution logic, plus
+  `SidebarSystem`'s inline-editing forwarders and scroll bookkeeping, move
+  out of their four god files into `compose/shell_layout.rs`,
+  `compose/activity_bar_controller.rs`, `compose/tab_drag.rs`, and
+  `compose/sidebar_edit.rs`/`compose/sidebar_scroll.rs`. A new
+  `compose::divider_drag::DividerDrag<T>` (pattern of
+  `primitives::scrollbar::ThumbDrag`) replaces the three
+  independently-reimplemented divider-drag `Option` fields in `AppShell`
+  and `TabGroupController`. Pure internal refactor: no public API changed,
+  every existing test passes unchanged. **Downstream impact:** no
+  consumer hits (`grep -rn 'drag_offset|activity_cursor|dragging_divider'
+  ~/src/coord-tui/src ~/src/vimcode/src` is empty — these were all
+  private fields); `resolve_tab_drop`/`TabDragSource`/`TabDropInstruction`
+  are still re-exported at the same `quadraui::compose::` path.
 
 ## [0.9.0] - 2026-11-07
 ### Added
