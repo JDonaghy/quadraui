@@ -231,13 +231,17 @@ pub enum DialogInput {
     /// [`DialogHit::BodyToolbarButton`].
     Toolbar(Toolbar),
     /// A multi-field form (e.g. Name + Description), for dialogs that need
-    /// more than one input. Not painted inline by `Dialog`'s own backend
-    /// rasterisers (mirrors [`Self::Toolbar`]'s "not painted
-    /// here" contract) — [`crate::compose::form_dialog::FormDialogController`]
-    /// paints it separately via [`crate::Backend::draw_form`], the same
-    /// cross-backend path every other `Form` host uses, and owns the
-    /// Tab/Shift-Tab focus hand-off between the form's fields and this
-    /// dialog's buttons.
+    /// more than one input. Unlike [`Self::Toolbar`] (which every
+    /// backend's `draw_dialog` paints inline, inside the input slot),
+    /// **no** backend's `draw_dialog` paints this variant at all — a
+    /// bare `Dialog::layout` + `draw_dialog` caller gets a blank
+    /// reserved hole where the form would go.
+    /// [`crate::compose::form_dialog::FormDialogController`] is the
+    /// intended (and today, only) way to use this variant: it paints
+    /// the form separately via [`crate::Backend::draw_form`] — the same
+    /// cross-backend path every other `Form` host uses — after calling
+    /// `draw_dialog`, and owns the Tab/Shift-Tab focus hand-off between
+    /// the form's fields and this dialog's buttons.
     Form(Form),
 }
 

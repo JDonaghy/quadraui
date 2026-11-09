@@ -85,21 +85,29 @@ only a push to `main` runs this workflow.
   match on either enum needs a new arm.
 - `DialogInput::Form(Form)` (#328): lets a `Dialog` host a multi-field
   `Form` (e.g. Name + Description) instead of a single
-  `DialogTextInput`. `Dialog::layout`/`measure_generic`/
-  `measure_generic_measured` size the input slot to one row per field;
-  the new `compose::FormDialogController` composes the `Dialog`
-  primitive with the existing `FormController` and owns the Tab/
-  Shift-Tab hand-off between the form's fields and the dialog's
-  buttons (stepping past either end cycles into the other), Left/
-  Right button cycling, Enter-activates-the-focused-button, and
-  Escape-always-resolves-to-cancel/default, mirroring
-  `MessageDialogController`'s own keyboard model. TUI's
+  `DialogTextInput`. `compose::FormDialogController` composes the
+  `Dialog` primitive with the existing `FormController`, sizing the
+  input slot via `Backend::form_layout` (so a `TextArea`'s
+  `visible_rows`, a `Top`-labelled field's extra row, and a focused
+  `Dropdown`'s open option list all reserve their real height rather
+  than a flat one-row-per-field estimate), and owns the Tab/Shift-Tab
+  hand-off between the form's fields and the dialog's buttons
+  (stepping past either end cycles into the other, surfacing
+  `FormEvent::FocusChanged` either way so a consumer mirroring
+  `focused_field` stays in sync), Left/Right button cycling,
+  Enter-activates-the-focused-button, Escape-always-resolves-to-
+  cancel/default (except into an open `ComboBox` popup, which claims
+  Escape first), mirroring `MessageDialogController`'s own keyboard
+  model. `FormController::live_form` and the `pub(crate)
+  form_controller::focus_order` helper back the controller's accurate
+  `has_focus` reporting and boundary detection respectively. TUI's
   `draw_dialog`/`tui_dialog_layout` and the GTK/macOS/Win
   `native_surface_paint::paint`/`a11y::chrome` plumbing all gained the
   new variant; existing single-`DialogTextInput`/`DialogInput::Toolbar`
   dialogs are unaffected. Demo: `examples/tui_form_dialog.rs`
-  (`examples/common/form_dialog_demo.rs`), with a `TuiDriver`
-  paint/focus/submit round-trip in `tests/tui_example_driver.rs`.
+  (`examples/common/form_dialog_demo.rs`), with `TuiDriver`
+  paint/focus/submit/multi-line round-trips in
+  `tests/tui_example_driver.rs`.
 - Item-level keyboard focus for `FieldKind::ButtonRow`/`ToggleGroup`/
   `Toolbar` form fields (#2250): `FormController` now tracks which item
   inside the focused field has keyboard focus (starting on the first
