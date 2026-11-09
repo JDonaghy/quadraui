@@ -9,11 +9,11 @@
 //!
 //! Picker (namespace/resource-kind) key handling does **not** go
 //! through `Action` — while a `PickerOverlay` is open,
-//! `quadraui::DualModePaletteController::handle` consumes the raw
-//! event directly (it already knows how to turn keystrokes into
-//! query edits / selection moves / confirm / cancel), and
+//! [`crate::state::PickerOverlay::handle_key`]/`handle_mouse` consume
+//! the raw event directly (they already know how to turn keystrokes
+//! into query edits / selection moves / confirm / cancel), and
 //! [`crate::KubeApp`] applies the resulting
-//! `quadraui::DualModePaletteEvent` via [`open_namespace_picker`],
+//! [`crate::state::PickerOutcome`] via [`open_namespace_picker`],
 //! [`open_kind_picker`] and [`commit_picker_selection`] below.
 
 use quadraui::WidgetId;
@@ -26,8 +26,6 @@ use crate::state::{AppState, Focus, PickerOverlay, PickerPurpose, ResourceKind};
 /// `apply_action` arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// Set `state.should_quit = true`.
-    Quit,
     /// Re-fetch the current resource kind in the current namespace.
     Refresh,
     /// Open the namespace picker.
@@ -58,7 +56,6 @@ pub enum Action {
 /// this freely, then re-render from `state` on the next frame.
 pub fn apply_action(state: &mut AppState, action: Action, rt: &tokio::runtime::Runtime) {
     match action {
-        Action::Quit => state.should_quit = true,
         Action::Refresh => refresh_resources(state, rt),
         Action::OpenNamespacePicker => open_namespace_picker(state),
         Action::OpenKindPicker => open_kind_picker(state),
@@ -113,7 +110,7 @@ fn current_kind_index(state: &AppState) -> Option<usize> {
 pub fn open_namespace_picker(state: &mut AppState) {
     state.picker = Some(PickerOverlay::new(
         PickerPurpose::Namespace,
-        " Namespace ",
+        "Namespace",
         state.namespaces.clone(),
         Some(state.current_ns),
     ));
@@ -126,7 +123,7 @@ pub fn open_kind_picker(state: &mut AppState) {
         .collect();
     state.picker = Some(PickerOverlay::new(
         PickerPurpose::ResourceKind,
-        " Resource kind ",
+        "Resource kind",
         items,
         current_kind_index(state),
     ));
@@ -134,10 +131,9 @@ pub fn open_kind_picker(state: &mut AppState) {
 
 /// Apply a picker's confirmed selection — switch namespace or kind
 /// and trigger a refresh. `orig` is the `source`-index the picker
-/// confirmed (`PickerOverlay::selected_orig_index` /
-/// `orig_index_of_row`). Called by [`crate::KubeApp::handle`] when
-/// the open `PickerOverlay`'s controller reports
-/// `quadraui::DualModePaletteEvent::ItemConfirmed`.
+/// confirmed (`PickerOverlay::selected_orig_index`). Called by
+/// [`crate::KubeApp::handle`] when the open `PickerOverlay` reports
+/// `crate::state::PickerOutcome::Confirmed`.
 pub fn commit_picker_selection(
     state: &mut AppState,
     purpose: PickerPurpose,

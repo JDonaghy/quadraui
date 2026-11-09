@@ -32,3 +32,10 @@ serde_yaml = "0.9"
 
 # Time formatting for "age" column.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+# Headless `TuiDriver` end-to-end test only — the lib build above
+# stays featureless (resolver = "2" keeps dev-dependency features out
+# of it), so the per-leg `--exclude kubeui`/`--exclude kubeui-gtk`
+# split is unaffected.
+quadraui = { path = "../quadraui", features = ["tui"] }

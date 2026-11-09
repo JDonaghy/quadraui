@@ -9,13 +9,13 @@
 //! crate doesn't need its own.
 
 use quadraui::{
-    AppLogic, Backend, Color, DualModePaletteEvent, InteractionState, Key, MouseButton, NamedKey,
-    Point, Reaction, Rect, StatusBarHit, Theme, UiEvent, PALETTE_CHROME_ROWS,
+    AppLogic, Backend, Color, InteractionState, Key, MouseButton, NamedKey, Point, Reaction, Rect,
+    StatusBarHit, Theme, UiEvent, PALETTE_CHROME_ROWS,
 };
 
 use crate::action::{apply_action, commit_picker_selection, Action};
 use crate::shell::{bootstrap_state, theme};
-use crate::state::AppState;
+use crate::state::{AppState, PickerOutcome};
 use crate::view::{build_list, build_status_bar, build_yaml_view};
 
 /// Backend-agnostic kubeui application. Owns the `AppState`, the
@@ -44,10 +44,28 @@ impl KubeApp {
         })
     }
 
-    /// Centred popup rect for the namespace/kind picker — `DualModePaletteController`
-    /// has no opinion on placement, so every consumer picks one; this
-    /// is the same "60% of the viewport, centred" shape the dual-mode
-    /// palette demo uses.
+    /// Construct from an already-built `AppState` and `Theme`,
+    /// skipping the cluster bootstrap in [`Self::new`]. For tests and
+    /// smoke checks that need a `KubeApp` to drive through
+    /// `quadraui::AppLogic::render`/`handle` (e.g. a headless
+    /// `quadraui::tui::testing::TuiDriver` run, or asserting
+    /// `Theme::light_default()` repaints every pane) without
+    /// contacting a real cluster.
+    pub fn with_state(state: AppState, theme: Theme) -> anyhow::Result<Self> {
+        let rt = tokio::runtime::Runtime::new()?;
+        Ok(Self { state, theme, rt })
+    }
+
+    /// Read-only access to the current `AppState` — for tests and
+    /// smoke checks driving a `KubeApp` built via [`Self::with_state`].
+    pub fn state(&self) -> &AppState {
+        &self.state
+    }
+
+    /// Centred popup rect for the namespace/kind picker — the
+    /// `quadraui::Palette` primitive has no opinion on placement, so
+    /// every consumer picks one; this is the same "60% of the
+    /// viewport, centred" shape the dual-mode palette demo uses.
     fn popup_rect(backend: &dyn Backend) -> Rect {
         let vp = backend.viewport();
         let lh = backend.line_height();
@@ -83,7 +101,7 @@ impl KubeApp {
         }
     }
 
-    fn handle_key(&mut self, key: Key) -> Reaction {
+    fn handle_key(&mut self, key: Key, backend: &mut dyn Backend) -> Reaction {
         let action = match key {
             Key::Char('q') | Key::Named(NamedKey::Escape) => return Reaction::Exit,
             Key::Char('r') => Action::Refresh,
@@ -97,8 +115,15 @@ impl KubeApp {
             _ => return Reaction::Continue,
         };
         apply_action(&mut self.state, action, &self.rt);
-        if self.state.should_quit {
-            return Reaction::Exit;
+        // `OpenNamespacePicker`/`OpenKindPicker` just seeded a fresh
+        // `PickerOverlay` with its pre-selected row but a zeroed
+        // `scroll_top` (the real popup geometry isn't known until a
+        // backend is in hand) — sync it now instead of leaving the
+        // highlight off-screen until the first keystroke inside the
+        // picker.
+        if let Some(picker) = self.state.picker.as_mut() {
+            let popup_rect = Self::popup_rect(backend);
+            picker.sync_scroll(Self::popup_visible_rows(backend, popup_rect));
         }
         Reaction::Redraw
     }
@@ -107,8 +132,7 @@ impl KubeApp {
     /// non-picker clickable surface. Walks the same `StatusBar`
     /// `render` painted via `Backend::status_bar_layout`, so paint and
     /// click never drift apart (same convention
-    /// `DualModePaletteController::handle_mouse` uses for the palette
-    /// below).
+    /// `PickerOverlay::handle_mouse` uses for the palette below).
     fn handle_status_bar_click(&mut self, backend: &dyn Backend, position: Point) -> Reaction {
         let rect = Self::status_bar_rect(backend);
         if position.y < rect.y {
@@ -128,60 +152,63 @@ impl KubeApp {
         Reaction::Continue
     }
 
-    /// Route an event to the open `PickerOverlay`'s
-    /// `DualModePaletteController`. Called instead of the ordinary key
-    /// map whenever `state.picker.is_some()` — the picker owns every
-    /// keystroke while it's open (including letters that would
-    /// otherwise be app accelerators, e.g. `q`, which types into the
-    /// filter query instead of quitting).
-    fn handle_picker_event(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        let popup_rect = Self::popup_rect(backend);
+    /// `popup_rect`'s height, converted to a row count and reduced by
+    /// the palette chrome — shared by rendering and every event path
+    /// below so the row math driving `sync_scroll`/hit-testing can
+    /// never drift from what got painted.
+    fn popup_visible_rows(backend: &dyn Backend, popup_rect: Rect) -> usize {
         let lh = backend.line_height();
         let popup_rows = if lh > 0.0 {
             (popup_rect.height / lh) as usize
         } else {
             20
         };
-        let visible_rows = popup_rows.saturating_sub(PALETTE_CHROME_ROWS);
+        popup_rows.saturating_sub(PALETTE_CHROME_ROWS)
+    }
+
+    /// Route an event to the open `PickerOverlay`. Called instead of
+    /// the ordinary key map whenever `state.picker.is_some()` — the
+    /// picker owns every keystroke while it's open (including letters
+    /// that would otherwise be app accelerators, e.g. `q`, which
+    /// types into the filter query instead of quitting).
+    fn handle_picker_event(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+        // A resize needs a repaint even while a picker is open — the
+        // popup rect below is sized off the viewport.
+        if matches!(event, UiEvent::WindowResized { .. }) {
+            return Reaction::Redraw;
+        }
+
+        let popup_rect = Self::popup_rect(backend);
+        let visible_rows = Self::popup_visible_rows(backend, popup_rect);
 
         let Some(picker) = self.state.picker.as_mut() else {
             return Reaction::Continue;
         };
         let outcome = match &event {
-            UiEvent::MouseDown { .. } => {
-                picker
-                    .controller_mut()
-                    .handle_mouse(&event, backend, popup_rect, visible_rows)
+            UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position,
+                ..
+            } => picker.handle_mouse(*position, popup_rect, backend, visible_rows),
+            UiEvent::KeyPressed { key, modifiers, .. } => {
+                picker.handle_key(key, modifiers, visible_rows)
             }
-            _ => picker.controller_mut().handle(&event, visible_rows),
+            _ => return Reaction::Continue,
         };
 
         match outcome {
-            DualModePaletteEvent::ItemConfirmed { idx } => {
+            PickerOutcome::Confirmed { orig } => {
                 let purpose = picker.purpose;
-                let orig = picker.orig_index_of_row(idx);
                 self.state.picker = None;
-                if let Some(orig) = orig {
-                    commit_picker_selection(&mut self.state, purpose, orig, &self.rt);
-                }
+                commit_picker_selection(&mut self.state, purpose, orig, &self.rt);
                 Reaction::Redraw
             }
-            DualModePaletteEvent::QueryChanged { .. } => {
-                picker.refilter();
-                Reaction::Redraw
-            }
-            DualModePaletteEvent::Cancelled => {
+            PickerOutcome::Cancelled => {
                 self.state.picker = None;
                 Reaction::Redraw
             }
-            DualModePaletteEvent::Consumed => Reaction::Redraw,
-            // Namespace/kind pickers have no free-text "create new"
-            // concept, so Input mode (reachable via Tab) has nothing
-            // meaningful to confirm — both are no-ops beyond redrawing
-            // whatever the controller's own chrome changed to.
-            DualModePaletteEvent::ModeToggled { .. }
-            | DualModePaletteEvent::TextConfirmed { .. } => Reaction::Redraw,
-            DualModePaletteEvent::Ignored => Reaction::Continue,
+            PickerOutcome::Changed => Reaction::Redraw,
+            PickerOutcome::Ignored => Reaction::Continue,
         }
     }
 }
@@ -217,12 +244,16 @@ impl AppLogic for KubeApp {
         backend.set_theme(self.theme);
 
         let bar = build_status_bar(&self.state, &self.theme);
+        // A fresh `InteractionState` every frame means the status bar
+        // never shows hover feedback. `compose::StatusBarInteractionController`
+        // is the intended holder for that — wiring it up means also
+        // handling `UiEvent::MouseMove` to update it between frames.
         backend.draw_status_bar_interactive(status_rect, &bar, &InteractionState::new());
 
         if let Some(picker) = self.state.picker.as_ref() {
-            picker
-                .controller()
-                .render(Self::popup_rect(backend), backend);
+            let popup_rect = Self::popup_rect(backend);
+            let palette = picker.build_palette();
+            backend.draw_palette(popup_rect, &palette);
         }
     }
 
@@ -231,7 +262,7 @@ impl AppLogic for KubeApp {
             return self.handle_picker_event(event, backend);
         }
         match event {
-            UiEvent::KeyPressed { key, .. } => self.handle_key(key),
+            UiEvent::KeyPressed { key, .. } => self.handle_key(key, backend),
             UiEvent::MouseDown {
                 button: MouseButton::Left,
                 position,
@@ -240,5 +271,75 @@ impl AppLogic for KubeApp {
             UiEvent::WindowResized { .. } => Reaction::Redraw,
             _ => Reaction::Continue,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quadraui::tui::testing::TuiDriver;
+
+    fn app() -> KubeApp {
+        let state = AppState::new(
+            "test-ctx".to_string(),
+            vec![
+                "default".to_string(),
+                "kube-system".to_string(),
+                "kube-public".to_string(),
+            ],
+        );
+        KubeApp::with_state(state, Theme::light_default()).expect("with_state")
+    }
+
+    /// Drives a real `KubeApp` through the headless `TuiDriver` — the
+    /// seam `KubeApp::with_state` + `KubeApp::state` unlock — to pin
+    /// the issue's own acceptance example end to end: opening the
+    /// namespace picker and typing `"kbs"` (including the two
+    /// characters a `DualModePaletteController`-backed picker could
+    /// never receive as query text) fuzzy-matches and selects
+    /// `kube-system`.
+    #[test]
+    fn fuzzy_namespace_picker_round_trips_through_the_real_app() {
+        let mut driver = TuiDriver::new(app(), 80, 24);
+        driver.render();
+        assert!(driver.screen_contains("Pods"));
+
+        driver.press(Key::Char('n'));
+        driver.type_char('k');
+        driver.type_char('b');
+        driver.type_char('s');
+        assert_eq!(driver.app().state().picker.as_ref().unwrap().query(), "kbs");
+        assert!(driver.screen_contains("kube-system"));
+
+        driver.press_named(NamedKey::Enter);
+        assert!(driver.app().state().picker.is_none());
+        assert_eq!(driver.app().state().current_namespace(), "kube-system");
+    }
+
+    #[test]
+    fn clicking_outside_the_popup_cancels_the_picker() {
+        let mut driver = TuiDriver::new(app(), 80, 24);
+        driver.render();
+        driver.press(Key::Char('n'));
+        assert!(driver.app().state().picker.is_some());
+
+        // Top-left corner is outside the centred 60%-viewport popup.
+        driver.click(0.0, 0.0);
+        assert!(driver.app().state().picker.is_none());
+    }
+
+    #[test]
+    fn resize_while_picker_open_still_redraws() {
+        let mut driver = TuiDriver::new(app(), 80, 24);
+        driver.render();
+        driver.press(Key::Char('n'));
+        let reaction = driver.dispatch(UiEvent::WindowResized {
+            viewport: quadraui::Viewport {
+                width: 100.0,
+                height: 30.0,
+                scale: 1.0,
+            },
+        });
+        assert_eq!(reaction, Reaction::Redraw);
     }
 }
