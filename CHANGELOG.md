@@ -674,8 +674,8 @@ only a push to `main` runs this workflow.
 ### Added
 - `Style::tooltip_auto_dismiss_ms` — how long a hover-driven tooltip stays
   visible before it hides itself even though the pointer never left its
-  anchor, wired through `BindingHost::drive_hover_tooltip`. Default `0`
-  disables auto-dismiss, matching prior behaviour. New builder
+  anchor, wired through `BindingHost::drive_hover_tooltip`. `0` disables
+  auto-dismiss and is the default. New builder
   `Style::with_tooltip_auto_dismiss_ms`. `HoverTooltipTracker` gains
   `next_auto_dismiss_wake_ms`, the `Visible`-phase sibling of
   `next_wake_ms`.
@@ -686,13 +686,21 @@ only a push to `main` runs this workflow.
   an unrelated hover-highlight repaint no longer swallows the deadline via
   `Reaction::merge`, so a hover-driven tooltip appears at
   `tooltip_delay_ms` rather than waiting for the coarser idle-poll
-  ceiling. Also guards the pending-to-visible transition on a painted
-  anchor actually existing, so a hovered id with no `PaintedHit::Button`
-  in the current frame's hit map no longer cycles through pending/
-  visible-unpainted/dismissed forever. `drive_hover_tooltip`'s signature
-  gains `backend: &mut dyn Backend` and `auto_dismiss_ms: u64` parameters
-  to support this — `quadraui-py`/`quadraui-node` updated at their one
-  call site each.
+  ceiling. Also guards the pending-to-visible transition, and the
+  pending wake itself, on a painted anchor actually existing: a hovered
+  id with no `PaintedHit::Button` in the current frame's hit map no
+  longer cycles through pending/visible-unpainted/dismissed forever,
+  and no longer re-arms a zero-delay `request_frame_in` every dispatch
+  once its delay has elapsed with no anchor to show against.
+  `drive_hover_tooltip`'s signature gains `backend: &mut dyn Backend`
+  and `auto_dismiss_ms: u64` parameters to support this —
+  `quadraui-py`/`quadraui-node` updated at their one call site each.
+- `HoverTooltipTracker::tick_auto_dismiss` now latches into a `Dismissed`
+  phase instead of resetting straight to idle, so a tooltip the pointer
+  never moved off stays hidden once it auto-dismisses rather than
+  re-arming the delay and showing (then auto-dismissing) itself again
+  every `tooltip_delay_ms + tooltip_auto_dismiss_ms` indefinitely. The
+  latch clears the moment the pointer hovers a different item or leaves.
 
 ## [0.9.0] - 2026-11-07
 ### Added

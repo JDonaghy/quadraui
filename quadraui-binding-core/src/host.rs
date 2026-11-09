@@ -327,23 +327,43 @@ impl BindingHost {
     /// nothing shown on screen; the next call's resync above would then
     /// see `engine`'s tooltip still closed, dismiss the tracker, and
     /// `on_hover` would re-arm it from scratch — pending, visible-but-
-    /// unpainted, dismissed, forever, for a pointer that never moved.
+    /// unpainted, dismissed, forever, for a pointer that never moved. The
+    /// wake schedule below has the same guard, for the same reason:
+    /// without an anchor, [`HoverTooltipTracker::tick`] never ran, so
+    /// [`HoverTooltipTracker::next_wake_ms`] would otherwise keep
+    /// returning an already-elapsed `Some(0)` and arm a zero-delay wake
+    /// every single dispatch for as long as the hover stays stale.
+    ///
+    /// A tooltip that [`HoverTooltipTracker::tick_auto_dismiss`] hides
+    /// stays hidden while the pointer keeps hovering the same anchor —
+    /// the tracker latches into its own `Dismissed` phase rather than
+    /// resetting to idle, so the delay doesn't simply re-arm and show the
+    /// same tooltip again `delay_ms` later (which would auto-dismiss
+    /// again after that, forever, with no user input at all). Hovering a
+    /// different widget, or leaving, clears the latch.
     ///
     /// Schedules every wake this call still needs — the pending-delay
-    /// deadline, and, while a tooltip is visible with `auto_dismiss_ms >
-    /// 0`, its auto-dismiss deadline — directly on `backend` via
-    /// [`Backend::request_frame_in`], not only through the returned
-    /// [`Reaction`]. A `Reaction::RedrawAfter` folded into a caller's own
-    /// `Reaction::Redraw` via [`Reaction::merge`] loses the deadline
-    /// (`Redraw` always wins); `request_frame_in` doesn't go through that
-    /// merge at all, so the wake survives even on the frame a hover
-    /// change *also* triggers an unrelated `Redraw`.
+    /// deadline while an anchor exists, and, while a tooltip is visible
+    /// with `auto_dismiss_ms > 0`, its auto-dismiss deadline — directly
+    /// on `backend` via [`Backend::request_frame_in`], not only through
+    /// the returned [`Reaction`]. A `Reaction::RedrawAfter` folded into a
+    /// caller's own `Reaction::Redraw` via [`Reaction::merge`] loses the
+    /// deadline (`Redraw` always wins); `request_frame_in` doesn't go
+    /// through that merge at all, so the wake survives even on the frame
+    /// a hover change *also* triggers an unrelated `Redraw`. The wake is
+    /// still deliberately *also* folded into the returned `Reaction`, so
+    /// a steady-state pending/visible hover arms two wakes per call
+    /// (direct + the caller's own `request_frame_in` off the returned
+    /// `Reaction`) rather than one; [`Reaction::RedrawAfter`]'s own doc
+    /// calls an early extra wake harmless, and this guarantees the exact
+    /// deadline reaches `backend` even when the caller's runner doesn't
+    /// re-derive it from the merged reaction at all.
     ///
     /// Returns the [`Reaction`] the caller should merge into its own:
     /// [`Reaction::Redraw`] when a tooltip opened, closed, or
     /// auto-dismissed this call, [`Reaction::RedrawAfter`] while one is
-    /// still pending or counting down to auto-dismiss, [`Reaction::Continue`]
-    /// otherwise.
+    /// still pending (with an anchor) or counting down to auto-dismiss,
+    /// [`Reaction::Continue`] otherwise.
     pub fn drive_hover_tooltip(
         &mut self,
         engine: &mut InteractionEngine,
@@ -387,11 +407,22 @@ impl BindingHost {
             reaction = Reaction::Redraw;
         }
 
-        if let Some(remaining_ms) = self.tooltip_tracker.next_wake_ms(now_ms, delay_ms) {
-            let wake = Duration::from_millis(remaining_ms);
-            backend.request_frame_in(wake);
-            reaction = reaction.merge(Reaction::RedrawAfter(wake));
-        } else if auto_dismiss_ms > 0 {
+        // Gated on `anchor.is_some()`: without a painted anchor, `tick`
+        // above never ran, so `Phase::Pending` never advances and
+        // `next_wake_ms` would return `Some(0)` on every call once the
+        // delay has already elapsed -- a zero-delay wake re-armed every
+        // dispatch for as long as the hover stays stale. Nothing can
+        // make the tracker progress without a new anchor anyway, so
+        // skip arming a wake for it at all.
+        if anchor.is_some() {
+            if let Some(remaining_ms) = self.tooltip_tracker.next_wake_ms(now_ms, delay_ms) {
+                let wake = Duration::from_millis(remaining_ms);
+                backend.request_frame_in(wake);
+                reaction = reaction.merge(Reaction::RedrawAfter(wake));
+            }
+        }
+
+        if auto_dismiss_ms > 0 {
             if let Some(remaining_ms) = self
                 .tooltip_tracker
                 .next_auto_dismiss_wake_ms(now_ms, auto_dismiss_ms)
@@ -1367,19 +1398,6 @@ mod tests {
         auto_dismiss_ms: u64,
     }
 
-    impl Default for HoverHostLogic<RecordingSink> {
-        fn default() -> Self {
-            Self {
-                host: BindingHost::default(),
-                engine: InteractionEngine::default(),
-                sink: RefCell::new(RecordingSink),
-                clock_ms: Rc::new(Cell::new(0)),
-                delay_ms: 500,
-                auto_dismiss_ms: 0,
-            }
-        }
-    }
-
     impl<S: EventSink> AppLogic for HoverHostLogic<S> {
         type AreaId = ();
 
@@ -1564,7 +1582,11 @@ mod tests {
     /// the pointer never moving off it must still hide itself —
     /// [`HoverTooltipTracker::tick_auto_dismiss`]'s own third dismissal
     /// path, wired through [`BindingHost::drive_hover_tooltip`] via
-    /// [`quadraui::Style::tooltip_auto_dismiss_ms`].
+    /// [`quadraui::Style::tooltip_auto_dismiss_ms`] — and, with the
+    /// pointer still held on the exact same anchor, must *stay* hidden
+    /// rather than re-arming the delay and showing (then auto-dismissing)
+    /// the same tooltip again every `delay_ms + auto_dismiss_ms`
+    /// indefinitely.
     #[test]
     fn drive_hover_tooltip_auto_dismisses_after_the_timeout_with_the_pointer_held_still() {
         const DELAY_MS: u64 = 500;
@@ -1619,6 +1641,50 @@ mod tests {
             !driver.screen_contains("Save the file"),
             "a tooltip left open past tooltip_auto_dismiss_ms must hide \
              itself even though the pointer never left its anchor"
+        );
+
+        // Several more delay-plus-dismiss cycles pass with the pointer
+        // still held on the very same button -- without a latch this
+        // would re-show (then auto-dismiss) the tooltip every cycle
+        // forever. It must stay hidden instead.
+        for n in 1..=3u64 {
+            clock.set(DELAY_MS + n * (DELAY_MS + AUTO_DISMISS_MS));
+            driver.tick();
+            driver.render();
+            assert!(
+                !driver.screen_contains("Save the file"),
+                "cycle {n}: an auto-dismissed tooltip must not blink back \
+                 on while the pointer keeps hovering the same anchor"
+            );
+        }
+
+        // The pointer finally leaves and comes back -- the delay is free
+        // to start over for a genuinely new hover.
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(20.0, 10.0),
+            buttons: ButtonMask::default(),
+        });
+        let resume_at = clock.get() + 1;
+        clock.set(resume_at);
+        driver.tick();
+        driver.render();
+        assert!(
+            !driver.screen_contains("Save the file"),
+            "leaving the anchor must not instantly show a new tooltip \
+             either -- the delay still applies"
+        );
+
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(x, y),
+            buttons: ButtonMask::default(),
+        });
+        clock.set(resume_at + DELAY_MS);
+        driver.tick();
+        driver.render();
+        assert!(
+            driver.screen_contains("Save the file"),
+            "a fresh hover after leaving the anchor must show the tooltip \
+             again once its own delay elapses"
         );
     }
 
@@ -1776,6 +1842,15 @@ mod tests {
                 Reaction::Redraw,
                 "call {n}: nothing actually changed on screen, so this must \
                  not force a redraw"
+            );
+            assert_eq!(
+                backend.pending_frame_delay(),
+                None,
+                "call {n}: without an anchor, `next_wake_ms`'s Pending \
+                 deadline has already elapsed, so arming a wake for it \
+                 would be a zero-delay busy-spin re-armed every dispatch \
+                 for as long as the hover stays stale -- the call must \
+                 skip the wake entirely instead"
             );
         }
     }
