@@ -126,23 +126,31 @@ only a push to `main` runs this workflow.
   callback expects via a generic `pythonize::pythonize`/`serde_json::to_value`
   call instead of its own hand-rolled, binding-specific tagging function.
 ### Changed
-- `GtkBackend::draw_panel` (#2225) paints a `Panel`'s title bar through
-  `Panel::header_toolbar`'s mapped `SidebarPanel` + `Toolbar` header,
-  routed through `sidebar_panel::native_surface_paint::paint`, instead of
+- `GtkBackend::draw_panel` (#2225) paints a `Panel`'s title-bar background
+  and title label through `Panel::header_toolbar`'s mapped `SidebarPanel` +
+  `Toolbar` header (title `Label` only — its `Action` buttons are dropped
+  before the header reaches the delegate), routed through
+  `sidebar_panel::native_surface_paint::paint`, instead of
   `panel::native_surface_paint::paint`'s own near-duplicate title-bar
-  painter — macOS and Windows still call the latter until their own
-  seam issues land. `draw_panel`'s returned `PanelLayout` is unaffected
-  (still `gtk_panel_layout(...)`); the title keeps its leading inset and
-  each action glyph still paints inside its own `visible_actions[i].bounds`.
-  `GtkBackend::draw_panel` re-fills a `PanelAction::is_active` button's
-  full bounds with `theme.accent_bg` after the delegate paints, since
-  `sidebar_panel::native_surface_paint`'s own active-state highlight is a
-  2px-inset `theme.selected_bg` pill scoped to its own interactive chrome
-  (`draw_panel` has no `InteractionState` to drive hover/press from, so
-  `is_active` is the only state it feeds through). One visible difference
-  is disclosed, not pinned against: the title text is now vertically
-  centred in the title bar (matching `SidebarPanel`'s `Label` convention)
-  rather than top-aligned as `panel::native_surface_paint::paint` drew it.
+  painter — macOS and Windows still call the latter until their own seam
+  issues land. `draw_panel`'s returned `PanelLayout` is unaffected (still
+  `gtk_panel_layout(...)`). Action buttons are painted directly against
+  that same `PanelLayout`'s `visible_actions` rects — `header_toolbar`'s
+  own `Action` buttons are measured by `Toolbar`'s text-width-based
+  `measure_button`, not `PanelMeasure::action_button_width`, so routing
+  them through the delegate too would land each glyph at a different rect
+  than `visible_actions[i].bounds` for an icon wider than a single narrow
+  glyph; each glyph is centred horizontally (unclamped) and top-aligned,
+  filled with `theme.accent_bg` when `is_active` else the title bar's own
+  colour, matching `panel::native_surface_paint::paint`'s contract
+  exactly. The title `Label`'s `fg` and the header `Toolbar`'s `bg` are
+  both resolved explicitly at the call site (`theme.foreground`,
+  `panel.accent.unwrap_or(theme.separator)`) so the title text colour and
+  title-bar background also keep matching that contract. One visible
+  difference is disclosed and pinned by a test: the title text is now
+  vertically centred in the title bar (matching `SidebarPanel`'s `Label`
+  convention) rather than top-aligned as `panel::native_surface_paint::paint`
+  drew it.
 - `tui::multi_section_view`'s section-header rasteriser derives a
   `HeaderAction`'s glyph text (and `SectionAux::Toolbar`'s action glyphs)
   via `primitives::toolbar::action_text`, the same derivation the

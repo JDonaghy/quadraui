@@ -1,13 +1,21 @@
 //! GTK rasteriser for [`crate::Panel`].
 //!
-//! Painting goes through `GtkBackend::draw_panel`, which maps the
-//! title bar onto a [`crate::SidebarPanel`] + [`crate::Toolbar`] header
-//! (via [`Panel::header_toolbar`][crate::primitives::panel::Panel::header_toolbar])
-//! and paints it with
+//! Painting goes through `GtkBackend::draw_panel`, which maps the title
+//! bar's background + label onto a [`crate::SidebarPanel`] +
+//! [`crate::Toolbar`] header (via
+//! [`Panel::header_toolbar`][crate::primitives::panel::Panel::header_toolbar],
+//! with its `Action` buttons dropped) and paints that with
 //! [`crate::primitives::sidebar_panel::native_surface_paint::paint`].
-//! This module provides [`gtk_panel_layout`] for computing pixel-unit
-//! layout without painting, used by `GtkBackend::panel_layout` (and as
-//! `draw_panel`'s own hit-test return value) for hit-test queries.
+//! Action buttons are painted directly against this module's own
+//! `PanelLayout::visible_actions` rects instead — `header_toolbar`'s
+//! `Action` buttons are measured by `Toolbar`'s text-width-based
+//! `measure_button`, not `PanelMeasure::action_button_width`, so the
+//! delegate's own action layout would otherwise disagree with the
+//! fixed-width rects this module's layout (and `draw_panel`'s hit-test
+//! contract) use. This module provides [`gtk_panel_layout`] for
+//! computing pixel-unit layout without painting, used by
+//! `GtkBackend::panel_layout` (and as `draw_panel`'s own hit-test return
+//! value) for hit-test queries.
 
 use crate::primitives::layout_metrics::pixel_panel_layout;
 use crate::primitives::panel::{Panel, PanelLayout};
