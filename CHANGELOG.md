@@ -132,8 +132,8 @@ only a push to `main` runs this workflow.
   before the header reaches the delegate), routed through
   `sidebar_panel::native_surface_paint::paint`, instead of
   `panel::native_surface_paint::paint`'s own near-duplicate title-bar
-  painter — macOS and Windows still call the latter until their own seam
-  issues land. `draw_panel`'s returned `PanelLayout` is unaffected (still
+  painter — macOS still calls the latter until its own seam issue lands.
+  `draw_panel`'s returned `PanelLayout` is unaffected (still
   `gtk_panel_layout(...)`). Action buttons are painted directly against
   that same `PanelLayout`'s `visible_actions` rects — `header_toolbar`'s
   own `Action` buttons are measured by `Toolbar`'s text-width-based
@@ -165,18 +165,22 @@ only a push to `main` runs this workflow.
   `visible_actions` rects, for the same width-agreement reason #2225's
   entry above gives; each button is filled with `theme.accent_bg` when
   `is_active` else the title bar's own colour, and its glyph is top-aligned
-  and centred horizontally unclamped — unchanged from
-  `panel::native_surface_paint::paint`'s own contract, since
-  `win_panel_layout`'s fixed-width action buttons never hit the
-  text-measured-overflow case #2225 clipped for GTK's own header-toolbar
-  measurer. The title `Label`'s `fg` and the header `Toolbar`'s `bg` are
-  both resolved explicitly at the call site (`theme.foreground`,
-  `panel.accent.unwrap_or(theme.separator)`) so the title text colour and
-  title-bar background also keep matching that contract. One visible
-  difference is disclosed and pinned by a test: the title text is now
+  and centred horizontally — left-aligned instead when the measured text
+  is wider than the button, and clipped to the button's own bounds, the
+  same guard #2225 added for GTK: `PanelAction::icon` is an app-supplied
+  string, so an icon wider than `win_panel_layout`'s fixed-width action
+  buttons is reachable here too, not just for GTK's own text-measured
+  header-toolbar actions. The title `Label`'s `fg` and the header
+  `Toolbar`'s `bg` are both resolved explicitly at the call site
+  (`theme.foreground`, `panel.accent.unwrap_or(theme.separator)`) so the
+  title text colour and title-bar background also keep matching that
+  contract. One visible difference is disclosed and pinned by a test
+  (`draw_panel_paints_title_vertically_centered`): the title text is now
   vertically centred in the title bar (matching `SidebarPanel`'s `Label`
   convention) rather than top-aligned as `panel::native_surface_paint::paint`
-  drew it.
+  drew it; the action glyphs stay top-aligned, so a title bar much taller
+  than the chrome font now shows the title and actions misaligned with
+  each other (`GtkBackend::draw_panel` has the same shape).
 - `tui::multi_section_view`'s section-header rasteriser derives a
   `HeaderAction`'s glyph text (and `SectionAux::Toolbar`'s action glyphs)
   via `primitives::toolbar::action_text`, the same derivation the

@@ -5164,6 +5164,16 @@ impl Backend for WinBackend {
     /// method's own hit-test bounds for anything wider than a single
     /// narrow glyph. The returned layout stays `win_panel_layout(...)`
     /// (this method's hit-test contract), unaffected either way.
+    ///
+    /// Disclosed-and-pinned divergence (see `CHANGELOG.md` and
+    /// `draw_panel_paints_title_vertically_centered`): the delegate
+    /// vertically centres the title label in the title bar, where
+    /// `panel::native_surface_paint::paint` drew it flush against the
+    /// bar's top edge. The action glyphs below are still painted
+    /// top-aligned at `va.bounds.y`, so a title bar much taller than
+    /// the chrome font (an editor line height far above the chrome
+    /// text height) now shows the title centred but the actions
+    /// top-aligned — `GtkBackend::draw_panel` has the same shape.
     fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
@@ -5221,15 +5231,17 @@ impl Backend for WinBackend {
                     // method's own hit-test rects (`layout.visible_actions`),
                     // filled with `theme.accent_bg` when `is_active` else
                     // the title bar's own colour, glyph top-aligned at
-                    // `va.bounds.y` and centred horizontally —
-                    // unclamped, matching
-                    // `panel::native_surface_paint::paint`'s own
-                    // centring (see that module's doc for the named
-                    // win-vs-gtk/macos divergence this preserves). Drawn
-                    // through `surface_draw_icon_glyph` so an app-chosen
-                    // codicon/nerd-font `PanelAction::icon` resolves
-                    // through the same icon-font fallback this crate's
-                    // other chrome glyphs use.
+                    // `va.bounds.y` and centred horizontally — left-aligned
+                    // instead when the measured text is wider than the
+                    // button, and clipped to `va.bounds`, so an oversized
+                    // icon never bleeds into the title or a neighbouring
+                    // action (`PanelAction::icon` is an app-supplied string,
+                    // so this overflow case is reachable even though
+                    // `win_panel_layout`'s action rects are fixed-width).
+                    // Drawn through `surface_draw_icon_glyph` so an
+                    // app-chosen codicon/nerd-font `PanelAction::icon`
+                    // resolves through the same icon-font fallback this
+                    // crate's other chrome glyphs use.
                     for va in &layout.visible_actions {
                         let Some(action) = panel.actions.get(va.action_idx) else {
                             continue;
@@ -5241,12 +5253,14 @@ impl Backend for WinBackend {
                         };
                         self.surface_fill_rect(va.bounds, action_bg);
                         let (gw, gh) = self.surface_measure_text(&action.icon);
-                        let glyph_x = va.bounds.x + (va.bounds.width - gw) / 2.0;
+                        let glyph_x = va.bounds.x + ((va.bounds.width - gw) / 2.0).max(0.0);
+                        self.surface_push_clip(va.bounds);
                         self.surface_draw_icon_glyph(
                             crate::event::Rect::new(glyph_x, va.bounds.y, gw, gh),
                             &action.icon,
                             theme.foreground,
                         );
+                        self.surface_pop_clip();
                     }
                 }
             }
@@ -9699,19 +9713,27 @@ mod tests {
         let title_bg = theme.separator; // no accent on this panel
 
         // Title: the leftmost column whose pixel differs from the bar's
-        // own fill is where the title's glyph ink starts. It must sit
-        // strictly right of `tb.x` — the leading-space inset.
+        // own fill is where the title's glyph ink starts. Bounded to
+        // left of the action button's bounds so this can only find the
+        // title's own ink, never the action glyph's — otherwise a
+        // blank title would still pass by picking up the action's ink
+        // far to the right. It must sit strictly right of `tb.x` — the
+        // leading-space inset — and within a few pixels of it, pinning
+        // the documented 4px-equivalent inset rather than merely
+        // "somewhere to the right".
         let row_y = (tb.y + tb.height / 2.0) as u32;
-        let first_ink_x = (tb.x as u32..(tb.x + tb.width) as u32)
+        let action_x_start = layout.visible_actions[0].bounds.x as u32;
+        let first_ink_x = (tb.x as u32..action_x_start)
             .find(|&x| {
                 let px = surface.pixel_at(x, row_y);
                 (px.r, px.g, px.b) != (title_bg.r, title_bg.g, title_bg.b)
             })
             .expect("title text must paint some ink");
         assert!(
-            first_ink_x as f32 > tb.x,
-            "title ink must start inset from the title bar's left edge, \
-             got first ink at x={first_ink_x} vs tb.x={}",
+            first_ink_x as f32 > tb.x && (first_ink_x as f32 - tb.x) < 20.0,
+            "title ink must start inset from the title bar's left edge by \
+             roughly the leading-space advance, got first ink at x={first_ink_x} \
+             vs tb.x={}",
             tb.x,
         );
 
@@ -9744,6 +9766,92 @@ mod tests {
         assert!(
             found_action_ink,
             "action glyph must paint some ink inside visible_actions[0].bounds"
+        );
+    }
+
+    /// Disclosed-and-pinned divergence (`CHANGELOG.md`): the title label
+    /// now paints vertically centred in the title bar, not top-aligned
+    /// the way `panel::native_surface_paint::paint` drew it. Uses a title
+    /// bar much taller than the title glyph (`current_line_height`, set
+    /// far above the chrome font's own metrics) so top-aligned vs.
+    /// centred land at clearly different rows. Mirrors
+    /// `gtk_backend_draw_panel_title_label_is_vertically_centered`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn draw_panel_paints_title_vertically_centered() {
+        use crate::primitives::panel::Panel;
+        use crate::theme::Theme;
+        use crate::types::{Color, StyledText, WidgetId};
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 200;
+        const H: u32 = 60;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        // A title-bar height far taller than the title glyph makes
+        // top-aligned vs. vertically-centred land at clearly different
+        // rows.
+        backend.set_current_line_height(50.0);
+        backend.set_theme(Theme {
+            separator: Color::rgb(255, 255, 255),
+            foreground: Color::rgb(0, 0, 0),
+            ..Theme::default()
+        });
+
+        let panel = Panel {
+            id: WidgetId::new("panel"),
+            title: Some(StyledText::plain("T")),
+            actions: Vec::new(),
+            accent: None,
+            collapsed: false,
+        };
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = backend.draw_panel(rect, &panel);
+        backend.end_frame();
+
+        let title_bg = Color::rgb(255, 255, 255);
+        let tb = layout
+            .title_bar_bounds
+            .expect("panel has a title, so a title bar is reserved");
+        let row_top = tb.y as u32;
+        let row_bottom = (tb.y + tb.height) as u32;
+        let text_x_start = tb.x as u32;
+        let text_x_end = text_x_start + 20;
+
+        let mut first_ink_row = None;
+        let mut last_ink_row = None;
+        for y in row_top..row_bottom {
+            let has_ink = (text_x_start..text_x_end).any(|x| {
+                let px = surface.pixel_at(x, y);
+                (px.r, px.g, px.b) != (title_bg.r, title_bg.g, title_bg.b)
+            });
+            if has_ink {
+                first_ink_row.get_or_insert(y);
+                last_ink_row = Some(y);
+            }
+        }
+        let first_ink_row = first_ink_row.expect("title text must paint some ink");
+        let last_ink_row = last_ink_row.expect("title text must paint some ink");
+
+        assert!(
+            first_ink_row > row_top + 5,
+            "title text must not be top-aligned flush against the title \
+             bar's top edge: first_ink_row={first_ink_row}, row_top={row_top}"
+        );
+
+        let text_mid = (first_ink_row + last_ink_row) as f32 / 2.0;
+        let bar_mid = tb.y + tb.height / 2.0;
+        assert!(
+            (text_mid - bar_mid).abs() < 4.0,
+            "title text must be vertically centred in the title bar: \
+             text_mid={text_mid}, bar_mid={bar_mid}"
         );
     }
 
