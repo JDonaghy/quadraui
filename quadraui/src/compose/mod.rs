@@ -53,6 +53,7 @@
 //! composes [`crate::ScrollView`] the same way these compose their own
 //! primitive instead of duplicating offset/thumb math.
 
+mod activity_bar_controller;
 pub mod app_shell;
 pub mod bottom_panel;
 pub mod chat_controller;

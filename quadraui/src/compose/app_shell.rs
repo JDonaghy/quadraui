@@ -15,6 +15,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use super::activity_bar_controller::ActivityBarKeyboard;
 use super::divider_drag::DividerDrag;
 use super::shell_layout;
 use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit, ActivityItem};
@@ -189,7 +190,6 @@ pub struct AppShell {
     activity_bar_width_px: Option<f32>,
     position: ShellPosition,
     drag_offset: DividerDrag<f32>,
-    hovered_activity_idx: Option<usize>,
     // ── Chrome slot config ───────────────────────────────────────
     has_title_bar: bool,
     title_bar_height_lh: f32,
@@ -260,25 +260,15 @@ pub struct AppShell {
     cached_activity_hits: RefCell<Vec<ActivityBarRowHit>>,
     cached_activity_bar_bounds: RefCell<Option<Rect>>,
     // ── Keyboard navigation state ─────────────────────────────────
-    /// Whether the activity bar currently holds keyboard focus. When
-    /// `true`, `build_activity_bar()` sets `is_keyboard_focused = true`
-    /// on the emitted [`ActivityBar`], causing the TUI and GTK backends
-    /// to redirect [`crate::UiEvent::KeyPressed`] events to
-    /// [`crate::UiEvent::ActivityBar`] events — so navigation logic
-    /// stays entirely in the consumer.
-    activity_keyboard_focused: bool,
-    /// Cursor position in the **logical item sequence**: top panels
-    /// (indices `0..panels.len()`) followed by bottom items
-    /// (indices `panels.len()..panels.len()+bottom_items.len()`).
-    /// Saturates at the ends; does not wrap.
-    activity_cursor: usize,
-    /// Show the keyboard cursor highlight without enabling the key-event
-    /// redirect that [`Self::activity_keyboard_focused`] triggers. A
-    /// `ShellApp` consumer that handles toolbar keys itself (via its own
-    /// `route_sidebar_chord_key` / `handle_activity_bar_key` in
-    /// `ShellApp::handle`) uses this to paint the cursor without having
-    /// the TUI backend redirect keys to `UiEvent::ActivityBar(…)`.
-    activity_cursor_visible: bool,
+    /// Keyboard focus/cursor + mouse-hover state for the activity bar's
+    /// **logical item sequence**: top panels (indices `0..panels.len()`)
+    /// followed by bottom items (indices
+    /// `panels.len()..panels.len()+bottom_items.len()`). See
+    /// [`ActivityBarKeyboard`]'s own doc for what each piece of state
+    /// means; [`Self::activity_keyboard_focused`] and friends below are
+    /// thin delegating wrappers that also resolve `total` (the combined
+    /// item count) from `panels`/`bottom_items` where needed.
+    activity_keyboard: ActivityBarKeyboard,
     /// Per-panel Nerd-Font glyph + ASCII fallback pairs, keyed by
     /// [`WidgetId`], registered via [`Self::with_panel_icon`]. Consulted by
     /// [`Self::build_activity_bar`] in preference to widening the panel's
@@ -294,8 +284,9 @@ pub struct AppShell {
     active_accent: Option<Color>,
     /// Colour [`Self::build_activity_bar`] sets on the emitted
     /// [`ActivityBar::selection_bg`] — the keyboard-selection highlight
-    /// each backend paints on the [`Self::activity_cursor`] row when the
-    /// bar [`Self::activity_keyboard_focused`]. `None` (the default) falls
+    /// each backend paints on the activity-bar cursor row (see
+    /// [`ActivityBarKeyboard`]) when the bar
+    /// [`Self::activity_keyboard_focused`]. `None` (the default) falls
     /// back to each backend's own reversed/brightened default fill.
     selection_bg: Option<Color>,
 }
@@ -316,7 +307,6 @@ impl AppShell {
             activity_bar_width_px: None,
             position: ShellPosition::Left,
             drag_offset: DividerDrag::none(),
-            hovered_activity_idx: None,
             has_title_bar: false,
             title_bar_height_lh: 1.5,
             title_bar_min_px: None,
@@ -334,9 +324,7 @@ impl AppShell {
             cached_bottom_band_bounds: RefCell::new(Vec::new()),
             cached_activity_hits: RefCell::new(Vec::new()),
             cached_activity_bar_bounds: RefCell::new(None),
-            activity_keyboard_focused: false,
-            activity_cursor_visible: false,
-            activity_cursor: 0,
+            activity_keyboard: ActivityBarKeyboard::new(),
             icon_overrides: HashMap::new(),
             active_accent: None,
             selection_bg: None,
@@ -596,7 +584,7 @@ impl AppShell {
     }
 
     pub fn hovered_activity_idx(&self) -> Option<usize> {
-        self.hovered_activity_idx
+        self.activity_keyboard.hovered_idx()
     }
 
     // ── Activity-bar keyboard navigation ─────────────────────────────
@@ -610,7 +598,7 @@ impl AppShell {
     /// than raw `UiEvent::KeyPressed`. The consumer maps those key strings to
     /// the navigation methods below.
     pub fn activity_keyboard_focused(&self) -> bool {
-        self.activity_keyboard_focused
+        self.activity_keyboard.focused()
     }
 
     /// Focus or unfocus the activity bar. Pair with
@@ -622,7 +610,7 @@ impl AppShell {
     /// the top item on focus, call
     /// `set_activity_keyboard_focused(true)` then `activity_set_cursor(0)`.
     pub fn set_activity_keyboard_focused(&mut self, focused: bool) {
-        self.activity_keyboard_focused = focused;
+        self.activity_keyboard.set_focused(focused);
     }
 
     /// Show (or hide) the keyboard cursor highlight on the activity bar
@@ -636,7 +624,7 @@ impl AppShell {
     /// TUI / GTK backends leave key events as `KeyPressed` rather than
     /// rewriting them to `UiEvent::ActivityBar(…)`.
     pub fn set_activity_cursor_visible(&mut self, visible: bool) {
-        self.activity_cursor_visible = visible;
+        self.activity_keyboard.set_cursor_visible(visible);
     }
 
     /// Set (or clear, with `None`) the active-panel accent colour
@@ -661,15 +649,13 @@ impl AppShell {
     /// item — does not wrap to the top.
     pub fn activity_select_next(&mut self) {
         let total = self.panels.len() + self.bottom_items.len();
-        if total > 0 {
-            self.activity_cursor = (self.activity_cursor + 1).min(total - 1);
-        }
+        self.activity_keyboard.select_next(total);
     }
 
     /// Move the keyboard cursor to the previous item. **Saturates** at
     /// index 0 — does not wrap to the bottom.
     pub fn activity_select_prev(&mut self) {
-        self.activity_cursor = self.activity_cursor.saturating_sub(1);
+        self.activity_keyboard.select_prev();
     }
 
     /// Set the keyboard cursor to an explicit index in the logical sequence.
@@ -677,9 +663,7 @@ impl AppShell {
     /// Has no effect when the panel + bottom-item lists are both empty.
     pub fn activity_set_cursor(&mut self, idx: usize) {
         let total = self.panels.len() + self.bottom_items.len();
-        if total > 0 {
-            self.activity_cursor = idx.min(total - 1);
-        }
+        self.activity_keyboard.set_cursor(idx, total);
     }
 
     /// Returns the [`WidgetId`] of the item currently under the keyboard
@@ -689,10 +673,11 @@ impl AppShell {
     /// bottom items (`panels.len()..`).
     pub fn activity_selected_id(&self) -> Option<&WidgetId> {
         let np = self.panels.len();
-        if self.activity_cursor < np {
-            Some(&self.panels[self.activity_cursor].id)
+        let cursor = self.activity_keyboard.cursor();
+        if cursor < np {
+            Some(&self.panels[cursor].id)
         } else {
-            let bi = self.activity_cursor - np;
+            let bi = cursor - np;
             self.bottom_items.get(bi).map(|p| &p.id)
         }
     }
@@ -915,16 +900,17 @@ impl AppShell {
         // panel occupied combined-index `idx`; everything after it shifts
         // down by one.
         let total = self.panels.len() + self.bottom_items.len();
+        let cursor = self.activity_keyboard.cursor();
         if total == 0 {
-            self.activity_cursor = 0;
-            self.activity_keyboard_focused = false;
-        } else if self.activity_cursor > idx {
-            self.activity_cursor -= 1;
-        } else if self.activity_cursor == idx {
+            self.activity_keyboard.set_cursor_raw(0);
+            self.activity_keyboard.set_focused(false);
+        } else if cursor > idx {
+            self.activity_keyboard.set_cursor_raw(cursor - 1);
+        } else if cursor == idx {
             // The cursor was on the removed panel; clamp to the new range.
-            self.activity_cursor = self.activity_cursor.min(total - 1);
+            self.activity_keyboard.set_cursor_raw(cursor.min(total - 1));
         }
-        // activity_cursor < idx: no change needed.
+        // cursor < idx: no change needed.
         true
     }
 
@@ -961,15 +947,16 @@ impl AppShell {
             other => other,
         };
         let total = np + self.bottom_items.len();
+        let cursor = self.activity_keyboard.cursor();
         if total == 0 {
-            self.activity_cursor = 0;
-            self.activity_keyboard_focused = false;
-        } else if self.activity_cursor > combined_idx {
-            self.activity_cursor -= 1;
-        } else if self.activity_cursor == combined_idx {
-            self.activity_cursor = self.activity_cursor.min(total - 1);
+            self.activity_keyboard.set_cursor_raw(0);
+            self.activity_keyboard.set_focused(false);
+        } else if cursor > combined_idx {
+            self.activity_keyboard.set_cursor_raw(cursor - 1);
+        } else if cursor == combined_idx {
+            self.activity_keyboard.set_cursor_raw(cursor.min(total - 1));
         }
-        // activity_cursor < combined_idx: no change needed.
+        // cursor < combined_idx: no change needed.
         true
     }
 
@@ -1021,9 +1008,10 @@ impl AppShell {
     /// - `ActivityBar::is_keyboard_focused` is set to `true`, causing both
     ///   the TUI and GTK backends to route key events as
     ///   `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })`.
-    /// - The item at [`Self::activity_cursor`] (in the top-then-bottom
-    ///   logical sequence) has `is_keyboard_selected = true`, painting the
-    ///   selection ring on that icon.
+    /// - The item at the activity bar's keyboard cursor (in the
+    ///   top-then-bottom logical sequence, see [`ActivityBarKeyboard`])
+    ///   has `is_keyboard_selected = true`, painting the selection ring on
+    ///   that icon.
     ///
     /// `ActivityBar::active_accent`/`selection_bg` carry whatever colours
     /// were last set via [`Self::with_active_accent`]/[`Self::set_active_accent`]
@@ -1031,8 +1019,8 @@ impl AppShell {
     /// (no accent/highlight painted) until a host app opts in.
     pub fn build_activity_bar(&self) -> ActivityBar {
         let np = self.panels.len();
-        let focused = self.activity_keyboard_focused;
-        let show_cursor = focused || self.activity_cursor_visible;
+        let focused = self.activity_keyboard.focused();
+        let show_cursor = focused || self.activity_keyboard.cursor_visible();
 
         let top_items: Vec<ActivityItem> = self
             .panels
@@ -1050,7 +1038,7 @@ impl AppShell {
                 is_active: self.sidebar_bottom_owner.is_none()
                     && self.active_panel == Some(i)
                     && self.sidebar_visible,
-                is_keyboard_selected: show_cursor && self.activity_cursor == i,
+                is_keyboard_selected: show_cursor && self.activity_keyboard.cursor() == i,
             })
             .collect();
 
@@ -1066,7 +1054,7 @@ impl AppShell {
                 // active accent. The `sidebar_owner_panel()` call titles the
                 // header when a bottom item owns it.
                 is_active: false,
-                is_keyboard_selected: show_cursor && self.activity_cursor == np + j,
+                is_keyboard_selected: show_cursor && self.activity_keyboard.cursor() == np + j,
             })
             .collect();
 
@@ -1139,8 +1127,11 @@ impl AppShell {
         Self::register_chrome_zones(backend, &layout);
 
         let bar = self.build_activity_bar();
-        let hits =
-            backend.draw_activity_bar(layout.activity_bar_bounds, &bar, self.hovered_activity_idx);
+        let hits = backend.draw_activity_bar(
+            layout.activity_bar_bounds,
+            &bar,
+            self.activity_keyboard.hovered_idx(),
+        );
         // Register each activity-bar item's own zone (its real `WidgetId`,
         // e.g. `panel:git`) *before* `hits` moves into the hover-hit cache
         // below — this is the per-item provenance
@@ -1440,11 +1431,12 @@ impl AppShell {
         if contains(layout.activity_bar_bounds, *position) {
             let ab = layout.activity_bar_bounds;
             let hits = self.cached_activity_hits.borrow();
-            self.hovered_activity_idx = hits
+            let idx = hits
                 .iter()
                 .position(|hit| position.y >= hit.y_start + ab.y && position.y < hit.y_end + ab.y);
+            self.activity_keyboard.set_hovered_idx(idx);
         } else {
-            self.hovered_activity_idx = None;
+            self.activity_keyboard.set_hovered_idx(None);
         }
     }
 }
@@ -2245,7 +2237,7 @@ mod tests {
     #[test]
     fn build_activity_bar_no_selection_when_not_focused() {
         let mut s = shell();
-        s.activity_cursor = 1;
+        s.activity_keyboard.set_cursor_raw(1);
         // focused is false → no item should be selected
         let bar = s.build_activity_bar();
         assert!(bar.top_items.iter().all(|i| !i.is_keyboard_selected));
@@ -2257,11 +2249,11 @@ mod tests {
         s.set_activity_keyboard_focused(true);
         // cursor starts at 0
         s.activity_select_next(); // → 1
-        assert_eq!(s.activity_cursor, 1);
+        assert_eq!(s.activity_keyboard.cursor(), 1);
         s.activity_select_next(); // → 2
-        assert_eq!(s.activity_cursor, 2);
+        assert_eq!(s.activity_keyboard.cursor(), 2);
         s.activity_select_next(); // → 3 (first bottom item)
-        assert_eq!(s.activity_cursor, 3);
+        assert_eq!(s.activity_keyboard.cursor(), 3);
 
         let bar = s.build_activity_bar();
         assert!(bar.bottom_items[0].is_keyboard_selected);
@@ -2276,7 +2268,7 @@ mod tests {
             s.activity_select_next();
         }
         // Should saturate at 3 (last index: 3 top + 1 bottom − 1 = 3).
-        assert_eq!(s.activity_cursor, 3);
+        assert_eq!(s.activity_keyboard.cursor(), 3);
     }
 
     #[test]
@@ -2284,32 +2276,32 @@ mod tests {
         let mut s = shell();
         // cursor is already at 0
         s.activity_select_prev();
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
         s.activity_select_prev();
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
     }
 
     #[test]
     fn select_prev_moves_cursor_up() {
         let mut s = shell();
-        s.activity_cursor = 3; // bottom item
+        s.activity_keyboard.set_cursor_raw(3); // bottom item
         s.activity_select_prev();
-        assert_eq!(s.activity_cursor, 2);
+        assert_eq!(s.activity_keyboard.cursor(), 2);
         s.activity_select_prev();
-        assert_eq!(s.activity_cursor, 1);
+        assert_eq!(s.activity_keyboard.cursor(), 1);
         s.activity_select_prev();
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
         s.activity_select_prev(); // saturates
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
     }
 
     #[test]
     fn activity_set_cursor_clamps_to_valid_range() {
         let mut s = shell(); // 4 items total
         s.activity_set_cursor(100);
-        assert_eq!(s.activity_cursor, 3);
+        assert_eq!(s.activity_keyboard.cursor(), 3);
         s.activity_set_cursor(0);
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
     }
 
     #[test]
@@ -2325,7 +2317,7 @@ mod tests {
     #[test]
     fn activity_selected_id_bottom_item() {
         let mut s = shell();
-        s.activity_cursor = 3; // first (and only) bottom item
+        s.activity_keyboard.set_cursor_raw(3); // first (and only) bottom item
         assert_eq!(
             s.activity_selected_id(),
             Some(&WidgetId::new("panel:settings"))
@@ -2335,7 +2327,7 @@ mod tests {
     #[test]
     fn activity_activate_selected_top_panel_emits_panel_changed() {
         let mut s = shell();
-        s.activity_cursor = 1; // panel:search
+        s.activity_keyboard.set_cursor_raw(1); // panel:search
         let ev = s.activity_activate_selected().expect("should return Some");
         assert_eq!(
             ev,
@@ -2349,7 +2341,7 @@ mod tests {
     #[test]
     fn activity_activate_selected_bottom_item_emits_bottom_clicked() {
         let mut s = shell();
-        s.activity_cursor = 3; // panel:settings
+        s.activity_keyboard.set_cursor_raw(3); // panel:settings
         let ev = s.activity_activate_selected().expect("should return Some");
         assert_eq!(
             ev,
@@ -2372,7 +2364,7 @@ mod tests {
     fn activity_activate_does_not_clear_keyboard_focus() {
         let mut s = shell();
         s.set_activity_keyboard_focused(true);
-        s.activity_cursor = 1;
+        s.activity_keyboard.set_cursor_raw(1);
         let _ = s.activity_activate_selected();
         // Consumer decides whether to clear focus; AppShell must not.
         assert!(s.activity_keyboard_focused());
@@ -2388,7 +2380,7 @@ mod tests {
     fn select_next_noop_on_empty_shell() {
         let mut s = AppShell::new(vec![], 30.0);
         s.activity_select_next(); // must not panic
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
     }
 
     // ── Programmatic state control ──────────────────────────────────
@@ -2622,7 +2614,7 @@ mod tests {
         s.activity_set_cursor(2); // pointing at git (index 2)
         s.remove_panel(&WidgetId::new("panel:explorer")); // remove index 0
                                                           // cursor was > 0, so should decrement to 1 (still pointing at git)
-        assert_eq!(s.activity_cursor, 1);
+        assert_eq!(s.activity_keyboard.cursor(), 1);
         assert_eq!(s.activity_selected_id(), Some(&WidgetId::new("panel:git")));
     }
 
@@ -2632,7 +2624,7 @@ mod tests {
         s.set_activity_keyboard_focused(true);
         s.activity_set_cursor(0); // pointing at explorer (index 0)
         s.remove_panel(&WidgetId::new("panel:search")); // remove index 1 (after cursor)
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
         assert_eq!(
             s.activity_selected_id(),
             Some(&WidgetId::new("panel:explorer"))
@@ -2647,7 +2639,7 @@ mod tests {
         s.remove_panel(&WidgetId::new("panel:git")); // remove the cursor item
                                                      // New total = 2 panels + 1 bottom = 3; cursor was 2, clamped to 2.
                                                      // Now index 2 is the bottom item (settings).
-        assert_eq!(s.activity_cursor, 2);
+        assert_eq!(s.activity_keyboard.cursor(), 2);
         assert_eq!(
             s.activity_selected_id(),
             Some(&WidgetId::new("panel:settings"))
@@ -2668,7 +2660,7 @@ mod tests {
         s.set_activity_keyboard_focused(true);
         s.remove_panel(&WidgetId::new("panel:only"));
         assert!(!s.activity_keyboard_focused());
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
     }
 
     #[test]
@@ -2681,7 +2673,7 @@ mod tests {
         s.set_activity_keyboard_focused(true);
         s.activity_set_cursor(1); // pointing at search (panel index 1)
         s.remove_bottom_item(&WidgetId::new("panel:settings")); // remove bottom at combined 3
-        assert_eq!(s.activity_cursor, 1); // cursor was before removed item
+        assert_eq!(s.activity_keyboard.cursor(), 1); // cursor was before removed item
         assert_eq!(
             s.activity_selected_id(),
             Some(&WidgetId::new("panel:search"))
@@ -2695,7 +2687,7 @@ mod tests {
         s.activity_set_cursor(3); // pointing at settings (combined index 3)
         s.remove_bottom_item(&WidgetId::new("panel:settings"));
         // New total = 3; cursor was 3, clamped to 2 (last panel).
-        assert_eq!(s.activity_cursor, 2);
+        assert_eq!(s.activity_keyboard.cursor(), 2);
         assert_eq!(s.activity_selected_id(), Some(&WidgetId::new("panel:git")));
     }
 
