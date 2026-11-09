@@ -537,7 +537,7 @@ impl A11yTree {
         for _ in 0..depth {
             out.push_str("  ");
         }
-        out.push_str(role_name(node.role()));
+        out.push_str(&role_name(node.role()));
         if let Some(label) = node.label() {
             out.push_str(" \"");
             out.push_str(&escape_snapshot_text(label));
@@ -1131,48 +1131,16 @@ fn content_kind(content: &OwnedContent) -> &'static str {
 }
 
 /// Snake-case name of a role, as it appears in a snapshot line.
-fn role_name(role: A11yRole) -> &'static str {
-    match role {
-        A11yRole::Window => "window",
-        A11yRole::Toolbar => "toolbar",
-        A11yRole::Button => "button",
-        A11yRole::Tab => "tab",
-        A11yRole::TabList => "tab_list",
-        A11yRole::Menu => "menu",
-        A11yRole::MenuItem => "menu_item",
-        A11yRole::MenuBar => "menu_bar",
-        A11yRole::Tree => "tree",
-        A11yRole::TreeItem => "tree_item",
-        A11yRole::List => "list",
-        A11yRole::ListItem => "list_item",
-        A11yRole::Table => "table",
-        A11yRole::Row => "row",
-        A11yRole::Cell => "cell",
-        A11yRole::TextInput => "text_input",
-        A11yRole::CheckBox => "check_box",
-        A11yRole::RadioGroup => "radio_group",
-        A11yRole::RadioButton => "radio_button",
-        A11yRole::Slider => "slider",
-        A11yRole::ComboBox => "combo_box",
-        A11yRole::Label => "label",
-        A11yRole::Form => "form",
-        A11yRole::Document => "document",
-        A11yRole::Editor => "editor",
-        A11yRole::Terminal => "terminal",
-        A11yRole::Dialog => "dialog",
-        A11yRole::Status => "status",
-        A11yRole::Alert => "alert",
-        A11yRole::Tooltip => "tooltip",
-        A11yRole::ScrollBar => "scroll_bar",
-        A11yRole::Splitter => "splitter",
-        A11yRole::Progress => "progress",
-        A11yRole::Image => "image",
-        A11yRole::Chart => "chart",
-        A11yRole::Canvas => "canvas",
-        A11yRole::Group => "group",
-        A11yRole::Presentation => "presentation",
-        A11yRole::Heading => "heading",
-        A11yRole::Link => "link",
+///
+/// Derived from [`A11yRole`]'s own `#[serde(rename_all = "snake_case")]`
+/// representation via a JSON round-trip, rather than a hand-maintained
+/// match arm per variant: the snapshot name and the wire name can never
+/// drift apart, because they are the same string. `A11yRole` is a plain
+/// unit-variant enum, so this always serializes to a JSON string.
+fn role_name(role: A11yRole) -> String {
+    match serde_json::to_value(role) {
+        Ok(serde_json::Value::String(name)) => name,
+        _ => unreachable!("A11yRole is a unit-variant enum and always serializes to a string"),
     }
 }
 
@@ -3101,5 +3069,65 @@ mod tests {
              list_item \"src\" [expanded level=1 pos=1/2]\n    \
              list_item \"main.rs\" [selected value=\"12 lines\" level=2 pos=2/2]\n"
         );
+    }
+
+    /// `role_name` must equal `A11yRole`'s own serde `snake_case` name for
+    /// every variant — the acceptance bar for deriving one from the other
+    /// instead of maintaining two hand-written tables that can drift.
+    #[test]
+    fn role_name_equals_the_serde_name_for_every_variant() {
+        let roles = [
+            A11yRole::Window,
+            A11yRole::Toolbar,
+            A11yRole::Button,
+            A11yRole::Tab,
+            A11yRole::TabList,
+            A11yRole::Menu,
+            A11yRole::MenuItem,
+            A11yRole::MenuBar,
+            A11yRole::Tree,
+            A11yRole::TreeItem,
+            A11yRole::List,
+            A11yRole::ListItem,
+            A11yRole::Table,
+            A11yRole::Row,
+            A11yRole::Cell,
+            A11yRole::TextInput,
+            A11yRole::CheckBox,
+            A11yRole::RadioGroup,
+            A11yRole::RadioButton,
+            A11yRole::Slider,
+            A11yRole::ComboBox,
+            A11yRole::Label,
+            A11yRole::Form,
+            A11yRole::Document,
+            A11yRole::Editor,
+            A11yRole::Terminal,
+            A11yRole::Dialog,
+            A11yRole::Status,
+            A11yRole::Alert,
+            A11yRole::Tooltip,
+            A11yRole::ScrollBar,
+            A11yRole::Splitter,
+            A11yRole::Progress,
+            A11yRole::Image,
+            A11yRole::Chart,
+            A11yRole::Canvas,
+            A11yRole::Group,
+            A11yRole::Presentation,
+            A11yRole::Heading,
+            A11yRole::Link,
+        ];
+        for role in roles {
+            let serde_name = match serde_json::to_value(role).unwrap() {
+                serde_json::Value::String(name) => name,
+                other => panic!("A11yRole must serialize to a JSON string, got {other:?}"),
+            };
+            assert_eq!(
+                role_name(role),
+                serde_name,
+                "role_name({role:?}) must equal its serde name"
+            );
+        }
     }
 }
