@@ -10,7 +10,9 @@
 #![cfg(feature = "tui")]
 
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
-use quadraui::{Backend, ButtonMask, Key, Modifiers, NamedKey, Point, Reaction, UiEvent};
+use quadraui::{
+    Backend, ButtonMask, FieldKind, Key, Modifiers, NamedKey, Point, Reaction, UiEvent,
+};
 
 #[path = "../examples/common/shell_app.rs"]
 mod shell_app_ex;
@@ -2636,6 +2638,93 @@ fn form_dialog_q_quits_only_once_a_button_has_focus() {
     driver.press_named(NamedKey::Tab); // Description -> Cancel
     driver.type_char('q');
     assert!(driver.exited(), "'q' with a button focused should quit");
+}
+
+/// Re-entering the form from a button (Shift-Tab backward off the first
+/// button) must surface `FormAction(FocusChanged)` so the app's own
+/// `focused_field` mirror — which it feeds back via `set_form` every
+/// frame, per this controller's documented contract — stays in sync.
+/// Without it, typing right after re-entering the form would land in
+/// whichever field the app's stale mirror still names, not the one
+/// actually focused.
+#[test]
+fn form_dialog_entering_form_from_a_button_keeps_the_apps_focus_mirror_in_sync() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    form_dialog_shift_tab(&mut driver); // Name -> (wraps) Create
+    form_dialog_shift_tab(&mut driver); // Create -> Cancel
+    form_dialog_shift_tab(&mut driver); // Cancel -> (wraps back) Description
+    assert!(
+        driver.app().controller().is_form_focused(),
+        "third shift-tab should land back on the form"
+    );
+    assert_eq!(
+        driver
+            .app()
+            .controller()
+            .form()
+            .and_then(|f| f.focused_field)
+            .map(|id| id.as_str()),
+        Some("description"),
+        "focus should land on the last field (Description)"
+    );
+    driver.type_char('a');
+    driver.type_char('b');
+    driver.type_char('c');
+    let form = driver
+        .app()
+        .controller()
+        .form()
+        .expect("controller should have a form set");
+    let name_value = form
+        .fields
+        .iter()
+        .find(|f| f.id.as_str() == "name")
+        .and_then(|f| match &f.kind {
+            FieldKind::TextInput { value, .. } => Some(value.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let description_value = form
+        .fields
+        .iter()
+        .find(|f| f.id.as_str() == "description")
+        .and_then(|f| match &f.kind {
+            FieldKind::TextArea { value, .. } => Some(value.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        name_value, "",
+        "typed text must not leak into the Name field (stale focus mirror)"
+    );
+    assert_eq!(
+        description_value, "abc",
+        "typed text should land in the actually-focused Description field"
+    );
+}
+
+/// `DialogInput::Form`'s input slot must be tall enough for a
+/// `TextArea`'s `visible_rows`, not a flat one-row-per-field estimate —
+/// otherwise a multi-line field's extra rows are clipped and never
+/// reach the screen.
+#[test]
+fn form_dialog_text_area_renders_more_than_its_single_top_row() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    driver.press_named(NamedKey::Tab); // Name -> Description
+    driver.type_char('L');
+    driver.type_char('1');
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Enter), // TextArea: Enter inserts a newline
+        modifiers: Modifiers::default(),
+        repeat: false,
+    });
+    driver.type_char('L');
+    driver.type_char('2');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("L1") && screen.contains("L2"),
+        "both TextArea lines should be visible, not clipped to one row:\n{screen}"
+    );
 }
 
 /// Shell-runner path: Ctrl-A selects all content lines, Ctrl-C copies them.

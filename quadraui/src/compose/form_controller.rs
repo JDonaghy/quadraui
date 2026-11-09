@@ -391,6 +391,24 @@ impl FormController {
         self.form.as_ref()
     }
 
+    /// The `Form` this controller actually renders/exposes to a11y this
+    /// frame: [`Self::form`]'s stored descriptor overlaid with the live
+    /// render-only state [`Self::render`] bakes in before painting
+    /// (`has_focus`, in-progress text/date-edit cursor, scroll offset,
+    /// required-field markers) — see [`Self::build_form`]. Distinct from
+    /// `form()` so a composing controller that embeds this `Form` inside
+    /// its *own* descriptor (e.g.
+    /// [`crate::compose::form_dialog::FormDialogController::dialog`])
+    /// reports the state that's actually on screen rather than the raw
+    /// one the consumer last pushed via [`Self::set_form`] (which may
+    /// have gone stale — e.g. `has_focus` toggled by [`Self::set_has_focus`]
+    /// since).
+    pub fn live_form(&self) -> Option<Form> {
+        self.form
+            .as_ref()
+            .map(|_| self.build_form(Rect::default(), None))
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -1271,33 +1289,20 @@ impl FormController {
         let Some(form) = &self.form else {
             return FormControllerEvent::Ignored;
         };
-        // Explicit `tab_index` wins; a field that leaves it `None` keeps
-        // its natural position in `fields` as its sort key, so a form
-        // where nobody sets `tab_index` still traverses in plain `Vec`
-        // order (see `FormField::tab_index`'s doc).
-        let mut ordered: Vec<(i32, usize, &WidgetId)> = form
-            .fields
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| field_is_focusable(f))
-            .map(|(i, f)| (f.tab_index.unwrap_or(i as i32), i, &f.id))
-            .collect();
-        ordered.sort_by_key(|&(tab_index, i, _)| (tab_index, i));
-        let stops: Vec<&WidgetId> = ordered.into_iter().map(|(_, _, id)| id).collect();
+        let stops = focus_order(form);
         if stops.is_empty() {
             return FormControllerEvent::Ignored;
         }
         let n = stops.len();
         let cur_idx = form
             .focused_field
-            .as_ref()
             .and_then(|id| stops.iter().position(|fid| *fid == id));
         let next_idx = match cur_idx {
             Some(i) => crate::focus::cycle_index(i, delta, n),
             None if delta >= 0 => 0,
             None => n - 1,
         };
-        let id = *stops[next_idx];
+        let id = stops[next_idx];
         // The stop's index among `stops` isn't necessarily its index in
         // `form.fields` (non-focusable fields are filtered out above),
         // so re-find its field index for scrolling and for seeding the
@@ -1749,6 +1754,31 @@ fn activate_item_event(field: &crate::primitives::form::FormField, item_id: Widg
 /// read-only row either.
 fn field_is_focusable(field: &crate::primitives::form::FormField) -> bool {
     !matches!(field.kind, FieldKind::Label | FieldKind::ReadOnly { .. }) && !field.disabled
+}
+
+/// Focusable field ids of `form`, in Tab-order: explicit `tab_index`
+/// wins, a field that leaves it `None` keeps its natural position in
+/// `fields` as its sort key (so a form where nobody sets `tab_index`
+/// still traverses in plain `Vec` order — see `FormField::tab_index`'s
+/// doc), and [`field_is_focusable`] filters out `Label`/`ReadOnly`/
+/// disabled fields.
+///
+/// Shared by [`FormController::move_focus`] (which wraps within the
+/// form) and [`crate::compose::form_dialog::FormDialogController`]
+/// (which needs to detect stepping off either end *before* forwarding
+/// a Tab/Shift-Tab keypress into the form, so it can hand focus to its
+/// own button row instead — something `move_focus`'s own wrap-within-
+/// the-form traversal can't signal).
+pub(crate) fn focus_order(form: &Form) -> Vec<WidgetId> {
+    let mut ordered: Vec<(i32, usize, WidgetId)> = form
+        .fields
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| field_is_focusable(f))
+        .map(|(i, f)| (f.tab_index.unwrap_or(i as i32), i, f.id))
+        .collect();
+    ordered.sort_by_key(|&(tab_index, i, _)| (tab_index, i));
+    ordered.into_iter().map(|(_, _, id)| id).collect()
 }
 
 /// The editable text of a `TextInput` / `TextArea` / `PasswordInput`

@@ -46,9 +46,17 @@
 //! Enter activates the focused button when one has focus, otherwise it's
 //! forwarded to the form (commits a `TextInput`, inserts a newline in a
 //! `TextArea`, etc. — see [`FormController`]'s own "Keyboard editing" doc
-//! section). Escape always resolves to [`Dialog::cancel_button_id`],
-//! falling back to [`Dialog::default_button_id`], regardless of where
-//! focus currently is.
+//! section). Escape resolves to [`Dialog::cancel_button_id`], falling
+//! back to [`Dialog::default_button_id`], regardless of where button
+//! focus currently is — *except* while the focused field is an open
+//! `ComboBox` popup, where Escape is forwarded into the form first so it
+//! closes the popup instead of the whole dialog (mirroring
+//! [`FormController`]'s own combo-box Escape handling).
+//!
+//! Every button-activating path above (Enter while a button has focus,
+//! Escape) resolves the id regardless of which button currently holds
+//! *keyboard* focus — Escape always targets the cancel/default button,
+//! not whichever one Tab last landed on.
 //!
 //! Unlike a bare [`FormController`] consumer (which must re-apply a
 //! `FormEvent::FocusChanged` onto its own canonical `Form` and call
@@ -57,8 +65,26 @@
 //! hand-off to its own stored form itself, the same way it already owns
 //! `focused_button`: a dialog is a self-contained modal, not a page the
 //! host app otherwise tracks field-by-field focus for. `FormAction`
-//! still bubbles the event up so a consumer that *does* want to mirror
-//! focus elsewhere (e.g. a status line) can.
+//! still bubbles the event up (including when focus moves onto the form
+//! from a button — see [`Self::enter_form`]) so a consumer that *does*
+//! want to mirror focus elsewhere (e.g. a status line, or its own
+//! canonical `focused_field` it feeds back via [`Self::set_form`]) can,
+//! and must: [`Self::dialog`] always reports the stored form's *current*
+//! `focused_field`, so a consumer whose own mirror goes stale here would
+//! otherwise stomp it back to the wrong field on its next `set_form`.
+//!
+//! # No visual keyboard-focus ring (known limitation)
+//!
+//! Like [`crate::compose::MessageDialogController`] (see its own doc
+//! section of the same name), [`DialogButton`] carries no
+//! "keyboard-focused" field, so a button holding keyboard focus renders
+//! no differently from an unfocused one beyond `is_default`'s existing
+//! styling. It's worse here: moving focus onto a button
+//! ([`Self::enter_buttons`]) also clears the form's own focus highlight
+//! (`FormController::set_has_focus(false)`), so once focus leaves the
+//! form nothing on screen is highlighted at all until it returns. Enter/
+//! Escape/click routing is fully correct regardless; this only affects
+//! what a sighted user sees highlighted while tabbing.
 
 use crate::backend::Backend;
 use crate::event::{Point, Rect, UiEvent};
@@ -70,13 +96,16 @@ use crate::primitives::toolbar::ToolbarItemMeasure;
 use crate::types::{StyledText, WidgetId};
 use crate::{Key, Modifiers, NamedKey};
 
-use super::form_controller::{FormController, FormControllerEvent};
+use super::form_controller::{focus_order, FormController, FormControllerEvent};
 
 /// What happened after [`FormDialogController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormDialogEvent {
-    /// A button was clicked, or activated via Enter/Escape while it had
-    /// keyboard focus. The consumer should check `id` against the
+    /// A button was clicked, activated via Enter while it had keyboard
+    /// focus, or resolved via Escape (which always targets
+    /// [`Dialog::cancel_button_id`]/[`Dialog::default_button_id`]
+    /// regardless of keyboard focus — see this module's "Keyboard
+    /// model" doc section). The consumer should check `id` against the
     /// [`DialogButton::id`] values it built the dialog from — e.g. a
     /// click on the "Create" button is the submit signal; the app reads
     /// its own canonical field values (already kept in sync via
@@ -219,7 +248,15 @@ impl FormDialogController {
             severity: self.severity,
             vertical_buttons: self.vertical_buttons,
             table: None,
-            input: self.form.form().cloned().map(DialogInput::Form),
+            // `live_form` (not `form`) so the descriptor used for both
+            // painting and a11y chrome (`a11y::chrome`'s
+            // `DialogInput::Form` child) reports the form's *actual*
+            // on-screen state — in particular `has_focus`, which
+            // `self.form`'s raw stored descriptor doesn't track (a
+            // consumer's own mirror typically always pushes
+            // `has_focus: true`; this controller is the one that knows
+            // whether focus is really on the form or on a button).
+            input: self.form.live_form().map(DialogInput::Form),
         }
     }
 
@@ -240,29 +277,62 @@ impl FormDialogController {
         let viewport = backend.viewport();
         let dialog = self.dialog();
         let has_title = dialog.title.spans.iter().any(|s| !s.text.is_empty());
-        let field_count = self.form.field_count();
         let button_width = self
             .buttons
             .iter()
             .map(|b| b.resolved_button_spec().min_cell_width() * char_w)
             .fold(char_w * 10.0, f32::max);
+        let width = (viewport.width * 0.5).clamp(char_w * 30.0, char_w * 64.0);
+        let padding = lh;
+        let input_height = self.measure_input_height(backend, &dialog, width, padding);
         let measure = DialogMeasure {
-            width: (viewport.width * 0.5).clamp(char_w * 30.0, char_w * 64.0),
+            width,
             title_height: if has_title { lh } else { 0.0 },
             body_height: lh * dialog.body.len() as f32,
             table_height: 0.0,
-            input_height: if field_count > 0 {
-                lh * field_count as f32
-            } else {
-                0.0
-            },
+            input_height,
             button_row_height: lh,
             button_width,
             button_gap: char_w * 2.0,
-            padding: lh,
+            padding,
         };
         let viewport_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
         dialog.layout(viewport_rect, measure, |_| ToolbarItemMeasure::new(0.0))
+    }
+
+    /// The input slot's real height for `dialog.input`, measured
+    /// per-field through [`Backend::form_layout`] rather than the
+    /// one-row-per-field estimate every other `DialogInput` variant can
+    /// get away with — a `FieldKind::TextArea` is `visible_rows` tall, a
+    /// `Top`-labelled field takes an extra row for its label line, and a
+    /// focused `Dropdown` grows to fit its open option list (see
+    /// `tui::form::tui_form_layout`'s own per-kind measure). Probes with
+    /// a generously tall rect so every field lands at its full,
+    /// unclipped height — [`Form::layout`]'s "last row squeezed to fit
+    /// the viewport" clipping never kicks in here, since this *is* how
+    /// the viewport height gets decided.
+    fn measure_input_height(
+        &self,
+        backend: &dyn Backend,
+        dialog: &Dialog,
+        dialog_width: f32,
+        padding: f32,
+    ) -> f32 {
+        let Some(DialogInput::Form(form)) = dialog.input.as_ref() else {
+            return 0.0;
+        };
+        if form.fields.is_empty() {
+            return 0.0;
+        }
+        let content_w = (dialog_width - padding * 2.0).max(0.0);
+        let probe_rect = Rect::new(0.0, 0.0, content_w, f32::MAX / 4.0);
+        let probe = backend.form_layout(probe_rect, form);
+        let content_h = probe
+            .visible_fields
+            .iter()
+            .map(|f| f.bounds.y + f.bounds.height)
+            .fold(0.0_f32, f32::max);
+        content_h + form.spacing.padding
     }
 
     /// The on-screen rect the embedded form renders/hit-tests within —
@@ -293,7 +363,9 @@ impl FormDialogController {
     /// Drive the state machine with a backend-neutral [`UiEvent`].
     pub fn handle(&mut self, event: &UiEvent, backend: &mut dyn Backend) -> FormDialogEvent {
         match event {
-            UiEvent::KeyPressed { key, modifiers, .. } => self.handle_key(key, modifiers, backend),
+            UiEvent::KeyPressed { key, modifiers, .. } => {
+                self.handle_key(key, modifiers, event, backend)
+            }
             UiEvent::MouseDown { position, .. } => self.handle_click(event, *position, backend),
             _ if self.focused_button.is_none() => {
                 let rect = self.form_rect(backend);
@@ -308,9 +380,21 @@ impl FormDialogController {
         &mut self,
         key: &Key,
         modifiers: &Modifiers,
+        event: &UiEvent,
         backend: &mut dyn Backend,
     ) -> FormDialogEvent {
         match key {
+            // An open `ComboBox` popup claims Escape first — closing the
+            // popup, not the dialog — the same precedence
+            // `FormController::handle_key` already gives its own
+            // combo-box Escape path; this controller otherwise never
+            // forwards Escape, so it would be unreachable without this
+            // check.
+            Key::Named(NamedKey::Escape)
+                if self.focused_button.is_none() && self.form_has_open_combo_box() =>
+            {
+                self.forward_to_form(event, backend)
+            }
             Key::Named(NamedKey::Escape) => match self.cancel_or_default_button_id() {
                 Some(id) => FormDialogEvent::ButtonClicked(id),
                 None => FormDialogEvent::Ignored,
@@ -320,7 +404,7 @@ impl FormDialogController {
                     Some(b) => FormDialogEvent::ButtonClicked(b.id),
                     None => FormDialogEvent::Ignored,
                 },
-                None => self.forward_to_form(key, modifiers, backend),
+                None => self.forward_to_form(event, backend),
             },
             Key::Named(NamedKey::Tab) if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd => {
                 self.navigate(if modifiers.shift { -1 } else { 1 }, backend)
@@ -328,25 +412,37 @@ impl FormDialogController {
             Key::Named(NamedKey::BackTab) => self.navigate(-1, backend),
             Key::Named(NamedKey::Left) if self.focused_button.is_some() => self.cycle_button(-1),
             Key::Named(NamedKey::Right) if self.focused_button.is_some() => self.cycle_button(1),
-            _ if self.focused_button.is_none() => self.forward_to_form(key, modifiers, backend),
+            _ if self.focused_button.is_none() => self.forward_to_form(event, backend),
             _ => FormDialogEvent::Ignored,
         }
     }
 
-    fn forward_to_form(
-        &mut self,
-        key: &Key,
-        modifiers: &Modifiers,
-        backend: &mut dyn Backend,
-    ) -> FormDialogEvent {
+    /// Forward `event` (the original [`UiEvent::KeyPressed`] `handle`
+    /// received) into the form unchanged — preserving its `repeat` flag
+    /// rather than reconstructing a new event that always hardcodes
+    /// `repeat: false`.
+    fn forward_to_form(&mut self, event: &UiEvent, backend: &mut dyn Backend) -> FormDialogEvent {
         let rect = self.form_rect(backend);
-        let event = UiEvent::KeyPressed {
-            key: key.clone(),
-            modifiers: *modifiers,
-            repeat: false,
-        };
-        let result = self.form.handle(&event, backend, rect);
+        let result = self.form.handle(event, backend, rect);
         self.apply_form_result(result)
+    }
+
+    /// Whether the focused field is an enabled, currently-open
+    /// `ComboBox` — see this module's "Keyboard model" doc section for
+    /// why Escape checks this before resolving to a button.
+    fn form_has_open_combo_box(&self) -> bool {
+        let Some(form) = self.form.form() else {
+            return false;
+        };
+        let Some(focused_id) = form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| f.id == focused_id)
+            .is_some_and(|f| {
+                !f.disabled && matches!(&f.kind, FieldKind::ComboBox(combo) if combo.open)
+            })
     }
 
     /// Move keyboard focus by `delta` (`1` = forward, `-1` = backward)
@@ -413,6 +509,16 @@ impl FormDialogController {
         FormDialogEvent::Consumed
     }
 
+    /// Move focus from the button row onto the form's first (`delta >
+    /// 0`) or last (`delta < 0`) focusable field, self-applying the new
+    /// `focused_field` onto the stored form (same as every other
+    /// focus-moving path in this controller) **and** surfacing it as
+    /// [`FormDialogEvent::FormAction(FormEvent::FocusChanged)`] — a
+    /// consumer that mirrors `focused_field` onto its own canonical
+    /// `Form` (the documented `set_form`-every-frame contract; see this
+    /// module's doc) needs this event the same way it needs the one
+    /// `FormController::handle` emits for an in-form Tab, or its mirror
+    /// goes stale the moment focus re-enters the form from a button.
     fn enter_form(&mut self, delta: isize) -> FormDialogEvent {
         self.focused_button = None;
         self.form.set_has_focus(true);
@@ -425,11 +531,15 @@ impl FormDialogController {
         } else {
             stops.last()
         };
-        if let Some(id) = target {
-            form.focused_field = Some(*id);
-            self.form.set_form(form);
+        match target {
+            Some(id) => {
+                let id = *id;
+                form.focused_field = Some(id);
+                self.form.set_form(form);
+                FormDialogEvent::FormAction(FormEvent::FocusChanged { id })
+            }
+            None => FormDialogEvent::Consumed,
         }
-        FormDialogEvent::Consumed
     }
 
     fn cycle_button(&mut self, delta: isize) -> FormDialogEvent {
@@ -475,19 +585,7 @@ impl FormDialogController {
             }
         }
     }
-}
 
-fn map_form_event(event: FormControllerEvent) -> FormDialogEvent {
-    match event {
-        FormControllerEvent::FormAction(e) => FormDialogEvent::FormAction(e),
-        FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => {
-            FormDialogEvent::Consumed
-        }
-        FormControllerEvent::Ignored => FormDialogEvent::Ignored,
-    }
-}
-
-impl FormDialogController {
     /// Map a [`FormControllerEvent`] from `self.form.handle`/`handle_cached`
     /// to a [`FormDialogEvent`], self-applying a `FocusChanged` onto the
     /// stored form first — see this module's "Keyboard model" doc section
@@ -504,26 +602,14 @@ impl FormDialogController {
     }
 }
 
-/// Focusable field ids of `form`, in Tab-order (explicit `tab_index`
-/// first, ties and `None` broken by `fields` order) — mirrors
-/// [`crate::compose::form_controller::FormController`]'s own private
-/// traversal order, duplicated here (rather than exposed from there) so
-/// this module can detect "about to step off either end of the form"
-/// *before* forwarding a Tab/Shift-Tab keypress to it, something
-/// `FormController::handle` alone can't signal (its own traversal always
-/// wraps within the form).
-fn focus_order(form: &Form) -> Vec<WidgetId> {
-    let mut ordered: Vec<(i32, usize, WidgetId)> = form
-        .fields
-        .iter()
-        .enumerate()
-        .filter(|(_, f)| {
-            !f.disabled && !matches!(f.kind, FieldKind::Label | FieldKind::ReadOnly { .. })
-        })
-        .map(|(i, f)| (f.tab_index.unwrap_or(i as i32), i, f.id))
-        .collect();
-    ordered.sort_by_key(|&(tab_index, i, _)| (tab_index, i));
-    ordered.into_iter().map(|(_, _, id)| id).collect()
+fn map_form_event(event: FormControllerEvent) -> FormDialogEvent {
+    match event {
+        FormControllerEvent::FormAction(e) => FormDialogEvent::FormAction(e),
+        FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => {
+            FormDialogEvent::Consumed
+        }
+        FormControllerEvent::Ignored => FormDialogEvent::Ignored,
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -639,6 +725,87 @@ mod tests {
         }
     }
 
+    /// `dialog()`'s embedded `Form` reports `has_focus` matching this
+    /// controller's *actual* keyboard-focus state, not whatever
+    /// `has_focus` the consumer's own pushed descriptor carries (the
+    /// shipped demo always pushes `true`, since it isn't the one
+    /// tracking button-vs-form focus) — otherwise a screen reader (via
+    /// `a11y::chrome`) or a future rasteriser painting straight off
+    /// `dialog()` would report the form focused even once focus has
+    /// moved to a button.
+    #[test]
+    fn dialog_form_has_focus_reflects_actual_keyboard_focus() {
+        let mut c = controller();
+        match c.dialog().input {
+            Some(DialogInput::Form(f)) => assert!(f.has_focus, "form should start focused"),
+            other => panic!("expected DialogInput::Form, got {:?}", other),
+        }
+        let mut backend = crate::tui::backend::TuiBackend::new();
+        c.handle(&tab_event(false), &mut backend); // name -> description
+        c.handle(&tab_event(false), &mut backend); // description -> cancel
+        assert!(!c.is_form_focused());
+        match c.dialog().input {
+            Some(DialogInput::Form(f)) => {
+                assert!(
+                    !f.has_focus,
+                    "form should report unfocused once a button has focus"
+                )
+            }
+            other => panic!("expected DialogInput::Form, got {:?}", other),
+        }
+    }
+
+    /// Escape forwards into the form instead of resolving to a button
+    /// while the focused field is an open `ComboBox` — the popup should
+    /// close without dismissing the whole dialog.
+    #[test]
+    fn escape_closes_an_open_combo_box_instead_of_resolving_to_cancel() {
+        use crate::primitives::combo_box::ComboBox;
+        let mut c = controller();
+        let mut form = c.form().unwrap().clone();
+        form.fields.push(FormField {
+            id: WidgetId::new("kind"),
+            label: StyledText::plain("Kind"),
+            kind: FieldKind::ComboBox(ComboBox {
+                id: WidgetId::new("kind-combo"),
+                options: vec!["Alpha".into(), "Beta".into()],
+                text: "Al".into(),
+                committed: String::new(),
+                open: true,
+                highlighted: Some(0),
+                disabled: false,
+                focused: true,
+            }),
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        });
+        form.focused_field = Some(WidgetId::new("kind"));
+        c.set_form(form);
+        let mut backend = crate::tui::backend::TuiBackend::new();
+        let esc = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Escape),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        let result = c.handle(&esc, &mut backend);
+        // The combo box's own Escape path cancels the edit back to the
+        // committed value and closes the popup — not a `ButtonClicked`.
+        assert!(
+            matches!(result, FormDialogEvent::FormAction(_)),
+            "Escape should have been forwarded into the open combo box, got {:?}",
+            result
+        );
+        assert!(c.is_form_focused(), "dialog should still be open");
+    }
+
     /// `set_body` updates the rendered `Dialog::body` after construction
     /// — a consumer uses this for a status line (e.g. "Created: …")
     /// shown after a submit, without rebuilding the whole controller.
@@ -694,11 +861,46 @@ mod tests {
         c.handle(&tab_event(false), &mut backend); // description -> cancel
         c.handle(&tab_event(false), &mut backend); // cancel -> create
         let result = c.handle(&tab_event(false), &mut backend); // create -> name
-        assert_eq!(result, FormDialogEvent::Consumed);
+                                                                // `enter_form` surfaces `FocusChanged` (not a bare `Consumed`)
+                                                                // so a consumer mirroring `focused_field` onto its own
+                                                                // canonical `Form` (the documented `set_form`-every-frame
+                                                                // contract) learns about the hand-off too — see this module's
+                                                                // "Keyboard model" doc section.
+        assert_eq!(
+            result,
+            FormDialogEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("name")
+            })
+        );
         assert!(c.is_form_focused());
         assert_eq!(
             c.form().and_then(|f| f.focused_field).unwrap().as_str(),
             "name"
+        );
+    }
+
+    /// Typing immediately after a Tab-wrap back onto the form (the
+    /// specific regression this module's "Keyboard model" doc section
+    /// now documents) must land in the field `enter_form` actually
+    /// focused, not wherever a caller's stale `focused_field` mirror
+    /// still points — i.e. the mirror itself must have been updated via
+    /// the `FocusChanged` [`tab_past_the_last_button_wraps_to_the_first_field`]
+    /// asserts above, which this test exercises end-to-end.
+    #[test]
+    fn typing_after_tab_wrap_back_onto_the_form_lands_in_the_focused_field() {
+        let mut c = controller();
+        let mut backend = crate::tui::backend::TuiBackend::new();
+        c.handle(&tab_event(false), &mut backend); // name -> description
+        c.handle(&tab_event(false), &mut backend); // description -> cancel
+        c.handle(&tab_event(false), &mut backend); // cancel -> create
+        c.handle(&tab_event(false), &mut backend); // create -> (wraps) name
+        let result = c.handle(&UiEvent::CharTyped('z'), &mut backend);
+        assert_eq!(
+            result,
+            FormDialogEvent::FormAction(FormEvent::TextInputChanged {
+                id: WidgetId::new("name"),
+                value: "z".into(),
+            })
         );
     }
 
@@ -808,6 +1010,30 @@ mod tests {
         let c = controller();
         let backend = crate::tui::backend::TuiBackend::new();
         assert_eq!(c.bounds(&backend), c.layout(&backend).bounds);
+    }
+
+    /// The input slot reserved for a `TextArea { visible_rows: 3 }`
+    /// field must be at least 3 rows tall (plus the Name field's own
+    /// row) — a flat one-row-per-field estimate would clip it to a
+    /// single row and drop two-thirds of what the user typed off
+    /// screen. `name_description_form`'s Description field is exactly
+    /// this shape.
+    #[test]
+    fn layout_reserves_the_text_areas_full_visible_rows_not_one_row_per_field() {
+        let c = controller();
+        let backend = crate::tui::backend::TuiBackend::new();
+        let input_bounds = c
+            .layout(&backend)
+            .input_bounds
+            .expect("Form input should reserve a slot");
+        // Name's single row + Description's 3 `visible_rows` == 4,
+        // against the TUI backend's 1.0 line height.
+        assert!(
+            input_bounds.height >= 4.0,
+            "input slot should be tall enough for a 1-row field + a \
+             3-row TextArea, got height {}",
+            input_bounds.height
+        );
     }
 
     #[test]
