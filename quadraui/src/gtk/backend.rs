@@ -10806,6 +10806,7 @@ mod tests {
     /// `draw_panel` does) would shift the whole trailing action group
     /// left of `visible_actions`' own bounds, straight into this gap.
     #[test]
+    #[allow(deprecated)]
     fn gtk_backend_draw_panel_paints_title_inset_and_actions_in_bounds() {
         const W: i32 = 300;
         const H: i32 = 40;
@@ -10936,6 +10937,7 @@ mod tests {
     /// inside an inset pill's margin but inside a full-rect fill — so this
     /// fails if the override regresses to the inset-only highlight.
     #[test]
+    #[allow(deprecated)]
     fn gtk_backend_draw_panel_is_active_action_fills_full_bounds_with_accent_bg() {
         const W: i32 = 300;
         const H: i32 = 40;
@@ -11002,6 +11004,7 @@ mod tests {
     /// `panel::native_surface_paint::paint`'s `theme.foreground` /
     /// `theme.separator` contract exactly.
     #[test]
+    #[allow(deprecated)]
     fn gtk_backend_draw_panel_title_colours_match_panel_native_surface_paint() {
         const W: i32 = 300;
         const H: i32 = 40;
@@ -11100,6 +11103,7 @@ mod tests {
     /// bar much taller than the title glyph so top-aligned vs. centred
     /// land at clearly different rows.
     #[test]
+    #[allow(deprecated)]
     fn gtk_backend_draw_panel_title_label_is_vertically_centered() {
         const W: i32 = 300;
         const H: i32 = 60;
