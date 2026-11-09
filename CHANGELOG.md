@@ -59,6 +59,27 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `FieldKind::NumberInput(NumberInput)` and `FieldKind::RadioGroup(RadioGroup)`
+  (#2251): `Form` can now host the standalone `NumberInput` (#1446) and
+  `RadioGroup` (#1436) primitives as field kinds, following the
+  `ComboBox`/`DatePicker` embedding pattern. `FormController` handles their
+  keys (`NumberInput`: typing, Up/Down step, Enter-to-commit with
+  clamp/round to `[min, max]`/`precision`, Escape-to-cancel; `RadioGroup`:
+  Up/Down/Left/Right move the selection, skipping disabled options) and
+  their clicks (the stepper buttons via a new `item_bounds`-based lookup;
+  each radio option via its own `WidgetId`, through the same per-item path
+  `ToggleGroup`/`ButtonRow` already use), emitting `FormEvent::NumberChanged`/
+  `NumberDraftChanged`/`NumberCommitted`/`NumberCancelled`/`RadioChanged`.
+  Every backend paints both kinds through the primitives' own existing
+  rasterisers (`tui::draw_number_input`/`draw_radio_group`,
+  `number_input`/`radio_group`'s shared `native_surface_paint::paint` for
+  GTK/macOS/Win) rather than a second, form-only paint path — `RadioGroup`'s
+  row is therefore allowed to span one sub-row per option, the first
+  `FieldKind` to do so (see `FormFieldMeasure::vertical`, a new field
+  defaulting to `false` for every existing item-bearing kind). This is a
+  breaking addition to the non-`#[non_exhaustive]` `FieldKind`/`FormEvent`
+  enums, the same shape #1773/#1689 (`ComboBox`/`DatePicker`) already
+  shipped — a downstream exhaustive match on either enum needs a new arm.
 - Item-level keyboard focus for `FieldKind::ButtonRow`/`ToggleGroup`/
   `Toolbar` form fields (#2250): `FormController` now tracks which item
   inside the focused field has keyboard focus (starting on the first

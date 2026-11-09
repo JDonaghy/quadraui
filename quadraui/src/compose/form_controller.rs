@@ -118,6 +118,45 @@
 //! - A disabled focused `ComboBox` does not intercept its keys at all,
 //!   the same as a disabled `DatePicker`.
 //!
+//! ## Number input fields
+//!
+//! `FieldKind::NumberInput` needs no shadow-state struct, the same as
+//! `ComboBox` above: the embedded input's own `value`/`draft`/`focused`
+//! are already the live state the app feeds back each frame.
+//! `handle_number_input_key` clones the focused field's `NumberInput`,
+//! forces its `focused` flag to match `Form::focused_field`, and calls
+//! its own `handle_key` directly — `Up`/`Down` step the value, digits/
+//! `Backspace` edit the draft, `Enter` commits, `Escape` cancels.
+//!
+//! - Stepper clicks (the increment/decrement buttons `FieldKind::NumberInput`
+//!   paints through the real `NumberInput::layout`/backend rasteriser —
+//!   see `primitives/form.rs`'s doc) are resolved in [`Self::click_inner`]
+//!   via [`number_input_click_event`], which reads the clicked field's
+//!   single [`crate::primitives::form::VisibleFormField::item_bounds`]
+//!   entry for the control's exact on-screen rect — the same rect
+//!   `native_surface_paint::paint`/`tui::form::draw_field_number_input`
+//!   painted, so a click always lands where the stepper visually is.
+//! - A disabled focused `NumberInput` does not intercept its keys at
+//!   all, the same as a disabled `ComboBox`/`DatePicker`.
+//!
+//! ## Radio group fields
+//!
+//! `FieldKind::RadioGroup` also needs no shadow state: the embedded
+//! group's `selected`/`focused` are the live state. `handle_radio_group_key`
+//! mirrors `handle_number_input_key` — clone, force `focused`, call the
+//! embedded group's own `handle_key` (`Up`/`Left` previous option,
+//! `Down`/`Right` next, wrapping and skipping disabled options).
+//!
+//! - A click on one of the group's options resolves through the *generic*
+//!   per-item click path: each `RadioOption` gets its own
+//!   [`crate::primitives::form::VisibleFormField::item_bounds`] entry
+//!   (one per option, stacked vertically — see
+//!   [`crate::primitives::form::FormFieldMeasure::vertical`]'s doc), so
+//!   [`form_click_event`]'s `FieldKind::RadioGroup` arm resolves the
+//!   clicked option's own id directly, the same way a `ToggleGroup`
+//!   item's click already does — no extra geometry lookup needed, unlike
+//!   `NumberInput`'s stepper buttons above.
+//!
 //! ## Item-level keyboard focus
 //!
 //! `FieldKind::ButtonRow` / `ToggleGroup` / `Toolbar` each pack more than
@@ -206,7 +245,10 @@ use crate::primitives::combo_box::ComboBoxEvent;
 use crate::primitives::date_picker::{CalendarDate, DatePickerEvent};
 use crate::primitives::form::{
     focusable_items, FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
+    FormLayout,
 };
+use crate::primitives::number_input::NumberInputEvent;
+use crate::primitives::radio_group::RadioGroupEvent;
 use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
 use crate::primitives::text_input::{EditOp, TextEditor, TextInput};
 use crate::text_util::snap_to_char_boundary;
@@ -691,6 +733,21 @@ impl FormController {
                     return result;
                 }
             }
+            // `NumberInput`/`RadioGroup` — see this module's "Number
+            // input fields"/"Radio group fields" doc sections. Both
+            // return `Option` for the same reason `handle_combo_box_key`
+            // does: an unclaimed key (Tab/BackTab among them) must fall
+            // through to the generic dispatch below.
+            if self.focused_field_is_enabled_number_input() {
+                if let Some(result) = self.handle_number_input_key(key, modifiers) {
+                    return result;
+                }
+            }
+            if self.focused_field_is_enabled_radio_group() {
+                if let Some(result) = self.handle_radio_group_key(key, modifiers) {
+                    return result;
+                }
+            }
         }
         match key {
             Key::Named(NamedKey::Tab) if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd => {
@@ -893,6 +950,121 @@ impl FormController {
                 FormEvent::ComboBoxCancelled { id: focused_id },
             )),
         }
+    }
+
+    /// Whether the currently-focused field is a non-disabled
+    /// `NumberInput` — gates `handle_key`'s number-input-key
+    /// interception. Mirrors [`Self::focused_field_is_enabled_combo_box`].
+    fn focused_field_is_enabled_number_input(&self) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let Some(focused_id) = &form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| &f.id == focused_id)
+            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::NumberInput(_)))
+    }
+
+    /// Route `key`/`modifiers` into the focused `NumberInput`'s own
+    /// [`crate::primitives::number_input::NumberInput::handle_key`] and
+    /// translate the result into a `FormEvent::Number*` variant. Needs no
+    /// shadow-state struct — see this module's "Number input fields" doc
+    /// section.
+    fn handle_number_input_key(
+        &mut self,
+        key: &Key,
+        modifiers: &Modifiers,
+    ) -> Option<FormControllerEvent> {
+        let form = self.form.as_ref()?;
+        let focused_id = form.focused_field?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+        if field.disabled {
+            return None;
+        }
+        let FieldKind::NumberInput(number) = &field.kind else {
+            return None;
+        };
+
+        // `NumberInput::focused` is documented as "set by the host's
+        // focus-traversal logic" — `Form::focused_field` already singled
+        // this field out above, so force it here rather than depending
+        // on the app to have mirrored that onto the embedded primitive
+        // itself (mirrors `handle_combo_box_key`'s identical override).
+        let mut number = number.clone();
+        number.focused = true;
+
+        match number.handle_key(key, modifiers)? {
+            NumberInputEvent::ValueChanged { value, .. } => {
+                Some(FormControllerEvent::FormAction(FormEvent::NumberChanged {
+                    id: focused_id,
+                    value,
+                }))
+            }
+            NumberInputEvent::DraftChanged { draft, .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::NumberDraftChanged {
+                    id: focused_id,
+                    draft,
+                },
+            )),
+            NumberInputEvent::Committed { value, .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::NumberCommitted {
+                    id: focused_id,
+                    value,
+                },
+            )),
+            NumberInputEvent::Cancelled { .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::NumberCancelled { id: focused_id },
+            )),
+        }
+    }
+
+    /// Whether the currently-focused field is a non-disabled
+    /// `RadioGroup` — gates `handle_key`'s radio-group-key interception.
+    /// Mirrors [`Self::focused_field_is_enabled_number_input`].
+    fn focused_field_is_enabled_radio_group(&self) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let Some(focused_id) = &form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| &f.id == focused_id)
+            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::RadioGroup(_)))
+    }
+
+    /// Route `key`/`modifiers` into the focused `RadioGroup`'s own
+    /// [`crate::primitives::radio_group::RadioGroup::handle_key`] and
+    /// translate the result into [`FormEvent::RadioChanged`]. Needs no
+    /// shadow-state struct — see this module's "Radio group fields" doc
+    /// section.
+    fn handle_radio_group_key(
+        &mut self,
+        key: &Key,
+        modifiers: &Modifiers,
+    ) -> Option<FormControllerEvent> {
+        let form = self.form.as_ref()?;
+        let focused_id = form.focused_field?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+        if field.disabled {
+            return None;
+        }
+        let FieldKind::RadioGroup(group) = &field.kind else {
+            return None;
+        };
+
+        let mut group = group.clone();
+        group.focused = true;
+
+        let RadioGroupEvent::SelectionChanged { index } = group.handle_key(key, modifiers)?;
+        Some(FormControllerEvent::FormAction(FormEvent::RadioChanged {
+            id: focused_id,
+            selected: index,
+        }))
     }
 
     /// Whether the currently-focused field is a non-disabled, non-empty
@@ -1305,9 +1477,23 @@ impl FormController {
                     form_field_measure(&form.fields[i], row_h, char_w)
                 })
             };
-            match layout.hit_test(x - form_rect.x, y - form_rect.y) {
+            let local_x = x - form_rect.x;
+            let local_y = y - form_rect.y;
+            match layout.hit_test(local_x, local_y) {
                 FormHit::Field(id) => {
-                    let event = form_click_event(&form, &id);
+                    // `NumberInput`'s stepper buttons are sub-regions of
+                    // its single `item_bounds` entry, not separate
+                    // `WidgetId`s the way a `RadioGroup` option or a
+                    // `ToggleGroup` item is — so unlike
+                    // `form_click_event`'s generic per-id dispatch, this
+                    // needs the clicked field's exact on-screen rect (see
+                    // this module's "Number input fields" doc section).
+                    // `None` (not a `NumberInput`, or the click landed
+                    // outside the stepper) falls through to the generic
+                    // path, which still resolves a plain field click to
+                    // `FocusChanged`.
+                    let event = number_input_click_event(&form, &layout, &id, local_x, local_y)
+                        .unwrap_or_else(|| form_click_event(&form, &id));
                     FormControllerEvent::FormAction(event)
                 }
                 FormHit::Empty => FormControllerEvent::Consumed,
@@ -1430,8 +1616,65 @@ pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent 
                 };
             }
         }
+        // Each `RadioOption` carries its own `WidgetId` (one
+        // `item_bounds` entry per option — see this module's "Radio
+        // group fields" doc section), so a click resolves directly to
+        // the option's index, the same generic per-item path
+        // `ToggleGroup` above uses. `RadioGroup::select` already gates
+        // on the option's own `disabled` flag, so a disabled option's
+        // click falls through to focusing the field instead of
+        // selecting it.
+        if let FieldKind::RadioGroup(group) = &field.kind {
+            if let Some(idx) = group.options.iter().position(|o| &o.id == clicked_id) {
+                if let Some(RadioGroupEvent::SelectionChanged { index }) = group.select(idx) {
+                    return FormEvent::RadioChanged {
+                        id: field.id,
+                        selected: index,
+                    };
+                }
+                return FormEvent::FocusChanged { id: field.id };
+            }
+        }
     }
     FormEvent::FocusChanged { id: *clicked_id }
+}
+
+/// `FieldKind::NumberInput`'s stepper buttons are sub-regions of its
+/// single `item_bounds` entry rather than separate `WidgetId`s, so
+/// resolving a click needs the clicked field's exact on-screen rect —
+/// unlike [`form_click_event`]'s generic per-id dispatch, which only
+/// needs `clicked_id`. Returns `None` for every other `FieldKind`, or a
+/// `NumberInput` click that landed outside the stepper (text area, or no
+/// `item_bounds` entry at all) — [`FormController::click_inner`] falls
+/// through to [`form_click_event`] in both cases, which still resolves a
+/// plain click there to `FormEvent::FocusChanged`.
+fn number_input_click_event(
+    form: &Form,
+    layout: &FormLayout,
+    clicked_id: &WidgetId,
+    x: f32,
+    y: f32,
+) -> Option<FormEvent> {
+    let field = form.fields.iter().find(|f| &f.id == clicked_id)?;
+    if field.disabled {
+        return None;
+    }
+    let FieldKind::NumberInput(number) = &field.kind else {
+        return None;
+    };
+    let vf = layout
+        .visible_fields
+        .iter()
+        .find(|vf| &vf.id == clicked_id)?;
+    let (_, control_rect) = vf.item_bounds.first()?;
+    let hit = number.layout(*control_rect).hit_test(Point::new(x, y));
+    let NumberInputEvent::ValueChanged { value, .. } = number.click(hit)? else {
+        return None;
+    };
+    Some(FormEvent::NumberChanged {
+        id: *clicked_id,
+        value,
+    })
 }
 
 // ── Item-level keyboard focus helpers ─────────────────────────────────
@@ -1870,6 +2113,52 @@ fn form_field_measure(
         FieldKind::TextArea { visible_rows, .. } => {
             FormFieldMeasure::new(row_h * *visible_rows as f32)
         }
+        // See `click_inner`/`number_input_click_event`'s doc: the single
+        // item (the field's own id, not a synthetic one) exists purely
+        // so this fallback's `item_bounds` lookup finds the same control
+        // rect a live backend's `form_layout` would.
+        FieldKind::NumberInput(number) => {
+            let label_w = field.label.visible_width() as f32 * char_w;
+            let start_x = if label_w > 0.0 {
+                label_w + char_w * 2.0
+            } else {
+                char_w
+            };
+            let text = match &number.draft {
+                Some(draft) => draft.clone(),
+                None => format!("{:.*}", number.precision as usize, number.value),
+            };
+            let width = (text.chars().count() as f32 + 5.0) * char_w;
+            let items = vec![FormItemMeasure {
+                id: field.id,
+                width,
+            }];
+            FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
+        }
+        // One item per `RadioOption`, stacked vertically — see
+        // `FormFieldMeasure::vertical`'s doc; the field's row is `row_h`
+        // *per option*, not a single `row_h`.
+        FieldKind::RadioGroup(group) => {
+            let label_w = field.label.visible_width() as f32 * char_w;
+            let start_x = if label_w > 0.0 {
+                label_w + char_w * 2.0
+            } else {
+                char_w
+            };
+            let items: Vec<FormItemMeasure> = group
+                .options
+                .iter()
+                .map(|o| FormItemMeasure {
+                    id: o.id,
+                    width: row_h,
+                })
+                .collect();
+            FormFieldMeasure::with_vertical_items(
+                row_h * group.options.len().max(1) as f32,
+                start_x,
+                items,
+            )
+        }
         _ => FormFieldMeasure::new(row_h),
     }
 }
@@ -1893,6 +2182,8 @@ mod tests {
     use super::*;
     use crate::primitives::combo_box::ComboBox;
     use crate::primitives::form::{FieldKind, FormField, ToggleGroupItem};
+    use crate::primitives::number_input::NumberInput;
+    use crate::primitives::radio_group::{RadioGroup, RadioOption};
     use crate::types::StyledText;
 
     fn make_fields(n: usize) -> Vec<FormField> {
@@ -3006,6 +3297,42 @@ mod tests {
         }
     }
 
+    fn number_field(id: &str, number: NumberInput, disabled: bool) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::default(),
+            kind: FieldKind::NumberInput(number),
+            hint: StyledText::default(),
+            disabled,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        }
+    }
+
+    fn radio_group_field(id: &str, group: RadioGroup, disabled: bool) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::default(),
+            kind: FieldKind::RadioGroup(group),
+            hint: StyledText::default(),
+            disabled,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        }
+    }
+
     fn dropdown_field(
         id: &str,
         options: &[&str],
@@ -4072,6 +4399,379 @@ mod tests {
             FormControllerEvent::FormAction(FormEvent::ComboBoxCancelled {
                 id: WidgetId::new("field"),
             })
+        );
+    }
+
+    // ── NumberInput routing ─────────────────────────────────────────
+
+    #[test]
+    fn up_arrow_steps_a_focused_number_input_value_up() {
+        let mut fc = controller_with(
+            vec![number_field(
+                "n",
+                NumberInput::new(WidgetId::new("n"), 0.0, 10.0),
+                false,
+            )],
+            Some("n"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Up), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberChanged {
+                id: WidgetId::new("n"),
+                value: 1.0,
+            })
+        );
+    }
+
+    #[test]
+    fn down_arrow_steps_a_focused_number_input_value_down_clamped_at_min() {
+        let mut fc = controller_with(
+            vec![number_field(
+                "n",
+                NumberInput::new(WidgetId::new("n"), 0.0, 10.0),
+                false,
+            )],
+            Some("n"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberChanged {
+                id: WidgetId::new("n"),
+                value: 0.0,
+            }),
+            "decrementing below `min` must clamp, not go negative"
+        );
+    }
+
+    #[test]
+    fn up_arrow_on_a_number_input_already_at_max_clamps_instead_of_overshooting() {
+        let mut n = NumberInput::new(WidgetId::new("n"), 0.0, 10.0);
+        n.value = 9.0;
+        n.step = 5.0;
+        let mut fc = controller_with(vec![number_field("n", n, false)], Some("n"));
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Up), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberChanged {
+                id: WidgetId::new("n"),
+                value: 10.0,
+            }),
+            "a step past `max` must clamp to `max`, not overshoot to 14.0"
+        );
+    }
+
+    #[test]
+    fn typed_digit_on_a_focused_number_input_updates_its_draft() {
+        let mut fc = controller_with(
+            vec![number_field(
+                "n",
+                NumberInput::new(WidgetId::new("n"), 0.0, 100.0),
+                false,
+            )],
+            Some("n"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Char('5'), Modifiers::default()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberDraftChanged {
+                id: WidgetId::new("n"),
+                draft: "5".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn enter_commits_the_focused_number_inputs_draft_clamped_and_rounded() {
+        let mut n = NumberInput::new(WidgetId::new("n"), 0.0, 10.0);
+        n.draft = Some("999.456".into());
+        n.precision = 1;
+        let mut fc = controller_with(vec![number_field("n", n, false)], Some("n"));
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberCommitted {
+                id: WidgetId::new("n"),
+                value: 10.0,
+            }),
+            "the draft must clamp to `max` on commit"
+        );
+    }
+
+    #[test]
+    fn escape_cancels_a_focused_number_inputs_pending_draft() {
+        let mut n = NumberInput::new(WidgetId::new("n"), 0.0, 10.0);
+        n.draft = Some("3".into());
+        let mut fc = controller_with(vec![number_field("n", n, false)], Some("n"));
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Escape), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberCancelled {
+                id: WidgetId::new("n"),
+            })
+        );
+    }
+
+    #[test]
+    fn disabled_number_input_field_ignores_its_keys() {
+        let mut fc = controller_with(
+            vec![number_field(
+                "n",
+                NumberInput::new(WidgetId::new("n"), 0.0, 10.0),
+                true,
+            )],
+            Some("n"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Up), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn tab_moves_focus_away_from_a_focused_number_input_field_normally() {
+        let mut fc = controller_with(
+            vec![
+                number_field("n", NumberInput::new(WidgetId::new("n"), 0.0, 10.0), false),
+                toggle_field("t", false),
+            ],
+            Some("n"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("t")
+            }),
+            "Tab isn't one of NumberInput's claimed keys, so focus traversal \
+             off a focused NumberInput field still works"
+        );
+    }
+
+    /// `lh=10.0` → `row_h=14.0`, `char_w=6.0`; an unlabelled `NumberInput`
+    /// (no label, so `items_start_x = char_w = 6.0`) showing "0" sizes its
+    /// single item to `(1 + 5) * 6.0 = 36.0` wide — see
+    /// `form_field_measure`'s `FieldKind::NumberInput` arm — so its
+    /// control rect spans x in `[6, 42)`. `NumberInput::layout` then
+    /// splits off a 3-wide stepper column at the right: increment is
+    /// `[39, 42) x [0, 7)`, decrement is `[39, 42) x [7, 14)`.
+    #[test]
+    fn stepper_click_increments_a_number_inputs_value() {
+        let mut fc = controller_with(
+            vec![number_field(
+                "n",
+                NumberInput::new(WidgetId::new("n"), 0.0, 10.0),
+                false,
+            )],
+            None,
+        );
+        fc.set_backend_info(10.0);
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 40.0, y: 2.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberChanged {
+                id: WidgetId::new("n"),
+                value: 1.0,
+            })
+        );
+    }
+
+    #[test]
+    fn stepper_click_decrements_a_number_inputs_value() {
+        let mut n = NumberInput::new(WidgetId::new("n"), 0.0, 10.0);
+        n.value = 5.0;
+        let mut fc = controller_with(vec![number_field("n", n, false)], None);
+        fc.set_backend_info(10.0);
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 40.0, y: 10.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberChanged {
+                id: WidgetId::new("n"),
+                value: 4.0,
+            })
+        );
+    }
+
+    #[test]
+    fn stepper_click_on_a_disabled_number_input_just_focuses_the_field() {
+        let mut fc = controller_with(
+            vec![number_field(
+                "n",
+                NumberInput::new(WidgetId::new("n"), 0.0, 10.0),
+                true,
+            )],
+            None,
+        );
+        fc.set_backend_info(10.0);
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 40.0, y: 2.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("n"),
+            }),
+            "a disabled NumberInput's stepper click must not step the value"
+        );
+    }
+
+    // ── RadioGroup routing ──────────────────────────────────────────
+
+    fn radio_group(selected: Option<usize>) -> RadioGroup {
+        let mut group = RadioGroup::new(
+            WidgetId::new("theme"),
+            vec![
+                RadioOption::new(WidgetId::new("theme:light"), "Light"),
+                RadioOption::new(WidgetId::new("theme:dark"), "Dark"),
+            ],
+        );
+        group.selected = selected;
+        group
+    }
+
+    #[test]
+    fn down_arrow_moves_a_focused_radio_groups_selection() {
+        let mut fc = controller_with(
+            vec![radio_group_field("g", radio_group(Some(0)), false)],
+            Some("g"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::RadioChanged {
+                id: WidgetId::new("g"),
+                selected: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn left_arrow_moves_a_focused_radio_groups_selection_back() {
+        let mut fc = controller_with(
+            vec![radio_group_field("g", radio_group(Some(1)), false)],
+            Some("g"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Left), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::RadioChanged {
+                id: WidgetId::new("g"),
+                selected: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn disabled_radio_group_field_ignores_its_keys() {
+        let mut fc = controller_with(
+            vec![radio_group_field("g", radio_group(Some(0)), true)],
+            Some("g"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn tab_moves_focus_away_from_a_focused_radio_group_field_normally() {
+        let mut fc = controller_with(
+            vec![
+                radio_group_field("g", radio_group(Some(0)), false),
+                toggle_field("t", false),
+            ],
+            Some("g"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("t")
+            }),
+            "Tab isn't one of RadioGroup's claimed keys, so focus traversal \
+             off a focused RadioGroup field still works"
+        );
+    }
+
+    #[test]
+    fn click_radio_group_option_emits_radio_changed_with_the_field_id() {
+        let mut form = make_form(1);
+        form.fields[0] = radio_group_field("g", radio_group(Some(0)), false);
+        let ev = form_click_event(&form, &WidgetId::new("theme:dark"));
+        assert_eq!(
+            ev,
+            FormEvent::RadioChanged {
+                id: WidgetId::new("g"),
+                selected: 1,
+            },
+            "the event must carry the *field's* id, not the clicked option's"
+        );
+    }
+
+    #[test]
+    fn click_disabled_radio_group_option_focuses_the_field_instead_of_selecting() {
+        let mut group = radio_group(Some(0));
+        group.options[1].disabled = true;
+        let mut form = make_form(1);
+        form.fields[0] = radio_group_field("g", group, false);
+        let ev = form_click_event(&form, &WidgetId::new("theme:dark"));
+        assert_eq!(
+            ev,
+            FormEvent::FocusChanged {
+                id: WidgetId::new("g"),
+            }
         );
     }
 

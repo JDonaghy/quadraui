@@ -35,8 +35,10 @@ use crate::primitives::date_picker::DatePicker;
 use crate::primitives::dialog::{Dialog, DialogInput, DialogTable};
 use crate::primitives::form::{FieldKind, Form, FormField, ValidationState};
 use crate::primitives::menu_bar::MenuBar;
+use crate::primitives::number_input::NumberInput;
 use crate::primitives::panel::Panel;
 use crate::primitives::progress::ProgressBar;
+use crate::primitives::radio_group::RadioGroup;
 use crate::primitives::rich_text_popup::RichTextPopup;
 use crate::primitives::scrollbar::{ScrollAxis, Scrollbar};
 use crate::primitives::sidebar_panel::SidebarPanel;
@@ -768,6 +770,12 @@ fn field_kind(kind: &FieldKind) -> (A11yRole, A11yInfo, Vec<A11yChild>) {
         FieldKind::Toolbar(bar) => (A11yRole::Toolbar, plain, bar.a11y_children()),
         FieldKind::DatePicker(picker) => (A11yRole::Group, picker.a11y_info(), Vec::new()),
         FieldKind::ComboBox(combo) => (A11yRole::ComboBox, combo.a11y_info(), Vec::new()),
+        FieldKind::NumberInput(number) => (A11yRole::Slider, number.a11y_info(), Vec::new()),
+        FieldKind::RadioGroup(group) => (
+            A11yRole::RadioGroup,
+            group.a11y_info(),
+            group.a11y_children(),
+        ),
     }
 }
 
@@ -828,6 +836,58 @@ impl A11yPrimitive for DatePicker {
         A11yInfo::new()
             .with_role(A11yRole::Group)
             .with_label("Date picker")
+    }
+}
+
+// ------------------------------------------------------------ number input
+
+impl A11yPrimitive for NumberInput {
+    /// `A11yRole::Slider` — this crate's `A11yRole` has no dedicated
+    /// spin-button variant, and a bounded numeric control with a
+    /// `min`/`max`/`value` triple maps onto the same AT contract
+    /// [`FieldKind::Slider`] already uses.
+    fn a11y_info(&self) -> A11yInfo {
+        let draft = self
+            .draft
+            .clone()
+            .unwrap_or_else(|| format!("{:.*}", self.precision as usize, self.value));
+        A11yInfo::new()
+            .with_role(A11yRole::Slider)
+            .with_disabled(self.disabled)
+            .with_value_range(A11yValueRange::new(self.value, self.min, self.max))
+            .with_value(draft)
+    }
+}
+
+// -------------------------------------------------------------- radio group
+
+impl A11yPrimitive for RadioGroup {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::new()
+            .with_role(A11yRole::RadioGroup)
+            .with_set_size(self.options.len() as u32)
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        let total = self.options.len();
+        self.options
+            .iter()
+            .enumerate()
+            .map(|(idx, option)| {
+                A11yChild::new(
+                    format!("option.{}", option.id.as_str()),
+                    in_set(
+                        A11yInfo::new()
+                            .with_role(A11yRole::RadioButton)
+                            .with_label(&option.label)
+                            .with_disabled(option.disabled)
+                            .with_selected(self.selected == Some(idx)),
+                        idx,
+                        total,
+                    ),
+                )
+            })
+            .collect()
     }
 }
 

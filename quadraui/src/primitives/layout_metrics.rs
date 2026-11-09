@@ -542,6 +542,21 @@ fn label_text(field: &FormField) -> String {
     field.label.spans.iter().map(|s| s.text.as_str()).collect()
 }
 
+/// The text a [`crate::primitives::number_input::NumberInput`] field
+/// currently shows — the in-progress draft, or `value` formatted to
+/// `precision` decimal places. A private copy of
+/// [`crate::primitives::number_input::native_surface_paint::display_text`]'s
+/// one-liner rather than a call to it: that function is gated to
+/// `gtk`/`win`/`macos`, while this module (and a `tui`-only build) must
+/// measure the same text regardless of which pixel backend, if any, is
+/// enabled.
+fn number_input_display_text(number: &crate::primitives::number_input::NumberInput) -> String {
+    match &number.draft {
+        Some(draft) => draft.clone(),
+        None => format!("{:.*}", number.precision as usize, number.value),
+    }
+}
+
 /// `field.validation`'s message, when present and non-empty — the text a
 /// GUI painter reserves a second line beneath the field for, rather
 /// than painting it on top of the label at the same vertical centre
@@ -644,6 +659,42 @@ fn form_field_measure_inner(
                 })
                 .collect();
             FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
+        }
+        // A single item carrying the *field's* own id, not a synthetic
+        // one, purely so the control's on-screen rect is available via
+        // `VisibleFormField::item_bounds` — `native_surface_paint::paint`'s
+        // `FieldKind::NumberInput` arm reads it instead of re-deriving
+        // `control_start`, and `FormController`'s click routing reads the
+        // same rect, so paint and click always agree.
+        FieldKind::NumberInput(number) => {
+            let start_x = items_start_x(&label_text(field), measure, false);
+            let text = number_input_display_text(number);
+            let width = measure.width_of(&text) + pixel::FORM_BUTTON_ITEM_PADDING * 2.0;
+            let items = vec![FormItemMeasure {
+                id: field.id,
+                width,
+            }];
+            FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
+        }
+        // One item per `RadioOption`, stacked vertically — see
+        // `FormFieldMeasure::vertical`'s doc. Unlike every other
+        // item-bearing kind above, the field's own row isn't `row_h` —
+        // it's `row_h` *per option* (see `form_field_measure`'s doc).
+        FieldKind::RadioGroup(group) => {
+            let start_x = items_start_x(&label_text(field), measure, false);
+            let items: Vec<FormItemMeasure> = group
+                .options
+                .iter()
+                .map(|o| FormItemMeasure {
+                    id: o.id,
+                    width: row_h,
+                })
+                .collect();
+            FormFieldMeasure::with_vertical_items(
+                row_h * group.options.len().max(1) as f32,
+                start_x,
+                items,
+            )
         }
         _ => FormFieldMeasure::new(row_h),
     }
