@@ -70,6 +70,7 @@ use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 
 pub use crate::backend::BackendWidget;
+use crate::compose::Handled;
 // This controller caches exactly what `Backend::draw_tab_bar` returns for
 // click dispatch — see `TabBarHits`'s own doc for its stability contract.
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarSegment, TabItem};
@@ -345,18 +346,27 @@ impl BottomPanelController {
     /// Resolve a mouse click at `(x, y)` in viewport coordinates.
     ///
     /// Applies any resulting state change (tab activation, close, maximise
-    /// toggle) to the controller and returns the event for the app. Returns
-    /// `None` when the click is outside the tab strip or on dead space.
+    /// toggle) to the controller and returns [`Handled::Event`] with the
+    /// event for the app. Returns [`Handled::Consumed`] when the click
+    /// landed inside the tab strip but on dead space (a non-closable tab's
+    /// × region, or the already-active tab's body) — nothing to route, but
+    /// the click was this controller's to handle. Returns
+    /// [`Handled::Ignored`] when the click was outside the tab strip
+    /// entirely.
     ///
     /// Call this from the shell runner's mouse-down handler after
     /// [`AppShell::handle`] returns [`AppShellEvent::Ignored`].
-    pub fn handle_click(&mut self, x: f32, y: f32) -> Option<BottomPanelEvent> {
-        let strip = self.last_strip_bounds?;
+    pub fn handle_click_event(&mut self, x: f32, y: f32) -> Handled<BottomPanelEvent> {
+        let Some(strip) = self.last_strip_bounds else {
+            return Handled::Ignored;
+        };
         // Check vertical bounds.
         if y < strip.y || y >= strip.y + strip.height {
-            return None;
+            return Handled::Ignored;
         }
-        let hits = self.last_hits.as_ref()?;
+        let Some(hits) = self.last_hits.as_ref() else {
+            return Handled::Ignored;
+        };
 
         // `TabBarHits` positions are in target-surface (viewport-absolute)
         // coordinates — the same space as the incoming click — so compare
@@ -373,10 +383,10 @@ impl BottomPanelController {
                         if tab.closable {
                             let id = tab.id.clone();
                             self.close_tab(&id);
-                            return Some(BottomPanelEvent::TabClosed(id));
+                            return Handled::Event(BottomPanelEvent::TabClosed(id));
                         }
                     }
-                    return None;
+                    return Handled::Consumed;
                 }
             }
         }
@@ -384,7 +394,7 @@ impl BottomPanelController {
         // Right segments — the only one we emit is the maximise toggle.
         if hits.right_segment_bounds.iter().copied().any(in_range) {
             self.toggle_maximised();
-            return Some(BottomPanelEvent::MaximiseToggled);
+            return Handled::Event(BottomPanelEvent::MaximiseToggled);
         }
 
         // Tab bodies.
@@ -394,13 +404,26 @@ impl BottomPanelController {
                     let id = tab.id.clone();
                     if id != self.active_tab_id {
                         self.activate_tab(id.clone());
-                        return Some(BottomPanelEvent::TabActivated(id));
+                        return Handled::Event(BottomPanelEvent::TabActivated(id));
                     }
                 }
-                return None;
+                return Handled::Consumed;
             }
         }
-        None
+        Handled::Consumed
+    }
+
+    /// Resolve a mouse click at `(x, y)` in viewport coordinates.
+    ///
+    /// Applies any resulting state change (tab activation, close, maximise
+    /// toggle) to the controller and returns the event for the app. Returns
+    /// `None` when the click is outside the tab strip or on dead space.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_click_event`, which returns `Handled<BottomPanelEvent>` and distinguishes dead-space clicks (`Handled::Consumed`) from clicks outside the panel (`Handled::Ignored`)"
+    )]
+    pub fn handle_click(&mut self, x: f32, y: f32) -> Option<BottomPanelEvent> {
+        self.handle_click_event(x, y).into_event()
     }
 
     // ── Helpers ────────────────────────────────────────────────────
@@ -455,6 +478,7 @@ impl BottomPanelController {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(deprecated)] // covers `handle_click`, the shim kept for pre-`Handled` callers.
 mod tests {
     use super::*;
 
@@ -902,5 +926,86 @@ mod tests {
             let actual = serde_json::to_value(&event).expect("BottomPanelEvent always serializes");
             assert_eq!(actual, expected, "{event:?}");
         }
+    }
+
+    // ── handle_click_event: Handled<BottomPanelEvent> ─────────────────────────
+
+    #[test]
+    fn handle_click_event_without_render_is_ignored() {
+        let cfg = make_config(vec![tab("t0", "T", false)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        assert_eq!(ctrl.handle_click_event(0.0, 0.0), Handled::Ignored);
+    }
+
+    #[test]
+    fn handle_click_event_outside_strip_is_ignored() {
+        let cfg = make_config(vec![tab("t0", "T", false)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 0.0, 10.0, 80.0);
+        assert_eq!(ctrl.handle_click_event(5.0, 5.0), Handled::Ignored); // above strip
+        assert_eq!(ctrl.handle_click_event(5.0, 12.0), Handled::Ignored); // below strip
+    }
+
+    #[test]
+    fn handle_click_event_on_inactive_tab_is_event() {
+        let cfg = make_config(
+            vec![tab("t0", "AAAA", false), tab("t1", "BBBB", false)],
+            "t0",
+        );
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
+        let outcome = ctrl.handle_click_event(9.0, 0.5); // x=9 → tab1
+        assert_eq!(
+            outcome,
+            Handled::Event(BottomPanelEvent::TabActivated("t1".to_string()))
+        );
+    }
+
+    #[test]
+    fn handle_click_event_on_already_active_tab_is_consumed() {
+        let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
+        // Inside the panel's tab strip, but dead space — the already-active
+        // tab's own body — so this is `Consumed`, not `Ignored`.
+        assert_eq!(ctrl.handle_click_event(2.0, 0.5), Handled::Consumed);
+    }
+
+    #[test]
+    fn handle_click_event_on_non_closable_close_area_is_consumed() {
+        let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
+        assert_eq!(ctrl.handle_click_event(5.0, 0.5), Handled::Consumed);
+    }
+
+    #[test]
+    fn handle_click_event_on_close_button_is_event() {
+        let cfg = make_config(vec![tab("t0", "AAAA", true)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
+        let outcome = ctrl.handle_click_event(5.0, 0.5); // close region of tab0
+        assert_eq!(
+            outcome,
+            Handled::Event(BottomPanelEvent::TabClosed("t0".to_string()))
+        );
+        assert_eq!(ctrl.tabs().len(), 0);
+    }
+
+    #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
+    fn deprecated_handle_click_still_adapts_to_option() {
+        let cfg = make_config(
+            vec![tab("t0", "AAAA", false), tab("t1", "BBBB", false)],
+            "t0",
+        );
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
+        assert_eq!(
+            ctrl.handle_click(9.0, 0.5),
+            Some(BottomPanelEvent::TabActivated("t1".to_string()))
+        );
+        assert_eq!(ctrl.handle_click(9.0, 0.5), None); // already active now — consumed, no event
+        assert_eq!(ctrl.handle_click(5.0, 5.0), None); // ignored, outside strip
     }
 }

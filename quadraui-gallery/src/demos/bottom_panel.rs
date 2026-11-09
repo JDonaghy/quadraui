@@ -4,7 +4,7 @@
 //! Drives `compose::bottom_panel::BottomPanelController` directly rather
 //! than through `ShellConfig::with_bottom_panel_config` (that path needs
 //! a full `AppShell`, which this gallery's own shell already is) — the
-//! controller is a stateful value with its own `render`/`handle_click`,
+//! controller is a stateful value with its own `render`/`handle_click_event`,
 //! so a host can mount it inside any rect, exactly as done here.
 
 use std::cell::RefCell;
@@ -132,7 +132,7 @@ fn build_controller(variant: usize) -> BottomPanelController {
 
 pub struct BottomPanelDemo {
     // `BottomPanelController::render` needs `&mut self` to cache its hit
-    // map for `handle_click` — `Demo::render` only hands out `&self` —
+    // map for `handle_click_event` — `Demo::render` only hands out `&self` —
     // so each variant's controller lives behind its own `RefCell`.
     controllers: [RefCell<BottomPanelController>; 2],
     last_event: String,
@@ -203,7 +203,8 @@ impl Demo for BottomPanelDemo {
             // `render` call this same frame already made.
             if let Some(ev) = self.controllers[variant]
                 .borrow_mut()
-                .handle_click(position.x, position.y)
+                .handle_click_event(position.x, position.y)
+                .into_event()
             {
                 self.last_event = match ev {
                     BottomPanelEvent::TabActivated(id) => format!("Tab activated: {id}"),

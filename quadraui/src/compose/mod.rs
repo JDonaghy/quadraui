@@ -48,6 +48,9 @@
 //!   hover-driven tooltip, sitting on top of [`ToolbarHoverTracker`]/
 //!   [`ListHoverTracker`]/[`TreeHoverTracker`]'s plain "what's hovered"
 //!   answer.
+//! - [`Handled`] — the shared "did you handle it" return type new
+//!   `handle_*` controller methods converge on: a semantic event to
+//!   route, a state-only consumption, or "not mine".
 //!
 //! [`crate::ScrollView`] is a `primitives` type, not a controller here —
 //! it is the generic seam for a host that scrolls content it lays out
@@ -70,6 +73,7 @@ pub mod focus_ring;
 pub mod folder_picker;
 pub mod form_controller;
 pub mod form_dialog;
+mod handled;
 pub mod help_layer;
 pub mod hover_tooltip_tracker;
 pub mod markdown;
@@ -106,6 +110,7 @@ pub use focus_ring::FocusRing;
 pub use folder_picker::{FolderPickerController, FolderPickerEvent, PALETTE_CHROME_ROWS};
 pub use form_controller::{FormController, FormControllerEvent};
 pub use form_dialog::{FormDialogController, FormDialogEvent};
+pub use handled::Handled;
 pub use help_layer::{
     filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote,
     HelpOverlayController, HelpOverlayEvent, HelpRegistry, ViewHelp,
@@ -119,7 +124,12 @@ pub use sidebar_panel_body::{SidebarPanelBody, SidebarPanelBodyLayout, SidebarPa
 pub use sidebar_system::{
     NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,
 };
-pub use status_bar_interaction::{StatusBarAction, StatusBarInteraction};
+// `StatusBarAction` is `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
+// `Handled<WidgetId>` instead). Allow it here since `pub use` of a deprecated
+// item is itself a use site.
+#[allow(deprecated)]
+pub use status_bar_interaction::StatusBarAction;
+pub use status_bar_interaction::StatusBarInteraction;
 pub use tab_drag::{resolve_tab_drop, TabDragSource, TabDropInstruction};
 pub use tab_group::{
     GroupLayout, Pane, PaneDragRect, PaneTab, TabGroupController, TabGroupEvent, TabGroupLayout,
