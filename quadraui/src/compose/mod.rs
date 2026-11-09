@@ -76,6 +76,7 @@ pub mod markdown;
 pub mod menu_system;
 pub mod message_dialog;
 pub mod notification;
+mod path_picker;
 mod shell_layout;
 mod sidebar_edit;
 pub mod sidebar_panel_body;

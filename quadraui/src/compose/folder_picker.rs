@@ -55,12 +55,11 @@
 //! `rect.height as usize - PALETTE_CHROME_ROWS` where
 //! [`PALETTE_CHROME_ROWS`] = 4.
 
-use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 
+use super::path_picker::{classify_nav_key, NavKey, PathPickerCore};
 use crate::{
-    Backend, Icon, Key, Modifiers, NamedKey, Palette, PaletteItem, Rect, StyledText, UiEvent,
-    WidgetId,
+    Backend, Icon, Key, Modifiers, Palette, PaletteItem, Rect, StyledText, UiEvent, WidgetId,
 };
 
 /// Overhead rows consumed by the `Palette` chrome (title + query + borders).
@@ -116,18 +115,8 @@ pub enum FolderPickerEvent {
 pub struct FolderPickerController {
     /// Widget ID used for the rendered `Palette`.
     id: WidgetId,
-    /// Current browsing root. Changes on `navigate_to` / `navigate_up`.
-    root: PathBuf,
-    /// Live query string (typed characters build up incrementally).
-    query: String,
-    /// All candidate entries relative to `root` (unfiltered, stable).
-    all_entries: Vec<PathBuf>,
-    /// Currently filtered + ranked entries (subset of `all_entries`).
-    filtered: Vec<PathBuf>,
-    /// Index into `filtered` of the highlighted row.
-    selected: usize,
-    /// First visible row index (scroll offset into `filtered`).
-    scroll_top: usize,
+    /// Shared query/list/selection/scroll state.
+    core: PathPickerCore,
     /// Whether to surface hidden directories (names beginning with `.`).
     show_hidden: bool,
     /// Additional dotfile names to surface even when `show_hidden` is false.
@@ -173,15 +162,9 @@ impl FolderPickerController {
             &ignore_dirs,
             max_depth,
         );
-        let filtered = all_entries.iter().take(50).cloned().collect();
         Self {
             id: WidgetId::new("folder_picker"),
-            root,
-            query: String::new(),
-            all_entries,
-            filtered,
-            selected: 0,
-            scroll_top: 0,
+            core: PathPickerCore::new(root, all_entries),
             show_hidden,
             extra_file_names,
             ignore_dirs,
@@ -210,14 +193,14 @@ impl FolderPickerController {
     /// Returns `self` for builder-style chaining.
     pub fn with_ignore_dirs(mut self, ignore_dirs: Vec<String>) -> Self {
         self.ignore_dirs = ignore_dirs;
-        self.all_entries = collect_dir_entries(
-            &self.root,
+        let all_entries = collect_dir_entries(
+            &self.core.root,
             self.show_hidden,
             &self.extra_file_names,
             &self.ignore_dirs,
             self.max_depth,
         );
-        self.refilter();
+        self.core.set_all_entries(all_entries);
         self
     }
 
@@ -230,14 +213,14 @@ impl FolderPickerController {
     /// Returns `self` for builder-style chaining.
     pub fn with_max_depth(mut self, max_depth: usize) -> Self {
         self.max_depth = max_depth;
-        self.all_entries = collect_dir_entries(
-            &self.root,
+        let all_entries = collect_dir_entries(
+            &self.core.root,
             self.show_hidden,
             &self.extra_file_names,
             &self.ignore_dirs,
             self.max_depth,
         );
-        self.refilter();
+        self.core.set_all_entries(all_entries);
         self
     }
 
@@ -245,27 +228,27 @@ impl FolderPickerController {
 
     /// Current browsing root.
     pub fn root(&self) -> &Path {
-        &self.root
+        &self.core.root
     }
 
     /// Current query string.
     pub fn query(&self) -> &str {
-        &self.query
+        &self.core.query
     }
 
     /// Currently filtered entries (relative paths).
     pub fn filtered(&self) -> &[PathBuf] {
-        &self.filtered
+        &self.core.filtered
     }
 
     /// Index of the highlighted row in `filtered`.
     pub fn selected(&self) -> usize {
-        self.selected
+        self.core.selected
     }
 
     /// Scroll offset (first visible row index in `filtered`).
     pub fn scroll_top(&self) -> usize {
-        self.scroll_top
+        self.core.scroll_top
     }
 
     /// The resolved absolute path for the currently selected entry, or `None`
@@ -274,11 +257,11 @@ impl FolderPickerController {
     /// The `..` entry resolves to the parent of `root`; all others resolve to
     /// `root.join(rel)`.
     pub fn selected_path(&self) -> Option<PathBuf> {
-        let rel = self.filtered.get(self.selected)?;
+        let rel = self.core.filtered.get(self.core.selected)?;
         if rel.as_os_str() == ".." {
-            self.root.parent().map(|p| p.to_path_buf())
+            self.core.root.parent().map(|p| p.to_path_buf())
         } else {
-            Some(self.root.join(rel))
+            Some(self.core.root.join(rel))
         }
     }
 
@@ -286,23 +269,19 @@ impl FolderPickerController {
 
     /// Navigate to `new_root`, clearing the query and reloading entries.
     pub fn navigate_to(&mut self, new_root: PathBuf) {
-        self.root = new_root;
-        self.query.clear();
-        self.all_entries = collect_dir_entries(
-            &self.root,
+        let all_entries = collect_dir_entries(
+            &new_root,
             self.show_hidden,
             &self.extra_file_names,
             &self.ignore_dirs,
             self.max_depth,
         );
-        self.filtered = self.all_entries.iter().take(50).cloned().collect();
-        self.selected = 0;
-        self.scroll_top = 0;
+        self.core.navigate_to(new_root, all_entries);
     }
 
     /// Navigate to the parent directory (no-op at filesystem root).
     pub fn navigate_up(&mut self) {
-        if let Some(parent) = self.root.parent() {
+        if let Some(parent) = self.core.root.parent() {
             self.navigate_to(parent.to_path_buf());
         }
     }
@@ -311,49 +290,35 @@ impl FolderPickerController {
 
     /// Append `c` to the query and refilter.
     pub fn push_char(&mut self, c: char) {
-        self.query.push(c);
-        self.refilter();
+        self.core.push_char(c);
     }
 
     /// Remove the last character from the query and refilter.
     pub fn pop_char(&mut self) {
-        self.query.pop();
-        self.refilter();
+        self.core.pop_char();
     }
 
     /// Re-compute `filtered` from `all_entries` and the current `query`.
     pub fn refilter(&mut self) {
-        self.filtered = filter_dir_entries(&self.all_entries, &self.query);
-        self.selected = 0;
-        self.scroll_top = 0;
+        self.core.refilter();
     }
 
     // ── Selection movement ────────────────────────────────────────────
 
     /// Move the selection one row up (clamped at 0).
     pub fn move_up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        self.core.move_up();
     }
 
     /// Move the selection one row down (clamped at last row).
     pub fn move_down(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected = (self.selected + 1).min(self.filtered.len() - 1);
-        }
+        self.core.move_down();
     }
 
     /// Clamp `scroll_top` so `selected` is always visible within
     /// `visible_rows` rows.
     pub fn sync_scroll(&mut self, visible_rows: usize) {
-        if visible_rows == 0 {
-            return;
-        }
-        if self.selected < self.scroll_top {
-            self.scroll_top = self.selected;
-        }
-        if self.selected >= self.scroll_top + visible_rows {
-            self.scroll_top = self.selected + 1 - visible_rows;
-        }
+        self.core.sync_scroll(visible_rows);
     }
 
     // ── Render ────────────────────────────────────────────────────────
@@ -399,34 +364,22 @@ impl FolderPickerController {
 
     // ── Internal helpers ──────────────────────────────────────────────
 
-    // Key dispatch.
-    //
-    // Trade-off (intentional, matches vimcode's existing behavior): the vim
-    // shortcuts `-` (parent dir), `k` (up), and `j` (down) are matched
-    // *before* the generic `Key::Char(c) => push_char` arm. That means the
-    // query input can never begin with — or contain — those three
-    // characters: a user typing "kubernetes" cannot start the query with
-    // `k`, nor include `j`/`-` anywhere. This is documented for downstream
-    // consumers; if any consumer needs typing-priority (e.g. searching
-    // codebases with hyphenated names), they can build their own dispatch
-    // by calling the state-mutation methods (`push_char`, `move_up`, …)
-    // directly instead of routing through `handle()`.
+    /// Key dispatch, shared with [`FilePickerController`] via
+    /// [`classify_nav_key`](super::path_picker::classify_nav_key) so the
+    /// two pickers' key maps (including the vim-style `-`/`j`/`k`
+    /// shortcuts) can't drift apart.
+    ///
+    /// [`FilePickerController`]: crate::compose::FilePickerController
     fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> FolderPickerEvent {
-        // `cmd` is treated the same as `ctrl` here: every backend delivers
-        // a Cmd-modified letter (the macOS accelerator convention) as a
-        // plain `Key::Char` with the modifier set, not a dedicated key
-        // variant, so it must be excluded alongside `ctrl` or it would be
-        // typed into the query / trigger a vim-style shortcut instead of
-        // falling through `Ignored` for an app-level accelerator.
-        let modified = modifiers.ctrl || modifiers.cmd;
-        match key {
-            Key::Named(NamedKey::Escape) => FolderPickerEvent::Cancelled,
+        match classify_nav_key(key, modifiers) {
+            Some(NavKey::Escape) => FolderPickerEvent::Cancelled,
 
-            Key::Named(NamedKey::Enter) => {
+            Some(NavKey::Confirm) => {
                 // ".." → navigate up; anything else → confirm selection.
                 let is_dotdot = self
+                    .core
                     .filtered
-                    .get(self.selected)
+                    .get(self.core.selected)
                     .map(|p| p.as_os_str() == "..")
                     .unwrap_or(false);
                 if is_dotdot {
@@ -439,49 +392,38 @@ impl FolderPickerController {
                 }
             }
 
-            // '-' navigates up to parent (vim netrw convention).
-            Key::Char('-') if !modified => {
+            Some(NavKey::NavigateUp) => {
                 self.navigate_up();
                 FolderPickerEvent::Consumed
             }
 
-            Key::Named(NamedKey::Up) => {
-                self.move_up();
-                FolderPickerEvent::Consumed
-            }
-            // 'k' vim-style up (only if no modifier).
-            Key::Char('k') if !modified => {
+            Some(NavKey::Up) => {
                 self.move_up();
                 FolderPickerEvent::Consumed
             }
 
-            Key::Named(NamedKey::Down) => {
-                self.move_down();
-                FolderPickerEvent::Consumed
-            }
-            // 'j' vim-style down (only if no modifier).
-            Key::Char('j') if !modified => {
+            Some(NavKey::Down) => {
                 self.move_down();
                 FolderPickerEvent::Consumed
             }
 
-            Key::Named(NamedKey::Backspace) => {
+            Some(NavKey::Backspace) => {
                 self.pop_char();
                 FolderPickerEvent::Consumed
             }
 
-            Key::Char(c) if !modified => {
-                self.push_char(*c);
+            Some(NavKey::Char(c)) => {
+                self.push_char(c);
                 FolderPickerEvent::Consumed
             }
 
-            _ => FolderPickerEvent::Ignored,
+            None => FolderPickerEvent::Ignored,
         }
     }
 
     /// Build the `Palette` descriptor for the current state.
     fn build_palette(&self, rect: Rect) -> Palette {
-        let r = self.root.to_string_lossy();
+        let r = self.core.root.to_string_lossy();
         // Truncate from the left if the root path is too long.
         // Reserve ~30 cells for palette chrome (borders + count chip + padding).
         let max = (rect.width as usize).saturating_sub(30).max(10);
@@ -516,6 +458,7 @@ impl FolderPickerController {
             Icon::codicon("gear", "\u{2699}").unwrap_or_else(|| Icon::new("\u{2699}", "\u{2699}")); // ⚙
 
         let items: Vec<PaletteItem> = self
+            .core
             .filtered
             .iter()
             .map(|entry| {
@@ -545,12 +488,12 @@ impl FolderPickerController {
         Palette {
             id: self.id,
             title,
-            query: self.query.clone(),
-            query_cursor: self.query.len(),
+            query: self.core.query.clone(),
+            query_cursor: self.core.query.len(),
             items,
-            selected_idx: self.selected,
-            scroll_offset: self.scroll_top,
-            total_count: self.all_entries.len(),
+            selected_idx: self.core.selected,
+            scroll_offset: self.core.scroll_top,
+            total_count: self.core.all_entries.len(),
             has_focus: true,
             show_query: true,
             create_label: None,
@@ -653,52 +596,12 @@ fn walk_dir_entries_recursive(
     }
 }
 
-/// Filter `all` by `query` using subsequence matching with a relevance score.
-///
-/// Returns up to 50 entries, sorted by descending score.
-/// If `query` is empty, the first 50 entries are returned unchanged.
-fn filter_dir_entries(all: &[PathBuf], query: &str) -> Vec<PathBuf> {
-    const CAP: usize = 50;
-    if query.is_empty() {
-        return all.iter().take(CAP).cloned().collect();
-    }
-    let q = query.to_lowercase();
-    let mut scored: Vec<(i32, &PathBuf)> = all
-        .iter()
-        .filter_map(|p| {
-            let display = p.to_string_lossy().to_lowercase();
-            dir_fuzzy_score(&display, &q).map(|s| (s, p))
-        })
-        .collect();
-    scored.sort_by_key(|&(s, _)| Reverse(s));
-    scored
-        .into_iter()
-        .take(CAP)
-        .map(|(_, p)| p.clone())
-        .collect()
-}
-
-/// Subsequence fuzzy match returning a relevance score, or `None` if the
-/// query is not a subsequence of `path`.
-///
-/// Higher scores mean the query characters appear closer together and/or
-/// at word boundaries (`/`, `\`, `_`, `-`, `.`). Both forward and backward
-/// slashes count so that Windows paths get the same boundary bonus as
-/// POSIX paths.
-///
-/// Thin wrapper over [`crate::text_util::fuzzy_score`] — the match
-/// positions it also returns aren't needed here (the folder picker doesn't
-/// highlight per-character matches), so this drops them and keeps the
-/// score-only signature the rest of this module already expects.
-fn dir_fuzzy_score(path: &str, query: &str) -> Option<i32> {
-    crate::text_util::fuzzy_score(path, query).map(|(score, _positions)| score)
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NamedKey;
 
     /// Number of child directories [`picker_root`] creates. Chosen so
     /// `filtered()` (which also carries `".."` and `"."`) holds well over
@@ -723,83 +626,9 @@ mod tests {
         dir
     }
 
-    // ── dir_fuzzy_score ───────────────────────────────────────────────
-
-    #[test]
-    fn fuzzy_score_exact_match_scores_high() {
-        let s = dir_fuzzy_score("src/main.rs", "src/main.rs");
-        assert!(s.is_some());
-        assert!(s.unwrap() > 0);
-    }
-
-    #[test]
-    fn fuzzy_score_subsequence_matches() {
-        // "sm" is a subsequence of "src/main"
-        let s = dir_fuzzy_score("src/main", "sm");
-        assert!(s.is_some());
-    }
-
-    #[test]
-    fn fuzzy_score_non_subsequence_is_none() {
-        let s = dir_fuzzy_score("src/main", "xyz");
-        assert!(s.is_none());
-    }
-
-    #[test]
-    fn fuzzy_score_boundary_bonus() {
-        // "m" starting at a "/" boundary should score higher than mid-word.
-        let at_boundary = dir_fuzzy_score("src/main", "m");
-        let mid_word = dir_fuzzy_score("abcmain", "m");
-        assert!(at_boundary.unwrap() > mid_word.unwrap());
-    }
-
-    #[test]
-    fn fuzzy_score_empty_query_none() {
-        // Empty query returns None — the caller (filter_dir_entries) handles
-        // the empty-query fast path before calling dir_fuzzy_score.
-        let s = dir_fuzzy_score("anything", "");
-        // Empty query: qi starts at 0, qb.len() is 0, so qi == qb.len()
-        // at the start → Some(100).  This is fine — filter_dir_entries
-        // short-circuits before reaching here for empty queries.
-        assert!(s.is_some());
-    }
-
-    // ── filter_dir_entries ────────────────────────────────────────────
-
-    #[test]
-    fn filter_returns_all_on_empty_query() {
-        let paths: Vec<PathBuf> = (0..10).map(|i| PathBuf::from(format!("dir{i}"))).collect();
-        let result = filter_dir_entries(&paths, "");
-        assert_eq!(result.len(), 10);
-    }
-
-    #[test]
-    fn filter_caps_at_50() {
-        let paths: Vec<PathBuf> = (0..100).map(|i| PathBuf::from(format!("dir{i}"))).collect();
-        let result = filter_dir_entries(&paths, "");
-        assert_eq!(result.len(), 50);
-    }
-
-    #[test]
-    fn filter_excludes_non_matching() {
-        let paths = vec![
-            PathBuf::from("src/main"),
-            PathBuf::from("docs/readme"),
-            PathBuf::from("tests/unit"),
-        ];
-        let result = filter_dir_entries(&paths, "src");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], PathBuf::from("src/main"));
-    }
-
-    #[test]
-    fn filter_sorts_by_score() {
-        // "sr" matches both "src/main" (boundary) and "usr/local" (mid-word).
-        let paths = vec![PathBuf::from("usr/local"), PathBuf::from("src/main")];
-        let result = filter_dir_entries(&paths, "sr");
-        // "src/main" should rank higher (boundary bonus on 's').
-        assert_eq!(result[0], PathBuf::from("src/main"));
-    }
+    // Fuzzy-scoring and filtering live in `path_picker` now — see
+    // `super::path_picker::tests` for their coverage. This module only
+    // tests `FolderPickerController`'s own state machine.
 
     // ── FolderPickerController state machine ──────────────────────────
 
@@ -809,8 +638,8 @@ mod tests {
         let tmp = dir.path().to_path_buf();
         let picker = FolderPickerController::new(tmp, vec![], false);
         // ".." and "." should always be the first two entries.
-        assert!(picker.all_entries.contains(&PathBuf::from("..")));
-        assert!(picker.all_entries.contains(&PathBuf::from(".")));
+        assert!(picker.core.all_entries.contains(&PathBuf::from("..")));
+        assert!(picker.core.all_entries.contains(&PathBuf::from(".")));
         // An isolated root makes the whole walk deterministic: "..", "."
         // and one entry per child directory, nothing else.
         assert_eq!(
@@ -871,10 +700,10 @@ mod tests {
         let mut picker = FolderPickerController::new(tmp, vec![], false);
         // Force a large selection index.
         assert!(picker.filtered().len() >= 10);
-        picker.selected = 9;
+        picker.core.selected = 9;
         picker.sync_scroll(5);
-        assert!(picker.scroll_top + 5 > picker.selected);
-        assert!(picker.scroll_top <= picker.selected);
+        assert!(picker.core.scroll_top + 5 > picker.core.selected);
+        assert!(picker.core.scroll_top <= picker.core.selected);
     }
 
     #[test]
@@ -883,10 +712,10 @@ mod tests {
         let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::new(tmp, vec![], false);
         assert!(picker.filtered().len() >= 5);
-        picker.scroll_top = 5;
-        picker.selected = 2; // above scroll_top
+        picker.core.scroll_top = 5;
+        picker.core.selected = 2; // above scroll_top
         picker.sync_scroll(3);
-        assert_eq!(picker.scroll_top, 2);
+        assert_eq!(picker.core.scroll_top, 2);
     }
 
     #[test]
@@ -911,7 +740,7 @@ mod tests {
         std::fs::create_dir_all(&sub).expect("create child dir");
         let mut picker = FolderPickerController::new(sub.clone(), vec![], false);
         // Select ".." (index 0, always prepended when parent exists).
-        picker.selected = 0;
+        picker.core.selected = 0;
         assert_eq!(picker.filtered().first(), Some(&PathBuf::from("..")));
         let ev = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Enter),
@@ -934,7 +763,7 @@ mod tests {
             .iter()
             .position(|p| p.as_os_str() == ".")
             .expect("'.' should always be in filtered");
-        picker.selected = dot_idx;
+        picker.core.selected = dot_idx;
         let ev = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Enter),
             modifiers: Modifiers::default(),
@@ -1046,7 +875,7 @@ mod tests {
             .position(|p| p.as_os_str() == ".")
             .unwrap();
         let mut picker = picker;
-        picker.selected = dot_idx;
+        picker.core.selected = dot_idx;
         assert_eq!(picker.selected_path(), Some(tmp));
     }
 
@@ -1151,23 +980,6 @@ mod tests {
         assert!(palette.title.starts_with("Open Folder "));
     }
 
-    // ── Windows-style path scoring ────────────────────────────────────
-
-    #[test]
-    fn fuzzy_score_treats_backslash_as_boundary() {
-        // On Windows, paths use `\\` as the separator. Both
-        // `src\\main.rs`-style and `src/main.rs`-style paths should get
-        // the same boundary bonus when matching at a directory boundary.
-        let posix = dir_fuzzy_score("src/main", "m");
-        let windows = dir_fuzzy_score("src\\main", "m");
-        // Both should rank higher than a mid-word match.
-        let mid = dir_fuzzy_score("abcmain", "m");
-        assert!(posix.unwrap() > mid.unwrap());
-        assert!(windows.unwrap() > mid.unwrap());
-        // And they should rank equally (same boundary bonus).
-        assert_eq!(posix.unwrap(), windows.unwrap());
-    }
-
     // ── Builder-method overrides ──────────────────────────────────────
 
     #[test]
@@ -1189,10 +1001,12 @@ mod tests {
         let picker = FolderPickerController::new(root.path().to_path_buf(), vec![], false)
             .with_ignore_dirs(vec![]);
         let has_target = picker
+            .core
             .all_entries
             .iter()
             .any(|p| p == &PathBuf::from("target"));
         let has_keep = picker
+            .core
             .all_entries
             .iter()
             .any(|p| p == &PathBuf::from("keep_me"));
@@ -1212,8 +1026,8 @@ mod tests {
         // depth=0 should only emit the top-level "d1".
         let picker =
             FolderPickerController::new(root.path().to_path_buf(), vec![], false).with_max_depth(0);
-        let has_d1 = picker.all_entries.iter().any(|p| p.ends_with("d1"));
-        let has_d2 = picker.all_entries.iter().any(|p| p.ends_with("d2"));
+        let has_d1 = picker.core.all_entries.iter().any(|p| p.ends_with("d1"));
+        let has_d2 = picker.core.all_entries.iter().any(|p| p.ends_with("d2"));
         assert!(has_d1);
         assert!(!has_d2, "depth=0 should not surface nested subdirs");
     }
