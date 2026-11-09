@@ -597,6 +597,10 @@ pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout, PaletteMode,
     PalettePreview, PaletteScrollbar, VisiblePaletteItem,
 };
+// `Panel`/`PanelAction` are `#[deprecated]` (use `SidebarPanel` + `Toolbar`
+// instead). Allow it here since `pub use` of a deprecated item is itself a
+// use site.
+#[allow(deprecated)]
 pub use primitives::panel::{
     Panel, PanelAction, PanelHit, PanelLayout, PanelMeasure, VisiblePanelAction,
 };

@@ -31,6 +31,10 @@ use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::Deserializer;
 use serde_json::Value;
 
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead); the
+// `"panel"` wire node's decode below is this type's own plumbing —
+// retargeting/removing that node is a separate breaking change.
+#[allow(deprecated)]
 use quadraui::{
     Backend, BackendWidget, BottomPanelConfig, BottomPanelTab, Color, Panel, PanelDefinition, Rect,
     ShellConfig, ShellPosition, SidebarPanel, Split, SplitDirection, SplitTree, TabBar,
@@ -617,6 +621,7 @@ fn layout_split_from_value(
 /// siblings, already decoded by [`spacing_from_value`] in the caller
 /// (`"gap"` is rejected there — a panel has no second sibling to space it
 /// from).
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; this fn is its own wire-decode plumbing.
 fn layout_panel_from_value(
     what: &str,
     value: &Value,
@@ -1283,6 +1288,7 @@ pub fn decode_shell_config<'de, D: Deserializer<'de>>(
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; these tests cover the `"panel"` wire node's decode directly.
 mod tests {
     use serde_json::json;
 

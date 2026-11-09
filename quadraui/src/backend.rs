@@ -75,6 +75,10 @@ use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
 use crate::primitives::number_input::{NumberInput, NumberInputLayout};
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
+// `Backend::draw_panel`/`panel_layout` are this type's own plumbing and
+// keep carrying it until every in-repo caller migrates.
+#[allow(deprecated)]
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
@@ -3834,6 +3838,7 @@ pub trait Backend: sealed::Sealed {
     /// bar, or content. Content is NOT drawn — hosts paint into
     /// `layout.content_bounds`. Same coordinate frame as
     /// [`Self::panel_layout`] (ABSOLUTE).
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this method is its own plumbing.
     fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout;
 
     /// Compute the panel layout without painting. Hosts call this in
@@ -3841,6 +3846,7 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Coordinate frame: **ABSOLUTE** — `title_bar_bounds` / action /
     /// `content_bounds` are shifted by `rect.x` / `rect.y`.
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this method is its own plumbing.
     fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout;
 
     /// Draw a [`ToastOverlay`] overlay. The backend computes the layout

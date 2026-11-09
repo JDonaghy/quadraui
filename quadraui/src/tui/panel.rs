@@ -18,6 +18,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::{qc, ratatui_color, set_cell};
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead); this
+// whole module is `Panel`'s own TUI rasteriser plumbing.
+#[allow(deprecated)]
 use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
 use crate::primitives::toolbar::{ToolbarButton, ToolbarItemMeasure, ToolbarLayoutOptions};
 use crate::theme::Theme;
@@ -29,6 +32,7 @@ const TUI_ACTION_BUTTON_WIDTH: f32 = 3.0;
 /// (hit-test layout, via [`Panel::layout`]) and [`draw_panel`] (paint,
 /// via [`Panel::header_toolbar`]) so both agree on the exact same
 /// title-bar height and action-button width.
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; this fn is its own plumbing.
 fn tui_panel_measure(panel: &Panel) -> PanelMeasure {
     PanelMeasure {
         title_bar_height: if panel.title.is_some() {
@@ -42,6 +46,7 @@ fn tui_panel_measure(panel: &Panel) -> PanelMeasure {
 }
 
 /// Compute the TUI cell-unit layout for a [`Panel`] without painting.
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; this fn is its own plumbing.
 pub fn tui_panel_layout(panel: &Panel, area: Rect) -> PanelLayout {
     let bounds = crate::event::Rect::new(
         area.x as f32,
@@ -55,6 +60,7 @@ pub fn tui_panel_layout(panel: &Panel, area: Rect) -> PanelLayout {
 /// Draw a [`Panel`] chrome into `area` on `buf`. Returns the layout
 /// for host click dispatch. Content is NOT painted — the app draws
 /// into `layout.content_bounds`.
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; this fn is its own plumbing.
 pub fn draw_panel(buf: &mut Buffer, area: Rect, panel: &Panel, theme: &Theme) -> PanelLayout {
     let layout = tui_panel_layout(panel, area);
 
@@ -162,6 +168,7 @@ pub fn draw_panel(buf: &mut Buffer, area: Rect, panel: &Panel, theme: &Theme) ->
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // `Panel`/`PanelAction` are `#[deprecated]`; these tests cover their TUI rasteriser directly.
 mod tests {
     use super::*;
     use crate::primitives::panel::{Panel, PanelAction, PanelHit};

@@ -36,6 +36,9 @@ use crate::primitives::dialog::{Dialog, DialogInput, DialogTable};
 use crate::primitives::form::{FieldKind, Form, FormField, ValidationState};
 use crate::primitives::menu_bar::MenuBar;
 use crate::primitives::number_input::NumberInput;
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead); its
+// `A11yPrimitive` impl below is this type's own plumbing.
+#[allow(deprecated)]
 use crate::primitives::panel::Panel;
 use crate::primitives::progress::ProgressBar;
 use crate::primitives::radio_group::RadioGroup;
@@ -1189,6 +1192,7 @@ fn split_tree_node(tree: &SplitTree, key: impl Into<String>) -> A11yChild {
 
 // ------------------------------------------------------------------- panel
 
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; this impl is its own plumbing.
 impl A11yPrimitive for Panel {
     fn a11y_info(&self) -> A11yInfo {
         let label = self

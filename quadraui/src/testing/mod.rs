@@ -1486,10 +1486,12 @@ impl crate::Backend for RecordingBackend {
     fn split_tree_layout(&self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
         unimplemented!("RecordingBackend has no SplitTree layout algorithm")
     }
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this test double is its own plumbing.
     fn draw_panel(&mut self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
         self.record("draw_panel");
         unimplemented!("RecordingBackend has no Panel layout algorithm")
     }
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this test double is its own plumbing.
     fn panel_layout(&self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
         unimplemented!("RecordingBackend has no Panel layout algorithm")
     }

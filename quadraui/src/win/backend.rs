@@ -38,6 +38,9 @@ use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
+// `WinBackend::draw_panel`/`panel_layout` are this type's own plumbing.
+#[allow(deprecated)]
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::radio_group::{
@@ -5174,6 +5177,7 @@ impl Backend for WinBackend {
     /// the chrome font (an editor line height far above the chrome
     /// text height) now shows the title centred but the actions
     /// top-aligned — `GtkBackend::draw_panel` has the same shape.
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
     fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
@@ -5276,6 +5280,7 @@ impl Backend for WinBackend {
     /// not text measurement, so this needs no `self.dwrite`/surface at
     /// all — computed directly rather than reaching into
     /// the Windows-only `super::panel` module.
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
     fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout {
         let line_height = self.current_line_height;
         let measure = crate::primitives::panel::PanelMeasure::new(if panel.title.is_some() {

@@ -4110,6 +4110,7 @@ impl Backend for TuiBackend {
         crate::tui::tui_split_tree_layout(tree, area)
     }
 
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
     fn draw_panel(
         &mut self,
         rect: QRect,
@@ -4127,6 +4128,7 @@ impl Backend for TuiBackend {
         crate::tui::draw_panel(frame.buffer_mut(), area, panel, &theme)
     }
 
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
     fn panel_layout(
         &self,
         rect: QRect,
@@ -5199,6 +5201,7 @@ mod tests {
             )
         }
 
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this test double is its own plumbing.
         fn draw_panel(
             &mut self,
             _r: QRect,
@@ -5208,6 +5211,7 @@ mod tests {
             panel.layout(bounds, crate::primitives::panel::PanelMeasure::new(1.0))
         }
 
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this test double is its own plumbing.
         fn panel_layout(
             &self,
             _r: QRect,

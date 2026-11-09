@@ -1799,6 +1799,7 @@ pub fn message_dialog_options_from_buttons(
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // `Panel`/`PanelAction` are `#[deprecated]`; `PanelLogic` and its tests cover `LayoutNode::Panel`'s own plumbing directly.
 mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;

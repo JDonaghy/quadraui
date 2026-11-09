@@ -191,6 +191,9 @@ use crate::primitives::message_list::MessageList;
 use crate::primitives::minimap::Minimap;
 use crate::primitives::multi_section_view::MultiSectionView;
 use crate::primitives::palette::Palette;
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
+// `Surface::Panel`/`OwnedContent::Panel` are this type's own plumbing.
+#[allow(deprecated)]
 use crate::primitives::panel::Panel;
 use crate::primitives::pipeline_view::PipelineView;
 use crate::primitives::progress::ProgressBar;
@@ -282,6 +285,7 @@ pub enum Surface {
         rect: Rect,
         split: Split,
     },
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this variant is its own plumbing.
     Panel {
         rect: Rect,
         panel: Panel,
@@ -945,6 +949,7 @@ impl ScreenLayout {
                 Surface::List { rect, list } => Some((list.id, *rect)),
                 Surface::Form { rect, form } => Some((form.id, *rect)),
                 Surface::MenuBar { rect, bar } => Some((bar.id, *rect)),
+                #[allow(deprecated)] // `Panel` is `#[deprecated]`.
                 Surface::Panel { rect, panel } => Some((panel.id, *rect)),
                 Surface::Palette { rect, palette } => Some((palette.id, *rect)),
                 Surface::DataTable { rect, table, .. } => Some((table.id, *rect)),
@@ -1073,6 +1078,7 @@ pub enum OwnedContent {
     Form(Form),
     MenuBar(MenuBar),
     Split(Split),
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this variant is its own plumbing.
     Panel(Panel),
     Scrollbar(Scrollbar),
     Palette(Palette),
@@ -1422,6 +1428,7 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         Surface::Form { rect, form } => (*rect, Some(form.id), OwnedContent::Form(form.clone())),
         Surface::MenuBar { rect, bar } => (*rect, Some(bar.id), OwnedContent::MenuBar(bar.clone())),
         Surface::Split { rect, split } => (*rect, None, OwnedContent::Split(split.clone())),
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`.
         Surface::Panel { rect, panel } => {
             (*rect, Some(panel.id), OwnedContent::Panel(panel.clone()))
         }

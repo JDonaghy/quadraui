@@ -492,6 +492,7 @@ pub fn paint_layout(
                 );
             }
         }
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this arm is its own plumbing.
         LayoutNode::Panel(panel_node) => {
             let char_width = backend.char_width();
             let line_height = backend.line_height();

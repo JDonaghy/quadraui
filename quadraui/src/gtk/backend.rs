@@ -5003,6 +5003,7 @@ impl Backend for GtkBackend {
         )
     }
 
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
     fn draw_panel(
         &mut self,
         rect: QRect,
@@ -5112,6 +5113,7 @@ impl Backend for GtkBackend {
         layout
     }
 
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
     fn panel_layout(
         &self,
         rect: QRect,
