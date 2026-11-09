@@ -64,11 +64,15 @@ use quadraui::gtk::testing::GtkDriver;
 use quadraui::{
     AppLogic, Backend, Color, CompletionItem, CompletionItemMeasure, CompletionKind, Completions,
     Decoration, DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView,
-    FieldKind, Form, FormField, MessageList, MessageRow, Palette, PaletteItem, Panel, Reaction,
-    Rect, Spinner, StyledSpan, StyledText, Terminal, TerminalCell, TerminalCursorShape,
-    TextDisplay, TextDisplayLine, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity,
-    Tooltip, TooltipMeasure, UiEvent, WidgetId,
+    FieldKind, Form, FormField, MessageList, MessageRow, Palette, PaletteItem, Reaction, Rect,
+    Spinner, StyledSpan, StyledText, Terminal, TerminalCell, TerminalCursorShape, TextDisplay,
+    TextDisplayLine, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity, Tooltip,
+    TooltipMeasure, UiEvent, WidgetId,
 };
+// `Panel` is `#[deprecated]`; imported separately so the allow stays
+// scoped to the one chrome-font paint case below.
+#[allow(deprecated)]
+use quadraui::Panel;
 
 const W: i32 = 640;
 const H: i32 = 400;
@@ -371,6 +375,7 @@ fn draw_toast_overlay_paints_in_chrome_font() {
 }
 
 #[test]
+#[allow(deprecated)] // constructs the deprecated `Panel`
 fn draw_panel_paints_in_chrome_font() {
     assert_paints_in_chrome_font("draw_panel", |b, area| {
         let panel = Panel {

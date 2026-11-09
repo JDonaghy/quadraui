@@ -35,8 +35,6 @@ pub enum LayoutNode {
     Leaf(LayoutLeaf),
     Split(LayoutSplit),
     Tabs(LayoutTabs),
-    #[allow(deprecated)]
-    // `LayoutPanel` carries `#[deprecated]` `Panel`; this variant is its own plumbing.
     Panel(LayoutPanel),
     SidebarPanel(LayoutSidebarPanel),
     SplitTree(LayoutSplitTree),
