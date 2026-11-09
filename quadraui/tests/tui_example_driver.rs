@@ -96,6 +96,8 @@ mod form_combo_box;
 mod form_control_width;
 #[path = "../examples/common/form_date_picker.rs"]
 mod form_date_picker;
+#[path = "../examples/common/form_dialog_demo.rs"]
+mod form_dialog_demo;
 #[path = "../examples/common/form_dropdown.rs"]
 mod form_dropdown;
 #[path = "../examples/common/form_groups.rs"]
@@ -225,6 +227,7 @@ use form_all_fields::FormAllFieldsApp;
 use form_combo_box::FormComboBoxApp;
 use form_control_width::FormControlWidthApp;
 use form_date_picker::FormDatePickerApp;
+use form_dialog_demo::FormDialogApp;
 use form_dropdown::FormDropdownApp;
 use form_groups::FormGroupsApp;
 use form_label_placement::FormLabelPlacementApp;
@@ -2462,6 +2465,177 @@ fn dialog_table_esc_exits() {
     let mut driver = TuiDriver::new(DialogTableDemo::new(), 100, 30);
     driver.press_named(NamedKey::Escape);
     assert!(driver.exited(), "Esc should exit the dialog demo");
+}
+
+// ─── FormDialogApp: DialogInput::Form in a Dialog ──────────────────────────
+
+fn form_dialog_shift_tab(driver: &mut TuiDriver<FormDialogApp>) -> Reaction {
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Tab),
+        modifiers: Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+        repeat: false,
+    })
+}
+
+/// Initial screen renders the dialog title and both form field labels,
+/// plus the Cancel/Create buttons.
+#[test]
+fn form_dialog_initial_screen_paints_title_fields_and_buttons() {
+    let driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("Create milestone"),
+        "dialog title should appear:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Name"),
+        "Name field label should be painted:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Description"),
+        "Description field label should be painted:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Cancel"),
+        "Cancel button should be painted:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Create"),
+        "Create button should be painted:\n{screen}"
+    );
+}
+
+/// Typing while the Name field has initial focus edits that field, not
+/// the Description field.
+#[test]
+fn form_dialog_typing_edits_the_focused_name_field() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    driver.type_char('A');
+    driver.type_char('l');
+    driver.type_char('p');
+    driver.type_char('h');
+    driver.type_char('a');
+    assert!(
+        driver.screen_contains("Alpha"),
+        "typed text should appear in the Name field:\n{}",
+        driver.screen()
+    );
+}
+
+/// Tab cycles focus: Name -> Description -> Cancel -> Create -> (wraps)
+/// Name, a single order across the form and the dialog's buttons.
+#[test]
+fn form_dialog_tab_cycles_through_fields_then_buttons_then_wraps() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    assert!(driver.app().controller().is_form_focused());
+    driver.press_named(NamedKey::Tab); // Name -> Description
+    assert!(driver.app().controller().is_form_focused());
+    driver.press_named(NamedKey::Tab); // Description -> Cancel
+    assert!(!driver.app().controller().is_form_focused());
+    assert_eq!(
+        driver
+            .app()
+            .controller()
+            .focused_button_id()
+            .map(|id| id.as_str()),
+        Some("cancel")
+    );
+    driver.press_named(NamedKey::Tab); // Cancel -> Create
+    assert_eq!(
+        driver
+            .app()
+            .controller()
+            .focused_button_id()
+            .map(|id| id.as_str()),
+        Some("create")
+    );
+    driver.press_named(NamedKey::Tab); // Create -> (wraps) Name
+    assert!(driver.app().controller().is_form_focused());
+}
+
+/// Shift-Tab from the first field (Name) moves focus straight to the
+/// last button (Create), the reverse of the forward wrap.
+#[test]
+fn form_dialog_shift_tab_from_first_field_focuses_last_button() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    form_dialog_shift_tab(&mut driver);
+    assert_eq!(
+        driver
+            .app()
+            .controller()
+            .focused_button_id()
+            .map(|id| id.as_str()),
+        Some("create")
+    );
+}
+
+/// Tabbing to the Create button and pressing Enter submits the form —
+/// the app reads back its own canonical Name/Description state and
+/// shows it as a status line above the form.
+#[test]
+fn form_dialog_enter_on_focused_create_button_submits_the_form() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    driver.type_char('A');
+    driver.type_char('B');
+    driver.press_named(NamedKey::Tab); // Name -> Description
+    driver.press_named(NamedKey::Tab); // Description -> Cancel
+    driver.press_named(NamedKey::Tab); // Cancel -> Create
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        driver.screen_contains("Created:"),
+        "submitting should show a status line:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("AB"),
+        "the status line should carry back the typed Name value:\n{}",
+        driver.screen()
+    );
+    assert!(!driver.exited(), "Create should not exit the demo");
+}
+
+/// Clicking Cancel exits the demo, same as the message-dialog
+/// convention.
+#[test]
+fn form_dialog_cancel_button_click_exits() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    let (cx, cy) = driver
+        .find("Cancel")
+        .expect("Cancel button should be on screen");
+    driver.click(cx, cy);
+    assert!(driver.exited(), "clicking Cancel should exit the demo");
+}
+
+/// Escape always resolves to Cancel and exits, regardless of focus.
+#[test]
+fn form_dialog_esc_exits() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Esc should exit the form dialog demo");
+}
+
+/// `q` quits once focus has moved off the form onto a button — typing
+/// `q` while a field is focused must insert the character instead.
+#[test]
+fn form_dialog_q_quits_only_once_a_button_has_focus() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    driver.type_char('q');
+    assert!(
+        !driver.exited(),
+        "'q' while the Name field is focused should type, not quit"
+    );
+    assert!(
+        driver.screen_contains('q'.to_string().as_str()),
+        "'q' should have been typed into the Name field:\n{}",
+        driver.screen()
+    );
+    driver.press_named(NamedKey::Tab); // Name -> Description
+    driver.press_named(NamedKey::Tab); // Description -> Cancel
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' with a button focused should quit");
 }
 
 /// Shell-runner path: Ctrl-A selects all content lines, Ctrl-C copies them.
