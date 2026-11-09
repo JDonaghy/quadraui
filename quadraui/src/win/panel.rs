@@ -3,7 +3,8 @@
 //! `WinBackend::draw_panel` paints the title bar through the mapped
 //! `SidebarPanel` + `Toolbar` header — see that method's own doc. This
 //! module carries [`win_panel_layout`] for the pure layout queries
-//! `WinBackend::panel_layout` and `draw_panel`'s own no-surface fallback
+//! `WinBackend::panel_layout`'s no-paint hit-test path and
+//! `draw_panel`'s own painting path (surfaced and no-surface alike)
 //! need.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
@@ -61,9 +62,12 @@ mod tests {
 
     /// Paint `panel` via the shared
     /// [`crate::primitives::panel::native_surface_paint::paint`] through
-    /// a [`super::super::surface::D2dSurface`] over `surface`'s headless target — the same
-    /// adapter the now-removed `draw_panel` shim used,
-    /// exercised here directly.
+    /// a [`super::super::surface::D2dSurface`] over `surface`'s headless
+    /// target. This pins `panel::native_surface_paint::paint` itself —
+    /// which `macos` still calls and `win/panel.rs` keeps covered here —
+    /// rather than `WinBackend::draw_panel`'s own production path, which
+    /// paints through `sidebar_panel::native_surface_paint::paint`
+    /// instead (see that method's own doc).
     fn paint(surface: &HeadlessSurface, dwrite: &DWrite, rect: Rect, panel: &Panel) -> PanelLayout {
         let layout = win_panel_layout(rect, panel, LINE_HEIGHT);
         surface
