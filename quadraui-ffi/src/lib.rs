@@ -332,8 +332,8 @@ fn record_panic(name: &str, payload: &(dyn Any + Send)) -> i32 {
 
 /// Runs `body` with unwinding stopped at the boundary, mapping a panic to
 /// [`QUI_ERR_PANIC`]. Used by the entry points that take no app handle;
-/// handle-taking ones use [`with_app`] / [`with_app_ref`], which additionally
-/// poison the handle.
+/// handle-taking ones use [`with_handle_mut`] / [`with_handle_ref`], which
+/// additionally poison the handle.
 fn boundary<T: AbiResult>(name: &str, body: impl FnOnce() -> T) -> T {
     match panic::catch_unwind(AssertUnwindSafe(body)) {
         Ok(value) => value,
@@ -341,18 +341,58 @@ fn boundary<T: AbiResult>(name: &str, body: impl FnOnce() -> T) -> T {
     }
 }
 
+/// A caller-facing opaque handle that can be left *poisoned* by a caught
+/// panic — [`QuiApp`] and [`QuiRtApp`]. Lets [`with_handle_mut`] /
+/// [`with_handle_ref`] be written once instead of once per handle type: the
+/// two handles' entry points are otherwise identical boundary bodies that
+/// differed only in which free function the poisoned-handle message names.
+trait PoisonableHandle {
+    /// Name of the function that releases a poisoned handle of this type
+    /// (the only thing left safe to do with one) — e.g. `"qui_app_free"`.
+    const FREE_FN: &'static str;
+
+    fn is_poisoned(&self) -> bool;
+    fn poison(&mut self);
+}
+
+impl PoisonableHandle for QuiApp {
+    const FREE_FN: &'static str = "qui_app_free";
+
+    fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    fn poison(&mut self) {
+        self.poisoned = true;
+    }
+}
+
+impl PoisonableHandle for QuiRtApp {
+    const FREE_FN: &'static str = "qui_rt_app_free";
+
+    fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    fn poison(&mut self) {
+        self.poisoned = true;
+    }
+}
+
 /// Resolves `app` to a live, unpoisoned handle and runs `body` on it behind
 /// the panic boundary. A caught panic poisons the handle: the panic may have
 /// unwound out of the middle of a dispatch or a repaint, leaving the driver
-/// half-updated, and the only safe thing a host can still do with it is
-/// [`qui_app_free`].
+/// half-updated, and the only safe thing a host can still do with it is call
+/// `H::FREE_FN`.
 ///
 /// # Safety
-/// `app` must be either null or a live pointer from [`qui_app_new`].
-unsafe fn with_app<T: AbiResult>(
+/// `app` must be either null or a live pointer from the matching handle's
+/// constructor ([`qui_app_new`] for [`QuiApp`], [`qui_rt_app_new`] for
+/// [`QuiRtApp`]).
+unsafe fn with_handle_mut<H: PoisonableHandle, T: AbiResult>(
     name: &str,
-    app: *mut QuiApp,
-    body: impl FnOnce(&mut QuiApp) -> T,
+    app: *mut H,
+    body: impl FnOnce(&mut H) -> T,
 ) -> T {
     let Some(borrowed) = app.as_mut() else {
         return T::from_error(fail(
@@ -360,30 +400,34 @@ unsafe fn with_app<T: AbiResult>(
             format!("{name}: app handle is null"),
         ));
     };
-    if borrowed.poisoned {
+    if borrowed.is_poisoned() {
         return T::from_error(fail(
             QUI_ERR_POISONED,
-            format!("{name}: app handle is poisoned by an earlier caught panic; free it with qui_app_free"),
+            format!(
+                "{name}: app handle is poisoned by an earlier caught panic; free it with {}",
+                H::FREE_FN
+            ),
         ));
     }
     match panic::catch_unwind(AssertUnwindSafe(|| body(borrowed))) {
         Ok(value) => value,
         Err(payload) => {
-            (*app).poisoned = true;
+            (*app).poison();
             T::from_error(record_panic(name, &*payload))
         }
     }
 }
 
-/// [`with_app`] for the read-only entry points. A panic here cannot have
-/// mutated the app, so the handle is left usable.
+/// [`with_handle_mut`] for the read-only entry points. A panic here cannot
+/// have mutated the app, so the handle is left usable.
 ///
 /// # Safety
-/// `app` must be either null or a live pointer from [`qui_app_new`].
-unsafe fn with_app_ref<T: AbiResult>(
+/// `app` must be either null or a live pointer from the matching handle's
+/// constructor.
+unsafe fn with_handle_ref<H: PoisonableHandle, T: AbiResult>(
     name: &str,
-    app: *const QuiApp,
-    body: impl FnOnce(&QuiApp) -> T,
+    app: *const H,
+    body: impl FnOnce(&H) -> T,
 ) -> T {
     let Some(borrowed) = app.as_ref() else {
         return T::from_error(fail(
@@ -391,10 +435,13 @@ unsafe fn with_app_ref<T: AbiResult>(
             format!("{name}: app handle is null"),
         ));
     };
-    if borrowed.poisoned {
+    if borrowed.is_poisoned() {
         return T::from_error(fail(
             QUI_ERR_POISONED,
-            format!("{name}: app handle is poisoned by an earlier caught panic; free it with qui_app_free"),
+            format!(
+                "{name}: app handle is poisoned by an earlier caught panic; free it with {}",
+                H::FREE_FN
+            ),
         ));
     }
     boundary(name, || body(borrowed))
@@ -659,7 +706,7 @@ unsafe fn insert_descriptor(
     json_len: usize,
 ) -> i64 {
     clear_last_error();
-    with_app(name, app, |app| {
+    with_handle_mut(name, app, |app| {
         let text = match borrow_utf8(name, "json", json, json_len) {
             Ok(text) => text,
             Err(code) => return i64::from(code),
@@ -679,12 +726,17 @@ unsafe fn insert_descriptor(
             );
         }
 
-        // One arm per slot rather than a generic helper: the crate has no
-        // direct `serde` dependency, so there is no `DeserializeOwned` bound
-        // to be generic over.
+        // One arm per slot rather than a generic helper: each slot stores
+        // into its own named `BindingHost` field, so there's no single
+        // `field: Option<T>` to be generic over even though the decode
+        // itself — `quadraui_binding_core::decode_value` — is shared with
+        // every other binding's fixed-slot descriptor decode.
         macro_rules! decode_into {
             ($ty:ty, $field:ident) => {
-                match serde_json::from_str::<$ty>(text) {
+                match quadraui_binding_core::decode_value::<$ty, _>(
+                    label,
+                    &mut serde_json::Deserializer::from_str(text),
+                ) {
                     Ok(decoded) => app.driver.app_mut().host.$field = Some(decoded),
                     Err(err) => {
                         return fail_i64(
@@ -848,7 +900,7 @@ pub unsafe extern "C" fn qui_tab_bar_insert(
 pub unsafe extern "C" fn qui_slot_clear(app: *mut QuiApp, slot: i32) -> i32 {
     const NAME: &str = "qui_slot_clear";
     clear_last_error();
-    with_app(NAME, app, |app| {
+    with_handle_mut(NAME, app, |app| {
         if slot_label(slot).is_none() {
             return fail(
                 QUI_ERR_UNKNOWN_SLOT,
@@ -887,7 +939,7 @@ pub unsafe extern "C" fn qui_slot_clear(app: *mut QuiApp, slot: i32) -> i32 {
 pub unsafe extern "C" fn qui_push_event(app: *mut QuiApp, json: *const u8, json_len: usize) -> i32 {
     const NAME: &str = "qui_push_event";
     clear_last_error();
-    with_app(NAME, app, |app| {
+    with_handle_mut(NAME, app, |app| {
         let text = match borrow_utf8(NAME, "json", json, json_len) {
             Ok(text) => text,
             Err(code) => return code,
@@ -921,7 +973,7 @@ pub unsafe extern "C" fn qui_push_event(app: *mut QuiApp, json: *const u8, json_
 pub unsafe extern "C" fn qui_push_key_event(app: *mut QuiApp, ch: u32) -> i32 {
     const NAME: &str = "qui_push_key_event";
     clear_last_error();
-    with_app(NAME, app, |app| {
+    with_handle_mut(NAME, app, |app| {
         let Some(ch) = char::from_u32(ch) else {
             return fail(
                 QUI_ERR_INVALID_CHAR,
@@ -955,7 +1007,7 @@ pub unsafe extern "C" fn qui_push_key_event(app: *mut QuiApp, ch: u32) -> i32 {
 pub unsafe extern "C" fn qui_resize(app: *mut QuiApp, width: u16, height: u16) -> i32 {
     const NAME: &str = "qui_resize";
     clear_last_error();
-    with_app(NAME, app, |app| {
+    with_handle_mut(NAME, app, |app| {
         if width == 0 || height == 0 {
             return fail(
                 QUI_ERR_INVALID_DIMENSIONS,
@@ -990,7 +1042,7 @@ pub unsafe extern "C" fn qui_resize(app: *mut QuiApp, width: u16, height: u16) -
 pub unsafe extern "C" fn qui_step(app: *mut QuiApp) -> i32 {
     const NAME: &str = "qui_step";
     clear_last_error();
-    with_app(NAME, app, |app| {
+    with_handle_mut(NAME, app, |app| {
         if app.driver.exited() {
             return QUI_STEP_EXITED;
         }
@@ -1057,7 +1109,7 @@ pub unsafe extern "C" fn qui_screen_contains(
 ) -> i32 {
     const NAME: &str = "qui_screen_contains";
     clear_last_error();
-    with_app_ref(NAME, app, |app| {
+    with_handle_ref(NAME, app, |app| {
         let text = match borrow_utf8(NAME, "needle", needle, needle_len) {
             Ok(text) => text,
             Err(code) => return code,
@@ -1082,7 +1134,7 @@ pub unsafe extern "C" fn qui_screen_contains(
 pub unsafe extern "C" fn qui_screen(app: *const QuiApp) -> *mut c_char {
     const NAME: &str = "qui_screen";
     clear_last_error();
-    with_app_ref(NAME, app, |app| {
+    with_handle_ref(NAME, app, |app| {
         into_owned_c_string(NAME, app.driver.screen())
     })
 }
@@ -1463,40 +1515,9 @@ impl AppLogic for FfiRtApp {
 pub struct QuiRtApp {
     runner: TuiRunner<FfiRtApp>,
     /// Set when a panic was caught while this handle was borrowed; see
-    /// [`QuiApp::poisoned`] for the equivalent on the headless handle.
+    /// [`QuiApp::poisoned`] for the equivalent on the headless handle and
+    /// [`PoisonableHandle`] for the shared boundary that reads it.
     poisoned: bool,
-}
-
-/// [`with_app`] for [`QuiRtApp`].
-///
-/// # Safety
-/// `app` must be either null or a live pointer from [`qui_rt_app_new`].
-unsafe fn with_rt_app<T: AbiResult>(
-    name: &str,
-    app: *mut QuiRtApp,
-    body: impl FnOnce(&mut QuiRtApp) -> T,
-) -> T {
-    let Some(borrowed) = app.as_mut() else {
-        return T::from_error(fail(
-            QUI_ERR_NULL_HANDLE,
-            format!("{name}: app handle is null"),
-        ));
-    };
-    if borrowed.poisoned {
-        return T::from_error(fail(
-            QUI_ERR_POISONED,
-            format!(
-                "{name}: app handle is poisoned by an earlier caught panic; free it with qui_rt_app_free"
-            ),
-        ));
-    }
-    match panic::catch_unwind(AssertUnwindSafe(|| body(borrowed))) {
-        Ok(value) => value,
-        Err(payload) => {
-            (*app).poisoned = true;
-            T::from_error(record_panic(name, &*payload))
-        }
-    }
 }
 
 /// Create a new app that negotiates and owns a real terminal (raw mode,
@@ -1577,7 +1598,7 @@ pub unsafe extern "C" fn qui_rt_list_insert(
 ) -> i64 {
     const NAME: &str = "qui_rt_list_insert";
     clear_last_error();
-    with_rt_app(NAME, app, |app| {
+    with_handle_mut(NAME, app, |app| {
         let text = match borrow_utf8(NAME, "json", json, json_len) {
             Ok(text) => text,
             Err(code) => return i64::from(code),
@@ -1624,7 +1645,7 @@ pub unsafe extern "C" fn qui_rt_list_update(
 ) -> i32 {
     const NAME: &str = "qui_rt_list_update";
     clear_last_error();
-    with_rt_app(NAME, app, |app| {
+    with_handle_mut(NAME, app, |app| {
         let text = match borrow_utf8(NAME, "json", json, json_len) {
             Ok(text) => text,
             Err(code) => return code,
@@ -1678,7 +1699,7 @@ pub unsafe extern "C" fn qui_rt_list_update(
 pub unsafe extern "C" fn qui_rt_step(app: *mut QuiRtApp) -> i32 {
     const NAME: &str = "qui_rt_step";
     clear_last_error();
-    with_rt_app(NAME, app, |app| match app.runner.step() {
+    with_handle_mut(NAME, app, |app| match app.runner.step() {
         Ok(StepOutcome::Exited) => QUI_STEP_EXITED,
         Ok(_) => QUI_STEP_CONTINUE,
         Err(err) => fail(QUI_ERR_IO, format!("{NAME}: {err}")),
@@ -1698,7 +1719,7 @@ pub unsafe extern "C" fn qui_rt_step(app: *mut QuiRtApp) -> i32 {
 pub unsafe extern "C" fn qui_rt_pump(app: *mut QuiRtApp, timeout_ms: u32) -> i32 {
     const NAME: &str = "qui_rt_pump";
     clear_last_error();
-    with_rt_app(NAME, app, |app| {
+    with_handle_mut(NAME, app, |app| {
         match app
             .runner
             .pump(Duration::from_millis(u64::from(timeout_ms)))
