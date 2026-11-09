@@ -681,8 +681,12 @@ jobs:
         # `quadraui-py` is excluded here (and from the `test`/`clippy` steps
         # below): it links against libpython, which this job's runner
         # doesn't provision. Its maturin build + pytest suite run in the
-        # dedicated `quadraui-py-tests` job instead.
-        run: cargo build --features tui --workspace --exclude kubeui-gtk --exclude quadraui-py
+        # dedicated `quadraui-py-tests` job instead. `quadraui-ffi` is
+        # excluded too (#2183): its own ~2,300 test LOC have no bearing on
+        # whether it or `quadraui-binding-core` actually changed, so
+        # `ffi.yml`'s `paths`-filtered job is the only place its
+        # build/test/clippy run.
+        run: cargo build --features tui --workspace --exclude kubeui-gtk --exclude quadraui-py --exclude quadraui-ffi
       - name: Test (tui feature)
         # #823: the sealed `quadraui/tests/acceptance/ms-11/wide_tab_labels.rs`
         # (`#[cfg(feature = "tui")]`, so it compiles under this tui-only job
@@ -702,15 +706,15 @@ jobs:
         # `README.md` (between the `TERMINAL_MATRIX` markers) differs from
         # what it generates — the same guard shape `tests/readme_truth.rs`
         # (#798) uses for the rest of the README.
-        run: cargo test --features tui --workspace --exclude kubeui-gtk --exclude quadraui-py
+        run: cargo test --features tui --workspace --exclude kubeui-gtk --exclude quadraui-py --exclude quadraui-ffi
         env:
           RUSTFLAGS: "-D warnings -A deprecated"
       - name: Clippy (tui feature)
         # This step is CLAUDE.md's documented Quality Gate command
         # `cargo clippy --features tui --workspace --exclude kubeui-gtk -- -D warnings`
-        # plus the same `--exclude quadraui-py` as the two steps above, for
-        # the same reason.
-        run: cargo clippy --features tui --workspace --exclude kubeui-gtk --exclude quadraui-py -- -D warnings
+        # plus the same `--exclude quadraui-py`/`--exclude quadraui-ffi` as
+        # the two steps above, for the same reasons.
+        run: cargo clippy --features tui --workspace --exclude kubeui-gtk --exclude quadraui-py --exclude quadraui-ffi -- -D warnings
       - name: Clippy (quadraui-py, extension-module)
         # `quadraui-py` is excluded from every step above because its
         # default `cdylib` build links against libpython, which this
@@ -1145,8 +1149,11 @@ jobs:
       - name: Build (gtk + tui features)
         # `quadraui-py` is excluded here too, for the same reason as the
         # `tui` job above: it links against libpython, which this job's
-        # runner doesn't provision.
-        run: cargo build --features gtk,tui --workspace --exclude kubeui --exclude quadraui-py
+        # runner doesn't provision. `quadraui-ffi` is excluded for the
+        # reason given on the `tui` job's own "Build (tui feature)" step
+        # (#2183): `ffi.yml`'s `paths`-filtered job is the only place it
+        # builds/tests/lints now.
+        run: cargo build --features gtk,tui --workspace --exclude kubeui --exclude quadraui-py --exclude quadraui-ffi
       # --no-fail-fast: without it, a failure in the `quadraui` lib unit-test
       # target (e.g. pre-existing gtk::services main-thread panics) makes
       # cargo abort before ever building/running the tests/*.rs integration
@@ -1162,15 +1169,15 @@ jobs:
         # --workspace` compiles that target under this job's `gtk,tui`
         # features too. Only `deprecated` is relaxed; every other lint
         # stays denied.
-        run: cargo test --features gtk,tui --workspace --exclude kubeui --no-fail-fast --exclude quadraui-py
+        run: cargo test --features gtk,tui --workspace --exclude kubeui --no-fail-fast --exclude quadraui-py --exclude quadraui-ffi
         env:
           RUSTFLAGS: "-D warnings -A deprecated"
       - name: Clippy (gtk + tui features)
         # This step is CLAUDE.md's documented Quality Gate command
         # `cargo clippy --features gtk,tui --workspace --exclude kubeui -- -D warnings`
-        # plus the same `--exclude quadraui-py` as the two steps above, for
-        # the same reason.
-        run: cargo clippy --features gtk,tui --workspace --exclude kubeui --exclude quadraui-py -- -D warnings
+        # plus the same `--exclude quadraui-py`/`--exclude quadraui-ffi` as
+        # the two steps above, for the same reasons.
+        run: cargo clippy --features gtk,tui --workspace --exclude kubeui --exclude quadraui-py --exclude quadraui-ffi -- -D warnings
       # `quadraui-py`'s own `gtk`-gated code (`run_native` and friends) is
       # excluded from every workspace-wide step above, so without this it
       # never gets type-checked against `quadraui::gtk` at all — a renamed
