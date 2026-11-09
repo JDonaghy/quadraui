@@ -223,6 +223,14 @@ only a push to `main` runs this workflow.
   change) has migrated, not before a 0.10.0 bump.
 
 ### Fixed
+- `FilePickerController` (#2172) now shares its query/list/selection/scroll
+  state machine and key map with `FolderPickerController` via a new
+  internal `PathPickerCore` (`compose/path_picker.rs`), closing the drift
+  between the two: `FilePickerController::handle` now routes the vim-style
+  `-`/`j`/`k` shortcuts the same way `FolderPickerController` does, gains a
+  public `navigate_up`, and `refilter` is `pub` on both (previously private
+  on `FilePickerController`). Public method signatures are otherwise
+  unchanged on both controllers.
 - A `LabelPosition::Top`-resolved `FieldKind::RadioGroup`/`NumberInput`
   (#2251) now agrees between paint and click on TUI: `FormFieldMeasure`
   gains an `items_start_y` field so `Form::layout` skips its item/sub-row
