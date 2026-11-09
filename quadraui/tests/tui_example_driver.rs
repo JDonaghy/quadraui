@@ -3325,6 +3325,109 @@ fn shell_app_k_saturates_at_first_item() {
     );
 }
 
+/// Pins the painted cells of three different `ActivityBar` rows — one
+/// `is_active`, one keyboard-selected, one mouse-hovered — through
+/// `tui::activity_bar`'s post-migration paint path
+/// (`ActivityBar::to_toolbar_parts` → `tui::toolbar::draw_toolbar_with_rail_style`
+/// → `ActivityBar::row_hits_from_toolbar_layout`). `ShellApp`'s bar sets
+/// neither `active_accent` nor `selection_bg` (both `None`), so this
+/// exercises the two fallbacks those `None`s force: the active row's own
+/// foreground (not a fill, since no `active_bg`/`active_accent` is set)
+/// and the keyboard-selected row's `Modifier::REVERSED` highlight (not an
+/// explicit fill, since no `selection_bg` is set) — plus the hovered
+/// row's lightened background, which has no fallback to begin with.
+#[test]
+fn shell_app_activity_bar_active_hovered_and_keyboard_selected_rows_paint_distinctly() {
+    use quadraui::tui::testing::Modifier;
+
+    let mut driver = TuiDriver::new(ShellAppEx::new(), 100, 30);
+
+    // Explorer (row 0) is the default active panel — no interaction needed.
+    let (ex, ey) = driver
+        .find("E│")
+        .unwrap_or_else(|| panic!("Explorer icon should be painted:\n{}", driver.screen()));
+    let active_cell = driver
+        .style_at(ex as u16, ey as u16)
+        .expect("Explorer icon cell should be on screen");
+
+    // Tab focuses the bar (cursor starts at Explorer); 'j' moves the
+    // keyboard cursor to Search (row 1) without activating it, so Search
+    // is keyboard-selected but not active.
+    driver.press_named(NamedKey::Tab);
+    driver.type_char('j');
+    let (sx, sy) = driver
+        .find("S│")
+        .unwrap_or_else(|| panic!("Search icon should be painted:\n{}", driver.screen()));
+    let selected_cell = driver
+        .style_at(sx as u16, sy as u16)
+        .expect("Search icon cell should be on screen");
+
+    // Hover the mouse over Source Control (row 2) — distinct from both
+    // the active row (0) and the keyboard-selected row (1) above.
+    let (gx, gy) = driver.find("G│").unwrap_or_else(|| {
+        panic!(
+            "Source Control icon should be painted:\n{}",
+            driver.screen()
+        )
+    });
+    driver.mouse_move(gx, gy);
+    driver.render();
+    let hovered_cell = driver
+        .style_at(gx as u16, gy as u16)
+        .expect("Source Control icon cell should be on screen");
+
+    // Baseline: Settings (bottom-pinned) has none of the three states.
+    let (bx, by) = driver
+        .find("*│")
+        .unwrap_or_else(|| panic!("Settings icon should be painted:\n{}", driver.screen()));
+    let resting_cell = driver
+        .style_at(bx as u16, by as u16)
+        .expect("Settings icon cell should be on screen");
+
+    let screen = driver.screen();
+
+    assert_ne!(
+        active_cell.fg, resting_cell.fg,
+        "the active row's icon should paint theme.foreground, distinct \
+         from a resting row's theme.inactive_fg:\n{screen}"
+    );
+    assert_eq!(
+        active_cell.bg, resting_cell.bg,
+        "with no active_bg/active_accent set, the active row keeps the \
+         plain bar background:\n{screen}"
+    );
+
+    assert!(
+        selected_cell.modifiers.contains(Modifier::REVERSED),
+        "with no selection_bg set, the keyboard-selected row should fall \
+         back to Modifier::REVERSED:\n{screen}"
+    );
+    assert!(
+        !resting_cell.modifiers.contains(Modifier::REVERSED),
+        "a row with no keyboard selection must not carry REVERSED:\n{screen}"
+    );
+    assert_eq!(
+        selected_cell.bg, resting_cell.bg,
+        "with no selection_bg set, the keyboard-selected row's bg stays \
+         plain (REVERSED does the visual work, not a bg change):\n{screen}"
+    );
+
+    assert_ne!(
+        hovered_cell.bg, resting_cell.bg,
+        "the hovered row should paint a lightened background, distinct \
+         from a resting row's plain background:\n{screen}"
+    );
+    assert!(
+        !hovered_cell.modifiers.contains(Modifier::REVERSED),
+        "hover alone (no keyboard selection) must not carry REVERSED:\n{screen}"
+    );
+    assert_eq!(
+        hovered_cell.fg, active_cell.fg,
+        "hover, like is_active, paints theme.foreground rather than \
+         theme.inactive_fg:\n{screen}"
+    );
+}
+
 /// `Shift+Tab` is `ShellApp`'s *other* focus-region control (see the
 /// module doc comment's "`Shift+Tab` cycle sidebar sections"), distinct
 /// from the activity-bar `Tab` focus the tests above cover. Real
