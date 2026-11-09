@@ -129,6 +129,21 @@ pub(crate) fn register_font_from_memory(bytes: &[u8]) -> Option<Vec<String>> {
     static LOCK: Mutex<()> = Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
+    // In a `#[cfg(test)]` build, also take `super::TEST_RENDER_LOCK` —
+    // `notify_fontmap_config_changed` below invalidates the same
+    // process-global Pango font map that `GtkBackend::enter_frame_scope`
+    // guards for real text shaping. `LOCK` above only serialises this
+    // function against itself; without also taking `TEST_RENDER_LOCK`, a
+    // concurrently-running test's `enter_frame_scope`-protected paint on
+    // another thread could still have its font map invalidated mid-shape
+    // by this call, which empirically reproduced as the *measurement*
+    // coming back wrong (a 48pt glyph painting less ink than a 6pt one)
+    // rather than a segfault.
+    #[cfg(test)]
+    let _test_render_guard = super::TEST_RENDER_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let path = create_temp_font_file(bytes)?;
 
     let names = register_with_fontconfig(&path);

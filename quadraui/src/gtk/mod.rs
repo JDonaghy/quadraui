@@ -18,6 +18,31 @@ use gtk4::pango;
 
 use crate::types::Color;
 
+/// Serialises every `#[test]`-driven touch of GTK's process-global Pango
+/// state (`pango_cairo_font_map_get_default()` and the caches it owns)
+/// across OS threads — Pango's own docs are explicit that this is not
+/// thread-safe, yet Rust's default test harness runs every `#[test]` fn on
+/// its own spawned OS thread by default, so two tests that each build a
+/// `pango::Context`/`Layout` and shape real text (every GTK paint/
+/// round-trip test does) can do so concurrently against the same shared
+/// font map with no synchronisation of their own. That is a genuine data
+/// race in the C library underneath, not just a Rust-level one — reported
+/// in CI as an intermittent, un-attributable SIGSEGV partway through this
+/// crate's `gtk` lib tests, with no failing assertion (#2284), and
+/// reproduced locally against a real Linux GTK build as both that SIGSEGV
+/// and a deterministic-looking-but-actually-racy wrong measurement in
+/// `gtk::backend::tests::gtk_rich_text_popup_font_role_selects_the_requested_fonts_size`.
+///
+/// [`GtkBackend::enter_frame_scope`][super::backend::GtkBackend::enter_frame_scope]
+/// holds this for its entire body — the one choke point essentially every
+/// paint/round-trip test in this module runs through, whether directly or
+/// via [`testing::GtkDriver`]'s shared `render_frame`. `#[cfg(test)]`-gated
+/// so it costs real apps nothing: GTK's own glib main loop renders from a
+/// single thread in production, so no concurrent `enter_frame_scope` call
+/// ever happens outside a test binary.
+#[cfg(test)]
+pub(crate) static TEST_RENDER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 mod activity_bar;
 mod app_font;
 pub mod backend;

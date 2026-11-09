@@ -1217,6 +1217,12 @@ impl GtkBackend {
     /// 3. Calls don't nest meaningfully (a nested `enter_frame_scope`
     ///    would alias the same `&Context`, which Rust forbids at
     ///    the caller side anyway).
+    ///
+    /// In a `#[cfg(test)]` build, also holds
+    /// [`super::TEST_RENDER_LOCK`] for the whole call — see that lock's
+    /// doc for why: Pango's process-global font map is not thread-safe,
+    /// and this is the one choke point nearly every GTK paint test in
+    /// this crate runs real text shaping through.
     #[allow(dead_code)]
     pub fn enter_frame_scope<R>(
         &mut self,
@@ -1224,6 +1230,11 @@ impl GtkBackend {
         layout: &pango::Layout,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
+        #[cfg(test)]
+        let _test_render_guard = super::TEST_RENDER_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         let cr_ptr = cr as *const Context as *const ();
         let layout_ptr = layout as *const pango::Layout as *const ();
         let prev_cr = self.current_cr_ptr.replace(cr_ptr);
