@@ -26,6 +26,7 @@ pub mod semantic;
 pub mod services;
 pub mod text_input;
 pub mod tree_edit;
+pub mod widget_state;
 pub mod wire;
 pub mod wire_schema;
 
@@ -103,6 +104,7 @@ pub use services::{
 pub use text_input::{apply_text_input_edit, clamp_cursor, text_input_click_event};
 pub use text_input::{text_input_insert_event, text_input_key_event, TextEditorCache};
 pub use tree_edit::tree_row_rename_key_event;
+pub use widget_state::WidgetState;
 pub use wire::{
     decode_layout_node, decode_render_output, decode_shell_config, RenderOutput, StaticTabContent,
     LAYOUT_NODE_KEYS,
