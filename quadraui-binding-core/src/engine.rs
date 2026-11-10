@@ -3163,6 +3163,53 @@ mod tests {
         );
     }
 
+    /// Moving a `List`'s stored cursor is invisible to the app's own event
+    /// handler: a navigation key still arrives as the focus-scoped raw
+    /// `ListViewEvent::KeyPressed`, never as a synthesised
+    /// `SelectionChanged`. That is what an app tracking its own
+    /// `ListView::selected_idx` (the controlled shape) needs in order to
+    /// move that selection itself, so the widget-state cursor must not take
+    /// the event away from it.
+    #[test]
+    fn list_navigation_keys_reach_the_app_as_the_raw_key_pressed_event() {
+        use quadraui::ListViewEvent;
+
+        let mut driver = list_cursor_driver(500, 0, 0);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("list-cursor"))),
+                "the list is a tab stop and must accept focus"
+            );
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Down),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = driver.app().sink.borrow().dispatched.clone();
+        let list_events: Vec<_> = dispatched
+            .iter()
+            .filter_map(|(event, _)| match event {
+                UiEvent::List(id, inner) if *id == WidgetId::new("list-cursor") => Some(inner),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            list_events.len(),
+            1,
+            "exactly one list event must reach the app: {dispatched:?}"
+        );
+        assert!(
+            matches!(list_events[0], ListViewEvent::KeyPressed { .. }),
+            "Down must stay a raw focus-scoped KeyPressed: {:?}",
+            list_events[0]
+        );
+    }
+
     /// A minimal [`AppLogic`] painting a single `DataTable` through
     /// [`resolve_data_table_cursor`] — the `DataTable` counterpart of
     /// [`TreeLogic`]/[`ListCursorLogic`], for the widget-state

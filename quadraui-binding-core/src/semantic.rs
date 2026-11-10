@@ -50,20 +50,22 @@ fn data_table_key_event(
     Some(UiEvent::DataTable(id, DataTableEvent::RowSelected { idx }))
 }
 
-/// Up/Down/vim `j`/`k` navigation and Enter activation for a focused
-/// `List` with at least one row — the `List` counterpart of
-/// [`data_table_key_event`]'s own Up/Down/Enter handling. Enter is the
-/// keyboard equivalent of a row's pointer double-click
-/// (`ListViewEvent::ItemDoubleClicked`); Up/Down/`j`/`k` are the keyboard
-/// equivalent of a single click (`ListViewEvent::SelectionChanged`), per
-/// `ListView`'s own module doc ("Keyboard `j`/`k` move the selection the
-/// same way `SelectionChanged` does"). `selected_idx` is always a valid
+/// Enter on a focused `List` with at least one row activates the current
+/// selection — the keyboard equivalent of [`data_table_key_event`]'s own
+/// Enter handling, and of a `List` row's pointer double-click
+/// (`ListViewEvent::ItemDoubleClicked`). `selected_idx` is always a valid
 /// index into a non-empty `ListView::items` (the field has no `None`
-/// state), so the only case with nothing to activate/move is an empty list
+/// state), so the only case with nothing to activate is an empty list
 /// (`total_items == 0`), which returns `None` and leaves
 /// [`focus_scoped_key_event`] to fall through to the raw
 /// `ListViewEvent::KeyPressed`. Every other key also returns `None` for the
-/// same fallthrough.
+/// same fallthrough — in particular Up/Down/vim `j`/`k`, which move the
+/// `List`'s row cursor inside [`crate::host::apply_list_nav_key`]'s own
+/// `WidgetState` entry rather than through an event. A binding's handler
+/// therefore keeps seeing navigation keys as `ListViewEvent::KeyPressed`,
+/// which is what an app that tracks its own `ListView::selected_idx`
+/// (the controlled shape, since `selected_idx` is a required descriptor
+/// field) needs in order to move that selection itself.
 fn list_key_event(
     id: WidgetId,
     key: &Key,
@@ -79,12 +81,7 @@ fn list_key_event(
             ListViewEvent::ItemActivated { idx: selected_idx },
         ));
     }
-    let idx = match key {
-        Key::Named(NamedKey::Down) | Key::Char('j') => (selected_idx + 1).min(total_items - 1),
-        Key::Named(NamedKey::Up) | Key::Char('k') => selected_idx.saturating_sub(1),
-        _ => return None,
-    };
-    Some(UiEvent::List(id, ListViewEvent::SelectionChanged { idx }))
+    None
 }
 
 /// Left/Right navigation and Enter/Space activation for a focused `TabBar`
