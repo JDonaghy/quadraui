@@ -586,6 +586,37 @@ jobs:
       - name: introduction.md / README.md hello-world sync check
         run: python3 tools/test_introduction_matches_readme.py
 
+  wire-types-check:
+    # Staleness + acceptance gate for the generated wire types
+    # (`scripts/gen_wire_types.py`): fails if regenerating would change
+    # either committed output (`quadraui-py/python/quadraui/wire.pyi` /
+    # `quadraui-node/js/wire.d.ts`), if the "good" fixture scripts
+    # (`scripts/wire_types_sample.{py,ts}`) fail to type-check under
+    # `mypy --strict`/`tsc --strict`, or if the "bad" misspelled-key
+    # fixtures (`scripts/wire_types_sample_bad.{py,ts}`) type-check clean
+    # when they should not. No Rust toolchain needed -- the schema is
+    # transcribed by hand into `scripts/gen_wire_types.py`, not derived
+    # from `quadraui`'s own source at build time (see that script's own
+    # module doc for why).
+    name: Wire types (generated .pyi / .d.ts) staleness + type-check
+    runs-on: ubuntu-latest
+    needs: bump-shape
+    if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
+    # #1292: a Python regeneration pass plus two small `mypy --strict`/
+    # `tsc --strict` fixture runs; a healthy run is well under 5 minutes
+    # including dependency installs.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Regenerate + type-check wire types
+        run: scripts/check_wire_types.sh
+
   lockfile-check:
     # Catches a version-bump commit that edited `quadraui/Cargo.toml`
     # directly instead of going through `scripts/release.py prepare` (which
