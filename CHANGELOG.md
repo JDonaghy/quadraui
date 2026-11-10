@@ -58,6 +58,8 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+
+## [0.10.0] - 2026-11-10
 ### Added
 - `compose::{classify_tree_nav_key, TreeNavKey}` (#2305): the key
   classification `TreeController::handle_key`/`SidebarSystem`'s own key
