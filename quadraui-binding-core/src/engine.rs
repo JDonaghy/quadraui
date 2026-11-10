@@ -23,8 +23,9 @@ use quadraui::{
     CompletionsLayout, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, EditOp,
     Float, FloatLayout, FloatMeasure, Form, InteractionState, Key, MenuBar, MessageDialogButton,
     Modifiers, NamedKey, Point, Rect, RichTextPopup, RichTextPopupHit, RichTextPopupLayout,
-    RichTextPopupMeasure, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit, ToastOverlay,
-    ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, UiEvent, WidgetId,
+    RichTextPopupMeasure, TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit,
+    ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent, UiEvent,
+    WidgetId,
 };
 
 use crate::drag::{
@@ -36,7 +37,10 @@ use crate::hit::{
     chrome_hover_hit, data_table_rows_and_viewport, event_position, hit_test_painted,
     list_rows_and_viewport, set_event_widget, tree_rows_and_viewport, HitDetail, PaintedHit,
 };
-use crate::host::{apply_data_table_nav_key, apply_list_nav_key, apply_tree_nav_key};
+use crate::host::{
+    apply_data_table_nav_key, apply_list_nav_key, apply_split_divider_drag, apply_tab_activated,
+    apply_tree_nav_key, apply_tree_toggle_expand,
+};
 use crate::semantic::{focus_scoped_key_event, number_input_click_event, semantic_event_for_hit};
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
 use crate::widget_state::WidgetState;
@@ -128,7 +132,14 @@ pub struct InteractionEngine {
     /// `KeyPressed` routing writes a focused `Tree`'s cursor through it via
     /// [`crate::host::apply_tree_nav_key`]; a binding's own `render` reads
     /// it back (merged with whatever the descriptor pins) via
-    /// [`crate::host::resolve_tree_cursor`].
+    /// [`crate::host::resolve_tree_cursor`]. [`Self::handle`]'s final
+    /// dispatch also writes a divider drag's ratio, a clicked tab's active
+    /// index, and a toggled tree row's expand state through
+    /// [`crate::host::apply_split_divider_drag`]/[`crate::host::apply_tab_activated`]/
+    /// [`crate::host::apply_tree_toggle_expand`]; a binding's own `render`
+    /// reads each back the same way, via
+    /// [`crate::host::resolve_split_ratio`]/[`crate::host::resolve_tab_bar_active`]/
+    /// [`crate::host::resolve_tree_expansion`].
     widget_state: WidgetState,
     /// Owns the in-window dropdown behind a `"menu_bar"` extra: the
     /// open/close/keyboard-nav/submenu state machine that turns a click on
@@ -1799,6 +1810,30 @@ impl InteractionEngine {
             }
         }
 
+        // Persists the handful of events `Self::widget_state` tracks
+        // uncontrolled-by-default, regardless of what `sink` goes on to do
+        // with them: a divider drag's resolved ratio
+        // ([`crate::host::resolve_split_ratio`]'s own counterpart), a
+        // clicked tab becoming active
+        // ([`crate::host::resolve_tab_bar_active`]'s), or a toggled tree
+        // row's expand state ([`crate::host::resolve_tree_expansion`]'s).
+        // Never changes `event` itself — a controlled app's own handling
+        // of the same event is unaffected.
+        match &event {
+            UiEvent::SplitDividerDragged {
+                tree, new_ratio, ..
+            } => {
+                apply_split_divider_drag(&self.widget_state, *tree, *new_ratio);
+            }
+            UiEvent::TabBar(id, TabBarEvent::TabActivated { index }) => {
+                apply_tab_activated(&self.widget_state, *id, *index);
+            }
+            UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }) => {
+                apply_tree_toggle_expand(&self.widget_state, *id, path);
+            }
+            _ => {}
+        }
+
         let hit_detail = if attach_hit {
             hit.as_ref().map(|(_, detail)| detail)
         } else {
@@ -1876,14 +1911,20 @@ mod tests {
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
         AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, MouseButton, NamedKey,
-        Point, Reaction, Rect, ToolbarEvent, TreeView, UiEvent, WidgetId,
+        Point, Reaction, Rect, Split, TabBarEvent, ToolbarEvent, TreeEvent, TreeView, UiEvent,
+        WidgetId,
     };
 
     use super::{EventSink, InteractionEngine};
     use crate::drag::find_split_tree_layout;
     use crate::hit::HitDetail;
-    use crate::host::{resolve_data_table_cursor, resolve_list_cursor, resolve_tree_cursor};
-    use crate::layout::{LayoutLeaf, LayoutNode, LayoutPanel, LayoutSplitTree, LeafDescriptor};
+    use crate::host::{
+        resolve_data_table_cursor, resolve_list_cursor, resolve_split_ratio,
+        resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion,
+    };
+    use crate::layout::{
+        LayoutLeaf, LayoutNode, LayoutPanel, LayoutSplit, LayoutSplitTree, LeafDescriptor, Spacing,
+    };
     use crate::render::{
         draw_bands, list_viewport_rows, paint_layout, tree_viewport_rows, RenderRefs,
     };
@@ -3868,6 +3909,254 @@ mod tests {
         assert!(
             (new_ratio - expected_ratio).abs() < 0.001,
             "expected a ratio around {expected_ratio}, got {new_ratio}"
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single two-pane `quadraui::Split`
+    /// node (via [`paint_layout`]'s `LayoutNode::Split` arm), resolving the
+    /// ratio through [`resolve_split_ratio`] before every render — the
+    /// `Split` counterpart of [`SplitTreeLogic`]. `split` is the raw
+    /// descriptor an app would hand a binding (never mutated by a drag),
+    /// mirroring [`TreeLogic::tree`].
+    struct SplitLogic {
+        split: Split,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for SplitLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let resolved = resolve_split_ratio(self.engine.widget_state(), &self.split);
+            let mut hits = Vec::new();
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let node = LayoutNode::Split(LayoutSplit {
+                split: resolved,
+                first: Box::new(LayoutNode::Leaf(LayoutLeaf {
+                    id: "left".to_string(),
+                    descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("left-btn"), "L")),
+                    scroll_px: None,
+                })),
+                second: Box::new(LayoutNode::Leaf(LayoutLeaf {
+                    id: "right".to_string(),
+                    descriptor: LeafDescriptor::Button(Button::new(
+                        WidgetId::new("right-btn"),
+                        "R",
+                    )),
+                    scroll_px: None,
+                })),
+                spacing: Spacing::default(),
+            });
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Dragging a two-pane `Split`'s divider persists the resolved ratio
+    /// into the widget-state store, so a later render with the app's own
+    /// `Split::ratio` left at its original, never-updated `0.5` (the
+    /// "uncontrolled, no app state" shape this module's own doc describes)
+    /// still paints the dragged ratio — this crate's acceptance contract
+    /// for the split-ratio half of the widget-state store, exercised
+    /// end-to-end through [`InteractionEngine::handle`] rather than only
+    /// at the [`resolve_split_ratio`]/[`crate::host::apply_split_divider_drag`]
+    /// unit level `crate::host::tests` already covers.
+    #[test]
+    fn dragging_a_split_divider_persists_the_ratio_into_the_widget_state_store() {
+        let split = Split {
+            id: WidgetId::new("split"),
+            direction: quadraui::SplitDirection::Horizontal,
+            ratio: 0.5,
+            first_min: 0.0,
+            second_min: 0.0,
+        };
+        let logic = SplitLogic {
+            split,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 10);
+        driver.render();
+
+        let divider_bounds = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    crate::hit::PaintedHit::Split { layout } => Some(layout.divider_bounds),
+                    _ => None,
+                })
+                .expect("the split should have painted a divider")
+        };
+        // `divider_bounds.x` itself, not its midpoint: at an exact `0.5`
+        // ratio on an even-width viewport the midpoint lands on the exact
+        // boundary with the second pane's hit region, which wins the tie
+        // (`SplitLayout::hit_test` checks regions in order) and the click
+        // lands on a button instead of the divider.
+        let divider_point = Point::new(
+            divider_bounds.x,
+            divider_bounds.y + divider_bounds.height / 2.0,
+        );
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: divider_point,
+            modifiers: Modifiers::default(),
+        });
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(divider_point.x + 15.0, divider_point.y),
+            buttons: quadraui::ButtonMask {
+                left: true,
+                right: false,
+                middle: false,
+            },
+        });
+
+        let dragged_ratio = {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            dispatched
+                .iter()
+                .find_map(|(event, _)| match event {
+                    UiEvent::SplitDividerDragged {
+                        tree, new_ratio, ..
+                    } if *tree == WidgetId::new("split") => Some(*new_ratio),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("expected a SplitDividerDragged event: {:?}", dispatched))
+        };
+        assert_ne!(
+            dragged_ratio, 0.5,
+            "the drag must have actually moved the ratio away from its starting 0.5"
+        );
+
+        // The app's own `Split` descriptor is never touched by the drag —
+        // this render still hands `paint_layout` the exact same `ratio:
+        // 0.5` it always has, the "uncontrolled, no app state" shape this
+        // test is about.
+        driver.render();
+        let resolved_ratio = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    crate::hit::PaintedHit::Split { layout } => Some(layout.resolved_ratio),
+                    _ => None,
+                })
+                .expect("the split should still have painted a divider")
+        };
+        assert!(
+            (resolved_ratio - dragged_ratio).abs() < 0.001,
+            "the dragged ratio must survive a render whose descriptor still says 0.5: got {resolved_ratio}, expected {dragged_ratio}"
+        );
+    }
+
+    /// Clicking a tab (`TabBarEvent::TabActivated`, dispatched the same
+    /// already-semantic shape a real click on a tab body resolves to)
+    /// persists the active index into the widget-state store, so a later
+    /// render with the app's own `TabBar` descriptor left exactly as it
+    /// started (no tab marked active — "uncontrolled, no app state") still
+    /// shows the clicked tab active. Exercises
+    /// [`InteractionEngine::handle`]'s own persistence hook directly,
+    /// rather than only [`resolve_tab_bar_active`]/
+    /// [`crate::host::apply_tab_activated`] at the `crate::host::tests`
+    /// unit level.
+    #[test]
+    fn clicking_a_tab_persists_the_active_index_into_the_widget_state_store() {
+        let id = WidgetId::new("tabs");
+        let mut engine = InteractionEngine::new();
+        let mut sink = RecordingSink::default();
+        let mut backend = quadraui::tui::TuiBackend::new();
+
+        engine.handle(
+            UiEvent::TabBar(id, TabBarEvent::TabActivated { index: 2 }),
+            &mut backend,
+            &mut sink,
+        );
+
+        let tab_bar = quadraui::TabBar {
+            id,
+            tabs: (0..4)
+                .map(|i| quadraui::TabItem {
+                    label: format!("tab {i}"),
+                    ..Default::default()
+                })
+                .collect(),
+            scroll_offset: 0,
+            right_segments: Vec::new(),
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+        let resolved = resolve_tab_bar_active(engine.widget_state(), &tab_bar);
+        assert!(
+            resolved.tabs[2].is_active,
+            "the clicked tab must stay active even though the descriptor never marks any tab active"
+        );
+    }
+
+    /// Toggling a tree row's expand state (`TreeEvent::RowToggleExpand`,
+    /// dispatched the same already-semantic shape a real click on a
+    /// chevron resolves to) persists it into the widget-state store, so a
+    /// later render with the app's own `TreeView` descriptor left exactly
+    /// as it started ("uncontrolled, no app state") still shows the row
+    /// expanded. Exercises [`InteractionEngine::handle`]'s own persistence
+    /// hook directly, rather than only [`resolve_tree_expansion`]/
+    /// [`crate::host::apply_tree_toggle_expand`] at the `crate::host::tests`
+    /// unit level.
+    #[test]
+    fn toggling_a_tree_row_persists_the_expand_state_into_the_widget_state_store() {
+        let id = WidgetId::new("tree");
+        let path = vec![0_u16];
+        let mut engine = InteractionEngine::new();
+        let mut sink = RecordingSink::default();
+        let mut backend = quadraui::tui::TuiBackend::new();
+
+        let tree = TreeView {
+            id,
+            rows: vec![quadraui::TreeRow {
+                path: path.clone(),
+                indent: 0,
+                icon: None,
+                text: quadraui::StyledText::plain("row"),
+                badge: None,
+                is_expanded: Some(false),
+                decoration: Default::default(),
+                edit: None,
+            }],
+            selection_mode: quadraui::SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: 0,
+            style: Default::default(),
+            has_focus: false,
+        };
+        // A render always happens before a click can land on a chevron —
+        // this seeds `resolve_tree_expansion`'s own baseline from the
+        // descriptor's starting `is_expanded: Some(false)`.
+        resolve_tree_expansion(engine.widget_state(), &tree);
+
+        engine.handle(
+            UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }),
+            &mut backend,
+            &mut sink,
+        );
+
+        let resolved = resolve_tree_expansion(engine.widget_state(), &tree);
+        assert_eq!(
+            resolved.rows[0].is_expanded,
+            Some(true),
+            "the toggled row must stay expanded even though the descriptor never changes"
         );
     }
 
