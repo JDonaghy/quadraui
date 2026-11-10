@@ -16,9 +16,8 @@
 //! - `Enter`                      select first row of active section
 //! - `q` / `Esc`                  quit
 
-use quadraui::compose::Handled;
 use quadraui::{
-    AppLogic, Backend, Color, Decoration, InteractionState, Key, NamedKey, NavigationMode,
+    AppLogic, Backend, Color, Decoration, Handled, InteractionState, Key, NamedKey, NavigationMode,
     Reaction, Rect, ScrollMode, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
     StatusBarInteraction, StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
 };

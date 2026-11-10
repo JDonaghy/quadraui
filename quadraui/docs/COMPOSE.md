@@ -86,6 +86,11 @@ the controller for you; you supply `BackendWidget` content per tab.
 
 **Events (`BottomPanelEvent`):** `TabActivated(String)`,
 `TabClosed(String)`, `MaximiseToggled`, `Resized(f32)`.
+`handle_click_event` returns `Handled<BottomPanelEvent>`: `Event(..)`
+for a tab activation/close/maximise toggle, `Consumed` for a dead-space
+click inside the tab strip, `Ignored` for a click outside the strip
+entirely. The older `handle_click` (returns `Option<BottomPanelEvent>`)
+is deprecated in favour of `handle_click_event`.
 
 **Smallest wiring:**
 
@@ -654,15 +659,18 @@ mouse event plus the bar's rect; read `hovered_id()` / `pressed_id()`
 at render time and pass them to `Backend::draw_status_bar`. Eliminates
 per-backend status-bar hover routing.
 
-**Events (`StatusBarAction`):** `Clicked(WidgetId)`, `Redraw`,
-`Ignored`.
+**Events (`Handled<WidgetId>` via `handle_event`):** `Event(WidgetId)`
+(a segment was clicked), `Consumed` (hover/press state changed, caller
+should redraw), `Ignored` (not relevant to the status bar). The older
+`handle` + `StatusBarAction` (`Clicked(WidgetId)`, `Redraw`, `Ignored`)
+is deprecated in favour of `handle_event`.
 
 **Smallest wiring:**
 
 ```ignore
-let action = self.status_interaction.handle(&event, bar_rect);
+let handled = self.status_interaction.handle_event(&event, bar_rect);
 backend.draw_status_bar(bar_rect, &segments, self.status_interaction.hovered_id());
-if let StatusBarAction::Clicked(id) = action { run_segment_command(id); }
+if let Handled::Event(id) = handled { run_segment_command(id); }
 ```
 
 **Example:** `examples/tui_full_chrome_demo.rs` / `examples/gtk_full_chrome_demo.rs`
