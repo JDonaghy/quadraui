@@ -37,6 +37,7 @@ use crate::hit::{
 };
 use crate::semantic::{focus_scoped_key_event, number_input_click_event, semantic_event_for_hit};
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
+use crate::widget_state::WidgetState;
 
 /// `backend.viewport()`, as a `(0, 0)`-origin [`Rect`] — the shape every
 /// anchored-overlay layout call here (`Tooltip`/`Completions`/`Float`/
@@ -117,6 +118,14 @@ pub struct InteractionEngine {
     /// [`crate::text_input::apply_text_input_edit`]'s own doc for why a
     /// cache is needed at all, including its own `undo_stack`.
     text_editors: TextEditorCache,
+    /// Framework-owned per-widget state store, keyed by `WidgetId`,
+    /// surviving across frames — see [`crate::widget_state::WidgetState`]'s
+    /// own module doc for its controlled/uncontrolled resolution and GC
+    /// policies. [`Self::set_hits`] sweeps it every frame alongside
+    /// [`Self::text_editors`]'s own pruning. No widget kind in this crate
+    /// reads or writes through it yet; that's scoped to later work that
+    /// builds on this store.
+    widget_state: WidgetState,
     /// Owns the in-window dropdown behind a `"menu_bar"` extra: the
     /// open/close/keyboard-nav/submenu state machine that turns a click on
     /// a top-level item into an open dropdown and a selection into
@@ -247,6 +256,10 @@ impl InteractionEngine {
     /// rendering (its host removes it, navigates away, ...) leaves its
     /// cached [`quadraui::TextEditor`] — buffer, cursor, and up to
     /// `UNDO_HISTORY_LIMIT` full undo snapshots — in the map forever.
+    ///
+    /// Also sweeps [`Self::widget_state`] via [`WidgetState::gc`] — its own
+    /// "seen this frame" marks, not `hits`, drive what survives; see that
+    /// type's own module doc.
     pub fn set_hits(&self, hits: Vec<PaintedHit>) {
         let live_text_inputs: Vec<WidgetId> = hits
             .iter()
@@ -260,6 +273,7 @@ impl InteractionEngine {
         self.text_editors
             .borrow_mut()
             .retain(|id, _| live_text_inputs.contains(id));
+        self.widget_state.gc();
         *self.hit_map.borrow_mut() = hits;
     }
 
