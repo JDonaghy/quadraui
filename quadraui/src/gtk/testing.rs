@@ -145,9 +145,7 @@ impl<A: AppLogic> GtkDriver<A> {
             // guards — without the same lock here, a concurrently-running
             // test's paint could race this seeding step.
             #[cfg(test)]
-            let _test_render_guard = super::TEST_RENDER_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _test_render_guard = super::test_render_guard();
 
             let cr = Context::new(&surface).expect("Context::new on headless ImageSurface");
             let pctx = pangocairo::functions::create_context(&cr);
@@ -198,6 +196,12 @@ impl<A: AppLogic> GtkDriver<A> {
             return Reaction::Exit;
         }
         let reaction = {
+            // Tick-driven work (e.g. hover/tooltip layout) measures text
+            // via the stored Pango context the same way `Self::dispatch`'s
+            // hit-testing does — see `super::TEST_RENDER_LOCK`'s doc.
+            #[cfg(test)]
+            let _test_render_guard = super::test_render_guard();
+
             let (backend, app) = self.core.parts_mut();
             app.tick(backend)
         };
@@ -223,9 +227,7 @@ impl<A: AppLogic> GtkDriver<A> {
             // `super::TEST_RENDER_LOCK` guards there, so this path needs
             // the same lock.
             #[cfg(test)]
-            let _test_render_guard = super::TEST_RENDER_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _test_render_guard = super::test_render_guard();
 
             let (backend, app) = self.core.parts_mut();
             dispatch_event(event, backend, app)
