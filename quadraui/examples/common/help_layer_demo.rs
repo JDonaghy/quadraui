@@ -23,9 +23,10 @@
 //! - `q` / `Esc`          quit (when no overlay is open)
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
+use quadraui::compose::Handled;
 use quadraui::{
     filter_help_actions, help_actions_to_palette_items, Backend, Color, DualModePaletteController,
-    DualModePaletteEvent, HelpAction, HelpNote, HelpOverlayController, HelpOverlayEvent,
+    DualModePaletteEvent, HelpAction, HelpNote, HelpOverlayAction, HelpOverlayController,
     HelpRegistry, InteractionState, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig,
     ShellContext, StatusBar, StatusBarSegment, UiEvent, ViewHelp, WidgetId,
 };
@@ -237,17 +238,17 @@ impl ShellApp for HelpLayerDemo {
 
         // Help overlay: `?` opens/closes when relevant, swallows keys
         // while open, `Ignored` when closed and the key isn't `?`.
-        match self.help_overlay.handle(&event) {
-            HelpOverlayEvent::Opened => {
+        match self.help_overlay.handle_event(&event) {
+            Handled::Event(HelpOverlayAction::Opened) => {
                 self.last_message = format!("Help — {}", self.active_panel.as_str());
                 return Reaction::Redraw;
             }
-            HelpOverlayEvent::Closed => {
+            Handled::Event(HelpOverlayAction::Closed) => {
                 self.last_message = "Help closed".into();
                 return Reaction::Redraw;
             }
-            HelpOverlayEvent::Consumed => return Reaction::Redraw,
-            HelpOverlayEvent::Ignored => {}
+            Handled::Consumed => return Reaction::Redraw,
+            Handled::Ignored => {}
         }
 
         match event {

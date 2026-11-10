@@ -18,10 +18,10 @@
 //! already covers, so it isn't duplicated here; this demo is scoped to
 //! [`HelpOverlayController`] itself.
 
+use quadraui::compose::Handled;
 use quadraui::{
-    Backend, BackendCaps, Color, HelpAction, HelpNote, HelpOverlayController, HelpOverlayEvent,
-    HelpRegistry, InteractionState, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, ViewHelp,
-    WidgetId,
+    Backend, BackendCaps, Color, HelpAction, HelpNote, HelpOverlayController, HelpRegistry,
+    InteractionState, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, ViewHelp, WidgetId,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
@@ -171,11 +171,9 @@ impl Demo for HelpOverlayDemo {
         _backend: &mut dyn Backend,
         _area: Rect,
     ) -> Reaction {
-        match self.overlay.handle(event) {
-            HelpOverlayEvent::Opened | HelpOverlayEvent::Closed | HelpOverlayEvent::Consumed => {
-                Reaction::Redraw
-            }
-            HelpOverlayEvent::Ignored => Reaction::Continue,
+        match self.overlay.handle_event(event) {
+            Handled::Event(_) | Handled::Consumed => Reaction::Redraw,
+            Handled::Ignored => Reaction::Continue,
         }
     }
 

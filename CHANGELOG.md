@@ -100,6 +100,15 @@ only a push to `main` runs this workflow.
   alongside their now-deprecated originals (see `### Deprecated`); the
   remaining `compose` controllers listed in #2298 migrate incrementally in
   follow-up PRs under the same issue.
+- `HelpOverlayController::handle_event`/`open_action`/`close_action`/
+  `toggle_action` (#2298): one more `compose` controller onto
+  `compose::Handled<E>`. `handle_event` returns `Handled<HelpOverlayAction>`
+  (`HelpOverlayAction` carries just the semantic `Opened`/`Closed` payloads
+  `HelpOverlayEvent` used to mix with its own `Consumed`/`Ignored`);
+  `open_action`/`close_action`/`toggle_action` return the new
+  `HelpOverlayAction` directly (they're unconditional, so never
+  `Consumed`/`Ignored`). Added alongside their now-deprecated
+  `handle`/`open`/`close`/`toggle` originals (see `### Deprecated`).
 - `quadraui-node`: `QuiApp.armWakeNotify`/`disarmWakeNotify` (#2238) register
   a threadsafe notifier `QuiAppWaker.post`/`wake`/`postAfter`/`wakeAfter`
   fires the instant they deliver, from whatever thread that happens on.
@@ -305,6 +314,16 @@ only a push to `main` runs this workflow.
   this PR; `handle`/`MessageDialogEvent` stay as a thin adapter with their
   own tests still passing. Removal target: same as
   `StatusBarInteraction::handle` above.
+- `HelpOverlayController::handle`/`open`/`close`/`toggle` /
+  `HelpOverlayEvent` (#2298): use `handle_event`/`open_action`/
+  `close_action`/`toggle_action` instead — `Consumed`/`Ignored` from
+  `handle` are `Handled::Consumed`/`Handled::Ignored`, and the
+  `Opened`/`Closed` payloads move to the new `HelpOverlayAction`, returned
+  directly by the `_action` methods and under `Handled::Event` by
+  `handle_event`. Every in-repo caller (`examples/common/help_layer_demo.rs`,
+  `quadraui-gallery`'s help-overlay demo) migrates in this PR; the four
+  deprecated originals stay as thin adapters with their own tests still
+  passing. Removal target: same as `StatusBarInteraction::handle` above.
 - `TreeController::jump_to_edge` (#2178): use `move_selection_to_edge`,
   which takes the new `Edge::Start`/`Edge::End` enum instead of a
   `to_start: bool` positional param. Every in-repo caller
