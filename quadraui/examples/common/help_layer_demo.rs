@@ -23,12 +23,12 @@
 //! - `q` / `Esc`          quit (when no overlay is open)
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
-use quadraui::compose::Handled;
+use quadraui::compose::{DualModePaletteAction, Handled};
 use quadraui::{
     filter_help_actions, help_actions_to_palette_items, Backend, Color, DualModePaletteController,
-    DualModePaletteEvent, HelpAction, HelpNote, HelpOverlayAction, HelpOverlayController,
-    HelpRegistry, InteractionState, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig,
-    ShellContext, StatusBar, StatusBarSegment, UiEvent, ViewHelp, WidgetId,
+    HelpAction, HelpNote, HelpOverlayAction, HelpOverlayController, HelpRegistry, InteractionState,
+    Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext, StatusBar,
+    StatusBarSegment, UiEvent, ViewHelp, WidgetId,
 };
 
 const EXPLORER_PANEL: &str = "panel:explorer";
@@ -202,8 +202,8 @@ impl ShellApp for HelpLayerDemo {
             } else {
                 10
             };
-            let reaction = match palette.handle(&event, visible_rows) {
-                DualModePaletteEvent::ItemConfirmed { idx } => {
+            let reaction = match palette.handle_event(&event, visible_rows) {
+                Handled::Event(DualModePaletteAction::ItemConfirmed { idx }) => {
                     let query = palette.query().to_string();
                     let matched = self.filtered_actions(&query);
                     if let Some(action) = matched.get(idx) {
@@ -211,23 +211,23 @@ impl ShellApp for HelpLayerDemo {
                     }
                     Reaction::Redraw
                 }
-                DualModePaletteEvent::QueryChanged { value } => {
+                Handled::Event(DualModePaletteAction::QueryChanged { value }) => {
                     let matched = self.filtered_actions(&value);
                     palette.set_items(help_actions_to_palette_items(matched, &value));
                     self.palette = Some(palette);
                     return Reaction::Redraw;
                 }
-                DualModePaletteEvent::Cancelled => {
+                Handled::Event(DualModePaletteAction::Cancelled) => {
                     self.last_message = "Command palette closed".into();
                     Reaction::Redraw
                 }
-                DualModePaletteEvent::TextConfirmed { .. }
-                | DualModePaletteEvent::ModeToggled { .. }
-                | DualModePaletteEvent::Consumed => {
+                Handled::Event(DualModePaletteAction::TextConfirmed { .. })
+                | Handled::Event(DualModePaletteAction::ModeToggled { .. })
+                | Handled::Consumed => {
                     self.palette = Some(palette);
                     return Reaction::Redraw;
                 }
-                DualModePaletteEvent::Ignored => {
+                Handled::Ignored => {
                     self.palette = Some(palette);
                     return Reaction::Continue;
                 }

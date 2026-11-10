@@ -109,6 +109,13 @@ only a push to `main` runs this workflow.
   `HelpOverlayAction` directly (they're unconditional, so never
   `Consumed`/`Ignored`). Added alongside their now-deprecated
   `handle`/`open`/`close`/`toggle` originals (see `### Deprecated`).
+- `DualModePaletteController::handle_event`/`handle_mouse_event` (#2298):
+  one more `compose` controller onto `compose::Handled<E>`. Both return
+  `Handled<DualModePaletteAction>` (`DualModePaletteAction` carries just the
+  semantic `ItemConfirmed`/`TextConfirmed`/`QueryChanged`/`ModeToggled`/
+  `Cancelled` payloads `DualModePaletteEvent` used to mix with its own
+  `Consumed`/`Ignored`). Added alongside their now-deprecated
+  `handle`/`handle_mouse` originals (see `### Deprecated`).
 - `quadraui-node`: `QuiApp.armWakeNotify`/`disarmWakeNotify` (#2238) register
   a threadsafe notifier `QuiAppWaker.post`/`wake`/`postAfter`/`wakeAfter`
   fires the instant they deliver, from whatever thread that happens on.
@@ -324,6 +331,17 @@ only a push to `main` runs this workflow.
   `quadraui-gallery`'s help-overlay demo) migrates in this PR; the four
   deprecated originals stay as thin adapters with their own tests still
   passing. Removal target: same as `StatusBarInteraction::handle` above.
+- `DualModePaletteController::handle`/`handle_mouse` / `DualModePaletteEvent`
+  (#2298): use `handle_event`/`handle_mouse_event`, which return
+  `Handled<DualModePaletteAction>` instead — `Consumed`/`Ignored` are
+  `Handled::Consumed`/`Handled::Ignored`, and the
+  `ItemConfirmed`/`TextConfirmed`/`QueryChanged`/`ModeToggled`/`Cancelled`
+  payloads move to the new `DualModePaletteAction` under `Handled::Event`.
+  Every in-repo caller (`examples/common/{palette_dual_mode_app,
+  help_layer_demo}.rs`, `quadraui-gallery`'s command-palette demo) migrates
+  in this PR; `handle`/`handle_mouse`/`DualModePaletteEvent` stay as a thin
+  adapter with their own tests still passing. Removal target: same as
+  `StatusBarInteraction::handle` above.
 - `TreeController::jump_to_edge` (#2178): use `move_selection_to_edge`,
   which takes the new `Edge::Start`/`Edge::End` enum instead of a
   `to_start: bool` positional param. Every in-repo caller

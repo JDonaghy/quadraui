@@ -5,10 +5,11 @@
 //! branches; `Tab` switches to **Input mode**, a free-text field for
 //! naming a new one. Two variants show the popup at two sizes.
 
+use quadraui::compose::{DualModePaletteAction, Handled};
 use quadraui::{
-    Backend, BackendCaps, Color, DualModePaletteController, DualModePaletteEvent, InteractionState,
-    PaletteItem, PaletteMode, Reaction, Rect, StatusBar, StatusBarSegment, StyledSpan, StyledText,
-    UiEvent, WidgetId, PALETTE_CHROME_ROWS,
+    Backend, BackendCaps, Color, DualModePaletteController, InteractionState, PaletteItem,
+    PaletteMode, Reaction, Rect, StatusBar, StatusBarSegment, StyledSpan, StyledText, UiEvent,
+    WidgetId, PALETTE_CHROME_ROWS,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -137,13 +138,13 @@ impl Demo for PaletteDemo {
         let ev = match event {
             UiEvent::MouseDown { .. } => {
                 self.picker
-                    .handle_mouse(event, backend, popup_rect, visible_rows)
+                    .handle_mouse_event(event, backend, popup_rect, visible_rows)
             }
-            _ => self.picker.handle(event, visible_rows),
+            _ => self.picker.handle_event(event, visible_rows),
         };
 
         match ev {
-            DualModePaletteEvent::ItemConfirmed { idx } => {
+            Handled::Event(DualModePaletteAction::ItemConfirmed { idx }) => {
                 let query = self.picker.query().to_lowercase();
                 let matched: Vec<&&str> = BRANCHES
                     .iter()
@@ -155,14 +156,14 @@ impl Demo for PaletteDemo {
                 }
                 Reaction::Redraw
             }
-            DualModePaletteEvent::TextConfirmed { value } => {
+            Handled::Event(DualModePaletteAction::TextConfirmed { value }) => {
                 if !value.is_empty() {
                     self.current_branch = value.clone();
                     self.status = format!("Created and switched to '{value}'");
                 }
                 Reaction::Redraw
             }
-            DualModePaletteEvent::QueryChanged { value } => {
+            Handled::Event(DualModePaletteAction::QueryChanged { value }) => {
                 let q = value.to_lowercase();
                 let matching: Vec<&str> = BRANCHES
                     .iter()
@@ -172,7 +173,7 @@ impl Demo for PaletteDemo {
                 self.picker.set_items(branches_as_items(&matching));
                 Reaction::Redraw
             }
-            DualModePaletteEvent::ModeToggled { new_mode } => {
+            Handled::Event(DualModePaletteAction::ModeToggled { new_mode }) => {
                 self.status = match new_mode {
                     PaletteMode::Input => "Type a new branch name, Enter to create".into(),
                     PaletteMode::List => "Type to filter, Enter to select".into(),
@@ -188,16 +189,16 @@ impl Demo for PaletteDemo {
                 }
                 Reaction::Redraw
             }
-            DualModePaletteEvent::Cancelled => {
+            Handled::Event(DualModePaletteAction::Cancelled) => {
                 self.status = "Dismissed — reopen by switching variants".into();
                 Reaction::Redraw
             }
-            DualModePaletteEvent::Consumed => Reaction::Redraw,
+            Handled::Consumed => Reaction::Redraw,
             // Escape falls through to `Reaction::Continue` — the
             // gallery shell quits on an unconsumed Escape, matching
             // every other gallery demo's convention of not re-handling
             // the quit key itself.
-            DualModePaletteEvent::Ignored => Reaction::Continue,
+            Handled::Ignored => Reaction::Continue,
         }
     }
 

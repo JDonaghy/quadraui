@@ -103,7 +103,13 @@ pub use bottom_panel::{
 };
 pub use chat_controller::{ChatController, ChatControllerEvent, ChatRole, ChatTurn};
 pub use context_menu_controller::{ContextMenuController, ContextMenuOutcome};
-pub use dual_mode_palette::{DualModePaletteController, DualModePaletteEvent};
+pub use dual_mode_palette::{DualModePaletteAction, DualModePaletteController};
+// `DualModePaletteEvent` is `#[deprecated]` (use
+// `DualModePaletteController::handle_event`'s `Handled<DualModePaletteAction>`
+// instead). Allow it here since `pub use` of a deprecated item is itself a
+// use site.
+#[allow(deprecated)]
+pub use dual_mode_palette::DualModePaletteEvent;
 pub use file_picker::{FilePickerController, FilePickerEvent, FilePickerMode};
 pub use focus_group::FocusGroup;
 pub use focus_ring::FocusRing;

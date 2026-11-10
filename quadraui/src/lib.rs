@@ -758,12 +758,12 @@ pub use compose::{
     filter_help_actions, help_actions_to_palette_items, notify_or_toast, AppShell, AppShellEvent,
     AppShellLayout, BackendWidget, BottomBand, BottomPanelConfig, BottomPanelController,
     BottomPanelEvent, BottomPanelLayout, BottomPanelTab, ChatController, ChatControllerEvent,
-    ChatRole, ChatTurn, ContextMenuController, ContextMenuOutcome, DualModePaletteController,
-    DualModePaletteEvent, Edge, FilePickerController, FilePickerEvent, FilePickerMode, FocusGroup,
-    FocusRing, FolderPickerController, FolderPickerEvent, FormController, FormControllerEvent,
-    FormDialogController, FormDialogEvent, GroupLayout, Handled, HelpAction, HelpNote,
-    HelpOverlayAction, HelpOverlayController, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent,
-    MenuSystem, MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab,
+    ChatRole, ChatTurn, ContextMenuController, ContextMenuOutcome, DualModePaletteAction,
+    DualModePaletteController, Edge, FilePickerController, FilePickerEvent, FilePickerMode,
+    FocusGroup, FocusRing, FolderPickerController, FolderPickerEvent, FormController,
+    FormControllerEvent, FormDialogController, FormDialogEvent, GroupLayout, Handled, HelpAction,
+    HelpNote, HelpOverlayAction, HelpOverlayController, HelpRegistry, ListHoverTracker, MenuDef,
+    MenuEvent, MenuSystem, MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab,
     PanelDefinition, SectionKind, ShellPosition, SidebarEvent, SidebarPanelBody,
     SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef, SidebarSystem,
     StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout, ToastStackAction,
@@ -771,15 +771,19 @@ pub use compose::{
     TreeHoverTracker, ViewHelp, WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout,
     PALETTE_CHROME_ROWS,
 };
-// `StatusBarAction`, `MessageDialogEvent`, `ToastStackEvent` and
-// `HelpOverlayEvent` are `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
-// `Handled<WidgetId>`, `MessageDialogController::handle_event`'s
-// `Handled<MessageDialogChoice>`, `ToastStackController::handle_event`'s
-// `Handled<ToastStackAction>`, and `HelpOverlayController::handle_event`'s
-// `Handled<HelpOverlayAction>` instead). Allow them here since `pub use` of a
-// deprecated item is itself a use site.
+// `StatusBarAction`, `MessageDialogEvent`, `ToastStackEvent`,
+// `HelpOverlayEvent` and `DualModePaletteEvent` are `#[deprecated]` (use
+// `StatusBarInteraction::handle_event`'s `Handled<WidgetId>`,
+// `MessageDialogController::handle_event`'s `Handled<MessageDialogChoice>`,
+// `ToastStackController::handle_event`'s `Handled<ToastStackAction>`,
+// `HelpOverlayController::handle_event`'s `Handled<HelpOverlayAction>`, and
+// `DualModePaletteController::handle_event`'s
+// `Handled<DualModePaletteAction>` instead). Allow them here since `pub use`
+// of a deprecated item is itself a use site.
 #[allow(deprecated)]
-pub use compose::{HelpOverlayEvent, MessageDialogEvent, StatusBarAction, ToastStackEvent};
+pub use compose::{
+    DualModePaletteEvent, HelpOverlayEvent, MessageDialogEvent, StatusBarAction, ToastStackEvent,
+};
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
     text_selection_line_range, DragState, DragTarget, ScrollSurface, SurfaceScrollbar, TextRegion,
