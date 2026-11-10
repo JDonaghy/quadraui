@@ -45,7 +45,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
@@ -95,9 +95,17 @@ def _ts_wrap(t: Ty) -> str:
 def NULLABLE(t: Ty) -> Ty:
     """The value may be `None`/`null`, but the *key* is still required --
     distinct from [`Field.optional`], which controls whether the key may be
-    omitted. Rust's `Option<T>` field with no `#[serde(default)]` decodes
-    this way: the wire dict must carry the key, but its value may be
-    `null`."""
+    omitted. This is stricter than the actual Rust decode: serde's derive
+    routes a missing field through `Deserialize::deserialize` on `none`,
+    which `Option<T>` always accepts, so an `Option<T>` field decodes fine
+    whether the wire dict omits the key entirely or carries it set to
+    `null` -- `#[serde(default)]` isn't needed either way. [`NULLABLE`]
+    (rather than [`Field.optional`]) is still the right default for most
+    `Option<T>` fields here because this repo's own house style always
+    writes the explicit `None`/`null` (see `quadraui-py/tests/
+    test_descriptors.py` and `quadraui-py/examples/file_manager.py`) --
+    reach for `optional=True` instead when a field is genuinely meant to be
+    omittable on the wire, not just nullable."""
     return Ty(f"Optional[{t.py}]", f"{_ts_wrap(t)} | null")
 
 
@@ -150,7 +158,7 @@ class ObjDef:
     itself) so `"Tag" in value` narrows the way `quadraui-py/examples/
     file_manager.py`'s own event handler already does. A tagged union a
     binding only *writes* (a layout-tree node, a `ToolbarButton`) instead
-    gets one [`ObjDef`] per variant, combined into a [`UnionDef`] below --
+    gets one [`ObjDef`] per variant, combined into a [`union_of`] below --
     stricter for construction, since a dict literal checked against a
     `Union` of single-required-key members rejects two tags set at once,
     which a shared flat object (every key optional) would silently accept."""
@@ -174,6 +182,15 @@ class ObjDef:
     # while [`render_python`] keeps rendering every [`ObjDef`] (flat or
     # not) as one `TypedDict`.
     discriminated: bool = False
+    # Extra fields present alongside whichever tag [`discriminated`] member
+    # is set -- not a tag of their own. [`render_python`] folds these into
+    # the same `TypedDict` as every other field (already how a flat object
+    # works); [`render_typescript`] has to splice them into *each* union
+    # member's object-type literal instead, since a `discriminated` union
+    # has no single interface to add an optional property to. Every
+    # `common` field should itself be [`Field.optional`] -- it is never
+    # part of what makes a tag's payload well-formed.
+    common: List[Field] = field(default_factory=list)
 
 
 @dataclass
@@ -186,12 +203,22 @@ class AliasDef:
 Def = object  # ObjDef | AliasDef, kept loose to avoid importing Union twice
 
 
-def flat(name: str, variants: Sequence[Tuple[str, Ty]], doc: str = "") -> ObjDef:
+def flat(
+    name: str,
+    variants: Sequence[Tuple[str, Ty]],
+    doc: str = "",
+    common: Sequence[Field] = (),
+) -> ObjDef:
     """An [`ObjDef`] with one optional [`Field`] per `(tag, payload_type)`
     pair -- see [`ObjDef`]'s own doc for when to reach for this over a
-    per-variant [`UnionDef`]."""
+    per-variant [`UnionDef`]. `common` (see [`ObjDef.common`]) is for a key
+    that can ride alongside whichever tag is set, not a tag of its own."""
     return ObjDef(
-        name, [Field(tag, ty, optional=True) for tag, ty in variants], doc, discriminated=True
+        name,
+        [Field(tag, ty, optional=True) for tag, ty in variants],
+        doc,
+        discriminated=True,
+        common=list(common),
     )
 
 
@@ -239,14 +266,48 @@ StyledSpan = define(
     )
 )
 StyledText = define(ObjDef("StyledText", [Field("spans", LIST(REF("StyledSpan")))]))
-Icon = define(
+# `Icon` accepts either of two input wire shapes (`quadraui/src/types.rs`'s
+# hand-written `Deserialize` impl) -- a raw glyph, or a bundled codicon name
+# resolved to one. Every use of `Icon` in this schema is write-direction (an
+# app-constructed descriptor field Rust decodes); nothing here reads an
+# `Icon` back out of an event or a getter, so there is no need for a
+# glyph-only "read" alias alongside this union -- `IconGlyph` below already
+# serves that purpose if a future read-direction use needs it.
+IconGlyph = define(
     ObjDef(
-        "Icon",
+        "IconGlyph",
         [
             Field("glyph", STR, doc="Nerd Font glyph, painted verbatim."),
             Field("fallback", STR, doc="ASCII/basic-Unicode fallback."),
             Field("color", NULLABLE(REF("Color")), optional=True),
         ],
+        "The glyph form of `Icon` -- also the only shape `Icon::serialize` "
+        "ever emits.",
+    )
+)
+IconCodicon = define(
+    ObjDef(
+        "IconCodicon",
+        [
+            Field(
+                "codicon",
+                STR,
+                doc="Bundled codicon name -- see `Icon::codicon`'s doc for the set.",
+            ),
+            Field("fallback", STR, doc="ASCII/basic-Unicode fallback."),
+            Field("color", NULLABLE(REF("Color")), optional=True),
+        ],
+        "The codicon form of `Icon` -- lets an app pass a bundled icon name "
+        "instead of hand-encoding its glyph codepoint.",
+    )
+)
+Icon = define(
+    union_of(
+        "Icon",
+        [REF("IconGlyph"), REF("IconCodicon")],
+        "An icon reference: either `{\"glyph\", \"fallback\", \"color\"?}` or "
+        "`{\"codicon\", \"fallback\", \"color\"?}` -- see `Icon`'s own doc in "
+        "`quadraui/src/types.rs`.",
     )
 )
 Badge = define(
@@ -378,16 +439,14 @@ StatusBarDescriptor = define(
         ],
     )
 )
-ExtraPrimitiveDescriptor = define(
-    AliasDef(
-        "ExtraPrimitiveDescriptor",
-        DICTT(STR, ANY),
-        "Any additive primitive other than `status_bar` -- registered in "
-        "`quadraui-binding-core/src/extra_paint.rs`'s `extra_primitives!` "
-        "table (`progress`, `spinner`, `image`, `form`, ...). Not yet typed "
-        "field-by-field; see this module's own doc.",
-    )
-)
+# Any additive primitive other than `status_bar` -- registered in
+# `quadraui-binding-core/src/extra_paint.rs`'s `extra_primitives!` table
+# (`progress`, `spinner`, `image`, `form`, ...) -- isn't modelled here at
+# all: `LayoutLeafNode` enumerates only the six core kinds plus
+# `status_bar`, and neither it nor `RenderFrameDict` admits an arbitrary
+# extra-primitive kind key a `Dict[str, Any]`-shaped type could attach to.
+# Narrowing these 28 kinds field-by-field, and giving each a reachable leaf
+# shape, is follow-on work; see this module's own doc.
 
 # ── Core leaf descriptors (the six fixed primitive kinds) ───────────────────
 
@@ -879,8 +938,8 @@ LayoutLeafNode = define(
         "One `{\"id\", \"<kind>\": <descriptor>}` leaf -- exactly one kind "
         "key is present. Covers the six core kinds plus `status_bar`; any "
         "other additive primitive kind (`progress`, `form`, ...) also "
-        "decodes here but isn't enumerated as its own field -- see "
-        "`ExtraPrimitiveDescriptor`.",
+        "decodes here but isn't modelled -- not reachable through this "
+        "type (see this module's own doc).",
     )
 )
 
@@ -1165,6 +1224,67 @@ _insert_before(
     ),
 )
 
+# ── `HitDetail` (quadraui-binding-core/src/hit.rs) ──────────────────────────
+
+# `HitDetail` is internally tagged (`#[serde(tag = "kind", rename_all =
+# "snake_case")]`): each variant serializes to one object carrying a
+# `"kind"` string literal alongside whatever fields that variant has, not
+# `{"Tag": {...}}` like an ordinary externally-tagged enum. Modelled as one
+# [`ObjDef`] per variant (its `"kind"` a single-value [`LIT`]), combined
+# into a union below -- the same per-variant-then-union shape
+# `ToolbarButtonDescriptor` uses, just with the tag folded into each
+# member's own fields instead of wrapping it.
+_HIT_DETAIL_KINDS: List[Tuple[str, str, List[Field]]] = [
+    ("_HitDetailButtonBody", "button_body", []),
+    ("_HitDetailTreeRow", "tree_row", [Field("row", INT)]),
+    ("_HitDetailTreeChevron", "tree_chevron", [Field("row", INT)]),
+    ("_HitDetailListTitle", "list_title", []),
+    ("_HitDetailListItem", "list_item", [Field("index", INT)]),
+    ("_HitDetailDataTableHeader", "data_table_header", [Field("col", INT)]),
+    ("_HitDetailDataTableHeaderDivider", "data_table_header_divider", [Field("col", INT)]),
+    ("_HitDetailDataTableRow", "data_table_row", [Field("row", INT)]),
+    ("_HitDetailDataTableFooter", "data_table_footer", []),
+    ("_HitDetailTabBarTab", "tab_bar_tab", [Field("tab", INT)]),
+    ("_HitDetailTabBarTabClose", "tab_bar_tab_close", [Field("tab", INT)]),
+    ("_HitDetailTabBarScrollLeft", "tab_bar_scroll_left", []),
+    ("_HitDetailTabBarScrollRight", "tab_bar_scroll_right", []),
+    ("_HitDetailTabBarRightSegment", "tab_bar_right_segment", []),
+    ("_HitDetailTextDisplayLine", "text_display_line", [Field("line", INT)]),
+    ("_HitDetailTextDisplayScrollbarThumb", "text_display_scrollbar_thumb", []),
+    ("_HitDetailTextDisplayScrollbarTrackBefore", "text_display_scrollbar_track_before", []),
+    ("_HitDetailTextDisplayScrollbarTrackAfter", "text_display_scrollbar_track_after", []),
+    ("_HitDetailSplitFirstPane", "split_first_pane", []),
+    ("_HitDetailSplitSecondPane", "split_second_pane", []),
+    ("_HitDetailSplitDivider", "split_divider", []),
+    ("_HitDetailSplitTreeDivider", "split_tree_divider", [Field("split_index", INT)]),
+    ("_HitDetailPanelAction", "panel_action", []),
+    ("_HitDetailPanelTitleBar", "panel_title_bar", []),
+    (
+        "_HitDetailSidebarPanelToolbarButton",
+        "sidebar_panel_toolbar_button",
+        [Field("bar", REF("WidgetId"))],
+    ),
+    ("_HitDetailTreeScrollbarTrackBefore", "tree_scrollbar_track_before", []),
+    ("_HitDetailTreeScrollbarThumb", "tree_scrollbar_thumb", []),
+    ("_HitDetailTreeScrollbarTrackAfter", "tree_scrollbar_track_after", []),
+    ("_HitDetailExtraBody", "extra_body", []),
+    ("_HitDetailExtraChrome", "extra_chrome", [Field("bar", REF("WidgetId"))]),
+]
+_hit_detail_members: List[Ty] = []
+for _hd_name, _hd_kind, _hd_fields in _HIT_DETAIL_KINDS:
+    _hit_detail_members.append(
+        define(ObjDef(_hd_name, [Field("kind", LIT(_hd_kind)), *_hd_fields]))
+    )
+HitDetail = define(
+    union_of(
+        "HitDetail",
+        _hit_detail_members,
+        "The sub-region of a primitive a pointer event landed on -- see "
+        "`HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on "
+        '`.kind` (e.g. `detail["kind"] == "tree_row"`).',
+    )
+)
+
 # ── `UiEvent` (quadraui/src/event.rs) ───────────────────────────────────────
 
 _UI_EVENT_UNIT_TAGS = ("WindowClose", "DisplaysChanged", "ContextMenuDismissed")
@@ -1220,6 +1340,16 @@ _UiEventDict = define(
             ("Toolbar", TUP(REF("WidgetId"), REF("ToolbarEvent"))),
             ("BackendNative", REF("BackendNativeEvent")),
             ("User", ANY),
+        ],
+        common=[
+            Field(
+                "hit",
+                REF("HitDetail"),
+                optional=True,
+                doc="The hit-tested sub-region a pointer landed on, when the "
+                "binding attached one (never present on `User`). See "
+                "`quadraui-py/src/lib.rs`'s `dispatch`.",
+            )
         ],
     )
 )
@@ -1325,9 +1455,9 @@ def render_python(defs: List[Def]) -> str:
             lines.append(f"class {d.name}(TypedDict):")
             if d.doc:
                 lines.append(f'    """{d.doc}"""')
-            if not d.fields:
+            if not d.fields and not d.common:
                 lines.append("    pass")
-            for f in d.fields:
+            for f in (*d.fields, *d.common):
                 ty = f"NotRequired[{f.ty.py}]" if f.optional else f.ty.py
                 comment = f"  # {f.doc}" if f.doc else ""
                 lines.append(f"    {f.name}: {ty}{comment}")
@@ -1364,7 +1494,10 @@ def render_typescript(defs: List[Def]) -> str:
             # -- the shape TS's `"Tag" in value` actually narrows on.
             if d.doc:
                 lines.append(f"/** {d.doc} */")
-            members = " | ".join(f"{{ {f.name}: {f.ty.ts} }}" for f in d.fields)
+            common_ts = "".join(
+                f" {cf.name}{'?' if cf.optional else ''}: {cf.ty.ts};" for cf in d.common
+            )
+            members = " | ".join(f"{{ {f.name}: {f.ty.ts};{common_ts} }}" for f in d.fields)
             lines.append(f"export type {d.name} = {members};")
             lines.append("")
         elif isinstance(d, ObjDef):

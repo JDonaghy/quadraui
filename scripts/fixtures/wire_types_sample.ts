@@ -2,12 +2,12 @@
 // `wire.d.ts` -- never executed, only type-checked:
 //
 //     npx tsc --strict --noEmit --module commonjs --target es2020 \
-//         scripts/wire_types_sample.ts
+//         scripts/fixtures/wire_types_sample.ts
 //
 // Builds a tree + split + data_table layout tree, and matches on a
 // tree-row click the same way `quadraui-node/tests/descriptors.test.ts`'s
 // own JS callers do -- the two acceptance scenarios from the "generated
-// .pyi / TypeScript types" issue. `scripts/wire_types_sample_bad.ts` is
+// .pyi / TypeScript types" issue. `scripts/fixtures/wire_types_sample_bad.ts` is
 // the negative counterpart `scripts/check_wire_types.sh` asserts *fails*.
 
 import type {
@@ -19,7 +19,7 @@ import type {
   TreeRowDescriptor,
   TreeViewDescriptor,
   UiEvent,
-} from "../quadraui-node/js/wire";
+} from "../../quadraui-node/js/wire";
 
 function styledText(text: string): StyledText {
   return { spans: [{ text, fg: null, bg: null }] };

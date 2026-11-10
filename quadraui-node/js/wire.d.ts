@@ -41,11 +41,22 @@ export interface StyledText {
   spans: StyledSpan[];
 }
 
-export interface Icon {
+/** The glyph form of `Icon` -- also the only shape `Icon::serialize` ever emits. */
+export interface IconGlyph {
   glyph: string; // Nerd Font glyph, painted verbatim.
   fallback: string; // ASCII/basic-Unicode fallback.
   color?: Color | null;
 }
+
+/** The codicon form of `Icon` -- lets an app pass a bundled icon name instead of hand-encoding its glyph codepoint. */
+export interface IconCodicon {
+  codicon: string; // Bundled codicon name -- see `Icon::codicon`'s doc for the set.
+  fallback: string; // ASCII/basic-Unicode fallback.
+  color?: Color | null;
+}
+
+/** An icon reference: either `{"glyph", "fallback", "color"?}` or `{"codicon", "fallback", "color"?}` -- see `Icon`'s own doc in `quadraui/src/types.rs`. */
+export type Icon = IconGlyph | IconCodicon;
 
 export interface Badge {
   text: string;
@@ -112,7 +123,7 @@ export interface _NamedKeyF {
 export type NamedKey = ("Escape" | "Tab" | "BackTab" | "Enter" | "Backspace" | "Delete" | "Insert" | "Home" | "End" | "PageUp" | "PageDown" | "Up" | "Down" | "Left" | "Right" | "CapsLock" | "NumLock" | "ScrollLock" | "Menu") | _NamedKeyF;
 
 /** A raw keyboard key: `{"Char": "a"}` or `{"Named": "Up"}`/`{"Named": {"F": 2}}`. */
-export type Key = { Char: string } | { Named: NamedKey };
+export type Key = { Char: string; } | { Named: NamedKey; };
 
 export interface _MouseButtonOther {
   Other: number;
@@ -139,9 +150,6 @@ export interface StatusBarDescriptor {
   left_segments: StatusBarSegment[];
   right_segments: StatusBarSegment[];
 }
-
-/** Any additive primitive other than `status_bar` -- registered in `quadraui-binding-core/src/extra_paint.rs`'s `extra_primitives!` table (`progress`, `spinner`, `image`, `form`, ...). Not yet typed field-by-field; see this module's own doc. */
-export type ExtraPrimitiveDescriptor = Record<string, unknown>;
 
 export type ButtonVariant = "Primary" | "Secondary" | "Icon" | "Danger" | "Warning";
 
@@ -246,7 +254,7 @@ export interface _ColumnWidthContent {
 }
 
 /** Column sizing strategy, e.g. `{"Flex": 2.0}` -- the deprecated `"Fixed"` variant is omitted here; use `FixedCells`/`FixedPx` instead. */
-export type ColumnWidth = { FixedCells: number } | { FixedPx: number } | { Flex: number } | { Content: _ColumnWidthContent };
+export type ColumnWidth = { FixedCells: number; } | { FixedPx: number; } | { Flex: number; } | { Content: _ColumnWidthContent; };
 
 export interface ColumnDescriptor {
   title: string;
@@ -468,7 +476,7 @@ export interface LayoutSplitTreeNode {
   split_tree: LayoutSplitTreePayload;
 }
 
-/** One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Covers the six core kinds plus `status_bar`; any other additive primitive kind (`progress`, `form`, ...) also decodes here but isn't enumerated as its own field -- see `ExtraPrimitiveDescriptor`. */
+/** One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Covers the six core kinds plus `status_bar`; any other additive primitive kind (`progress`, `form`, ...) also decodes here but isn't modelled -- not reachable through this type (see this module's own doc). */
 export interface LayoutLeafNode {
   id: string;
   button?: ButtonDescriptor;
@@ -567,7 +575,7 @@ export interface _TreeRowRenameCommittedPayload {
   text: string;
 }
 
-export type TreeEvent = { RowClicked: _TreeRowClickedPayload } | { RowDoubleClicked: _TreePathPayload } | { RowToggleExpand: _TreePathPayload } | { SelectionChanged: _TreePathPayload } | { KeyPressed: _KeyPressedStrPayload } | { SelectionSet: _TreeSelectionSetPayload } | { RowRenameChanged: _TreeRowRenameChangedPayload } | { RowRenameCommitted: _TreeRowRenameCommittedPayload } | { RowRenameCancelled: _TreePathPayload };
+export type TreeEvent = { RowClicked: _TreeRowClickedPayload; } | { RowDoubleClicked: _TreePathPayload; } | { RowToggleExpand: _TreePathPayload; } | { SelectionChanged: _TreePathPayload; } | { KeyPressed: _KeyPressedStrPayload; } | { SelectionSet: _TreeSelectionSetPayload; } | { RowRenameChanged: _TreeRowRenameChangedPayload; } | { RowRenameCommitted: _TreeRowRenameCommittedPayload; } | { RowRenameCancelled: _TreePathPayload; };
 
 export interface _IdxPayload {
   idx: number;
@@ -577,7 +585,7 @@ export interface _IndicesPayload {
   indices: number[];
 }
 
-export type ListViewEvent = { SelectionChanged: _IdxPayload } | { ItemActivated: _IdxPayload } | { ItemDoubleClicked: _IdxPayload } | { KeyPressed: _KeyPressedStrPayload } | { SelectionSet: _IndicesPayload };
+export type ListViewEvent = { SelectionChanged: _IdxPayload; } | { ItemActivated: _IdxPayload; } | { ItemDoubleClicked: _IdxPayload; } | { KeyPressed: _KeyPressedStrPayload; } | { SelectionSet: _IndicesPayload; };
 
 export interface _ColPayload {
   col: number;
@@ -593,7 +601,7 @@ export interface _ColumnResizedPayload {
   width: number;
 }
 
-export type DataTableEvent = { HeaderClicked: _ColPayload } | { RowActivated: _IdxPayload } | { RowSelected: _IdxPayload } | { RowDoubleClicked: _IdxPayload } | { Scroll: _DataTableScrollPayload } | { ColumnResized: _ColumnResizedPayload };
+export type DataTableEvent = { HeaderClicked: _ColPayload; } | { RowActivated: _IdxPayload; } | { RowSelected: _IdxPayload; } | { RowDoubleClicked: _IdxPayload; } | { Scroll: _DataTableScrollPayload; } | { ColumnResized: _ColumnResizedPayload; };
 
 export interface _IndexPayload {
   index: number;
@@ -603,9 +611,9 @@ export interface _IdPayload {
   id: WidgetId;
 }
 
-export type TabBarEvent = { TabActivated: _IndexPayload } | { TabClosed: _IndexPayload } | { ButtonClicked: _IdPayload } | { KeyPressed: _KeyPressedStrPayload } | { FocusMoved: _IndexPayload };
+export type TabBarEvent = { TabActivated: _IndexPayload; } | { TabClosed: _IndexPayload; } | { ButtonClicked: _IdPayload; } | { KeyPressed: _KeyPressedStrPayload; } | { FocusMoved: _IndexPayload; };
 
-export type StatusBarEvent = { SegmentClicked: _IdPayload } | { KeyPressed: _KeyPressedStrPayload };
+export type StatusBarEvent = { SegmentClicked: _IdPayload; } | { KeyPressed: _KeyPressedStrPayload; };
 
 export interface _NewOffsetPayload {
   new_offset: number;
@@ -619,9 +627,9 @@ export interface _TextPayload {
   text: string;
 }
 
-export type TextDisplayEvent = { Scrolled: _NewOffsetPayload } | { AutoScrollToggled: _EnabledPayload } | { Copied: _TextPayload } | { KeyPressed: _KeyPressedStrPayload };
+export type TextDisplayEvent = { Scrolled: _NewOffsetPayload; } | { AutoScrollToggled: _EnabledPayload; } | { Copied: _TextPayload; } | { KeyPressed: _KeyPressedStrPayload; };
 
-export type ActivityBarEvent = { ItemClicked: _IdPayload } | { KeyPressed: _KeyPressedStrPayload };
+export type ActivityBarEvent = { ItemClicked: _IdPayload; } | { KeyPressed: _KeyPressedStrPayload; };
 
 export interface _RowColPayload {
   row: number;
@@ -632,7 +640,7 @@ export interface _IntDeltaPayload {
   delta: number;
 }
 
-export type _TerminalEventDict = { KeyPressed: _KeyPressedStrPayload } | { SelectStart: _RowColPayload } | { SelectExtend: _RowColPayload } | { Scroll: _IntDeltaPayload };
+export type _TerminalEventDict = { KeyPressed: _KeyPressedStrPayload; } | { SelectStart: _RowColPayload; } | { SelectExtend: _RowColPayload; } | { Scroll: _IntDeltaPayload; };
 
 /** Mouse release has no payload -- bare `"SelectEnd"`, unlike every other variant. */
 export type TerminalEvent = "SelectEnd" | _TerminalEventDict;
@@ -648,14 +656,149 @@ export interface _LegendClickedPayload {
   series_idx: number;
 }
 
-export type ChartEvent = { Clicked: _IdPayload } | { DataPointClicked: _DataPointClickedPayload } | { LegendClicked: _LegendClickedPayload };
+export type ChartEvent = { Clicked: _IdPayload; } | { DataPointClicked: _DataPointClickedPayload; } | { LegendClicked: _LegendClickedPayload; };
 
 export interface _ToolbarButtonClickedPayload {
   id: WidgetId;
   is_active: boolean;
 }
 
-export type ToolbarEvent = { ButtonClicked: _ToolbarButtonClickedPayload };
+export type ToolbarEvent = { ButtonClicked: _ToolbarButtonClickedPayload; };
+
+export interface _HitDetailButtonBody {
+  kind: "button_body";
+}
+
+export interface _HitDetailTreeRow {
+  kind: "tree_row";
+  row: number;
+}
+
+export interface _HitDetailTreeChevron {
+  kind: "tree_chevron";
+  row: number;
+}
+
+export interface _HitDetailListTitle {
+  kind: "list_title";
+}
+
+export interface _HitDetailListItem {
+  kind: "list_item";
+  index: number;
+}
+
+export interface _HitDetailDataTableHeader {
+  kind: "data_table_header";
+  col: number;
+}
+
+export interface _HitDetailDataTableHeaderDivider {
+  kind: "data_table_header_divider";
+  col: number;
+}
+
+export interface _HitDetailDataTableRow {
+  kind: "data_table_row";
+  row: number;
+}
+
+export interface _HitDetailDataTableFooter {
+  kind: "data_table_footer";
+}
+
+export interface _HitDetailTabBarTab {
+  kind: "tab_bar_tab";
+  tab: number;
+}
+
+export interface _HitDetailTabBarTabClose {
+  kind: "tab_bar_tab_close";
+  tab: number;
+}
+
+export interface _HitDetailTabBarScrollLeft {
+  kind: "tab_bar_scroll_left";
+}
+
+export interface _HitDetailTabBarScrollRight {
+  kind: "tab_bar_scroll_right";
+}
+
+export interface _HitDetailTabBarRightSegment {
+  kind: "tab_bar_right_segment";
+}
+
+export interface _HitDetailTextDisplayLine {
+  kind: "text_display_line";
+  line: number;
+}
+
+export interface _HitDetailTextDisplayScrollbarThumb {
+  kind: "text_display_scrollbar_thumb";
+}
+
+export interface _HitDetailTextDisplayScrollbarTrackBefore {
+  kind: "text_display_scrollbar_track_before";
+}
+
+export interface _HitDetailTextDisplayScrollbarTrackAfter {
+  kind: "text_display_scrollbar_track_after";
+}
+
+export interface _HitDetailSplitFirstPane {
+  kind: "split_first_pane";
+}
+
+export interface _HitDetailSplitSecondPane {
+  kind: "split_second_pane";
+}
+
+export interface _HitDetailSplitDivider {
+  kind: "split_divider";
+}
+
+export interface _HitDetailSplitTreeDivider {
+  kind: "split_tree_divider";
+  split_index: number;
+}
+
+export interface _HitDetailPanelAction {
+  kind: "panel_action";
+}
+
+export interface _HitDetailPanelTitleBar {
+  kind: "panel_title_bar";
+}
+
+export interface _HitDetailSidebarPanelToolbarButton {
+  kind: "sidebar_panel_toolbar_button";
+  bar: WidgetId;
+}
+
+export interface _HitDetailTreeScrollbarTrackBefore {
+  kind: "tree_scrollbar_track_before";
+}
+
+export interface _HitDetailTreeScrollbarThumb {
+  kind: "tree_scrollbar_thumb";
+}
+
+export interface _HitDetailTreeScrollbarTrackAfter {
+  kind: "tree_scrollbar_track_after";
+}
+
+export interface _HitDetailExtraBody {
+  kind: "extra_body";
+}
+
+export interface _HitDetailExtraChrome {
+  kind: "extra_chrome";
+  bar: WidgetId;
+}
+
+/** The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind` (e.g. `detail["kind"] == "tree_row"`). */
+export type HitDetail = _HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailExtraChrome;
 
 export interface _UiKeyPressedPayload {
   key: Key;
@@ -746,7 +889,7 @@ export interface _NotificationActivatedPayload {
   action: WidgetId | null;
 }
 
-export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers] } | { GlobalShortcut: GlobalShortcutId } | { KeyPressed: _UiKeyPressedPayload } | { CharTyped: string } | { MouseDown: _MouseDownPayload } | { MouseUp: _MouseUpPayload } | { MouseMoved: _MouseMovedPayload } | { MouseEntered: _WidgetPayload } | { MouseLeft: _WidgetPayload } | { DoubleClick: _DoubleClickPayload } | { Scroll: _UiScrollPayload } | { WindowResized: _WindowResizedPayload } | { WindowFocused: boolean } | { DpiChanged: number } | { WindowStateChanged: _WindowStateChangedPayload } | { FilesDropped: _FilesDroppedPayload } | { ClipboardPaste: string } | { OpenRequested: _OpenRequestedPayload } | { TextCopied: string } | { FocusChanged: WidgetId | null } | { SystemThemeChanged: SystemTheme } | { PowerStateChanged: _PowerStateChangedPayload } | { ScrollOffsetChanged: _ScrollOffsetChangedPayload } | { TextSelectionChanged: _TextSelectionChangedPayload } | { SplitDividerDragged: _SplitDividerDraggedPayload } | { MenuActivated: WidgetId } | { ContextMenuItemActivated: WidgetId } | { MessageDialogResolved: WidgetId } | { ToastActionClicked: WidgetId } | { CompletionItemActivated: [WidgetId, number] } | { RichTextLinkClicked: [WidgetId, string] } | { TrayClicked: _TrayClickedPayload } | { NotificationActivated: _NotificationActivatedPayload } | { Tree: [WidgetId, TreeEvent] } | { List: [WidgetId, ListViewEvent] } | { Form: [WidgetId, Record<string, unknown>] } | { Palette: [WidgetId, Record<string, unknown>] } | { TabBar: [WidgetId, TabBarEvent] } | { StatusBar: [WidgetId, StatusBarEvent] } | { ActivityBar: [WidgetId, ActivityBarEvent] } | { Terminal: [WidgetId, TerminalEvent] } | { TextDisplay: [WidgetId, TextDisplayEvent] } | { Chart: [WidgetId, ChartEvent] } | { DataTable: [WidgetId, DataTableEvent] } | { Toolbar: [WidgetId, ToolbarEvent] } | { BackendNative: BackendNativeEvent } | { User: unknown };
+export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; hit?: HitDetail; } | { GlobalShortcut: GlobalShortcutId; hit?: HitDetail; } | { KeyPressed: _UiKeyPressedPayload; hit?: HitDetail; } | { CharTyped: string; hit?: HitDetail; } | { MouseDown: _MouseDownPayload; hit?: HitDetail; } | { MouseUp: _MouseUpPayload; hit?: HitDetail; } | { MouseMoved: _MouseMovedPayload; hit?: HitDetail; } | { MouseEntered: _WidgetPayload; hit?: HitDetail; } | { MouseLeft: _WidgetPayload; hit?: HitDetail; } | { DoubleClick: _DoubleClickPayload; hit?: HitDetail; } | { Scroll: _UiScrollPayload; hit?: HitDetail; } | { WindowResized: _WindowResizedPayload; hit?: HitDetail; } | { WindowFocused: boolean; hit?: HitDetail; } | { DpiChanged: number; hit?: HitDetail; } | { WindowStateChanged: _WindowStateChangedPayload; hit?: HitDetail; } | { FilesDropped: _FilesDroppedPayload; hit?: HitDetail; } | { ClipboardPaste: string; hit?: HitDetail; } | { OpenRequested: _OpenRequestedPayload; hit?: HitDetail; } | { TextCopied: string; hit?: HitDetail; } | { FocusChanged: WidgetId | null; hit?: HitDetail; } | { SystemThemeChanged: SystemTheme; hit?: HitDetail; } | { PowerStateChanged: _PowerStateChangedPayload; hit?: HitDetail; } | { ScrollOffsetChanged: _ScrollOffsetChangedPayload; hit?: HitDetail; } | { TextSelectionChanged: _TextSelectionChangedPayload; hit?: HitDetail; } | { SplitDividerDragged: _SplitDividerDraggedPayload; hit?: HitDetail; } | { MenuActivated: WidgetId; hit?: HitDetail; } | { ContextMenuItemActivated: WidgetId; hit?: HitDetail; } | { MessageDialogResolved: WidgetId; hit?: HitDetail; } | { ToastActionClicked: WidgetId; hit?: HitDetail; } | { CompletionItemActivated: [WidgetId, number]; hit?: HitDetail; } | { RichTextLinkClicked: [WidgetId, string]; hit?: HitDetail; } | { TrayClicked: _TrayClickedPayload; hit?: HitDetail; } | { NotificationActivated: _NotificationActivatedPayload; hit?: HitDetail; } | { Tree: [WidgetId, TreeEvent]; hit?: HitDetail; } | { List: [WidgetId, ListViewEvent]; hit?: HitDetail; } | { Form: [WidgetId, Record<string, unknown>]; hit?: HitDetail; } | { Palette: [WidgetId, Record<string, unknown>]; hit?: HitDetail; } | { TabBar: [WidgetId, TabBarEvent]; hit?: HitDetail; } | { StatusBar: [WidgetId, StatusBarEvent]; hit?: HitDetail; } | { ActivityBar: [WidgetId, ActivityBarEvent]; hit?: HitDetail; } | { Terminal: [WidgetId, TerminalEvent]; hit?: HitDetail; } | { TextDisplay: [WidgetId, TextDisplayEvent]; hit?: HitDetail; } | { Chart: [WidgetId, ChartEvent]; hit?: HitDetail; } | { DataTable: [WidgetId, DataTableEvent]; hit?: HitDetail; } | { Toolbar: [WidgetId, ToolbarEvent]; hit?: HitDetail; } | { BackendNative: BackendNativeEvent; hit?: HitDetail; } | { User: unknown; hit?: HitDetail; };
 
 /** Everything a user (or platform) can do that an app might care about -- see `quadraui/src/event.rs`'s `UiEvent`. `isinstance(event, str)` (Python) / `typeof event === "string"` (TS) separates the three no-payload variants from the rest before narrowing on a key. */
 export type UiEvent = ("WindowClose" | "DisplaysChanged" | "ContextMenuDismissed") | _UiEventDict;

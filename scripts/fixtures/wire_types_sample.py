@@ -4,13 +4,13 @@
 with:
 
     MYPYPATH=quadraui-py/python python3 -m mypy --strict \\
-        --ignore-missing-imports scripts/wire_types_sample.py
+        --ignore-missing-imports scripts/fixtures/wire_types_sample.py
 
 Builds a tree + split + data_table layout tree, and matches on a tree-row
 click the same way `quadraui-py/examples/file_manager.py`'s own handler
 does -- the two acceptance scenarios from the "generated .pyi / TypeScript
 types" issue. This file must type-check with zero errors;
-`scripts/wire_types_sample_bad.py` is its negative counterpart -- the same
+`scripts/fixtures/wire_types_sample_bad.py` is its negative counterpart -- the same
 shapes with one key misspelled each -- which `scripts/check_wire_types.sh`
 asserts *fails* to type-check.
 """

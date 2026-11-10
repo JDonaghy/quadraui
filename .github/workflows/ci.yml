@@ -583,6 +583,11 @@ jobs:
         run: python3 scripts/test_release_full.py
       - name: site_gen.py unit tests
         run: python3 tools/test_site_gen.py
+      # Same rationale again, for `scripts/gen_wire_types.py`'s rendering
+      # layer -- the committed `.pyi`/`.d.ts` staleness check below can't
+      # see a renderer bug that's self-consistent with its own output.
+      - name: gen_wire_types.py unit tests
+        run: python3 scripts/test_gen_wire_types.py
       - name: introduction.md / README.md hello-world sync check
         run: python3 tools/test_introduction_matches_readme.py
 
@@ -591,9 +596,9 @@ jobs:
     # (`scripts/gen_wire_types.py`): fails if regenerating would change
     # either committed output (`quadraui-py/python/quadraui/wire.pyi` /
     # `quadraui-node/js/wire.d.ts`), if the "good" fixture scripts
-    # (`scripts/wire_types_sample.{py,ts}`) fail to type-check under
+    # (`scripts/fixtures/wire_types_sample.{py,ts}`) fail to type-check under
     # `mypy --strict`/`tsc --strict`, or if the "bad" misspelled-key
-    # fixtures (`scripts/wire_types_sample_bad.{py,ts}`) type-check clean
+    # fixtures (`scripts/fixtures/wire_types_sample_bad.{py,ts}`) type-check clean
     # when they should not. No Rust toolchain needed -- the schema is
     # transcribed by hand into `scripts/gen_wire_types.py`, not derived
     # from `quadraui`'s own source at build time (see that script's own
