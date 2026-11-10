@@ -32,19 +32,21 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use quadraui::compose::HoverTooltipTracker;
+use quadraui::compose::{Edge, HoverTooltipTracker, TreeController};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::Rect;
 use quadraui::{
     mouse_down, mouse_up, Accelerator, AcceleratorId, AppLogic, Backend, Button, DataTable,
-    Decoration, Key, ListView, Modifiers, MouseButton, Reaction, Style, StyledSpan, TabBar,
-    TextDisplay, TextDisplayLine, Theme, Tooltip, TreeView, UiEvent, WidgetId,
+    Decoration, Key, ListView, Modifiers, MouseButton, NamedKey, Reaction, Style, StyledSpan,
+    StyledText, TabBar, TextDisplay, TextDisplayLine, Theme, Tooltip, TreePath, TreeRow, TreeView,
+    UiEvent, WidgetId,
 };
 
 use crate::engine::InteractionEngine;
 use crate::extra_paint::ExtraPaint;
 use crate::hit::PaintedHit;
 use crate::render::RenderRefs;
+use crate::widget_state::WidgetState;
 
 /// Slot id of the host's `Button` descriptor.
 pub const SLOT_BUTTON: i64 = 0;
@@ -500,6 +502,225 @@ impl BindingHost {
         }
 
         reaction
+    }
+}
+
+// ─── Tree cursor + scroll, uncontrolled by default ─────────────────────────
+//
+// A `TreeView` descriptor's own `selected_path`/`scroll_offset` stay the
+// source of truth whenever an app sets them (controlled mode, unchanged
+// from before this module existed). When it leaves them at their defaults
+// (`None` / `0`) the app gets working keyboard navigation for free: the
+// cursor and its scroll position live in `WidgetState`, keyed by the
+// tree's own id, moved and scrolled into view through
+// `quadraui::compose::TreeController`'s own navigation primitives rather
+// than re-deriving that arithmetic here.
+//
+// [`apply_tree_nav_key`] is the event-time half — called from a key
+// handler (e.g. [`crate::engine::InteractionEngine::handle`]) with the
+// `PaintedHit::Tree` geometry the most recent render produced, it moves
+// the stored cursor and persists the result. [`resolve_tree_cursor`] is
+// the render-time half — called right before painting, it merges the
+// descriptor's own (possibly controlled) fields with whatever is stored,
+// re-clamps the result into view against the current viewport, and
+// returns the `TreeView` a binding should actually paint.
+
+/// One keyboard navigation action [`apply_tree_nav_key`] recognizes on a
+/// focused `Tree` — the subset of `quadraui::compose::TreeController::handle`'s
+/// own key map that moves the cursor (`Up`/`Down`/vim `j`/`k`,
+/// `Home`/`End`, `PageUp`/`PageDown`). Enter and Space stay out of scope:
+/// row activation and expand/collapse keep going through this crate's
+/// existing `TreeEvent::KeyPressed` fallback rather than moving into the
+/// widget-state store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TreeNav {
+    Up,
+    Down,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+}
+
+/// Classifies a raw key against [`TreeNav`]'s key map. Vim `j`/`k` are
+/// always recognized as `Down`/`Up` aliases — unlike
+/// `TreeController::vim_keys`, `TreeView` carries no per-tree toggle for
+/// this crate to read, so this matches `TreeController::new`'s own
+/// default (`vim_keys: true`).
+fn tree_nav_for_key(key: &Key) -> Option<TreeNav> {
+    match key {
+        Key::Named(NamedKey::Up) | Key::Char('k') => Some(TreeNav::Up),
+        Key::Named(NamedKey::Down) | Key::Char('j') => Some(TreeNav::Down),
+        Key::Named(NamedKey::Home) => Some(TreeNav::Home),
+        Key::Named(NamedKey::End) => Some(TreeNav::End),
+        Key::Named(NamedKey::PageUp) => Some(TreeNav::PageUp),
+        Key::Named(NamedKey::PageDown) => Some(TreeNav::PageDown),
+        _ => None,
+    }
+}
+
+/// A `Tree`'s cursor + scroll, persisted in [`WidgetState`] keyed by the
+/// tree's own id. [`apply_tree_nav_key`] writes it on a recognized
+/// navigation key; [`resolve_tree_cursor`] reads it back — merged with
+/// whatever the descriptor itself pins — at render time.
+#[derive(Debug, Clone, Default)]
+struct TreeCursorState {
+    selected_path: Option<TreePath>,
+    scroll_offset: usize,
+}
+
+/// A throwaway [`TreeRow`] standing in for `path`, with every other field
+/// at its default — used only to satisfy
+/// [`quadraui::compose::TreeController::set_rows`]'s shape so its own
+/// `move_selection_by`/`move_selection_to_edge` can be reused verbatim for
+/// pure path/count arithmetic that never reads a row's icon, text, badge,
+/// or expand state.
+fn placeholder_tree_row(path: TreePath) -> TreeRow {
+    TreeRow {
+        path,
+        indent: 0,
+        icon: None,
+        text: StyledText::plain(""),
+        badge: None,
+        is_expanded: None,
+        decoration: Decoration::default(),
+        edit: None,
+    }
+}
+
+/// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
+/// `Tree`, resolved against [`WidgetState`] rather than the app: moves the
+/// stored cursor for `id` by one row (or to an edge, or by a page) and
+/// scrolls it into view, via `quadraui::compose::TreeController`'s own
+/// navigation primitives (never re-derived here) seeded from whichever
+/// cursor is currently stored. `row_paths` and `viewport_rows` should come
+/// from the `PaintedHit::Tree` the most recent render produced — the same
+/// geometry [`crate::drag::tree_scroll_state`] already reads for
+/// scrollbar drag/wheel handling — so movement matches what was actually
+/// painted rather than a stale descriptor.
+///
+/// Returns `true` (and leaves [`WidgetState`] updated) for a recognized
+/// navigation key, so the caller knows to redraw; `false` for any other
+/// key, which the caller should fall through to unchanged (today's raw
+/// `TreeEvent::KeyPressed` dispatch keeps working for Enter, Space, and
+/// anything app-specific). A controlled `Tree` (whose descriptor sets a
+/// non-default `selected_path`/`scroll_offset`) still has its stored
+/// cursor moved here — harmless, since [`resolve_tree_cursor`] discards it
+/// again in favor of the descriptor's own value on the very next render,
+/// the same "controlled wins and is written back" rule
+/// [`WidgetState::resolve`]'s own doc already describes.
+pub fn apply_tree_nav_key(
+    widget_state: &WidgetState,
+    id: WidgetId,
+    row_paths: &[TreePath],
+    viewport_rows: usize,
+    key: &Key,
+) -> bool {
+    let Some(nav) = tree_nav_for_key(key) else {
+        return false;
+    };
+    if row_paths.is_empty() {
+        return true;
+    }
+    let stored = widget_state.get::<TreeCursorState>(id).unwrap_or_default();
+    let mut controller = TreeController::new(id.as_str());
+    controller.set_rows(
+        row_paths
+            .iter()
+            .cloned()
+            .map(placeholder_tree_row)
+            .collect(),
+    );
+    controller.set_selected_path(stored.selected_path);
+    controller.set_scroll_offset(stored.scroll_offset);
+    match nav {
+        TreeNav::Up => {
+            controller.move_selection_by(-1, viewport_rows);
+        }
+        TreeNav::Down => {
+            controller.move_selection_by(1, viewport_rows);
+        }
+        TreeNav::Home => {
+            controller.move_selection_to_edge(Edge::Start, viewport_rows);
+        }
+        TreeNav::End => {
+            controller.move_selection_to_edge(Edge::End, viewport_rows);
+        }
+        TreeNav::PageUp => {
+            let delta = (viewport_rows.max(1) - 1).max(1) as isize;
+            controller.move_selection_by(-delta, viewport_rows);
+        }
+        TreeNav::PageDown => {
+            let delta = (viewport_rows.max(1) - 1).max(1) as isize;
+            controller.move_selection_by(delta, viewport_rows);
+        }
+    }
+    widget_state.set(
+        id,
+        TreeCursorState {
+            selected_path: controller.selected_path().cloned(),
+            scroll_offset: controller.scroll_offset(),
+        },
+    );
+    true
+}
+
+/// Resolves `tree`'s cursor + scroll for painting, through the
+/// controlled/uncontrolled policy [`WidgetState`]'s own module doc
+/// describes: `tree.selected_path` wins outright when `Some`; otherwise
+/// the id's stored cursor wins (`None`, no selection, the first time it's
+/// seen). Same per-field split for `scroll_offset`, treating `0` — already
+/// `TreeView::scroll_offset`'s own "unscrolled" sentinel — as "not pinned
+/// by the app": a non-zero value wins outright and is returned exactly as
+/// given — genuinely pinned, never nudged to keep the selection visible —
+/// while `0` resolves from the store and IS scrolled into view (via
+/// `TreeController::scroll_to_visible`, never re-derived here) against the
+/// current `viewport_rows`, so a resize or a freshly uncontrolled
+/// selection are both caught here even without an intervening
+/// [`apply_tree_nav_key`] call.
+///
+/// Call once per frame, before painting `tree` — the returned [`TreeView`]
+/// is what a binding's render should hand to [`crate::render::draw_bands`]/
+/// [`crate::render::paint_layout`], not `tree` itself.
+pub fn resolve_tree_cursor(
+    widget_state: &WidgetState,
+    tree: &TreeView,
+    viewport_rows: usize,
+) -> TreeView {
+    let id = tree.id;
+    let stored = widget_state.get::<TreeCursorState>(id).unwrap_or_default();
+
+    let selected_path = tree.selected_path.clone().or(stored.selected_path);
+    let scroll_controlled = tree.scroll_offset != 0;
+    let mut scroll_offset = if scroll_controlled {
+        tree.scroll_offset
+    } else {
+        stored.scroll_offset
+    };
+
+    if !scroll_controlled {
+        if let Some(path) = &selected_path {
+            if let Some(row) = tree.rows.iter().position(|r| &r.path == path) {
+                let mut controller = TreeController::new(id.as_str());
+                controller.set_scroll_offset(scroll_offset);
+                controller.scroll_to_visible(row, viewport_rows);
+                scroll_offset = controller.scroll_offset();
+            }
+        }
+    }
+
+    widget_state.set(
+        id,
+        TreeCursorState {
+            selected_path: selected_path.clone(),
+            scroll_offset,
+        },
+    );
+
+    TreeView {
+        selected_path,
+        scroll_offset,
+        ..tree.clone()
     }
 }
 

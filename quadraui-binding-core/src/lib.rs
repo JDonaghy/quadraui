@@ -75,14 +75,14 @@ pub use hit::{HitDetail, PaintedHit};
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 pub use host::NativeExitPolicy;
 pub use host::{
-    app_path_kind, callback_reaction, callback_reaction_for_render, caret_shape,
-    click_down_up_events, color_depth_name, dialog_severity, font_role, guarded, key_pressed_event,
-    menu_for_surface, merge_overrides, panic_message, pointer_shape, power_save_kind,
-    record_pending_error, render_overlays, resize_edge, step_driver, take_pending_error,
-    text_display_from_lines, theme_color_value, toast_corner, window_close_reaction, with_tray,
-    with_window, BindingHost, ErasedShellDriver, GuardedFailure, OverrideError,
-    WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY,
-    SLOT_TREE,
+    app_path_kind, apply_tree_nav_key, callback_reaction, callback_reaction_for_render,
+    caret_shape, click_down_up_events, color_depth_name, dialog_severity, font_role, guarded,
+    key_pressed_event, menu_for_surface, merge_overrides, panic_message, pointer_shape,
+    power_save_kind, record_pending_error, render_overlays, resize_edge, resolve_tree_cursor,
+    step_driver, take_pending_error, text_display_from_lines, theme_color_value, toast_corner,
+    window_close_reaction, with_tray, with_window, BindingHost, ErasedShellDriver, GuardedFailure,
+    OverrideError, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR,
+    SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
 pub use layout::{LayoutPanel, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry};
