@@ -603,9 +603,11 @@ jobs:
     # running `quadraui-binding-core`'s `export_wire_schema` binary (built
     # from `quadraui-binding-core/src/wire_schema.rs`), so this job needs a
     # Rust toolchain too -- a field or variant added to a wire-decoded Rust
-    # type without updating `wire_schema.rs` already fails `cargo check`/
-    # `cargo test -p quadraui-binding-core` (that crate's own `coverage`
-    # drift guards); the regeneration step below is what catches the
+    # type without updating `wire_schema.rs` already fails `cargo test -p
+    # quadraui-binding-core` (or `cargo check --tests -p
+    # quadraui-binding-core`; the `coverage` drift guards live in a
+    # `#[cfg(test)]` module, so a bare `cargo check`/`cargo build` does not
+    # compile them); the regeneration step below is what catches the
     # matching "`wire_schema.rs` changed but `wire.pyi`/`wire.d.ts` weren't
     # regenerated" half.
     name: Wire types (generated .pyi / .d.ts) staleness + type-check
