@@ -12,9 +12,10 @@
 
 use quadraui::{
     Backend, BackendCaps, ButtonRowItem, CalendarDate, Color, DatePicker, FieldKind, FocusRing,
-    Form, FormController, FormControllerEvent, FormEvent, FormField, FormHit, InteractionState,
-    Key, LabelAlign, LabelPosition, MouseButton, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
+    Form, FormController, FormControllerAction, FormEvent, FormField, FormHit, Handled,
+    InteractionState, Key, LabelAlign, LabelPosition, MouseButton, NamedKey, Reaction, Rect,
+    StatusBar, StatusBarSegment, StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent,
+    WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -813,8 +814,10 @@ impl Demo for FormDemo {
                 self.scroll.fc.set_form(self.scroll.build_form());
                 self.scroll.fc.set_backend_info(backend.line_height());
                 let rect = Self::form_rect(area, backend);
-                match self.scroll.fc.handle_cached(event, rect) {
-                    FormControllerEvent::FormAction(FormEvent::ToggleChanged { id, value }) => {
+                match self.scroll.fc.handle_cached_event(event, rect) {
+                    Handled::Event(FormControllerAction::FormAction(
+                        FormEvent::ToggleChanged { id, value },
+                    )) => {
                         if let Ok(idx) = id
                             .as_str()
                             .strip_prefix("toggle-")
@@ -828,14 +831,14 @@ impl Demo for FormDemo {
                         self.scroll.last_action = format!("{} = {value}", id.as_str());
                         Reaction::Redraw
                     }
-                    FormControllerEvent::FormAction(other) => {
+                    Handled::Event(FormControllerAction::FormAction(other)) => {
                         self.scroll.last_action = format!("{other:?}");
                         Reaction::Redraw
                     }
-                    FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => {
+                    Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
                         Reaction::Redraw
                     }
-                    FormControllerEvent::Ignored => Reaction::Continue,
+                    Handled::Ignored => Reaction::Continue,
                 }
             }
         }

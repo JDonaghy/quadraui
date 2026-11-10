@@ -126,6 +126,7 @@
 //! or a transcript click last parked the cursor.
 
 use crate::compose::markdown::render_markdown_to_styled;
+use crate::compose::Handled;
 use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
 use crate::text_util::{wrap_spans, WrapPolicy};
 use crate::theme::Theme;
@@ -193,7 +194,60 @@ pub struct ChatTurn {
     pub line_scales: Vec<f32>,
 }
 
+/// Semantic payloads returned under [`Handled::Event`] by
+/// [`ChatController::handle_event`].
+///
+/// Carries the same variants [`ChatControllerEvent`] used to mix with its
+/// own baked-in `Consumed`/`Ignored` — those two are now
+/// [`Handled::Consumed`]/[`Handled::Ignored`] instead.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatControllerAction {
+    /// User submitted a message (`Ctrl+S`, `Alt+Enter`, or `Ctrl+Enter`). Contains the full input text
+    /// (with embedded `\n` for multi-line messages). Apps should:
+    /// 1. Append the text as a `User` turn to their own transcript.
+    /// 2. Call [`ChatController::clear_input`].
+    /// 3. Start their backend session continuation (subprocess, API call, etc.).
+    Submit { text: String },
+    /// Stream chunk (reserved for the backend-push path; apps that own
+    /// the session pipe call [`ChatController::set_transcript`] directly).
+    StreamChunk { text: String },
+    /// User pressed `Esc`. The app decides whether to close the overlay,
+    /// show a confirmation dialog, or ignore it.
+    Cancelled,
+    /// User clicked the Send/Stop segment while [`ChatController::set_busy`]
+    /// was `true`. Distinct from [`Cancelled`](Self::Cancelled),
+    /// which is about closing the overlay — this is about interrupting an
+    /// in-flight generation. The app should stop its backend session
+    /// continuation (kill the subprocess, cancel the API call, etc.); the
+    /// input buffer is left untouched.
+    StopRequested,
+    /// A key press that the chat controller did not consume. Apps can
+    /// bind hotkeys here (e.g. `'c'` to copy the last assistant turn).
+    KeyPressed { key: String, modifiers: Modifiers },
+    /// A click landed on a transcript row belonging to `turn_idx`, at
+    /// `row_in_turn` rows into that turn's block (`0` = the role header
+    /// row). Also moves [`ChatController::focused_turn`] to
+    /// `Some(turn_idx)`, so a keyboard `Enter` right after the click acts on
+    /// the same turn. The controller does not itself toggle the turn's
+    /// collapsed state on click — apps decide what a click means (toggle
+    /// the card when `row_in_turn == 0`, resolve a `path:line` location
+    /// elsewhere in the body, etc.) and call
+    /// [`ChatController::toggle_turn_collapsed`] /
+    /// [`ChatController::set_turn_collapsed`] themselves.
+    ///
+    /// **`row_in_turn` includes the trailing blank separator row** between
+    /// this turn and the next, attributed to *this* turn (e.g. for a
+    /// 1-line turn, `0` = header, `1` = body, `2` = the blank separator) —
+    /// see this module's *Collapsible turns and per-turn hit regions*
+    /// section.
+    TurnClicked { turn_idx: usize, row_in_turn: usize },
+}
+
 /// Events emitted by [`ChatController::handle`].
+#[deprecated(
+    since = "0.9.0",
+    note = "use `ChatController::handle_event`, which returns `Handled<ChatControllerAction>` instead — `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, every other payload moves to `ChatControllerAction` under `Handled::Event`"
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatControllerEvent {
     /// User submitted a message (`Ctrl+S`, `Alt+Enter`, or `Ctrl+Enter`). Contains the full input text
@@ -239,6 +293,32 @@ pub enum ChatControllerEvent {
     Consumed,
     /// Event was not handled by the controller.
     Ignored,
+}
+
+#[allow(deprecated)] // `ChatControllerEvent` is `#[deprecated]`; this is its own adapter.
+fn handled_from_chat_controller_event(event: ChatControllerEvent) -> Handled<ChatControllerAction> {
+    match event {
+        ChatControllerEvent::Submit { text } => {
+            Handled::Event(ChatControllerAction::Submit { text })
+        }
+        ChatControllerEvent::StreamChunk { text } => {
+            Handled::Event(ChatControllerAction::StreamChunk { text })
+        }
+        ChatControllerEvent::Cancelled => Handled::Event(ChatControllerAction::Cancelled),
+        ChatControllerEvent::StopRequested => Handled::Event(ChatControllerAction::StopRequested),
+        ChatControllerEvent::KeyPressed { key, modifiers } => {
+            Handled::Event(ChatControllerAction::KeyPressed { key, modifiers })
+        }
+        ChatControllerEvent::TurnClicked {
+            turn_idx,
+            row_in_turn,
+        } => Handled::Event(ChatControllerAction::TurnClicked {
+            turn_idx,
+            row_in_turn,
+        }),
+        ChatControllerEvent::Consumed => Handled::Consumed,
+        ChatControllerEvent::Ignored => Handled::Ignored,
+    }
 }
 
 // ── Internal types ─────────────────────────────────────────────────────────────
@@ -412,6 +492,13 @@ pub struct ChatController {
     hint: Option<StyledText>,
 }
 
+// `handle` (deprecated) and its private helpers (`handle_key`,
+// `handle_click`, `handle_drag`) still speak `ChatControllerEvent`
+// internally — only the public boundary (`handle`/`handle_event`) changed
+// shape. `handle_event` wraps the deprecated result via
+// `handled_from_chat_controller_event` rather than threading
+// `ChatControllerAction` through every one of these private methods.
+#[allow(deprecated)]
 impl ChatController {
     /// Create a new controller. `id` is used to namespace widget IDs for all
     /// sub-primitives (transcript, scrollbar, input, spinner).
@@ -829,10 +916,31 @@ impl ChatController {
     ///
     /// Keyboard events mutate the input buffer; scroll events mutate the
     /// transcript scroll position. Returns a semantic
+    /// [`Handled<ChatControllerAction>`] for the app to act on.
+    ///
+    /// `backend` is used only for layout measurements (line_height,
+    /// char_width, text_input_layout) — no drawing happens here.
+    pub fn handle_event(
+        &mut self,
+        event: &UiEvent,
+        backend: &dyn Backend,
+        rect: Rect,
+    ) -> Handled<ChatControllerAction> {
+        handled_from_chat_controller_event(self.handle(event, backend, rect))
+    }
+
+    /// Dispatch a [`UiEvent`] to the controller.
+    ///
+    /// Keyboard events mutate the input buffer; scroll events mutate the
+    /// transcript scroll position. Returns a semantic
     /// [`ChatControllerEvent`] for the app to act on.
     ///
     /// `backend` is used only for layout measurements (line_height,
     /// char_width, text_input_layout) — no drawing happens here.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_event`, which returns `Handled<ChatControllerAction>` instead of `ChatControllerEvent`"
+    )]
     pub fn handle(
         &mut self,
         event: &UiEvent,
@@ -2118,6 +2226,10 @@ fn input_visual_to_logical(rows: &[InputRow], row_idx: usize, col: usize) -> (us
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
+// The existing test suite exercises `handle`/`ChatControllerEvent` directly
+// (`handle_event` is a thin wrapper proven correct separately, below); kept
+// on the deprecated API rather than rewritten wholesale.
+#[allow(deprecated)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4360,5 +4472,58 @@ mod tests {
             !ti_layout.visible_lines.is_empty(),
             "text_input_layout returned no visible lines"
         );
+    }
+}
+
+#[cfg(test)]
+mod handle_event_tests {
+    use super::*;
+    use crate::testing::RecordingBackend;
+
+    fn make_rect() -> Rect {
+        Rect::new(0.0, 0.0, 80.0, 20.0)
+    }
+
+    #[test]
+    fn deprecated_handle_still_adapts_to_chat_controller_event() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello");
+        let rect = make_rect();
+        let event = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            repeat: false,
+        };
+        let outcome = cc.handle_event(&event, &RecordingBackend::new(), rect);
+        assert_eq!(
+            outcome,
+            Handled::Event(ChatControllerAction::Submit {
+                text: "hello".into()
+            })
+        );
+    }
+
+    #[test]
+    fn handle_event_returns_consumed_for_a_typed_char() {
+        let mut cc = ChatController::new("c");
+        let rect = make_rect();
+        let outcome = cc.handle_event(&UiEvent::CharTyped('x'), &RecordingBackend::new(), rect);
+        assert_eq!(outcome, Handled::Consumed);
+    }
+
+    #[test]
+    fn handle_event_returns_ignored_for_an_unrelated_mouse_up() {
+        let mut cc = ChatController::new("c");
+        let rect = make_rect();
+        let event = UiEvent::MouseUp {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(0.0, 0.0),
+        };
+        let outcome = cc.handle_event(&event, &RecordingBackend::new(), rect);
+        assert_eq!(outcome, Handled::Ignored);
     }
 }

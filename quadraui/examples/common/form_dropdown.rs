@@ -17,9 +17,9 @@
 //! - `q` / `Esc`   → quit
 
 use quadraui::{
-    AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerEvent, FormEvent,
-    FormField, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerAction, FormEvent,
+    FormField, Handled, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct FormDropdownApp {
@@ -151,21 +151,24 @@ impl AppLogic for FormDropdownApp {
         self.fc.set_form(self.build_form());
         self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle_cached(&event, rect) {
-            FormControllerEvent::FormAction(FormEvent::DropdownChanged {
-                selected_idx, ..
-            }) => {
+        match self.fc.handle_cached_event(&event, rect) {
+            Handled::Event(FormControllerAction::FormAction(FormEvent::DropdownChanged {
+                selected_idx,
+                ..
+            })) => {
                 self.selected_idx = selected_idx;
                 self.last_action = format!("selected {}", self.options[selected_idx]);
                 self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
-            FormControllerEvent::FormAction(other) => {
+            Handled::Event(FormControllerAction::FormAction(other)) => {
                 self.last_action = format!("{other:?}");
                 Reaction::Redraw
             }
-            FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => Reaction::Redraw,
-            FormControllerEvent::Ignored => Reaction::Continue,
+            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
+                Reaction::Redraw
+            }
+            Handled::Ignored => Reaction::Continue,
         }
     }
 }

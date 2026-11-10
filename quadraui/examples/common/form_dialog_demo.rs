@@ -22,8 +22,8 @@
 //! - `q` (no field focused) quit
 
 use quadraui::{
-    AppLogic, Backend, DialogButton, FieldKind, Form, FormDialogController, FormDialogEvent,
-    FormEvent, Key, Reaction, StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, DialogButton, FieldKind, Form, FormDialogAction, FormDialogController,
+    FormEvent, Handled, Key, Reaction, StyledText, UiEvent, WidgetId,
 };
 
 pub struct FormDialogApp {
@@ -173,17 +173,19 @@ impl AppLogic for FormDialogApp {
             return Reaction::Redraw;
         }
 
-        match self.controller.handle(&event, backend) {
-            FormDialogEvent::ButtonClicked(id) if id.as_str() == "cancel" => Reaction::Exit,
-            FormDialogEvent::ButtonClicked(id) if id.as_str() == "create" => {
+        match self.controller.handle_event(&event, backend) {
+            Handled::Event(FormDialogAction::ButtonClicked(id)) if id.as_str() == "cancel" => {
+                Reaction::Exit
+            }
+            Handled::Event(FormDialogAction::ButtonClicked(id)) if id.as_str() == "create" => {
                 self.controller.set_body(vec![StyledText::plain(format!(
                     "Created: {:?} / {:?}",
                     self.name, self.description
                 ))]);
                 Reaction::Redraw
             }
-            FormDialogEvent::ButtonClicked(_) => Reaction::Redraw,
-            FormDialogEvent::FormAction(fe) => {
+            Handled::Event(FormDialogAction::ButtonClicked(_)) => Reaction::Redraw,
+            Handled::Event(FormDialogAction::FormAction(fe)) => {
                 match fe {
                     FormEvent::TextInputChanged { id, value }
                     | FormEvent::TextInputCommitted { id, value }
@@ -205,11 +207,11 @@ impl AppLogic for FormDialogApp {
                 self.sync_form();
                 Reaction::Redraw
             }
-            FormDialogEvent::Consumed => Reaction::Redraw,
+            Handled::Consumed => Reaction::Redraw,
             // Escape always resolves to the cancel button inside
-            // `FormDialogController::handle` (see its "Keyboard model"
+            // `FormDialogController::handle_event` (see its "Keyboard model"
             // doc section), so this arm never actually sees Escape.
-            FormDialogEvent::Ignored => Reaction::Continue,
+            Handled::Ignored => Reaction::Continue,
         }
     }
 }

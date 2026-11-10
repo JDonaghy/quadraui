@@ -10,8 +10,8 @@
 use std::time::Duration;
 
 use quadraui::{
-    Backend, ChatController, ChatControllerEvent, ChatRole, ChatTurn, Color, Reaction, Rect,
-    StyledText, Theme, UiEvent,
+    Backend, ChatController, ChatControllerAction, ChatRole, ChatTurn, Color, Handled, Reaction,
+    Rect, StyledText, Theme, UiEvent,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -88,9 +88,9 @@ impl InteractiveState {
     }
 
     fn handle(&mut self, event: &UiEvent, backend: &mut dyn Backend, area: Rect) -> Reaction {
-        let ev = self.controller.handle(event, backend, area);
+        let ev = self.controller.handle_event(event, backend, area);
         match ev {
-            ChatControllerEvent::Submit { text } => {
+            Handled::Event(ChatControllerAction::Submit { text }) => {
                 self.turns.push(ChatTurn {
                     role: ChatRole::User,
                     text: StyledText::colored(text.clone(), Color::rgb(220, 220, 220)),
@@ -104,21 +104,21 @@ impl InteractiveState {
                 self.sync();
                 Reaction::Redraw
             }
-            ChatControllerEvent::StopRequested => {
+            Handled::Event(ChatControllerAction::StopRequested) => {
                 self.thinking_ticks = 0;
                 self.pending_reply = None;
                 self.sync();
                 Reaction::Redraw
             }
-            ChatControllerEvent::TurnClicked {
+            Handled::Event(ChatControllerAction::TurnClicked {
                 turn_idx,
                 row_in_turn: 0,
-            } => {
+            }) => {
                 self.controller.toggle_turn_collapsed(turn_idx);
                 self.sync();
                 Reaction::Redraw
             }
-            ChatControllerEvent::Consumed => Reaction::Redraw,
+            Handled::Consumed => Reaction::Redraw,
             _ => {
                 if matches!(event, UiEvent::WindowResized { .. }) {
                     Reaction::Redraw
@@ -197,12 +197,12 @@ impl TranscriptState {
     }
 
     fn handle(&mut self, event: &UiEvent, backend: &mut dyn Backend, area: Rect) -> Reaction {
-        match self.controller.handle(event, backend, area) {
-            ChatControllerEvent::Submit { .. } => {
+        match self.controller.handle_event(event, backend, area) {
+            Handled::Event(ChatControllerAction::Submit { .. }) => {
                 self.send_next();
                 Reaction::Redraw
             }
-            ChatControllerEvent::Consumed => Reaction::Redraw,
+            Handled::Consumed => Reaction::Redraw,
             _ => Reaction::Continue,
         }
     }
