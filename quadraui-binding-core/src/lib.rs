@@ -27,6 +27,7 @@ pub mod services;
 pub mod text_input;
 pub mod tree_edit;
 pub mod wire;
+pub mod wire_schema;
 
 /// A wire-decode failure from any decoder in [`wire`] or
 /// [`extra_paint::decode_extra_primitive`] — the core counterpart of a

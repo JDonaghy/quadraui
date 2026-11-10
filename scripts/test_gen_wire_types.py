@@ -13,7 +13,12 @@ exercises the renderer directly against small throwaway schemas instead:
 `_ts_wrap` parenthesization, the `flat()`-built discriminated union's
 `TypedDict` (Python) vs. per-variant-union (TypeScript) divergence
 (including a `common` field folded into every TypeScript member),
-`_insert_before` ordering, and `main`'s `--check` exit codes.
+`_ty_from_json`/`_def_from_json`'s JSON decode, and `main`'s `--check` exit
+codes. Every test monkeypatches `gwt.DEFS` directly (or never calls
+`main`/`get_defs` at all) rather than exercising `load_defs_from_rust`'s own
+`cargo run` -- that round-trip, and the schema's actual content, is
+`scripts/check_wire_types.sh`'s job, run separately so this file stays a
+fast, toolchain-independent unit suite.
 """
 from __future__ import annotations
 
@@ -75,40 +80,90 @@ class DiscriminatedRenderingTests(unittest.TestCase):
         self.assertIn("export type _NoCommon = { Foo: string; };", text)
 
 
-class InsertBeforeTests(unittest.TestCase):
-    def test_inserts_immediately_before_the_named_def(self) -> None:
-        defs: list = [
-            gwt.ObjDef("A", []),
-            gwt.ObjDef("B", []),
-            gwt.ObjDef("C", []),
-        ]
-        saved, gwt.DEFS = gwt.DEFS, defs
-        try:
-            gwt._insert_before("B", gwt.ObjDef("Inserted", []))
-        finally:
-            defs, gwt.DEFS = gwt.DEFS, saved
-        self.assertEqual([d.name for d in defs], ["A", "Inserted", "B", "C"])
+class DefJsonDecodeTests(unittest.TestCase):
+    """[`gwt._ty_from_json`]/[`gwt._def_from_json`] -- the decode half of
+    [`gwt.load_defs_from_rust`], exercised directly against hand-built JSON
+    rather than a real `cargo run` (that round-trip is
+    `scripts/check_wire_types.sh`'s job, not this renderer-only suite's)."""
 
-    def test_raises_when_the_named_def_is_missing(self) -> None:
-        defs: list = [gwt.ObjDef("A", [])]
-        saved, gwt.DEFS = gwt.DEFS, defs
-        try:
-            with self.assertRaises(StopIteration):
-                gwt._insert_before("Missing", gwt.ObjDef("Inserted", []))
-        finally:
-            gwt.DEFS = saved
+    def test_ty_from_json_round_trips_every_shape(self) -> None:
+        self.assertEqual(gwt._ty_from_json({"kind": "prim", "name": "STR"}), gwt.STR)
+        self.assertEqual(gwt._ty_from_json({"kind": "ref", "name": "Foo"}), gwt.REF("Foo"))
+        self.assertEqual(
+            gwt._ty_from_json({"kind": "nullable", "inner": {"kind": "prim", "name": "INT"}}),
+            gwt.NULLABLE(gwt.INT),
+        )
+        self.assertEqual(
+            gwt._ty_from_json({"kind": "list", "inner": {"kind": "prim", "name": "BOOL"}}),
+            gwt.LIST(gwt.BOOL),
+        )
+        self.assertEqual(
+            gwt._ty_from_json(
+                {
+                    "kind": "dict",
+                    "key": {"kind": "prim", "name": "STR"},
+                    "value": {"kind": "prim", "name": "ANY"},
+                }
+            ),
+            gwt.DICTT(gwt.STR, gwt.ANY),
+        )
+        self.assertEqual(
+            gwt._ty_from_json(
+                {"kind": "tuple", "items": [{"kind": "prim", "name": "STR"}, {"kind": "prim", "name": "INT"}]}
+            ),
+            gwt.TUP(gwt.STR, gwt.INT),
+        )
+        self.assertEqual(gwt._ty_from_json({"kind": "lit", "values": ["A", "B"]}), gwt.LIT("A", "B"))
+        self.assertEqual(
+            gwt._ty_from_json(
+                {"kind": "union", "items": [{"kind": "prim", "name": "STR"}, {"kind": "prim", "name": "INT"}]}
+            ),
+            gwt.UNIONT(gwt.STR, gwt.INT),
+        )
+
+    def test_def_from_json_decodes_obj_and_alias(self) -> None:
+        obj = gwt._def_from_json(
+            {
+                "kind": "obj",
+                "name": "Foo",
+                "fields": [{"name": "x", "ty": {"kind": "prim", "name": "INT"}, "optional": True, "doc": "d"}],
+                "doc": "Foo's own doc.",
+                "discriminated": False,
+                "common": [],
+            }
+        )
+        assert isinstance(obj, gwt.ObjDef)
+        self.assertEqual(obj.name, "Foo")
+        self.assertEqual(obj.fields, [gwt.Field("x", gwt.INT, optional=True, doc="d")])
+        self.assertEqual(obj.doc, "Foo's own doc.")
+
+        alias = gwt._def_from_json(
+            {"kind": "alias", "name": "Bar", "ty": {"kind": "prim", "name": "STR"}, "doc": ""}
+        )
+        assert isinstance(alias, gwt.AliasDef)
+        self.assertEqual(alias.name, "Bar")
+        self.assertEqual(alias.ty, gwt.STR)
+
+    def test_def_from_json_rejects_unknown_kind(self) -> None:
+        with self.assertRaises(ValueError):
+            gwt._def_from_json({"kind": "bogus", "name": "Foo"})
 
 
 class CheckExitCodeTests(unittest.TestCase):
     """`main(["--check"])`'s exit code against a throwaway pair of output
-    paths, monkeypatched in and restored -- never against the real
-    committed `wire.pyi`/`wire.d.ts`."""
+    paths and a small monkeypatched [`gwt.DEFS`] fixture -- never against
+    the real committed `wire.pyi`/`wire.d.ts`, and never through
+    [`gwt.load_defs_from_rust`]'s own `cargo run` (that's
+    `scripts/check_wire_types.sh`'s job)."""
 
     def setUp(self) -> None:
         self._py_out, self._ts_out = gwt.PY_OUT, gwt.TS_OUT
+        self._defs = gwt.DEFS
+        gwt.DEFS = [gwt.ObjDef("Foo", [gwt.Field("x", gwt.INT)])]
 
     def tearDown(self) -> None:
         gwt.PY_OUT, gwt.TS_OUT = self._py_out, self._ts_out
+        gwt.DEFS = self._defs
 
     def test_check_passes_once_outputs_match_generation(self) -> None:
         import tempfile

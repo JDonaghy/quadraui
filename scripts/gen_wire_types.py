@@ -1,37 +1,31 @@
 #!/usr/bin/env python3
-"""Generates typed wire definitions for `quadraui-py`/`quadraui-node` from one
-schema defined in this file: Python `.pyi` stubs
-(`quadraui-py/python/quadraui/wire.pyi`) and TypeScript ambient declarations
-(`quadraui-node/js/wire.d.ts`) for every layout-tree node, leaf descriptor,
-and `UiEvent`/activation shape a binding's wire format accepts or emits.
+"""Generates typed wire definitions for `quadraui-py`/`quadraui-node`: Python
+`.pyi` stubs (`quadraui-py/python/quadraui/wire.pyi`) and TypeScript ambient
+declarations (`quadraui-node/js/wire.d.ts`) for every layout-tree node, leaf
+descriptor, and `UiEvent`/activation shape a binding's wire format accepts
+or emits.
 
-The schema below is transcribed by hand from the actual decode/encode logic
-it describes — `quadraui-binding-core/src/wire.rs`'s `layout_node_from_value`
-family for the descriptor/layout-tree side, and `quadraui/src/event.rs` +
-each primitive's own event enum (`quadraui/src/primitives/*.rs`) for the
-`UiEvent` side, which reach a binding via `pythonize`/`napi-rs`'s ordinary
-`#[derive(Serialize)]` externally-tagged JSON shape. It is not derived
-automatically from the Rust source at build time: the dynamically-keyed,
-custom-decoder dict shapes `wire.rs` builds don't correspond to a single
-`#[derive(Deserialize)]` struct a reflection tool could walk, and the event
-enums live in `quadraui/src/**`, outside what this script's own package
-boundary touches. Keeping the two generated outputs (`.pyi`/`.d.ts`) in sync
-with *each other* is what this script guarantees; keeping the schema in sync
-with `quadraui`'s own Rust types is a manual update made alongside whatever
-Rust change prompts it, caught at review time the same way any other
-binding-core wire change already is.
+The schema itself lives in Rust, not here: [`load_defs_from_rust`] shells
+out to `quadraui-binding-core`'s `export_wire_schema` binary (built from
+`quadraui-binding-core/src/wire_schema.rs`) and decodes its JSON dump into
+this script's own [`Ty`]/[`Field`]/[`ObjDef`]/[`AliasDef`] objects. This
+module owns exactly two things: that JSON decode, and rendering the decoded
+definitions into the two target languages ([`render_python`]/
+[`render_typescript`]) -- never the definitions' own shape. That split is
+what makes the Rust side the actual source of truth: a field or variant
+added on the Rust side without a matching `wire_schema.rs` update fails
+`cargo build`/`cargo check` outright (see that module's own `coverage`
+guards), and a `wire_schema.rs` update that isn't reflected here is caught
+by `--check` below, the same staleness gate as before.
 
-Coverage is deliberately bounded to what a render callback/event handler
-commonly touches: the six core leaf descriptor kinds (`button`,
-`text_display`, `list`, `tree`, `data_table`, `tab_bar`), every layout-tree
-container node, `run_shell`'s `config` dict, and the full `UiEvent` top-level
-vocabulary. Two primitive-specific activation payloads (`FormEvent`,
-`PaletteEvent`) and the 28 additive "extra" primitive kinds other than
-`status_bar` (registered in `quadraui-binding-core/src/extra_paint.rs`'s
-`extra_primitives!` table) are intentionally typed as `Any`/`unknown` rather
-than enumerated field-by-field — each is a large, independently-evolving
-vocabulary of its own; narrowing them is follow-on work, not a gap in this
-script's generation logic.
+Coverage is deliberately bounded for the 28 additive "extra" primitive
+kinds other than `status_bar` (registered in
+`quadraui-binding-core/src/extra_paint.rs`'s `extra_primitives!` table):
+`wire_schema.rs` lists every one of them (reading
+`EXTRA_PRIMITIVE_KINDS` directly, so a new kind is never missed), but types
+all but `status_bar` as `Any`/`unknown` rather than enumerated field-by-field
+-- each is a large, independently-evolving vocabulary of its own; narrowing
+them is follow-on work, not a gap in this script's generation logic.
 
 Usage:
 
@@ -44,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -226,1198 +221,106 @@ def union_of(name: str, members: Sequence[Ty], doc: str = "") -> AliasDef:
     return AliasDef(name, UNIONT(*members), doc)
 
 
-DEFS: List[Def] = []
+# `None` until [`load_defs_from_rust`] populates it (lazily, from `main`) --
+# never built eagerly at import time, so importing this module for its
+# renderer/builder helpers alone (as `scripts/test_gen_wire_types.py` does)
+# never shells out to `cargo`. A test that wants `main`/`_def_from_json` to
+# see a specific schema monkeypatches this directly, the same way it always
+# has, bypassing [`load_defs_from_rust`] entirely.
+DEFS: Optional[List[Def]] = None
 
 
-def define(d: Def) -> Ty:
-    """Registers `d` in [`DEFS`] (render order) and returns a [`Ty`]
-    referencing it by name."""
-    DEFS.append(d)
-    return REF(d.name)
+# ─── Decoding the Rust-exported JSON into this script's own `Ty`/`Def` ─────
 
 
-# ── Identifiers + small scalar aliases ──────────────────────────────────────
-
-WidgetId = define(AliasDef("WidgetId", STR, "A widget's own string label."))
-TreePath = define(AliasDef("TreePath", LIST(INT), "Route from the tree root, as child indices."))
-AcceleratorId = define(AliasDef("AcceleratorId", STR))
-GlobalShortcutId = define(AliasDef("GlobalShortcutId", INT))
-
-# ── Shared value types (quadraui/src/types.rs, event.rs) ───────────────────
-
-Color = define(
-    ObjDef(
-        "Color",
-        [Field("r", INT), Field("g", INT), Field("b", INT), Field("a", INT)],
-        "8-bit RGBA.",
-    )
-)
-StyledSpan = define(
-    ObjDef(
-        "StyledSpan",
-        [
-            Field("text", STR),
-            Field("fg", NULLABLE(REF("Color"))),
-            Field("bg", NULLABLE(REF("Color"))),
-            Field("bold", BOOL, optional=True),
-            Field("italic", BOOL, optional=True),
-            Field("underline", BOOL, optional=True),
-        ],
-    )
-)
-StyledText = define(ObjDef("StyledText", [Field("spans", LIST(REF("StyledSpan")))]))
-# `Icon` accepts either of two input wire shapes (`quadraui/src/types.rs`'s
-# hand-written `Deserialize` impl) -- a raw glyph, or a bundled codicon name
-# resolved to one. Every use of `Icon` in this schema is write-direction (an
-# app-constructed descriptor field Rust decodes); nothing here reads an
-# `Icon` back out of an event or a getter, so there is no need for a
-# glyph-only "read" alias alongside this union -- `IconGlyph` below already
-# serves that purpose if a future read-direction use needs it.
-IconGlyph = define(
-    ObjDef(
-        "IconGlyph",
-        [
-            Field("glyph", STR, doc="Nerd Font glyph, painted verbatim."),
-            Field("fallback", STR, doc="ASCII/basic-Unicode fallback."),
-            Field("color", NULLABLE(REF("Color")), optional=True),
-        ],
-        "The glyph form of `Icon` -- also the only shape `Icon::serialize` "
-        "ever emits.",
-    )
-)
-IconCodicon = define(
-    ObjDef(
-        "IconCodicon",
-        [
-            Field(
-                "codicon",
-                STR,
-                doc="Bundled codicon name -- see `Icon::codicon`'s doc for the set.",
-            ),
-            Field("fallback", STR, doc="ASCII/basic-Unicode fallback."),
-            Field("color", NULLABLE(REF("Color")), optional=True),
-        ],
-        "The codicon form of `Icon` -- lets an app pass a bundled icon name "
-        "instead of hand-encoding its glyph codepoint.",
-    )
-)
-Icon = define(
-    union_of(
-        "Icon",
-        [REF("IconGlyph"), REF("IconCodicon")],
-        "An icon reference: either `{\"glyph\", \"fallback\", \"color\"?}` or "
-        "`{\"codicon\", \"fallback\", \"color\"?}` -- see `Icon`'s own doc in "
-        "`quadraui/src/types.rs`.",
-    )
-)
-Badge = define(
-    ObjDef(
-        "Badge",
-        [
-            Field("text", STR),
-            Field("fg", NULLABLE(REF("Color"))),
-            Field("bg", NULLABLE(REF("Color"))),
-        ],
-    )
-)
-Decoration = define(
-    AliasDef("Decoration", LIT("Normal", "Header", "Muted", "Error", "Warning", "Modified"))
-)
-SelectionMode = define(AliasDef("SelectionMode", LIT("None", "Single", "Multi")))
-TreeStyle = define(
-    ObjDef(
-        "TreeStyle",
-        [
-            Field("indent", INT),
-            Field("show_chevrons", BOOL),
-            Field("chevron_expanded", STR),
-            Field("chevron_collapsed", STR),
-            Field("row_height", NULLABLE(INT), optional=True),
-            Field("bordered", BOOL, optional=True),
-        ],
-    )
-)
-Modifiers = define(
-    ObjDef(
-        "Modifiers",
-        [
-            Field("shift", BOOL, optional=True),
-            Field("ctrl", BOOL, optional=True),
-            Field("alt", BOOL, optional=True),
-            Field("cmd", BOOL, optional=True),
-        ],
-    )
-)
-Point = define(ObjDef("Point", [Field("x", FLOAT), Field("y", FLOAT)]))
-ScrollDelta = define(ObjDef("ScrollDelta", [Field("x", FLOAT), Field("y", FLOAT)]))
-ButtonMask = define(
-    ObjDef(
-        "ButtonMask",
-        [
-            Field("left", BOOL, optional=True),
-            Field("right", BOOL, optional=True),
-            Field("middle", BOOL, optional=True),
-        ],
-    )
-)
-Viewport = define(
-    ObjDef("Viewport", [Field("width", FLOAT), Field("height", FLOAT), Field("scale", FLOAT)])
-)
-SystemTheme = define(
-    ObjDef(
-        "SystemTheme",
-        [
-            Field("dark", BOOL),
-            Field("accent", NULLABLE(REF("Color"))),
-            Field("high_contrast", BOOL),
-            Field("reduce_motion", BOOL, optional=True),
-        ],
-    )
-)
-PowerEventKind = define(
-    AliasDef(
-        "PowerEventKind",
-        LIT("Suspend", "Resume", "OnBattery", "OnAc", "LockScreen", "UnlockScreen"),
-    )
-)
-_NamedKeyF = define(ObjDef("_NamedKeyF", [Field("F", INT)], "Function key 1-24."))
-NamedKey = define(
-    AliasDef(
-        "NamedKey",
-        UNIONT(
-            LIT(
-                "Escape", "Tab", "BackTab", "Enter", "Backspace", "Delete", "Insert", "Home",
-                "End", "PageUp", "PageDown", "Up", "Down", "Left", "Right", "CapsLock",
-                "NumLock", "ScrollLock", "Menu",
-            ),
-            REF("_NamedKeyF"),
-        ),
-    )
-)
-Key = define(
-    flat(
-        "Key",
-        [("Char", STR), ("Named", REF("NamedKey"))],
-        'A raw keyboard key: `{"Char": "a"}` or `{"Named": "Up"}`/`{"Named": {"F": 2}}`.',
-    )
-)
-_MouseButtonOther = define(ObjDef("_MouseButtonOther", [Field("Other", INT)]))
-MouseButton = define(
-    AliasDef(
-        "MouseButton",
-        UNIONT(LIT("Left", "Right", "Middle", "X1", "X2"), REF("_MouseButtonOther")),
-    )
-)
-BackendNativeEvent = define(
-    ObjDef(
-        "BackendNativeEvent",
-        [Field("backend", STR), Field("kind", STR), Field("payload", STR)],
-    )
-)
-
-# ── Common "extra" primitive used by the file-manager example ──────────────
-
-StatusBarSegment = define(
-    ObjDef(
-        "StatusBarSegment",
-        [
-            Field("text", STR),
-            Field("fg", REF("Color")),
-            Field("bg", REF("Color")),
-            Field("bold", BOOL, optional=True),
-            Field("action_id", NULLABLE(REF("WidgetId")), optional=True),
-        ],
-    )
-)
-StatusBarDescriptor = define(
-    ObjDef(
-        "StatusBarDescriptor",
-        [
-            Field("id", REF("WidgetId")),
-            Field("left_segments", LIST(REF("StatusBarSegment"))),
-            Field("right_segments", LIST(REF("StatusBarSegment"))),
-        ],
-    )
-)
-# Any additive primitive other than `status_bar` -- registered in
-# `quadraui-binding-core/src/extra_paint.rs`'s `extra_primitives!` table
-# (`progress`, `spinner`, `image`, `form`, ...) -- isn't modelled here at
-# all: `LayoutLeafNode` enumerates only the six core kinds plus
-# `status_bar`, and neither it nor `RenderFrameDict` admits an arbitrary
-# extra-primitive kind key a `Dict[str, Any]`-shaped type could attach to.
-# Narrowing these 28 kinds field-by-field, and giving each a reachable leaf
-# shape, is follow-on work; see this module's own doc.
-
-# ── Core leaf descriptors (the six fixed primitive kinds) ───────────────────
-
-ButtonVariant = define(
-    AliasDef("ButtonVariant", LIT("Primary", "Secondary", "Icon", "Danger", "Warning"))
-)
-ButtonIconPosition = define(AliasDef("ButtonIconPosition", LIT("Leading", "Trailing")))
-ButtonDescriptor = define(
-    ObjDef(
-        "ButtonDescriptor",
-        [
-            Field("id", REF("WidgetId")),
-            Field("label", STR),
-            Field("variant", REF("ButtonVariant"), optional=True),
-            Field("disabled", BOOL, optional=True),
-            Field("focused", BOOL, optional=True),
-            Field("tooltip", NULLABLE(STR), optional=True),
-            Field("icon", NULLABLE(REF("Icon")), optional=True),
-            Field("icon_position", REF("ButtonIconPosition"), optional=True),
-            Field("icon_gap", FLOAT, optional=True),
-        ],
-    )
-)
-ButtonSpecDescriptor = define(
-    ObjDef(
-        "ButtonSpecDescriptor",
-        [
-            Field("label", STR),
-            Field("variant", REF("ButtonVariant"), optional=True),
-            Field("icon", NULLABLE(REF("Icon")), optional=True),
-            Field("icon_position", REF("ButtonIconPosition"), optional=True),
-            Field("icon_gap", FLOAT, optional=True),
-            Field("tooltip", NULLABLE(STR), optional=True),
-            Field("disabled", BOOL, optional=True),
-        ],
-    )
-)
-
-TextDisplayLineDescriptor = define(
-    ObjDef(
-        "TextDisplayLineDescriptor",
-        [
-            Field("spans", LIST(REF("StyledSpan"))),
-            Field("decoration", REF("Decoration"), optional=True),
-            Field("timestamp", NULLABLE(STR), optional=True),
-        ],
-    )
-)
-TextDisplayDescriptor = define(
-    ObjDef(
-        "TextDisplayDescriptor",
-        [
-            Field("id", REF("WidgetId")),
-            Field("lines", LIST(REF("TextDisplayLineDescriptor"))),
-            Field("scroll_offset", INT, optional=True),
-            Field("auto_scroll", BOOL, optional=True),
-            Field("max_lines", INT, optional=True),
-            Field("has_focus", BOOL, optional=True),
-            Field("title", NULLABLE(REF("StyledText")), optional=True),
-            Field("show_scrollbar", BOOL, optional=True),
-        ],
-    )
-)
-
-ListItemDescriptor = define(
-    ObjDef(
-        "ListItemDescriptor",
-        [
-            Field("text", REF("StyledText")),
-            Field("icon", NULLABLE(REF("Icon")), optional=True),
-            Field("detail", NULLABLE(REF("StyledText")), optional=True),
-            Field("decoration", REF("Decoration"), optional=True),
-        ],
-    )
-)
-ListViewDescriptor = define(
-    ObjDef(
-        "ListViewDescriptor",
-        [
-            Field("id", REF("WidgetId")),
-            Field("title", NULLABLE(REF("StyledText")), optional=True),
-            Field("items", LIST(REF("ListItemDescriptor"))),
-            Field("selected_idx", INT),
-            Field("scroll_offset", INT, optional=True),
-            Field("has_focus", BOOL, optional=True),
-            Field("bordered", BOOL, optional=True),
-            Field("h_scroll", INT, optional=True),
-            Field("max_content_width", NULLABLE(INT), optional=True),
-            Field("show_v_scrollbar", BOOL, optional=True),
-            Field(
-                "scroll_px",
-                FLOAT,
-                optional=True,
-                doc="binding-core extension key, lifted out by `scroll_px_from_value`.",
-            ),
-        ],
-    )
-)
-
-TreeRowEditStateDescriptor = define(
-    ObjDef(
-        "TreeRowEditStateDescriptor",
-        [
-            Field("text", STR),
-            Field("cursor", INT),
-            Field("selection_anchor", NULLABLE(INT)),
-            Field("placeholder", NULLABLE(STR), optional=True),
-        ],
-    )
-)
-TreeRowDescriptor = define(
-    ObjDef(
-        "TreeRowDescriptor",
-        [
-            Field("path", REF("TreePath")),
-            Field("indent", INT),
-            Field("icon", NULLABLE(REF("Icon"))),
-            Field("text", REF("StyledText")),
-            Field("badge", NULLABLE(REF("Badge"))),
-            Field("is_expanded", NULLABLE(BOOL)),
-            Field("decoration", REF("Decoration"), optional=True),
-            Field("edit", NULLABLE(REF("TreeRowEditStateDescriptor")), optional=True),
-        ],
-    )
-)
-TreeViewDescriptor = define(
-    ObjDef(
-        "TreeViewDescriptor",
-        [
-            Field("id", REF("WidgetId")),
-            Field("rows", LIST(REF("TreeRowDescriptor"))),
-            Field("selection_mode", REF("SelectionMode")),
-            Field("selected_path", NULLABLE(REF("TreePath"))),
-            Field("scroll_offset", INT, optional=True),
-            Field("style", REF("TreeStyle")),
-            Field("has_focus", BOOL, optional=True),
-            Field("scroll_px", FLOAT, optional=True),
-        ],
-    )
-)
-
-ColumnAlign = define(AliasDef("ColumnAlign", LIT("Left", "Center", "Right")))
-SortDirection = define(AliasDef("SortDirection", LIT("Ascending", "Descending")))
-_ColumnWidthContent = define(ObjDef("_ColumnWidthContent", [Field("min", FLOAT), Field("max", FLOAT)]))
-ColumnWidth = define(
-    flat(
-        "ColumnWidth",
-        [
-            ("FixedCells", FLOAT),
-            ("FixedPx", FLOAT),
-            ("Flex", FLOAT),
-            ("Content", REF("_ColumnWidthContent")),
-        ],
-        'Column sizing strategy, e.g. `{"Flex": 2.0}` -- the deprecated '
-        '`"Fixed"` variant is omitted here; use `FixedCells`/`FixedPx` instead.',
-    )
-)
-ColumnDescriptor = define(
-    ObjDef(
-        "ColumnDescriptor",
-        [
-            Field("title", STR),
-            Field("width", REF("ColumnWidth"), optional=True),
-            Field("align", REF("ColumnAlign"), optional=True),
-        ],
-    )
-)
-DataRowDescriptor = define(
-    ObjDef(
-        "DataRowDescriptor",
-        [Field("cells", LIST(REF("StyledText"))), Field("decoration", REF("Decoration"), optional=True)],
-    )
-)
-DataTableDescriptor = define(
-    ObjDef(
-        "DataTableDescriptor",
-        [
-            Field("id", REF("WidgetId")),
-            Field("columns", LIST(REF("ColumnDescriptor"))),
-            Field("rows", LIST(REF("DataRowDescriptor"))),
-            Field("selected_idx", NULLABLE(INT), optional=True),
-            Field("scroll_offset", INT, optional=True),
-            Field("sort", NULLABLE(TUP(INT, REF("SortDirection"))), optional=True),
-            Field("has_focus", BOOL, optional=True),
-            Field("show_scrollbar", BOOL, optional=True),
-            Field("min_total_width", NULLABLE(FLOAT), optional=True),
-            Field("h_scroll", FLOAT, optional=True),
-            Field("column_overrides", LIST(NULLABLE(FLOAT)), optional=True),
-            Field("footer", NULLABLE(REF("DataRowDescriptor")), optional=True),
-            Field("scroll_px", FLOAT, optional=True),
-        ],
-    )
-)
-
-TabItemDescriptor = define(
-    ObjDef(
-        "TabItemDescriptor",
-        [
-            Field("label", STR),
-            Field("is_active", BOOL, optional=True),
-            Field("is_dirty", BOOL, optional=True),
-            Field("is_preview", BOOL, optional=True),
-            Field("is_closable", BOOL, optional=True),
-        ],
-        'The raw `tab_bar` leaf\'s own tab shape -- distinct from a `"tabs"` '
-        "layout node's tab entry (see `LayoutTabEntryNode`), which uses "
-        '`"title"`/`"closable"` instead of `"label"`/`"is_closable"`.',
-    )
-)
-TabBarSegmentDescriptor = define(
-    ObjDef(
-        "TabBarSegmentDescriptor",
-        [
-            Field("text", STR),
-            Field("width_cells", INT),
-            Field("id", NULLABLE(REF("WidgetId")), optional=True),
-            Field("is_active", BOOL, optional=True),
-        ],
-    )
-)
-TabBarDescriptor = define(
-    ObjDef(
-        "TabBarDescriptor",
-        [
-            Field("id", REF("WidgetId")),
-            Field("tabs", LIST(REF("TabItemDescriptor"))),
-            Field("scroll_offset", INT, optional=True),
-            Field("right_segments", LIST(REF("TabBarSegmentDescriptor")), optional=True),
-            Field("active_accent", NULLABLE(REF("Color")), optional=True),
-            Field("show_tab_close", BOOL, optional=True),
-            Field("compact", BOOL, optional=True),
-        ],
-    )
-)
-
-# ── Chrome descriptors (toolbar / panel / sidebar_panel) ────────────────────
-
-_ToolbarButtonAction = define(
-    ObjDef(
-        "_ToolbarButtonAction",
-        [
-            Field("id", REF("WidgetId")),
-            Field("label", STR),
-            Field("icon", NULLABLE(STR), optional=True),
-            Field("key_hint", NULLABLE(STR), optional=True),
-            Field("enabled", BOOL, optional=True),
-            Field("is_active", BOOL, optional=True),
-            Field("tooltip", STR, optional=True),
-            Field("spec", NULLABLE(REF("ButtonSpecDescriptor")), optional=True),
-        ],
-    )
-)
-_ToolbarButtonActionWrapper = define(
-    ObjDef("_ToolbarButtonActionWrapper", [Field("Action", REF("_ToolbarButtonAction"))])
-)
-_ToolbarButtonLabel = define(
-    ObjDef("_ToolbarButtonLabel", [Field("text", STR), Field("fg", NULLABLE(REF("Color")), optional=True)])
-)
-_ToolbarButtonLabelWrapper = define(
-    ObjDef("_ToolbarButtonLabelWrapper", [Field("Label", REF("_ToolbarButtonLabel"))])
-)
-ToolbarButtonDescriptor = define(
-    union_of(
-        "ToolbarButtonDescriptor",
-        [LIT("Separator", "Spacer"), REF("_ToolbarButtonActionWrapper"), REF("_ToolbarButtonLabelWrapper")],
-        'One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare '
-        'strings), `{"Action": {...}}`, or `{"Label": {...}}`.',
-    )
-)
-ToolbarDescriptor = define(
-    ObjDef(
-        "ToolbarDescriptor",
-        [
-            Field("id", REF("WidgetId")),
-            Field("buttons", LIST(REF("ToolbarButtonDescriptor"))),
-            Field("bg", NULLABLE(REF("Color")), optional=True),
-            Field("focused_index", NULLABLE(INT), optional=True),
-        ],
-    )
-)
-PanelActionDescriptor = define(
-    ObjDef(
-        "PanelActionDescriptor",
-        [
-            Field("id", REF("WidgetId")),
-            Field("icon", STR),
-            Field("tooltip", STR, optional=True),
-            Field("is_active", BOOL, optional=True),
-        ],
-    )
-)
-
-# ── Layout tree node wire shapes (quadraui-binding-core/src/wire.rs) ────────
-
-PaddingAxis = define(
-    ObjDef("PaddingAxis", [Field("x", FLOAT, optional=True), Field("y", FLOAT, optional=True)])
-)
-PaddingSides = define(
-    ObjDef(
-        "PaddingSides",
-        [
-            Field("top", FLOAT, optional=True),
-            Field("right", FLOAT, optional=True),
-            Field("bottom", FLOAT, optional=True),
-            Field("left", FLOAT, optional=True),
-        ],
-    )
-)
-PaddingValue = define(
-    AliasDef(
-        "PaddingValue",
-        UNIONT(FLOAT, REF("PaddingAxis"), REF("PaddingSides")),
-        'A `"padding"` spacing value: one number (every side), `{"x", "y"}`, '
-        'or `{"top", "right", "bottom", "left"}` -- never both shapes at once '
-        "(not expressible as a static type here; rejected at decode time).",
-    )
-)
-
-# `LayoutNode` is a forward reference satisfied once every node-kind Obj
-# below is registered -- fine in both a `.pyi` (never executed) and a
-# `.d.ts` (type declarations are hoisted), so the alias is declared now and
-# backfilled with the real union just before output.
-LayoutNode = REF("LayoutNode")
-
-LayoutRowNode = define(
-    ObjDef(
-        "LayoutRowNode",
-        [
-            Field("row", LIST(LayoutNode)),
-            Field("padding", REF("PaddingValue"), optional=True),
-            Field("margin", FLOAT, optional=True),
-            Field("gap", FLOAT, optional=True),
-        ],
-    )
-)
-LayoutColumnNode = define(
-    ObjDef(
-        "LayoutColumnNode",
-        [
-            Field("column", LIST(LayoutNode)),
-            Field("padding", REF("PaddingValue"), optional=True),
-            Field("margin", FLOAT, optional=True),
-            Field("gap", FLOAT, optional=True),
-        ],
-    )
-)
-LayoutSplitPayload = define(
-    ObjDef(
-        "LayoutSplitPayload",
-        [
-            Field("id", STR),
-            Field("orientation", LIT("horizontal", "vertical")),
-            Field("ratio", FLOAT),
-            Field("first_min", FLOAT, optional=True),
-            Field("second_min", FLOAT, optional=True),
-            Field("first", LayoutNode),
-            Field("second", LayoutNode),
-        ],
-    )
-)
-LayoutSplitNode = define(
-    ObjDef(
-        "LayoutSplitNode",
-        [
-            Field("split", REF("LayoutSplitPayload")),
-            Field("padding", REF("PaddingValue"), optional=True),
-            Field("margin", FLOAT, optional=True),
-            Field("gap", FLOAT, optional=True),
-        ],
-    )
-)
-LayoutTabEntryNode = define(
-    ObjDef(
-        "LayoutTabEntryNode",
-        [
-            Field("id", STR),
-            Field("title", STR),
-            Field("content", LayoutNode),
-            Field("closable", BOOL, optional=True),
-            Field("is_dirty", BOOL, optional=True),
-            Field("is_preview", BOOL, optional=True),
-        ],
-    )
-)
-LayoutTabsPayload = define(
-    ObjDef(
-        "LayoutTabsPayload",
-        [
-            Field("id", STR),
-            Field("tabs", LIST(REF("LayoutTabEntryNode"))),
-            Field("selected", INT, optional=True),
-            Field("closable", BOOL, optional=True),
-            Field("scroll_offset", INT, optional=True),
-            Field("focused_index", NULLABLE(INT), optional=True),
-            Field("right_segments", LIST(REF("TabBarSegmentDescriptor")), optional=True),
-            Field("active_accent", NULLABLE(REF("Color")), optional=True),
-            Field("compact", BOOL, optional=True),
-        ],
-    )
-)
-LayoutTabsNode = define(
-    ObjDef(
-        "LayoutTabsNode",
-        [
-            Field("tabs", REF("LayoutTabsPayload")),
-            Field("padding", REF("PaddingValue"), optional=True),
-            Field("margin", FLOAT, optional=True),
-        ],
-    )
-)
-LayoutPanelPayload = define(
-    ObjDef(
-        "LayoutPanelPayload",
-        [
-            Field("id", STR),
-            Field("title", NULLABLE(REF("StyledText")), optional=True),
-            Field("actions", LIST(REF("PanelActionDescriptor")), optional=True),
-            Field("accent", NULLABLE(REF("Color")), optional=True),
-            Field("collapsed", BOOL, optional=True),
-            Field("content", LayoutNode),
-        ],
-        "The deprecated `panel` node's own chrome dict -- prefer "
-        "`LayoutSidebarPanelNode`.",
-    )
-)
-LayoutPanelNode = define(
-    ObjDef(
-        "LayoutPanelNode",
-        [
-            Field("panel", REF("LayoutPanelPayload")),
-            Field("padding", REF("PaddingValue"), optional=True),
-            Field("margin", FLOAT, optional=True),
-        ],
-    )
-)
-LayoutSidebarPanelPayload = define(
-    ObjDef(
-        "LayoutSidebarPanelPayload",
-        [
-            Field("id", STR),
-            Field("toolbar", NULLABLE(REF("ToolbarDescriptor")), optional=True),
-            Field("toolbar_height", NULLABLE(FLOAT), optional=True),
-            Field("content", LayoutNode),
-        ],
-    )
-)
-LayoutSidebarPanelNode = define(
-    ObjDef("LayoutSidebarPanelNode", [Field("sidebar_panel", REF("LayoutSidebarPanelPayload"))])
-)
-
-SplitTreeRecursiveNode = REF("SplitTreeRecursiveNode")
-_SplitTreeLeaf = define(ObjDef("_SplitTreeLeaf", [Field("leaf", LayoutNode)]))
-SplitTreeSplitPayload = define(
-    ObjDef(
-        "SplitTreeSplitPayload",
-        [
-            Field("orientation", LIT("horizontal", "vertical")),
-            Field("ratio", FLOAT),
-            Field("first", SplitTreeRecursiveNode),
-            Field("second", SplitTreeRecursiveNode),
-        ],
-    )
-)
-_SplitTreeSplitWrapper = define(
-    ObjDef("_SplitTreeSplitWrapper", [Field("split", REF("SplitTreeSplitPayload"))])
-)
-DEFS.append(union_of("SplitTreeRecursiveNode", [REF("_SplitTreeLeaf"), REF("_SplitTreeSplitWrapper")]))
-
-LayoutSplitTreePayload = define(
-    ObjDef("LayoutSplitTreePayload", [Field("id", STR), Field("root", SplitTreeRecursiveNode)])
-)
-LayoutSplitTreeNode = define(
-    ObjDef("LayoutSplitTreeNode", [Field("split_tree", REF("LayoutSplitTreePayload"))])
-)
-
-LayoutLeafNode = define(
-    ObjDef(
-        "LayoutLeafNode",
-        [
-            Field("id", STR),
-            Field("button", REF("ButtonDescriptor"), optional=True),
-            Field("text_display", REF("TextDisplayDescriptor"), optional=True),
-            Field("list", REF("ListViewDescriptor"), optional=True),
-            Field("tree", REF("TreeViewDescriptor"), optional=True),
-            Field("data_table", REF("DataTableDescriptor"), optional=True),
-            Field("tab_bar", REF("TabBarDescriptor"), optional=True),
-            Field("status_bar", REF("StatusBarDescriptor"), optional=True),
-        ],
-        "One `{\"id\", \"<kind>\": <descriptor>}` leaf -- exactly one kind "
-        "key is present. Covers the six core kinds plus `status_bar`; any "
-        "other additive primitive kind (`progress`, `form`, ...) also "
-        "decodes here but isn't modelled -- not reachable through this "
-        "type (see this module's own doc).",
-    )
-)
-
-DEFS.append(
-    union_of(
-        "LayoutNode",
-        [
-            REF("LayoutRowNode"),
-            REF("LayoutColumnNode"),
-            REF("LayoutSplitNode"),
-            REF("LayoutTabsNode"),
-            REF("LayoutPanelNode"),
-            REF("LayoutSidebarPanelNode"),
-            REF("LayoutSplitTreeNode"),
-            REF("LayoutLeafNode"),
-        ],
-        "One node of a render callback's returned layout tree.",
-    )
-)
-
-RenderFrameDict = define(
-    ObjDef(
-        "RenderFrameDict",
-        [
-            Field("button", NULLABLE(REF("ButtonDescriptor")), optional=True),
-            Field("text_display", NULLABLE(REF("TextDisplayDescriptor")), optional=True),
-            Field("list", NULLABLE(REF("ListViewDescriptor")), optional=True),
-            Field("tree", NULLABLE(REF("TreeViewDescriptor")), optional=True),
-            Field("data_table", NULLABLE(REF("DataTableDescriptor")), optional=True),
-            Field("tab_bar", NULLABLE(REF("TabBarDescriptor")), optional=True),
-        ],
-        "The pre-layout-tree flat per-slot shape a render callback may "
-        "still return instead of a `LayoutNode` tree.",
-    )
-)
-RenderOutput = define(
-    AliasDef(
-        "RenderOutput",
-        UNIONT(LayoutNode, REF("RenderFrameDict")),
-        "A render callback's return value: a layout tree or the flat shape.",
-    )
-)
-
-# ── `run_shell` config (quadraui-binding-core/src/wire.rs) ──────────────────
-
-PanelDefinitionDescriptor = define(
-    ObjDef(
-        "PanelDefinitionDescriptor",
-        [
-            Field("id", STR),
-            Field("icon", STR, optional=True),
-            Field("tooltip", STR, optional=True),
-            Field("title", STR, optional=True),
-        ],
-    )
-)
-BottomPanelTabDescriptor = define(
-    ObjDef(
-        "BottomPanelTabDescriptor",
-        [
-            Field("id", STR),
-            Field("label", STR, optional=True),
-            Field("closable", BOOL, optional=True),
-            Field("badge", NULLABLE(STR), optional=True),
-        ],
-    )
-)
-BottomPanelConfigDescriptor = define(
-    ObjDef(
-        "BottomPanelConfigDescriptor",
-        [
-            Field("tabs", LIST(REF("BottomPanelTabDescriptor")), optional=True),
-            Field("active_tab_id", STR, optional=True),
-            Field("maximised", BOOL, optional=True),
-            Field("height_fraction", FLOAT, optional=True),
-        ],
-    )
-)
-ShellConfigDescriptor = define(
-    ObjDef(
-        "ShellConfigDescriptor",
-        [
-            Field("title", STR),
-            Field("panels", LIST(REF("PanelDefinitionDescriptor")), optional=True),
-            Field("bottom_items", LIST(REF("PanelDefinitionDescriptor")), optional=True),
-            Field("position", LIT("left", "right"), optional=True),
-            Field("sidebar_visible", BOOL, optional=True),
-            Field("default_sidebar_width", FLOAT, optional=True),
-            Field("min_sidebar_width", FLOAT, optional=True),
-            Field("max_sidebar_width", FLOAT, optional=True),
-            Field("activity_bar_width", FLOAT, optional=True),
-            Field("has_title_bar", BOOL, optional=True),
-            Field("title_bar_height_lh", FLOAT, optional=True),
-            Field("has_status_bar", BOOL, optional=True),
-            Field("has_command_line", BOOL, optional=True),
-            Field("has_bottom_panel", BOOL, optional=True),
-            Field("bottom_panel_height_lh", FLOAT, optional=True),
-            Field("bottom_panel", REF("BottomPanelConfigDescriptor"), optional=True),
-        ],
-        "`run_shell`'s `config` dict.",
-    )
-)
-
-# ── Per-widget activation payloads (flat: `"Tag" in activation` narrows) ───
-
-TreeEvent = define(
-    flat(
-        "TreeEvent",
-        [
-            ("RowClicked", REF("_TreeRowClickedPayload")),
-            ("RowDoubleClicked", REF("_TreePathPayload")),
-            ("RowToggleExpand", REF("_TreePathPayload")),
-            ("SelectionChanged", REF("_TreePathPayload")),
-            ("KeyPressed", REF("_KeyPressedStrPayload")),
-            ("SelectionSet", REF("_TreeSelectionSetPayload")),
-            ("RowRenameChanged", REF("_TreeRowRenameChangedPayload")),
-            ("RowRenameCommitted", REF("_TreeRowRenameCommittedPayload")),
-            ("RowRenameCancelled", REF("_TreePathPayload")),
-        ],
-    )
-)
-
-def _insert_before(name: str, d: ObjDef) -> None:
-    idx = next(i for i, existing in enumerate(DEFS) if getattr(existing, "name", None) == name)
-    DEFS.insert(idx, d)
+def _ty_from_json(obj: dict) -> Ty:
+    """Decodes one `TyJson` value (`quadraui-binding-core/src/wire_schema.rs`)
+    into this script's own [`Ty`] -- the abstract type expression, not a
+    pre-rendered string; [`render_python`]/[`render_typescript`] still own
+    every target-language rendering/parenthesization rule."""
+    kind = obj["kind"]
+    if kind == "prim":
+        return {"STR": STR, "INT": INT, "FLOAT": FLOAT, "BOOL": BOOL, "ANY": ANY}[obj["name"]]
+    if kind == "ref":
+        return REF(obj["name"])
+    if kind == "nullable":
+        return NULLABLE(_ty_from_json(obj["inner"]))
+    if kind == "list":
+        return LIST(_ty_from_json(obj["inner"]))
+    if kind == "dict":
+        return DICTT(_ty_from_json(obj["key"]), _ty_from_json(obj["value"]))
+    if kind == "tuple":
+        return TUP(*[_ty_from_json(i) for i in obj["items"]])
+    if kind == "lit":
+        return LIT(*obj["values"])
+    if kind == "union":
+        return UNIONT(*[_ty_from_json(i) for i in obj["items"]])
+    raise ValueError(f"unknown TyJson kind: {kind!r}")
 
 
-_insert_before("TreeEvent", ObjDef("_TreePathPayload", [Field("path", REF("TreePath"))]))
-_insert_before(
-    "TreeEvent",
-    ObjDef(
-        "_TreeRowClickedPayload",
-        [Field("path", REF("TreePath")), Field("modifiers", REF("Modifiers"))],
-    ),
-)
-_insert_before(
-    "TreeEvent", ObjDef("_KeyPressedStrPayload", [Field("key", STR), Field("modifiers", REF("Modifiers"))])
-)
-_insert_before("TreeEvent", ObjDef("_TreeSelectionSetPayload", [Field("paths", LIST(REF("TreePath")))]))
-_insert_before(
-    "TreeEvent",
-    ObjDef(
-        "_TreeRowRenameChangedPayload",
-        [
-            Field("path", REF("TreePath")),
-            Field("text", STR),
-            Field("cursor", INT),
-            Field("selection_anchor", NULLABLE(INT)),
-        ],
-    ),
-)
-_insert_before(
-    "TreeEvent",
-    ObjDef("_TreeRowRenameCommittedPayload", [Field("path", REF("TreePath")), Field("text", STR)]),
-)
-
-ListViewEvent = define(
-    flat(
-        "ListViewEvent",
-        [
-            ("SelectionChanged", REF("_IdxPayload")),
-            ("ItemActivated", REF("_IdxPayload")),
-            ("ItemDoubleClicked", REF("_IdxPayload")),
-            ("KeyPressed", REF("_KeyPressedStrPayload")),
-            ("SelectionSet", REF("_IndicesPayload")),
-        ],
+def _field_from_json(obj: dict) -> Field:
+    return Field(
+        obj["name"],
+        _ty_from_json(obj["ty"]),
+        optional=obj.get("optional", False),
+        doc=obj.get("doc", ""),
     )
-)
-_insert_before("ListViewEvent", ObjDef("_IdxPayload", [Field("idx", INT)]))
-_insert_before("ListViewEvent", ObjDef("_IndicesPayload", [Field("indices", LIST(INT))]))
 
-DataTableEvent = define(
-    flat(
-        "DataTableEvent",
-        [
-            ("HeaderClicked", REF("_ColPayload")),
-            ("RowActivated", REF("_IdxPayload")),
-            ("RowSelected", REF("_IdxPayload")),
-            ("RowDoubleClicked", REF("_IdxPayload")),
-            ("Scroll", REF("_DataTableScrollPayload")),
-            ("ColumnResized", REF("_ColumnResizedPayload")),
-        ],
+
+def _def_from_json(obj: dict) -> Def:
+    """Decodes one `DefJson` value into this script's own [`ObjDef`]/
+    [`AliasDef`]."""
+    kind = obj["kind"]
+    if kind == "obj":
+        return ObjDef(
+            obj["name"],
+            [_field_from_json(f) for f in obj["fields"]],
+            obj.get("doc", ""),
+            discriminated=obj.get("discriminated", False),
+            common=[_field_from_json(f) for f in obj.get("common", [])],
+        )
+    if kind == "alias":
+        return AliasDef(obj["name"], _ty_from_json(obj["ty"]), obj.get("doc", ""))
+    raise ValueError(f"unknown DefJson kind: {kind!r}")
+
+
+def load_defs_from_rust() -> List[Def]:
+    """Runs `quadraui-binding-core`'s `export_wire_schema` binary (built
+    from `quadraui-binding-core/src/wire_schema.rs`, the Rust-side schema
+    this whole module renders) and decodes its JSON dump into this script's
+    own `Ty`/`Field`/`ObjDef`/`AliasDef` objects, in the same order the
+    Rust side returned them.
+
+    This is the one step that makes the Rust side the actual source of
+    truth: this script never constructs the schema itself, only whatever
+    shape `cargo run` reports right now. A field or variant added to a
+    wire-decoded Rust type without a matching `wire_schema.rs` update fails
+    to build at all (`wire_schema.rs`'s own `coverage` module), and a
+    `wire_schema.rs` update that isn't reflected in the committed
+    `.pyi`/`.d.ts` fails `--check` below, exactly like before.
+    """
+    proc = subprocess.run(
+        ["cargo", "run", "--quiet", "-p", "quadraui-binding-core", "--bin", "export_wire_schema"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
     )
-)
-_insert_before("DataTableEvent", ObjDef("_ColPayload", [Field("col", INT)]))
-_insert_before(
-    "DataTableEvent",
-    ObjDef("_DataTableScrollPayload", [Field("delta", INT), Field("modifiers", REF("Modifiers"))]),
-)
-_insert_before(
-    "DataTableEvent", ObjDef("_ColumnResizedPayload", [Field("col", INT), Field("width", FLOAT)])
-)
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+        raise RuntimeError(
+            "failed to export the wire schema from "
+            "`quadraui-binding-core` -- see cargo's output above"
+        )
+    raw: List[dict] = json.loads(proc.stdout)
+    return [_def_from_json(d) for d in raw]
 
-TabBarEvent = define(
-    flat(
-        "TabBarEvent",
-        [
-            ("TabActivated", REF("_IndexPayload")),
-            ("TabClosed", REF("_IndexPayload")),
-            ("ButtonClicked", REF("_IdPayload")),
-            ("KeyPressed", REF("_KeyPressedStrPayload")),
-            ("FocusMoved", REF("_IndexPayload")),
-        ],
-    )
-)
-_insert_before("TabBarEvent", ObjDef("_IndexPayload", [Field("index", INT)]))
-_insert_before("TabBarEvent", ObjDef("_IdPayload", [Field("id", REF("WidgetId"))]))
 
-StatusBarEvent = define(
-    flat("StatusBarEvent", [("SegmentClicked", REF("_IdPayload")), ("KeyPressed", REF("_KeyPressedStrPayload"))])
-)
-
-TextDisplayEvent = define(
-    flat(
-        "TextDisplayEvent",
-        [
-            ("Scrolled", REF("_NewOffsetPayload")),
-            ("AutoScrollToggled", REF("_EnabledPayload")),
-            ("Copied", REF("_TextPayload")),
-            ("KeyPressed", REF("_KeyPressedStrPayload")),
-        ],
-    )
-)
-_insert_before("TextDisplayEvent", ObjDef("_NewOffsetPayload", [Field("new_offset", INT)]))
-_insert_before("TextDisplayEvent", ObjDef("_EnabledPayload", [Field("enabled", BOOL)]))
-_insert_before("TextDisplayEvent", ObjDef("_TextPayload", [Field("text", STR)]))
-
-ActivityBarEvent = define(
-    flat("ActivityBarEvent", [("ItemClicked", REF("_IdPayload")), ("KeyPressed", REF("_KeyPressedStrPayload"))])
-)
-
-_TerminalEventDict = define(
-    flat(
-        "_TerminalEventDict",
-        [
-            ("KeyPressed", REF("_KeyPressedStrPayload")),
-            ("SelectStart", REF("_RowColPayload")),
-            ("SelectExtend", REF("_RowColPayload")),
-            ("Scroll", REF("_IntDeltaPayload")),
-        ],
-    )
-)
-_insert_before("_TerminalEventDict", ObjDef("_RowColPayload", [Field("row", INT), Field("col", INT)]))
-_insert_before("_TerminalEventDict", ObjDef("_IntDeltaPayload", [Field("delta", INT)]))
-TerminalEvent = define(
-    AliasDef(
-        "TerminalEvent",
-        UNIONT(LIT("SelectEnd"), REF("_TerminalEventDict")),
-        'Mouse release has no payload -- bare `"SelectEnd"`, unlike every '
-        "other variant.",
-    )
-)
-
-ChartEvent = define(
-    flat(
-        "ChartEvent",
-        [
-            ("Clicked", REF("_IdPayload")),
-            ("DataPointClicked", REF("_DataPointClickedPayload")),
-            ("LegendClicked", REF("_LegendClickedPayload")),
-        ],
-    )
-)
-_insert_before(
-    "ChartEvent",
-    ObjDef(
-        "_DataPointClickedPayload",
-        [Field("id", REF("WidgetId")), Field("series_idx", INT), Field("data_idx", INT)],
-    ),
-)
-_insert_before(
-    "ChartEvent", ObjDef("_LegendClickedPayload", [Field("id", REF("WidgetId")), Field("series_idx", INT)])
-)
-
-ToolbarEvent = define(
-    flat("ToolbarEvent", [("ButtonClicked", REF("_ToolbarButtonClickedPayload"))])
-)
-_insert_before(
-    "ToolbarEvent",
-    ObjDef(
-        "_ToolbarButtonClickedPayload", [Field("id", REF("WidgetId")), Field("is_active", BOOL)]
-    ),
-)
-
-# ── `HitDetail` (quadraui-binding-core/src/hit.rs) ──────────────────────────
-
-# `HitDetail` is internally tagged (`#[serde(tag = "kind", rename_all =
-# "snake_case")]`): each variant serializes to one object carrying a
-# `"kind"` string literal alongside whatever fields that variant has, not
-# `{"Tag": {...}}` like an ordinary externally-tagged enum. Modelled as one
-# [`ObjDef`] per variant (its `"kind"` a single-value [`LIT`]), combined
-# into a union below -- the same per-variant-then-union shape
-# `ToolbarButtonDescriptor` uses, just with the tag folded into each
-# member's own fields instead of wrapping it.
-_HIT_DETAIL_KINDS: List[Tuple[str, str, List[Field]]] = [
-    ("_HitDetailButtonBody", "button_body", []),
-    ("_HitDetailTreeRow", "tree_row", [Field("row", INT)]),
-    ("_HitDetailTreeChevron", "tree_chevron", [Field("row", INT)]),
-    ("_HitDetailListTitle", "list_title", []),
-    ("_HitDetailListItem", "list_item", [Field("index", INT)]),
-    ("_HitDetailDataTableHeader", "data_table_header", [Field("col", INT)]),
-    ("_HitDetailDataTableHeaderDivider", "data_table_header_divider", [Field("col", INT)]),
-    ("_HitDetailDataTableRow", "data_table_row", [Field("row", INT)]),
-    ("_HitDetailDataTableFooter", "data_table_footer", []),
-    ("_HitDetailTabBarTab", "tab_bar_tab", [Field("tab", INT)]),
-    ("_HitDetailTabBarTabClose", "tab_bar_tab_close", [Field("tab", INT)]),
-    ("_HitDetailTabBarScrollLeft", "tab_bar_scroll_left", []),
-    ("_HitDetailTabBarScrollRight", "tab_bar_scroll_right", []),
-    ("_HitDetailTabBarRightSegment", "tab_bar_right_segment", []),
-    ("_HitDetailTextDisplayLine", "text_display_line", [Field("line", INT)]),
-    ("_HitDetailTextDisplayScrollbarThumb", "text_display_scrollbar_thumb", []),
-    ("_HitDetailTextDisplayScrollbarTrackBefore", "text_display_scrollbar_track_before", []),
-    ("_HitDetailTextDisplayScrollbarTrackAfter", "text_display_scrollbar_track_after", []),
-    ("_HitDetailSplitFirstPane", "split_first_pane", []),
-    ("_HitDetailSplitSecondPane", "split_second_pane", []),
-    ("_HitDetailSplitDivider", "split_divider", []),
-    ("_HitDetailSplitTreeDivider", "split_tree_divider", [Field("split_index", INT)]),
-    ("_HitDetailPanelAction", "panel_action", []),
-    ("_HitDetailPanelTitleBar", "panel_title_bar", []),
-    (
-        "_HitDetailSidebarPanelToolbarButton",
-        "sidebar_panel_toolbar_button",
-        [Field("bar", REF("WidgetId"))],
-    ),
-    ("_HitDetailTreeScrollbarTrackBefore", "tree_scrollbar_track_before", []),
-    ("_HitDetailTreeScrollbarThumb", "tree_scrollbar_thumb", []),
-    ("_HitDetailTreeScrollbarTrackAfter", "tree_scrollbar_track_after", []),
-    ("_HitDetailExtraBody", "extra_body", []),
-    ("_HitDetailExtraChrome", "extra_chrome", [Field("bar", REF("WidgetId"))]),
-]
-_hit_detail_members: List[Ty] = []
-for _hd_name, _hd_kind, _hd_fields in _HIT_DETAIL_KINDS:
-    _hit_detail_members.append(
-        define(ObjDef(_hd_name, [Field("kind", LIT(_hd_kind)), *_hd_fields]))
-    )
-HitDetail = define(
-    union_of(
-        "HitDetail",
-        _hit_detail_members,
-        "The sub-region of a primitive a pointer event landed on -- see "
-        "`HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on "
-        '`.kind` (e.g. `detail["kind"] == "tree_row"`).',
-    )
-)
-
-# ── `UiEvent` (quadraui/src/event.rs) ───────────────────────────────────────
-
-_UI_EVENT_UNIT_TAGS = ("WindowClose", "DisplaysChanged", "ContextMenuDismissed")
-
-_UiEventDict = define(
-    flat(
-        "_UiEventDict",
-        [
-            ("Accelerator", TUP(REF("AcceleratorId"), REF("Modifiers"))),
-            ("GlobalShortcut", REF("GlobalShortcutId")),
-            ("KeyPressed", REF("_UiKeyPressedPayload")),
-            ("CharTyped", STR),
-            ("MouseDown", REF("_MouseDownPayload")),
-            ("MouseUp", REF("_MouseUpPayload")),
-            ("MouseMoved", REF("_MouseMovedPayload")),
-            ("MouseEntered", REF("_WidgetPayload")),
-            ("MouseLeft", REF("_WidgetPayload")),
-            ("DoubleClick", REF("_DoubleClickPayload")),
-            ("Scroll", REF("_UiScrollPayload")),
-            ("WindowResized", REF("_WindowResizedPayload")),
-            ("WindowFocused", BOOL),
-            ("DpiChanged", FLOAT),
-            ("WindowStateChanged", REF("_WindowStateChangedPayload")),
-            ("FilesDropped", REF("_FilesDroppedPayload")),
-            ("ClipboardPaste", STR),
-            ("OpenRequested", REF("_OpenRequestedPayload")),
-            ("TextCopied", STR),
-            ("FocusChanged", NULLABLE(REF("WidgetId"))),
-            ("SystemThemeChanged", REF("SystemTheme")),
-            ("PowerStateChanged", REF("_PowerStateChangedPayload")),
-            ("ScrollOffsetChanged", REF("_ScrollOffsetChangedPayload")),
-            ("TextSelectionChanged", REF("_TextSelectionChangedPayload")),
-            ("SplitDividerDragged", REF("_SplitDividerDraggedPayload")),
-            ("MenuActivated", REF("WidgetId")),
-            ("ContextMenuItemActivated", REF("WidgetId")),
-            ("MessageDialogResolved", REF("WidgetId")),
-            ("ToastActionClicked", REF("WidgetId")),
-            ("CompletionItemActivated", TUP(REF("WidgetId"), INT)),
-            ("RichTextLinkClicked", TUP(REF("WidgetId"), STR)),
-            ("TrayClicked", REF("_TrayClickedPayload")),
-            ("NotificationActivated", REF("_NotificationActivatedPayload")),
-            ("Tree", TUP(REF("WidgetId"), REF("TreeEvent"))),
-            ("List", TUP(REF("WidgetId"), REF("ListViewEvent"))),
-            ("Form", TUP(REF("WidgetId"), DICTT(STR, ANY))),
-            ("Palette", TUP(REF("WidgetId"), DICTT(STR, ANY))),
-            ("TabBar", TUP(REF("WidgetId"), REF("TabBarEvent"))),
-            ("StatusBar", TUP(REF("WidgetId"), REF("StatusBarEvent"))),
-            ("ActivityBar", TUP(REF("WidgetId"), REF("ActivityBarEvent"))),
-            ("Terminal", TUP(REF("WidgetId"), REF("TerminalEvent"))),
-            ("TextDisplay", TUP(REF("WidgetId"), REF("TextDisplayEvent"))),
-            ("Chart", TUP(REF("WidgetId"), REF("ChartEvent"))),
-            ("DataTable", TUP(REF("WidgetId"), REF("DataTableEvent"))),
-            ("Toolbar", TUP(REF("WidgetId"), REF("ToolbarEvent"))),
-            ("BackendNative", REF("BackendNativeEvent")),
-            ("User", ANY),
-        ],
-        common=[
-            Field(
-                "hit",
-                REF("HitDetail"),
-                optional=True,
-                doc="The hit-tested sub-region a pointer landed on, when the "
-                "binding attached one (never present on `User`). See "
-                "`quadraui-py/src/lib.rs`'s `dispatch`.",
-            )
-        ],
-    )
-)
-for _tag, _fields in [
-    ("_UiKeyPressedPayload", [Field("key", REF("Key")), Field("modifiers", REF("Modifiers")), Field("repeat", BOOL)]),
-    (
-        "_MouseDownPayload",
-        [
-            Field("widget", NULLABLE(REF("WidgetId"))),
-            Field("button", REF("MouseButton")),
-            Field("position", REF("Point")),
-            Field("modifiers", REF("Modifiers")),
-        ],
-    ),
-    (
-        "_MouseUpPayload",
-        [
-            Field("widget", NULLABLE(REF("WidgetId"))),
-            Field("button", REF("MouseButton")),
-            Field("position", REF("Point")),
-        ],
-    ),
-    ("_MouseMovedPayload", [Field("position", REF("Point")), Field("buttons", REF("ButtonMask"))]),
-    ("_WidgetPayload", [Field("widget", REF("WidgetId"))]),
-    ("_DoubleClickPayload", [Field("widget", NULLABLE(REF("WidgetId"))), Field("position", REF("Point"))]),
-    (
-        "_UiScrollPayload",
-        [
-            Field("widget", NULLABLE(REF("WidgetId"))),
-            Field("delta", REF("ScrollDelta")),
-            Field("position", REF("Point")),
-        ],
-    ),
-    ("_WindowResizedPayload", [Field("viewport", REF("Viewport"))]),
-    (
-        "_WindowStateChangedPayload",
-        [Field("maximized", BOOL), Field("fullscreen", BOOL), Field("minimized", BOOL)],
-    ),
-    ("_FilesDroppedPayload", [Field("paths", LIST(STR)), Field("position", REF("Point"))]),
-    ("_OpenRequestedPayload", [Field("urls", LIST(STR)), Field("files", LIST(STR))]),
-    ("_PowerStateChangedPayload", [Field("kind", REF("PowerEventKind"))]),
-    ("_ScrollOffsetChangedPayload", [Field("widget", REF("WidgetId")), Field("new_offset", INT)]),
-    (
-        "_TextSelectionChangedPayload",
-        [Field("region", REF("WidgetId")), Field("anchor", REF("Point")), Field("focus", REF("Point"))],
-    ),
-    (
-        "_SplitDividerDraggedPayload",
-        [Field("tree", REF("WidgetId")), Field("split_index", INT), Field("new_ratio", FLOAT)],
-    ),
-    ("_TrayClickedPayload", [Field("button", REF("MouseButton"))]),
-    (
-        "_NotificationActivatedPayload",
-        [Field("tag", NULLABLE(STR)), Field("action", NULLABLE(REF("WidgetId")))],
-    ),
-]:
-    _insert_before("_UiEventDict", ObjDef(_tag, _fields))
-
-UiEvent = define(
-    AliasDef(
-        "UiEvent",
-        UNIONT(LIT(*_UI_EVENT_UNIT_TAGS), REF("_UiEventDict")),
-        "Everything a user (or platform) can do that an app might care "
-        "about -- see `quadraui/src/event.rs`'s `UiEvent`. `isinstance(event, "
-        "str)` (Python) / `typeof event === \"string\"` (TS) separates the "
-        "three no-payload variants from the rest before narrowing on a key.",
-    )
-)
+def get_defs() -> List[Def]:
+    """[`DEFS`], populating it via [`load_defs_from_rust`] on first use."""
+    global DEFS
+    if DEFS is None:
+        DEFS = load_defs_from_rust()
+    return DEFS
 
 
 # ─── Rendering ──────────────────────────────────────────────────────────────
@@ -1524,8 +427,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    py_text = render_python(DEFS)
-    ts_text = render_typescript(DEFS)
+    defs = get_defs()
+    py_text = render_python(defs)
+    ts_text = render_typescript(defs)
 
     if args.check:
         stale = []
