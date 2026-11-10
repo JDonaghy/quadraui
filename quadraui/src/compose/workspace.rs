@@ -12,6 +12,7 @@
 //!
 //! ```ignore
 //! use quadraui::compose::workspace::{WorkspaceController, WorkspaceDoc, WorkspaceEvent};
+//! use quadraui::compose::Handled;
 //!
 //! let mut ws = WorkspaceController::new("panel:docs");
 //! ws.open(WorkspaceDoc::new("doc:a", "alpha.rs"));
@@ -25,8 +26,10 @@
 //!
 //! // In AppLogic::handle:
 //! # let button = quadraui::MouseButton::Left;
-//! for ev in ws.handle_click(pos.x, pos.y, button) {
-//!     if let WorkspaceEvent::Closed { id, .. } = ev { /* drop the buffer */ }
+//! if let Handled::Event(evs) = ws.handle_click_event(pos.x, pos.y, button) {
+//!     for ev in evs {
+//!         if let WorkspaceEvent::Closed { id, .. } = ev { /* drop the buffer */ }
+//!     }
 //! }
 //! ```
 //!
@@ -75,7 +78,7 @@
 //!
 //! # Keyboard
 //!
-//! [`WorkspaceController::handle_key`] consumes, all wrapping around the
+//! [`WorkspaceController::handle_key_event`] consumes, all wrapping around the
 //! ends of the strip:
 //!
 //! | Key | Effect |
@@ -126,7 +129,7 @@
 //! | Trigger | How | vimcode reference |
 //! |---|---|---|
 //! | Re-opening it as permanent (incl. a double click on the source row, which just calls the permanent open instead of the preview one) | [`Self::open`] promotes when `id` is already the preview | `engine/windows.rs:2297-2299`, `engine/tests.rs::test_double_click_promotes_preview` |
-//! | Selecting the preview tab | [`Self::activate`] / [`Self::activate_index`] / a left click on the tab body (via [`Self::handle_click`]) promote when the newly-selected tab is the preview | `engine/windows.rs:1757-1761` (`goto_tab`) |
+//! | Selecting the preview tab | [`Self::activate`] / [`Self::activate_index`] / a left click on the tab body (via [`Self::handle_click_event`]) promote when the newly-selected tab is the preview | `engine/windows.rs:1757-1761` (`goto_tab`) |
 //! | Editing the document | [`Self::set_dirty`]`(id, true)` promotes when `id` is the preview | `engine/keys.rs:427-430` |
 //! | Saving | the host calls [`Self::promote`] from its save handler | `engine/tests.rs::test_save_promotes_preview` |
 //! | Explicit pin | the host calls [`Self::promote`] from a pin action | — |
@@ -141,6 +144,7 @@
 //! [`TabItem::is_preview`], which every backend already renders italic
 //! (`quadraui/src/tui/tab_bar.rs`).
 
+use crate::compose::Handled;
 use crate::event::{Key, MouseButton, NamedKey, Rect};
 // This compose helper caches exactly what `Backend::draw_tab_bar` returns
 // for click dispatch — see `TabBarHits`'s own doc for its stability
@@ -181,7 +185,7 @@ pub struct WorkspaceDoc {
     /// Text painted on the tab.
     pub label: String,
     /// When `false` the tab paints no close button and
-    /// [`WorkspaceController::handle_click`] cannot close it. Defaults to
+    /// [`WorkspaceController::handle_click_event`] cannot close it. Defaults to
     /// `true`.
     pub closable: bool,
     /// Unsaved-changes marker — the tab paints `●` instead of `×`.
@@ -261,6 +265,19 @@ pub enum WorkspaceEvent {
         /// The promoted document's opaque id.
         id: String,
     },
+}
+
+/// Wrap a mutating entry point's `Vec<WorkspaceEvent>` result as
+/// [`Handled::Event`] when non-empty, [`Handled::Consumed`] otherwise — the
+/// controller already mutated state (or confirmed there was nothing to do)
+/// by the time it has a `Vec` to return, so an empty one is never
+/// [`Handled::Ignored`].
+fn events_to_handled(events: Vec<WorkspaceEvent>) -> Handled<Vec<WorkspaceEvent>> {
+    if events.is_empty() {
+        Handled::Consumed
+    } else {
+        Handled::Event(events)
+    }
 }
 
 /// Resolved rects from one [`WorkspaceController::render`] call.
@@ -541,7 +558,7 @@ impl WorkspaceController {
     /// still emits `Closed`.
     ///
     /// This ignores [`WorkspaceDoc::closable`]: that flag governs the
-    /// *tab strip's* close affordance (see [`Self::handle_click`]), not
+    /// *tab strip's* close affordance (see [`Self::handle_click_event`]), not
     /// the host's ability to close a document programmatically.
     pub fn close(&mut self, id: impl Into<WidgetId>) -> Vec<WorkspaceEvent> {
         let Some(index) = self.index_of(id) else {
@@ -753,20 +770,32 @@ impl WorkspaceController {
     ///   button falls through to the existing left-click behaviour: a
     ///   click on a tab's close button closes it (close buttons win over
     ///   tab bodies, matching
-    ///   [`TabGroupController::handle_click`](crate::compose::tab_group::TabGroupController::handle_click));
+    ///   [`TabGroupController::handle_click_event`](crate::compose::tab_group::TabGroupController::handle_click_event));
     ///   a click on a tab body activates it, promoting it when it's the
     ///   preview (see [`Self::activate_index`]).
     ///
     /// Both close paths ignore [`WorkspaceDoc::closable`]: a `false` tab
-    /// closes for neither the close button nor a middle click. Anything
-    /// else — the body area, dead space in the strip, a click before the
-    /// first [`Self::render`] — returns an empty `Vec`.
-    pub fn handle_click(&mut self, x: f32, y: f32, button: MouseButton) -> Vec<WorkspaceEvent> {
+    /// closes for neither the close button nor a middle click.
+    ///
+    /// Returns [`Handled::Event`] with the resulting events (in temporal
+    /// order) when the click produced at least one. Returns
+    /// [`Handled::Consumed`] when the click landed inside the strip but on
+    /// dead space (the body area, a non-closable tab's close region, an
+    /// already-active tab's body) — nothing to route, but the click was
+    /// this controller's to handle. Returns [`Handled::Ignored`] when the
+    /// click was outside the strip entirely, or landed before the first
+    /// [`Self::render`].
+    pub fn handle_click_event(
+        &mut self,
+        x: f32,
+        y: f32,
+        button: MouseButton,
+    ) -> Handled<Vec<WorkspaceEvent>> {
         let (Some(strip), Some(hits)) = (self.last_strip, self.last_hits.as_ref()) else {
-            return Vec::new();
+            return Handled::Ignored;
         };
         if y < strip.y || y >= strip.y + strip.height || x < strip.x || x >= strip.x + strip.width {
-            return Vec::new();
+            return Handled::Ignored;
         }
         let click_x = x as f64;
         let in_range = |(start, end): (f64, f64)| end > start && click_x >= start && click_x < end;
@@ -783,16 +812,16 @@ impl WorkspaceController {
             // anywhere on its span — unlike the close button, it doesn't
             // require landing on the × glyph specifically.
             let Some(i) = body_hit else {
-                return Vec::new();
+                return Handled::Consumed;
             };
             let Some(doc) = self.docs.get(i) else {
-                return Vec::new();
+                return Handled::Consumed;
             };
             if !doc.closable {
-                return Vec::new();
+                return Handled::Consumed;
             }
             let id = doc.id.clone();
-            return self.close(&id);
+            return events_to_handled(self.close(&id));
         }
 
         // Close buttons take precedence over the tab bodies that contain
@@ -805,31 +834,45 @@ impl WorkspaceController {
             .map(|(i, _)| i);
         if let Some(i) = close_hit {
             let Some(doc) = self.docs.get(i) else {
-                return Vec::new();
+                return Handled::Consumed;
             };
             if !doc.closable {
-                return Vec::new();
+                return Handled::Consumed;
             }
             let id = doc.id.clone();
-            return self.close(&id);
+            return events_to_handled(self.close(&id));
         }
 
         match body_hit {
-            Some(i) => self.activate_index(i),
-            None => Vec::new(),
+            Some(i) => events_to_handled(self.activate_index(i)),
+            None => Handled::Consumed,
         }
     }
 
-    /// Route a key press. Returns the emitted event, or `None` when the
-    /// key isn't one this controller binds (the caller should keep
-    /// dispatching it).
+    /// Route a mouse click at `(x, y)` in surface coordinates.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_click_event`, which returns `Handled<Vec<WorkspaceEvent>>` and distinguishes dead-space clicks (`Handled::Consumed`) from clicks outside the strip (`Handled::Ignored`)"
+    )]
+    pub fn handle_click(&mut self, x: f32, y: f32, button: MouseButton) -> Vec<WorkspaceEvent> {
+        self.handle_click_event(x, y, button)
+            .into_event()
+            .unwrap_or_default()
+    }
+
+    /// Route a key press. Returns [`Handled::Event`] with the emitted
+    /// event, [`Handled::Consumed`] when the key is one of this
+    /// controller's bindings but the step was a no-op (an empty workspace,
+    /// or stepping lands back on the already-active document), and
+    /// [`Handled::Ignored`] when the key isn't one this controller binds
+    /// at all (the caller should keep dispatching it).
     ///
     /// See the module doc for the full binding table: `Ctrl+Tab` /
     /// `Ctrl+PageDown` step forward, `Ctrl+Shift+Tab` / `Ctrl+PageUp`
     /// step back, both wrapping.
-    pub fn handle_key(&mut self, key: &Key, modifiers: Modifiers) -> Option<WorkspaceEvent> {
+    pub fn handle_key_event(&mut self, key: &Key, modifiers: Modifiers) -> Handled<WorkspaceEvent> {
         if !modifiers.ctrl {
-            return None;
+            return Handled::Ignored;
         }
         let delta = match key {
             // Crossterm reports Ctrl+Shift+Tab as `BackTab`; GTK reports a
@@ -840,9 +883,21 @@ impl WorkspaceController {
             Key::Named(NamedKey::Tab) => 1,
             Key::Named(NamedKey::PageUp) => -1,
             Key::Named(NamedKey::PageDown) => 1,
-            _ => return None,
+            _ => return Handled::Ignored,
         };
-        self.cycle(delta)
+        match self.cycle(delta) {
+            Some(ev) => Handled::Event(ev),
+            None => Handled::Consumed,
+        }
+    }
+
+    /// Route a key press.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_key_event`, which returns `Handled<WorkspaceEvent>` and distinguishes a no-op step (`Handled::Consumed`) from an unbound key (`Handled::Ignored`)"
+    )]
+    pub fn handle_key(&mut self, key: &Key, modifiers: Modifiers) -> Option<WorkspaceEvent> {
+        self.handle_key_event(key, modifiers).into_event()
     }
 
     // ── Internals ───────────────────────────────────────────────────
@@ -1142,28 +1197,33 @@ mod tests {
         ws.activate("a");
 
         assert_eq!(
-            ws.handle_key(&Key::Named(NamedKey::Tab), ctrl())
+            ws.handle_key_event(&Key::Named(NamedKey::Tab), ctrl())
+                .into_event()
                 .map(event_id),
             Some("b".to_string())
         );
         assert_eq!(
-            ws.handle_key(&Key::Named(NamedKey::Tab), ctrl_shift())
+            ws.handle_key_event(&Key::Named(NamedKey::Tab), ctrl_shift())
+                .into_event()
                 .map(event_id),
             Some("a".to_string())
         );
         assert_eq!(
-            ws.handle_key(&Key::Named(NamedKey::BackTab), ctrl())
+            ws.handle_key_event(&Key::Named(NamedKey::BackTab), ctrl())
+                .into_event()
                 .map(event_id),
             Some("c".to_string()),
             "crossterm's Ctrl+Shift+Tab spelling"
         );
         assert_eq!(
-            ws.handle_key(&Key::Named(NamedKey::PageDown), ctrl())
+            ws.handle_key_event(&Key::Named(NamedKey::PageDown), ctrl())
+                .into_event()
                 .map(event_id),
             Some("a".to_string())
         );
         assert_eq!(
-            ws.handle_key(&Key::Named(NamedKey::PageUp), ctrl())
+            ws.handle_key_event(&Key::Named(NamedKey::PageUp), ctrl())
+                .into_event()
                 .map(event_id),
             Some("c".to_string())
         );
@@ -1173,14 +1233,17 @@ mod tests {
     fn unbound_keys_are_left_for_the_caller() {
         let mut ws = ws(&["a", "b"]);
         assert_eq!(
-            ws.handle_key(&Key::Named(NamedKey::Tab), Modifiers::default()),
-            None,
+            ws.handle_key_event(&Key::Named(NamedKey::Tab), Modifiers::default()),
+            Handled::Ignored,
             "plain Tab is not the workspace's key"
         );
-        assert_eq!(ws.handle_key(&Key::Char('q'), ctrl()), None);
         assert_eq!(
-            ws.handle_key(&Key::Named(NamedKey::Right), ctrl()),
-            None,
+            ws.handle_key_event(&Key::Char('q'), ctrl()),
+            Handled::Ignored
+        );
+        assert_eq!(
+            ws.handle_key_event(&Key::Named(NamedKey::Right), ctrl()),
+            Handled::Ignored,
             "arrows belong to whatever owns the body"
         );
     }
@@ -1325,8 +1388,8 @@ mod tests {
     fn click_before_the_first_render_is_ignored() {
         let mut ws = ws(&["a", "b"]);
         assert_eq!(
-            ws.handle_click(3.0, 0.0, MouseButton::Left),
-            vec![],
+            ws.handle_click_event(3.0, 0.0, MouseButton::Left),
+            Handled::Ignored,
             "no cached strip geometry yet"
         );
     }
@@ -1542,7 +1605,10 @@ mod tests {
             Rect::new(0.0, 0.0, 80.0, 1.0),
             &[(0.0, 10.0), (10.0, 20.0)],
         );
-        let events = ws.handle_click(5.0, 0.5, MouseButton::Left);
+        let events = ws
+            .handle_click_event(5.0, 0.5, MouseButton::Left)
+            .into_event()
+            .unwrap_or_default();
         assert!(
             events.contains(&WorkspaceEvent::Promoted { id: "a".into() }),
             "left click on the preview tab must promote it: {events:?}"
@@ -1615,7 +1681,10 @@ mod tests {
             &[(0.0, 10.0), (10.0, 20.0)],
         );
 
-        let events = ws.handle_click(15.0, 0.5, MouseButton::Middle);
+        let events = ws
+            .handle_click_event(15.0, 0.5, MouseButton::Middle)
+            .into_event()
+            .unwrap_or_default();
         assert_eq!(
             events,
             vec![WorkspaceEvent::Closed {
@@ -1639,13 +1708,45 @@ mod tests {
 
         seed_click_geometry(&mut ws, Rect::new(0.0, 0.0, 80.0, 1.0), &[(0.0, 10.0)]);
 
-        assert_eq!(ws.handle_click(5.0, 0.5, MouseButton::Middle), vec![]);
+        assert_eq!(
+            ws.handle_click_event(5.0, 0.5, MouseButton::Middle),
+            Handled::Consumed
+        );
         assert_eq!(ws.len(), 1, "non-closable tab survives a middle click");
+    }
+
+    // ── Deprecated adapters ─────────────────────────────────────────────
+
+    #[test]
+    #[allow(deprecated)] // covers the `handle_click` shim kept for pre-`Handled` callers.
+    fn deprecated_handle_click_still_adapts_to_vec() {
+        let mut ws = ws(&["a", "b"]);
+        assert_eq!(
+            ws.handle_click(3.0, 0.0, MouseButton::Left),
+            vec![],
+            "no cached strip geometry yet"
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)] // covers the `handle_key` shim kept for pre-`Handled` callers.
+    fn deprecated_handle_key_still_adapts_to_option() {
+        let mut ws = ws(&["a", "b", "c"]);
+        ws.activate("a");
+        assert_eq!(
+            ws.handle_key(&Key::Named(NamedKey::Tab), ctrl())
+                .map(event_id),
+            Some("b".to_string())
+        );
+        assert_eq!(
+            ws.handle_key(&Key::Named(NamedKey::Tab), Modifiers::default()),
+            None
+        );
     }
 
     /// Test-only: seed the controller's cached click geometry as if
     /// [`WorkspaceController::render`] had just painted `bounds`, tab `i`
-    /// spanning `tabs[i]`. Exercises `handle_click`'s real hit-testing and
+    /// spanning `tabs[i]`. Exercises `handle_click_event`'s real hit-testing and
     /// event logic without a `Backend`; the rasteriser step itself
     /// (actually painting a `TabBar` into those bounds) is covered
     /// end-to-end by the driver tests in `tests/tui_example_driver.rs`.

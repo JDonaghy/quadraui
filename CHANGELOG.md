@@ -87,8 +87,7 @@ only a push to `main` runs this workflow.
   event" apart from "not mine"). `StatusBarInteraction::handle_event` and
   `BottomPanelController::handle_click_event` are the first two controllers
   migrated, added alongside their now-deprecated originals (see
-  `### Deprecated`); the remaining `compose` controllers migrate
-  incrementally in follow-up PRs under the same issue.
+  `### Deprecated`); #2298 migrates the rest of `compose`.
 - `ToastStackController::handle_event` and `MessageDialogController::handle_event`
   (#2298): two more `compose` controllers onto `compose::Handled<E>`.
   `ToastStackController::handle_event` returns `Handled<ToastStackAction>`
@@ -97,9 +96,7 @@ only a push to `main` runs this workflow.
   `Consumed`/`Ignored`); `MessageDialogController::handle_event` returns
   `Handled<MessageDialogChoice>` directly, reusing the existing choice type
   as `Handled::Event`'s payload rather than introducing a new one. Added
-  alongside their now-deprecated originals (see `### Deprecated`); the
-  remaining `compose` controllers listed in #2298 migrate incrementally in
-  follow-up PRs under the same issue.
+  alongside their now-deprecated originals (see `### Deprecated`).
 - `HelpOverlayController::handle_event`/`open_action`/`close_action`/
   `toggle_action` (#2298): one more `compose` controller onto
   `compose::Handled<E>`. `handle_event` returns `Handled<HelpOverlayAction>`
@@ -116,6 +113,23 @@ only a push to `main` runs this workflow.
   `Cancelled` payloads `DualModePaletteEvent` used to mix with its own
   `Consumed`/`Ignored`). Added alongside their now-deprecated
   `handle`/`handle_mouse` originals (see `### Deprecated`).
+- `TabGroupController::{handle_click_event, handle_drag_move_event,
+  handle_tab_drop_event}` and `WorkspaceController::{handle_click_event,
+  handle_key_event}` (#2298): the two controllers #2298 names explicitly,
+  onto `compose::Handled<E>`. Both already used plain semantic event enums
+  (`TabGroupEvent`, `WorkspaceEvent`, neither baking in its own
+  `Consumed`/`Ignored`), so no new payload type was needed — only the
+  `Option<E>`/`Vec<E>`-returning methods gain a `Handled`-returning
+  sibling that distinguishes a dead-space interaction
+  (`Handled::Consumed`) from one that wasn't this controller's at all
+  (`Handled::Ignored`), a split `None`/an empty `Vec` couldn't express.
+  Added alongside the five now-deprecated originals (see
+  `### Deprecated`).
+- `compose::path_picker::PathPickerAction` (#2298): shared `Handled<E>`
+  payload for `FilePickerController::handle_event` and
+  `FolderPickerController::handle_event`, replacing the identical
+  `FilePickerEvent`/`FolderPickerEvent` enums each facade used to define
+  on its own (see `### Deprecated`).
 - `quadraui-node`: `QuiApp.armWakeNotify`/`disarmWakeNotify` (#2238) register
   a threadsafe notifier `QuiAppWaker.post`/`wake`/`postAfter`/`wakeAfter`
   fires the instant they deliver, from whatever thread that happens on.
@@ -341,6 +355,38 @@ only a push to `main` runs this workflow.
   help_layer_demo}.rs`, `quadraui-gallery`'s command-palette demo) migrates
   in this PR; `handle`/`handle_mouse`/`DualModePaletteEvent` stay as a thin
   adapter with their own tests still passing. Removal target: same as
+  `StatusBarInteraction::handle` above.
+- `TabGroupController::{handle_click, handle_drag_move, handle_tab_drop}`
+  (#2298): use `handle_click_event`/`handle_drag_move_event`/
+  `handle_tab_drop_event` instead, which return `Handled<TabGroupEvent>`/
+  `Handled<TabGroupEvent>`/`Handled<Vec<TabGroupEvent>>` — each
+  distinguishes a dead-space interaction (`Handled::Consumed`) from one
+  that wasn't this controller's at all (`Handled::Ignored`), a split the
+  `Option`/`Vec` they replace couldn't express. Every in-repo caller
+  (`examples/common/tab_group_demo.rs`) migrates in this PR; the three
+  originals stay as thin adapters with their own tests still passing.
+  Removal target: same as `StatusBarInteraction::handle` above.
+- `WorkspaceController::{handle_click, handle_key}` (#2298): use
+  `handle_click_event`/`handle_key_event` instead, which return
+  `Handled<Vec<WorkspaceEvent>>`/`Handled<WorkspaceEvent>` and distinguish
+  a dead-space interaction (`Handled::Consumed`) from one outside the
+  strip or not one of the controller's key bindings (`Handled::Ignored`).
+  Every in-repo caller (`examples/common/workspace_demo.rs`,
+  `quadraui-gallery`'s workspace demo) migrates in this PR; `handle_click`/
+  `handle_key` stay as thin adapters with their own tests still passing.
+  Removal target: same as `StatusBarInteraction::handle` above.
+- `FilePickerEvent`/`FolderPickerEvent` (#2298): the two enums were
+  identical (`Confirmed { path }`, `Cancelled`, `Consumed`, `Ignored`) —
+  unified onto `compose::path_picker::PathPickerAction` (`Confirmed`/
+  `Cancelled` only; `Consumed`/`Ignored` are `Handled::Consumed`/
+  `Handled::Ignored`), returned by both controllers' new
+  `handle_event(&mut self, event: &UiEvent, visible_rows: usize) ->
+  Handled<PathPickerAction>`. Every in-repo caller
+  (`examples/common/{file_picker_app,folder_picker_app}.rs`,
+  `tui::services`'s native file/folder-open dialog fallbacks,
+  `quadraui-gallery`'s file-picker demo) migrates in this PR; `handle`/
+  `FilePickerEvent`/`FolderPickerEvent` stay as thin adapters with their
+  own tests still passing. Removal target: same as
   `StatusBarInteraction::handle` above.
 - `TreeController::jump_to_edge` (#2178): use `move_selection_to_edge`,
   which takes the new `Edge::Start`/`Edge::End` enum instead of a

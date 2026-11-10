@@ -36,8 +36,8 @@ use std::cell::RefCell;
 
 use quadraui::compose::app_shell::{AppShellLayout, PanelDefinition};
 use quadraui::{
-    Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig,
-    ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId, WorkspaceController,
+    Backend, Color, Handled, InteractionState, Key, NamedKey, Reaction, Rect, ShellApp,
+    ShellConfig, ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId, WorkspaceController,
     WorkspaceDoc, WorkspaceEvent,
 };
 
@@ -263,20 +263,26 @@ impl ShellApp for WorkspaceDemo {
                 // The controller owns its own key table (Ctrl+Tab,
                 // Ctrl+PageUp/PageDown); anything it declines falls
                 // through to the rest of the app unchanged.
-                let handled = self.workspace.borrow_mut().handle_key(&key, modifiers);
+                let handled = self
+                    .workspace
+                    .borrow_mut()
+                    .handle_key_event(&key, modifiers);
                 match handled {
-                    Some(ev) => self.record(&[ev]),
-                    None => Reaction::Continue,
+                    Handled::Event(ev) => self.record(&[ev]),
+                    Handled::Consumed | Handled::Ignored => Reaction::Continue,
                 }
             }
             UiEvent::MouseDown {
                 position, button, ..
             } => {
-                let events = self
+                let outcome = self
                     .workspace
                     .borrow_mut()
-                    .handle_click(position.x, position.y, button);
-                self.record(&events)
+                    .handle_click_event(position.x, position.y, button);
+                match outcome {
+                    Handled::Event(events) => self.record(&events),
+                    Handled::Consumed | Handled::Ignored => Reaction::Continue,
+                }
             }
             _ => Reaction::Continue,
         }

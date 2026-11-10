@@ -20,6 +20,27 @@ use std::path::{Path, PathBuf};
 
 use crate::{Key, Modifiers, NamedKey};
 
+/// Semantic payload of [`crate::compose::Handled::Event`] shared by
+/// [`FolderPickerController::handle_event`] and
+/// [`FilePickerController::handle_event`] — the two facades' per-controller
+/// event enums (`FolderPickerEvent`, `FilePickerEvent`) were identical
+/// modulo name, so they route through this one type instead.
+///
+/// [`FolderPickerController::handle_event`]: crate::compose::FolderPickerController::handle_event
+/// [`FilePickerController::handle_event`]: crate::compose::FilePickerController::handle_event
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathPickerAction {
+    /// The user confirmed a path — an existing entry for the folder
+    /// picker and `FilePickerMode::Open`, or `root.join(query)` for
+    /// `FilePickerMode::Save`.
+    Confirmed {
+        /// The resolved, absolute path.
+        path: PathBuf,
+    },
+    /// The user dismissed the picker (Escape).
+    Cancelled,
+}
+
 /// The outcome of classifying a raw `Key` + `Modifiers` pair against the
 /// shared path-picker key map.
 ///
