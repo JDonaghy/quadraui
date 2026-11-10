@@ -53,6 +53,19 @@ When adding a capability, state its TUI story and ship a `tui_*` test.
 the focused input; `UiEvent::TextCopied(String)` only confirms a copy happened.
 Ctrl-C copy in a new backend/primitive emits `TextCopied`, never `ClipboardPaste`.
 
+## Finish the issue — `partial` is not a scope choice
+
+An issue is done when everything in its body is done. Don't do a slice of it and merge that as `ISSUE_RESOLUTION: partial`. That includes "the rest migrate in follow-up PRs" and a hand-written stand-in for something the issue says must be generated.
+
+`partial` is allowed only when:
+- the issue spans backends and you did the one it names (or the seam), per *One backend per issue*;
+- the rest is blocked on another repo (`BLOCKED_ON_UPSTREAM`); or
+- the issue body defines tranches and you finished one whole tranche.
+
+If the whole issue really is too big for one session, don't merge a slice. Say in your final message that it needs splitting, and propose the split.
+
+**Reviewers:** any other `partial`, such as scope the worker cut on its own or a main deliverable swapped for an approximation, is a blocking finding and gets `request-changes`, however good the code that landed is. List what's missing so the fix round can finish it.
+
 ## Downstream consumers — READ BEFORE CHANGING ANY `pub` ITEM
 
 quadraui is **published on crates.io** (`quadraui/Cargo.toml` `version`, 0.1.x);
