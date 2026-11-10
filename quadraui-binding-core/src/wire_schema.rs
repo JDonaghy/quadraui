@@ -18,14 +18,31 @@
 //!
 //! Every struct/enum below that corresponds to a real `quadraui`/
 //! `quadraui-binding-core` Rust type (not an invented wire-only dict shape
-//! like a layout-tree node) is paired with an `assert_fields!`/
-//! `assert_variants!` call in [`coverage`] — an exhaustive destructure or
-//! match, with no `..`/wildcard arm, over that real type. Adding a field to
-//! one of those structs, or a variant to one of those enums, without also
-//! updating the matching entry here makes the destructure/match
-//! non-exhaustive and fails `cargo build`/`cargo check` outright — the
-//! schema can't silently drift out of sync with the Rust types it
-//! describes the way a hand-copied Python transcription could.
+//! like a layout-tree node) is paired with a guard in [`coverage`] — an
+//! `assert_fields!` destructure or a hand-written exhaustive `match`, with
+//! no `..`/wildcard arm for a type that isn't itself `#[non_exhaustive]`.
+//! Adding a field to one of those structs, or a variant to one of those
+//! enums, without also updating the matching entry here makes the
+//! destructure/match non-exhaustive and fails to compile — but only under
+//! a command that builds test targets (`cargo test`, or `cargo check
+//! --tests`), since [`coverage`] is a `#[cfg(test)]` module and a bare
+//! `cargo build`/`cargo check` skips it entirely. Two caveats:
+//!
+//! - The guards match on field/variant **names** only — every binding is
+//!   `_`, so changing a field's or variant payload's *type* (e.g.
+//!   `FormEvent::SliderChanged { value: f32 }` to `value: String`) compiles
+//!   clean while the schema keeps emitting the old type.
+//! - `Button`, `Toolbar`, `ToolbarButton` and `TabBarEvent` are themselves
+//!   `#[non_exhaustive]`. A struct marked `#[non_exhaustive]` requires a
+//!   trailing `..` in any pattern built outside its defining crate, so a
+//!   *new field* on `Button`/`Toolbar` is invisible to this guard (closed
+//!   instead by a `serde_json::to_value` key-set assertion — see
+//!   [`coverage::value_shape`]). An enum marked `#[non_exhaustive]` only
+//!   requires a wildcard arm for *unlisted* variants; a known variant's own
+//!   fields (`ToolbarButton::Action { .. }`, `TabBarEvent::KeyPressed { .. }`)
+//!   are still matched exhaustively by name, so a new field on one of
+//!   those is caught the same as any other type here — only a brand new
+//!   *variant* on `ToolbarButton`/`TabBarEvent` stays invisible.
 //!
 //! The layout-tree node shapes (`"row"`/`"column"`/`"split"`/...) have no
 //! single Rust type to destructure this way — they're dynamically-keyed
@@ -83,53 +100,59 @@ pub enum TyJson {
     },
 }
 
-pub fn str_() -> TyJson {
+pub(crate) fn str_() -> TyJson {
     TyJson::Prim { name: "STR".into() }
 }
-pub fn int_() -> TyJson {
+pub(crate) fn int_() -> TyJson {
     TyJson::Prim { name: "INT".into() }
 }
-pub fn float_() -> TyJson {
+pub(crate) fn float_() -> TyJson {
     TyJson::Prim {
         name: "FLOAT".into(),
     }
 }
-pub fn bool_() -> TyJson {
+pub(crate) fn bool_() -> TyJson {
     TyJson::Prim {
         name: "BOOL".into(),
     }
 }
-pub fn any_() -> TyJson {
+pub(crate) fn any_() -> TyJson {
     TyJson::Prim { name: "ANY".into() }
 }
-pub fn re(name: &str) -> TyJson {
+pub(crate) fn re(name: &str) -> TyJson {
     TyJson::Ref { name: name.into() }
 }
-pub fn nullable(inner: TyJson) -> TyJson {
+pub(crate) fn nullable(inner: TyJson) -> TyJson {
     TyJson::Nullable {
         inner: Box::new(inner),
     }
 }
-pub fn list(inner: TyJson) -> TyJson {
+pub(crate) fn list(inner: TyJson) -> TyJson {
     TyJson::List {
         inner: Box::new(inner),
     }
 }
-pub fn dictt(key: TyJson, value: TyJson) -> TyJson {
+/// No current schema entry needs a `Dict[K, V]`/`Record<K, V>` wire shape,
+/// so this constructor has no caller today -- kept (like
+/// `gen_wire_types.py`'s own `DICTT`, whose only remaining caller is the
+/// JSON-decode match arm for [`TyJson::Dict`], not a schema entry either)
+/// so the vocabulary stays complete for the next entry that needs one.
+#[allow(dead_code)]
+pub(crate) fn dictt(key: TyJson, value: TyJson) -> TyJson {
     TyJson::Dict {
         key: Box::new(key),
         value: Box::new(value),
     }
 }
-pub fn tup(items: Vec<TyJson>) -> TyJson {
+pub(crate) fn tup(items: Vec<TyJson>) -> TyJson {
     TyJson::Tuple { items }
 }
-pub fn lit(values: &[&str]) -> TyJson {
+pub(crate) fn lit(values: &[&str]) -> TyJson {
     TyJson::Lit {
         values: values.iter().map(|s| s.to_string()).collect(),
     }
 }
-pub fn uniont(items: Vec<TyJson>) -> TyJson {
+pub(crate) fn uniont(items: Vec<TyJson>) -> TyJson {
     TyJson::Union { items }
 }
 
@@ -147,7 +170,7 @@ pub struct FieldJson {
 }
 
 /// A required field with no doc comment -- the common case.
-pub fn field(name: &str, ty: TyJson) -> FieldJson {
+pub(crate) fn field(name: &str, ty: TyJson) -> FieldJson {
     FieldJson {
         name: name.into(),
         ty,
@@ -157,7 +180,7 @@ pub fn field(name: &str, ty: TyJson) -> FieldJson {
 }
 
 /// [`field`], but the key may be omitted on the wire.
-pub fn field_opt(name: &str, ty: TyJson) -> FieldJson {
+pub(crate) fn field_opt(name: &str, ty: TyJson) -> FieldJson {
     FieldJson {
         name: name.into(),
         ty,
@@ -167,7 +190,7 @@ pub fn field_opt(name: &str, ty: TyJson) -> FieldJson {
 }
 
 /// Attaches a doc comment to an already-built [`FieldJson`].
-pub fn with_doc(mut f: FieldJson, doc: &str) -> FieldJson {
+pub(crate) fn with_doc(mut f: FieldJson, doc: &str) -> FieldJson {
     f.doc = doc.to_string();
     f
 }
@@ -208,7 +231,7 @@ impl DefJson {
 
 /// An ordinary struct-shaped [`DefJson::Obj`] -- some fields required, some
 /// [`field_opt`].
-pub fn obj(name: &str, fields: Vec<FieldJson>) -> DefJson {
+pub(crate) fn obj(name: &str, fields: Vec<FieldJson>) -> DefJson {
     DefJson::Obj {
         name: name.into(),
         fields,
@@ -218,7 +241,7 @@ pub fn obj(name: &str, fields: Vec<FieldJson>) -> DefJson {
     }
 }
 
-pub fn obj_doc(name: &str, fields: Vec<FieldJson>, doc: &str) -> DefJson {
+pub(crate) fn obj_doc(name: &str, fields: Vec<FieldJson>, doc: &str) -> DefJson {
     DefJson::Obj {
         name: name.into(),
         fields,
@@ -232,7 +255,7 @@ pub fn obj_doc(name: &str, fields: Vec<FieldJson>, doc: &str) -> DefJson {
 /// -- see `gen_wire_types.py`'s `flat()` doc for when to reach for this
 /// over a per-variant union. `common` is a key that rides alongside
 /// whichever tag is set, not a tag of its own.
-pub fn flat(name: &str, variants: &[(&str, TyJson)], common: Vec<FieldJson>) -> DefJson {
+pub(crate) fn flat(name: &str, variants: &[(&str, TyJson)], common: Vec<FieldJson>) -> DefJson {
     DefJson::Obj {
         name: name.into(),
         fields: variants
@@ -245,7 +268,7 @@ pub fn flat(name: &str, variants: &[(&str, TyJson)], common: Vec<FieldJson>) -> 
     }
 }
 
-pub fn flat_doc(
+pub(crate) fn flat_doc(
     name: &str,
     variants: &[(&str, TyJson)],
     common: Vec<FieldJson>,
@@ -258,7 +281,7 @@ pub fn flat_doc(
     d
 }
 
-pub fn alias(name: &str, ty: TyJson) -> DefJson {
+pub(crate) fn alias(name: &str, ty: TyJson) -> DefJson {
     DefJson::Alias {
         name: name.into(),
         ty,
@@ -266,7 +289,7 @@ pub fn alias(name: &str, ty: TyJson) -> DefJson {
     }
 }
 
-pub fn alias_doc(name: &str, ty: TyJson, doc: &str) -> DefJson {
+pub(crate) fn alias_doc(name: &str, ty: TyJson, doc: &str) -> DefJson {
     DefJson::Alias {
         name: name.into(),
         ty,
@@ -274,11 +297,11 @@ pub fn alias_doc(name: &str, ty: TyJson, doc: &str) -> DefJson {
     }
 }
 
-pub fn union_of(name: &str, members: Vec<TyJson>) -> DefJson {
+pub(crate) fn union_of(name: &str, members: Vec<TyJson>) -> DefJson {
     alias(name, uniont(members))
 }
 
-pub fn union_of_doc(name: &str, members: Vec<TyJson>, doc: &str) -> DefJson {
+pub(crate) fn union_of_doc(name: &str, members: Vec<TyJson>, doc: &str) -> DefJson {
     alias_doc(name, uniont(members), doc)
 }
 
@@ -954,12 +977,19 @@ pub fn schema() -> Vec<DefJson> {
     // kind), every other one an untyped placeholder (see this module's own
     // doc). Reading straight off the real Rust consts means a new fixed or
     // additive kind always gets *a* schema entry with no further edit here.
-    debug_assert_eq!(
-        LEAF_KIND_KEYS.len(),
-        6,
-        "update the fixed-kind fields below if this changes"
-    );
+    //
+    // `leaf_fields` and `render_frame_fields` are built independently
+    // (rather than one sliced from the other) because they are not the
+    // same shape: a `LayoutLeafNode` is a `{"id", "<kind>": <descriptor>}`
+    // dict where exactly one kind key is present, so every kind field here
+    // is non-nullable (a *present* kind key is never `null`). A
+    // `RenderFrameDict` is a flat `{"<kind>": <descriptor-or-null>, ...}`
+    // frame where any number of slots may be present, and `render_frame_
+    // from_value`'s `slot_entry` (`crate::wire`) treats a missing key and
+    // an explicit `null` value identically ("draw nothing in this slot this
+    // frame") -- so every kind field there must accept `null` too.
     let mut leaf_fields = vec![field("id", str_())];
+    let mut render_frame_fields = Vec::new();
     for key in LEAF_KIND_KEYS {
         let ty = match key {
             "button" => button_descriptor.clone(),
@@ -970,16 +1000,25 @@ pub fn schema() -> Vec<DefJson> {
             "tab_bar" => tab_bar_descriptor.clone(),
             other => unreachable!("LEAF_KIND_KEYS grew an unhandled kind {other:?}"),
         };
-        leaf_fields.push(field_opt(key, ty));
+        leaf_fields.push(field_opt(key, ty.clone()));
+        render_frame_fields.push(field_opt(key, nullable(ty)));
     }
-    let mut render_frame_fields = leaf_fields[1..].to_vec();
     leaf_fields.push(field_opt("status_bar", status_bar_descriptor.clone()));
+    render_frame_fields.push(field_opt(
+        "status_bar",
+        nullable(status_bar_descriptor.clone()),
+    ));
     for kind in EXTRA_PRIMITIVE_KINDS {
         if kind == "status_bar" {
             continue;
         }
+        // `any_()` already renders as `Optional[Any]`/`unknown | null` on
+        // both targets, so wrapping it in `nullable()` here would be a
+        // redundant double-optional -- unlike the six core kinds and
+        // `status_bar` above, where `nullable(ty)` is load-bearing because
+        // `ty` itself is a concrete, non-nullable descriptor type.
         leaf_fields.push(field_opt(kind, any_()));
-        render_frame_fields.push(field_opt(kind, nullable(any_())));
+        render_frame_fields.push(field_opt(kind, any_()));
     }
     let layout_leaf_node = b.define(obj_doc(
         "LayoutLeafNode",
@@ -1287,7 +1326,6 @@ pub fn schema() -> Vec<DefJson> {
         "_IdValueDatePayload",
         vec![field("id", re("WidgetId")), field("value", calendar_date)],
     ));
-    let id_only = b.define(obj("_IdOnlyPayload", vec![field("id", re("WidgetId"))]));
     let toolbar_button_clicked_form_payload = b.define(obj(
         "_FormToolbarButtonClickedPayload",
         vec![
@@ -1322,8 +1360,8 @@ pub fn schema() -> Vec<DefJson> {
             ("DropdownChanged", id_selected_idx.clone()),
             ("SegmentedControlChanged", id_selected_idx),
             ("DateChanged", id_value_date),
-            ("FocusChanged", id_only.clone()),
-            ("ButtonClicked", id_only),
+            ("FocusChanged", id_payload.clone()),
+            ("ButtonClicked", id_payload.clone()),
             ("ToolbarButtonClicked", toolbar_button_clicked_form_payload),
             ("KeyPressed", key_pressed_str_payload.clone()),
             ("ComboBoxTextChanged", id_value_str.clone()),
@@ -1639,21 +1677,26 @@ pub fn schema() -> Vec<DefJson> {
 mod coverage {
     //! Compile-time drift guards: one exhaustive `match`/destructure per
     //! real Rust type [`super::schema`] models, with no wildcard arm and
-    //! no `..`. Adding a variant or field to the matching Rust type without
-    //! updating [`super::schema`] breaks compilation here (`E0004`
-    //! non-exhaustive match, or `E0027` pattern missing a field) --
-    //! [`super::schema`] can't silently drift out of sync with the real
-    //! types it describes.
+    //! no `..` (except where the type itself is `#[non_exhaustive]` -- see
+    //! this module's own doc). Adding a variant or field to the matching
+    //! Rust type without updating [`super::schema`] breaks compilation
+    //! here (`E0004` non-exhaustive match, or `E0027` pattern missing a
+    //! field) -- [`super::schema`] can't silently drift out of sync with
+    //! the real types it describes.
     //!
-    //! These guards never run as tests (there is nothing to execute --
-    //! every function body only destructures its argument); `cargo build`/
-    //! `cargo check` already type-checks every function in the crate
-    //! whether or not it's called, so gating them behind `#[cfg(test)]`
-    //! only changes *which* command needs to run to see the failure, not
-    //! whether this module compiles. Keeping them in a dedicated test
-    //! module (rather than scattered through `schema()` itself) keeps the
-    //! schema construction and its coverage guards reviewable side by
-    //! side without interleaving unrelated code.
+    //! Most of these guards never run as tests (there is nothing to
+    //! execute -- the function body only destructures its argument), but
+    //! this whole module is still gated by `#[cfg(test)]`, so it is only
+    //! *compiled* -- and the guards only take effect -- under a command
+    //! that builds test targets (`cargo test`, `cargo check --tests`), not
+    //! a bare `cargo build`/`cargo check`. [`value_shape`] below is the
+    //! exception: it has real runtime assertions, because `Button`'s and
+    //! `Toolbar`'s own `#[non_exhaustive]` blocks a pure pattern-match
+    //! guard from seeing an added field (see this module's own doc).
+    //! Keeping every guard in a dedicated test module (rather than
+    //! scattered through `schema()` itself) keeps the schema construction
+    //! and its coverage guards reviewable side by side without
+    //! interleaving unrelated code.
 
     #![allow(dead_code, unused_variables)]
     // `Panel`/`PanelAction` are `#[deprecated]` (use `SidebarPanel` + a
@@ -1663,12 +1706,15 @@ mod coverage {
     #![allow(deprecated)]
 
     use quadraui::{
-        ActivityBarEvent, Badge, Button, ChartEvent, Color, Column, DataRow, DataTable,
-        DataTableEvent, FormEvent, ListItem, ListView, ListViewEvent, PaletteEvent, Panel,
-        PanelAction, SidebarPanel, StatusBar, StatusBarEvent, StatusBarSegment, StyledSpan,
-        StyledText, TabBar, TabBarEvent, TabItem, TerminalEvent, TextDisplay, TextDisplayEvent,
-        TextDisplayLine, Toolbar, ToolbarButton, ToolbarEvent, TreeEvent, TreeRow,
-        TreeRowEditState, TreeView, UiEvent,
+        ActivityBarEvent, BackendNativeEvent, Badge, Button, ButtonIconPosition, ButtonMask,
+        ButtonSpec, ButtonVariant, CalendarDate, ChartEvent, Color, Column, ColumnAlign,
+        ColumnWidth, DataRow, DataTable, DataTableEvent, Decoration, FormEvent, Icon, Key,
+        ListItem, ListView, ListViewEvent, Modifiers, MouseButton, NamedKey, PaletteEvent, Panel,
+        PanelAction, Point, PowerEventKind, ScrollDelta, SelectionMode, SidebarPanel,
+        SortDirection, StatusBar, StatusBarEvent, StatusBarSegment, StyledSpan, StyledText,
+        SystemTheme, TabBar, TabBarEvent, TabBarSegment, TabItem, TerminalEvent, TextDisplay,
+        TextDisplayEvent, TextDisplayLine, Toolbar, ToolbarButton, ToolbarEvent, TreeEvent,
+        TreeRow, TreeRowEditState, TreeStyle, TreeView, UiEvent, Viewport,
     };
 
     use crate::hit::HitDetail;
@@ -2029,6 +2075,134 @@ mod coverage {
         }
     }
 
+    fn assert_selection_mode(m: SelectionMode) {
+        match m {
+            SelectionMode::None => {}
+            SelectionMode::Single => {}
+            SelectionMode::Multi => {}
+        }
+    }
+
+    fn assert_decoration(d: Decoration) {
+        match d {
+            Decoration::Normal => {}
+            Decoration::Header => {}
+            Decoration::Muted => {}
+            Decoration::Error => {}
+            Decoration::Warning => {}
+            Decoration::Modified => {}
+        }
+    }
+
+    fn assert_power_event_kind(k: PowerEventKind) {
+        match k {
+            PowerEventKind::Suspend => {}
+            PowerEventKind::Resume => {}
+            PowerEventKind::OnBattery => {}
+            PowerEventKind::OnAc => {}
+            PowerEventKind::LockScreen => {}
+            PowerEventKind::UnlockScreen => {}
+        }
+    }
+
+    fn assert_column_align(a: ColumnAlign) {
+        match a {
+            ColumnAlign::Left => {}
+            ColumnAlign::Center => {}
+            ColumnAlign::Right => {}
+        }
+    }
+
+    fn assert_sort_direction(d: SortDirection) {
+        match d {
+            SortDirection::Ascending => {}
+            SortDirection::Descending => {}
+        }
+    }
+
+    fn assert_column_width(w: ColumnWidth) {
+        match w {
+            // Deprecated in favour of `FixedCells`/`FixedPx` (ambiguous
+            // unit) -- `schema()`'s own `ColumnWidth` entry deliberately
+            // omits it; still named here so a field change to this variant
+            // still trips this guard.
+            ColumnWidth::Fixed(_) => {}
+            ColumnWidth::FixedCells(_) => {}
+            ColumnWidth::FixedPx(_) => {}
+            ColumnWidth::Flex(_) => {}
+            ColumnWidth::Content { min: _, max: _ } => {}
+            // `ColumnWidth` is `#[non_exhaustive]` -- see
+            // `assert_tab_bar_event`'s matching comment.
+            _ => {}
+        }
+    }
+
+    fn assert_key(k: Key) {
+        match k {
+            Key::Char(_) => {}
+            Key::Named(_) => {}
+        }
+    }
+
+    fn assert_named_key(k: NamedKey) {
+        match k {
+            NamedKey::Escape => {}
+            NamedKey::Tab => {}
+            NamedKey::BackTab => {}
+            NamedKey::Enter => {}
+            NamedKey::Backspace => {}
+            NamedKey::Delete => {}
+            NamedKey::Insert => {}
+            NamedKey::Home => {}
+            NamedKey::End => {}
+            NamedKey::PageUp => {}
+            NamedKey::PageDown => {}
+            NamedKey::Up => {}
+            NamedKey::Down => {}
+            NamedKey::Left => {}
+            NamedKey::Right => {}
+            NamedKey::F(_) => {}
+            NamedKey::CapsLock => {}
+            NamedKey::NumLock => {}
+            NamedKey::ScrollLock => {}
+            NamedKey::Menu => {}
+        }
+    }
+
+    fn assert_mouse_button(b: MouseButton) {
+        match b {
+            MouseButton::Left => {}
+            MouseButton::Right => {}
+            MouseButton::Middle => {}
+            MouseButton::X1 => {}
+            MouseButton::X2 => {}
+            MouseButton::Other(_) => {}
+        }
+    }
+
+    fn assert_button_variant(v: ButtonVariant) {
+        match v {
+            ButtonVariant::Primary => {}
+            ButtonVariant::Secondary => {}
+            ButtonVariant::Icon => {}
+            ButtonVariant::Danger => {}
+            ButtonVariant::Warning => {}
+            // `ButtonVariant` is `#[non_exhaustive]` -- see
+            // `assert_tab_bar_event`'s matching comment.
+            _ => {}
+        }
+    }
+
+    fn assert_button_icon_position(p: ButtonIconPosition) {
+        match p {
+            ButtonIconPosition::Leading => {}
+            ButtonIconPosition::Trailing => {}
+            // `ButtonIconPosition` is `#[non_exhaustive]` -- see
+            // `assert_tab_bar_event`'s matching comment.
+            _ => {}
+        }
+    }
+
     macro_rules! assert_fields {
         ($fn_name:ident, $ty:path { $($field_name:ident),+ $(,)? }) => {
             #[allow(dead_code)]
@@ -2267,6 +2441,94 @@ mod coverage {
     );
     assert_fields!(assert_styled_text_fields, StyledText { spans });
     assert_fields!(assert_badge_fields, Badge { text, fg, bg });
+    assert_fields!(
+        assert_icon_fields,
+        Icon {
+            glyph,
+            fallback,
+            color
+        }
+    );
+    assert_fields!(
+        assert_modifiers_fields,
+        Modifiers {
+            shift,
+            ctrl,
+            alt,
+            cmd
+        }
+    );
+    assert_fields!(assert_point_fields, Point { x, y });
+    assert_fields!(assert_scroll_delta_fields, ScrollDelta { x, y });
+    assert_fields!(
+        assert_button_mask_fields,
+        ButtonMask {
+            left,
+            right,
+            middle
+        }
+    );
+    assert_fields!(
+        assert_viewport_fields,
+        Viewport {
+            width,
+            height,
+            scale
+        }
+    );
+    assert_fields!(
+        assert_tree_style_fields,
+        TreeStyle {
+            indent,
+            show_chevrons,
+            chevron_expanded,
+            chevron_collapsed,
+            row_height,
+            bordered
+        }
+    );
+    assert_fields!(
+        assert_system_theme_fields,
+        SystemTheme {
+            dark,
+            accent,
+            high_contrast,
+            reduce_motion
+        }
+    );
+    assert_fields!(
+        assert_tab_bar_segment_fields,
+        TabBarSegment {
+            text,
+            width_cells,
+            id,
+            is_active
+        }
+    );
+    assert_fields!(
+        assert_backend_native_event_fields,
+        BackendNativeEvent {
+            backend,
+            kind,
+            payload
+        }
+    );
+    assert_fields!(
+        assert_calendar_date_fields,
+        CalendarDate { year, month, day }
+    );
+    assert_fields_non_exhaustive!(
+        assert_button_spec_fields,
+        ButtonSpec {
+            label,
+            variant,
+            icon,
+            icon_position,
+            icon_gap,
+            tooltip,
+            disabled
+        }
+    );
 
     fn assert_toolbar_button(b: ToolbarButton) {
         match b {
@@ -2286,6 +2548,78 @@ mod coverage {
             // `ToolbarButton` is `#[non_exhaustive]` -- see
             // `assert_tab_bar_event`'s matching comment.
             _ => {}
+        }
+    }
+
+    /// Runtime key-set guards for the two `#[non_exhaustive]` **structs**
+    /// (`Button`, `Toolbar`) [`assert_fields_non_exhaustive!`] can't fully
+    /// cover -- a struct pattern built outside its defining crate must end
+    /// in `..`, so a brand-new named field never shows up in that macro's
+    /// destructure. Serializing a real value and comparing its JSON key
+    /// set against the exact field list [`super::schema`] declares catches
+    /// that new field instead: `serde_json` emits one key per struct
+    /// field regardless of `..`, so an added field changes the key set
+    /// even though it was invisible to the pattern match above.
+    mod value_shape {
+        use std::collections::BTreeSet;
+
+        use quadraui::{Button, ButtonVariant, Toolbar, WidgetId};
+
+        fn keys(v: &serde_json::Value) -> BTreeSet<String> {
+            v.as_object()
+                .expect("value must serialize to a JSON object")
+                .keys()
+                .cloned()
+                .collect()
+        }
+
+        fn set(names: &[&str]) -> BTreeSet<String> {
+            names.iter().map(|s| s.to_string()).collect()
+        }
+
+        #[test]
+        fn button_json_keys_match_the_schema_field_list() {
+            let button = Button::new(WidgetId::new("test"), "label");
+            let value = serde_json::to_value(&button).expect("Button must serialize");
+            assert_eq!(
+                keys(&value),
+                set(&[
+                    "id",
+                    "label",
+                    "variant",
+                    "disabled",
+                    "focused",
+                    "tooltip",
+                    "icon",
+                    "icon_position",
+                    "icon_gap",
+                ]),
+                "a field was added to or removed from `Button` without a matching \
+                 update to `schema()`'s `ButtonDescriptor` entry -- \
+                 `assert_fields_non_exhaustive!` can't see a new field on a \
+                 `#[non_exhaustive]` struct, so this key-set check is the guard \
+                 that catches it"
+            );
+            // `ButtonVariant` is itself `#[non_exhaustive]`; constructing one
+            // here (rather than only via `Button::default()`'s `Primary`)
+            // keeps this test from silently losing coverage if `Button`'s own
+            // default variant ever changes.
+            let _ = ButtonVariant::Secondary;
+        }
+
+        #[test]
+        fn toolbar_json_keys_match_the_schema_field_list() {
+            let toolbar = Toolbar::new(WidgetId::new("test"));
+            let value = serde_json::to_value(&toolbar).expect("Toolbar must serialize");
+            assert_eq!(
+                keys(&value),
+                set(&["id", "buttons", "bg", "focused_index"]),
+                "a field was added to or removed from `Toolbar` without a \
+                 matching update to `schema()`'s `ToolbarDescriptor` entry -- \
+                 `assert_fields_non_exhaustive!` can't see a new field on a \
+                 `#[non_exhaustive]` struct, so this key-set check is the guard \
+                 that catches it"
+            );
         }
     }
 }
