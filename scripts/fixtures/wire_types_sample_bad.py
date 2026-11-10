@@ -1,4 +1,4 @@
-"""Negative counterpart of `scripts/wire_types_sample.py`: the same two
+"""Negative counterpart of `scripts/fixtures/wire_types_sample.py`: the same two
 shapes, each with one key misspelled. `scripts/check_wire_types.sh` asserts
 `mypy --strict` reports an error against this file -- proof that the
 generated `quadraui.wire` stub actually catches a typo instead of quietly
@@ -24,4 +24,10 @@ def bad_misspelled_descriptor_field() -> "TreeViewDescriptor":
         "rows": [],
         "selection_mode": "Single",
         "selected_pathh": [0],  # typo: not a `TreeViewDescriptor` key
+        "style": {
+            "indent": 2,
+            "show_chevrons": True,
+            "chevron_expanded": "v",
+            "chevron_collapsed": ">",
+        },
     }

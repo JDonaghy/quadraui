@@ -45,10 +45,20 @@ class StyledSpan(TypedDict):
 class StyledText(TypedDict):
     spans: List[StyledSpan]
 
-class Icon(TypedDict):
+class IconGlyph(TypedDict):
+    """The glyph form of `Icon` -- also the only shape `Icon::serialize` ever emits."""
     glyph: str  # Nerd Font glyph, painted verbatim.
     fallback: str  # ASCII/basic-Unicode fallback.
     color: NotRequired[Optional[Color]]
+
+class IconCodicon(TypedDict):
+    """The codicon form of `Icon` -- lets an app pass a bundled icon name instead of hand-encoding its glyph codepoint."""
+    codicon: str  # Bundled codicon name -- see `Icon::codicon`'s doc for the set.
+    fallback: str  # ASCII/basic-Unicode fallback.
+    color: NotRequired[Optional[Color]]
+
+# An icon reference: either `{"glyph", "fallback", "color"?}` or `{"codicon", "fallback", "color"?}` -- see `Icon`'s own doc in `quadraui/src/types.rs`.
+Icon = Union[IconGlyph, IconCodicon]
 
 class Badge(TypedDict):
     text: str
@@ -131,9 +141,6 @@ class StatusBarDescriptor(TypedDict):
     id: WidgetId
     left_segments: List[StatusBarSegment]
     right_segments: List[StatusBarSegment]
-
-# Any additive primitive other than `status_bar` -- registered in `quadraui-binding-core/src/extra_paint.rs`'s `extra_primitives!` table (`progress`, `spinner`, `image`, `form`, ...). Not yet typed field-by-field; see this module's own doc.
-ExtraPrimitiveDescriptor = Dict[str, Any]
 
 ButtonVariant = Literal['Primary', 'Secondary', 'Icon', 'Danger', 'Warning']
 
@@ -425,7 +432,7 @@ class LayoutSplitTreeNode(TypedDict):
     split_tree: LayoutSplitTreePayload
 
 class LayoutLeafNode(TypedDict):
-    """One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Covers the six core kinds plus `status_bar`; any other additive primitive kind (`progress`, `form`, ...) also decodes here but isn't enumerated as its own field -- see `ExtraPrimitiveDescriptor`."""
+    """One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Covers the six core kinds plus `status_bar`; any other additive primitive kind (`progress`, `form`, ...) also decodes here but isn't modelled -- not reachable through this type (see this module's own doc)."""
     id: str
     button: NotRequired[ButtonDescriptor]
     text_display: NotRequired[TextDisplayDescriptor]
@@ -627,6 +634,111 @@ class _ToolbarButtonClickedPayload(TypedDict):
 class ToolbarEvent(TypedDict):
     ButtonClicked: NotRequired[_ToolbarButtonClickedPayload]
 
+class _HitDetailButtonBody(TypedDict):
+    kind: Literal['button_body']
+
+class _HitDetailTreeRow(TypedDict):
+    kind: Literal['tree_row']
+    row: int
+
+class _HitDetailTreeChevron(TypedDict):
+    kind: Literal['tree_chevron']
+    row: int
+
+class _HitDetailListTitle(TypedDict):
+    kind: Literal['list_title']
+
+class _HitDetailListItem(TypedDict):
+    kind: Literal['list_item']
+    index: int
+
+class _HitDetailDataTableHeader(TypedDict):
+    kind: Literal['data_table_header']
+    col: int
+
+class _HitDetailDataTableHeaderDivider(TypedDict):
+    kind: Literal['data_table_header_divider']
+    col: int
+
+class _HitDetailDataTableRow(TypedDict):
+    kind: Literal['data_table_row']
+    row: int
+
+class _HitDetailDataTableFooter(TypedDict):
+    kind: Literal['data_table_footer']
+
+class _HitDetailTabBarTab(TypedDict):
+    kind: Literal['tab_bar_tab']
+    tab: int
+
+class _HitDetailTabBarTabClose(TypedDict):
+    kind: Literal['tab_bar_tab_close']
+    tab: int
+
+class _HitDetailTabBarScrollLeft(TypedDict):
+    kind: Literal['tab_bar_scroll_left']
+
+class _HitDetailTabBarScrollRight(TypedDict):
+    kind: Literal['tab_bar_scroll_right']
+
+class _HitDetailTabBarRightSegment(TypedDict):
+    kind: Literal['tab_bar_right_segment']
+
+class _HitDetailTextDisplayLine(TypedDict):
+    kind: Literal['text_display_line']
+    line: int
+
+class _HitDetailTextDisplayScrollbarThumb(TypedDict):
+    kind: Literal['text_display_scrollbar_thumb']
+
+class _HitDetailTextDisplayScrollbarTrackBefore(TypedDict):
+    kind: Literal['text_display_scrollbar_track_before']
+
+class _HitDetailTextDisplayScrollbarTrackAfter(TypedDict):
+    kind: Literal['text_display_scrollbar_track_after']
+
+class _HitDetailSplitFirstPane(TypedDict):
+    kind: Literal['split_first_pane']
+
+class _HitDetailSplitSecondPane(TypedDict):
+    kind: Literal['split_second_pane']
+
+class _HitDetailSplitDivider(TypedDict):
+    kind: Literal['split_divider']
+
+class _HitDetailSplitTreeDivider(TypedDict):
+    kind: Literal['split_tree_divider']
+    split_index: int
+
+class _HitDetailPanelAction(TypedDict):
+    kind: Literal['panel_action']
+
+class _HitDetailPanelTitleBar(TypedDict):
+    kind: Literal['panel_title_bar']
+
+class _HitDetailSidebarPanelToolbarButton(TypedDict):
+    kind: Literal['sidebar_panel_toolbar_button']
+    bar: WidgetId
+
+class _HitDetailTreeScrollbarTrackBefore(TypedDict):
+    kind: Literal['tree_scrollbar_track_before']
+
+class _HitDetailTreeScrollbarThumb(TypedDict):
+    kind: Literal['tree_scrollbar_thumb']
+
+class _HitDetailTreeScrollbarTrackAfter(TypedDict):
+    kind: Literal['tree_scrollbar_track_after']
+
+class _HitDetailExtraBody(TypedDict):
+    kind: Literal['extra_body']
+
+class _HitDetailExtraChrome(TypedDict):
+    kind: Literal['extra_chrome']
+    bar: WidgetId
+
+# The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind` (e.g. `detail["kind"] == "tree_row"`).
+HitDetail = Union[_HitDetailButtonBody, _HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailPanelAction, _HitDetailPanelTitleBar, _HitDetailSidebarPanelToolbarButton, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailExtraChrome]
+
 class _UiKeyPressedPayload(TypedDict):
     key: Key
     modifiers: Modifiers
@@ -747,6 +859,7 @@ class _UiEventDict(TypedDict):
     Toolbar: NotRequired[Tuple[WidgetId, ToolbarEvent]]
     BackendNative: NotRequired[BackendNativeEvent]
     User: NotRequired[Any]
+    hit: NotRequired[HitDetail]  # The hit-tested sub-region a pointer landed on, when the binding attached one (never present on `User`). See `quadraui-py/src/lib.rs`'s `dispatch`.
 
 # Everything a user (or platform) can do that an app might care about -- see `quadraui/src/event.rs`'s `UiEvent`. `isinstance(event, str)` (Python) / `typeof event === "string"` (TS) separates the three no-payload variants from the rest before narrowing on a key.
 UiEvent = Union[Literal['WindowClose', 'DisplaysChanged', 'ContextMenuDismissed'], _UiEventDict]
