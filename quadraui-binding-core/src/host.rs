@@ -32,14 +32,17 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use quadraui::compose::{Edge, HoverTooltipTracker, TreeController};
+use quadraui::compose::{
+    classify_tree_nav_key, Edge, HoverTooltipTracker, TreeController, TreeControllerEvent,
+    TreeNavKey,
+};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::Rect;
 use quadraui::{
     mouse_down, mouse_up, Accelerator, AcceleratorId, AppLogic, Backend, Button, DataTable,
-    Decoration, Key, ListView, Modifiers, MouseButton, NamedKey, Reaction, Style, StyledSpan,
-    StyledText, TabBar, TextDisplay, TextDisplayLine, Theme, Tooltip, TreePath, TreeRow, TreeView,
-    UiEvent, WidgetId,
+    Decoration, Key, ListView, Modifiers, MouseButton, Reaction, Style, StyledSpan, StyledText,
+    TabBar, TextDisplay, TextDisplayLine, Theme, Tooltip, TreePath, TreeRow, TreeView, UiEvent,
+    WidgetId,
 };
 
 use crate::engine::InteractionEngine;
@@ -525,15 +528,15 @@ impl BindingHost {
 // re-clamps the result into view against the current viewport, and
 // returns the `TreeView` a binding should actually paint.
 
-/// One keyboard navigation action [`apply_tree_nav_key`] recognizes on a
-/// focused `Tree` — the subset of `quadraui::compose::TreeController::handle`'s
-/// own key map that moves the cursor (`Up`/`Down`/vim `j`/`k`,
-/// `Home`/`End`, `PageUp`/`PageDown`). Enter and Space stay out of scope:
-/// row activation and expand/collapse keep going through this crate's
-/// existing `TreeEvent::KeyPressed` fallback rather than moving into the
-/// widget-state store.
+/// The subset of `TreeNavKey` this module's cursor navigation
+/// (`Tree`/`List`/`DataTable` alike) actually moves a stored cursor for.
+/// Enter and Space stay out of scope: row activation and expand/collapse
+/// keep going through each widget's own existing semantic-event
+/// translation (`crate::semantic::list_key_event`/`data_table_key_event`,
+/// or `Tree`'s raw `TreeEvent::KeyPressed` fallback) rather than moving
+/// into the widget-state store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TreeNav {
+enum CursorNav {
     Up,
     Down,
     Home,
@@ -542,31 +545,51 @@ enum TreeNav {
     PageDown,
 }
 
-/// Classifies a raw key against [`TreeNav`]'s key map. Vim `j`/`k` are
-/// always recognized as `Down`/`Up` aliases — unlike
-/// `TreeController::vim_keys`, `TreeView` carries no per-tree toggle for
-/// this crate to read, so this matches `TreeController::new`'s own
-/// default (`vim_keys: true`).
-fn tree_nav_for_key(key: &Key) -> Option<TreeNav> {
-    match key {
-        Key::Named(NamedKey::Up) | Key::Char('k') => Some(TreeNav::Up),
-        Key::Named(NamedKey::Down) | Key::Char('j') => Some(TreeNav::Down),
-        Key::Named(NamedKey::Home) => Some(TreeNav::Home),
-        Key::Named(NamedKey::End) => Some(TreeNav::End),
-        Key::Named(NamedKey::PageUp) => Some(TreeNav::PageUp),
-        Key::Named(NamedKey::PageDown) => Some(TreeNav::PageDown),
-        _ => None,
+/// Classifies a raw key into [`CursorNav`] by delegating to
+/// `quadraui::compose::classify_tree_nav_key` — the single key map
+/// `TreeController::handle_key` and `SidebarSystem`'s own key dispatch
+/// already share — rather than hand-copying it a second time here, which
+/// would drift the moment that shared map changes. `vim_keys: true`
+/// always, matching `TreeController::new`'s own default: none of `Tree`/
+/// `List`/`DataTable`'s descriptors carry a per-widget toggle for this
+/// crate to read (`ListView`'s own module doc already documents `j`/`k`
+/// as `Down`/`Up` aliases unconditionally, matching this).
+fn cursor_nav_for_key(key: &Key) -> Option<CursorNav> {
+    match classify_tree_nav_key(key, true)? {
+        TreeNavKey::Up => Some(CursorNav::Up),
+        TreeNavKey::Down => Some(CursorNav::Down),
+        TreeNavKey::Home => Some(CursorNav::Home),
+        TreeNavKey::End => Some(CursorNav::End),
+        TreeNavKey::PageUp => Some(CursorNav::PageUp),
+        TreeNavKey::PageDown => Some(CursorNav::PageDown),
+        TreeNavKey::Enter | TreeNavKey::ToggleExpand => None,
     }
+}
+
+/// `(viewport_rows.max(1) - 1).max(1)`, as an `isize` delta — the page
+/// size `TreeController::handle_key`'s own `PageUp`/`PageDown` arms use,
+/// shared here so `Tree`/`List`/`DataTable`'s own page navigation agrees
+/// with it instead of re-deriving the formula per call site.
+fn page_delta(viewport_rows: usize) -> isize {
+    (viewport_rows.max(1) - 1).max(1) as isize
 }
 
 /// A `Tree`'s cursor + scroll, persisted in [`WidgetState`] keyed by the
 /// tree's own id. [`apply_tree_nav_key`] writes it on a recognized
 /// navigation key; [`resolve_tree_cursor`] reads it back — merged with
 /// whatever the descriptor itself pins — at render time.
+///
+/// `scroll_controlled` latches `true` the first time a frame's own
+/// `TreeView::scroll_offset` is non-zero, and then stays `true` forever
+/// after (even across a later frame whose `scroll_offset` goes back to
+/// `0`) — see [`resolve_tree_cursor`]'s own doc for why `scroll_offset`
+/// alone can't tell "controlled, pinned to the top" apart from
+/// "uncontrolled, never pinned" and why this latch is the fix.
 #[derive(Debug, Clone, Default)]
 struct TreeCursorState {
     selected_path: Option<TreePath>,
     scroll_offset: usize,
+    scroll_controlled: bool,
 }
 
 /// A throwaway [`TreeRow`] standing in for `path`, with every other field
@@ -594,20 +617,25 @@ fn placeholder_tree_row(path: TreePath) -> TreeRow {
 /// scrolls it into view, via `quadraui::compose::TreeController`'s own
 /// navigation primitives (never re-derived here) seeded from whichever
 /// cursor is currently stored. `row_paths` and `viewport_rows` should come
-/// from the `PaintedHit::Tree` the most recent render produced — the same
-/// geometry [`crate::drag::tree_scroll_state`] already reads for
-/// scrollbar drag/wheel handling — so movement matches what was actually
-/// painted rather than a stale descriptor.
+/// from `crate::hit::tree_rows_and_viewport` against the most recent
+/// render's hit map — the same geometry [`crate::drag::tree_scroll_state`]
+/// already reads for scrollbar drag/wheel handling — so movement matches
+/// what was actually painted rather than a stale descriptor, and so a
+/// tree whose selected row is currently mid-rename is never navigated out
+/// from under the edit in progress (`tree_rows_and_viewport` already
+/// returns `None` for that case).
 ///
 /// Returns `true` (and leaves [`WidgetState`] updated) for a recognized
-/// navigation key, so the caller knows to redraw; `false` for any other
-/// key, which the caller should fall through to unchanged (today's raw
-/// `TreeEvent::KeyPressed` dispatch keeps working for Enter, Space, and
-/// anything app-specific). A controlled `Tree` (whose descriptor sets a
-/// non-default `selected_path`/`scroll_offset`) still has its stored
-/// cursor moved here — harmless, since [`resolve_tree_cursor`] discards it
-/// again in favor of the descriptor's own value on the very next render,
-/// the same "controlled wins and is written back" rule
+/// navigation key that actually moved the cursor, so the caller knows to
+/// redraw; `false` for any other key, or for a recognized key that moved
+/// nothing (an empty tree, or already at the edge an arrow key pushes
+/// further against), which the caller should fall through to unchanged
+/// (today's raw `TreeEvent::KeyPressed` dispatch keeps working for Enter,
+/// Space, and anything app-specific). A controlled `Tree` (whose
+/// descriptor sets a non-default `selected_path`/`scroll_offset`) still
+/// has its stored cursor moved here — harmless, since [`resolve_tree_cursor`]
+/// discards it again in favor of the descriptor's own value on the very
+/// next render, the same "controlled wins and is written back" rule
 /// [`WidgetState::resolve`]'s own doc already describes.
 pub fn apply_tree_nav_key(
     widget_state: &WidgetState,
@@ -616,11 +644,11 @@ pub fn apply_tree_nav_key(
     viewport_rows: usize,
     key: &Key,
 ) -> bool {
-    let Some(nav) = tree_nav_for_key(key) else {
+    let Some(nav) = cursor_nav_for_key(key) else {
         return false;
     };
     if row_paths.is_empty() {
-        return true;
+        return false;
     }
     let stored = widget_state.get::<TreeCursorState>(id).unwrap_or_default();
     let mut controller = TreeController::new(id.as_str());
@@ -633,47 +661,56 @@ pub fn apply_tree_nav_key(
     );
     controller.set_selected_path(stored.selected_path);
     controller.set_scroll_offset(stored.scroll_offset);
-    match nav {
-        TreeNav::Up => {
-            controller.move_selection_by(-1, viewport_rows);
+    let event = match nav {
+        CursorNav::Up => controller.move_selection_by(-1, viewport_rows),
+        CursorNav::Down => controller.move_selection_by(1, viewport_rows),
+        CursorNav::Home => controller.move_selection_to_edge(Edge::Start, viewport_rows),
+        CursorNav::End => controller.move_selection_to_edge(Edge::End, viewport_rows),
+        CursorNav::PageUp => {
+            controller.move_selection_by(-page_delta(viewport_rows), viewport_rows)
         }
-        TreeNav::Down => {
-            controller.move_selection_by(1, viewport_rows);
+        CursorNav::PageDown => {
+            controller.move_selection_by(page_delta(viewport_rows), viewport_rows)
         }
-        TreeNav::Home => {
-            controller.move_selection_to_edge(Edge::Start, viewport_rows);
-        }
-        TreeNav::End => {
-            controller.move_selection_to_edge(Edge::End, viewport_rows);
-        }
-        TreeNav::PageUp => {
-            let delta = (viewport_rows.max(1) - 1).max(1) as isize;
-            controller.move_selection_by(-delta, viewport_rows);
-        }
-        TreeNav::PageDown => {
-            let delta = (viewport_rows.max(1) - 1).max(1) as isize;
-            controller.move_selection_by(delta, viewport_rows);
-        }
-    }
+    };
     widget_state.set(
         id,
         TreeCursorState {
             selected_path: controller.selected_path().cloned(),
             scroll_offset: controller.scroll_offset(),
+            scroll_controlled: stored.scroll_controlled,
         },
     );
-    true
+    matches!(event, TreeControllerEvent::RowSelected { .. })
 }
 
 /// Resolves `tree`'s cursor + scroll for painting, through the
 /// controlled/uncontrolled policy [`WidgetState`]'s own module doc
 /// describes: `tree.selected_path` wins outright when `Some`; otherwise
 /// the id's stored cursor wins (`None`, no selection, the first time it's
-/// seen). Same per-field split for `scroll_offset`, treating `0` — already
-/// `TreeView::scroll_offset`'s own "unscrolled" sentinel — as "not pinned
-/// by the app": a non-zero value wins outright and is returned exactly as
-/// given — genuinely pinned, never nudged to keep the selection visible —
-/// while `0` resolves from the store and IS scrolled into view (via
+/// seen).
+///
+/// `scroll_offset` needs one more rule on top of that, because `0` is
+/// already `TreeView::scroll_offset`'s own "unscrolled" sentinel and so
+/// can't tell "the app explicitly pins the scroll to the top" apart from
+/// "the app never set this field at all". [`TreeCursorState::scroll_controlled`]
+/// resolves the ambiguity by latching: the very first frame whose
+/// `tree.scroll_offset` is non-zero marks this id controlled from then on,
+/// including every later frame whose `scroll_offset` goes back to `0` —
+/// so an app that pins `20`, lets the user wheel back to the top, and then
+/// paints `0` again keeps that `0` rather than getting stuck at `20`
+/// forever (the bug this latch exists to fix) or silently falling back to
+/// treating `0` as uncontrolled (which would just move the bug to "pin at
+/// exactly `0`" instead). The one case this still can't distinguish —
+/// an app that pins `0` from the very first frame and never changes it —
+/// is indistinguishable from "uncontrolled, never touched" without a
+/// breaking change to `TreeView::scroll_offset`'s own type; see
+/// `CLAUDE.md`'s *Downstream consumers* section for why that cost isn't
+/// paid here.
+///
+/// Once controlled, the descriptor's value wins outright and is returned
+/// exactly as given — never nudged to keep the selection visible — while
+/// uncontrolled resolves from the store and IS scrolled into view (via
 /// `TreeController::scroll_to_visible`, never re-derived here) against the
 /// current `viewport_rows`, so a resize or a freshly uncontrolled
 /// selection are both caught here even without an intervening
@@ -691,7 +728,7 @@ pub fn resolve_tree_cursor(
     let stored = widget_state.get::<TreeCursorState>(id).unwrap_or_default();
 
     let selected_path = tree.selected_path.clone().or(stored.selected_path);
-    let scroll_controlled = tree.scroll_offset != 0;
+    let scroll_controlled = stored.scroll_controlled || tree.scroll_offset != 0;
     let mut scroll_offset = if scroll_controlled {
         tree.scroll_offset
     } else {
@@ -714,6 +751,7 @@ pub fn resolve_tree_cursor(
         TreeCursorState {
             selected_path: selected_path.clone(),
             scroll_offset,
+            scroll_controlled,
         },
     );
 
@@ -721,6 +759,304 @@ pub fn resolve_tree_cursor(
         selected_path,
         scroll_offset,
         ..tree.clone()
+    }
+}
+
+// ─── List cursor + scroll, uncontrolled by default ─────────────────────────
+//
+// Same policy as the `Tree` section above, for a flat `ListView`. Unlike
+// `Tree`, there is no composed `ListController` in `quadraui::compose` to
+// reuse for movement/scroll-into-view (only `TreeController` exists today)
+// — [`move_flat_index`]/[`edge_flat_index`]/[`scroll_into_view`] below are
+// the pure index arithmetic a future `ListController` would also need,
+// kept as free functions here rather than duplicated per widget since
+// `List`/`DataTable` share the identical flat-cursor shape.
+
+/// A `List`'s cursor + scroll, persisted in [`WidgetState`] keyed by the
+/// list's own id. `selected_idx`/`selected_controlled` mirror
+/// [`TreeCursorState::scroll_controlled`]'s latch, because
+/// `ListView::selected_idx` (a bare `usize`, always a valid index into a
+/// non-empty list) has the exact same `0`-is-ambiguous shape
+/// `TreeView::scroll_offset` does — see [`resolve_list_cursor`]'s own doc.
+#[derive(Debug, Clone, Default)]
+struct ListCursorState {
+    selected_idx: Option<usize>,
+    selected_controlled: bool,
+    scroll_offset: usize,
+    scroll_controlled: bool,
+}
+
+/// Moves a flat (non-hierarchical) cursor by `delta` rows within `[0,
+/// count)`, clamped at either edge — the `List`/`DataTable` counterpart of
+/// `TreeController::move_selection_by`'s own clamp. `None` means "nothing
+/// selected yet": a forward move (`delta > 0`) starts at row `0`, a
+/// backward one at the last row, matching `TreeController::move_selection_by`'s
+/// own "no current selection" branch. Returns `None` only when `count == 0`.
+fn move_flat_index(current: Option<usize>, delta: isize, count: usize) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let new = match current {
+        Some(cur) => {
+            let target = cur as isize + delta;
+            target.max(0).min(count as isize - 1) as usize
+        }
+        None if delta > 0 => 0,
+        None => count - 1,
+    };
+    Some(new)
+}
+
+/// The first (`Edge::Start`) or last (`Edge::End`) row of a `count`-row
+/// flat list — the `List`/`DataTable` counterpart of
+/// `TreeController::move_selection_to_edge`'s own edge row. Returns `None`
+/// only when `count == 0`.
+fn edge_flat_index(edge: Edge, count: usize) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    Some(match edge {
+        Edge::Start => 0,
+        Edge::End => count - 1,
+    })
+}
+
+/// Scrolls `scroll_offset` by the minimum amount needed to bring `row`
+/// into a `viewport_rows`-tall window — the `List`/`DataTable` counterpart
+/// of `TreeController::scroll_to_visible`'s own formula.
+fn scroll_into_view(scroll_offset: usize, row: usize, viewport_rows: usize) -> usize {
+    if viewport_rows == 0 {
+        return scroll_offset;
+    }
+    if row < scroll_offset {
+        row
+    } else if row >= scroll_offset + viewport_rows {
+        row.saturating_sub(viewport_rows.saturating_sub(1))
+    } else {
+        scroll_offset
+    }
+}
+
+/// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
+/// `List`, resolved against [`WidgetState`] — the `List` counterpart of
+/// [`apply_tree_nav_key`]. `total_items`/`viewport_rows` should come from
+/// `crate::hit::list_rows_and_viewport` against the most recent render's
+/// hit map. Returns `true` (and leaves [`WidgetState`] updated) only when
+/// a recognized navigation key actually moved the cursor; `false`
+/// otherwise, so the caller falls through unchanged — today's
+/// `crate::semantic::list_key_event` Enter/Up/Down event translation, or
+/// the raw `ListViewEvent::KeyPressed` fallback for anything else.
+pub fn apply_list_nav_key(
+    widget_state: &WidgetState,
+    id: WidgetId,
+    total_items: usize,
+    viewport_rows: usize,
+    key: &Key,
+) -> bool {
+    let Some(nav) = cursor_nav_for_key(key) else {
+        return false;
+    };
+    let stored = widget_state.get::<ListCursorState>(id).unwrap_or_default();
+    let new_idx = match nav {
+        CursorNav::Up => move_flat_index(stored.selected_idx, -1, total_items),
+        CursorNav::Down => move_flat_index(stored.selected_idx, 1, total_items),
+        CursorNav::Home => edge_flat_index(Edge::Start, total_items),
+        CursorNav::End => edge_flat_index(Edge::End, total_items),
+        CursorNav::PageUp => {
+            move_flat_index(stored.selected_idx, -page_delta(viewport_rows), total_items)
+        }
+        CursorNav::PageDown => {
+            move_flat_index(stored.selected_idx, page_delta(viewport_rows), total_items)
+        }
+    };
+    let moved = new_idx != stored.selected_idx;
+    let scroll_offset = match new_idx {
+        Some(row) if moved => scroll_into_view(stored.scroll_offset, row, viewport_rows),
+        _ => stored.scroll_offset,
+    };
+    widget_state.set(
+        id,
+        ListCursorState {
+            selected_idx: new_idx,
+            selected_controlled: stored.selected_controlled,
+            scroll_offset,
+            scroll_controlled: stored.scroll_controlled,
+        },
+    );
+    moved
+}
+
+/// Resolves `list`'s cursor + scroll for painting — the `List` counterpart
+/// of [`resolve_tree_cursor`]. `ListView::selected_idx` has no "unset"
+/// state of its own (always a valid index into a non-empty list, default
+/// `0`), so it gets the exact same latch [`resolve_tree_cursor`]'s own doc
+/// describes for `scroll_offset`: `selected_controlled` turns `true` the
+/// first time `list.selected_idx` is non-zero and then stays `true`,
+/// including a later frame whose `selected_idx` goes back to `0`. An app
+/// that genuinely pins the selection at row `0` from the very first frame
+/// is indistinguishable from "uncontrolled, never touched" — the same
+/// residual ambiguity [`resolve_tree_cursor`] accepts for `scroll_offset`.
+///
+/// Call once per frame, before painting `list`.
+pub fn resolve_list_cursor(
+    widget_state: &WidgetState,
+    list: &ListView,
+    viewport_rows: usize,
+) -> ListView {
+    let id = list.id;
+    let stored = widget_state.get::<ListCursorState>(id).unwrap_or_default();
+
+    let selected_controlled = stored.selected_controlled || list.selected_idx != 0;
+    let selected_idx = if selected_controlled {
+        Some(list.selected_idx)
+    } else {
+        stored.selected_idx
+    };
+    let resolved_selected_idx = selected_idx.unwrap_or(0);
+
+    let scroll_controlled = stored.scroll_controlled || list.scroll_offset != 0;
+    let mut scroll_offset = if scroll_controlled {
+        list.scroll_offset
+    } else {
+        stored.scroll_offset
+    };
+
+    if !scroll_controlled {
+        scroll_offset = scroll_into_view(scroll_offset, resolved_selected_idx, viewport_rows);
+    }
+
+    widget_state.set(
+        id,
+        ListCursorState {
+            selected_idx,
+            selected_controlled,
+            scroll_offset,
+            scroll_controlled,
+        },
+    );
+
+    ListView {
+        selected_idx: resolved_selected_idx,
+        scroll_offset,
+        ..list.clone()
+    }
+}
+
+// ─── DataTable cursor + scroll, uncontrolled by default ────────────────────
+//
+// Same policy as `List` above, reusing the same flat-cursor arithmetic.
+// `DataTable::selected_idx` is already `Option<usize>` (unlike `ListView`'s
+// bare `usize`), so its own resolution needs no latch — `None` already
+// unambiguously means "no selection, uncontrolled" the same way
+// `TreeView::selected_path` does.
+
+/// A `DataTable`'s cursor + scroll, persisted in [`WidgetState`] keyed by
+/// the table's own id.
+#[derive(Debug, Clone, Default)]
+struct DataTableCursorState {
+    selected_idx: Option<usize>,
+    scroll_offset: usize,
+    scroll_controlled: bool,
+}
+
+/// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
+/// `DataTable`, resolved against [`WidgetState`] — the `DataTable`
+/// counterpart of [`apply_tree_nav_key`]/[`apply_list_nav_key`].
+/// `total_rows`/`viewport_rows` should come from
+/// `crate::hit::data_table_rows_and_viewport` against the most recent
+/// render's hit map. Returns `true` (and leaves [`WidgetState`] updated)
+/// only when a recognized navigation key actually moved the cursor;
+/// `false` otherwise, so the caller falls through unchanged — today's
+/// `crate::semantic::data_table_key_event` Enter/Up/Down event
+/// translation.
+pub fn apply_data_table_nav_key(
+    widget_state: &WidgetState,
+    id: WidgetId,
+    total_rows: usize,
+    viewport_rows: usize,
+    key: &Key,
+) -> bool {
+    let Some(nav) = cursor_nav_for_key(key) else {
+        return false;
+    };
+    let stored = widget_state
+        .get::<DataTableCursorState>(id)
+        .unwrap_or_default();
+    let new_idx = match nav {
+        CursorNav::Up => move_flat_index(stored.selected_idx, -1, total_rows),
+        CursorNav::Down => move_flat_index(stored.selected_idx, 1, total_rows),
+        CursorNav::Home => edge_flat_index(Edge::Start, total_rows),
+        CursorNav::End => edge_flat_index(Edge::End, total_rows),
+        CursorNav::PageUp => {
+            move_flat_index(stored.selected_idx, -page_delta(viewport_rows), total_rows)
+        }
+        CursorNav::PageDown => {
+            move_flat_index(stored.selected_idx, page_delta(viewport_rows), total_rows)
+        }
+    };
+    let moved = new_idx != stored.selected_idx;
+    let scroll_offset = match new_idx {
+        Some(row) if moved => scroll_into_view(stored.scroll_offset, row, viewport_rows),
+        _ => stored.scroll_offset,
+    };
+    widget_state.set(
+        id,
+        DataTableCursorState {
+            selected_idx: new_idx,
+            scroll_offset,
+            scroll_controlled: stored.scroll_controlled,
+        },
+    );
+    moved
+}
+
+/// Resolves `table`'s cursor + scroll for painting — the `DataTable`
+/// counterpart of [`resolve_tree_cursor`]/[`resolve_list_cursor`]. No
+/// latch needed for `selected_idx` (unlike `List`'s): `DataTable::selected_idx`
+/// is already `Option<usize>`, so `None` unambiguously means
+/// "uncontrolled". `scroll_offset` still needs the same latch
+/// [`resolve_tree_cursor`]'s own doc describes, for the identical reason
+/// (`DataTable::scroll_offset` is a bare `usize`).
+///
+/// Call once per frame, before painting `table`.
+pub fn resolve_data_table_cursor(
+    widget_state: &WidgetState,
+    table: &DataTable,
+    viewport_rows: usize,
+) -> DataTable {
+    let id = table.id;
+    let stored = widget_state
+        .get::<DataTableCursorState>(id)
+        .unwrap_or_default();
+
+    let selected_idx = table.selected_idx.or(stored.selected_idx);
+
+    let scroll_controlled = stored.scroll_controlled || table.scroll_offset != 0;
+    let mut scroll_offset = if scroll_controlled {
+        table.scroll_offset
+    } else {
+        stored.scroll_offset
+    };
+
+    if !scroll_controlled {
+        if let Some(row) = selected_idx {
+            scroll_offset = scroll_into_view(scroll_offset, row, viewport_rows);
+        }
+    }
+
+    widget_state.set(
+        id,
+        DataTableCursorState {
+            selected_idx,
+            scroll_offset,
+            scroll_controlled,
+        },
+    );
+
+    DataTable {
+        selected_idx,
+        scroll_offset,
+        ..table.clone()
     }
 }
 
@@ -2490,5 +2826,325 @@ mod tests {
 
         host.set_test_clock_ms(None);
         assert!(host.now_ms() < 5_000);
+    }
+
+    // ─── Tree/List/DataTable cursor + scroll ───────────────────────────
+
+    use quadraui::{Column, DataRow, ListItem, NamedKey, SelectionMode, TreeStyle};
+
+    fn down_key() -> Key {
+        Key::Named(NamedKey::Down)
+    }
+
+    fn home_key() -> Key {
+        Key::Named(NamedKey::Home)
+    }
+
+    fn end_key() -> Key {
+        Key::Named(NamedKey::End)
+    }
+
+    fn test_tree(
+        row_count: usize,
+        selected_path: Option<TreePath>,
+        scroll_offset: usize,
+    ) -> TreeView {
+        TreeView {
+            id: WidgetId::new("host-test:tree"),
+            rows: (0..row_count)
+                .map(|i| placeholder_tree_row(vec![i as u16]))
+                .collect(),
+            selection_mode: SelectionMode::Single,
+            selected_path,
+            scroll_offset,
+            style: TreeStyle::default(),
+            has_focus: true,
+        }
+    }
+
+    fn test_list(row_count: usize, selected_idx: usize, scroll_offset: usize) -> ListView {
+        ListView {
+            id: WidgetId::new("host-test:list"),
+            title: None,
+            items: (0..row_count)
+                .map(|i| ListItem {
+                    text: StyledText::plain(format!("row {i}")),
+                    icon: None,
+                    detail: None,
+                    decoration: Decoration::default(),
+                })
+                .collect(),
+            selected_idx,
+            scroll_offset,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        }
+    }
+
+    fn test_data_table(
+        row_count: usize,
+        selected_idx: Option<usize>,
+        scroll_offset: usize,
+    ) -> DataTable {
+        DataTable {
+            id: WidgetId::new("host-test:table"),
+            columns: vec![Column {
+                title: "Col".to_string(),
+                width: Default::default(),
+                align: Default::default(),
+            }],
+            rows: (0..row_count)
+                .map(|i| DataRow {
+                    cells: vec![StyledText::plain(format!("row {i}"))],
+                    decoration: Decoration::default(),
+                })
+                .collect(),
+            selected_idx,
+            scroll_offset,
+            sort: None,
+            has_focus: true,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+        }
+    }
+
+    /// A fully uncontrolled `Tree` (no `selected_path`, `scroll_offset: 0`)
+    /// moves its stored cursor one row per `Down` and keeps it within the
+    /// scrolled viewport — [`apply_tree_nav_key`]'s own basic contract,
+    /// exercised directly (no [`quadraui::tui::testing::TuiDriver`]
+    /// needed) rather than only through `crate::engine`'s integration
+    /// tests.
+    #[test]
+    fn apply_tree_nav_key_down_moves_the_cursor_and_scrolls_it_into_view() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:tree");
+        let row_paths: Vec<TreePath> = (0..500).map(|i| vec![i as u16]).collect();
+
+        for _ in 0..40 {
+            let moved = apply_tree_nav_key(&widget_state, id, &row_paths, 8, &down_key());
+            assert!(moved, "every Down from row 0..39 must move the cursor");
+        }
+
+        let tree = test_tree(500, None, 0);
+        let resolved = resolve_tree_cursor(&widget_state, &tree, 8);
+        assert_eq!(
+            resolved.selected_path,
+            Some(vec![39]),
+            "40 Downs starting from no selection must land exactly on row 39"
+        );
+        assert!(
+            (resolved.scroll_offset..resolved.scroll_offset + 8).contains(&39),
+            "row 39 must be scrolled into the 8-row viewport: offset {}",
+            resolved.scroll_offset
+        );
+    }
+
+    /// `Home`/`End` jump straight to the first/last row; a further `Down`
+    /// past the last row is a no-op that reports no movement, matching
+    /// [`apply_tree_nav_key`]'s own "return `false` when nothing moved"
+    /// contract.
+    #[test]
+    fn apply_tree_nav_key_home_and_end_jump_to_the_edges_and_further_movement_past_the_end_is_a_no_op(
+    ) {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:tree");
+        let row_paths: Vec<TreePath> = (0..10).map(|i| vec![i as u16]).collect();
+
+        assert!(apply_tree_nav_key(
+            &widget_state,
+            id,
+            &row_paths,
+            4,
+            &end_key()
+        ));
+        let tree = test_tree(10, None, 0);
+        let resolved = resolve_tree_cursor(&widget_state, &tree, 4);
+        assert_eq!(resolved.selected_path, Some(vec![9]));
+
+        assert!(
+            !apply_tree_nav_key(&widget_state, id, &row_paths, 4, &down_key()),
+            "Down past the last row must report no movement"
+        );
+
+        assert!(apply_tree_nav_key(
+            &widget_state,
+            id,
+            &row_paths,
+            4,
+            &home_key()
+        ));
+        let tree = test_tree(10, None, 0);
+        let resolved = resolve_tree_cursor(&widget_state, &tree, 4);
+        assert_eq!(resolved.selected_path, Some(vec![0]));
+    }
+
+    /// Vim `j`/`k` are recognized aliases for `Down`/`Up`, via the shared
+    /// `quadraui::compose::classify_tree_nav_key` key map rather than a
+    /// second hand-copied one.
+    #[test]
+    fn apply_tree_nav_key_recognizes_vim_j_and_k_aliases() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:tree");
+        let row_paths: Vec<TreePath> = (0..10).map(|i| vec![i as u16]).collect();
+
+        assert!(apply_tree_nav_key(
+            &widget_state,
+            id,
+            &row_paths,
+            4,
+            &Key::Char('j')
+        ));
+        assert!(apply_tree_nav_key(
+            &widget_state,
+            id,
+            &row_paths,
+            4,
+            &Key::Char('j')
+        ));
+        assert!(apply_tree_nav_key(
+            &widget_state,
+            id,
+            &row_paths,
+            4,
+            &Key::Char('k')
+        ));
+
+        let tree = test_tree(10, None, 0);
+        let resolved = resolve_tree_cursor(&widget_state, &tree, 4);
+        assert_eq!(resolved.selected_path, Some(vec![0]));
+    }
+
+    /// A controlled `selected_path` wins outright over the stored cursor,
+    /// and the viewport re-clamps the scroll on every call even with no
+    /// intervening [`apply_tree_nav_key`] — covering the resize case
+    /// [`resolve_tree_cursor`]'s own doc describes.
+    #[test]
+    fn resolve_tree_cursor_controlled_selected_path_wins_and_rescrolls_on_viewport_resize() {
+        let widget_state = WidgetState::new();
+        let tree = test_tree(50, Some(vec![30]), 0);
+
+        let resolved = resolve_tree_cursor(&widget_state, &tree, 8);
+        assert_eq!(resolved.selected_path, Some(vec![30]));
+        assert!((resolved.scroll_offset..resolved.scroll_offset + 8).contains(&30));
+
+        // The viewport shrinks (e.g. the window resized) with the same
+        // controlled selection and no key pressed in between -- row 30
+        // must still be visible in the new, smaller viewport.
+        let resolved = resolve_tree_cursor(&widget_state, &tree, 4);
+        assert!(
+            (resolved.scroll_offset..resolved.scroll_offset + 4).contains(&30),
+            "a shrunk viewport must re-clamp the scroll to keep row 30 visible: {}",
+            resolved.scroll_offset
+        );
+    }
+
+    /// A `Tree` pinned at a non-zero `scroll_offset` that later goes back
+    /// to `0` must actually scroll back to the top, not get stuck at the
+    /// old pinned value — the regression this module's own
+    /// `scroll_controlled` latch exists to fix. Before the latch, `0` was
+    /// read as "uncontrolled", so `resolve_tree_cursor` fell back to the
+    /// stored (still-pinned) offset and the tree could never scroll back
+    /// to the top.
+    #[test]
+    fn resolve_tree_cursor_can_scroll_back_to_zero_after_being_pinned_nonzero() {
+        let widget_state = WidgetState::new();
+
+        let pinned = test_tree(50, None, 20);
+        let resolved = resolve_tree_cursor(&widget_state, &pinned, 8);
+        assert_eq!(resolved.scroll_offset, 20);
+
+        // The app (or the user wheeling back to the top) now pins the
+        // scroll at 0 on the very next frame.
+        let pinned_at_top = test_tree(50, None, 0);
+        let resolved = resolve_tree_cursor(&widget_state, &pinned_at_top, 8);
+        assert_eq!(
+            resolved.scroll_offset, 0,
+            "a controlled tree must be able to scroll back to the top"
+        );
+    }
+
+    /// A fully uncontrolled `List` (`selected_idx: 0`, `scroll_offset: 0`)
+    /// moves its stored cursor one row per `Down` and scrolls it into
+    /// view — the `List` counterpart of
+    /// `apply_tree_nav_key_down_moves_the_cursor_and_scrolls_it_into_view`.
+    #[test]
+    fn apply_list_nav_key_down_moves_the_cursor_and_scrolls_it_into_view() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:list");
+
+        for _ in 0..40 {
+            assert!(apply_list_nav_key(&widget_state, id, 500, 8, &down_key()));
+        }
+
+        let list = test_list(500, 0, 0);
+        let resolved = resolve_list_cursor(&widget_state, &list, 8);
+        assert_eq!(resolved.selected_idx, 39);
+        assert!((resolved.scroll_offset..resolved.scroll_offset + 8).contains(&39));
+    }
+
+    /// A `List` whose descriptor pins a non-zero `scroll_offset` keeps
+    /// that value even while uncontrolled navigation keys move the
+    /// selection — controlled mode wins outright, mirroring
+    /// `engine::tests::controlled_tree_scroll_offset_is_pinned_and_not_moved_by_navigation_keys`.
+    #[test]
+    fn resolve_list_cursor_controlled_scroll_offset_is_pinned() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:list");
+
+        for _ in 0..10 {
+            apply_list_nav_key(&widget_state, id, 500, 8, &down_key());
+        }
+
+        let list = test_list(500, 0, 50);
+        let resolved = resolve_list_cursor(&widget_state, &list, 8);
+        assert_eq!(resolved.scroll_offset, 50);
+    }
+
+    /// A fully uncontrolled `DataTable` (`selected_idx: None`,
+    /// `scroll_offset: 0`) moves its stored cursor one row per `Down` and
+    /// scrolls it into view — the `DataTable` counterpart of
+    /// `apply_tree_nav_key_down_moves_the_cursor_and_scrolls_it_into_view`.
+    #[test]
+    fn apply_data_table_nav_key_down_moves_the_cursor_and_scrolls_it_into_view() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:table");
+
+        for _ in 0..40 {
+            assert!(apply_data_table_nav_key(
+                &widget_state,
+                id,
+                500,
+                8,
+                &down_key()
+            ));
+        }
+
+        let table = test_data_table(500, None, 0);
+        let resolved = resolve_data_table_cursor(&widget_state, &table, 8);
+        assert_eq!(resolved.selected_idx, Some(39));
+        assert!((resolved.scroll_offset..resolved.scroll_offset + 8).contains(&39));
+    }
+
+    /// A `DataTable` whose descriptor pins a non-zero `scroll_offset`
+    /// keeps that value even while uncontrolled navigation keys move the
+    /// selection, the same as [`resolve_list_cursor_controlled_scroll_offset_is_pinned`].
+    #[test]
+    fn resolve_data_table_cursor_controlled_scroll_offset_is_pinned() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:table");
+
+        for _ in 0..10 {
+            apply_data_table_nav_key(&widget_state, id, 500, 8, &down_key());
+        }
+
+        let table = test_data_table(500, None, 50);
+        let resolved = resolve_data_table_cursor(&widget_state, &table, 8);
+        assert_eq!(resolved.scroll_offset, 50);
     }
 }

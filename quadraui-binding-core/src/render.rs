@@ -165,12 +165,15 @@ pub fn draw_bands(
             let state = quadraui::ListPaintState::default().with_scroll_px(refs.list_scroll_px);
             backend.draw_list_with_state(rect, list, &state, false);
             let layout = backend.list_layout(rect, list);
+            let viewport_rows = list_viewport_rows(backend, rect, list);
             hits.push(PaintedHit::List {
                 id: list.id,
                 area: rect,
                 layout,
                 selected_idx: list.selected_idx,
                 total_items: list.items.len(),
+                scroll_offset: list.scroll_offset,
+                viewport_rows,
             });
         }
     }
@@ -199,6 +202,7 @@ pub fn draw_bands(
             let state =
                 quadraui::DataTablePaintState::default().with_scroll_px(refs.data_table_scroll_px);
             let layout = backend.draw_data_table_with_state(rect, data_table, &state);
+            let viewport_rows = layout.visible_rows;
             hits.push(PaintedHit::DataTable {
                 id: data_table.id,
                 area: rect,
@@ -206,6 +210,7 @@ pub fn draw_bands(
                 scroll_offset: data_table.scroll_offset,
                 total_rows: data_table.rows.len(),
                 selected_idx: data_table.selected_idx,
+                viewport_rows,
             });
         }
     }
@@ -692,6 +697,18 @@ pub fn tree_viewport_rows(backend: &mut dyn Backend, rect: Rect, tree: &TreeView
     backend.tree_layout(rect, &shadow).visible_rows.len()
 }
 
+/// How many items of `list` fit in `rect` at a zero scroll offset — the
+/// viewport's true row capacity, mirroring [`tree_viewport_rows`] for the
+/// identical reason: `ListViewLayout::visible_items.len()` at `list`'s
+/// ACTUAL offset can be shorter near the end of a long list. Paints into
+/// no backend at all — only queries `Backend::list_layout` against a
+/// scratch clone — so computing this never disturbs the real paint.
+pub fn list_viewport_rows(backend: &mut dyn Backend, rect: Rect, list: &ListView) -> usize {
+    let mut shadow = list.clone();
+    shadow.scroll_offset = 0;
+    backend.list_layout(rect, &shadow).visible_items.len()
+}
+
 /// Paints `tree` into `area`, reserving a right-hand gutter for its
 /// vertical scrollbar when one is needed, and returns `(content_rect,
 /// scrollbar, viewport_rows)` so the caller can hit-test against the SAME
@@ -846,12 +863,15 @@ pub fn paint_leaf(
             let state = quadraui::ListPaintState::default().with_scroll_px(leaf.scroll_px);
             backend.draw_list_with_state(area, list, &state, false);
             let layout = backend.list_layout(area, list);
+            let viewport_rows = list_viewport_rows(backend, area, list);
             hits.push(PaintedHit::List {
                 id,
                 area,
                 layout,
                 selected_idx: list.selected_idx,
                 total_items: list.items.len(),
+                scroll_offset: list.scroll_offset,
+                viewport_rows,
             });
         }
         LeafDescriptor::Tree(tree) => {
@@ -875,6 +895,7 @@ pub fn paint_leaf(
         LeafDescriptor::DataTable(data_table) => {
             let state = quadraui::DataTablePaintState::default().with_scroll_px(leaf.scroll_px);
             let layout = backend.draw_data_table_with_state(area, data_table, &state);
+            let viewport_rows = layout.visible_rows;
             hits.push(PaintedHit::DataTable {
                 id,
                 area,
@@ -882,6 +903,7 @@ pub fn paint_leaf(
                 scroll_offset: data_table.scroll_offset,
                 total_rows: data_table.rows.len(),
                 selected_idx: data_table.selected_idx,
+                viewport_rows,
             });
         }
         LeafDescriptor::TabBar(tab_bar) => {

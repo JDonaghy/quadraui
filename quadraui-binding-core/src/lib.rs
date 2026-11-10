@@ -70,19 +70,21 @@ pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree
 pub use drag::{ActiveDrag, ScrollbarDrag};
 pub use engine::{message_dialog_options_from_buttons, EventSink, InteractionEngine};
 pub use extra_paint::{decode_extra_primitive, extra_as, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
+pub use hit::{data_table_rows_and_viewport, list_rows_and_viewport, tree_rows_and_viewport};
 pub use hit::{event_position, hit_test_painted, set_event_widget};
 pub use hit::{HitDetail, PaintedHit};
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 pub use host::NativeExitPolicy;
 pub use host::{
-    app_path_kind, apply_tree_nav_key, callback_reaction, callback_reaction_for_render,
-    caret_shape, click_down_up_events, color_depth_name, dialog_severity, font_role, guarded,
-    key_pressed_event, menu_for_surface, merge_overrides, panic_message, pointer_shape,
-    power_save_kind, record_pending_error, render_overlays, resize_edge, resolve_tree_cursor,
-    step_driver, take_pending_error, text_display_from_lines, theme_color_value, toast_corner,
-    window_close_reaction, with_tray, with_window, BindingHost, ErasedShellDriver, GuardedFailure,
-    OverrideError, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR,
-    SLOT_TEXT_DISPLAY, SLOT_TREE,
+    app_path_kind, apply_data_table_nav_key, apply_list_nav_key, apply_tree_nav_key,
+    callback_reaction, callback_reaction_for_render, caret_shape, click_down_up_events,
+    color_depth_name, dialog_severity, font_role, guarded, key_pressed_event, menu_for_surface,
+    merge_overrides, panic_message, pointer_shape, power_save_kind, record_pending_error,
+    render_overlays, resize_edge, resolve_data_table_cursor, resolve_list_cursor,
+    resolve_tree_cursor, step_driver, take_pending_error, text_display_from_lines,
+    theme_color_value, toast_corner, window_close_reaction, with_tray, with_window, BindingHost,
+    ErasedShellDriver, GuardedFailure, OverrideError, WindowCloseHandling, SLOT_BUTTON,
+    SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
 pub use layout::{LayoutPanel, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry};
@@ -91,7 +93,9 @@ pub use render::{
     collect_leaf_tooltips, draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf,
     split_rects,
 };
-pub use render::{split_rects_with_gap, tree_viewport_rows, RenderFrame, RenderRefs};
+pub use render::{
+    list_viewport_rows, split_rects_with_gap, tree_viewport_rows, RenderFrame, RenderRefs,
+};
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
 pub use services::{
     add_recent_document, app_identifier, begin_drag_out, begin_power_save_block,

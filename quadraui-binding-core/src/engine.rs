@@ -29,13 +29,14 @@ use quadraui::{
 
 use crate::drag::{
     find_data_table_layout, find_split_layout, find_split_tree_layout, text_display_scroll_state,
-    tree_rows_and_viewport, tree_scroll_state, ActiveDrag, DataTableColumnDrag, ScrollbarDrag,
+    tree_scroll_state, ActiveDrag, DataTableColumnDrag, ScrollbarDrag,
 };
 use crate::extra_paint::extra_as;
 use crate::hit::{
-    chrome_hover_hit, event_position, hit_test_painted, set_event_widget, HitDetail, PaintedHit,
+    chrome_hover_hit, data_table_rows_and_viewport, event_position, hit_test_painted,
+    list_rows_and_viewport, set_event_widget, tree_rows_and_viewport, HitDetail, PaintedHit,
 };
-use crate::host::apply_tree_nav_key;
+use crate::host::{apply_data_table_nav_key, apply_list_nav_key, apply_tree_nav_key};
 use crate::semantic::{focus_scoped_key_event, number_input_click_event, semantic_event_for_hit};
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
 use crate::widget_state::WidgetState;
@@ -1451,28 +1452,43 @@ impl InteractionEngine {
         // own handler sees a focus-scoped event instead of a backend-global
         // one.
         //
-        // For a focused `Tree`, a recognized navigation key
-        // (Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown) is tried against
-        // [`apply_tree_nav_key`] first: it moves and scrolls-into-view the
-        // id's cursor in [`Self::widget_state`] (controlled or not — see
-        // that function's own doc), using the `Tree` hit's own
-        // `row_paths`/`viewport_rows` rather than a stale descriptor. This
-        // never changes what reaches `sink` (still the same
+        // For a focused `Tree`/`List`/`DataTable`, a recognized navigation
+        // key (Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown) is tried
+        // against [`apply_tree_nav_key`]/[`apply_list_nav_key`]/
+        // [`apply_data_table_nav_key`] first: it moves and scrolls-into-view
+        // the id's cursor in [`Self::widget_state`] (controlled or not — see
+        // those functions' own doc), using the hit's own row/viewport
+        // geometry rather than a stale descriptor. `tree_rows_and_viewport`
+        // returns `None` while the focused tree's selected row is mid-rename
+        // (`editing.is_some()`), so a rename's own text-editing keys
+        // (`Home`/`End` included) are never also interpreted as cursor
+        // navigation. This never changes what reaches `sink` (still the same
         // `focus_scoped_key_event` result a binding always got), only
         // forces the redraw that paints the moved cursor, even when the
         // binding's own `sink.dispatch` leaves the key unhandled.
         if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
             if let Some(focused) = backend.focus_manager().focused().copied() {
-                let tree_nav_applied = tree_rows_and_viewport(&self.hit_map.borrow(), focused)
-                    .is_some_and(|(row_paths, viewport_rows)| {
-                        apply_tree_nav_key(
-                            &self.widget_state,
-                            focused,
-                            &row_paths,
-                            viewport_rows,
-                            key,
-                        )
-                    });
+                let nav_applied = if let Some((row_paths, viewport_rows)) =
+                    tree_rows_and_viewport(&self.hit_map.borrow(), focused)
+                {
+                    apply_tree_nav_key(&self.widget_state, focused, &row_paths, viewport_rows, key)
+                } else if let Some((total_items, viewport_rows)) =
+                    list_rows_and_viewport(&self.hit_map.borrow(), focused)
+                {
+                    apply_list_nav_key(&self.widget_state, focused, total_items, viewport_rows, key)
+                } else if let Some((total_rows, viewport_rows)) =
+                    data_table_rows_and_viewport(&self.hit_map.borrow(), focused)
+                {
+                    apply_data_table_nav_key(
+                        &self.widget_state,
+                        focused,
+                        total_rows,
+                        viewport_rows,
+                        key,
+                    )
+                } else {
+                    false
+                };
                 event = focus_scoped_key_event(
                     focused,
                     key,
@@ -1480,7 +1496,7 @@ impl InteractionEngine {
                     &self.hit_map.borrow(),
                     &self.text_editors,
                 );
-                if tree_nav_applied {
+                if nav_applied {
                     return Reaction::Redraw.merge(sink.dispatch(&event, None));
                 }
             }
@@ -1859,16 +1875,18 @@ mod tests {
 
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
-        AppLogic, Backend, Button, DataTable, Key, Modifiers, MouseButton, NamedKey, Point,
-        Reaction, Rect, ToolbarEvent, TreeView, UiEvent, WidgetId,
+        AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, MouseButton, NamedKey,
+        Point, Reaction, Rect, ToolbarEvent, TreeView, UiEvent, WidgetId,
     };
 
     use super::{EventSink, InteractionEngine};
     use crate::drag::find_split_tree_layout;
     use crate::hit::HitDetail;
-    use crate::host::resolve_tree_cursor;
+    use crate::host::{resolve_data_table_cursor, resolve_list_cursor, resolve_tree_cursor};
     use crate::layout::{LayoutLeaf, LayoutNode, LayoutPanel, LayoutSplitTree, LeafDescriptor};
-    use crate::render::{draw_bands, paint_layout, tree_viewport_rows, RenderRefs};
+    use crate::render::{
+        draw_bands, list_viewport_rows, paint_layout, tree_viewport_rows, RenderRefs,
+    };
 
     /// Records every event [`InteractionEngine::handle`] dispatches, in
     /// order, so a test can assert on the orchestration's decisions (e.g.
@@ -2911,7 +2929,7 @@ mod tests {
             tree_hit.expect("the tree must still be painted after 40 Down presses");
         assert!(
             scroll_offset > 0,
-            "500 rows in an 8-row viewport must have scrolled: {scroll_offset}"
+            "500 rows in a {viewport_rows}-row tree viewport must have scrolled: {scroll_offset}"
         );
         assert!(
             (scroll_offset..scroll_offset + viewport_rows).contains(&39),
@@ -2950,6 +2968,384 @@ mod tests {
             crate::hit::PaintedHit::Tree {
                 id, scroll_offset, ..
             } if *id == WidgetId::new("tree") => Some(*scroll_offset),
+            _ => None,
+        });
+        assert_eq!(
+            scroll_offset,
+            Some(50),
+            "a controlled scroll_offset must stay pinned at the descriptor's own value: {:?}",
+            scroll_offset
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single `ListView` through
+    /// [`resolve_list_cursor`] — the `List` counterpart of [`TreeLogic`],
+    /// for the widget-state cursor/scroll coverage below.
+    struct ListCursorLogic {
+        list: ListView,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for ListCursorLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let line_height = backend.line_height();
+            // Mirrors `draw_bands`'s own list-band allocation (4 lines).
+            let list_rect = Rect::new(
+                0.0,
+                0.0,
+                viewport.width,
+                (4.0 * line_height).min(viewport.height),
+            );
+            let viewport_rows = list_viewport_rows(backend, list_rect, &self.list);
+            let resolved =
+                resolve_list_cursor(self.engine.widget_state(), &self.list, viewport_rows);
+
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: None,
+                    text_display: None,
+                    list: Some(&resolved),
+                    tree: None,
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Builds a `row_count`-row `ListView` with the given
+    /// `selected_idx`/`scroll_offset` and drives it through a
+    /// [`TuiDriver`] — mirrors [`tree_driver`].
+    fn list_cursor_driver(
+        row_count: usize,
+        selected_idx: usize,
+        scroll_offset: usize,
+    ) -> TuiDriver<ListCursorLogic> {
+        use quadraui::{ListItem, StyledText};
+
+        let list = ListView {
+            id: WidgetId::new("list-cursor"),
+            title: None,
+            items: (0..row_count)
+                .map(|i| ListItem {
+                    text: StyledText::plain(format!("row {i}")),
+                    icon: None,
+                    detail: None,
+                    decoration: Default::default(),
+                })
+                .collect(),
+            selected_idx,
+            scroll_offset,
+            has_focus: false,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        let logic = ListCursorLogic {
+            list,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 24, 8)
+    }
+
+    /// A 500-row `List` left fully uncontrolled (`selected_idx: 0`,
+    /// `scroll_offset: 0`) must still move its cursor and keep it
+    /// scrolled into view purely from arrow-key presses — the `List`
+    /// counterpart of
+    /// [`uncontrolled_tree_moves_the_cursor_and_scrolls_it_into_view_on_down`].
+    #[test]
+    fn uncontrolled_list_moves_the_cursor_and_scrolls_it_into_view_on_down() {
+        let mut driver = list_cursor_driver(500, 0, 0);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("list-cursor"))),
+                "the list is a tab stop and must accept focus"
+            );
+        }
+
+        for _ in 0..40 {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
+
+        let hits = driver.app().engine.hit_map();
+        let list_hit = hits.iter().find_map(|hit| match hit {
+            crate::hit::PaintedHit::List {
+                id,
+                selected_idx,
+                scroll_offset,
+                viewport_rows,
+                ..
+            } if *id == WidgetId::new("list-cursor") => {
+                Some((*selected_idx, *scroll_offset, *viewport_rows))
+            }
+            _ => None,
+        });
+        let (selected_idx, scroll_offset, viewport_rows) =
+            list_hit.expect("the list must still be painted after 40 Down presses");
+        assert_eq!(
+            selected_idx, 39,
+            "40 Downs starting from no selection must land exactly on row 39"
+        );
+        assert!(
+            (scroll_offset..scroll_offset + viewport_rows).contains(&39),
+            "row 39 (the moved cursor) must be within the scrolled window [{scroll_offset}, {})",
+            scroll_offset + viewport_rows
+        );
+    }
+
+    /// A `List` whose descriptor pins a non-zero `scroll_offset` keeps
+    /// that exact value every frame, even while arrow keys move its
+    /// (uncontrolled) selection — the `List` counterpart of
+    /// [`controlled_tree_scroll_offset_is_pinned_and_not_moved_by_navigation_keys`].
+    #[test]
+    fn controlled_list_scroll_offset_is_pinned_and_not_moved_by_navigation_keys() {
+        let mut driver = list_cursor_driver(500, 0, 50);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("list-cursor"))),
+                "the list is a tab stop and must accept focus"
+            );
+        }
+
+        for _ in 0..10 {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
+
+        let hits = driver.app().engine.hit_map();
+        let scroll_offset = hits.iter().find_map(|hit| match hit {
+            crate::hit::PaintedHit::List {
+                id, scroll_offset, ..
+            } if *id == WidgetId::new("list-cursor") => Some(*scroll_offset),
+            _ => None,
+        });
+        assert_eq!(
+            scroll_offset,
+            Some(50),
+            "a controlled scroll_offset must stay pinned at the descriptor's own value: {:?}",
+            scroll_offset
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single `DataTable` through
+    /// [`resolve_data_table_cursor`] — the `DataTable` counterpart of
+    /// [`TreeLogic`]/[`ListCursorLogic`], for the widget-state
+    /// cursor/scroll coverage below.
+    struct DataTableCursorLogic {
+        table: DataTable,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for DataTableCursorLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let line_height = backend.line_height();
+            // Mirrors `draw_bands`'s own data-table-band allocation (4 lines).
+            let table_rect = Rect::new(
+                0.0,
+                0.0,
+                viewport.width,
+                (4.0 * line_height).min(viewport.height),
+            );
+            let viewport_rows = backend
+                .data_table_layout(table_rect, &self.table)
+                .visible_rows;
+            let resolved =
+                resolve_data_table_cursor(self.engine.widget_state(), &self.table, viewport_rows);
+
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: None,
+                    text_display: None,
+                    list: None,
+                    tree: None,
+                    data_table: Some(&resolved),
+                    tab_bar: None,
+                    extra: &extra,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Builds a `row_count`-row `DataTable` with the given
+    /// `selected_idx`/`scroll_offset` and drives it through a
+    /// [`TuiDriver`] — mirrors [`tree_driver`]/[`list_cursor_driver`].
+    fn data_table_cursor_driver(
+        row_count: usize,
+        selected_idx: Option<usize>,
+        scroll_offset: usize,
+    ) -> TuiDriver<DataTableCursorLogic> {
+        use quadraui::{Column, DataRow, StyledText};
+
+        let table = DataTable {
+            id: WidgetId::new("table-cursor"),
+            columns: vec![Column {
+                title: "Col".to_string(),
+                width: Default::default(),
+                align: Default::default(),
+            }],
+            rows: (0..row_count)
+                .map(|i| DataRow {
+                    cells: vec![StyledText::plain(format!("row {i}"))],
+                    decoration: Default::default(),
+                })
+                .collect(),
+            selected_idx,
+            scroll_offset,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+        };
+        let logic = DataTableCursorLogic {
+            table,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 24, 8)
+    }
+
+    /// A 500-row `DataTable` left fully uncontrolled (`selected_idx: None`,
+    /// `scroll_offset: 0`) must still move its cursor and keep it
+    /// scrolled into view purely from arrow-key presses — the `DataTable`
+    /// counterpart of
+    /// [`uncontrolled_tree_moves_the_cursor_and_scrolls_it_into_view_on_down`].
+    #[test]
+    fn uncontrolled_data_table_moves_the_cursor_and_scrolls_it_into_view_on_down() {
+        let mut driver = data_table_cursor_driver(500, None, 0);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("table-cursor"))),
+                "the data table is a tab stop and must accept focus"
+            );
+        }
+
+        for _ in 0..40 {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
+
+        let hits = driver.app().engine.hit_map();
+        let table_hit = hits.iter().find_map(|hit| match hit {
+            crate::hit::PaintedHit::DataTable {
+                id,
+                selected_idx,
+                scroll_offset,
+                viewport_rows,
+                ..
+            } if *id == WidgetId::new("table-cursor") => {
+                Some((*selected_idx, *scroll_offset, *viewport_rows))
+            }
+            _ => None,
+        });
+        let (selected_idx, scroll_offset, viewport_rows) =
+            table_hit.expect("the table must still be painted after 40 Down presses");
+        assert_eq!(
+            selected_idx,
+            Some(39),
+            "40 Downs starting from no selection must land exactly on row 39"
+        );
+        assert!(
+            (scroll_offset..scroll_offset + viewport_rows).contains(&39),
+            "row 39 (the moved cursor) must be within the scrolled window [{scroll_offset}, {})",
+            scroll_offset + viewport_rows
+        );
+    }
+
+    /// A `DataTable` whose descriptor pins a non-zero `scroll_offset`
+    /// keeps that exact value every frame, even while arrow keys move its
+    /// (uncontrolled) selection — the `DataTable` counterpart of
+    /// [`controlled_tree_scroll_offset_is_pinned_and_not_moved_by_navigation_keys`].
+    #[test]
+    fn controlled_data_table_scroll_offset_is_pinned_and_not_moved_by_navigation_keys() {
+        let mut driver = data_table_cursor_driver(500, None, 50);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("table-cursor"))),
+                "the data table is a tab stop and must accept focus"
+            );
+        }
+
+        for _ in 0..10 {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
+
+        let hits = driver.app().engine.hit_map();
+        let scroll_offset = hits.iter().find_map(|hit| match hit {
+            crate::hit::PaintedHit::DataTable {
+                id, scroll_offset, ..
+            } if *id == WidgetId::new("table-cursor") => Some(*scroll_offset),
             _ => None,
         });
         assert_eq!(

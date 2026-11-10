@@ -253,29 +253,6 @@ pub fn tree_scroll_state(
     })
 }
 
-/// The `(row_paths, viewport_rows)` of the `Tree` hit painted under id
-/// `id` this frame, or `None` if that tree isn't in the current hit map.
-/// Unlike [`tree_scroll_state`], this doesn't require a scrollbar to have
-/// painted — used by the tree-cursor key handler
-/// (`crate::host::apply_tree_nav_key`), which needs the visual row order
-/// and viewport capacity regardless of whether the tree currently has
-/// anything to scroll (e.g. the very first navigation key on a tree
-/// short enough to fit without one).
-pub fn tree_rows_and_viewport(
-    hit_map: &[PaintedHit],
-    id: WidgetId,
-) -> Option<(Vec<TreePath>, usize)> {
-    hit_map.iter().find_map(|hit| match hit {
-        PaintedHit::Tree {
-            id: hit_id,
-            row_paths,
-            viewport_rows,
-            ..
-        } if *hit_id == id => Some((row_paths.clone(), *viewport_rows)),
-        _ => None,
-    })
-}
-
 /// The `(total_lines, viewport_lines, scroll_offset)` of the `TextDisplay`
 /// hit painted under id `id` this frame, or `None` if that display isn't in
 /// the current hit map — mirrors [`tree_scroll_state`], minus the

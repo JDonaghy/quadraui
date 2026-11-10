@@ -59,6 +59,15 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `compose::{classify_tree_nav_key, TreeNavKey}` (#2305): the key
+  classification `TreeController::handle_key`/`SidebarSystem`'s own key
+  dispatch already shared internally is now `pub` (was `pub(crate)`), so
+  an out-of-crate caller with its own row-cursor movement
+  (`quadraui-binding-core`'s uncontrolled `Tree`/`List`/`DataTable` cursor
+  navigation) can classify a key against the exact same `Up`/`Down`/vim
+  `j`/`k`/`Home`/`End`/`PageUp`/`PageDown`/`Enter`/`Space` map instead of
+  maintaining a second hand-copied one that can silently drift. Purely
+  additive — no existing call site changes.
 - `WidgetId: From<&String>` (#2178): lets id-taking `compose` methods accept
   `impl Into<WidgetId>` without breaking an existing call site that passes
   a borrowed `&String` (the common shape for an owned id threaded through a

@@ -75,6 +75,13 @@ pub enum PaintedHit {
         /// `0` is what tells the key handler there is no row to activate.
         selected_idx: usize,
         total_items: usize,
+        /// `ListView::scroll_offset` as painted, and how many rows fit in
+        /// `area` at a zero offset (snapshotted at paint time, mirroring
+        /// [`Self::Tree`]'s own `scroll_offset`/`viewport_rows`) — read by
+        /// `crate::host::apply_list_nav_key`/`crate::host::resolve_list_cursor`
+        /// to move the uncontrolled cursor and scroll it into view.
+        scroll_offset: usize,
+        viewport_rows: usize,
     },
     DataTable {
         id: WidgetId,
@@ -88,6 +95,12 @@ pub enum PaintedHit {
         /// [`Self::Tree`]'s `row_paths` lets a key event resolve against
         /// what was actually painted rather than re-deriving it.
         selected_idx: Option<usize>,
+        /// How many rows fit in `area` at a zero scroll offset — mirrors
+        /// [`Self::Tree`]'s own `viewport_rows`, read by
+        /// `crate::host::apply_data_table_nav_key`/
+        /// `crate::host::resolve_data_table_cursor` to scroll the
+        /// uncontrolled cursor into view.
+        viewport_rows: usize,
     },
     TabBar {
         id: WidgetId,
@@ -509,6 +522,74 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
     None
 }
 
+/// The `(row_paths, viewport_rows)` of the `Tree` hit painted under id
+/// `id` this frame, or `None` if that tree isn't in the current hit map,
+/// or if its own selected row is currently mid-rename (`editing.is_some()`).
+/// The latter guard matters for the cursor-navigation key handler this
+/// feeds (`crate::host::apply_tree_nav_key`): while
+/// [`crate::semantic::focus_scoped_key_event`] is routing an ordinary
+/// text-editing key (`Home`/`End`/arrows included) to
+/// `crate::tree_row_rename_key_event` for the row being renamed, the same
+/// keypress must not also move the stored navigation cursor — without
+/// this guard, `Home`/`End` mid-rename would jump the cursor to the first/
+/// last row underneath the edit in progress. Doesn't require a scrollbar
+/// to have painted — used by the tree-cursor key handler, which needs the
+/// visual row order and viewport capacity regardless of whether the tree
+/// currently has anything to scroll (e.g. the very first navigation key on
+/// a tree short enough to fit without one).
+pub fn tree_rows_and_viewport(
+    hit_map: &[PaintedHit],
+    id: WidgetId,
+) -> Option<(Vec<TreePath>, usize)> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::Tree {
+            id: hit_id,
+            row_paths,
+            viewport_rows,
+            editing,
+            ..
+        } if *hit_id == id && editing.is_none() => Some((row_paths.clone(), *viewport_rows)),
+        _ => None,
+    })
+}
+
+/// The `(total_items, viewport_rows)` of the `List` hit painted under id
+/// `id` this frame, or `None` if that list isn't in the current hit map —
+/// the `List` counterpart of [`tree_rows_and_viewport`], read by
+/// `crate::host::apply_list_nav_key` to move and scroll the uncontrolled
+/// cursor.
+pub fn list_rows_and_viewport(hit_map: &[PaintedHit], id: WidgetId) -> Option<(usize, usize)> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::List {
+            id: hit_id,
+            total_items,
+            viewport_rows,
+            ..
+        } if *hit_id == id => Some((*total_items, *viewport_rows)),
+        _ => None,
+    })
+}
+
+/// The `(total_rows, viewport_rows)` of the `DataTable` hit painted under
+/// id `id` this frame, or `None` if that table isn't in the current hit
+/// map — the `DataTable` counterpart of [`tree_rows_and_viewport`], read
+/// by `crate::host::apply_data_table_nav_key` to move and scroll the
+/// uncontrolled cursor.
+pub fn data_table_rows_and_viewport(
+    hit_map: &[PaintedHit],
+    id: WidgetId,
+) -> Option<(usize, usize)> {
+    hit_map.iter().find_map(|hit| match hit {
+        PaintedHit::DataTable {
+            id: hit_id,
+            total_rows,
+            viewport_rows,
+            ..
+        } if *hit_id == id => Some((*total_rows, *viewport_rows)),
+        _ => None,
+    })
+}
+
 /// Hit-tests `point` against only the `chrome_hits` lists
 /// [`PaintedHit::Extra`] entries carry (`Toolbar`'s buttons, `StatusBar`'s
 /// segments, `ActivityBar`'s items) — the subset [`InteractionEngine`][crate::engine::InteractionEngine]
@@ -556,5 +637,88 @@ pub fn set_event_widget(event: &mut UiEvent, id: WidgetId) {
         | UiEvent::DoubleClick { widget, .. }
         | UiEvent::Scroll { widget, .. } => *widget = Some(id),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quadraui::{
+        Decoration, SelectionMode, StyledText, TreeRow, TreeRowMeasure, TreeStyle, TreeView,
+    };
+
+    /// A single-row `Tree` hit, painted at a real `TreeView::layout` call
+    /// (not a hand-built `TreeViewLayout` literal — that type is
+    /// `#[non_exhaustive]`, so only the primitive's own constructor can
+    /// build one). `editing` is threaded straight onto the returned
+    /// [`PaintedHit::Tree`], the same shape `render::draw_bands`/
+    /// `render::paint_leaf` produce from a row's own `TreeRow::edit`.
+    fn single_row_tree_hit(editing: Option<(TreePath, TreeRowEditState)>) -> PaintedHit {
+        let row = TreeRow {
+            path: vec![0],
+            indent: 0,
+            icon: None,
+            text: StyledText::plain("row 0"),
+            badge: None,
+            is_expanded: None,
+            decoration: Decoration::default(),
+            edit: editing.as_ref().map(|(_, edit)| edit.clone()),
+        };
+        let tree = TreeView {
+            id: WidgetId::new("hit-test:tree"),
+            rows: vec![row],
+            selection_mode: SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: 0,
+            style: TreeStyle::default(),
+            has_focus: true,
+        };
+        let layout = tree.layout(80.0, 24.0, |_| TreeRowMeasure::new(1.0));
+        PaintedHit::Tree {
+            id: tree.id,
+            area: Rect::new(0.0, 0.0, 80.0, 24.0),
+            layout,
+            row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
+            scrollbar: None,
+            scroll_offset: 0,
+            viewport_rows: 24,
+            editing,
+        }
+    }
+
+    /// With no row mid-rename, [`tree_rows_and_viewport`] returns the
+    /// tree's own row order and viewport capacity, same as before
+    /// `editing` existed on [`PaintedHit::Tree`] at all.
+    #[test]
+    fn tree_rows_and_viewport_returns_rows_when_no_row_is_editing() {
+        let hit_map = vec![single_row_tree_hit(None)];
+        let id = WidgetId::new("hit-test:tree");
+        assert_eq!(
+            tree_rows_and_viewport(&hit_map, id),
+            Some((vec![vec![0]], 24))
+        );
+    }
+
+    /// While the tree's own selected row is mid-rename
+    /// (`PaintedHit::Tree::editing.is_some()`), [`tree_rows_and_viewport`]
+    /// must return `None` — the guard `crate::host::apply_tree_nav_key`'s
+    /// own caller relies on so an ordinary text-editing key
+    /// (`Home`/`End` included) routed to
+    /// `crate::tree_row_rename_key_event` never also moves the stored
+    /// navigation cursor out from under the rename in progress.
+    #[test]
+    fn tree_rows_and_viewport_returns_none_while_a_row_is_mid_rename() {
+        let editing = Some((
+            vec![0],
+            TreeRowEditState {
+                text: "row 0".to_string(),
+                cursor: 5,
+                selection_anchor: None,
+                placeholder: None,
+            },
+        ));
+        let hit_map = vec![single_row_tree_hit(editing)];
+        let id = WidgetId::new("hit-test:tree");
+        assert_eq!(tree_rows_and_viewport(&hit_map, id), None);
     }
 }
