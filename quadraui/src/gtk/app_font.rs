@@ -126,23 +126,39 @@ pub(crate) fn register_font_from_memory(bytes: &[u8]) -> Option<Vec<String>> {
     // Fontconfig concurrently (Linux's `PangoFcFontMap`; macOS's
     // `PangoCoreTextFontMap` never touches Fontconfig for shaping, so the
     // same race is latent but silent there).
+    //
+    // Lock order: this function always takes `LOCK` *before*
+    // `super::TEST_RENDER_LOCK` (below). `GtkBackend::enter_frame_scope`
+    // takes `TEST_RENDER_LOCK` and then runs arbitrary caller code —
+    // if that caller code calls this function from a *different*
+    // thread than the one already inside `enter_frame_scope`, and a
+    // third thread is meanwhile blocked on `LOCK` from inside this
+    // function waiting to take `TEST_RENDER_LOCK`, the two orderings
+    // can deadlock. No in-tree caller does this today (every
+    // `register_font_from_memory` call site runs outside a frame
+    // scope), but a future test that registers a font from inside
+    // `render`/`handle` on one thread while another thread calls this
+    // function directly needs to preserve this ordering, not take
+    // `TEST_RENDER_LOCK` first.
     static LOCK: Mutex<()> = Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    // In a `#[cfg(test)]` build, also take `super::TEST_RENDER_LOCK` —
-    // `notify_fontmap_config_changed` below invalidates the same
-    // process-global Pango font map that `GtkBackend::enter_frame_scope`
-    // guards for real text shaping. `LOCK` above only serialises this
-    // function against itself; without also taking `TEST_RENDER_LOCK`, a
-    // concurrently-running test's `enter_frame_scope`-protected paint on
-    // another thread could still have its font map invalidated mid-shape
-    // by this call, which empirically reproduced as the *measurement*
-    // coming back wrong (a 48pt glyph painting less ink than a 6pt one)
-    // rather than a segfault.
+    // In a `#[cfg(test)]` build, also take `super::TEST_RENDER_LOCK`
+    // (re-entrantly, via `super::test_render_guard`) — `notify_fontmap_
+    // config_changed` below invalidates the same process-global Pango
+    // font map that `GtkBackend::enter_frame_scope` guards for real text
+    // shaping. `LOCK` above only serialises this function against
+    // itself; without also taking `TEST_RENDER_LOCK`, a concurrently-
+    // running test's `enter_frame_scope`-protected paint on another
+    // thread could still have its font map invalidated mid-shape by this
+    // call, which can surface as a wrong *measurement* (text sized for
+    // the wrong font) rather than a crash. Re-entrant because this
+    // function itself can run from inside a frame scope (an app
+    // registers a font from `render`/`handle`), which on the same
+    // thread already holds this lock — taking it a second time here
+    // must not self-deadlock.
     #[cfg(test)]
-    let _test_render_guard = super::TEST_RENDER_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _test_render_guard = super::test_render_guard();
 
     let path = create_temp_font_file(bytes)?;
 
@@ -317,8 +333,12 @@ fn app_font_count(config: *mut fontconfig_sys::FcConfig) -> usize {
 /// The family name(s) of every `FcPattern` Fontconfig appended to
 /// `config`'s application font set since it held `before` entries —
 /// i.e. exactly the pattern(s) the just-returned `FcConfigAppFontAddFile`
-/// call added, assuming (true within this module — GTK's glib main loop
-/// is single-threaded) no concurrent registration raced it.
+/// call added. In production, GTK's glib main loop is single-threaded so
+/// no concurrent registration can race this; in a `#[cfg(test)]` build,
+/// every caller of this function's own caller
+/// ([`register_font_from_memory`]) holds that function's process-wide
+/// `LOCK` for the same reason, so the invariant holds there too, enforced
+/// rather than assumed.
 fn new_app_font_family_names(config: *mut fontconfig_sys::FcConfig, before: usize) -> Vec<String> {
     // SAFETY: same live, non-null `FcConfig` guarantee as `app_font_count`.
     let set = unsafe { fontconfig_sys::FcConfigGetFonts(config, fontconfig_sys::FcSetApplication) };
@@ -664,23 +684,29 @@ mod macos_core_text {
                 std::ptr::null_mut(),
             )
         };
-        if !registered {
-            return Registration {
-                registered: false,
-                family: None,
-            };
-        }
-
-        // SAFETY: `url.as_concrete_TypeRef()` is the same live `CFURLRef`
-        // just registered above; `CTFontManagerCreateFontDescriptorsFromURL`
-        // is a real `core-text` binding (unlike
-        // `CTFontManagerRegisterFontsForURL` above), so no hand-rolled
-        // signature risk here.
+        // Read the descriptor back even when `registered` is false:
+        // `CTFontManagerRegisterFontsForURL` fails for a font whose
+        // PostScript name is already registered under a *different* URL
+        // in this process (e.g. this same byte-identical font registered
+        // from an earlier temp file), but
+        // `CTFontManagerCreateFontDescriptorsFromURL` parses `path`
+        // directly rather than consulting the registration database, so
+        // it still resolves the family in that case. Without this, a
+        // caller that registers the same font bytes more than once in
+        // one process (every repeat call to [`super::register_font_from_memory`]
+        // with identical bytes — a real pattern this module's own
+        // concurrent-callers regression test exercises) would see
+        // `family: None` and report failure for every call after the
+        // first, even though the font is, in fact, resolvable.
+        //
+        // SAFETY: `url.as_concrete_TypeRef()` is a valid, live `CFURLRef`
+        // for the duration of this call — `core-text`'s own binding, so
+        // no hand-rolled signature risk here.
         let descriptors_ref =
             unsafe { CTFontManagerCreateFontDescriptorsFromURL(url.as_concrete_TypeRef()) };
         if descriptors_ref.is_null() {
             return Registration {
-                registered: true,
+                registered,
                 family: None,
             };
         }

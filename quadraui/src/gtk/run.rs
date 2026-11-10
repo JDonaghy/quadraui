@@ -2000,6 +2000,17 @@ pub(crate) fn render_frame<A: AppLogic>(
     width: i32,
     height: i32,
 ) {
+    // In a `#[cfg(test)]` build, hold `super::TEST_RENDER_LOCK` for this
+    // whole function, not just the `enter_frame_scope` call below —
+    // `pcfn::create_context` and `pango_ctx.metrics` just below, plus
+    // `measure_char_width_px` and `refresh_chrome_char_width`, all shape
+    // real text against the process-global Pango font map before a frame
+    // scope even exists. Re-entrant (`super::test_render_guard`), so the
+    // nested lock `enter_frame_scope` takes further down doesn't
+    // self-deadlock on the same thread.
+    #[cfg(test)]
+    let _test_render_guard = super::test_render_guard();
+
     let pango_ctx = pcfn::create_context(cr);
     let layout = pg::Layout::new(&pango_ctx);
     // Editor font — defaults to system monospace, size 11, but is

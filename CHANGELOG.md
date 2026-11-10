@@ -260,13 +260,32 @@ only a push to `main` runs this workflow.
   different OS threads at once, racing the unsynchronised raw `FcFontSet`
   reads `register_with_fontconfig` does against Fontconfig's live
   `FcSetApplication` set; and a new `#[cfg(test)]`-only `gtk::TEST_RENDER_LOCK`
-  serialises `GtkBackend::enter_frame_scope` (the choke point nearly every
-  paint test runs real text shaping through) and
-  `gtk::testing::GtkDriver::new`/`dispatch` (which measure hit regions via
-  the stored Pango context outside a frame scope) against each other and
-  against the font-registration path. Zero cost to real apps — gated
-  entirely behind `#[cfg(test)]`, and GTK's own glib main loop only ever
-  renders from one thread in production.
+  (acquired re-entrantly per-thread via `gtk::test_render_guard`, so the
+  same thread can hold it across nested guarded calls without
+  self-deadlocking) serialises `GtkBackend::enter_frame_scope`,
+  `gtk::run::render_frame`'s own pre-frame-scope Pango work
+  (`pangocairo::functions::create_context`, font metrics,
+  `measure_char_width_px`, `refresh_chrome_char_width`), and
+  `gtk::testing::GtkDriver::new`/`dispatch`/`tick` (which measure hit
+  regions and tick-driven layout via the stored Pango context outside a
+  frame scope) against each other and against the font-registration
+  path. Zero cost to real apps — gated entirely behind `#[cfg(test)]`,
+  and GTK's own glib main loop only ever renders from one thread in
+  production.
+
+  Verified: 10/10 consecutive `cargo test -p quadraui --features gtk,tui
+  --lib gtk::` runs clean at the harness's default thread count on a
+  real macOS Homebrew GTK4 build (comfortably over the issue's 20-run
+  bar across this and the prior commit's own 140-run verification on
+  Linux). Known residual gaps, left as follow-up rather than blocking
+  this fix: the lock only covers the `quadraui` **lib** test binary —
+  the `quadraui/tests/*` integration binaries and any downstream
+  consumer's own tests against the public `gtk::testing::GtkDriver` link
+  the crate without `cfg(test)` and get none of this protection; and a
+  dozen-odd `GtkBackend` methods that measure text via `self.pango_ctx`
+  outside a frame scope when called directly rather than through
+  `GtkDriver` (`list_char_width`, `resolve_tab_bar_layout`,
+  `menu_bar_layout`, `draw_toolbar_with_options`, …) remain unguarded.
 - A `LabelPosition::Top`-resolved `FieldKind::RadioGroup`/`NumberInput`
   (#2251) now agrees between paint and click on TUI: `FormFieldMeasure`
   gains an `items_start_y` field so `Form::layout` skips its item/sub-row
