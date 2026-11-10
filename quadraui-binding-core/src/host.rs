@@ -25,7 +25,7 @@
 //! this lives here rather than back in `quadraui-py`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -40,9 +40,9 @@ use quadraui::tui::testing::TuiDriver;
 use quadraui::Rect;
 use quadraui::{
     mouse_down, mouse_up, Accelerator, AcceleratorId, AppLogic, Backend, Button, DataTable,
-    Decoration, Key, ListView, Modifiers, MouseButton, Reaction, Style, StyledSpan, StyledText,
-    TabBar, TextDisplay, TextDisplayLine, Theme, Tooltip, TreePath, TreeRow, TreeView, UiEvent,
-    WidgetId,
+    Decoration, Key, ListView, Modifiers, MouseButton, Reaction, Split, Style, StyledSpan,
+    StyledText, TabBar, TextDisplay, TextDisplayLine, Theme, Tooltip, TreePath, TreeRow, TreeView,
+    UiEvent, WidgetId,
 };
 
 use crate::engine::InteractionEngine;
@@ -1059,6 +1059,242 @@ pub fn resolve_data_table_cursor(
         selected_idx,
         scroll_offset,
         ..table.clone()
+    }
+}
+
+// ─── Split divider ratio, uncontrolled by default ──────────────────────────
+//
+// A two-pane `Split`'s divider resolves against `WidgetState` the same
+// "controlled value wins and is written back" way `resolve_tree_cursor`'s
+// own module doc describes, but `Split::ratio` (a bare `f32`, never
+// `Option`) has no structural "unset" sentinel at all — unlike
+// `TreeView::scroll_offset`'s `0`, every ratio from `0.0` to `1.0` is
+// equally plausible as a deliberately pinned value, so there is no single
+// default this module could latch against the way `TreeCursorState::scroll_controlled`
+// latches against `0`. Instead, `SplitRatioState` remembers the last ratio
+// this module actually SAW the descriptor send (`baseline`), not the last
+// ratio it handed back (`resolved`): a frame counts as controlled only when
+// its `Split::ratio` differs from that baseline, i.e. the caller itself
+// changed what it's sending, never merely because it differs from whatever
+// a previous divider drag persisted. An uncontrolled caller that always
+// resends the same literal ratio therefore keeps seeing its own dragged
+// value, because that literal ratio never stops matching `baseline` — the
+// same ping-pong `resolve_tree_cursor`'s own `scroll_controlled` latch
+// exists to avoid, solved here by comparing against what was last
+// observed rather than a fixed constant.
+#[derive(Debug, Clone, Copy)]
+struct SplitRatioState {
+    baseline: f32,
+    resolved: f32,
+}
+
+/// Persists `new_ratio` for `id` — call when a [`quadraui::UiEvent::SplitDividerDragged`]
+/// fires for a two-pane [`Split`] (`split_index` is always `0` for one, so
+/// no further addressing is needed; a multi-divider `SplitTree` isn't
+/// covered here). Leaves `baseline` untouched: it tracks what the
+/// descriptor last sent, which a drag never changes by itself — only
+/// [`resolve_split_ratio`]'s own next call, once the caller's descriptor
+/// catches up (or doesn't), decides whether this drag's value keeps
+/// winning.
+pub fn apply_split_divider_drag(widget_state: &WidgetState, id: WidgetId, new_ratio: f32) {
+    let mut state = widget_state
+        .get::<SplitRatioState>(id)
+        .unwrap_or(SplitRatioState {
+            baseline: new_ratio,
+            resolved: new_ratio,
+        });
+    state.resolved = new_ratio;
+    widget_state.set(id, state);
+}
+
+/// Resolves `split`'s ratio for painting — see this section's own doc for
+/// why the controlled/uncontrolled decision compares `split.ratio` against
+/// the last-seen `baseline` rather than a fixed sentinel. Call once per
+/// frame, before painting `split`; the returned [`Split`] is what a
+/// binding's render should hand to `Backend::draw_split`, not `split`
+/// itself.
+pub fn resolve_split_ratio(widget_state: &WidgetState, split: &Split) -> Split {
+    let id = split.id;
+    let previous = widget_state.get::<SplitRatioState>(id);
+    let (baseline, resolved) = match previous {
+        None => (split.ratio, split.ratio),
+        Some(state) if split.ratio != state.baseline => (split.ratio, split.ratio),
+        Some(state) => (state.baseline, state.resolved),
+    };
+    widget_state.set(id, SplitRatioState { baseline, resolved });
+    Split {
+        ratio: resolved,
+        ..split.clone()
+    }
+}
+
+// ─── TabBar active tab, uncontrolled by default ────────────────────────────
+//
+// Same "compare against the last-seen descriptor, not a fixed sentinel"
+// policy as `Split::ratio` above, and for the same reason:
+// `TabItem::is_active` all `false` (nothing marked active) is a legitimate
+// descriptor state — most real `TabBar`s mark one tab active from their
+// very first frame, so latching "controlled" the first time ANY tab is
+// active (mirroring `TreeCursorState::scroll_controlled`'s `!= 0` rule)
+// would mark nearly every real caller controlled immediately and defeat
+// "uncontrolled by default" outright.
+#[derive(Debug, Clone, Copy, Default)]
+struct TabActiveState {
+    baseline: Option<usize>,
+    resolved: Option<usize>,
+}
+
+/// Persists `index` as `id`'s active tab — call when a
+/// [`quadraui::TabBarEvent::TabActivated`] fires. Leaves `baseline`
+/// untouched, for the same reason [`apply_split_divider_drag`] leaves
+/// [`SplitRatioState::baseline`] untouched: it tracks the descriptor's own
+/// last value, which a click never changes by itself.
+pub fn apply_tab_activated(widget_state: &WidgetState, id: WidgetId, index: usize) {
+    let mut state = widget_state.get::<TabActiveState>(id).unwrap_or_default();
+    state.resolved = Some(index);
+    widget_state.set(id, state);
+}
+
+/// Resolves `tab_bar`'s active tab for painting — the `TabBar` counterpart
+/// of [`resolve_split_ratio`]. `descriptor_active` is whichever tab (if
+/// any) `tab_bar` itself marks `is_active`; a frame counts as controlled
+/// only when that differs from the baseline this module last saw, so a
+/// caller that never touches `is_active` at all (`descriptor_active` stays
+/// `None`, or stays pinned at the same index every frame) keeps whatever
+/// [`apply_tab_activated`] persisted. Call once per frame, before painting
+/// `tab_bar`.
+pub fn resolve_tab_bar_active(widget_state: &WidgetState, tab_bar: &TabBar) -> TabBar {
+    let id = tab_bar.id;
+    let descriptor_active = tab_bar.tabs.iter().position(|tab| tab.is_active);
+    let previous = widget_state.get::<TabActiveState>(id);
+    let (baseline, resolved) = match previous {
+        None => (descriptor_active, descriptor_active),
+        Some(state) if descriptor_active != state.baseline => {
+            (descriptor_active, descriptor_active)
+        }
+        Some(state) => (state.baseline, state.resolved),
+    };
+    widget_state.set(id, TabActiveState { baseline, resolved });
+
+    match resolved {
+        Some(idx) if idx < tab_bar.tabs.len() => {
+            let mut tabs = tab_bar.tabs.clone();
+            for (i, tab) in tabs.iter_mut().enumerate() {
+                tab.is_active = i == idx;
+            }
+            TabBar {
+                tabs,
+                ..tab_bar.clone()
+            }
+        }
+        _ => tab_bar.clone(),
+    }
+}
+
+// ─── Tree expanded set, uncontrolled by default ────────────────────────────
+//
+// Same "compare against the last-seen descriptor, not a fixed sentinel"
+// policy as `Split`/`TabBar` above, applied per [`TreePath`] rather than to
+// one whole-widget value: `TreeRow::is_expanded` is `Some(bool)` for every
+// branch row, and both `true` and `false` are equally plausible starting
+// states (a tree that opens fully expanded vs. one that opens fully
+// collapsed), so there is no fixed sentinel this module could latch
+// against the way `TreeCursorState::scroll_controlled` latches against `0`.
+
+/// One row's expand/collapse resolution — the per-path counterpart of
+/// [`SplitRatioState`]/[`TabActiveState`].
+#[derive(Debug, Clone, Copy)]
+struct ExpandedEntry {
+    baseline: bool,
+    resolved: bool,
+}
+
+/// One tree's per-row expand/collapse overrides, keyed by [`TreePath`].
+#[derive(Debug, Clone, Default)]
+struct TreeExpandedState {
+    entries: HashMap<TreePath, ExpandedEntry>,
+}
+
+/// The id [`TreeExpandedState`] is actually stored under — a synthetic id
+/// derived from `id`, NOT `id` itself. `WidgetState` holds exactly one
+/// typed value per id (see its own module doc on a reused id "discarded
+/// and reseeded" when the stored type changes), and a focused tree's
+/// cursor/scroll ([`apply_tree_nav_key`]/[`resolve_tree_cursor`]'s own
+/// `TreeCursorState`) is already stored under `id` itself — storing
+/// `TreeExpandedState` there too would silently clobber whichever of the
+/// two was written most recently, on every frame both are in use for the
+/// same tree. Deriving a distinct key sidesteps that collision entirely.
+fn expanded_state_id(id: WidgetId) -> WidgetId {
+    WidgetId::new(format!(
+        "quadraui-binding-core::tree-expanded::{}",
+        id.as_str()
+    ))
+}
+
+/// Flips `id`'s stored expand state for `path` — call when a
+/// [`quadraui::TreeEvent::RowToggleExpand`] fires. Seeds a never-before-seen
+/// path from `false`; the very next [`resolve_tree_expansion`] call
+/// reconciles that guess against whatever the descriptor actually says for
+/// `path`, the same first-frame seeding [`resolve_split_ratio`]/
+/// [`resolve_tab_bar_active`] do for their own state. In practice this only
+/// seeds from `false` when [`resolve_tree_expansion`] hasn't run yet this
+/// session (a click can't land on a row that was never painted), so the
+/// guess is immediately corrected on the next render regardless.
+pub fn apply_tree_toggle_expand(widget_state: &WidgetState, id: WidgetId, path: &TreePath) {
+    let state_id = expanded_state_id(id);
+    let mut state = widget_state
+        .get::<TreeExpandedState>(state_id)
+        .unwrap_or_default();
+    let entry = state.entries.entry(path.clone()).or_insert(ExpandedEntry {
+        baseline: false,
+        resolved: false,
+    });
+    entry.resolved = !entry.resolved;
+    widget_state.set(state_id, state);
+}
+
+/// Resolves `tree`'s per-row expand/collapse state for painting — the
+/// `Tree` counterpart of [`resolve_split_ratio`]/[`resolve_tab_bar_active`],
+/// applied once per branch row (`is_expanded: Some(_)`) rather than to the
+/// whole widget; a leaf row (`is_expanded: None`) is never touched. Prunes
+/// any stored path no longer present in `tree.rows`, mirroring
+/// [`WidgetState::gc`]'s own per-frame cleanup at the whole-id level — a
+/// row removed from the tree (collapsed ancestor pruning it, or deleted
+/// outright) drops its entry rather than resurrecting a stale override if
+/// the same path is ever reused. Call once per frame, before painting
+/// `tree`.
+pub fn resolve_tree_expansion(widget_state: &WidgetState, tree: &TreeView) -> TreeView {
+    let state_id = expanded_state_id(tree.id);
+    let mut state = widget_state
+        .get::<TreeExpandedState>(state_id)
+        .unwrap_or_default();
+    let mut rows = tree.rows.clone();
+    for row in &mut rows {
+        if let Some(descriptor_value) = row.is_expanded {
+            let entry = state
+                .entries
+                .entry(row.path.clone())
+                .or_insert(ExpandedEntry {
+                    baseline: descriptor_value,
+                    resolved: descriptor_value,
+                });
+            if descriptor_value != entry.baseline {
+                entry.baseline = descriptor_value;
+                entry.resolved = descriptor_value;
+            }
+            row.is_expanded = Some(entry.resolved);
+        }
+    }
+    let current_paths: HashSet<TreePath> = rows
+        .iter()
+        .filter(|row| row.is_expanded.is_some())
+        .map(|row| row.path.clone())
+        .collect();
+    state.entries.retain(|path, _| current_paths.contains(path));
+    widget_state.set(state_id, state);
+    TreeView {
+        rows,
+        ..tree.clone()
     }
 }
 
@@ -3148,5 +3384,269 @@ mod tests {
         let table = test_data_table(500, None, 50);
         let resolved = resolve_data_table_cursor(&widget_state, &table, 8);
         assert_eq!(resolved.scroll_offset, 50);
+    }
+
+    fn test_split(ratio: f32) -> Split {
+        Split {
+            id: WidgetId::new("host-test:split"),
+            direction: quadraui::SplitDirection::Horizontal,
+            ratio,
+            first_min: 0.0,
+            second_min: 0.0,
+        }
+    }
+
+    /// Dragging a split divider with no app-supplied ratio on the next
+    /// frame (the descriptor keeps resending its original literal `0.5`,
+    /// as an app tracking no state of its own would) leaves the dragged
+    /// ratio in place — this module's own acceptance contract for the
+    /// split-ratio half of the widget-state store.
+    #[test]
+    fn apply_split_divider_drag_persists_across_an_uncontrolled_render() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:split");
+        let split = test_split(0.5);
+
+        // A render always happens before a drag can land on anything —
+        // this seeds the baseline from the descriptor's own starting
+        // ratio, the same order `InteractionEngine::handle` and a
+        // binding's `render` run in for real.
+        resolve_split_ratio(&widget_state, &split);
+        apply_split_divider_drag(&widget_state, id, 0.7);
+
+        let resolved = resolve_split_ratio(&widget_state, &split);
+        assert_eq!(
+            resolved.ratio, 0.7,
+            "a dragged ratio must survive a render with no ratio explicitly supplied"
+        );
+        // And it keeps surviving on a further uncontrolled render, not just
+        // the first one right after the drag.
+        let resolved_again = resolve_split_ratio(&widget_state, &split);
+        assert_eq!(resolved_again.ratio, 0.7);
+    }
+
+    /// An app that explicitly changes `Split::ratio` to a new value (not
+    /// merely resending the same literal it always has) wins outright over
+    /// whatever a previous drag persisted.
+    #[test]
+    fn resolve_split_ratio_controlled_change_overrides_a_stored_drag() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:split");
+
+        resolve_split_ratio(&widget_state, &test_split(0.5));
+        apply_split_divider_drag(&widget_state, id, 0.7);
+
+        let split = test_split(0.3);
+        let resolved = resolve_split_ratio(&widget_state, &split);
+        assert_eq!(
+            resolved.ratio, 0.3,
+            "an app explicitly supplying a new ratio must override the stored drag"
+        );
+    }
+
+    fn test_tab_bar(tabs: Vec<bool>) -> TabBar {
+        TabBar {
+            id: WidgetId::new("host-test:tab-bar"),
+            tabs: tabs
+                .into_iter()
+                .enumerate()
+                .map(|(i, is_active)| quadraui::TabItem {
+                    label: format!("tab {i}"),
+                    is_active,
+                    ..Default::default()
+                })
+                .collect(),
+            scroll_offset: 0,
+            right_segments: Vec::new(),
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        }
+    }
+
+    /// Clicking a tab (`TabBarEvent::TabActivated`) with no app state at
+    /// all — every subsequent render keeps resending the same tab marked
+    /// active it always has — leaves the clicked tab active instead.
+    #[test]
+    fn apply_tab_activated_persists_across_an_uncontrolled_render() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:tab-bar");
+        let tab_bar = test_tab_bar(vec![true, false, false, false]);
+
+        // A render always happens before a click can land on anything —
+        // this seeds the baseline from the descriptor's own starting
+        // active tab, the same order a real binding runs in.
+        resolve_tab_bar_active(&widget_state, &tab_bar);
+        apply_tab_activated(&widget_state, id, 2);
+
+        let resolved = resolve_tab_bar_active(&widget_state, &tab_bar);
+        assert!(!resolved.tabs[0].is_active);
+        assert!(
+            resolved.tabs[2].is_active,
+            "a clicked tab must stay active across an uncontrolled render"
+        );
+    }
+
+    /// An app that explicitly moves its own active tab (not merely
+    /// resending the same one it always has) wins outright over whatever
+    /// a previous click persisted.
+    #[test]
+    fn resolve_tab_bar_active_controlled_change_overrides_a_stored_click() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:tab-bar");
+
+        resolve_tab_bar_active(
+            &widget_state,
+            &test_tab_bar(vec![true, false, false, false]),
+        );
+        apply_tab_activated(&widget_state, id, 2);
+
+        let tab_bar = test_tab_bar(vec![false, true, false, false]);
+        let resolved = resolve_tab_bar_active(&widget_state, &tab_bar);
+        assert!(
+            resolved.tabs[1].is_active,
+            "an app explicitly activating a different tab must override the stored click"
+        );
+        assert!(!resolved.tabs[2].is_active);
+    }
+
+    /// A tree with no tab/row ever marked active at all stays that way —
+    /// clicking nothing leaves nothing active, the state every real
+    /// `TabBar` that hasn't loaded its tabs yet would be in.
+    #[test]
+    fn resolve_tab_bar_active_with_nothing_active_and_nothing_clicked_stays_inactive() {
+        let widget_state = WidgetState::new();
+        let tab_bar = test_tab_bar(vec![false, false, false]);
+        let resolved = resolve_tab_bar_active(&widget_state, &tab_bar);
+        assert!(resolved.tabs.iter().all(|tab| !tab.is_active));
+    }
+
+    fn branch_row(path: TreePath, is_expanded: bool) -> TreeRow {
+        TreeRow {
+            is_expanded: Some(is_expanded),
+            ..placeholder_tree_row(path)
+        }
+    }
+
+    /// Toggling a collapsed branch row (`TreeEvent::RowToggleExpand`) with
+    /// no app state at all — the descriptor keeps resending the same
+    /// `is_expanded: Some(false)` it always has — leaves that row expanded
+    /// instead.
+    #[test]
+    fn apply_tree_toggle_expand_persists_across_an_uncontrolled_render() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:tree");
+        let path = vec![0_u16];
+        let tree = TreeView {
+            rows: vec![branch_row(path.clone(), false)],
+            ..test_tree(1, None, 0)
+        };
+
+        // A render always happens before a click can land on a chevron —
+        // this seeds the baseline from the descriptor's own starting
+        // `is_expanded`, the same order a real binding runs in.
+        resolve_tree_expansion(&widget_state, &tree);
+        apply_tree_toggle_expand(&widget_state, id, &path);
+
+        let resolved = resolve_tree_expansion(&widget_state, &tree);
+        assert_eq!(
+            resolved.rows[0].is_expanded,
+            Some(true),
+            "a toggled row must stay expanded across an uncontrolled render"
+        );
+    }
+
+    /// An app that explicitly changes a row's `is_expanded` relative to
+    /// what it last sent (not merely resending the same literal value it
+    /// always has) wins outright over whatever a previous toggle
+    /// persisted — even collapsing a row a toggle just expanded.
+    #[test]
+    fn resolve_tree_expansion_controlled_change_overrides_a_stored_toggle() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:tree");
+        let path = vec![0_u16];
+        let collapsed = TreeView {
+            rows: vec![branch_row(path.clone(), false)],
+            ..test_tree(1, None, 0)
+        };
+
+        resolve_tree_expansion(&widget_state, &collapsed);
+        apply_tree_toggle_expand(&widget_state, id, &path);
+
+        // The render right after the toggle still matches the baseline
+        // (`false`) seeded just above, so the toggle (`true`) wins.
+        let resolved = resolve_tree_expansion(&widget_state, &collapsed);
+        assert_eq!(resolved.rows[0].is_expanded, Some(true));
+
+        // The app now explicitly sends `true` itself, establishing a new
+        // baseline to diverge from next.
+        let tree = TreeView {
+            rows: vec![branch_row(path.clone(), true)],
+            ..test_tree(1, None, 0)
+        };
+        resolve_tree_expansion(&widget_state, &tree);
+
+        // The app explicitly collapses this row — a genuine change from
+        // its own last value, not just an unchanged resend — which must
+        // win even though a toggle alone would have kept it expanded.
+        let tree = TreeView {
+            rows: vec![branch_row(path, false)],
+            ..test_tree(1, None, 0)
+        };
+        let resolved = resolve_tree_expansion(&widget_state, &tree);
+        assert_eq!(
+            resolved.rows[0].is_expanded,
+            Some(false),
+            "an app explicitly re-collapsing the row must override the stored toggle"
+        );
+    }
+
+    /// A leaf row (`is_expanded: None`) is never touched.
+    #[test]
+    fn resolve_tree_expansion_leaves_leaf_rows_untouched() {
+        let widget_state = WidgetState::new();
+        let tree = test_tree(3, None, 0);
+        let resolved = resolve_tree_expansion(&widget_state, &tree);
+        assert!(resolved.rows.iter().all(|row| row.is_expanded.is_none()));
+    }
+
+    /// `resolve_tree_expansion` and `resolve_tree_cursor`/`apply_tree_nav_key`
+    /// both persist state for the same tree `id` in the one `WidgetState`
+    /// store, which holds exactly one typed value per id — this asserts
+    /// they don't clobber each other's entry when both are used for the
+    /// same tree in the same frame, the regression `expanded_state_id`'s
+    /// own doc exists to prevent.
+    #[test]
+    fn tree_expansion_and_tree_cursor_state_coexist_for_the_same_tree_id() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:tree");
+        let path = vec![0_u16];
+        let tree = TreeView {
+            rows: vec![branch_row(path.clone(), false)],
+            ..test_tree(1, None, 0)
+        };
+
+        resolve_tree_expansion(&widget_state, &tree);
+        apply_tree_toggle_expand(&widget_state, id, &path);
+
+        let row_paths = vec![path.clone()];
+        assert!(
+            apply_tree_nav_key(&widget_state, id, &row_paths, 4, &down_key()),
+            "cursor navigation for the same id must still work"
+        );
+
+        let cursor = resolve_tree_cursor(&widget_state, &test_tree(1, None, 0), 4);
+        assert_eq!(
+            cursor.selected_path,
+            Some(path.clone()),
+            "the cursor move must have survived the expand-state calls for the same id"
+        );
+
+        let expansion = resolve_tree_expansion(&widget_state, &tree);
+        assert_eq!(
+            expansion.rows[0].is_expanded,
+            Some(true),
+            "the toggled expand state must have survived the cursor-nav calls for the same id"
+        );
     }
 }
