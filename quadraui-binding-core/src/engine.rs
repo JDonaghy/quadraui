@@ -29,12 +29,13 @@ use quadraui::{
 
 use crate::drag::{
     find_data_table_layout, find_split_layout, find_split_tree_layout, text_display_scroll_state,
-    tree_scroll_state, ActiveDrag, DataTableColumnDrag, ScrollbarDrag,
+    tree_rows_and_viewport, tree_scroll_state, ActiveDrag, DataTableColumnDrag, ScrollbarDrag,
 };
 use crate::extra_paint::extra_as;
 use crate::hit::{
     chrome_hover_hit, event_position, hit_test_painted, set_event_widget, HitDetail, PaintedHit,
 };
+use crate::host::apply_tree_nav_key;
 use crate::semantic::{focus_scoped_key_event, number_input_click_event, semantic_event_for_hit};
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
 use crate::widget_state::WidgetState;
@@ -122,9 +123,11 @@ pub struct InteractionEngine {
     /// surviving across frames — see [`crate::widget_state::WidgetState`]'s
     /// own module doc for its controlled/uncontrolled resolution and GC
     /// policies. [`Self::set_hits`] sweeps it every frame alongside
-    /// [`Self::text_editors`]'s own pruning. No widget kind in this crate
-    /// reads or writes through it yet; that's scoped to later work that
-    /// builds on this store.
+    /// [`Self::text_editors`]'s own pruning. [`Self::handle`]'s own
+    /// `KeyPressed` routing writes a focused `Tree`'s cursor through it via
+    /// [`crate::host::apply_tree_nav_key`]; a binding's own `render` reads
+    /// it back (merged with whatever the descriptor pins) via
+    /// [`crate::host::resolve_tree_cursor`].
     widget_state: WidgetState,
     /// Owns the in-window dropdown behind a `"menu_bar"` extra: the
     /// open/close/keyboard-nav/submenu state machine that turns a click on
@@ -243,6 +246,15 @@ impl InteractionEngine {
     /// [`InteractionEngine::tab_stops`] already expose.
     pub fn hit_map(&self) -> Ref<'_, Vec<PaintedHit>> {
         self.hit_map.borrow()
+    }
+
+    /// This engine's own per-widget state store — a binding's `render`
+    /// passes this to [`crate::host::resolve_tree_cursor`] (right before
+    /// painting a `Tree`) so the cursor [`Self::handle`]'s `KeyPressed`
+    /// routing moved via [`crate::host::apply_tree_nav_key`] is what
+    /// actually gets painted.
+    pub fn widget_state(&self) -> &WidgetState {
+        &self.widget_state
     }
 
     /// Replaces this frame's painted hits. Call once per render, after the
@@ -1438,8 +1450,29 @@ impl InteractionEngine {
         // wrapped into that leaf's own `KeyPressed` variant so the binding's
         // own handler sees a focus-scoped event instead of a backend-global
         // one.
+        //
+        // For a focused `Tree`, a recognized navigation key
+        // (Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown) is tried against
+        // [`apply_tree_nav_key`] first: it moves and scrolls-into-view the
+        // id's cursor in [`Self::widget_state`] (controlled or not — see
+        // that function's own doc), using the `Tree` hit's own
+        // `row_paths`/`viewport_rows` rather than a stale descriptor. This
+        // never changes what reaches `sink` (still the same
+        // `focus_scoped_key_event` result a binding always got), only
+        // forces the redraw that paints the moved cursor, even when the
+        // binding's own `sink.dispatch` leaves the key unhandled.
         if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
             if let Some(focused) = backend.focus_manager().focused().copied() {
+                let tree_nav_applied = tree_rows_and_viewport(&self.hit_map.borrow(), focused)
+                    .is_some_and(|(row_paths, viewport_rows)| {
+                        apply_tree_nav_key(
+                            &self.widget_state,
+                            focused,
+                            &row_paths,
+                            viewport_rows,
+                            key,
+                        )
+                    });
                 event = focus_scoped_key_event(
                     focused,
                     key,
@@ -1447,6 +1480,9 @@ impl InteractionEngine {
                     &self.hit_map.borrow(),
                     &self.text_editors,
                 );
+                if tree_nav_applied {
+                    return Reaction::Redraw.merge(sink.dispatch(&event, None));
+                }
             }
         }
 
@@ -1824,14 +1860,15 @@ mod tests {
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
         AppLogic, Backend, Button, DataTable, Key, Modifiers, MouseButton, NamedKey, Point,
-        Reaction, Rect, ToolbarEvent, UiEvent, WidgetId,
+        Reaction, Rect, ToolbarEvent, TreeView, UiEvent, WidgetId,
     };
 
     use super::{EventSink, InteractionEngine};
     use crate::drag::find_split_tree_layout;
     use crate::hit::HitDetail;
+    use crate::host::resolve_tree_cursor;
     use crate::layout::{LayoutLeaf, LayoutNode, LayoutPanel, LayoutSplitTree, LeafDescriptor};
-    use crate::render::{draw_bands, paint_layout, RenderRefs};
+    use crate::render::{draw_bands, paint_layout, tree_viewport_rows, RenderRefs};
 
     /// Records every event [`InteractionEngine::handle`] dispatches, in
     /// order, so a test can assert on the orchestration's decisions (e.g.
@@ -2720,6 +2757,206 @@ mod tests {
             )),
             "expected RowDoubleClicked {{ idx: 0 }}: {:?}",
             dispatched
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single `Tree`, for the
+    /// widget-state cursor/scroll coverage below — mirrors
+    /// [`DataTableLogic`], swapping the data-table band for a tree one.
+    /// `tree` is the raw descriptor an app would hand a binding (never
+    /// mutated by navigation); `render` resolves its cursor through
+    /// [`resolve_tree_cursor`] before painting, exactly as a real
+    /// binding's own `render` is expected to.
+    struct TreeLogic {
+        tree: TreeView,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for TreeLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let line_height = backend.line_height();
+            // Mirrors `draw_bands`'s own tree-band allocation (4 lines) —
+            // the only slot painted here, so it always starts at `y = 0.0`.
+            let tree_rect = Rect::new(
+                0.0,
+                0.0,
+                viewport.width,
+                (4.0 * line_height).min(viewport.height),
+            );
+            let viewport_rows = tree_viewport_rows(backend, tree_rect, &self.tree);
+            let resolved =
+                resolve_tree_cursor(self.engine.widget_state(), &self.tree, viewport_rows);
+
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: None,
+                    text_display: None,
+                    list: None,
+                    tree: Some(&resolved),
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Builds a `row_count`-row `Tree` with no selection/scroll set
+    /// (fully uncontrolled when `selected_path`/`scroll_offset` are left
+    /// at `None`/`0`) and drives it through a [`TuiDriver`] — mirrors
+    /// [`data_table_driver`]. `scroll_offset` lets a caller build a
+    /// controlled-scroll tree instead.
+    fn tree_driver(
+        row_count: usize,
+        selected_path: Option<quadraui::TreePath>,
+        scroll_offset: usize,
+    ) -> TuiDriver<TreeLogic> {
+        use quadraui::{StyledText, TreeRow};
+
+        let rows: Vec<TreeRow> = (0..row_count)
+            .map(|i| TreeRow {
+                path: vec![i as u16],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain(format!("row {i}")),
+                badge: None,
+                is_expanded: None,
+                decoration: Default::default(),
+                edit: None,
+            })
+            .collect();
+
+        let tree = TreeView {
+            id: WidgetId::new("tree"),
+            rows,
+            selection_mode: quadraui::SelectionMode::Single,
+            selected_path,
+            scroll_offset,
+            style: Default::default(),
+            has_focus: false,
+        };
+        let logic = TreeLogic {
+            tree,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 24, 8)
+    }
+
+    /// A 500-row `Tree` left fully uncontrolled (no `selected_path`, no
+    /// `scroll_offset`) must still move its cursor and keep it scrolled
+    /// into view purely from arrow-key presses — the cursor and its
+    /// scroll both live in the widget-state store, not the app, per this
+    /// module's own doc.
+    #[test]
+    fn uncontrolled_tree_moves_the_cursor_and_scrolls_it_into_view_on_down() {
+        let mut driver = tree_driver(500, None, 0);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("tree"))),
+                "the tree is a tab stop and must accept focus"
+            );
+        }
+
+        for _ in 0..40 {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
+
+        // 40 Downs starting from no selection land on row index 39 (the
+        // first Down selects row 0, each of the other 39 moves by one).
+        // Checked against the viewport capacity the same hit records
+        // (not the literal screen, which a focused tab stop's own
+        // separately-painted focus ring can cosmetically overdraw at this
+        // tiny band's edges — orthogonal to whether the cursor's row is
+        // within the scrolled window this module is responsible for).
+        let hits = driver.app().engine.hit_map();
+        let tree_hit = hits.iter().find_map(|hit| match hit {
+            crate::hit::PaintedHit::Tree {
+                id,
+                scroll_offset,
+                viewport_rows,
+                ..
+            } if *id == WidgetId::new("tree") => Some((*scroll_offset, *viewport_rows)),
+            _ => None,
+        });
+        let (scroll_offset, viewport_rows) =
+            tree_hit.expect("the tree must still be painted after 40 Down presses");
+        assert!(
+            scroll_offset > 0,
+            "500 rows in an 8-row viewport must have scrolled: {scroll_offset}"
+        );
+        assert!(
+            (scroll_offset..scroll_offset + viewport_rows).contains(&39),
+            "row 39 (the moved cursor) must be within the scrolled window [{scroll_offset}, {})",
+            scroll_offset + viewport_rows
+        );
+    }
+
+    /// A `Tree` whose descriptor pins a non-zero `scroll_offset` keeps
+    /// that exact value every frame, even while arrow keys move its
+    /// (uncontrolled) selection far enough that an uncontrolled scroll
+    /// would have followed it — controlled mode wins outright, per
+    /// [`resolve_tree_cursor`]'s own doc.
+    #[test]
+    fn controlled_tree_scroll_offset_is_pinned_and_not_moved_by_navigation_keys() {
+        let mut driver = tree_driver(500, None, 50);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("tree"))),
+                "the tree is a tab stop and must accept focus"
+            );
+        }
+
+        for _ in 0..10 {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
+
+        let hits = driver.app().engine.hit_map();
+        let scroll_offset = hits.iter().find_map(|hit| match hit {
+            crate::hit::PaintedHit::Tree {
+                id, scroll_offset, ..
+            } if *id == WidgetId::new("tree") => Some(*scroll_offset),
+            _ => None,
+        });
+        assert_eq!(
+            scroll_offset,
+            Some(50),
+            "a controlled scroll_offset must stay pinned at the descriptor's own value: {:?}",
+            scroll_offset
         );
     }
 
