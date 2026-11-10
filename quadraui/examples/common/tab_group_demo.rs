@@ -25,7 +25,7 @@ use std::cell::RefCell;
 
 use quadraui::compose::tab_group::{GroupLayout, Pane, PaneTab, TabGroupController, TabGroupEvent};
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, Modifiers, NamedKey, Reaction, Rect,
+    AppLogic, Backend, Color, Handled, InteractionState, Key, Modifiers, NamedKey, Reaction, Rect,
     SplitDirection, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
@@ -407,7 +407,11 @@ impl AppLogic for TabGroupDemo {
                 }
 
                 // 3. Otherwise treat as a click.
-                if let Some(ev) = self.group.borrow_mut().handle_click(position.x, position.y) {
+                if let Handled::Event(ev) = self
+                    .group
+                    .borrow_mut()
+                    .handle_click_event(position.x, position.y)
+                {
                     *self.last_event.borrow_mut() = format_event(&ev);
                     self.handle_tab_group_event(ev);
                 }
@@ -449,10 +453,10 @@ impl AppLogic for TabGroupDemo {
                 }
                 if *self.divider_dragging.borrow() {
                     let bounds = *self.last_bounds.borrow();
-                    if let Some(ev) = self
+                    if let Handled::Event(ev) = self
                         .group
                         .borrow_mut()
-                        .handle_drag_move(position.x, position.y, bounds)
+                        .handle_drag_move_event(position.x, position.y, bounds)
                     {
                         *self.last_event.borrow_mut() = format_event(&ev);
                         return Reaction::Redraw;
@@ -465,20 +469,23 @@ impl AppLogic for TabGroupDemo {
             UiEvent::MouseUp { position, .. } => {
                 if *self.tab_dragging.borrow() {
                     *self.tab_dragging.borrow_mut() = false;
-                    let evs = self
+                    let outcome = self
                         .group
                         .borrow_mut()
-                        .handle_tab_drop(position.x, position.y);
-                    if evs.is_empty() {
-                        self.group.borrow_mut().cancel_tab_drag();
-                        *self.last_event.borrow_mut() = "tab drag cancelled".into();
-                    } else {
-                        // Show the primary event in the status line; dispatch each.
-                        if let Some(primary) = evs.first() {
-                            *self.last_event.borrow_mut() = format_event(primary);
+                        .handle_tab_drop_event(position.x, position.y);
+                    match outcome {
+                        Handled::Event(evs) => {
+                            // Show the primary event in the status line; dispatch each.
+                            if let Some(primary) = evs.first() {
+                                *self.last_event.borrow_mut() = format_event(primary);
+                            }
+                            for ev in evs {
+                                self.handle_tab_group_event(ev);
+                            }
                         }
-                        for ev in evs {
-                            self.handle_tab_group_event(ev);
+                        Handled::Consumed | Handled::Ignored => {
+                            self.group.borrow_mut().cancel_tab_drag();
+                            *self.last_event.borrow_mut() = "tab drag cancelled".into();
                         }
                     }
                     return Reaction::Redraw;
@@ -488,7 +495,11 @@ impl AppLogic for TabGroupDemo {
                 if self.tab_drag_pending_pos.borrow().is_some() {
                     *self.tab_drag_pending_pos.borrow_mut() = None;
                     self.group.borrow_mut().cancel_tab_drag();
-                    if let Some(ev) = self.group.borrow_mut().handle_click(position.x, position.y) {
+                    if let Handled::Event(ev) = self
+                        .group
+                        .borrow_mut()
+                        .handle_click_event(position.x, position.y)
+                    {
                         *self.last_event.borrow_mut() = format_event(&ev);
                         self.handle_tab_group_event(ev);
                     }

@@ -110,10 +110,20 @@ pub use dual_mode_palette::{DualModePaletteAction, DualModePaletteController};
 // use site.
 #[allow(deprecated)]
 pub use dual_mode_palette::DualModePaletteEvent;
-pub use file_picker::{FilePickerController, FilePickerEvent, FilePickerMode};
+pub use file_picker::{FilePickerController, FilePickerMode};
+// `FilePickerEvent` is `#[deprecated]` (use `FilePickerController::handle_event`'s
+// `Handled<PathPickerAction>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use file_picker::FilePickerEvent;
 pub use focus_group::FocusGroup;
 pub use focus_ring::FocusRing;
-pub use folder_picker::{FolderPickerController, FolderPickerEvent, PALETTE_CHROME_ROWS};
+pub use folder_picker::{FolderPickerController, PALETTE_CHROME_ROWS};
+// `FolderPickerEvent` is `#[deprecated]` (use `FolderPickerController::handle_event`'s
+// `Handled<PathPickerAction>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use folder_picker::FolderPickerEvent;
 pub use form_controller::{FormController, FormControllerEvent};
 pub use form_dialog::{FormDialogController, FormDialogEvent};
 pub use handled::Handled;
@@ -136,6 +146,7 @@ pub use message_dialog::MessageDialogController;
 #[allow(deprecated)]
 pub use message_dialog::MessageDialogEvent;
 pub use notification::notify_or_toast;
+pub use path_picker::PathPickerAction;
 pub use sidebar_panel_body::{SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome};
 pub use sidebar_system::{
     NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,

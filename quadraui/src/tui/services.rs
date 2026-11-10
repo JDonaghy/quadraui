@@ -326,8 +326,8 @@ use crate::backend::{
     MessageDialogOptions, Notification, PlatformServices, ServiceResult, SystemTheme,
 };
 use crate::compose::{
-    FilePickerController, FilePickerEvent, FilePickerMode, FolderPickerController,
-    FolderPickerEvent, Handled, MessageDialogController,
+    FilePickerController, FilePickerMode, FolderPickerController, Handled, MessageDialogController,
+    PathPickerAction,
 };
 use crate::diagnostics;
 use crate::event::{Point, Rect, UiEvent};
@@ -1973,12 +1973,12 @@ impl PlatformServices for TuiPlatformServices {
             |event, _backend, viewport| {
                 let visible_rows = (viewport.height as usize)
                     .saturating_sub(crate::compose::folder_picker::PALETTE_CHROME_ROWS);
-                match picker.borrow_mut().handle(event, visible_rows) {
-                    FilePickerEvent::Confirmed { path } => NestedDialogStep::Resolved(path),
-                    FilePickerEvent::Cancelled => NestedDialogStep::Cancelled,
-                    FilePickerEvent::Consumed | FilePickerEvent::Ignored => {
-                        NestedDialogStep::Continue
+                match picker.borrow_mut().handle_event(event, visible_rows) {
+                    Handled::Event(PathPickerAction::Confirmed { path }) => {
+                        NestedDialogStep::Resolved(path)
                     }
+                    Handled::Event(PathPickerAction::Cancelled) => NestedDialogStep::Cancelled,
+                    Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,
                 }
             },
         )
@@ -2009,12 +2009,12 @@ impl PlatformServices for TuiPlatformServices {
             |event, _backend, viewport| {
                 let visible_rows = (viewport.height as usize)
                     .saturating_sub(crate::compose::folder_picker::PALETTE_CHROME_ROWS);
-                match picker.borrow_mut().handle(event, visible_rows) {
-                    FilePickerEvent::Confirmed { path } => NestedDialogStep::Resolved(path),
-                    FilePickerEvent::Cancelled => NestedDialogStep::Cancelled,
-                    FilePickerEvent::Consumed | FilePickerEvent::Ignored => {
-                        NestedDialogStep::Continue
+                match picker.borrow_mut().handle_event(event, visible_rows) {
+                    Handled::Event(PathPickerAction::Confirmed { path }) => {
+                        NestedDialogStep::Resolved(path)
                     }
+                    Handled::Event(PathPickerAction::Cancelled) => NestedDialogStep::Cancelled,
+                    Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,
                 }
             },
         )
@@ -2032,7 +2032,7 @@ impl PlatformServices for TuiPlatformServices {
     /// titles the palette `"Open Folder {root}"` with no override. This
     /// does not make `BackendCaps::folder_dialogs` `true` on
     /// `TuiBackend` — see the module doc's "Dialogs" section for why.
-    /// Every key reaches `FolderPickerController::handle` first, which
+    /// Every key reaches `FolderPickerController::handle_event` first, which
     /// intercepts `-`, `j` and `k` as navigation before the generic
     /// typing arm (see `classify_nav_key`'s doc in
     /// `compose::path_picker`), so a folder named e.g. `my-app` can't be
@@ -2047,12 +2047,12 @@ impl PlatformServices for TuiPlatformServices {
             |event, _backend, viewport| {
                 let visible_rows = (viewport.height as usize)
                     .saturating_sub(crate::compose::folder_picker::PALETTE_CHROME_ROWS);
-                match picker.borrow_mut().handle(event, visible_rows) {
-                    FolderPickerEvent::Confirmed { path } => NestedDialogStep::Resolved(path),
-                    FolderPickerEvent::Cancelled => NestedDialogStep::Cancelled,
-                    FolderPickerEvent::Consumed | FolderPickerEvent::Ignored => {
-                        NestedDialogStep::Continue
+                match picker.borrow_mut().handle_event(event, visible_rows) {
+                    Handled::Event(PathPickerAction::Confirmed { path }) => {
+                        NestedDialogStep::Resolved(path)
                     }
+                    Handled::Event(PathPickerAction::Cancelled) => NestedDialogStep::Cancelled,
+                    Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,
                 }
             },
         )

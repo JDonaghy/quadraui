@@ -66,18 +66,21 @@
 //!
 //! // In AppLogic::handle:
 //! let visible_rows = popup_rect.height as usize - PALETTE_CHROME_ROWS;
-//! match picker.handle(&event, visible_rows) {
-//!     FilePickerEvent::Confirmed { path } => { /* open/save `path` */ }
-//!     FilePickerEvent::Cancelled           => { /* dismiss modal */ }
-//!     FilePickerEvent::Consumed            => { /* redraw */ }
-//!     FilePickerEvent::Ignored             => {}
+//! match picker.handle_event(&event, visible_rows) {
+//!     Handled::Event(PathPickerAction::Confirmed { path }) => { /* open/save `path` */ }
+//!     Handled::Event(PathPickerAction::Cancelled)          => { /* dismiss modal */ }
+//!     Handled::Consumed                                    => { /* redraw */ }
+//!     Handled::Ignored                                      => {}
 //! }
 //! ```
 
 use std::path::{Path, PathBuf};
 
-use super::path_picker::{classify_nav_key, dir_entry_is_dir, NavKey, PathPickerCore};
+use super::path_picker::{
+    classify_nav_key, dir_entry_is_dir, NavKey, PathPickerAction, PathPickerCore,
+};
 use crate::compose::folder_picker::{DEFAULT_IGNORE_DIRS, DEFAULT_MAX_DEPTH};
+use crate::compose::Handled;
 use crate::{
     Backend, Icon, Key, Modifiers, Palette, PaletteItem, Rect, StyledText, UiEvent, WidgetId,
 };
@@ -95,6 +98,10 @@ pub enum FilePickerMode {
 
 /// What happened after [`FilePickerController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
+#[deprecated(
+    since = "0.9.0",
+    note = "use `FilePickerController::handle_event`'s `Handled<PathPickerAction>` instead — `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, `Confirmed`/`Cancelled` move to `PathPickerAction` under `Handled::Event`"
+)]
 pub enum FilePickerEvent {
     /// The user confirmed a file path — an existing file in
     /// [`FilePickerMode::Open`], or `root.join(query)` in
@@ -275,15 +282,36 @@ impl FilePickerController {
     /// palette chrome; compute it as
     /// `popup_height.saturating_sub(PALETTE_CHROME_ROWS)` (see
     /// [`crate::compose::folder_picker::PALETTE_CHROME_ROWS`]).
-    pub fn handle(&mut self, event: &UiEvent, visible_rows: usize) -> FilePickerEvent {
+    pub fn handle_event(
+        &mut self,
+        event: &UiEvent,
+        visible_rows: usize,
+    ) -> Handled<PathPickerAction> {
         let result = match event {
             UiEvent::KeyPressed { key, modifiers, .. } => self.handle_key(key, modifiers),
-            _ => FilePickerEvent::Ignored,
+            _ => Handled::Ignored,
         };
-        if matches!(result, FilePickerEvent::Consumed) {
+        if matches!(result, Handled::Consumed) {
             self.sync_scroll(visible_rows);
         }
         result
+    }
+
+    /// Drive the state machine with a backend-neutral `UiEvent`.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_event`, which returns `Handled<PathPickerAction>` instead of `FilePickerEvent`"
+    )]
+    #[allow(deprecated)] // `FilePickerEvent` is `#[deprecated]`; this method is its own shim.
+    pub fn handle(&mut self, event: &UiEvent, visible_rows: usize) -> FilePickerEvent {
+        match self.handle_event(event, visible_rows) {
+            Handled::Event(PathPickerAction::Confirmed { path }) => {
+                FilePickerEvent::Confirmed { path }
+            }
+            Handled::Event(PathPickerAction::Cancelled) => FilePickerEvent::Cancelled,
+            Handled::Consumed => FilePickerEvent::Consumed,
+            Handled::Ignored => FilePickerEvent::Ignored,
+        }
     }
 
     /// Key dispatch, shared with [`FolderPickerController`] via
@@ -292,35 +320,35 @@ impl FilePickerController {
     /// `-`/`j`/`k` shortcuts are active in.
     ///
     /// [`FolderPickerController`]: crate::compose::FolderPickerController
-    fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> FilePickerEvent {
+    fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> Handled<PathPickerAction> {
         // `Save` mode's query is the destination filename, so the vim
         // shortcuts must not steal `-`/`j`/`k` from it — only `Open`
         // mode, where there is nothing to type a name into, gets them.
         let vim_keys = self.mode == FilePickerMode::Open;
         match classify_nav_key(key, modifiers, vim_keys) {
-            Some(NavKey::Escape) => FilePickerEvent::Cancelled,
+            Some(NavKey::Escape) => Handled::Event(PathPickerAction::Cancelled),
             Some(NavKey::Confirm) => self.confirm_selection(),
             Some(NavKey::NavigateUp) => {
                 self.navigate_up();
-                FilePickerEvent::Consumed
+                Handled::Consumed
             }
             Some(NavKey::Up) => {
                 self.move_up();
-                FilePickerEvent::Consumed
+                Handled::Consumed
             }
             Some(NavKey::Down) => {
                 self.move_down();
-                FilePickerEvent::Consumed
+                Handled::Consumed
             }
             Some(NavKey::Backspace) => {
                 self.pop_char();
-                FilePickerEvent::Consumed
+                Handled::Consumed
             }
             Some(NavKey::Char(c)) => {
                 self.push_char(c);
-                FilePickerEvent::Consumed
+                Handled::Consumed
             }
-            None => FilePickerEvent::Ignored,
+            None => Handled::Ignored,
         }
     }
 
@@ -338,7 +366,7 @@ impl FilePickerController {
     /// onto a *real* directory row (handled below, not here) still
     /// navigates regardless of mode or query, matching native save
     /// dialogs' "Enter on a folder row browses" convention.
-    fn confirm_selection(&mut self) -> FilePickerEvent {
+    fn confirm_selection(&mut self) -> Handled<PathPickerAction> {
         let highlighted = self.core.filtered.get(self.core.selected).cloned();
         let highlighted_is_dotdot = highlighted
             .as_deref()
@@ -347,35 +375,35 @@ impl FilePickerController {
 
         if highlighted_is_dotdot {
             if self.mode == FilePickerMode::Save && !self.core.query.is_empty() {
-                return FilePickerEvent::Confirmed {
+                return Handled::Event(PathPickerAction::Confirmed {
                     path: self.core.root.join(&self.core.query),
-                };
+                });
             }
             self.navigate_up();
-            return FilePickerEvent::Consumed;
+            return Handled::Consumed;
         }
 
         if let Some(rel) = &highlighted {
             if self.is_dir_entry(rel) {
                 self.navigate_to(self.core.root.join(rel));
-                return FilePickerEvent::Consumed;
+                return Handled::Consumed;
             }
         }
 
         match self.mode {
             FilePickerMode::Open => match highlighted {
-                Some(rel) => FilePickerEvent::Confirmed {
+                Some(rel) => Handled::Event(PathPickerAction::Confirmed {
                     path: self.core.root.join(rel),
-                },
-                None => FilePickerEvent::Ignored,
+                }),
+                None => Handled::Ignored,
             },
             FilePickerMode::Save => {
                 if self.core.query.is_empty() {
-                    FilePickerEvent::Ignored
+                    Handled::Ignored
                 } else {
-                    FilePickerEvent::Confirmed {
+                    Handled::Event(PathPickerAction::Confirmed {
                         path: self.core.root.join(&self.core.query),
-                    }
+                    })
                 }
             }
         }
@@ -669,9 +697,9 @@ mod tests {
         let result = picker.confirm_selection();
         assert_eq!(
             result,
-            FilePickerEvent::Confirmed {
+            Handled::Event(PathPickerAction::Confirmed {
                 path: tmp.path().join("a.rs")
-            }
+            })
         );
     }
 
@@ -686,7 +714,7 @@ mod tests {
             .expect("sub listed");
         picker.core.selected = idx;
         let result = picker.confirm_selection();
-        assert_eq!(result, FilePickerEvent::Consumed);
+        assert_eq!(result, Handled::Consumed);
         assert_eq!(picker.root(), tmp.path().join("sub"));
     }
 
@@ -699,7 +727,7 @@ mod tests {
         picker.core.selected = 0;
         assert_eq!(picker.filtered().first(), Some(&PathBuf::from("..")));
         let result = picker.confirm_selection();
-        assert_eq!(result, FilePickerEvent::Consumed);
+        assert_eq!(result, Handled::Consumed);
         assert_eq!(picker.root(), parent.path());
     }
 
@@ -713,9 +741,9 @@ mod tests {
         let result = picker.confirm_selection();
         assert_eq!(
             result,
-            FilePickerEvent::Confirmed {
+            Handled::Event(PathPickerAction::Confirmed {
                 path: tmp.path().join("new")
-            }
+            })
         );
     }
 
@@ -728,7 +756,7 @@ mod tests {
         // no-highlighted-row path directly.
         picker.core.filtered.clear();
         let result = picker.confirm_selection();
-        assert_eq!(result, FilePickerEvent::Ignored);
+        assert_eq!(result, Handled::Ignored);
     }
 
     #[test]
@@ -747,9 +775,9 @@ mod tests {
         let result = picker.confirm_selection();
         assert_eq!(
             result,
-            FilePickerEvent::Confirmed {
+            Handled::Event(PathPickerAction::Confirmed {
                 path: sub.join("untitled.txt")
-            }
+            })
         );
         assert_eq!(picker.root(), sub, "must not have navigated");
     }
@@ -772,7 +800,7 @@ mod tests {
         picker.core.filtered = vec![picker.core.all_entries[idx].clone()];
         picker.core.selected = 0;
         let result = picker.confirm_selection();
-        assert_eq!(result, FilePickerEvent::Consumed);
+        assert_eq!(result, Handled::Consumed);
         assert_eq!(picker.root(), tmp.path().join("sub"));
     }
 
@@ -824,7 +852,10 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        assert_eq!(picker.handle(&ev, 10), FilePickerEvent::Cancelled);
+        assert_eq!(
+            picker.handle_event(&ev, 10),
+            Handled::Event(PathPickerAction::Cancelled)
+        );
     }
 
     // macOS delivers a Cmd-modified letter as a plain `Key::Char` with
@@ -842,7 +873,7 @@ mod tests {
             },
             repeat: false,
         };
-        assert_eq!(picker.handle(&ev, 10), FilePickerEvent::Ignored);
+        assert_eq!(picker.handle_event(&ev, 10), Handled::Ignored);
         assert_eq!(picker.query(), "");
     }
 
@@ -859,7 +890,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        assert_eq!(picker.handle(&down, 10), FilePickerEvent::Consumed);
+        assert_eq!(picker.handle_event(&down, 10), Handled::Consumed);
         assert_eq!(picker.selected(), 1);
 
         let up = UiEvent::KeyPressed {
@@ -867,7 +898,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        assert_eq!(picker.handle(&up, 10), FilePickerEvent::Consumed);
+        assert_eq!(picker.handle_event(&up, 10), Handled::Consumed);
         assert_eq!(picker.selected(), 0);
     }
 
@@ -882,8 +913,8 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        let result = picker.handle(&ev, 10);
-        assert_eq!(result, FilePickerEvent::Consumed);
+        let result = picker.handle_event(&ev, 10);
+        assert_eq!(result, Handled::Consumed);
         assert_eq!(picker.root(), parent.path());
     }
 
@@ -906,7 +937,7 @@ mod tests {
                 modifiers: Modifiers::default(),
                 repeat: false,
             };
-            assert_eq!(picker.handle(&ev, 10), FilePickerEvent::Consumed);
+            assert_eq!(picker.handle_event(&ev, 10), Handled::Consumed);
         }
 
         assert_eq!(picker.query(), "my-journal.md");
@@ -926,7 +957,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        assert_eq!(picker.handle(&down, 10), FilePickerEvent::Consumed);
+        assert_eq!(picker.handle_event(&down, 10), Handled::Consumed);
         assert_eq!(picker.selected(), 1);
     }
 
@@ -1022,7 +1053,7 @@ mod tests {
             .position(|p| p == &PathBuf::from("link"))
             .expect("link listed");
         picker.core.selected = idx;
-        assert_eq!(picker.confirm_selection(), FilePickerEvent::Consumed);
+        assert_eq!(picker.confirm_selection(), Handled::Consumed);
         assert_eq!(picker.root(), tmp.path().join("link"));
     }
 

@@ -39,11 +39,11 @@
 //!
 //! // In AppLogic::handle:
 //! let visible_rows = /* rect.height as usize - PALETTE_CHROME_ROWS */;
-//! match picker.handle(&event, visible_rows) {
-//!     FolderPickerEvent::Confirmed { path } => { /* open workspace */ },
-//!     FolderPickerEvent::Cancelled             => { /* dismiss modal */ },
-//!     FolderPickerEvent::Consumed              => { /* redraw */ },
-//!     FolderPickerEvent::Ignored               => {},
+//! match picker.handle_event(&event, visible_rows) {
+//!     Handled::Event(PathPickerAction::Confirmed { path }) => { /* open workspace */ },
+//!     Handled::Event(PathPickerAction::Cancelled)          => { /* dismiss modal */ },
+//!     Handled::Consumed                                    => { /* redraw */ },
+//!     Handled::Ignored                                      => {},
 //! }
 //! ```
 //!
@@ -57,7 +57,10 @@
 
 use std::path::{Path, PathBuf};
 
-use super::path_picker::{classify_nav_key, dir_entry_is_dir, NavKey, PathPickerCore};
+use super::path_picker::{
+    classify_nav_key, dir_entry_is_dir, NavKey, PathPickerAction, PathPickerCore,
+};
+use crate::compose::Handled;
 use crate::{
     Backend, Icon, Key, Modifiers, Palette, PaletteItem, Rect, StyledText, UiEvent, WidgetId,
 };
@@ -87,6 +90,10 @@ pub const DEFAULT_IGNORE_DIRS: &[&str] = &["target", "node_modules", "__pycache_
 
 /// What happened after [`FolderPickerController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
+#[deprecated(
+    since = "0.9.0",
+    note = "use `FolderPickerController::handle_event`'s `Handled<PathPickerAction>` instead — `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, `Confirmed`/`Cancelled` move to `PathPickerAction` under `Handled::Event`"
+)]
 pub enum FolderPickerEvent {
     /// The user confirmed a selection. The resolved absolute path is returned.
     ///
@@ -392,18 +399,39 @@ impl FolderPickerController {
     /// listening to only `KeyPressed` avoids the double-insert risk. If a
     /// future backend needs IME-composed input, route it through
     /// `KeyPressed` as well or call [`push_char`](Self::push_char) directly.
-    pub fn handle(&mut self, event: &UiEvent, visible_rows: usize) -> FolderPickerEvent {
+    pub fn handle_event(
+        &mut self,
+        event: &UiEvent,
+        visible_rows: usize,
+    ) -> Handled<PathPickerAction> {
         let result = match event {
             UiEvent::KeyPressed { key, modifiers, .. } => self.handle_key(key, modifiers),
-            _ => FolderPickerEvent::Ignored,
+            _ => Handled::Ignored,
         };
 
         // Keep scroll in sync after any state change.
-        if matches!(result, FolderPickerEvent::Consumed) {
+        if matches!(result, Handled::Consumed) {
             self.sync_scroll(visible_rows);
         }
 
         result
+    }
+
+    /// Drive the state machine with a backend-neutral `UiEvent`.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_event`, which returns `Handled<PathPickerAction>` instead of `FolderPickerEvent`"
+    )]
+    #[allow(deprecated)] // `FolderPickerEvent` is `#[deprecated]`; this method is its own shim.
+    pub fn handle(&mut self, event: &UiEvent, visible_rows: usize) -> FolderPickerEvent {
+        match self.handle_event(event, visible_rows) {
+            Handled::Event(PathPickerAction::Confirmed { path }) => {
+                FolderPickerEvent::Confirmed { path }
+            }
+            Handled::Event(PathPickerAction::Cancelled) => FolderPickerEvent::Cancelled,
+            Handled::Consumed => FolderPickerEvent::Consumed,
+            Handled::Ignored => FolderPickerEvent::Ignored,
+        }
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
@@ -414,11 +442,11 @@ impl FolderPickerController {
     /// shortcuts) can't drift apart.
     ///
     /// [`FilePickerController`]: crate::compose::FilePickerController
-    fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> FolderPickerEvent {
+    fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> Handled<PathPickerAction> {
         // The folder picker's query is never a destination filename, so
         // the vim shortcuts always take priority over typing them.
         match classify_nav_key(key, modifiers, true) {
-            Some(NavKey::Escape) => FolderPickerEvent::Cancelled,
+            Some(NavKey::Escape) => Handled::Event(PathPickerAction::Cancelled),
 
             Some(NavKey::Confirm) => {
                 // ".." → navigate up; anything else → confirm selection.
@@ -430,40 +458,40 @@ impl FolderPickerController {
                     .unwrap_or(false);
                 if is_dotdot {
                     self.navigate_up();
-                    FolderPickerEvent::Consumed
+                    Handled::Consumed
                 } else if let Some(path) = self.selected_path() {
-                    FolderPickerEvent::Confirmed { path }
+                    Handled::Event(PathPickerAction::Confirmed { path })
                 } else {
-                    FolderPickerEvent::Consumed
+                    Handled::Consumed
                 }
             }
 
             Some(NavKey::NavigateUp) => {
                 self.navigate_up();
-                FolderPickerEvent::Consumed
+                Handled::Consumed
             }
 
             Some(NavKey::Up) => {
                 self.move_up();
-                FolderPickerEvent::Consumed
+                Handled::Consumed
             }
 
             Some(NavKey::Down) => {
                 self.move_down();
-                FolderPickerEvent::Consumed
+                Handled::Consumed
             }
 
             Some(NavKey::Backspace) => {
                 self.pop_char();
-                FolderPickerEvent::Consumed
+                Handled::Consumed
             }
 
             Some(NavKey::Char(c)) => {
                 self.push_char(c);
-                FolderPickerEvent::Consumed
+                Handled::Consumed
             }
 
-            None => FolderPickerEvent::Ignored,
+            None => Handled::Ignored,
         }
     }
 
@@ -819,7 +847,10 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        assert_eq!(picker.handle(&ev, 10), FolderPickerEvent::Cancelled);
+        assert_eq!(
+            picker.handle_event(&ev, 10),
+            Handled::Event(PathPickerAction::Cancelled)
+        );
     }
 
     #[test]
@@ -838,8 +869,8 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        let result = picker.handle(&ev, 10);
-        assert_eq!(result, FolderPickerEvent::Consumed);
+        let result = picker.handle_event(&ev, 10);
+        assert_eq!(result, Handled::Consumed);
         assert_eq!(picker.root(), parent.path());
     }
 
@@ -860,8 +891,11 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        let result = picker.handle(&ev, 10);
-        assert_eq!(result, FolderPickerEvent::Confirmed { path: tmp });
+        let result = picker.handle_event(&ev, 10);
+        assert_eq!(
+            result,
+            Handled::Event(PathPickerAction::Confirmed { path: tmp })
+        );
     }
 
     #[test]
@@ -875,7 +909,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        picker.handle(&ev_down, 10);
+        let _ = picker.handle_event(&ev_down, 10);
         assert_eq!(picker.selected(), 1);
 
         let ev_up = UiEvent::KeyPressed {
@@ -883,7 +917,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        picker.handle(&ev_up, 10);
+        let _ = picker.handle_event(&ev_up, 10);
         assert_eq!(picker.selected(), 0);
     }
 
@@ -900,7 +934,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        picker.handle(&ev, 10);
+        let _ = picker.handle_event(&ev, 10);
         assert_eq!(picker.query(), "s");
     }
 
@@ -921,8 +955,8 @@ mod tests {
             },
             repeat: false,
         };
-        let result = picker.handle(&ev, 10);
-        assert_eq!(result, FolderPickerEvent::Ignored);
+        let result = picker.handle_event(&ev, 10);
+        assert_eq!(result, Handled::Ignored);
         assert_eq!(picker.query(), "");
     }
 
@@ -934,8 +968,8 @@ mod tests {
         let tmp = dir.path().to_path_buf();
         let mut picker = FolderPickerController::rooted_at(tmp, vec![]);
         let ev = UiEvent::CharTyped('s');
-        let result = picker.handle(&ev, 10);
-        assert_eq!(result, FolderPickerEvent::Ignored);
+        let result = picker.handle_event(&ev, 10);
+        assert_eq!(result, Handled::Ignored);
         assert_eq!(picker.query(), "");
     }
 
@@ -951,7 +985,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        picker.handle(&ev, 10);
+        let _ = picker.handle_event(&ev, 10);
         assert_eq!(picker.query(), "s");
     }
 
@@ -981,8 +1015,8 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        let result = picker.handle(&ev, 10);
-        assert_eq!(result, FolderPickerEvent::Consumed);
+        let result = picker.handle_event(&ev, 10);
+        assert_eq!(result, Handled::Consumed);
         assert_eq!(picker.root(), parent.path());
     }
 

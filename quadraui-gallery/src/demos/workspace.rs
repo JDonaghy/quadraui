@@ -14,7 +14,7 @@
 use std::cell::RefCell;
 
 use quadraui::{
-    Backend, BackendCaps, Color, InteractionState, Key, Reaction, Rect, StatusBar,
+    Backend, BackendCaps, Color, Handled, InteractionState, Key, Reaction, Rect, StatusBar,
     StatusBarSegment, UiEvent, WidgetId, WorkspaceController, WorkspaceDoc, WorkspaceEvent,
 };
 
@@ -224,19 +224,22 @@ impl Demo for WorkspaceDemo {
             UiEvent::KeyPressed { key, modifiers, .. } => {
                 let handled = self.workspaces[variant]
                     .borrow_mut()
-                    .handle_key(key, *modifiers);
+                    .handle_key_event(key, *modifiers);
                 match handled {
-                    Some(ev) => self.record(&[ev]),
-                    None => Reaction::Continue,
+                    Handled::Event(ev) => self.record(&[ev]),
+                    Handled::Consumed | Handled::Ignored => Reaction::Continue,
                 }
             }
             UiEvent::MouseDown {
                 position, button, ..
             } => {
-                let events = self.workspaces[variant]
+                let outcome = self.workspaces[variant]
                     .borrow_mut()
-                    .handle_click(position.x, position.y, *button);
-                self.record(&events)
+                    .handle_click_event(position.x, position.y, *button);
+                match outcome {
+                    Handled::Event(events) => self.record(&events),
+                    Handled::Consumed | Handled::Ignored => Reaction::Continue,
+                }
             }
             _ => Reaction::Continue,
         }
