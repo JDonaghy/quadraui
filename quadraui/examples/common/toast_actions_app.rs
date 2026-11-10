@@ -19,7 +19,7 @@
 //! - click ×/action/body   same hit-testing as every other toast example
 //! - q          quit
 
-use quadraui::compose::{ToastStackController, ToastStackEvent};
+use quadraui::compose::{Handled, ToastStackAction, ToastStackController};
 use quadraui::{
     AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
     StatusBarSegment, Toast, ToastButton, ToastCorner, ToastHit, ToastOverlay, ToastSeverity,
@@ -141,8 +141,8 @@ impl AppLogic for ToastActionsApp {
         // unfocused) comes back `Ignored`, so normal app routing below
         // still runs unimpeded.
         let stack = self.stack();
-        match self.controller.handle(&event, &stack) {
-            ToastStackEvent::Action(id) => {
+        match self.controller.handle_event(&event, &stack) {
+            Handled::Event(ToastStackAction::Action(id)) => {
                 self.last_message = format!("Action: {}", id.as_str());
                 // The demo's "Install"/"Don't ask again" both just
                 // dismiss the toast they belong to, like a real app
@@ -157,14 +157,14 @@ impl AppLogic for ToastActionsApp {
                 }
                 return Reaction::Redraw;
             }
-            ToastStackEvent::Dismiss(id) => {
+            Handled::Event(ToastStackAction::Dismiss(id)) => {
                 self.dismiss(id);
                 return Reaction::Redraw;
             }
-            ToastStackEvent::Consumed | ToastStackEvent::FocusReturned => {
+            Handled::Consumed | Handled::Event(ToastStackAction::FocusReturned) => {
                 return Reaction::Redraw;
             }
-            ToastStackEvent::Ignored => {}
+            Handled::Ignored => {}
         }
 
         match event {

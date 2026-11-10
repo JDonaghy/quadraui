@@ -89,6 +89,17 @@ only a push to `main` runs this workflow.
   migrated, added alongside their now-deprecated originals (see
   `### Deprecated`); the remaining `compose` controllers migrate
   incrementally in follow-up PRs under the same issue.
+- `ToastStackController::handle_event` and `MessageDialogController::handle_event`
+  (#2298): two more `compose` controllers onto `compose::Handled<E>`.
+  `ToastStackController::handle_event` returns `Handled<ToastStackAction>`
+  (`ToastStackAction` carries just the semantic `Action`/`Dismiss`/
+  `FocusReturned` payloads `ToastStackEvent` used to mix with its own
+  `Consumed`/`Ignored`); `MessageDialogController::handle_event` returns
+  `Handled<MessageDialogChoice>` directly, reusing the existing choice type
+  as `Handled::Event`'s payload rather than introducing a new one. Added
+  alongside their now-deprecated originals (see `### Deprecated`); the
+  remaining `compose` controllers listed in #2298 migrate incrementally in
+  follow-up PRs under the same issue.
 - `quadraui-node`: `QuiApp.armWakeNotify`/`disarmWakeNotify` (#2238) register
   a threadsafe notifier `QuiAppWaker.post`/`wake`/`postAfter`/`wakeAfter`
   fires the instant they deliver, from whatever thread that happens on.
@@ -276,6 +287,24 @@ only a push to `main` runs this workflow.
   in this PR; `handle_click` stays as a thin adapter with its own tests
   still passing. Removal target: same as `StatusBarInteraction::handle`
   above.
+- `ToastStackController::handle` / `ToastStackEvent` (#2298): use
+  `handle_event`, which returns `Handled<ToastStackAction>` instead —
+  `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, and the
+  `Action`/`Dismiss`/`FocusReturned` payloads move to the new
+  `ToastStackAction` under `Handled::Event`. Every in-repo caller
+  (`examples/common/toast_actions_app.rs`, `quadraui-gallery`'s toast demo)
+  migrates in this PR; `handle`/`ToastStackEvent` stay as a thin adapter
+  with their own tests still passing. Removal target: same as
+  `StatusBarInteraction::handle` above.
+- `MessageDialogController::handle` / `MessageDialogEvent` (#2298): use
+  `handle_event`, which returns `Handled<MessageDialogChoice>` instead of
+  wrapping the same choice in a dedicated `Resolved` variant. Every
+  in-repo caller (`examples/common/message_dialog_app.rs`,
+  `quadraui-gallery`'s message-dialog demo, `quadraui-binding-core`'s
+  `InteractionEngine`, `tui::services`'s nested dialog loop) migrates in
+  this PR; `handle`/`MessageDialogEvent` stay as a thin adapter with their
+  own tests still passing. Removal target: same as
+  `StatusBarInteraction::handle` above.
 - `TreeController::jump_to_edge` (#2178): use `move_selection_to_edge`,
   which takes the new `Edge::Start`/`Edge::End` enum instead of a
   `to_start: bool` positional param. Every in-repo caller

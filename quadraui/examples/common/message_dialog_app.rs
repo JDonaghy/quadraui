@@ -20,9 +20,10 @@
 //! - `o` — reopen the dialog.
 //! - `q` / `Esc` — quit.
 
+use quadraui::compose::Handled;
 use quadraui::{
-    AppLogic, Backend, Color, MessageDialogButton, MessageDialogController, MessageDialogEvent,
-    MessageDialogOptions, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, MessageDialogButton, MessageDialogController, MessageDialogOptions,
+    Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 pub struct MessageDialogApp {
@@ -106,8 +107,8 @@ impl AppLogic for MessageDialogApp {
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         if let Some(ref mut dialog) = self.dialog {
-            match dialog.handle(&event, backend) {
-                MessageDialogEvent::Resolved(id) => {
+            match dialog.handle_event(&event, backend) {
+                Handled::Event(id) => {
                     self.status = format!(
                         "Resolved: {}  (press 'o' to reopen, q/Esc to quit)",
                         id.as_str()
@@ -115,8 +116,8 @@ impl AppLogic for MessageDialogApp {
                     self.dialog = None;
                     return Reaction::Redraw;
                 }
-                MessageDialogEvent::Consumed => return Reaction::Redraw,
-                MessageDialogEvent::Ignored => {}
+                Handled::Consumed => return Reaction::Redraw,
+                Handled::Ignored => {}
             }
         } else if let UiEvent::KeyPressed { ref key, .. } = event {
             match key {

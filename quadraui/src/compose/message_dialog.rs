@@ -31,10 +31,10 @@
 //! dialog.render(backend);
 //!
 //! // In AppLogic::handle:
-//! match dialog.handle(&event, backend) {
-//!     MessageDialogEvent::Resolved(id) => { /* id matches one of the MessageDialogButton::id values */ }
-//!     MessageDialogEvent::Consumed => { /* redraw */ }
-//!     MessageDialogEvent::Ignored => {}
+//! match dialog.handle_event(&event, backend) {
+//!     Handled::Event(choice) => { /* choice matches one of the MessageDialogButton::id values */ }
+//!     Handled::Consumed => { /* redraw */ }
+//!     Handled::Ignored => {}
 //! }
 //! ```
 //!
@@ -61,6 +61,7 @@
 //! here.
 
 use crate::backend::{MessageDialogChoice, MessageDialogOptions};
+use crate::compose::Handled;
 use crate::event::{Point, Rect, UiEvent};
 use crate::primitives::dialog::{Dialog, DialogButton, DialogHit, DialogLayout, DialogMeasure};
 use crate::primitives::toolbar::ToolbarItemMeasure;
@@ -69,6 +70,10 @@ use crate::{Backend, Key, Modifiers, NamedKey};
 
 /// What happened after [`MessageDialogController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[deprecated(
+    since = "0.9.0",
+    note = "use `MessageDialogController::handle_event`'s `Handled<MessageDialogChoice>` instead — `Resolved(choice)` is `Handled::Event(choice)`, `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`"
+)]
 pub enum MessageDialogEvent {
     /// The user resolved the dialog — via Enter, a click on a button, or
     /// Escape resolving to the cancel/default button. The consumer should
@@ -229,15 +234,33 @@ impl MessageDialogController {
     /// Needs `backend` (immutably) to recompute the same [`DialogLayout`]
     /// [`Self::render`] just painted, so a `MouseDown` can hit-test
     /// against the exact button bounds on screen.
-    pub fn handle(&mut self, event: &UiEvent, backend: &dyn Backend) -> MessageDialogEvent {
+    pub fn handle_event(
+        &mut self,
+        event: &UiEvent,
+        backend: &dyn Backend,
+    ) -> Handled<MessageDialogChoice> {
         match event {
             UiEvent::KeyPressed { key, modifiers, .. } => self.handle_key(key, modifiers),
             UiEvent::MouseDown { position, .. } => self.handle_click(*position, backend),
-            _ => MessageDialogEvent::Ignored,
+            _ => Handled::Ignored,
         }
     }
 
-    fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> MessageDialogEvent {
+    /// Drive the state machine with a backend-neutral [`UiEvent`].
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_event`, which returns `Handled<MessageDialogChoice>` instead of `MessageDialogEvent`"
+    )]
+    #[allow(deprecated)] // `MessageDialogEvent` is `#[deprecated]`; this method is its own shim.
+    pub fn handle(&mut self, event: &UiEvent, backend: &dyn Backend) -> MessageDialogEvent {
+        match self.handle_event(event, backend) {
+            Handled::Event(choice) => MessageDialogEvent::Resolved(choice),
+            Handled::Consumed => MessageDialogEvent::Consumed,
+            Handled::Ignored => MessageDialogEvent::Ignored,
+        }
+    }
+
+    fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> Handled<MessageDialogChoice> {
         let n = self.dialog.buttons.len();
         match key {
             Key::Named(NamedKey::Escape) => {
@@ -246,21 +269,21 @@ impl MessageDialogController {
                     .cancel_button_id()
                     .or_else(|| self.dialog.default_button_id())
                 {
-                    Some(id) => MessageDialogEvent::Resolved(*id),
-                    None => MessageDialogEvent::Ignored,
+                    Some(id) => Handled::Event(*id),
+                    None => Handled::Ignored,
                 }
             }
             Key::Named(NamedKey::Enter) => match self.dialog.buttons.get(self.focused) {
-                Some(b) => MessageDialogEvent::Resolved(b.id),
-                None => MessageDialogEvent::Ignored,
+                Some(b) => Handled::Event(b.id),
+                None => Handled::Ignored,
             },
             Key::Named(NamedKey::Left) if n > 0 => {
                 self.focused = crate::focus::cycle_index(self.focused, -1, n);
-                MessageDialogEvent::Consumed
+                Handled::Consumed
             }
             Key::Named(NamedKey::Right) if n > 0 => {
                 self.focused = crate::focus::cycle_index(self.focused, 1, n);
-                MessageDialogEvent::Consumed
+                Handled::Consumed
             }
             Key::Named(NamedKey::Tab) if n > 0 => {
                 self.focused = crate::focus::cycle_index(
@@ -268,20 +291,24 @@ impl MessageDialogController {
                     if modifiers.shift { -1 } else { 1 },
                     n,
                 );
-                MessageDialogEvent::Consumed
+                Handled::Consumed
             }
-            _ => MessageDialogEvent::Ignored,
+            _ => Handled::Ignored,
         }
     }
 
-    fn handle_click(&mut self, position: Point, backend: &dyn Backend) -> MessageDialogEvent {
+    fn handle_click(
+        &mut self,
+        position: Point,
+        backend: &dyn Backend,
+    ) -> Handled<MessageDialogChoice> {
         let layout = self.layout(backend);
         match layout.hit_test(position.x, position.y) {
-            DialogHit::Button(id) => MessageDialogEvent::Resolved(id),
+            DialogHit::Button(id) => Handled::Event(id),
             // Modal overlay: swallow clicks on the body or outside rather
             // than letting them fall through, matching `Dialog`'s own
             // backend contract ("Modal overlay — intercept all clicks").
-            _ => MessageDialogEvent::Consumed,
+            _ => Handled::Consumed,
         }
     }
 }
@@ -376,8 +403,8 @@ mod tests {
         // tests always build with.
         let backend = crate::tui::backend::TuiBackend::new();
         assert_eq!(
-            controller.handle(&ev, &backend),
-            MessageDialogEvent::Resolved(WidgetId::new("save"))
+            controller.handle_event(&ev, &backend),
+            Handled::Event(WidgetId::new("save"))
         );
     }
 
@@ -390,10 +417,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        assert_eq!(
-            controller.handle(&right, &backend),
-            MessageDialogEvent::Consumed
-        );
+        assert_eq!(controller.handle_event(&right, &backend), Handled::Consumed);
         assert_eq!(controller.focused_button_id().unwrap().as_str(), "cancel");
         let enter = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Enter),
@@ -401,8 +425,8 @@ mod tests {
             repeat: false,
         };
         assert_eq!(
-            controller.handle(&enter, &backend),
-            MessageDialogEvent::Resolved(WidgetId::new("cancel"))
+            controller.handle_event(&enter, &backend),
+            Handled::Event(WidgetId::new("cancel"))
         );
     }
 
@@ -415,8 +439,8 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        controller.handle(&right, &backend);
-        controller.handle(&right, &backend);
+        let _ = controller.handle_event(&right, &backend);
+        let _ = controller.handle_event(&right, &backend);
         assert_eq!(controller.focused_button_id().unwrap().as_str(), "save");
     }
 
@@ -429,7 +453,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        controller.handle(&left, &backend);
+        let _ = controller.handle_event(&left, &backend);
         assert_eq!(controller.focused_button_id().unwrap().as_str(), "cancel");
     }
 
@@ -442,7 +466,7 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        controller.handle(&tab, &backend);
+        let _ = controller.handle_event(&tab, &backend);
         assert_eq!(controller.focused_button_id().unwrap().as_str(), "cancel");
     }
 
@@ -458,7 +482,7 @@ mod tests {
             },
             repeat: false,
         };
-        controller.handle(&shift_tab, &backend);
+        let _ = controller.handle_event(&shift_tab, &backend);
         assert_eq!(controller.focused_button_id().unwrap().as_str(), "cancel");
     }
 
@@ -472,8 +496,8 @@ mod tests {
             repeat: false,
         };
         assert_eq!(
-            controller.handle(&esc, &backend),
-            MessageDialogEvent::Resolved(WidgetId::new("cancel"))
+            controller.handle_event(&esc, &backend),
+            Handled::Event(WidgetId::new("cancel"))
         );
     }
 
@@ -489,8 +513,8 @@ mod tests {
             repeat: false,
         };
         assert_eq!(
-            controller.handle(&esc, &backend),
-            MessageDialogEvent::Resolved(WidgetId::new("ok"))
+            controller.handle_event(&esc, &backend),
+            Handled::Event(WidgetId::new("ok"))
         );
     }
 
@@ -509,8 +533,8 @@ mod tests {
             position: Point::new(cx, cy),
             modifiers: Modifiers::default(),
         };
-        let result = controller.handle(&ev, &backend);
-        assert!(matches!(result, MessageDialogEvent::Resolved(_)));
+        let result = controller.handle_event(&ev, &backend);
+        assert!(matches!(result, Handled::Event(_)));
     }
 
     #[test]
@@ -523,10 +547,7 @@ mod tests {
             position: Point::new(-100.0, -100.0),
             modifiers: Modifiers::default(),
         };
-        assert_eq!(
-            controller.handle(&ev, &backend),
-            MessageDialogEvent::Consumed
-        );
+        assert_eq!(controller.handle_event(&ev, &backend), Handled::Consumed);
     }
 
     /// A `MessageDialogButton::spec` override reaches the built `Dialog`'s
@@ -605,9 +626,22 @@ mod tests {
         let mut controller = MessageDialogController::new(opts_two_buttons());
         let backend = crate::tui::backend::TuiBackend::new();
         let ev = UiEvent::CharTyped('x');
+        assert_eq!(controller.handle_event(&ev, &backend), Handled::Ignored);
+    }
+
+    #[test]
+    #[allow(deprecated)] // covers the `handle` shim kept for pre-`Handled` callers.
+    fn deprecated_handle_still_adapts_to_message_dialog_event() {
+        let mut controller = MessageDialogController::new(opts_two_buttons());
+        let backend = crate::tui::backend::TuiBackend::new();
+        let enter = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
         assert_eq!(
-            controller.handle(&ev, &backend),
-            MessageDialogEvent::Ignored
+            controller.handle(&enter, &backend),
+            MessageDialogEvent::Resolved(WidgetId::new("save"))
         );
     }
 }
