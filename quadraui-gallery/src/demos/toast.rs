@@ -13,7 +13,7 @@
 //! harness end to end before the other groups are ported (separate
 //! follow-up issues).
 
-use quadraui::compose::{ToastStackController, ToastStackEvent};
+use quadraui::compose::{Handled, ToastStackAction, ToastStackController};
 use quadraui::{
     Backend, BackendCaps, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
     StatusBarSegment, Toast, ToastButton, ToastCorner, ToastHit, ToastOverlay, ToastSeverity,
@@ -149,8 +149,8 @@ impl Demo for ToastDemo {
         // unfocused) comes back `Ignored`, so the severity/action keys
         // below still work unimpeded until `Tab` claims focus.
         let stack = self.stack();
-        match self.controller.handle(event, &stack) {
-            ToastStackEvent::Action(id) => {
+        match self.controller.handle_event(event, &stack) {
+            Handled::Event(ToastStackAction::Action(id)) => {
                 if let Some(t) = self
                     .toasts
                     .iter()
@@ -161,14 +161,14 @@ impl Demo for ToastDemo {
                 }
                 return Reaction::Redraw;
             }
-            ToastStackEvent::Dismiss(id) => {
+            Handled::Event(ToastStackAction::Dismiss(id)) => {
                 self.toasts.retain(|t| t.id != id);
                 return Reaction::Redraw;
             }
-            ToastStackEvent::Consumed | ToastStackEvent::FocusReturned => {
+            Handled::Consumed | Handled::Event(ToastStackAction::FocusReturned) => {
                 return Reaction::Redraw;
             }
-            ToastStackEvent::Ignored => {}
+            Handled::Ignored => {}
         }
 
         match event {

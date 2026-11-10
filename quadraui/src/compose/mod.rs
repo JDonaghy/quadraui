@@ -118,7 +118,12 @@ pub use help_layer::{
 pub use hover_tooltip_tracker::HoverTooltipTracker;
 pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown};
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
-pub use message_dialog::{MessageDialogController, MessageDialogEvent};
+pub use message_dialog::MessageDialogController;
+// `MessageDialogEvent` is `#[deprecated]` (use `MessageDialogController::handle_event`'s
+// `Handled<MessageDialogChoice>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use message_dialog::MessageDialogEvent;
 pub use notification::notify_or_toast;
 pub use sidebar_panel_body::{SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome};
 pub use sidebar_system::{
@@ -134,7 +139,12 @@ pub use tab_drag::{resolve_tab_drop, TabDragSource, TabDropInstruction};
 pub use tab_group::{
     GroupLayout, Pane, PaneDragRect, PaneTab, TabGroupController, TabGroupEvent, TabGroupLayout,
 };
-pub use toast_stack::{ToastStackController, ToastStackEvent};
+pub use toast_stack::{ToastStackAction, ToastStackController};
+// `ToastStackEvent` is `#[deprecated]` (use `ToastStackController::handle_event`'s
+// `Handled<ToastStackAction>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use toast_stack::ToastStackEvent;
 pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker, TreeHoverTracker};
 pub use tree_controller::{Edge, TreeController, TreeControllerEvent};
 pub use workspace::{WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout};

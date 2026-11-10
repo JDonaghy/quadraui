@@ -327,7 +327,7 @@ use crate::backend::{
 };
 use crate::compose::{
     FilePickerController, FilePickerEvent, FilePickerMode, FolderPickerController,
-    FolderPickerEvent, MessageDialogController, MessageDialogEvent,
+    FolderPickerEvent, Handled, MessageDialogController,
 };
 use crate::diagnostics;
 use crate::event::{Point, Rect, UiEvent};
@@ -2066,11 +2066,9 @@ impl PlatformServices for TuiPlatformServices {
         let controller = RefCell::new(MessageDialogController::new(opts));
         self.run_nested_dialog_loop(
             |backend, _viewport| controller.borrow().render(backend),
-            |event, backend, _viewport| match controller.borrow_mut().handle(event, backend) {
-                MessageDialogEvent::Resolved(id) => NestedDialogStep::Resolved(id),
-                MessageDialogEvent::Consumed | MessageDialogEvent::Ignored => {
-                    NestedDialogStep::Continue
-                }
+            |event, backend, _viewport| match controller.borrow_mut().handle_event(event, backend) {
+                Handled::Event(id) => NestedDialogStep::Resolved(id),
+                Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,
             },
         )
     }

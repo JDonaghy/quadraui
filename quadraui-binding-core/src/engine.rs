@@ -14,8 +14,8 @@ use std::collections::HashMap;
 
 use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
-    ContextMenuController, ContextMenuOutcome, FormController, FormControllerEvent, MenuDef,
-    MenuEvent, MenuSystem, MessageDialogController, MessageDialogEvent,
+    ContextMenuController, ContextMenuOutcome, FormController, FormControllerEvent, Handled,
+    MenuDef, MenuEvent, MenuSystem, MessageDialogController,
 };
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{
@@ -968,11 +968,12 @@ impl InteractionEngine {
         // the menu-bar/context-menu checks below are never simultaneously
         // "open" in practice; the ordering here is what makes that
         // invariant hold even if that changes.
-        // `MessageDialogController::handle` reports `Ignored` immediately
-        // when nothing is open, so this is safe to run unconditionally.
+        // `MessageDialogController::handle_event` reports `Handled::Ignored`
+        // immediately when nothing is open, so this is safe to run
+        // unconditionally.
         if let Some(dialog) = self.dialog.as_mut() {
-            match dialog.handle(&event, &*backend) {
-                MessageDialogEvent::Resolved(choice) => {
+            match dialog.handle_event(&event, &*backend) {
+                Handled::Event(choice) => {
                     // The dialog is closing regardless of what `sink`
                     // itself returns — force the repaint that takes it off
                     // screen, same as the `ContextMenuOutcome::Event` arm
@@ -981,8 +982,8 @@ impl InteractionEngine {
                     return Reaction::Redraw
                         .merge(sink.dispatch(&UiEvent::MessageDialogResolved(choice), None));
                 }
-                MessageDialogEvent::Consumed => return Reaction::Redraw,
-                MessageDialogEvent::Ignored => {}
+                Handled::Consumed => return Reaction::Redraw,
+                Handled::Ignored => {}
             }
         }
 
