@@ -8274,7 +8274,7 @@ fn data_table_flipping_sort_direction_reorders_visible_rows() {
 //
 // `tui_bottom_panel`'s real ShellApp is `BottomPanelDemo`, driven through
 // `driver_with_shell` so the full `ShellApp -> ShellAdapter -> dispatch_event`
-// path (including `BottomPanelController::handle_click`) is exercised —
+// path (including `BottomPanelController::handle_click_event`) is exercised —
 // not a hand-built `BottomPanelController` in isolation, which is already
 // covered by `compose::bottom_panel`'s own unit tests.
 

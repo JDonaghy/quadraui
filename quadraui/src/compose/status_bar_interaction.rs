@@ -66,6 +66,14 @@ impl StatusBarInteraction {
     /// segment), [`Handled::Consumed`] when hover/press state changed
     /// (caller should redraw), or [`Handled::Ignored`] when the event
     /// wasn't relevant to the status bar.
+    ///
+    /// Note: `Handled::Ignored` here also covers "inside `bar_rect`, but
+    /// nothing changed" — a `MouseMoved` whose hover target is unchanged,
+    /// or a `MouseUp` with nothing pressed. Those are events the status bar
+    /// genuinely saw (unlike a click entirely outside `bar_rect`), just with
+    /// no state change and so no redraw to request; callers that fall
+    /// through on `Handled::Ignored` (e.g. to a title-bar-drag gesture) rely
+    /// on this.
     pub fn handle_event(&mut self, event: &UiEvent, bar_rect: Rect) -> Handled<WidgetId> {
         match event {
             UiEvent::MouseMoved { position, .. } => {
@@ -190,7 +198,7 @@ mod tests {
         let mut sbi = StatusBarInteraction::new();
         sbi.set_layout(test_layout());
         // Move into "run" first.
-        sbi.handle_event(
+        let _ = sbi.handle_event(
             &UiEvent::MouseMoved {
                 position: Point { x: 5.0, y: 100.5 },
                 buttons: Default::default(),
@@ -215,7 +223,7 @@ mod tests {
         sbi.set_layout(test_layout());
         let rect = bar_rect();
         // Mouse down on "stop".
-        sbi.handle_event(
+        let _ = sbi.handle_event(
             &UiEvent::MouseDown {
                 button: MouseButton::Left,
                 position: Point { x: 15.0, y: 100.5 },
@@ -244,7 +252,7 @@ mod tests {
         sbi.set_layout(test_layout());
         let rect = bar_rect();
         // Mouse down on "run".
-        sbi.handle_event(
+        let _ = sbi.handle_event(
             &UiEvent::MouseDown {
                 button: MouseButton::Left,
                 position: Point { x: 5.0, y: 100.5 },

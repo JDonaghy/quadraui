@@ -1,19 +1,15 @@
 //! Shared "did you handle it" contract for compose controllers.
 //!
-//! Before this type, controllers disagreed on how to tell a caller what
-//! happened with an event: some returned an enum with its own `Consumed`/
-//! `Ignored` variants spelled per-controller (`StatusBarAction::Redraw` for
-//! "consumed, nothing to route"), others returned `Option<Event>` or
-//! `Vec<Event>` with no way to distinguish "nothing happened" from "that
-//! event wasn't even for me". [`Handled<E>`] is the one shape new
-//! `handle_*` methods return: a semantic payload to route further, a
-//! state-only consumption that just needs a redraw, or "not mine".
+//! [`Handled<E>`] is the one shape a `handle_*` method returns: a semantic
+//! payload to route further ([`Handled::Event`]), a state-only consumption
+//! that just needs a redraw ([`Handled::Consumed`]), or "not mine"
+//! ([`Handled::Ignored`]).
 //!
-//! [`crate::compose::ContextMenuOutcome`] already had this shape before
-//! this type existed; it predates `Handled<E>` and keeps its own name
-//! rather than being replaced, since it isn't deprecated.
+//! [`crate::compose::ContextMenuOutcome`] has the same three-way shape
+//! under its own name, since it isn't deprecated.
 
 /// Outcome of a compose controller's `handle_*` method.
+#[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Handled<E> {
     /// A semantic event the caller must route further (e.g. activate a
@@ -66,20 +62,6 @@ impl<E> Handled<E> {
     }
 }
 
-impl<E> From<Option<E>> for Handled<E> {
-    /// `Some(event)` becomes [`Handled::Event`]; `None` becomes
-    /// [`Handled::Ignored`] — the right default for an adapter whose old
-    /// `Option`-returning method never distinguished "consumed, no event"
-    /// from "not mine". A controller that *can* tell the two apart should
-    /// construct `Handled` directly instead of going through this impl.
-    fn from(value: Option<E>) -> Self {
-        match value {
-            Some(e) => Handled::Event(e),
-            None => Handled::Ignored,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,11 +78,5 @@ mod tests {
         assert_eq!(Handled::Event(1).map(|n| n + 1), Handled::Event(2));
         assert_eq!(Handled::<i32>::Consumed.map(|n| n + 1), Handled::Consumed);
         assert_eq!(Handled::<i32>::Ignored.map(|n| n + 1), Handled::Ignored);
-    }
-
-    #[test]
-    fn from_option() {
-        assert_eq!(Handled::from(Some("x")), Handled::Event("x"));
-        assert_eq!(Handled::<&str>::from(None), Handled::Ignored);
     }
 }

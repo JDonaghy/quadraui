@@ -28,9 +28,8 @@
 //! they shift back down without losing the configured height.
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
-use quadraui::compose::Handled;
 use quadraui::{
-    Backend, Color, ImageSource, InteractionState, Key, Modifiers, MouseButton, NamedKey,
+    Backend, Color, Handled, ImageSource, InteractionState, Key, Modifiers, MouseButton, NamedKey,
     PointerShape, Reaction, Rect, ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar,
     StatusBarInteraction, StatusBarSegment, UiEvent, WidgetId,
 };

@@ -360,8 +360,15 @@ impl BottomPanelController {
         let Some(strip) = self.last_strip_bounds else {
             return Handled::Ignored;
         };
-        // Check vertical bounds.
+        // Check vertical and horizontal bounds — the strip spans only the
+        // panel's own column (`AppShell` docks the bottom panel under the
+        // main column, not the full viewport width), so a click at the
+        // strip's `y` but outside its `x` range (e.g. the activity bar or
+        // sidebar) is not this controller's to claim.
         if y < strip.y || y >= strip.y + strip.height {
+            return Handled::Ignored;
+        }
+        if x < strip.x || x >= strip.x + strip.width {
             return Handled::Ignored;
         }
         let Some(hits) = self.last_hits.as_ref() else {
@@ -478,7 +485,6 @@ impl BottomPanelController {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(deprecated)] // covers `handle_click`, the shim kept for pre-`Handled` callers.
 mod tests {
     use super::*;
 
@@ -631,6 +637,7 @@ mod tests {
     // ── handle_click: no layout primed ────────────────────────────────────────
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn handle_click_without_render_returns_none() {
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
         let mut ctrl = BottomPanelController::new(cfg);
@@ -640,6 +647,7 @@ mod tests {
     // ── handle_click: outside strip ──────────────────────────────────────────
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn handle_click_above_strip_is_none() {
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
         let mut ctrl = BottomPanelController::new(cfg);
@@ -648,6 +656,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn handle_click_below_strip_is_none() {
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
         let mut ctrl = BottomPanelController::new(cfg);
@@ -658,6 +667,7 @@ mod tests {
     // ── handle_click: tab body ────────────────────────────────────────────────
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_inactive_tab_emits_tab_activated() {
         // t0 = [0..6], t1 = [6..12], maximise = [77..80]
         let cfg = make_config(
@@ -672,6 +682,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_already_active_tab_returns_none() {
         let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
         let mut ctrl = BottomPanelController::new(cfg);
@@ -683,6 +694,7 @@ mod tests {
     // ── handle_click: close button ────────────────────────────────────────────
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_close_button_emits_tab_closed_and_removes_tab() {
         // tab0 closable: total=6, close=2 → close region [4..6]
         let cfg = make_config(vec![tab("t0", "AAAA", true)], "t0");
@@ -694,6 +706,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_non_closable_tab_close_area_returns_none() {
         // tab0 NOT closable but measurement still gives it 6 cells total/0 close
         let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
@@ -708,6 +721,7 @@ mod tests {
     // ── handle_click: non-zero strip origin (panel docked in main column) ─────
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_switches_and_closes_when_strip_offset_from_origin() {
         // Regression: the bottom panel docks in the main column, so the strip's
         // x origin is non-zero. Hits are in absolute coords, so clicks must be
@@ -735,6 +749,7 @@ mod tests {
     // ── handle_click: maximise button ────────────────────────────────────────
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_maximise_toggles_and_emits_event() {
         // Maximise segment at [77..80] in 80-cell bar
         let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
@@ -796,6 +811,7 @@ mod tests {
     /// (which has no close bounds) falls through to tab-body click → returns None
     /// (already active). A closable tab's close region still emits TabClosed.
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn mixed_closable_tabs_only_closable_tab_emits_close_event() {
         // t0: non-closable (close_w=0 → no close bounds)
         // t1: closable (close_w=2 → close region [10..12] in strip [0..80])
@@ -944,6 +960,18 @@ mod tests {
         prime_layout(&mut ctrl, 0.0, 10.0, 80.0);
         assert_eq!(ctrl.handle_click_event(5.0, 5.0), Handled::Ignored); // above strip
         assert_eq!(ctrl.handle_click_event(5.0, 12.0), Handled::Ignored); // below strip
+    }
+
+    #[test]
+    fn handle_click_event_outside_strip_horizontally_is_ignored() {
+        // Strip starts at x=20 (docked under the main column, as `AppShell`
+        // does), so a click at the strip's `y` but left or right of its `x`
+        // range (the activity bar / sidebar columns) must not be claimed.
+        let cfg = make_config(vec![tab("t0", "T", false)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 20.0, 0.0, 40.0);
+        assert_eq!(ctrl.handle_click_event(5.0, 0.5), Handled::Ignored); // left of strip
+        assert_eq!(ctrl.handle_click_event(70.0, 0.5), Handled::Ignored); // right of strip
     }
 
     #[test]
