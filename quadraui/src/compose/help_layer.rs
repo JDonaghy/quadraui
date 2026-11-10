@@ -28,6 +28,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::compose::Handled;
 use crate::event::Rect;
 use crate::types::{Decoration, StyledSpan, StyledText, WidgetId};
 use crate::{
@@ -159,9 +160,24 @@ impl HelpRegistry {
 
 // ── Cheatsheet overlay ──────────────────────────────────────────────────
 
+/// Semantic payload of [`Handled::Event`] returned by
+/// [`HelpOverlayController::handle_event`] / `open_action` / `close_action` /
+/// `toggle_action`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpOverlayAction {
+    /// The overlay just opened.
+    Opened,
+    /// The overlay just closed.
+    Closed,
+}
+
 /// Result of [`HelpOverlayController::handle`] / `open` / `close` /
 /// `toggle`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[deprecated(
+    since = "0.9.0",
+    note = "use `HelpOverlayController::handle_event`'s `Handled<HelpOverlayAction>` instead — `Opened`/`Closed` move to `HelpOverlayAction` under `Handled::Event`, `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`"
+)]
 pub enum HelpOverlayEvent {
     /// The overlay just opened.
     Opened,
@@ -212,41 +228,80 @@ impl HelpOverlayController {
     }
 
     /// Open the overlay unconditionally.
-    pub fn open(&mut self) -> HelpOverlayEvent {
+    pub fn open_action(&mut self) -> HelpOverlayAction {
         self.open = true;
-        HelpOverlayEvent::Opened
+        HelpOverlayAction::Opened
+    }
+
+    /// Open the overlay unconditionally.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `open_action`, which returns `HelpOverlayAction` instead of `HelpOverlayEvent`"
+    )]
+    #[allow(deprecated)] // `HelpOverlayEvent` is `#[deprecated]`; this method is its own shim.
+    pub fn open(&mut self) -> HelpOverlayEvent {
+        match self.open_action() {
+            HelpOverlayAction::Opened => HelpOverlayEvent::Opened,
+            HelpOverlayAction::Closed => HelpOverlayEvent::Closed,
+        }
     }
 
     /// Close the overlay unconditionally.
-    pub fn close(&mut self) -> HelpOverlayEvent {
+    pub fn close_action(&mut self) -> HelpOverlayAction {
         self.open = false;
-        HelpOverlayEvent::Closed
+        HelpOverlayAction::Closed
+    }
+
+    /// Close the overlay unconditionally.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `close_action`, which returns `HelpOverlayAction` instead of `HelpOverlayEvent`"
+    )]
+    #[allow(deprecated)] // `HelpOverlayEvent` is `#[deprecated]`; this method is its own shim.
+    pub fn close(&mut self) -> HelpOverlayEvent {
+        match self.close_action() {
+            HelpOverlayAction::Opened => HelpOverlayEvent::Opened,
+            HelpOverlayAction::Closed => HelpOverlayEvent::Closed,
+        }
     }
 
     /// Flip open/closed.
-    pub fn toggle(&mut self) -> HelpOverlayEvent {
+    pub fn toggle_action(&mut self) -> HelpOverlayAction {
         if self.open {
-            self.close()
+            self.close_action()
         } else {
-            self.open()
+            self.open_action()
+        }
+    }
+
+    /// Flip open/closed.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `toggle_action`, which returns `HelpOverlayAction` instead of `HelpOverlayEvent`"
+    )]
+    #[allow(deprecated)] // `HelpOverlayEvent` is `#[deprecated]`; this method is its own shim.
+    pub fn toggle(&mut self) -> HelpOverlayEvent {
+        match self.toggle_action() {
+            HelpOverlayAction::Opened => HelpOverlayEvent::Opened,
+            HelpOverlayAction::Closed => HelpOverlayEvent::Closed,
         }
     }
 
     /// Drive the open/close state machine with a backend-neutral
     /// [`UiEvent`].
     ///
-    /// - Closed: `?` opens it (any other event is [`HelpOverlayEvent::Ignored`]
-    ///   so callers can fall through to their own handling).
+    /// - Closed: `?` opens it (any other event is [`Handled::Ignored`] so
+    ///   callers can fall through to their own handling).
     /// - Open: `Escape` or `?` closes it; every other key is
-    ///   [`HelpOverlayEvent::Consumed`] (modal — nothing leaks through to
-    ///   the view underneath, matching [`crate::Palette`]'s "click
-    ///   intercept is mandatory" contract for keyboard input).
-    pub fn handle(&mut self, event: &UiEvent) -> HelpOverlayEvent {
+    ///   [`Handled::Consumed`] (modal — nothing leaks through to the view
+    ///   underneath, matching [`crate::Palette`]'s "click intercept is
+    ///   mandatory" contract for keyboard input).
+    pub fn handle_event(&mut self, event: &UiEvent) -> Handled<HelpOverlayAction> {
         let UiEvent::KeyPressed { key, modifiers, .. } = event else {
             return if self.open {
-                HelpOverlayEvent::Consumed
+                Handled::Consumed
             } else {
-                HelpOverlayEvent::Ignored
+                Handled::Ignored
             };
         };
         // Ignore Ctrl/Alt/Cmd-held combos so this doesn't steal e.g. a
@@ -255,14 +310,30 @@ impl HelpOverlayController {
 
         if self.open {
             match key {
-                Key::Named(NamedKey::Escape) => self.close(),
-                Key::Char('?') if plain => self.close(),
-                _ => HelpOverlayEvent::Consumed,
+                Key::Named(NamedKey::Escape) => Handled::Event(self.close_action()),
+                Key::Char('?') if plain => Handled::Event(self.close_action()),
+                _ => Handled::Consumed,
             }
         } else if plain && matches!(key, Key::Char('?')) {
-            self.open()
+            Handled::Event(self.open_action())
         } else {
-            HelpOverlayEvent::Ignored
+            Handled::Ignored
+        }
+    }
+
+    /// Drive the open/close state machine with a backend-neutral
+    /// [`UiEvent`].
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_event`, which returns `Handled<HelpOverlayAction>` instead of `HelpOverlayEvent`"
+    )]
+    #[allow(deprecated)] // `HelpOverlayEvent` is `#[deprecated]`; this method is its own shim.
+    pub fn handle(&mut self, event: &UiEvent) -> HelpOverlayEvent {
+        match self.handle_event(event) {
+            Handled::Event(HelpOverlayAction::Opened) => HelpOverlayEvent::Opened,
+            Handled::Event(HelpOverlayAction::Closed) => HelpOverlayEvent::Closed,
+            Handled::Consumed => HelpOverlayEvent::Consumed,
+            Handled::Ignored => HelpOverlayEvent::Ignored,
         }
     }
 
@@ -619,50 +690,50 @@ mod tests {
     #[test]
     fn question_mark_opens_when_closed() {
         let mut ctrl = HelpOverlayController::new();
-        let ev = ctrl.handle(&key_ev(Key::Char('?')));
-        assert_eq!(ev, HelpOverlayEvent::Opened);
+        let ev = ctrl.handle_event(&key_ev(Key::Char('?')));
+        assert_eq!(ev, Handled::Event(HelpOverlayAction::Opened));
         assert!(ctrl.is_open());
     }
 
     #[test]
     fn other_keys_ignored_when_closed() {
         let mut ctrl = HelpOverlayController::new();
-        let ev = ctrl.handle(&key_ev(Key::Char('x')));
-        assert_eq!(ev, HelpOverlayEvent::Ignored);
+        let ev = ctrl.handle_event(&key_ev(Key::Char('x')));
+        assert_eq!(ev, Handled::Ignored);
         assert!(!ctrl.is_open());
     }
 
     #[test]
     fn escape_closes_when_open() {
         let mut ctrl = HelpOverlayController::new();
-        ctrl.open();
-        let ev = ctrl.handle(&key_ev(Key::Named(NamedKey::Escape)));
-        assert_eq!(ev, HelpOverlayEvent::Closed);
+        ctrl.open_action();
+        let ev = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Escape)));
+        assert_eq!(ev, Handled::Event(HelpOverlayAction::Closed));
         assert!(!ctrl.is_open());
     }
 
     #[test]
     fn question_mark_closes_when_open() {
         let mut ctrl = HelpOverlayController::new();
-        ctrl.open();
-        let ev = ctrl.handle(&key_ev(Key::Char('?')));
-        assert_eq!(ev, HelpOverlayEvent::Closed);
+        ctrl.open_action();
+        let ev = ctrl.handle_event(&key_ev(Key::Char('?')));
+        assert_eq!(ev, Handled::Event(HelpOverlayAction::Closed));
     }
 
     #[test]
     fn other_keys_consumed_when_open() {
         let mut ctrl = HelpOverlayController::new();
-        ctrl.open();
-        let ev = ctrl.handle(&key_ev(Key::Char('x')));
-        assert_eq!(ev, HelpOverlayEvent::Consumed);
+        ctrl.open_action();
+        let ev = ctrl.handle_event(&key_ev(Key::Char('x')));
+        assert_eq!(ev, Handled::Consumed);
         assert!(ctrl.is_open(), "unrelated keys must not close the overlay");
     }
 
     #[test]
     fn ctrl_question_mark_does_not_open() {
         let mut ctrl = HelpOverlayController::new();
-        let ev = ctrl.handle(&ctrl_ev(Key::Char('?')));
-        assert_eq!(ev, HelpOverlayEvent::Ignored);
+        let ev = ctrl.handle_event(&ctrl_ev(Key::Char('?')));
+        assert_eq!(ev, Handled::Ignored);
         assert!(!ctrl.is_open());
     }
 
@@ -673,16 +744,16 @@ mod tests {
     #[test]
     fn cmd_question_mark_does_not_open() {
         let mut ctrl = HelpOverlayController::new();
-        let ev = ctrl.handle(&cmd_ev(Key::Char('?')));
-        assert_eq!(ev, HelpOverlayEvent::Ignored);
+        let ev = ctrl.handle_event(&cmd_ev(Key::Char('?')));
+        assert_eq!(ev, Handled::Ignored);
         assert!(!ctrl.is_open());
     }
 
     #[test]
     fn toggle_flips_state() {
         let mut ctrl = HelpOverlayController::new();
-        assert_eq!(ctrl.toggle(), HelpOverlayEvent::Opened);
-        assert_eq!(ctrl.toggle(), HelpOverlayEvent::Closed);
+        assert_eq!(ctrl.toggle_action(), HelpOverlayAction::Opened);
+        assert_eq!(ctrl.toggle_action(), HelpOverlayAction::Closed);
     }
 
     #[test]
@@ -694,9 +765,26 @@ mod tests {
             position: crate::Point::new(0.0, 0.0),
             modifiers: Modifiers::default(),
         };
-        assert_eq!(ctrl.handle(&mouse), HelpOverlayEvent::Ignored);
-        ctrl.open();
-        assert_eq!(ctrl.handle(&mouse), HelpOverlayEvent::Consumed);
+        assert_eq!(ctrl.handle_event(&mouse), Handled::Ignored);
+        ctrl.open_action();
+        assert_eq!(ctrl.handle_event(&mouse), Handled::Consumed);
+    }
+
+    #[test]
+    #[allow(deprecated)] // covers the `handle`/`open`/`close`/`toggle` shims kept for pre-`Handled` callers.
+    fn deprecated_methods_still_adapt_to_help_overlay_event() {
+        let mut ctrl = HelpOverlayController::new();
+        assert_eq!(ctrl.open(), HelpOverlayEvent::Opened);
+        assert_eq!(
+            ctrl.handle(&key_ev(Key::Char('x'))),
+            HelpOverlayEvent::Consumed
+        );
+        assert_eq!(ctrl.close(), HelpOverlayEvent::Closed);
+        assert_eq!(ctrl.toggle(), HelpOverlayEvent::Opened);
+        assert_eq!(
+            ctrl.handle(&key_ev(Key::Named(NamedKey::Escape))),
+            HelpOverlayEvent::Closed
+        );
     }
 
     // ── build_cheatsheet_lines ────────────────────────────────────────

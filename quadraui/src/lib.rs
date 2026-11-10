@@ -762,7 +762,7 @@ pub use compose::{
     DualModePaletteEvent, Edge, FilePickerController, FilePickerEvent, FilePickerMode, FocusGroup,
     FocusRing, FolderPickerController, FolderPickerEvent, FormController, FormControllerEvent,
     FormDialogController, FormDialogEvent, GroupLayout, Handled, HelpAction, HelpNote,
-    HelpOverlayController, HelpOverlayEvent, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent,
+    HelpOverlayAction, HelpOverlayController, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent,
     MenuSystem, MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab,
     PanelDefinition, SectionKind, ShellPosition, SidebarEvent, SidebarPanelBody,
     SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef, SidebarSystem,
@@ -771,13 +771,15 @@ pub use compose::{
     TreeHoverTracker, ViewHelp, WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout,
     PALETTE_CHROME_ROWS,
 };
-// `StatusBarAction`, `MessageDialogEvent` and `ToastStackEvent` are
-// `#[deprecated]` (use `StatusBarInteraction::handle_event`'s `Handled<WidgetId>`,
-// `MessageDialogController::handle_event`'s `Handled<MessageDialogChoice>`, and
-// `ToastStackController::handle_event`'s `Handled<ToastStackAction>` instead).
-// Allow them here since `pub use` of a deprecated item is itself a use site.
+// `StatusBarAction`, `MessageDialogEvent`, `ToastStackEvent` and
+// `HelpOverlayEvent` are `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
+// `Handled<WidgetId>`, `MessageDialogController::handle_event`'s
+// `Handled<MessageDialogChoice>`, `ToastStackController::handle_event`'s
+// `Handled<ToastStackAction>`, and `HelpOverlayController::handle_event`'s
+// `Handled<HelpOverlayAction>` instead). Allow them here since `pub use` of a
+// deprecated item is itself a use site.
 #[allow(deprecated)]
-pub use compose::{MessageDialogEvent, StatusBarAction, ToastStackEvent};
+pub use compose::{HelpOverlayEvent, MessageDialogEvent, StatusBarAction, ToastStackEvent};
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
     text_selection_line_range, DragState, DragTarget, ScrollSurface, SurfaceScrollbar, TextRegion,

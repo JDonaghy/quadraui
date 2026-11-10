@@ -112,9 +112,14 @@ pub use form_controller::{FormController, FormControllerEvent};
 pub use form_dialog::{FormDialogController, FormDialogEvent};
 pub use handled::Handled;
 pub use help_layer::{
-    filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote,
-    HelpOverlayController, HelpOverlayEvent, HelpRegistry, ViewHelp,
+    filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote, HelpOverlayAction,
+    HelpOverlayController, HelpRegistry, ViewHelp,
 };
+// `HelpOverlayEvent` is `#[deprecated]` (use `HelpOverlayController::handle_event`'s
+// `Handled<HelpOverlayAction>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use help_layer::HelpOverlayEvent;
 pub use hover_tooltip_tracker::HoverTooltipTracker;
 pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown};
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
