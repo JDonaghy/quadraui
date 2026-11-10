@@ -323,15 +323,18 @@ def test_tab_closed_event_removes_the_tab(fmmod, tree_root):
 
 
 def test_body_divider_drag_updates_the_ratio(fmmod, tree_root):
-    """A SplitDividerDragged on the body split writes the new ratio into state,
-    which the next render reads back."""
+    """A SplitDividerDragged on the body split persists the new ratio in the
+    engine's own widget-state store -- with no app code tracking it at all:
+    `_render()`'s own raw dict keeps resending the same starting literal
+    (`BODY_SPLIT_RATIO`) before and after the drag, and the store alone is
+    what the next real render actually paints."""
     fm = _manager(fmmod, tree_root)
 
-    assert _body_split(fm)["ratio"] == pytest.approx(0.3)
+    assert fm.app.widget_state("fm:split")["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
     _send(fm, {"SplitDividerDragged": {"tree": "fm:split", "split_index": 0, "new_ratio": 0.6}})
 
-    assert fm.ratio == pytest.approx(0.6)
-    assert _body_split(fm)["ratio"] == pytest.approx(0.6)
+    assert fm.app.widget_state("fm:split")["ratio"] == pytest.approx(0.6)
+    assert _body_split(fm)["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
 
 
 def test_outer_divider_drag_is_ignored(fmmod, tree_root):
@@ -339,8 +342,7 @@ def test_outer_divider_drag_is_ignored(fmmod, tree_root):
     fm = _manager(fmmod, tree_root)
 
     _send(fm, {"SplitDividerDragged": {"tree": "fm:outer", "split_index": 0, "new_ratio": 0.9}})
-    assert fm.ratio == pytest.approx(0.3)
-    assert _body_split(fm)["ratio"] == pytest.approx(0.3)
+    assert fm.app.widget_state("fm:split")["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
 
 
 # --- chrome: toolbar legend + live status bar --------------------------------
@@ -416,24 +418,36 @@ def test_overflowing_tree_paints_a_scrollbar_on_tui(fmmod, tmp_path):
     assert fm.app.screen_contains("█")  # thumb
 
 
+def _tree_scroll_offset(fm) -> int:
+    """The tree's current scroll offset read back from the engine's own
+    widget-state store -- `examples/file_manager.py` tracks no scroll state
+    of its own, so this (called here from outside any active `fm.app` call,
+    same as `QuiApp.widget_state`'s own doc requires) is the only place it
+    is readable at all."""
+    state = fm.app.widget_state("fm:tree")
+    return 0 if state is None else state.get("scroll_offset", 0)
+
+
 def test_scroll_follows_cursor_down_and_clamps(fmmod, tmp_path):
-    """Arrowing past the visible window advances `scroll` so the cursor stays
-    painted, and the last page clamps without scrolling past the end."""
+    """Arrowing past the visible window advances the engine's own stored
+    scroll offset so the cursor stays painted, and the last page clamps
+    without scrolling past the end -- with no `scroll`/keep-visible code in
+    the app itself."""
     fm = fmmod.FileManager(_deep_root(tmp_path, 20), width=60, height=12)
 
-    assert fm.scroll == 0
+    assert _tree_scroll_offset(fm) == 0
     for _ in range(15):
         _press(fmmod, fm, fmmod.DOWN_KEY)
 
     # The cursor advanced past the first window, so the view scrolled...
-    assert fm.scroll > 0
+    assert _tree_scroll_offset(fm) > 0
     # ...and the cursored folder is actually on screen (not off the bottom).
     assert fm.app.screen_contains(fm.cursor.name)
 
     # Arrowing back to the top pulls the window back to the start.
     for _ in range(20):
         _press(fmmod, fm, fmmod.UP_KEY)
-    assert fm.scroll == 0
+    assert _tree_scroll_offset(fm) == 0
     assert fm.cursor.name == tmp_path.name
 
 

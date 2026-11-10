@@ -185,16 +185,20 @@ use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
     add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction, caret_shape,
     clear_recent_documents, click_down_up_events, collect_leaf_tooltips, color_depth_name,
-    decode_extra_primitive, dialog_severity, draw_bands, end_power_save_block, font_role,
-    guarded as core_guarded, is_default_protocol_client, key_pressed_event, login_item_enabled,
-    menu_for_surface, merge_overrides, message_dialog_options_from_buttons, paint_layout,
-    pointer_shape, record_pending_error, remove_as_default_protocol_client, render_overlays,
-    resolve_app_path, set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item,
-    step_driver, take_pending_error as core_take_pending_error, text_display_from_lines,
-    theme_color_value, toast_corner, update_apply_on_quit, update_check_for_update,
-    update_download_and_stage, window_close_reaction, with_tray, with_window, BindingHost,
-    ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, OverrideError,
-    RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling,
+    data_table_rows_and_viewport, decode_extra_primitive, dialog_severity, draw_bands,
+    end_power_save_block, font_role, guarded as core_guarded, is_default_protocol_client,
+    key_pressed_event, list_rows_and_viewport, login_item_enabled, menu_for_surface,
+    merge_overrides, message_dialog_options_from_buttons, paint_layout, pointer_shape,
+    record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
+    resolve_data_table_cursor, resolve_layout_tabs_active, resolve_list_cursor,
+    resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor,
+    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
+    take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
+    toast_corner, tree_rows_and_viewport, update_apply_on_quit, update_check_for_update,
+    update_download_and_stage, widget_state_snapshot, window_close_reaction, with_tray,
+    with_window, BindingHost, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
+    InteractionEngine, LayoutLeaf, LayoutNode, LeafDescriptor, OverrideError, PaintedHit,
+    RenderFrame, RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling,
 };
 
 /// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`
@@ -765,11 +769,22 @@ impl AppLogic for PyAppLogic {
             return;
         };
         match render_output_from_callback(callback, &self.pending_error) {
-            Some(RenderOutput::Flat(frame)) => {
+            Some(RenderOutput::Flat(mut frame)) => {
+                // Merges the engine's own stored cursor/scroll/active-tab
+                // into whatever the callback's `tree`/`list`/`data_table`/
+                // `tab_bar` slot left uncontrolled, so an arrow key or a
+                // click a prior `handle` call already applied to
+                // `InteractionEngine::widget_state` is what actually
+                // paints this frame -- see `resolve_render_frame_state`'s
+                // own doc.
+                resolve_render_frame_state(&self.engine, &mut frame);
                 draw_bands(backend, frame.as_refs(), &mut hits, &chrome_interaction);
                 self.host.set_leaf_tooltips(HashMap::new());
             }
-            Some(RenderOutput::Tree(node)) => {
+            Some(RenderOutput::Tree(mut node)) => {
+                // The layout-tree counterpart of the `resolve_render_frame_state`
+                // call above.
+                resolve_layout_node_state(&self.engine, &mut node);
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
                 paint_layout(backend, area, &node, &mut hits, &chrome_interaction);
@@ -1469,6 +1484,186 @@ fn render_output_from_callback(
             }
         }
     })
+}
+
+/// A leaf's own painted `(rows_or_items, viewport_rows)` from the most
+/// recent frame's hit map, via `viewport_rows_fn`
+/// (`tree_rows_and_viewport`/`list_rows_and_viewport`/
+/// `data_table_rows_and_viewport`) -- the same previous-frame geometry
+/// `InteractionEngine::handle`'s own `apply_tree_nav_key`/
+/// `apply_list_nav_key`/`apply_data_table_nav_key` calls already resolve a
+/// keyboard move against, reused here so a `resolve_tree_cursor`/
+/// `resolve_list_cursor`/`resolve_data_table_cursor` call agrees with
+/// whatever cursor move just landed in the store. Falls back to
+/// `fallback_rows` (the leaf's own row/item count this frame, floored at
+/// `1`) on the very first render -- before any frame has painted this id
+/// at all -- so an uncontrolled scroll offset starts at `0` rather than
+/// panicking or guessing a viewport size out of thin air.
+fn resolved_viewport_rows(
+    engine: &InteractionEngine,
+    id: WidgetId,
+    fallback_rows: usize,
+    viewport_rows_fn: impl FnOnce(&[PaintedHit], WidgetId) -> Option<(usize, usize)>,
+) -> usize {
+    viewport_rows_fn(&engine.hit_map(), id)
+        .map(|(_, viewport_rows)| viewport_rows)
+        .unwrap_or_else(|| fallback_rows.max(1))
+}
+
+/// Resolves a decoded [`RenderFrame`]'s `tree`/`list`/`data_table`/
+/// `tab_bar` slots against [`InteractionEngine::widget_state`] in place --
+/// the flat six-slot counterpart of [`resolve_layout_node_state`], called
+/// right before [`draw_bands`] paints `frame.as_refs()` so an uncontrolled
+/// cursor/scroll/active-tab a key press or click just moved in the store
+/// (via [`InteractionEngine::handle`]'s own `apply_*` calls) is what
+/// actually gets painted this frame, with no app code needed to track it.
+/// A slot the render callback left `None` is untouched; a slot whose
+/// descriptor pins an explicit value keeps winning outright, since every
+/// `resolve_*` call below returns a controlled value unchanged -- see each
+/// one's own "controlled / uncontrolled" doc.
+fn resolve_render_frame_state(engine: &InteractionEngine, frame: &mut RenderFrame) {
+    let widget_state = engine.widget_state();
+    if let Some(tree) = frame.tree.take() {
+        let viewport_rows = resolved_viewport_rows(
+            engine,
+            tree.id,
+            tree.rows.len(),
+            tree_rows_and_viewport_for_resolve,
+        );
+        frame.tree = Some(resolve_tree_cursor(widget_state, &tree, viewport_rows));
+    }
+    if let Some(list) = frame.list.take() {
+        let viewport_rows = resolved_viewport_rows(
+            engine,
+            list.id,
+            list.items.len(),
+            list_rows_and_viewport_for_resolve,
+        );
+        frame.list = Some(resolve_list_cursor(widget_state, &list, viewport_rows));
+    }
+    if let Some(table) = frame.data_table.take() {
+        let viewport_rows = resolved_viewport_rows(
+            engine,
+            table.id,
+            table.rows.len(),
+            data_table_rows_and_viewport_for_resolve,
+        );
+        frame.data_table = Some(resolve_data_table_cursor(
+            widget_state,
+            &table,
+            viewport_rows,
+        ));
+    }
+    if let Some(tab_bar) = frame.tab_bar.take() {
+        frame.tab_bar = Some(resolve_tab_bar_active(widget_state, &tab_bar));
+    }
+}
+
+/// Resolves every `Tree`/`List`/`DataTable`/`Split`/`Tabs` encountered
+/// while walking a decoded layout tree, in place -- the layout-tree
+/// counterpart of [`resolve_render_frame_state`], called right before
+/// [`paint_layout`] paints `node`. See that function's own doc for why
+/// this never needs to special-case a controlled leaf.
+fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) {
+    match node {
+        LayoutNode::Row(container) | LayoutNode::Column(container) => {
+            for child in &mut container.children {
+                resolve_layout_node_state(engine, child);
+            }
+        }
+        LayoutNode::Leaf(leaf) => resolve_layout_leaf_state(engine, leaf),
+        LayoutNode::Split(split_node) => {
+            split_node.split = resolve_split_ratio(engine.widget_state(), &split_node.split);
+            resolve_layout_node_state(engine, &mut split_node.first);
+            resolve_layout_node_state(engine, &mut split_node.second);
+        }
+        LayoutNode::Tabs(tabs_node) => {
+            resolve_layout_tabs_active(engine.widget_state(), tabs_node);
+            for entry in &mut tabs_node.entries {
+                resolve_layout_node_state(engine, &mut entry.content);
+            }
+        }
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this arm is its own wire plumbing.
+        LayoutNode::Panel(panel_node) => {
+            resolve_layout_node_state(engine, &mut panel_node.content);
+        }
+        LayoutNode::SidebarPanel(sidebar_node) => {
+            resolve_layout_node_state(engine, &mut sidebar_node.content);
+        }
+        LayoutNode::SplitTree(split_tree_node) => {
+            for leaf in &mut split_tree_node.leaves {
+                resolve_layout_node_state(engine, leaf);
+            }
+        }
+    }
+}
+
+/// One [`LayoutLeaf`]'s own resolution -- the per-leaf step
+/// [`resolve_layout_node_state`]'s `LayoutNode::Leaf` arm defers to, mirroring
+/// [`resolve_render_frame_state`]'s per-slot handling for the four leaf
+/// kinds the widget-state store tracks. A `Button`/`TextDisplay`/`Extra`
+/// leaf is untouched -- none of those have cursor/scroll/active-tab state.
+fn resolve_layout_leaf_state(engine: &InteractionEngine, leaf: &mut LayoutLeaf) {
+    match &mut leaf.descriptor {
+        LeafDescriptor::Tree(tree) => {
+            let viewport_rows = resolved_viewport_rows(
+                engine,
+                tree.id,
+                tree.rows.len(),
+                tree_rows_and_viewport_for_resolve,
+            );
+            *tree = resolve_tree_cursor(engine.widget_state(), tree, viewport_rows);
+        }
+        LeafDescriptor::List(list) => {
+            let viewport_rows = resolved_viewport_rows(
+                engine,
+                list.id,
+                list.items.len(),
+                list_rows_and_viewport_for_resolve,
+            );
+            *list = resolve_list_cursor(engine.widget_state(), list, viewport_rows);
+        }
+        LeafDescriptor::DataTable(table) => {
+            let viewport_rows = resolved_viewport_rows(
+                engine,
+                table.id,
+                table.rows.len(),
+                data_table_rows_and_viewport_for_resolve,
+            );
+            *table = resolve_data_table_cursor(engine.widget_state(), table, viewport_rows);
+        }
+        LeafDescriptor::TabBar(tab_bar) => {
+            *tab_bar = resolve_tab_bar_active(engine.widget_state(), tab_bar);
+        }
+        LeafDescriptor::Button(_) | LeafDescriptor::TextDisplay(_) | LeafDescriptor::Extra(_) => {}
+    }
+}
+
+/// Thin by-value wrappers over `quadraui_binding_core::{tree,list,data_table}_rows_and_viewport`
+/// matching [`resolved_viewport_rows`]'s `impl FnOnce` parameter -- the
+/// core functions themselves take `id: WidgetId` positionally after the
+/// hit map, exactly the shape these wrappers already have, but naming them
+/// keeps each `resolved_viewport_rows` call site readable about which
+/// widget kind it's resolving.
+fn tree_rows_and_viewport_for_resolve(
+    hit_map: &[PaintedHit],
+    id: WidgetId,
+) -> Option<(usize, usize)> {
+    tree_rows_and_viewport(hit_map, id).map(|(rows, viewport_rows)| (rows.len(), viewport_rows))
+}
+
+fn list_rows_and_viewport_for_resolve(
+    hit_map: &[PaintedHit],
+    id: WidgetId,
+) -> Option<(usize, usize)> {
+    list_rows_and_viewport(hit_map, id)
+}
+
+fn data_table_rows_and_viewport_for_resolve(
+    hit_map: &[PaintedHit],
+    id: WidgetId,
+) -> Option<(usize, usize)> {
+    data_table_rows_and_viewport(hit_map, id)
 }
 
 /// Wraps [`PyAppLogic`] for `run_native`'s native runner loop (`GtkRunner`
@@ -3999,6 +4194,39 @@ impl QuiApp {
             app.driver.render();
             take_pending_error(app.driver.app_mut())?;
             Ok(app.driver.screen_contains(needle))
+        })
+    }
+
+    /// The engine's own stored state for widget `id` -- a `Tree`/`List`/
+    /// `DataTable`'s cursor + scroll, a `Split`'s dragged ratio, a
+    /// `TabBar`/tab group's active tab, and/or a `Tree`'s expanded row
+    /// set, whichever apply -- as a `dict` holding only the keys that do
+    /// (`selected_path`, `selected_idx`, `scroll_offset`, `ratio`,
+    /// `active_tab`, `expanded`), or `None` if `id` isn't being tracked
+    /// under any of those shapes at all.
+    ///
+    /// Reads back what the render callback's own `render` resolves every
+    /// frame (see `resolve_render_frame_state`/`resolve_layout_node_state`)
+    /// merged with whatever a key press or click already applied via
+    /// `InteractionEngine::handle` -- an app that leaves a tree's
+    /// `selected_path`/`scroll_offset` uncontrolled calls this after an
+    /// event to read back where the cursor landed, instead of tracking it
+    /// by hand. Renders first (like `screen`/`screen_contains`), so this
+    /// reflects a just-applied move even before the next `step`/`run`
+    /// call would otherwise repaint.
+    fn widget_state(&mut self, py: Python<'_>, id: &str) -> PyResult<Option<Py<PyAny>>> {
+        self.guarded(|app| {
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            let snapshot =
+                widget_state_snapshot(app.driver.app().engine.widget_state(), WidgetId::new(id));
+            snapshot
+                .map(|snapshot| {
+                    pythonize::pythonize(py, &snapshot)
+                        .map(|value| value.unbind())
+                        .map_err(|err| InternalError::new_err(format!("widget_state: {err}")))
+                })
+                .transpose()
         })
     }
 
