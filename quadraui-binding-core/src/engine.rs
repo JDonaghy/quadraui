@@ -39,7 +39,7 @@ use crate::hit::{
 };
 use crate::host::{
     apply_data_table_nav_key, apply_list_nav_key, apply_split_divider_drag, apply_tab_activated,
-    apply_tree_nav_key, apply_tree_toggle_expand,
+    apply_tab_closed, apply_tree_nav_key, apply_tree_toggle_expand,
 };
 use crate::semantic::{focus_scoped_key_event, number_input_click_event, semantic_event_for_hit};
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
@@ -1814,22 +1814,39 @@ impl InteractionEngine {
         // uncontrolled-by-default, regardless of what `sink` goes on to do
         // with them: a divider drag's resolved ratio
         // ([`crate::host::resolve_split_ratio`]'s own counterpart), a
-        // clicked tab becoming active
-        // ([`crate::host::resolve_tab_bar_active`]'s), or a toggled tree
-        // row's expand state ([`crate::host::resolve_tree_expansion`]'s).
-        // Never changes `event` itself — a controlled app's own handling
-        // of the same event is unaffected.
+        // clicked tab becoming active or a closed tab shifting whichever
+        // index was active ([`crate::host::resolve_tab_bar_active`]'s), or
+        // a toggled tree row's expand state
+        // ([`crate::host::resolve_tree_expansion`]'s). Never changes
+        // `event` itself — a controlled app's own handling of the same
+        // event is unaffected. `persisted_state` mirrors the Tree-cursor
+        // hook above (`nav_applied`'s own `Reaction::Redraw.merge`): a
+        // binding with no render callback of its own (so
+        // `host::callback_reaction_for_render`'s render-triggered redraw
+        // never kicks in) still needs the frame that paints the persisted
+        // change forced here, even when `sink.dispatch` below leaves the
+        // event itself unhandled.
+        let mut persisted_state = Reaction::Continue;
         match &event {
             UiEvent::SplitDividerDragged {
-                tree, new_ratio, ..
+                tree,
+                split_index,
+                new_ratio,
             } => {
-                apply_split_divider_drag(&self.widget_state, *tree, *new_ratio);
+                apply_split_divider_drag(&self.widget_state, *tree, *split_index, *new_ratio);
+                persisted_state = Reaction::Redraw;
             }
             UiEvent::TabBar(id, TabBarEvent::TabActivated { index }) => {
                 apply_tab_activated(&self.widget_state, *id, *index);
+                persisted_state = Reaction::Redraw;
+            }
+            UiEvent::TabBar(id, TabBarEvent::TabClosed { index }) => {
+                apply_tab_closed(&self.widget_state, *id, *index);
+                persisted_state = Reaction::Redraw;
             }
             UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }) => {
                 apply_tree_toggle_expand(&self.widget_state, *id, path);
+                persisted_state = Reaction::Redraw;
             }
             _ => {}
         }
@@ -1850,6 +1867,7 @@ impl InteractionEngine {
             .merge(hover_reaction)
             .merge(focus_reaction)
             .merge(event_reaction)
+            .merge(persisted_state)
     }
 }
 
@@ -1911,19 +1929,20 @@ mod tests {
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
         AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, MouseButton, NamedKey,
-        Point, Reaction, Rect, Split, TabBarEvent, ToolbarEvent, TreeEvent, TreeView, UiEvent,
-        WidgetId,
+        Point, Reaction, Rect, Split, TabBar, TabBarEvent, TabBarHit, ToolbarEvent, TreeEvent,
+        TreeView, UiEvent, WidgetId,
     };
 
     use super::{EventSink, InteractionEngine};
     use crate::drag::find_split_tree_layout;
     use crate::hit::HitDetail;
     use crate::host::{
-        resolve_data_table_cursor, resolve_list_cursor, resolve_split_ratio,
-        resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion,
+        resolve_data_table_cursor, resolve_layout_tabs_active, resolve_list_cursor,
+        resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion,
     };
     use crate::layout::{
-        LayoutLeaf, LayoutNode, LayoutPanel, LayoutSplit, LayoutSplitTree, LeafDescriptor, Spacing,
+        LayoutLeaf, LayoutNode, LayoutPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry,
+        LayoutTabs, LeafDescriptor, Spacing,
     };
     use crate::render::{
         draw_bands, list_viewport_rows, paint_layout, tree_viewport_rows, RenderRefs,
@@ -4103,6 +4122,177 @@ mod tests {
         assert!(
             resolved.tabs[2].is_active,
             "the clicked tab must stay active even though the descriptor never marks any tab active"
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single `LayoutTabs` tab group (via
+    /// [`paint_layout`]'s `LayoutNode::Tabs` arm), resolving it through
+    /// [`resolve_layout_tabs_active`] before every render — the `LayoutTabs`
+    /// counterpart of [`SplitLogic`]. Rebuilds a fresh [`LayoutTabs`] from
+    /// `tab_count` on every render (never mutated by a click), mirroring
+    /// [`SplitLogic::split`]'s "raw descriptor an app would hand a binding"
+    /// shape; `LayoutNode` isn't `Clone` (see [`crate::host::resolve_layout_tabs_active`]'s
+    /// own doc), so there's no stored `LayoutTabs` field to clone from
+    /// instead.
+    struct TabsLogic {
+        tab_count: usize,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl TabsLogic {
+        fn build_tabs(&self) -> LayoutTabs {
+            let tab_bar = TabBar {
+                id: WidgetId::new("tabs"),
+                tabs: (0..self.tab_count)
+                    .map(|i| quadraui::TabItem {
+                        label: format!("Tab {i}"),
+                        ..Default::default()
+                    })
+                    .collect(),
+                scroll_offset: 0,
+                right_segments: Vec::new(),
+                active_accent: None,
+                show_tab_close: false,
+                compact: false,
+            };
+            let entries = (0..self.tab_count)
+                .map(|i| LayoutTabEntry {
+                    id: format!("content-{i}"),
+                    content: Box::new(LayoutNode::Leaf(LayoutLeaf {
+                        id: format!("content-{i}-btn"),
+                        descriptor: LeafDescriptor::Button(Button::new(
+                            WidgetId::new(format!("content-{i}-btn")),
+                            format!("Tab {i} body"),
+                        )),
+                        scroll_px: None,
+                    })),
+                })
+                .collect();
+            LayoutTabs {
+                tab_bar,
+                entries,
+                selected: 0,
+                spacing: Spacing::default(),
+                focused_index: None,
+            }
+        }
+    }
+
+    impl AppLogic for TabsLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut tabs = self.build_tabs();
+            resolve_layout_tabs_active(self.engine.widget_state(), &mut tabs);
+            let mut hits = Vec::new();
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let node = LayoutNode::Tabs(tabs);
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Clicking a tab body inside a `LayoutTabs` tab group — with no app
+    /// state at all, the descriptor keeps rebuilding the exact same
+    /// `selected: 0` every render — moves BOTH the strip's own active
+    /// highlight AND the content pane `paint_layout`'s `LayoutNode::Tabs`
+    /// arm paints underneath it. This is the acceptance case
+    /// `resolve_tab_bar_active` alone cannot satisfy: a binding that
+    /// resolved only the strip would highlight tab 1 while this render
+    /// kept painting tab 0's own body underneath it.
+    #[test]
+    fn clicking_a_tab_in_a_layout_tabs_group_moves_both_the_strip_and_the_content_pane() {
+        let logic = TabsLogic {
+            tab_count: 3,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 10);
+        driver.render();
+
+        // Starts on tab 0's own content, never tab 1's.
+        {
+            let hits = driver.app().engine.hit_map();
+            assert!(hits.iter().any(|hit| matches!(
+                hit,
+                crate::hit::PaintedHit::Button { id, .. } if *id == WidgetId::new("content-0-btn")
+            )));
+        }
+
+        let (strip_area, strip_layout) = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    crate::hit::PaintedHit::TabBar { area, layout, .. } => {
+                        Some((*area, layout.clone()))
+                    }
+                    _ => None,
+                })
+                .expect("the tab strip should have painted")
+        };
+        let tab1_rect = strip_layout
+            .hit_regions
+            .iter()
+            .find_map(|(rect, hit)| match hit {
+                TabBarHit::Tab(1) => Some(*rect),
+                _ => None,
+            })
+            .expect("tab 1 should have its own hit region");
+        let click_point = Point::new(
+            strip_area.x + tab1_rect.x + tab1_rect.width / 2.0,
+            strip_area.y + tab1_rect.y + tab1_rect.height / 2.0,
+        );
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: click_point,
+            modifiers: Modifiers::default(),
+        });
+        driver.dispatch(UiEvent::MouseUp {
+            widget: None,
+            button: MouseButton::Left,
+            position: click_point,
+        });
+
+        // The app's own `LayoutTabs` is never touched by the click — every
+        // render still rebuilds the exact same `selected: 0` it always
+        // has, the "uncontrolled, no app state" shape this test is about.
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        assert!(
+            hits.iter().any(|hit| matches!(
+                hit,
+                crate::hit::PaintedHit::Button { id, .. } if *id == WidgetId::new("content-1-btn")
+            )),
+            "the content pane must follow the clicked tab, not stay on the descriptor's own tab 0"
+        );
+        assert!(
+            !hits.iter().any(|hit| matches!(
+                hit,
+                crate::hit::PaintedHit::Button { id, .. } if *id == WidgetId::new("content-0-btn")
+            )),
+            "tab 0's own content must stop painting once tab 1 is active"
+        );
+        assert!(
+            strip_layout
+                .hit_regions
+                .iter()
+                .any(|(_, hit)| matches!(hit, TabBarHit::Tab(1))),
+            "sanity: tab 1 must have been clickable in the first place"
         );
     }
 
