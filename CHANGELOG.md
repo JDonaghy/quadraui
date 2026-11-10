@@ -68,6 +68,15 @@ only a push to `main` runs this workflow.
   `j`/`k`/`Home`/`End`/`PageUp`/`PageDown`/`Enter`/`Space` map instead of
   maintaining a second hand-copied one that can silently drift. Purely
   additive — no existing call site changes.
+- Binding `Tree`/`List`/`DataTable` row cursor + scroll-into-view, kept in
+  the binding's widget-state store and uncontrolled by default (#2305): a
+  focused tree, list or table moves its own cursor on
+  `Up`/`Down`/`j`/`k`/`Home`/`End`/`PageUp`/`PageDown` and keeps it inside
+  the painted viewport without the app re-sending a descriptor. Supplying a
+  non-zero `scroll_offset` (or a non-zero `ListView::selected_idx` /
+  `Some` `DataTable::selected_idx`) pins that slot to the app instead.
+  Navigation keys still reach the app's own handler as the focus-scoped raw
+  `KeyPressed`, so a controlled app's key handling is unchanged.
 - `WidgetId: From<&String>` (#2178): lets id-taking `compose` methods accept
   `impl Into<WidgetId>` without breaking an existing call site that passes
   a borrowed `&String` (the common shape for an owned id threaded through a

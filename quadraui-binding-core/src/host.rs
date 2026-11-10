@@ -843,9 +843,11 @@ fn scroll_into_view(scroll_offset: usize, row: usize, viewport_rows: usize) -> u
 /// `crate::hit::list_rows_and_viewport` against the most recent render's
 /// hit map. Returns `true` (and leaves [`WidgetState`] updated) only when
 /// a recognized navigation key actually moved the cursor; `false`
-/// otherwise, so the caller falls through unchanged — today's
-/// `crate::semantic::list_key_event` Enter/Up/Down event translation, or
-/// the raw `ListViewEvent::KeyPressed` fallback for anything else.
+/// otherwise. Either way the event the caller goes on to dispatch is
+/// unchanged — `crate::semantic::list_key_event`'s Enter translation, or
+/// the raw `ListViewEvent::KeyPressed` fallback for everything else,
+/// navigation keys included, so an app that tracks its own
+/// `ListView::selected_idx` still sees them.
 pub fn apply_list_nav_key(
     widget_state: &WidgetState,
     id: WidgetId,
