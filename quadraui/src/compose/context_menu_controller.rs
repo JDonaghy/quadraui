@@ -132,7 +132,7 @@ struct OpenMenu {
 /// either controller depending on the other's state. Menu *width* isn't
 /// included: this controller uses a fixed `20.0 * lh`, while
 /// `MenuSystem` measures its dropdown's actual item text via
-/// `dropdown_width`, so the two have never shared that part.
+/// `dropdown_width`, so the two don't share that part.
 pub(crate) fn menu_item_heights(lh: f32) -> (f32, f32) {
     let item_h = (lh * 1.4).round().max(lh);
     let sep_h = (lh * 0.5).round().max(1.0);

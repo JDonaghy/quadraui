@@ -194,7 +194,7 @@ impl<A: AppLogic> MacDriver<A> {
         };
         let viewport = crate::Viewport::new(self.width as f32, self.height as f32, 1.0);
         let context_ptr = self.surface.context_ptr();
-        self.core.apply_outcome(reaction.into(), |backend, app| {
+        self.core.apply_outcome(reaction, |backend, app| {
             render_frame(backend, app, viewport, context_ptr);
         })
     }

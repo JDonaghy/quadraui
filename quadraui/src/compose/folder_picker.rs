@@ -30,7 +30,7 @@
 //! let mut picker = FolderPickerController::rooted_at(
 //!     std::env::current_dir().unwrap(),
 //!     vec![],       // no extra file names to surface
-//! );                // hidden dirs stay off by default; chain
+//! );                 // hidden dirs stay off by default; chain
 //!                    // `.with_show_hidden(true)` to surface them
 //!
 //! // In AppLogic::render:
@@ -74,7 +74,7 @@ use crate::{
 /// ```
 pub const PALETTE_CHROME_ROWS: usize = 4;
 
-/// Default recursion depth for [`FolderPickerController::new`].
+/// Default recursion depth for [`FolderPickerController::rooted_at`].
 ///
 /// Override per-instance with [`FolderPickerController::with_max_depth`].
 pub const DEFAULT_MAX_DEPTH: usize = 5;

@@ -109,10 +109,8 @@ use crate::runner::Reaction;
 /// What the frame/event loop should do after one event — or the
 /// periodic `tick` — has been handled by the app.
 ///
-/// Every backend runner used to declare this as its own variant-for-
-/// variant-identical enum. It is now a plain alias for [`Reaction`] —
-/// the two were never actually different types, just two names for the
-/// same four outcomes — so [`Reaction::merge`] is the one merge
+/// A plain alias for [`Reaction`]: the two are the same four outcomes
+/// under two names, so [`Reaction::merge`] is the one merge
 /// implementation both the public `AppLogic::handle` contract and this
 /// crate-internal plumbing share, and no conversion is needed at the
 /// boundary between them.
@@ -152,13 +150,12 @@ pub(crate) trait ReactionSink {
     fn request_frame_in(&self, delay: Duration);
 }
 
-/// Apply an outcome — an [`EventOutcome`] or anything that converts into
-/// one, e.g. a raw [`Reaction`] — to a [`ReactionSink`]. Replaces what
-/// used to be up to three near-identical `match` functions (GTK had two,
-/// macOS had one) with a single definition.
+/// Apply an [`EventOutcome`] to a [`ReactionSink`]: the single definition
+/// every GTK and macOS call site shares instead of its own near-identical
+/// `match`.
 #[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
-pub(crate) fn apply_outcome(outcome: impl Into<EventOutcome>, sink: &impl ReactionSink) {
-    match outcome.into() {
+pub(crate) fn apply_outcome(outcome: EventOutcome, sink: &impl ReactionSink) {
+    match outcome {
         EventOutcome::Continue => {}
         EventOutcome::Redraw => sink.request_redraw(),
         EventOutcome::RedrawAfter(d) => sink.request_frame_in(d),
@@ -987,13 +984,6 @@ mod reaction_sink_tests {
         assert_eq!(sink.exits.get(), 1);
     }
 
-    #[test]
-    fn apply_outcome_accepts_a_raw_reaction() {
-        let sink = RecordingSink::new();
-        apply_outcome(Reaction::Redraw, &sink);
-        assert_eq!(sink.redraws.get(), 1);
-    }
-
     /// `RedrawAfter` must reach `request_frame_in`, not
     /// `request_redraw` — the whole point is *not* forcing a repaint now.
     #[test]
@@ -1008,16 +998,6 @@ mod reaction_sink_tests {
         assert_eq!(
             *sink.frame_requests.borrow(),
             vec![Duration::from_millis(100)]
-        );
-    }
-
-    #[test]
-    fn apply_outcome_accepts_a_raw_redraw_after_reaction() {
-        let sink = RecordingSink::new();
-        apply_outcome(Reaction::RedrawAfter(Duration::from_millis(50)), &sink);
-        assert_eq!(
-            *sink.frame_requests.borrow(),
-            vec![Duration::from_millis(50)]
         );
     }
 }

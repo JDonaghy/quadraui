@@ -285,7 +285,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
             }
             // Keep the *earliest* `RedrawAfter` deadline seen
             // in this batch rather than the first non-`Continue` one — see
-            // `EventOutcome::merge`'s doc for why that distinction matters.
+            // `Reaction::merge`'s doc for why that distinction matters.
             outcome = outcome.merge(step);
         }
         return outcome;
@@ -319,7 +319,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         let mut outcome = EventOutcome::Continue;
         for ev in events {
             let step = if matches!(ev, UiEvent::MouseMoved { .. }) {
-                app.handle(ev, backend).into()
+                app.handle(ev, backend)
             } else {
                 dispatch_event(ev, backend, app, caret_visible, caret_pause)
             };
@@ -327,7 +327,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
                 return EventOutcome::Exit;
             }
             // Earliest `RedrawAfter` wins — see
-            // `EventOutcome::merge`'s doc.
+            // `Reaction::merge`'s doc.
             outcome = outcome.merge(step);
         }
         return outcome;
@@ -354,7 +354,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
             .next()
             .expect("dispatch_mouse_up always returns exactly one MouseUp")
         };
-        return app.handle(ev, backend).into();
+        return app.handle(ev, backend);
     }
 
     // Everything else — double-click folding, ActivityBar redirect,
