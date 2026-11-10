@@ -888,22 +888,28 @@ impl TabGroupController {
 
     /// Switch the active tab in `pane_idx` to `tab_id`.
     /// Returns `false` when the pane index or tab id is not found.
-    pub fn switch_tab(&mut self, pane_idx: usize, tab_id: &str) -> bool {
+    pub fn switch_tab(&mut self, pane_idx: usize, tab_id: impl Into<WidgetId>) -> bool {
+        let tab_id = tab_id.into();
         self.panes
             .get_mut(pane_idx)
-            .map(|p| p.activate_tab(tab_id))
+            .map(|p| p.activate_tab(tab_id.as_str()))
             .unwrap_or(false)
     }
 
     /// Close a tab in `pane_idx`. Returns the event produced (which may be
     /// `PaneCollapsed` when the last tab is closed), or `None` when the pane
     /// index / tab id is not found.
-    pub fn close_tab(&mut self, pane_idx: usize, tab_id: &str) -> Option<TabGroupEvent> {
+    pub fn close_tab(
+        &mut self,
+        pane_idx: usize,
+        tab_id: impl Into<WidgetId>,
+    ) -> Option<TabGroupEvent> {
+        let tab_id = tab_id.into();
         let pane = self.panes.get_mut(pane_idx)?;
-        if !pane.remove_tab(tab_id) {
+        if !pane.remove_tab(tab_id.as_str()) {
             return None;
         }
-        let tab_id_owned = tab_id.to_string();
+        let tab_id_owned = tab_id.as_str().to_string();
         if pane.is_empty() {
             // Collapse the pane.
             self.collapse_pane(pane_idx);
@@ -2140,6 +2146,14 @@ mod tests {
         let mut ctrl = make_group();
         assert!(!ctrl.switch_tab(0, "no-such"));
         assert_eq!(ctrl.panes[0].active_tab_id(), "t0"); // unchanged
+    }
+
+    #[test]
+    fn switch_tab_and_close_tab_also_accept_a_widget_id_directly() {
+        let mut ctrl = make_group();
+        assert!(ctrl.switch_tab(0, WidgetId::new("t1")));
+        assert_eq!(ctrl.panes[0].active_tab_id(), "t1");
+        assert!(ctrl.close_tab(0, WidgetId::new("t1")).is_some());
     }
 
     // ── Add tab ───────────────────────────────────────────────────────────────

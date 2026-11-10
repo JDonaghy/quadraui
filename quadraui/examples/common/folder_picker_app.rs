@@ -57,7 +57,7 @@ impl FolderPickerApp {
     /// happens to sit under.
     pub fn with_root(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
-        let picker = FolderPickerController::new(root.clone(), vec![], false);
+        let picker = FolderPickerController::rooted_at(root.clone(), vec![]);
         Self {
             picker: Some(picker),
             confirmed_path: None,
@@ -185,11 +185,8 @@ impl AppLogic for FolderPickerApp {
                     Key::Char('o') => {
                         // Reopen at the root this app was constructed with
                         // (the process's working directory for `new()`).
-                        self.picker = Some(FolderPickerController::new(
-                            self.root.clone(),
-                            vec![],
-                            false,
-                        ));
+                        self.picker =
+                            Some(FolderPickerController::rooted_at(self.root.clone(), vec![]));
                         self.status =
                             "Open Folder picker — navigate and press Enter to confirm".into();
                         return Reaction::Redraw;

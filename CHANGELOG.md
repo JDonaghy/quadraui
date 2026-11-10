@@ -59,6 +59,19 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 ### Added
+- `WidgetId: From<&String>` (#2178): lets id-taking `compose` methods accept
+  `impl Into<WidgetId>` without breaking an existing call site that passes
+  a borrowed `&String` (the common shape for an owned id threaded through a
+  closure), alongside the pre-existing `From<&str>`/`From<String>`.
+- `WorkspaceController::{index_of, contains, is_preview, promote, activate,
+  close, set_label, set_dirty}`, `BottomPanelController::close_tab`, and
+  `TabGroupController::{switch_tab, close_tab}` (#2178) now take
+  `impl Into<WidgetId>` instead of `&str` — a raw string literal still
+  works unchanged (`&str`/`String`/`&String` all convert), and a caller
+  that already holds a `WidgetId` no longer needs `.as_str()` first. Pure
+  signature widening, not a deprecation: every existing `&str` call site
+  across this crate's own tests, examples, and `quadraui-gallery` compiles
+  unchanged.
 - `compose::Handled<E>` (#2174): shared "did you handle it" return type for
   compose controller `handle_*` methods — `Event(E)` (a semantic payload to
   route further), `Consumed` (internal state changed, redraw, nothing to
@@ -249,6 +262,28 @@ only a push to `main` runs this workflow.
   in this PR; `handle_click` stays as a thin adapter with its own tests
   still passing. Removal target: same as `StatusBarInteraction::handle`
   above.
+- `TreeController::jump_to_edge` (#2178): use `move_selection_to_edge`,
+  which takes the new `Edge::Start`/`Edge::End` enum instead of a
+  `to_start: bool` positional param. Every in-repo caller
+  (`TreeController::handle_key`, `SidebarSystem`'s own selection-mode key
+  dispatch) migrates in this PR; `jump_to_edge` stays as a thin adapter
+  with its own test still passing. Removal target: not before a 0.10.0
+  bump.
+- `ModalStack::push_focusable` (#2178): use `push_with_focusable`, which
+  takes the new `Focusable::Yes`/`Focusable::No` enum instead of a
+  `focusable: bool` positional param. Every in-repo caller (`push`,
+  `push_float`) migrates in this PR; `push_focusable` stays as a thin
+  adapter with its own test still passing. Removal target: not before a
+  0.10.0 bump.
+- `FolderPickerController::new` (#2178): use `rooted_at`, which drops the
+  trailing `show_hidden: bool` positional param — chain
+  `.with_show_hidden(true)` if needed, mirroring the existing
+  `with_id`/`with_ignore_dirs`/`with_max_depth` builders. Every in-repo
+  caller (`examples/common/folder_picker_app.rs`, `tui::services`'s
+  native folder-open dialog fallback, `quadraui-gallery`'s file-picker
+  demo, and this file's own test suite) migrates in this PR; `new` stays
+  as a thin adapter with its own tests still passing. Removal target: not
+  before a 0.10.0 bump.
 
 ### Fixed
 - `FilePickerController` (#2172) now shares its query/list/selection/scroll

@@ -356,20 +356,22 @@ impl WorkspaceController {
     }
 
     /// Strip index of `id`, or `None` when it isn't open.
-    pub fn index_of(&self, id: &str) -> Option<usize> {
-        self.docs.iter().position(|d| d.id == id)
+    pub fn index_of(&self, id: impl Into<WidgetId>) -> Option<usize> {
+        let id = id.into();
+        self.docs.iter().position(|d| d.id == id.as_str())
     }
 
     /// Whether `id` is open.
-    pub fn contains(&self, id: &str) -> bool {
+    pub fn contains(&self, id: impl Into<WidgetId>) -> bool {
         self.index_of(id).is_some()
     }
 
     /// Whether `id` is the workspace's single preview document. See the
     /// module doc's *Preview tabs* section. `false` for an unknown id and
     /// for a permanent (promoted or never-preview) document.
-    pub fn is_preview(&self, id: &str) -> bool {
-        self.preview.as_deref() == Some(id)
+    pub fn is_preview(&self, id: impl Into<WidgetId>) -> bool {
+        let id = id.into();
+        self.preview.as_deref() == Some(id.as_str())
     }
 
     /// Scroll offset the last [`Self::render`] resolved — the index of
@@ -466,18 +468,21 @@ impl WorkspaceController {
     /// triggers reduces to — most of them (saving, an explicit pin) have
     /// no other `WorkspaceController` hook and call this directly from
     /// the host's own event handling.
-    pub fn promote(&mut self, id: &str) -> Option<WorkspaceEvent> {
+    pub fn promote(&mut self, id: impl Into<WidgetId>) -> Option<WorkspaceEvent> {
+        let id = id.into();
         if !self.is_preview(id) {
             return None;
         }
         self.preview = None;
-        Some(WorkspaceEvent::Promoted { id: id.to_string() })
+        Some(WorkspaceEvent::Promoted {
+            id: id.as_str().to_string(),
+        })
     }
 
     /// Activate the document with `id`. Returns an empty `Vec` when `id`
     /// isn't open or is already active. Promotes when `id` is the
     /// preview — "selecting the preview tab" (see the module doc).
-    pub fn activate(&mut self, id: &str) -> Vec<WorkspaceEvent> {
+    pub fn activate(&mut self, id: impl Into<WidgetId>) -> Vec<WorkspaceEvent> {
         match self.index_of(id) {
             Some(index) => self.activate_index(index),
             None => Vec::new(),
@@ -529,7 +534,7 @@ impl WorkspaceController {
     /// This ignores [`WorkspaceDoc::closable`]: that flag governs the
     /// *tab strip's* close affordance (see [`Self::handle_click`]), not
     /// the host's ability to close a document programmatically.
-    pub fn close(&mut self, id: &str) -> Vec<WorkspaceEvent> {
+    pub fn close(&mut self, id: impl Into<WidgetId>) -> Vec<WorkspaceEvent> {
         let Some(index) = self.index_of(id) else {
             return Vec::new();
         };
@@ -605,7 +610,7 @@ impl WorkspaceController {
     }
 
     /// Replace `id`'s tab label. Returns `false` when `id` isn't open.
-    pub fn set_label(&mut self, id: &str, label: impl Into<String>) -> bool {
+    pub fn set_label(&mut self, id: impl Into<WidgetId>, label: impl Into<String>) -> bool {
         match self.index_of(id) {
             Some(i) => {
                 self.docs[i].label = label.into();
@@ -628,7 +633,8 @@ impl WorkspaceController {
     /// otherwise empty, whether or not `id` was found. Use
     /// [`Self::contains`] first if the caller needs to distinguish
     /// "unknown id" from "known id, nothing to report".
-    pub fn set_dirty(&mut self, id: &str, dirty: bool) -> Vec<WorkspaceEvent> {
+    pub fn set_dirty(&mut self, id: impl Into<WidgetId>, dirty: bool) -> Vec<WorkspaceEvent> {
+        let id = id.into();
         let Some(i) = self.index_of(id) else {
             return Vec::new();
         };
@@ -1047,6 +1053,28 @@ mod tests {
         let mut ws = ws(&["a"]);
         assert_eq!(ws.close("ghost"), vec![]);
         assert_eq!(ws.len(), 1);
+    }
+
+    #[test]
+    fn id_taking_methods_also_accept_a_widget_id_directly() {
+        // Every id-taking method is `impl Into<WidgetId>` — a raw `&str`
+        // (every other test in this module) and an actual `WidgetId` both
+        // resolve to the same document.
+        let mut ws = ws(&["a"]);
+        let a = WidgetId::new("a");
+        assert!(ws.contains(a));
+        assert_eq!(ws.index_of(a), Some(0));
+        assert!(!ws.is_preview(a));
+        assert_eq!(ws.activate(a), vec![], "already active, so a no-op");
+        assert!(ws.set_label(a, "Alpha"));
+        assert_eq!(
+            ws.close(a),
+            vec![WorkspaceEvent::Closed {
+                id: "a".into(),
+                index: 0
+            }]
+        );
+        assert!(!ws.contains(a));
     }
 
     // ── Cycling ─────────────────────────────────────────────────────

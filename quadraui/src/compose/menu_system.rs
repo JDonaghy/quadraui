@@ -15,6 +15,7 @@
 //! }
 //! ```
 
+use super::context_menu_controller::menu_item_heights;
 use crate::backend::{Backend, ResolvedMenuStyle};
 use crate::event::{Rect, UiEvent};
 use crate::interaction::InteractionState;
@@ -749,8 +750,7 @@ impl MenuSystem {
         let viewport_rect = backend.context_menu_viewport();
         let ctx_menu = self.build_dropdown(open_idx);
         let menu_width = dropdown_width(backend, &ctx_menu.items, lh);
-        let item_h = (lh * 1.4).round().max(lh);
-        let sep_h = (lh * 0.5).round().max(1.0);
+        let (item_h, sep_h) = menu_item_heights(lh);
         let layout = ctx_menu.layout_at(anchor, viewport_rect, menu_width, |i| {
             if ctx_menu.items[i].is_separator() {
                 ContextMenuItemMeasure::new(sep_h)
@@ -777,8 +777,7 @@ impl MenuSystem {
         stack.push((root_menu, root_layout));
 
         let lh = backend.chrome_line_height();
-        let item_h = (lh * 1.4).round().max(lh);
-        let sep_h = (lh * 0.5).round().max(1.0);
+        let (item_h, sep_h) = menu_item_heights(lh);
         let vp = backend.context_menu_viewport();
 
         for (depth, &path_idx) in self.submenu_path.iter().enumerate() {

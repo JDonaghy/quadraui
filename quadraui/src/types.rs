@@ -547,6 +547,12 @@ impl From<String> for WidgetId {
     }
 }
 
+impl From<&String> for WidgetId {
+    fn from(s: &String) -> Self {
+        Self::new(s.as_str())
+    }
+}
+
 /// Keyboard modifier state carried alongside input events.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Modifiers {
@@ -1033,6 +1039,18 @@ mod tests {
         let b = WidgetId::new("shared-label".to_string());
         assert_eq!(a, b);
         assert_eq!(a.as_str(), b.as_str());
+    }
+
+    #[test]
+    fn widget_id_from_borrowed_string_matches_from_str() {
+        // `&String` (an owned id borrowed through a closure/field access,
+        // not a literal) resolves to the same handle as `&str`/`String` —
+        // needed so an `impl Into<WidgetId>` parameter stays a drop-in
+        // replacement for a pre-existing `&str` one.
+        let owned = String::from("borrowed-label");
+        let from_ref: WidgetId = (&owned).into();
+        let from_str: WidgetId = "borrowed-label".into();
+        assert_eq!(from_ref, from_str);
     }
 
     #[test]

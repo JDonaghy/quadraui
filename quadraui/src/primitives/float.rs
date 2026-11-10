@@ -41,8 +41,8 @@
 //! interactive float must" distinction this primitive exists to carry.
 //! It is **not** enforced by this primitive — a `Float` is plain data, same as every
 //! other primitive here — it is carried through to
-//! [`crate::ModalStack`] via [`crate::ModalStack::push_focusable`] (push
-//! a non-focusable float with `push_focusable(id, bounds, false)`
+//! [`crate::ModalStack`] via [`crate::ModalStack::push_with_focusable`] (push
+//! a non-focusable float with `push_with_focusable(id, bounds, Focusable::No)`
 //! instead of the focusable-by-default [`crate::ModalStack::push`]) and
 //! read back via [`crate::ModalStack::top_focusable`]: the topmost
 //! *focusable* entry, skipping any non-focusable float stacked above it

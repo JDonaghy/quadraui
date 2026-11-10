@@ -27,6 +27,7 @@ use super::focus_group::FocusGroup;
 use super::form_controller::{form_click_event, FormController};
 use super::tree_controller::TreeController;
 use super::tree_controller::TreeControllerEvent;
+use super::tree_controller::{classify_tree_nav_key, Edge, TreeNavKey};
 use crate::primitives::form::{
     FieldKind, Form, FormEvent, FormFieldMeasure, FormItemMeasure, FormLayout,
 };
@@ -698,6 +699,11 @@ impl SidebarSystem {
         }
     }
 
+    /// Dispatches via the same [`classify_tree_nav_key`] key map
+    /// [`TreeController::handle_key`] uses, so the two can't drift: the
+    /// difference between them is which viewport-rows/action methods each
+    /// resolves a [`TreeNavKey`] into (per-section focus tracking here vs.
+    /// a single tree there), not the key map itself.
     fn handle_key_selection(
         &mut self,
         key: &Key,
@@ -713,26 +719,24 @@ impl SidebarSystem {
                 SectionController::Tree(tc) => tc.vim_keys(),
                 SectionController::Form(_) => false,
             });
-        let vim_up = vim && matches!(key, Key::Char('k'));
-        let vim_down = vim && matches!(key, Key::Char('j'));
-        match key {
-            Key::Named(NamedKey::Up) => self.move_selection(-1, rect, lh, metrics),
-            _ if vim_up => self.move_selection(-1, rect, lh, metrics),
-            Key::Named(NamedKey::Down) => self.move_selection(1, rect, lh, metrics),
-            _ if vim_down => self.move_selection(1, rect, lh, metrics),
-            Key::Named(NamedKey::Home) => self.jump_selection_to_edge(true, rect, lh, metrics),
-            Key::Named(NamedKey::End) => self.jump_selection_to_edge(false, rect, lh, metrics),
-            Key::Named(NamedKey::PageUp) => {
+        let Some(nav) = classify_tree_nav_key(key, vim) else {
+            return SidebarEvent::Ignored;
+        };
+        match nav {
+            TreeNavKey::Up => self.move_selection(-1, rect, lh, metrics),
+            TreeNavKey::Down => self.move_selection(1, rect, lh, metrics),
+            TreeNavKey::Home => self.jump_selection_to_edge(Edge::Start, rect, lh, metrics),
+            TreeNavKey::End => self.jump_selection_to_edge(Edge::End, rect, lh, metrics),
+            TreeNavKey::PageUp => {
                 let vr = self.active_viewport_rows(rect, lh, metrics);
                 self.move_selection_by(-((vr.max(1) - 1).max(1) as isize), vr)
             }
-            Key::Named(NamedKey::PageDown) => {
+            TreeNavKey::PageDown => {
                 let vr = self.active_viewport_rows(rect, lh, metrics);
                 self.move_selection_by((vr.max(1) - 1).max(1) as isize, vr)
             }
-            Key::Named(NamedKey::Enter) => self.activate_selection(),
-            Key::Char(' ') => self.toggle_expand_selected(),
-            _ => SidebarEvent::Ignored,
+            TreeNavKey::Enter => self.activate_selection(),
+            TreeNavKey::ToggleExpand => self.toggle_expand_selected(),
         }
     }
 
@@ -768,23 +772,23 @@ impl SidebarSystem {
 
     fn jump_selection_to_edge(
         &mut self,
-        to_start: bool,
+        edge: Edge,
         rect: Rect,
         lh: f32,
         metrics: &MsvLayoutMetrics,
     ) -> SidebarEvent {
         let vr = self.active_viewport_rows(rect, lh, metrics);
-        self.jump_selection_to_edge_by(to_start, vr)
+        self.jump_selection_to_edge_by(edge, vr)
     }
 
-    fn jump_selection_to_edge_by(&mut self, to_start: bool, viewport_rows: usize) -> SidebarEvent {
+    fn jump_selection_to_edge_by(&mut self, edge: Edge, viewport_rows: usize) -> SidebarEvent {
         let Some(idx) = self.focus.active() else {
             return SidebarEvent::Ignored;
         };
         let SectionController::Tree(tc) = &mut self.sections[idx] else {
             return SidebarEvent::Ignored;
         };
-        match tc.jump_to_edge(to_start, viewport_rows) {
+        match tc.move_selection_to_edge(edge, viewport_rows) {
             TreeControllerEvent::RowSelected { path } => {
                 SidebarEvent::RowSelected { section: idx, path }
             }
@@ -1591,7 +1595,7 @@ mod tests {
     fn selection_home_jumps_to_first_row() {
         let mut ss = selection_sidebar();
         ss.set_selected_path(0, Some(vec![3]));
-        ss.jump_selection_to_edge_by(true, 10);
+        ss.jump_selection_to_edge_by(Edge::Start, 10);
         assert_eq!(ss.selected_path(0), Some(&vec![0]));
     }
 
@@ -1599,7 +1603,7 @@ mod tests {
     fn selection_end_jumps_to_last_row() {
         let mut ss = selection_sidebar();
         ss.set_selected_path(0, Some(vec![0]));
-        ss.jump_selection_to_edge_by(false, 10);
+        ss.jump_selection_to_edge_by(Edge::End, 10);
         assert_eq!(ss.selected_path(0), Some(&vec![4]));
     }
 

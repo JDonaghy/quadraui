@@ -124,15 +124,19 @@ struct OpenMenu {
     anchor: Point,
 }
 
-/// Item height / separator height / menu width in line-height units —
-/// the same constants [`crate::compose::MenuSystem::dropdown_stack`]
-/// uses, kept here rather than shared so this controller has no
-/// dependency on `MenuSystem`'s bar-anchored internals.
-fn item_measure(lh: f32) -> (f32, f32, f32) {
+/// Item height / separator height in line-height units.
+/// [`crate::compose::MenuSystem`]'s own dropdown layout
+/// (`dropdown_layout`/`dropdown_stack`) uses this same function for its
+/// item/separator heights so the two menu styles — free-floating context
+/// menu here, bar-anchored dropdown there — stay pixel-identical without
+/// either controller depending on the other's state. Menu *width* isn't
+/// included: this controller uses a fixed `20.0 * lh`, while
+/// `MenuSystem` measures its dropdown's actual item text via
+/// `dropdown_width`, so the two have never shared that part.
+pub(crate) fn menu_item_heights(lh: f32) -> (f32, f32) {
     let item_h = (lh * 1.4).round().max(lh);
     let sep_h = (lh * 0.5).round().max(1.0);
-    let menu_width = 20.0 * lh;
-    (item_h, sep_h, menu_width)
+    (item_h, sep_h)
 }
 
 impl ContextMenuController {
@@ -294,7 +298,8 @@ impl ContextMenuController {
         backend: &dyn Backend,
     ) -> ContextMenuLayout {
         let lh = backend.chrome_line_height();
-        let (item_h, sep_h, menu_width) = item_measure(lh);
+        let (item_h, sep_h) = menu_item_heights(lh);
+        let menu_width = 20.0 * lh;
         let vp = backend.context_menu_viewport();
         menu.layout(anchor.x, anchor.y, vp, menu_width, |i| {
             if menu.items[i].is_separator() {

@@ -670,7 +670,7 @@ impl<A: AppLogic> WinDriver<A> {
             let (backend, app) = self.core.parts_mut();
             app.tick(backend)
         };
-        self.apply_outcome(reaction.into())
+        self.apply_outcome(reaction)
     }
 
     /// Shared outcome→[`Reaction`] bookkeeping [`Self::dispatch`] and

@@ -305,7 +305,7 @@ impl<A: AppLogic> TuiDriver<A> {
             // two `RedrawAfter`s in the same batch keep the *earlier*
             // deadline rather than whichever arrived first — see
             // `Reaction::merge`'s doc.
-            result = result.merge(outcome.into());
+            result = result.merge(outcome);
         }
         result
     }
@@ -347,7 +347,7 @@ impl<A: AppLogic> TuiDriver<A> {
                 }
             }
             // See `Self::dispatch`'s identical merge.
-            result = result.merge(outcome.into());
+            result = result.merge(outcome);
         }
         result
     }

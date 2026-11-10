@@ -27,11 +27,11 @@
 //!
 //! ```rust,ignore
 //! // Instantiate when the user triggers "Open Folder":
-//! let mut picker = FolderPickerController::new(
+//! let mut picker = FolderPickerController::rooted_at(
 //!     std::env::current_dir().unwrap(),
 //!     vec![],       // no extra file names to surface
-//!     false,        // don't show hidden dirs
-//! );
+//! );                // hidden dirs stay off by default; chain
+//!                    // `.with_show_hidden(true)` to surface them
 //!
 //! // In AppLogic::render:
 //! let rect = /* palette popup bounds */;
@@ -137,7 +137,8 @@ pub struct FolderPickerController {
 }
 
 impl FolderPickerController {
-    /// Create a new picker rooted at `root`.
+    /// Create a new picker rooted at `root`, with `show_hidden` as a
+    /// positional bool.
     ///
     /// # Arguments
     ///
@@ -148,13 +149,38 @@ impl FolderPickerController {
     ///   Pass an empty `Vec` for the common case.
     /// - `show_hidden` — if true, all hidden directories are shown; if false,
     ///   only names in `extra_file_names` are surfaced from hidden entries.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `rooted_at`, which drops the `show_hidden: bool` positional param — chain `.with_show_hidden(true)` if needed"
+    )]
     pub fn new(root: impl Into<PathBuf>, extra_file_names: Vec<String>, show_hidden: bool) -> Self {
+        let picker = Self::rooted_at(root, extra_file_names);
+        if show_hidden {
+            picker.with_show_hidden(true)
+        } else {
+            picker
+        }
+    }
+
+    /// Create a new picker rooted at `root`. Hidden directories (names
+    /// beginning with `.`) stay hidden unless surfaced via
+    /// `extra_file_names` or [`Self::with_show_hidden`].
+    ///
+    /// # Arguments
+    ///
+    /// - `root` — initial browsing directory (typically `env::current_dir()`
+    ///   or the engine's active workspace root).
+    /// - `extra_file_names` — dotfile names to surface even with hidden
+    ///   directories hidden (e.g. `[".vimcode-workspace".to_string()]`).
+    ///   Pass an empty `Vec` for the common case.
+    pub fn rooted_at(root: impl Into<PathBuf>, extra_file_names: Vec<String>) -> Self {
         let root = root.into();
         let ignore_dirs: Vec<String> = DEFAULT_IGNORE_DIRS
             .iter()
             .map(|s| (*s).to_string())
             .collect();
         let max_depth = DEFAULT_MAX_DEPTH;
+        let show_hidden = false;
         let all_entries = collect_dir_entries(
             &root,
             show_hidden,
@@ -170,6 +196,24 @@ impl FolderPickerController {
             ignore_dirs,
             max_depth,
         }
+    }
+
+    /// Toggle whether hidden directories (names beginning with `.`) are
+    /// surfaced. Defaults to `false` — see [`Self::rooted_at`].
+    ///
+    /// Re-walks the current `root` so the change takes effect immediately.
+    /// Returns `self` for builder-style chaining.
+    pub fn with_show_hidden(mut self, show_hidden: bool) -> Self {
+        self.show_hidden = show_hidden;
+        let all_entries = collect_dir_entries(
+            &self.core.root,
+            self.show_hidden,
+            &self.extra_file_names,
+            &self.ignore_dirs,
+            self.max_depth,
+        );
+        self.core.set_all_entries(all_entries);
+        self
     }
 
     /// Override the `WidgetId` used by the rendered `Palette`.
@@ -638,7 +682,7 @@ mod tests {
     fn new_sets_dotdot_and_dot_entries() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let picker = FolderPickerController::new(tmp, vec![], false);
+        let picker = FolderPickerController::rooted_at(tmp, vec![]);
         // ".." and "." should always be the first two entries.
         assert!(picker.core.all_entries.contains(&PathBuf::from("..")));
         assert!(picker.core.all_entries.contains(&PathBuf::from(".")));
@@ -652,10 +696,55 @@ mod tests {
     }
 
     #[test]
+    fn with_show_hidden_surfaces_dot_directories() {
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
+        std::fs::create_dir(tmp.join(".hidden-child")).expect("create hidden child dir");
+
+        let hidden_off = FolderPickerController::rooted_at(tmp.clone(), vec![]);
+        assert!(
+            !hidden_off
+                .core
+                .all_entries
+                .contains(&PathBuf::from(".hidden-child")),
+            "hidden directories stay hidden by default"
+        );
+
+        let hidden_on = FolderPickerController::rooted_at(tmp, vec![]).with_show_hidden(true);
+        assert!(
+            hidden_on
+                .core
+                .all_entries
+                .contains(&PathBuf::from(".hidden-child")),
+            "with_show_hidden(true) surfaces hidden directories"
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)] // pins the deprecated bool-taking shim still forwards correctly.
+    fn deprecated_new_still_forwards_to_rooted_at_and_with_show_hidden() {
+        let dir = picker_root();
+        let tmp = dir.path().to_path_buf();
+        std::fs::create_dir(tmp.join(".hidden-child")).expect("create hidden child dir");
+
+        let hidden_off = FolderPickerController::new(tmp.clone(), vec![], false);
+        assert!(!hidden_off
+            .core
+            .all_entries
+            .contains(&PathBuf::from(".hidden-child")));
+
+        let hidden_on = FolderPickerController::new(tmp, vec![], true);
+        assert!(hidden_on
+            .core
+            .all_entries
+            .contains(&PathBuf::from(".hidden-child")));
+    }
+
+    #[test]
     fn push_and_pop_char_update_query() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let mut picker = FolderPickerController::rooted_at(tmp, vec![]);
         picker.push_char('s');
         picker.push_char('r');
         assert_eq!(picker.query(), "sr");
@@ -667,7 +756,7 @@ mod tests {
     fn move_up_clamps_at_zero() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let mut picker = FolderPickerController::rooted_at(tmp, vec![]);
         assert_eq!(picker.selected(), 0);
         picker.move_up();
         assert_eq!(picker.selected(), 0);
@@ -677,7 +766,7 @@ mod tests {
     fn move_down_advances_selection() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let mut picker = FolderPickerController::rooted_at(tmp, vec![]);
         assert!(picker.filtered().len() >= 2);
         picker.move_down();
         assert_eq!(picker.selected(), 1);
@@ -687,7 +776,7 @@ mod tests {
     fn move_down_clamps_at_last() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let mut picker = FolderPickerController::rooted_at(tmp, vec![]);
         let last = picker.filtered().len().saturating_sub(1);
         for _ in 0..last + 5 {
             picker.move_down();
@@ -699,7 +788,7 @@ mod tests {
     fn sync_scroll_brings_selected_into_view() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let mut picker = FolderPickerController::rooted_at(tmp, vec![]);
         // Force a large selection index.
         assert!(picker.filtered().len() >= 10);
         picker.core.selected = 9;
@@ -712,7 +801,7 @@ mod tests {
     fn sync_scroll_scrolls_up_when_needed() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let mut picker = FolderPickerController::rooted_at(tmp, vec![]);
         assert!(picker.filtered().len() >= 5);
         picker.core.scroll_top = 5;
         picker.core.selected = 2; // above scroll_top
@@ -724,7 +813,7 @@ mod tests {
     fn escape_event_returns_cancelled() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let mut picker = FolderPickerController::rooted_at(tmp, vec![]);
         let ev = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Escape),
             modifiers: Modifiers::default(),
@@ -740,7 +829,7 @@ mod tests {
         let parent = tempfile::tempdir().expect("create parent tempdir");
         let sub = parent.path().join("nav_up_child");
         std::fs::create_dir_all(&sub).expect("create child dir");
-        let mut picker = FolderPickerController::new(sub.clone(), vec![], false);
+        let mut picker = FolderPickerController::rooted_at(sub.clone(), vec![]);
         // Select ".." (index 0, always prepended when parent exists).
         picker.core.selected = 0;
         assert_eq!(picker.filtered().first(), Some(&PathBuf::from("..")));
@@ -758,7 +847,7 @@ mod tests {
     fn enter_on_dot_returns_confirmed_with_root() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPickerController::new(tmp.clone(), vec![], false);
+        let mut picker = FolderPickerController::rooted_at(tmp.clone(), vec![]);
         // "." is always at index 1 (after "..") when parent exists.
         let dot_idx = picker
             .filtered()
@@ -779,7 +868,7 @@ mod tests {
     fn up_down_key_moves_selection() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let mut picker = FolderPickerController::rooted_at(tmp, vec![]);
         assert!(picker.filtered().len() >= 2);
         let ev_down = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Down),
@@ -805,7 +894,7 @@ mod tests {
         // double-insert when a future backend emits both for the same input.
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let mut picker = FolderPickerController::rooted_at(tmp, vec![]);
         let ev = UiEvent::KeyPressed {
             key: Key::Char('s'),
             modifiers: Modifiers::default(),
@@ -823,7 +912,7 @@ mod tests {
     fn cmd_char_is_ignored_not_typed_into_query() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let mut picker = FolderPickerController::rooted_at(tmp, vec![]);
         let ev = UiEvent::KeyPressed {
             key: Key::Char('j'),
             modifiers: Modifiers {
@@ -843,7 +932,7 @@ mod tests {
         // source; only `Key::Char` in `KeyPressed` mutates the query.
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let mut picker = FolderPickerController::rooted_at(tmp, vec![]);
         let ev = UiEvent::CharTyped('s');
         let result = picker.handle(&ev, 10);
         assert_eq!(result, FolderPickerEvent::Ignored);
@@ -854,7 +943,7 @@ mod tests {
     fn backspace_removes_last_char() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPickerController::new(tmp, vec![], false);
+        let mut picker = FolderPickerController::rooted_at(tmp, vec![]);
         picker.push_char('s');
         picker.push_char('r');
         let ev = UiEvent::KeyPressed {
@@ -870,7 +959,7 @@ mod tests {
     fn selected_path_resolves_dot_to_root() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let picker = FolderPickerController::new(tmp.clone(), vec![], false);
+        let picker = FolderPickerController::rooted_at(tmp.clone(), vec![]);
         let dot_idx = picker
             .filtered()
             .iter()
@@ -886,7 +975,7 @@ mod tests {
         let parent = tempfile::tempdir().expect("create parent tempdir");
         let sub = parent.path().join("dash_nav_child");
         std::fs::create_dir_all(&sub).expect("create child dir");
-        let mut picker = FolderPickerController::new(sub.clone(), vec![], false);
+        let mut picker = FolderPickerController::rooted_at(sub.clone(), vec![]);
         let ev = UiEvent::KeyPressed {
             key: Key::Char('-'),
             modifiers: Modifiers::default(),
@@ -901,7 +990,7 @@ mod tests {
     fn build_palette_id_is_folder_picker() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let picker = FolderPickerController::new(tmp, vec![], false);
+        let picker = FolderPickerController::rooted_at(tmp, vec![]);
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         let palette = picker.build_palette(rect);
         assert_eq!(palette.id.as_str(), "folder_picker");
@@ -911,7 +1000,7 @@ mod tests {
     fn build_palette_title_contains_open_folder() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let picker = FolderPickerController::new(tmp, vec![], false);
+        let picker = FolderPickerController::rooted_at(tmp, vec![]);
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         let palette = picker.build_palette(rect);
         assert!(palette.title.starts_with("Open Folder"));
@@ -921,7 +1010,7 @@ mod tests {
     fn build_palette_items_match_filtered() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let picker = FolderPickerController::new(tmp, vec![], false);
+        let picker = FolderPickerController::rooted_at(tmp, vec![]);
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         let palette = picker.build_palette(rect);
         assert_eq!(palette.items.len(), picker.filtered().len());
@@ -934,10 +1023,9 @@ mod tests {
         let root = tempfile::tempdir().expect("create marker tempdir");
         let marker = root.path().join(".my-workspace");
         std::fs::write(&marker, b"").expect("write marker file");
-        let picker = FolderPickerController::new(
+        let picker = FolderPickerController::rooted_at(
             root.path().to_path_buf(),
             vec![".my-workspace".to_string()],
-            false,
         );
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         let palette = picker.build_palette(rect);
@@ -958,7 +1046,7 @@ mod tests {
         // validate UTF-8 char boundaries when slicing the root path to fit
         // the viewport width, rather than panicking on multi-byte characters.
         let long_japanese = PathBuf::from(format!("/a/{}", "ト".repeat(50)));
-        let picker = FolderPickerController::new(long_japanese, vec![], false);
+        let picker = FolderPickerController::rooted_at(long_japanese, vec![]);
         // Narrow rect forces truncation: max = max(80-30, 10) = 50 bytes.
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         // Must not panic.
@@ -976,7 +1064,7 @@ mod tests {
         let path = PathBuf::from(
             "/home/utilisateur/répertoire/sous-répertoire/encore-plus-profond/données",
         );
-        let picker = FolderPickerController::new(path, vec![], false);
+        let picker = FolderPickerController::rooted_at(path, vec![]);
         let rect = Rect::new(0.0, 0.0, 60.0, 24.0);
         let palette = picker.build_palette(rect);
         assert!(palette.title.starts_with("Open Folder "));
@@ -988,7 +1076,7 @@ mod tests {
     fn with_id_overrides_widget_id() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
-        let picker = FolderPickerController::new(tmp, vec![], false).with_id("picker_b");
+        let picker = FolderPickerController::rooted_at(tmp, vec![]).with_id("picker_b");
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         assert_eq!(picker.build_palette(rect).id.as_str(), "picker_b");
     }
@@ -1000,7 +1088,7 @@ mod tests {
         std::fs::create_dir_all(root.path().join("target")).unwrap();
         std::fs::create_dir_all(root.path().join("keep_me")).unwrap();
         // With an empty override list, `target` is no longer skipped.
-        let picker = FolderPickerController::new(root.path().to_path_buf(), vec![], false)
+        let picker = FolderPickerController::rooted_at(root.path().to_path_buf(), vec![])
             .with_ignore_dirs(vec![]);
         let has_target = picker
             .core
@@ -1027,7 +1115,7 @@ mod tests {
         std::fs::create_dir_all(&d3).unwrap();
         // depth=0 should only emit the top-level "d1".
         let picker =
-            FolderPickerController::new(root.path().to_path_buf(), vec![], false).with_max_depth(0);
+            FolderPickerController::rooted_at(root.path().to_path_buf(), vec![]).with_max_depth(0);
         let has_d1 = picker.core.all_entries.iter().any(|p| p.ends_with("d1"));
         let has_d2 = picker.core.all_entries.iter().any(|p| p.ends_with("d2"));
         assert!(has_d1);

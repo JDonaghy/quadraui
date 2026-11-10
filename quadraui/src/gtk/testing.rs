@@ -208,7 +208,7 @@ impl<A: AppLogic> GtkDriver<A> {
         let surface = &self.surface;
         let width = self.width;
         let height = self.height;
-        self.core.apply_outcome(reaction.into(), |backend, app| {
+        self.core.apply_outcome(reaction, |backend, app| {
             let cr = Context::new(surface).expect("Context::new on headless ImageSurface");
             render_frame(backend, app, &cr, width, height);
         })
