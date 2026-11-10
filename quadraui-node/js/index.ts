@@ -316,6 +316,30 @@ class QuiApp extends native.QuiApp {
 exports.QuiApp = QuiApp;
 
 /**
+ * The resolved widget-state shape `QuiApp.widgetState(id)` returns -- a
+ * `Tree`/`List`/`DataTable`'s cursor + scroll, a `Split`'s ratio, a
+ * `TabBar`'s active tab index, or a `Tree`'s expanded row paths, whichever
+ * apply to the widget `id` names. `id` names exactly one widget kind in
+ * practice, so only one group of fields is ever non-`null` on a given
+ * result. Every field defaults to `null` rather than being omitted, so a
+ * caller can destructure without an `in` check.
+ */
+export interface WidgetState {
+  /** A focused `Tree`'s selected row path, or `null` if none/not a tree. */
+  selectedPath: number[] | null;
+  /** A focused `List`/`DataTable`'s selected row index, or `null`. */
+  selectedIndex: number | null;
+  /** A `Tree`/`List`/`DataTable`'s first visible row index, or `null`. */
+  scrollOffset: number | null;
+  /** A `Split`'s resolved divider ratio (`0.0`-`1.0`), or `null`. */
+  splitRatio: number | null;
+  /** A `TabBar`'s resolved active tab index, or `null`. */
+  activeTab: number | null;
+  /** A `Tree`'s expanded row paths, sorted, or `null`. */
+  expanded: number[][] | null;
+}
+
+/**
  * A headless `ShellApp`/`ShellConfig`-backed app: an AppShell (activity bar
  * + sidebar + optional bottom-panel tab strip) around JS-registered
  * content and event handlers. Built by `QuiApp.runShell(width, height,
