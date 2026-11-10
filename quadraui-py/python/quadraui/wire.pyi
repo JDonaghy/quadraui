@@ -53,7 +53,7 @@ class IconGlyph(TypedDict):
 
 class IconCodicon(TypedDict):
     """The codicon form of `Icon` -- lets an app pass a bundled icon name instead of hand-encoding its glyph codepoint."""
-    codicon: str  # Bundled codicon name -- see `Icon::codicon`'s doc for the set.
+    codicon: str  # Bundled codicon name.
     fallback: str  # ASCII/basic-Unicode fallback.
     color: NotRequired[Optional[Color]]
 
@@ -198,7 +198,7 @@ class ListViewDescriptor(TypedDict):
     h_scroll: NotRequired[int]
     max_content_width: NotRequired[Optional[int]]
     show_v_scrollbar: NotRequired[bool]
-    scroll_px: NotRequired[float]  # binding-core extension key, lifted out by `scroll_px_from_value`.
+    scroll_px: NotRequired[float]  # binding-core extension key, lifted out by `scroll_px_from_value` -- not a `ListView` field.
 
 class TreeRowEditStateDescriptor(TypedDict):
     text: str
@@ -266,7 +266,7 @@ class DataTableDescriptor(TypedDict):
     scroll_px: NotRequired[float]
 
 class TabItemDescriptor(TypedDict):
-    """The raw `tab_bar` leaf's own tab shape -- distinct from a `"tabs"` layout node's tab entry (see `LayoutTabEntryNode`), which uses `"title"`/`"closable"` instead of `"label"`/`"is_closable"`."""
+    """The raw `tab_bar` leaf's own tab shape -- distinct from a `"tabs"` layout node's tab entry (`LayoutTabEntryNode`), which uses `"title"`/`"closable"` instead of `"label"`/`"is_closable"`."""
     label: str
     is_active: NotRequired[bool]
     is_dirty: NotRequired[bool]
@@ -333,7 +333,7 @@ class PaddingSides(TypedDict):
     bottom: NotRequired[float]
     left: NotRequired[float]
 
-# A `"padding"` spacing value: one number (every side), `{"x", "y"}`, or `{"top", "right", "bottom", "left"}` -- never both shapes at once (not expressible as a static type here; rejected at decode time).
+# A `"padding"` spacing value: one number (every side), `{"x", "y"}`, or `{"top", "right", "bottom", "left"}` -- never both shapes at once.
 PaddingValue = Union[float, PaddingAxis, PaddingSides]
 
 class LayoutRowNode(TypedDict):
@@ -432,7 +432,7 @@ class LayoutSplitTreeNode(TypedDict):
     split_tree: LayoutSplitTreePayload
 
 class LayoutLeafNode(TypedDict):
-    """One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Covers the six core kinds plus `status_bar`; any other additive primitive kind (`progress`, `form`, ...) also decodes here but isn't modelled -- not reachable through this type (see this module's own doc)."""
+    """One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. `status_bar` and the six core kinds are fully typed; every other additive kind (`progress`, `form`, ...) decodes here too but is typed `Any` pending field-by-field narrowing."""
     id: str
     button: NotRequired[ButtonDescriptor]
     text_display: NotRequired[TextDisplayDescriptor]
@@ -441,18 +441,76 @@ class LayoutLeafNode(TypedDict):
     data_table: NotRequired[DataTableDescriptor]
     tab_bar: NotRequired[TabBarDescriptor]
     status_bar: NotRequired[StatusBarDescriptor]
+    progress: NotRequired[Any]
+    spinner: NotRequired[Any]
+    image: NotRequired[Any]
+    form: NotRequired[Any]
+    text_input: NotRequired[Any]
+    number_input: NotRequired[Any]
+    combo_box: NotRequired[Any]
+    date_picker: NotRequired[Any]
+    radio_group: NotRequired[Any]
+    switch: NotRequired[Any]
+    chart: NotRequired[Any]
+    message_list: NotRequired[Any]
+    board: NotRequired[Any]
+    pipeline_view: NotRequired[Any]
+    minimap: NotRequired[Any]
+    multi_section_view: NotRequired[Any]
+    diff_view: NotRequired[Any]
+    activity_bar: NotRequired[Any]
+    toolbar: NotRequired[Any]
+    menu_bar: NotRequired[Any]
+    command_line: NotRequired[Any]
+    command_center: NotRequired[Any]
+    palette: NotRequired[Any]
+    scrollbar: NotRequired[Any]
+    editor: NotRequired[Any]
+    terminal: NotRequired[Any]
+    canvas: NotRequired[Any]
+    scroll_view: NotRequired[Any]
+    find_replace: NotRequired[Any]
 
 # One node of a render callback's returned layout tree.
 LayoutNode = Union[LayoutRowNode, LayoutColumnNode, LayoutSplitNode, LayoutTabsNode, LayoutPanelNode, LayoutSidebarPanelNode, LayoutSplitTreeNode, LayoutLeafNode]
 
 class RenderFrameDict(TypedDict):
-    """The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree."""
-    button: NotRequired[Optional[ButtonDescriptor]]
-    text_display: NotRequired[Optional[TextDisplayDescriptor]]
-    list: NotRequired[Optional[ListViewDescriptor]]
-    tree: NotRequired[Optional[TreeViewDescriptor]]
-    data_table: NotRequired[Optional[DataTableDescriptor]]
-    tab_bar: NotRequired[Optional[TabBarDescriptor]]
+    """The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. The six core kinds and `status_bar` are fully typed; every other additive kind is typed `Any`."""
+    button: NotRequired[ButtonDescriptor]
+    text_display: NotRequired[TextDisplayDescriptor]
+    list: NotRequired[ListViewDescriptor]
+    tree: NotRequired[TreeViewDescriptor]
+    data_table: NotRequired[DataTableDescriptor]
+    tab_bar: NotRequired[TabBarDescriptor]
+    progress: NotRequired[Optional[Any]]
+    spinner: NotRequired[Optional[Any]]
+    image: NotRequired[Optional[Any]]
+    form: NotRequired[Optional[Any]]
+    text_input: NotRequired[Optional[Any]]
+    number_input: NotRequired[Optional[Any]]
+    combo_box: NotRequired[Optional[Any]]
+    date_picker: NotRequired[Optional[Any]]
+    radio_group: NotRequired[Optional[Any]]
+    switch: NotRequired[Optional[Any]]
+    chart: NotRequired[Optional[Any]]
+    message_list: NotRequired[Optional[Any]]
+    board: NotRequired[Optional[Any]]
+    pipeline_view: NotRequired[Optional[Any]]
+    minimap: NotRequired[Optional[Any]]
+    multi_section_view: NotRequired[Optional[Any]]
+    diff_view: NotRequired[Optional[Any]]
+    activity_bar: NotRequired[Optional[Any]]
+    toolbar: NotRequired[Optional[Any]]
+    menu_bar: NotRequired[Optional[Any]]
+    command_line: NotRequired[Optional[Any]]
+    command_center: NotRequired[Optional[Any]]
+    palette: NotRequired[Optional[Any]]
+    scrollbar: NotRequired[Optional[Any]]
+    editor: NotRequired[Optional[Any]]
+    terminal: NotRequired[Optional[Any]]
+    canvas: NotRequired[Optional[Any]]
+    scroll_view: NotRequired[Optional[Any]]
+    find_replace: NotRequired[Optional[Any]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]
@@ -494,15 +552,15 @@ class ShellConfigDescriptor(TypedDict):
     bottom_panel_height_lh: NotRequired[float]
     bottom_panel: NotRequired[BottomPanelConfigDescriptor]
 
+class _KeyPressedStrPayload(TypedDict):
+    key: str
+    modifiers: Modifiers
+
 class _TreePathPayload(TypedDict):
     path: TreePath
 
 class _TreeRowClickedPayload(TypedDict):
     path: TreePath
-    modifiers: Modifiers
-
-class _KeyPressedStrPayload(TypedDict):
-    key: str
     modifiers: Modifiers
 
 class _TreeSelectionSetPayload(TypedDict):
@@ -553,6 +611,9 @@ class _ColumnResizedPayload(TypedDict):
     col: int
     width: float
 
+class _DataTableSelectionSetPayload(TypedDict):
+    indices: List[int]
+
 class DataTableEvent(TypedDict):
     HeaderClicked: NotRequired[_ColPayload]
     RowActivated: NotRequired[_IdxPayload]
@@ -560,6 +621,7 @@ class DataTableEvent(TypedDict):
     RowDoubleClicked: NotRequired[_IdxPayload]
     Scroll: NotRequired[_DataTableScrollPayload]
     ColumnResized: NotRequired[_ColumnResizedPayload]
+    SelectionSet: NotRequired[_DataTableSelectionSetPayload]
 
 class _IndexPayload(TypedDict):
     index: int
@@ -633,6 +695,103 @@ class _ToolbarButtonClickedPayload(TypedDict):
 
 class ToolbarEvent(TypedDict):
     ButtonClicked: NotRequired[_ToolbarButtonClickedPayload]
+
+class CalendarDate(TypedDict):
+    year: int
+    month: int
+    day: int
+
+class _IdValueBoolPayload(TypedDict):
+    id: WidgetId
+    value: bool
+
+class _IdValueStrPayload(TypedDict):
+    id: WidgetId
+    value: str
+
+class _IdValueFloatPayload(TypedDict):
+    id: WidgetId
+    value: float
+
+class _IdValueColorPayload(TypedDict):
+    id: WidgetId
+    value: Color
+
+class _IdSelectedIdxPayload(TypedDict):
+    id: WidgetId
+    selected_idx: int
+
+class _IdValueDatePayload(TypedDict):
+    id: WidgetId
+    value: CalendarDate
+
+class _IdOnlyPayload(TypedDict):
+    id: WidgetId
+
+class _FormToolbarButtonClickedPayload(TypedDict):
+    field_id: WidgetId
+    button_id: WidgetId
+
+class _IdValueF64Payload(TypedDict):
+    id: WidgetId
+    value: float
+
+class _IdDraftPayload(TypedDict):
+    id: WidgetId
+    draft: str
+
+class _IdIndexPayload(TypedDict):
+    id: WidgetId
+    index: int
+
+class _IdSelectedPayload(TypedDict):
+    id: WidgetId
+    selected: int
+
+class FormEvent(TypedDict):
+    """Events a `Form` emits back to the app -- see `quadraui/src/primitives/form.rs`'s `FormEvent`."""
+    ToggleChanged: NotRequired[_IdValueBoolPayload]
+    TextInputChanged: NotRequired[_IdValueStrPayload]
+    TextInputCommitted: NotRequired[_IdValueStrPayload]
+    SliderChanged: NotRequired[_IdValueFloatPayload]
+    ColorChanged: NotRequired[_IdValueColorPayload]
+    DropdownChanged: NotRequired[_IdSelectedIdxPayload]
+    SegmentedControlChanged: NotRequired[_IdSelectedIdxPayload]
+    DateChanged: NotRequired[_IdValueDatePayload]
+    FocusChanged: NotRequired[_IdOnlyPayload]
+    ButtonClicked: NotRequired[_IdOnlyPayload]
+    ToolbarButtonClicked: NotRequired[_FormToolbarButtonClickedPayload]
+    KeyPressed: NotRequired[_KeyPressedStrPayload]
+    ComboBoxTextChanged: NotRequired[_IdValueStrPayload]
+    ComboBoxHighlightChanged: NotRequired[_IdIndexPayload]
+    ComboBoxCommitted: NotRequired[_IdValueStrPayload]
+    ComboBoxCancelled: NotRequired[_IdPayload]
+    NumberChanged: NotRequired[_IdValueF64Payload]
+    NumberDraftChanged: NotRequired[_IdDraftPayload]
+    NumberCommitted: NotRequired[_IdValueF64Payload]
+    NumberCancelled: NotRequired[_IdPayload]
+    RadioChanged: NotRequired[_IdSelectedPayload]
+
+class _QueryChangedPayload(TypedDict):
+    value: str
+
+class _SelectionChangedIdxPayload(TypedDict):
+    idx: int
+
+class _ItemConfirmedPayload(TypedDict):
+    idx: int
+
+class _ExpandToggledPayload(TypedDict):
+    idx: int
+    expanded: bool
+
+class PaletteEvent(TypedDict):
+    """Events a `Palette` emits back to the app -- see `quadraui/src/primitives/palette.rs`'s `PaletteEvent`. `Closed` has no payload -- bare `"Closed"`, like `TerminalEvent`'s `"SelectEnd"`."""
+    QueryChanged: NotRequired[_QueryChangedPayload]
+    SelectionChanged: NotRequired[_SelectionChangedIdxPayload]
+    ItemConfirmed: NotRequired[_ItemConfirmedPayload]
+    ExpandToggled: NotRequired[_ExpandToggledPayload]
+    KeyPressed: NotRequired[_KeyPressedStrPayload]
 
 class _HitDetailButtonBody(TypedDict):
     kind: Literal['button_body']
@@ -736,7 +895,7 @@ class _HitDetailExtraChrome(TypedDict):
     kind: Literal['extra_chrome']
     bar: WidgetId
 
-# The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind` (e.g. `detail["kind"] == "tree_row"`).
+# The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
 HitDetail = Union[_HitDetailButtonBody, _HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailPanelAction, _HitDetailPanelTitleBar, _HitDetailSidebarPanelToolbarButton, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailExtraChrome]
 
 class _UiKeyPressedPayload(TypedDict):
@@ -812,6 +971,7 @@ class _NotificationActivatedPayload(TypedDict):
     action: Optional[WidgetId]
 
 class _UiEventDict(TypedDict):
+    """Everything a user (or platform) can do that an app might care about -- see `quadraui/src/event.rs`'s `UiEvent`."""
     Accelerator: NotRequired[Tuple[AcceleratorId, Modifiers]]
     GlobalShortcut: NotRequired[GlobalShortcutId]
     KeyPressed: NotRequired[_UiKeyPressedPayload]
@@ -847,8 +1007,8 @@ class _UiEventDict(TypedDict):
     NotificationActivated: NotRequired[_NotificationActivatedPayload]
     Tree: NotRequired[Tuple[WidgetId, TreeEvent]]
     List: NotRequired[Tuple[WidgetId, ListViewEvent]]
-    Form: NotRequired[Tuple[WidgetId, Dict[str, Any]]]
-    Palette: NotRequired[Tuple[WidgetId, Dict[str, Any]]]
+    Form: NotRequired[Tuple[WidgetId, FormEvent]]
+    Palette: NotRequired[Tuple[WidgetId, PaletteEvent]]
     TabBar: NotRequired[Tuple[WidgetId, TabBarEvent]]
     StatusBar: NotRequired[Tuple[WidgetId, StatusBarEvent]]
     ActivityBar: NotRequired[Tuple[WidgetId, ActivityBarEvent]]
@@ -859,7 +1019,7 @@ class _UiEventDict(TypedDict):
     Toolbar: NotRequired[Tuple[WidgetId, ToolbarEvent]]
     BackendNative: NotRequired[BackendNativeEvent]
     User: NotRequired[Any]
-    hit: NotRequired[HitDetail]  # The hit-tested sub-region a pointer landed on, when the binding attached one (never present on `User`). See `quadraui-py/src/lib.rs`'s `dispatch`.
+    hit: NotRequired[HitDetail]  # The hit-tested sub-region a pointer landed on, when the binding attached one (never present on `User`).
 
-# Everything a user (or platform) can do that an app might care about -- see `quadraui/src/event.rs`'s `UiEvent`. `isinstance(event, str)` (Python) / `typeof event === "string"` (TS) separates the three no-payload variants from the rest before narrowing on a key.
+# `isinstance(event, str)` (Python) / `typeof event === "string"` (TS) separates the three no-payload variants from the rest before narrowing on a key.
 UiEvent = Union[Literal['WindowClose', 'DisplaysChanged', 'ContextMenuDismissed'], _UiEventDict]

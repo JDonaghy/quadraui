@@ -50,7 +50,7 @@ export interface IconGlyph {
 
 /** The codicon form of `Icon` -- lets an app pass a bundled icon name instead of hand-encoding its glyph codepoint. */
 export interface IconCodicon {
-  codicon: string; // Bundled codicon name -- see `Icon::codicon`'s doc for the set.
+  codicon: string; // Bundled codicon name.
   fallback: string; // ASCII/basic-Unicode fallback.
   color?: Color | null;
 }
@@ -212,7 +212,7 @@ export interface ListViewDescriptor {
   h_scroll?: number;
   max_content_width?: number | null;
   show_v_scrollbar?: boolean;
-  scroll_px?: number; // binding-core extension key, lifted out by `scroll_px_from_value`.
+  scroll_px?: number; // binding-core extension key, lifted out by `scroll_px_from_value` -- not a `ListView` field.
 }
 
 export interface TreeRowEditStateDescriptor {
@@ -283,7 +283,7 @@ export interface DataTableDescriptor {
   scroll_px?: number;
 }
 
-/** The raw `tab_bar` leaf's own tab shape -- distinct from a `"tabs"` layout node's tab entry (see `LayoutTabEntryNode`), which uses `"title"`/`"closable"` instead of `"label"`/`"is_closable"`. */
+/** The raw `tab_bar` leaf's own tab shape -- distinct from a `"tabs"` layout node's tab entry (`LayoutTabEntryNode`), which uses `"title"`/`"closable"` instead of `"label"`/`"is_closable"`. */
 export interface TabItemDescriptor {
   label: string;
   is_active?: boolean;
@@ -362,7 +362,7 @@ export interface PaddingSides {
   left?: number;
 }
 
-/** A `"padding"` spacing value: one number (every side), `{"x", "y"}`, or `{"top", "right", "bottom", "left"}` -- never both shapes at once (not expressible as a static type here; rejected at decode time). */
+/** A `"padding"` spacing value: one number (every side), `{"x", "y"}`, or `{"top", "right", "bottom", "left"}` -- never both shapes at once. */
 export type PaddingValue = number | PaddingAxis | PaddingSides;
 
 export interface LayoutRowNode {
@@ -476,7 +476,7 @@ export interface LayoutSplitTreeNode {
   split_tree: LayoutSplitTreePayload;
 }
 
-/** One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Covers the six core kinds plus `status_bar`; any other additive primitive kind (`progress`, `form`, ...) also decodes here but isn't modelled -- not reachable through this type (see this module's own doc). */
+/** One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. `status_bar` and the six core kinds are fully typed; every other additive kind (`progress`, `form`, ...) decodes here too but is typed `Any` pending field-by-field narrowing. */
 export interface LayoutLeafNode {
   id: string;
   button?: ButtonDescriptor;
@@ -486,19 +486,77 @@ export interface LayoutLeafNode {
   data_table?: DataTableDescriptor;
   tab_bar?: TabBarDescriptor;
   status_bar?: StatusBarDescriptor;
+  progress?: unknown;
+  spinner?: unknown;
+  image?: unknown;
+  form?: unknown;
+  text_input?: unknown;
+  number_input?: unknown;
+  combo_box?: unknown;
+  date_picker?: unknown;
+  radio_group?: unknown;
+  switch?: unknown;
+  chart?: unknown;
+  message_list?: unknown;
+  board?: unknown;
+  pipeline_view?: unknown;
+  minimap?: unknown;
+  multi_section_view?: unknown;
+  diff_view?: unknown;
+  activity_bar?: unknown;
+  toolbar?: unknown;
+  menu_bar?: unknown;
+  command_line?: unknown;
+  command_center?: unknown;
+  palette?: unknown;
+  scrollbar?: unknown;
+  editor?: unknown;
+  terminal?: unknown;
+  canvas?: unknown;
+  scroll_view?: unknown;
+  find_replace?: unknown;
 }
 
 /** One node of a render callback's returned layout tree. */
 export type LayoutNode = LayoutRowNode | LayoutColumnNode | LayoutSplitNode | LayoutTabsNode | LayoutPanelNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutLeafNode;
 
-/** The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. */
+/** The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. The six core kinds and `status_bar` are fully typed; every other additive kind is typed `Any`. */
 export interface RenderFrameDict {
-  button?: ButtonDescriptor | null;
-  text_display?: TextDisplayDescriptor | null;
-  list?: ListViewDescriptor | null;
-  tree?: TreeViewDescriptor | null;
-  data_table?: DataTableDescriptor | null;
-  tab_bar?: TabBarDescriptor | null;
+  button?: ButtonDescriptor;
+  text_display?: TextDisplayDescriptor;
+  list?: ListViewDescriptor;
+  tree?: TreeViewDescriptor;
+  data_table?: DataTableDescriptor;
+  tab_bar?: TabBarDescriptor;
+  progress?: unknown | null;
+  spinner?: unknown | null;
+  image?: unknown | null;
+  form?: unknown | null;
+  text_input?: unknown | null;
+  number_input?: unknown | null;
+  combo_box?: unknown | null;
+  date_picker?: unknown | null;
+  radio_group?: unknown | null;
+  switch?: unknown | null;
+  chart?: unknown | null;
+  message_list?: unknown | null;
+  board?: unknown | null;
+  pipeline_view?: unknown | null;
+  minimap?: unknown | null;
+  multi_section_view?: unknown | null;
+  diff_view?: unknown | null;
+  activity_bar?: unknown | null;
+  toolbar?: unknown | null;
+  menu_bar?: unknown | null;
+  command_line?: unknown | null;
+  command_center?: unknown | null;
+  palette?: unknown | null;
+  scrollbar?: unknown | null;
+  editor?: unknown | null;
+  terminal?: unknown | null;
+  canvas?: unknown | null;
+  scroll_view?: unknown | null;
+  find_replace?: unknown | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */
@@ -545,17 +603,17 @@ export interface ShellConfigDescriptor {
   bottom_panel?: BottomPanelConfigDescriptor;
 }
 
+export interface _KeyPressedStrPayload {
+  key: string;
+  modifiers: Modifiers;
+}
+
 export interface _TreePathPayload {
   path: TreePath;
 }
 
 export interface _TreeRowClickedPayload {
   path: TreePath;
-  modifiers: Modifiers;
-}
-
-export interface _KeyPressedStrPayload {
-  key: string;
   modifiers: Modifiers;
 }
 
@@ -601,7 +659,11 @@ export interface _ColumnResizedPayload {
   width: number;
 }
 
-export type DataTableEvent = { HeaderClicked: _ColPayload; } | { RowActivated: _IdxPayload; } | { RowSelected: _IdxPayload; } | { RowDoubleClicked: _IdxPayload; } | { Scroll: _DataTableScrollPayload; } | { ColumnResized: _ColumnResizedPayload; };
+export interface _DataTableSelectionSetPayload {
+  indices: number[];
+}
+
+export type DataTableEvent = { HeaderClicked: _ColPayload; } | { RowActivated: _IdxPayload; } | { RowSelected: _IdxPayload; } | { RowDoubleClicked: _IdxPayload; } | { Scroll: _DataTableScrollPayload; } | { ColumnResized: _ColumnResizedPayload; } | { SelectionSet: _DataTableSelectionSetPayload; };
 
 export interface _IndexPayload {
   index: number;
@@ -664,6 +726,94 @@ export interface _ToolbarButtonClickedPayload {
 }
 
 export type ToolbarEvent = { ButtonClicked: _ToolbarButtonClickedPayload; };
+
+export interface CalendarDate {
+  year: number;
+  month: number;
+  day: number;
+}
+
+export interface _IdValueBoolPayload {
+  id: WidgetId;
+  value: boolean;
+}
+
+export interface _IdValueStrPayload {
+  id: WidgetId;
+  value: string;
+}
+
+export interface _IdValueFloatPayload {
+  id: WidgetId;
+  value: number;
+}
+
+export interface _IdValueColorPayload {
+  id: WidgetId;
+  value: Color;
+}
+
+export interface _IdSelectedIdxPayload {
+  id: WidgetId;
+  selected_idx: number;
+}
+
+export interface _IdValueDatePayload {
+  id: WidgetId;
+  value: CalendarDate;
+}
+
+export interface _IdOnlyPayload {
+  id: WidgetId;
+}
+
+export interface _FormToolbarButtonClickedPayload {
+  field_id: WidgetId;
+  button_id: WidgetId;
+}
+
+export interface _IdValueF64Payload {
+  id: WidgetId;
+  value: number;
+}
+
+export interface _IdDraftPayload {
+  id: WidgetId;
+  draft: string;
+}
+
+export interface _IdIndexPayload {
+  id: WidgetId;
+  index: number;
+}
+
+export interface _IdSelectedPayload {
+  id: WidgetId;
+  selected: number;
+}
+
+/** Events a `Form` emits back to the app -- see `quadraui/src/primitives/form.rs`'s `FormEvent`. */
+export type FormEvent = { ToggleChanged: _IdValueBoolPayload; } | { TextInputChanged: _IdValueStrPayload; } | { TextInputCommitted: _IdValueStrPayload; } | { SliderChanged: _IdValueFloatPayload; } | { ColorChanged: _IdValueColorPayload; } | { DropdownChanged: _IdSelectedIdxPayload; } | { SegmentedControlChanged: _IdSelectedIdxPayload; } | { DateChanged: _IdValueDatePayload; } | { FocusChanged: _IdOnlyPayload; } | { ButtonClicked: _IdOnlyPayload; } | { ToolbarButtonClicked: _FormToolbarButtonClickedPayload; } | { KeyPressed: _KeyPressedStrPayload; } | { ComboBoxTextChanged: _IdValueStrPayload; } | { ComboBoxHighlightChanged: _IdIndexPayload; } | { ComboBoxCommitted: _IdValueStrPayload; } | { ComboBoxCancelled: _IdPayload; } | { NumberChanged: _IdValueF64Payload; } | { NumberDraftChanged: _IdDraftPayload; } | { NumberCommitted: _IdValueF64Payload; } | { NumberCancelled: _IdPayload; } | { RadioChanged: _IdSelectedPayload; };
+
+export interface _QueryChangedPayload {
+  value: string;
+}
+
+export interface _SelectionChangedIdxPayload {
+  idx: number;
+}
+
+export interface _ItemConfirmedPayload {
+  idx: number;
+}
+
+export interface _ExpandToggledPayload {
+  idx: number;
+  expanded: boolean;
+}
+
+/** Events a `Palette` emits back to the app -- see `quadraui/src/primitives/palette.rs`'s `PaletteEvent`. `Closed` has no payload -- bare `"Closed"`, like `TerminalEvent`'s `"SelectEnd"`. */
+export type PaletteEvent = { QueryChanged: _QueryChangedPayload; } | { SelectionChanged: _SelectionChangedIdxPayload; } | { ItemConfirmed: _ItemConfirmedPayload; } | { ExpandToggled: _ExpandToggledPayload; } | { KeyPressed: _KeyPressedStrPayload; };
 
 export interface _HitDetailButtonBody {
   kind: "button_body";
@@ -797,7 +947,7 @@ export interface _HitDetailExtraChrome {
   bar: WidgetId;
 }
 
-/** The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind` (e.g. `detail["kind"] == "tree_row"`). */
+/** The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`. */
 export type HitDetail = _HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailPanelAction | _HitDetailPanelTitleBar | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailExtraChrome;
 
 export interface _UiKeyPressedPayload {
@@ -889,7 +1039,8 @@ export interface _NotificationActivatedPayload {
   action: WidgetId | null;
 }
 
-export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; hit?: HitDetail; } | { GlobalShortcut: GlobalShortcutId; hit?: HitDetail; } | { KeyPressed: _UiKeyPressedPayload; hit?: HitDetail; } | { CharTyped: string; hit?: HitDetail; } | { MouseDown: _MouseDownPayload; hit?: HitDetail; } | { MouseUp: _MouseUpPayload; hit?: HitDetail; } | { MouseMoved: _MouseMovedPayload; hit?: HitDetail; } | { MouseEntered: _WidgetPayload; hit?: HitDetail; } | { MouseLeft: _WidgetPayload; hit?: HitDetail; } | { DoubleClick: _DoubleClickPayload; hit?: HitDetail; } | { Scroll: _UiScrollPayload; hit?: HitDetail; } | { WindowResized: _WindowResizedPayload; hit?: HitDetail; } | { WindowFocused: boolean; hit?: HitDetail; } | { DpiChanged: number; hit?: HitDetail; } | { WindowStateChanged: _WindowStateChangedPayload; hit?: HitDetail; } | { FilesDropped: _FilesDroppedPayload; hit?: HitDetail; } | { ClipboardPaste: string; hit?: HitDetail; } | { OpenRequested: _OpenRequestedPayload; hit?: HitDetail; } | { TextCopied: string; hit?: HitDetail; } | { FocusChanged: WidgetId | null; hit?: HitDetail; } | { SystemThemeChanged: SystemTheme; hit?: HitDetail; } | { PowerStateChanged: _PowerStateChangedPayload; hit?: HitDetail; } | { ScrollOffsetChanged: _ScrollOffsetChangedPayload; hit?: HitDetail; } | { TextSelectionChanged: _TextSelectionChangedPayload; hit?: HitDetail; } | { SplitDividerDragged: _SplitDividerDraggedPayload; hit?: HitDetail; } | { MenuActivated: WidgetId; hit?: HitDetail; } | { ContextMenuItemActivated: WidgetId; hit?: HitDetail; } | { MessageDialogResolved: WidgetId; hit?: HitDetail; } | { ToastActionClicked: WidgetId; hit?: HitDetail; } | { CompletionItemActivated: [WidgetId, number]; hit?: HitDetail; } | { RichTextLinkClicked: [WidgetId, string]; hit?: HitDetail; } | { TrayClicked: _TrayClickedPayload; hit?: HitDetail; } | { NotificationActivated: _NotificationActivatedPayload; hit?: HitDetail; } | { Tree: [WidgetId, TreeEvent]; hit?: HitDetail; } | { List: [WidgetId, ListViewEvent]; hit?: HitDetail; } | { Form: [WidgetId, Record<string, unknown>]; hit?: HitDetail; } | { Palette: [WidgetId, Record<string, unknown>]; hit?: HitDetail; } | { TabBar: [WidgetId, TabBarEvent]; hit?: HitDetail; } | { StatusBar: [WidgetId, StatusBarEvent]; hit?: HitDetail; } | { ActivityBar: [WidgetId, ActivityBarEvent]; hit?: HitDetail; } | { Terminal: [WidgetId, TerminalEvent]; hit?: HitDetail; } | { TextDisplay: [WidgetId, TextDisplayEvent]; hit?: HitDetail; } | { Chart: [WidgetId, ChartEvent]; hit?: HitDetail; } | { DataTable: [WidgetId, DataTableEvent]; hit?: HitDetail; } | { Toolbar: [WidgetId, ToolbarEvent]; hit?: HitDetail; } | { BackendNative: BackendNativeEvent; hit?: HitDetail; } | { User: unknown; hit?: HitDetail; };
+/** Everything a user (or platform) can do that an app might care about -- see `quadraui/src/event.rs`'s `UiEvent`. */
+export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; hit?: HitDetail; } | { GlobalShortcut: GlobalShortcutId; hit?: HitDetail; } | { KeyPressed: _UiKeyPressedPayload; hit?: HitDetail; } | { CharTyped: string; hit?: HitDetail; } | { MouseDown: _MouseDownPayload; hit?: HitDetail; } | { MouseUp: _MouseUpPayload; hit?: HitDetail; } | { MouseMoved: _MouseMovedPayload; hit?: HitDetail; } | { MouseEntered: _WidgetPayload; hit?: HitDetail; } | { MouseLeft: _WidgetPayload; hit?: HitDetail; } | { DoubleClick: _DoubleClickPayload; hit?: HitDetail; } | { Scroll: _UiScrollPayload; hit?: HitDetail; } | { WindowResized: _WindowResizedPayload; hit?: HitDetail; } | { WindowFocused: boolean; hit?: HitDetail; } | { DpiChanged: number; hit?: HitDetail; } | { WindowStateChanged: _WindowStateChangedPayload; hit?: HitDetail; } | { FilesDropped: _FilesDroppedPayload; hit?: HitDetail; } | { ClipboardPaste: string; hit?: HitDetail; } | { OpenRequested: _OpenRequestedPayload; hit?: HitDetail; } | { TextCopied: string; hit?: HitDetail; } | { FocusChanged: WidgetId | null; hit?: HitDetail; } | { SystemThemeChanged: SystemTheme; hit?: HitDetail; } | { PowerStateChanged: _PowerStateChangedPayload; hit?: HitDetail; } | { ScrollOffsetChanged: _ScrollOffsetChangedPayload; hit?: HitDetail; } | { TextSelectionChanged: _TextSelectionChangedPayload; hit?: HitDetail; } | { SplitDividerDragged: _SplitDividerDraggedPayload; hit?: HitDetail; } | { MenuActivated: WidgetId; hit?: HitDetail; } | { ContextMenuItemActivated: WidgetId; hit?: HitDetail; } | { MessageDialogResolved: WidgetId; hit?: HitDetail; } | { ToastActionClicked: WidgetId; hit?: HitDetail; } | { CompletionItemActivated: [WidgetId, number]; hit?: HitDetail; } | { RichTextLinkClicked: [WidgetId, string]; hit?: HitDetail; } | { TrayClicked: _TrayClickedPayload; hit?: HitDetail; } | { NotificationActivated: _NotificationActivatedPayload; hit?: HitDetail; } | { Tree: [WidgetId, TreeEvent]; hit?: HitDetail; } | { List: [WidgetId, ListViewEvent]; hit?: HitDetail; } | { Form: [WidgetId, FormEvent]; hit?: HitDetail; } | { Palette: [WidgetId, PaletteEvent]; hit?: HitDetail; } | { TabBar: [WidgetId, TabBarEvent]; hit?: HitDetail; } | { StatusBar: [WidgetId, StatusBarEvent]; hit?: HitDetail; } | { ActivityBar: [WidgetId, ActivityBarEvent]; hit?: HitDetail; } | { Terminal: [WidgetId, TerminalEvent]; hit?: HitDetail; } | { TextDisplay: [WidgetId, TextDisplayEvent]; hit?: HitDetail; } | { Chart: [WidgetId, ChartEvent]; hit?: HitDetail; } | { DataTable: [WidgetId, DataTableEvent]; hit?: HitDetail; } | { Toolbar: [WidgetId, ToolbarEvent]; hit?: HitDetail; } | { BackendNative: BackendNativeEvent; hit?: HitDetail; } | { User: unknown; hit?: HitDetail; };
 
-/** Everything a user (or platform) can do that an app might care about -- see `quadraui/src/event.rs`'s `UiEvent`. `isinstance(event, str)` (Python) / `typeof event === "string"` (TS) separates the three no-payload variants from the rest before narrowing on a key. */
+/** `isinstance(event, str)` (Python) / `typeof event === "string"` (TS) separates the three no-payload variants from the rest before narrowing on a key. */
 export type UiEvent = ("WindowClose" | "DisplaysChanged" | "ContextMenuDismissed") | _UiEventDict;
