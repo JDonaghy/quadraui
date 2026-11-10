@@ -23,13 +23,13 @@
 //! dialog.render(backend);
 //!
 //! // AppLogic::handle:
-//! match dialog.handle(&event, backend) {
-//!     FormDialogEvent::ButtonClicked(id) if id.as_str() == "create" => {
+//! match dialog.handle_event(&event, backend) {
+//!     Handled::Event(FormDialogAction::ButtonClicked(id)) if id.as_str() == "create" => {
 //!         // Read the app's own canonical field values (already synced via
 //!         // FormAction(FormEvent::TextInputChanged { .. }) below) — same
 //!         // "app owns the data" contract `Form`'s own module doc states.
 //!     }
-//!     FormDialogEvent::FormAction(event) => { /* apply to app state, same as any FormController consumer */ }
+//!     Handled::Event(FormDialogAction::FormAction(event)) => { /* apply to app state, same as any FormController consumer */ }
 //!     _ => {}
 //! }
 //! ```
@@ -87,6 +87,7 @@
 //! what a sighted user sees highlighted while tabbing.
 
 use crate::backend::Backend;
+use crate::compose::Handled;
 use crate::event::{Point, Rect, UiEvent};
 use crate::primitives::dialog::{
     Dialog, DialogButton, DialogHit, DialogInput, DialogLayout, DialogMeasure, DialogSeverity,
@@ -96,10 +97,34 @@ use crate::primitives::toolbar::ToolbarItemMeasure;
 use crate::types::{StyledText, WidgetId};
 use crate::{Key, Modifiers, NamedKey};
 
-use super::form_controller::{focus_order, FormController, FormControllerEvent};
+use super::form_controller::{focus_order, FormController, FormControllerAction};
+
+/// Semantic payload of [`Handled::Event`] returned by
+/// [`FormDialogController::handle_event`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum FormDialogAction {
+    /// A button was clicked, activated via Enter while it had keyboard
+    /// focus, or resolved via Escape (which always targets
+    /// [`Dialog::cancel_button_id`]/[`Dialog::default_button_id`]
+    /// regardless of keyboard focus — see this module's "Keyboard
+    /// model" doc section). The consumer should check `id` against the
+    /// [`DialogButton::id`] values it built the dialog from — e.g. a
+    /// click on the "Create" button is the submit signal; the app reads
+    /// its own canonical field values (already kept in sync via
+    /// `FormAction` below) rather than this event carrying them.
+    ButtonClicked(WidgetId),
+    /// A field-level event occurred inside the form (text typed, a
+    /// toggle flipped, focus moved between fields, …). Apply it the same
+    /// way a direct [`FormController`] consumer would.
+    FormAction(FormEvent),
+}
 
 /// What happened after [`FormDialogController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
+#[deprecated(
+    since = "0.9.0",
+    note = "use `FormDialogController::handle_event`'s `Handled<FormDialogAction>` instead — `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, `ButtonClicked`/`FormAction` move to `FormDialogAction` under `Handled::Event`"
+)]
 pub enum FormDialogEvent {
     /// A button was clicked, activated via Enter while it had keyboard
     /// focus, or resolved via Escape (which always targets
@@ -361,7 +386,11 @@ impl FormDialogController {
     // ── Handle ────────────────────────────────────────────────────────
 
     /// Drive the state machine with a backend-neutral [`UiEvent`].
-    pub fn handle(&mut self, event: &UiEvent, backend: &mut dyn Backend) -> FormDialogEvent {
+    pub fn handle_event(
+        &mut self,
+        event: &UiEvent,
+        backend: &mut dyn Backend,
+    ) -> Handled<FormDialogAction> {
         match event {
             UiEvent::KeyPressed { key, modifiers, .. } => {
                 self.handle_key(key, modifiers, event, backend)
@@ -369,10 +398,27 @@ impl FormDialogController {
             UiEvent::MouseDown { position, .. } => self.handle_click(event, *position, backend),
             _ if self.focused_button.is_none() => {
                 let rect = self.form_rect(backend);
-                let result = self.form.handle(event, backend, rect);
+                let result = self.form.handle_event(event, backend, rect);
                 self.apply_form_result(result)
             }
-            _ => FormDialogEvent::Ignored,
+            _ => Handled::Ignored,
+        }
+    }
+
+    /// Drive the state machine with a backend-neutral [`UiEvent`].
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_event`, which returns `Handled<FormDialogAction>` instead of `FormDialogEvent`"
+    )]
+    #[allow(deprecated)] // `FormDialogEvent` is `#[deprecated]`; this method is its own shim.
+    pub fn handle(&mut self, event: &UiEvent, backend: &mut dyn Backend) -> FormDialogEvent {
+        match self.handle_event(event, backend) {
+            Handled::Event(FormDialogAction::ButtonClicked(id)) => {
+                FormDialogEvent::ButtonClicked(id)
+            }
+            Handled::Event(FormDialogAction::FormAction(e)) => FormDialogEvent::FormAction(e),
+            Handled::Consumed => FormDialogEvent::Consumed,
+            Handled::Ignored => FormDialogEvent::Ignored,
         }
     }
 
@@ -382,7 +428,7 @@ impl FormDialogController {
         modifiers: &Modifiers,
         event: &UiEvent,
         backend: &mut dyn Backend,
-    ) -> FormDialogEvent {
+    ) -> Handled<FormDialogAction> {
         match key {
             // An open `ComboBox` popup claims Escape first — closing the
             // popup, not the dialog — the same precedence
@@ -396,13 +442,13 @@ impl FormDialogController {
                 self.forward_to_form(event, backend)
             }
             Key::Named(NamedKey::Escape) => match self.cancel_or_default_button_id() {
-                Some(id) => FormDialogEvent::ButtonClicked(id),
-                None => FormDialogEvent::Ignored,
+                Some(id) => Handled::Event(FormDialogAction::ButtonClicked(id)),
+                None => Handled::Ignored,
             },
             Key::Named(NamedKey::Enter) => match self.focused_button {
                 Some(i) => match self.buttons.get(i) {
-                    Some(b) => FormDialogEvent::ButtonClicked(b.id),
-                    None => FormDialogEvent::Ignored,
+                    Some(b) => Handled::Event(FormDialogAction::ButtonClicked(b.id)),
+                    None => Handled::Ignored,
                 },
                 None => self.forward_to_form(event, backend),
             },
@@ -413,7 +459,7 @@ impl FormDialogController {
             Key::Named(NamedKey::Left) if self.focused_button.is_some() => self.cycle_button(-1),
             Key::Named(NamedKey::Right) if self.focused_button.is_some() => self.cycle_button(1),
             _ if self.focused_button.is_none() => self.forward_to_form(event, backend),
-            _ => FormDialogEvent::Ignored,
+            _ => Handled::Ignored,
         }
     }
 
@@ -421,9 +467,13 @@ impl FormDialogController {
     /// received) into the form unchanged — preserving its `repeat` flag
     /// rather than reconstructing a new event that always hardcodes
     /// `repeat: false`.
-    fn forward_to_form(&mut self, event: &UiEvent, backend: &mut dyn Backend) -> FormDialogEvent {
+    fn forward_to_form(
+        &mut self,
+        event: &UiEvent,
+        backend: &mut dyn Backend,
+    ) -> Handled<FormDialogAction> {
         let rect = self.form_rect(backend);
-        let result = self.form.handle(event, backend, rect);
+        let result = self.form.handle_event(event, backend, rect);
         self.apply_form_result(result)
     }
 
@@ -449,7 +499,7 @@ impl FormDialogController {
     /// across the single cyclic order: form fields, then buttons, then
     /// back to form fields — see this module's "Keyboard model" doc
     /// section.
-    fn navigate(&mut self, delta: isize, backend: &mut dyn Backend) -> FormDialogEvent {
+    fn navigate(&mut self, delta: isize, backend: &mut dyn Backend) -> Handled<FormDialogAction> {
         match self.focused_button {
             None => {
                 let stops = self.form.form().map(focus_order).unwrap_or_default();
@@ -482,48 +532,49 @@ impl FormDialogController {
                     modifiers: Modifiers::default(),
                     repeat: false,
                 };
-                let result = self.form.handle(&event, backend, rect);
+                let result = self.form.handle_event(&event, backend, rect);
                 self.apply_form_result(result)
             }
             Some(i) => {
                 let n = self.buttons.len();
                 if n == 0 {
-                    return FormDialogEvent::Ignored;
+                    return Handled::Ignored;
                 }
                 let at_boundary = (delta > 0 && i + 1 >= n) || (delta < 0 && i == 0);
                 if at_boundary {
                     return self.enter_form(delta);
                 }
                 self.focused_button = Some((i as isize + delta) as usize);
-                FormDialogEvent::Consumed
+                Handled::Consumed
             }
         }
     }
 
-    fn enter_buttons(&mut self, delta: isize) -> FormDialogEvent {
+    fn enter_buttons(&mut self, delta: isize) -> Handled<FormDialogAction> {
         if self.buttons.is_empty() {
-            return FormDialogEvent::Ignored;
+            return Handled::Ignored;
         }
         self.focused_button = Some(if delta > 0 { 0 } else { self.buttons.len() - 1 });
         self.form.set_has_focus(false);
-        FormDialogEvent::Consumed
+        Handled::Consumed
     }
 
     /// Move focus from the button row onto the form's first (`delta >
     /// 0`) or last (`delta < 0`) focusable field, self-applying the new
     /// `focused_field` onto the stored form (same as every other
     /// focus-moving path in this controller) **and** surfacing it as
-    /// [`FormDialogEvent::FormAction(FormEvent::FocusChanged)`] — a
+    /// [`FormDialogAction::FormAction(FormEvent::FocusChanged)`] — a
     /// consumer that mirrors `focused_field` onto its own canonical
     /// `Form` (the documented `set_form`-every-frame contract; see this
     /// module's doc) needs this event the same way it needs the one
-    /// `FormController::handle` emits for an in-form Tab, or its mirror
-    /// goes stale the moment focus re-enters the form from a button.
-    fn enter_form(&mut self, delta: isize) -> FormDialogEvent {
+    /// `FormController::handle_event` emits for an in-form Tab, or its
+    /// mirror goes stale the moment focus re-enters the form from a
+    /// button.
+    fn enter_form(&mut self, delta: isize) -> Handled<FormDialogAction> {
         self.focused_button = None;
         self.form.set_has_focus(true);
         let Some(mut form) = self.form.form().cloned() else {
-            return FormDialogEvent::Consumed;
+            return Handled::Consumed;
         };
         let stops = focus_order(&form);
         let target = if delta > 0 {
@@ -536,22 +587,22 @@ impl FormDialogController {
                 let id = *id;
                 form.focused_field = Some(id);
                 self.form.set_form(form);
-                FormDialogEvent::FormAction(FormEvent::FocusChanged { id })
+                Handled::Event(FormDialogAction::FormAction(FormEvent::FocusChanged { id }))
             }
-            None => FormDialogEvent::Consumed,
+            None => Handled::Consumed,
         }
     }
 
-    fn cycle_button(&mut self, delta: isize) -> FormDialogEvent {
+    fn cycle_button(&mut self, delta: isize) -> Handled<FormDialogAction> {
         let Some(i) = self.focused_button else {
-            return FormDialogEvent::Ignored;
+            return Handled::Ignored;
         };
         let n = self.buttons.len();
         if n == 0 {
-            return FormDialogEvent::Ignored;
+            return Handled::Ignored;
         }
         self.focused_button = Some(crate::focus::cycle_index(i, delta, n));
-        FormDialogEvent::Consumed
+        Handled::Consumed
     }
 
     fn handle_click(
@@ -559,7 +610,7 @@ impl FormDialogController {
         event: &UiEvent,
         position: Point,
         backend: &mut dyn Backend,
-    ) -> FormDialogEvent {
+    ) -> Handled<FormDialogAction> {
         let layout = self.layout(backend);
         match layout.hit_test(position.x, position.y) {
             DialogHit::Button(id) => {
@@ -567,48 +618,62 @@ impl FormDialogController {
                     self.focused_button = Some(i);
                     self.form.set_has_focus(false);
                 }
-                FormDialogEvent::ButtonClicked(id)
+                Handled::Event(FormDialogAction::ButtonClicked(id))
             }
-            DialogHit::Outside => FormDialogEvent::Consumed,
+            DialogHit::Outside => Handled::Consumed,
             // Body (or an impossible `BodyToolbarButton` — this
             // controller never sets `body_toolbar_layout`): delegate to
             // the form's own click routing so clicking a field moves
             // keyboard focus onto it.
             _ => {
                 let Some(input_bounds) = layout.input_bounds else {
-                    return FormDialogEvent::Consumed;
+                    return Handled::Consumed;
                 };
                 self.focused_button = None;
                 self.form.set_has_focus(true);
-                let result = self.form.handle(event, backend, input_bounds);
+                let result = self.form.handle_event(event, backend, input_bounds);
                 self.apply_form_result(result)
             }
         }
     }
 
-    /// Map a [`FormControllerEvent`] from `self.form.handle`/`handle_cached`
-    /// to a [`FormDialogEvent`], self-applying a `FocusChanged` onto the
-    /// stored form first — see this module's "Keyboard model" doc section
-    /// for why this controller, unlike a bare [`FormController`] consumer,
-    /// doesn't leave that hand-off to the caller.
-    fn apply_form_result(&mut self, result: FormControllerEvent) -> FormDialogEvent {
-        if let FormControllerEvent::FormAction(FormEvent::FocusChanged { id }) = &result {
+    /// Map a [`Handled<FormControllerAction>`] from
+    /// `self.form.handle_event`/`handle_cached_event` to a
+    /// `Handled<FormDialogAction>`, self-applying a `FocusChanged` onto
+    /// the stored form first — see this module's "Keyboard model" doc
+    /// section for why this controller, unlike a bare [`FormController`]
+    /// consumer, doesn't leave that hand-off to the caller.
+    fn apply_form_result(
+        &mut self,
+        result: Handled<FormControllerAction>,
+    ) -> Handled<FormDialogAction> {
+        if let Handled::Event(FormControllerAction::FormAction(FormEvent::FocusChanged { id })) =
+            &result
+        {
             if let Some(mut form) = self.form.form().cloned() {
                 form.focused_field = Some(*id);
                 self.form.set_form(form);
             }
         }
-        map_form_event(result)
+        handled_from_form_controller_action(result)
     }
 }
 
-fn map_form_event(event: FormControllerEvent) -> FormDialogEvent {
+/// Adapt a [`FormController`] sub-result into this controller's own
+/// `Handled<FormDialogAction>` — `ScrollChanged` carries no payload the
+/// dialog needs to re-surface, so it collapses into `Handled::Consumed`
+/// alongside the form's own `Consumed`.
+fn handled_from_form_controller_action(
+    event: Handled<FormControllerAction>,
+) -> Handled<FormDialogAction> {
     match event {
-        FormControllerEvent::FormAction(e) => FormDialogEvent::FormAction(e),
-        FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => {
-            FormDialogEvent::Consumed
+        Handled::Event(FormControllerAction::FormAction(e)) => {
+            Handled::Event(FormDialogAction::FormAction(e))
         }
-        FormControllerEvent::Ignored => FormDialogEvent::Ignored,
+        Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
+            Handled::Consumed
+        }
+        Handled::Ignored => Handled::Ignored,
     }
 }
 
@@ -741,8 +806,8 @@ mod tests {
             other => panic!("expected DialogInput::Form, got {:?}", other),
         }
         let mut backend = crate::tui::backend::TuiBackend::new();
-        c.handle(&tab_event(false), &mut backend); // name -> description
-        c.handle(&tab_event(false), &mut backend); // description -> cancel
+        let _ = c.handle_event(&tab_event(false), &mut backend); // name -> description
+        let _ = c.handle_event(&tab_event(false), &mut backend); // description -> cancel
         assert!(!c.is_form_focused());
         match c.dialog().input {
             Some(DialogInput::Form(f)) => {
@@ -795,11 +860,11 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        let result = c.handle(&esc, &mut backend);
+        let result = c.handle_event(&esc, &mut backend);
         // The combo box's own Escape path cancels the edit back to the
         // committed value and closes the popup — not a `ButtonClicked`.
         assert!(
-            matches!(result, FormDialogEvent::FormAction(_)),
+            matches!(result, Handled::Event(FormDialogAction::FormAction(_))),
             "Escape should have been forwarded into the open combo box, got {:?}",
             result
         );
@@ -829,10 +894,10 @@ mod tests {
         let mut c = controller();
         let mut backend = crate::tui::backend::TuiBackend::new();
         let ev = tab_event(false);
-        let result = c.handle(&ev, &mut backend);
+        let result = c.handle_event(&ev, &mut backend);
         assert!(matches!(
             result,
-            FormDialogEvent::FormAction(FormEvent::FocusChanged { .. })
+            Handled::Event(FormDialogAction::FormAction(FormEvent::FocusChanged { .. }))
         ));
         assert_eq!(
             c.form().and_then(|f| f.focused_field).unwrap().as_str(),
@@ -846,9 +911,9 @@ mod tests {
         let mut c = controller();
         let mut backend = crate::tui::backend::TuiBackend::new();
         // name -> description -> (past the last field) first button.
-        c.handle(&tab_event(false), &mut backend);
-        let result = c.handle(&tab_event(false), &mut backend);
-        assert_eq!(result, FormDialogEvent::Consumed);
+        let _ = c.handle_event(&tab_event(false), &mut backend);
+        let result = c.handle_event(&tab_event(false), &mut backend);
+        assert_eq!(result, Handled::Consumed);
         assert!(!c.is_form_focused());
         assert_eq!(c.focused_button_id().unwrap().as_str(), "cancel");
     }
@@ -857,20 +922,20 @@ mod tests {
     fn tab_past_the_last_button_wraps_to_the_first_field() {
         let mut c = controller();
         let mut backend = crate::tui::backend::TuiBackend::new();
-        c.handle(&tab_event(false), &mut backend); // name -> description
-        c.handle(&tab_event(false), &mut backend); // description -> cancel
-        c.handle(&tab_event(false), &mut backend); // cancel -> create
-        let result = c.handle(&tab_event(false), &mut backend); // create -> name
-                                                                // `enter_form` surfaces `FocusChanged` (not a bare `Consumed`)
-                                                                // so a consumer mirroring `focused_field` onto its own
-                                                                // canonical `Form` (the documented `set_form`-every-frame
-                                                                // contract) learns about the hand-off too — see this module's
-                                                                // "Keyboard model" doc section.
+        let _ = c.handle_event(&tab_event(false), &mut backend); // name -> description
+        let _ = c.handle_event(&tab_event(false), &mut backend); // description -> cancel
+        let _ = c.handle_event(&tab_event(false), &mut backend); // cancel -> create
+        let result = c.handle_event(&tab_event(false), &mut backend); // create -> name
+                                                                      // `enter_form` surfaces `FocusChanged` (not a bare `Consumed`)
+                                                                      // so a consumer mirroring `focused_field` onto its own
+                                                                      // canonical `Form` (the documented `set_form`-every-frame
+                                                                      // contract) learns about the hand-off too — see this module's
+                                                                      // "Keyboard model" doc section.
         assert_eq!(
             result,
-            FormDialogEvent::FormAction(FormEvent::FocusChanged {
+            Handled::Event(FormDialogAction::FormAction(FormEvent::FocusChanged {
                 id: WidgetId::new("name")
-            })
+            }))
         );
         assert!(c.is_form_focused());
         assert_eq!(
@@ -890,17 +955,17 @@ mod tests {
     fn typing_after_tab_wrap_back_onto_the_form_lands_in_the_focused_field() {
         let mut c = controller();
         let mut backend = crate::tui::backend::TuiBackend::new();
-        c.handle(&tab_event(false), &mut backend); // name -> description
-        c.handle(&tab_event(false), &mut backend); // description -> cancel
-        c.handle(&tab_event(false), &mut backend); // cancel -> create
-        c.handle(&tab_event(false), &mut backend); // create -> (wraps) name
-        let result = c.handle(&UiEvent::CharTyped('z'), &mut backend);
+        let _ = c.handle_event(&tab_event(false), &mut backend); // name -> description
+        let _ = c.handle_event(&tab_event(false), &mut backend); // description -> cancel
+        let _ = c.handle_event(&tab_event(false), &mut backend); // cancel -> create
+        let _ = c.handle_event(&tab_event(false), &mut backend); // create -> (wraps) name
+        let result = c.handle_event(&UiEvent::CharTyped('z'), &mut backend);
         assert_eq!(
             result,
-            FormDialogEvent::FormAction(FormEvent::TextInputChanged {
+            Handled::Event(FormDialogAction::FormAction(FormEvent::TextInputChanged {
                 id: WidgetId::new("name"),
                 value: "z".into(),
-            })
+            }))
         );
     }
 
@@ -908,8 +973,8 @@ mod tests {
     fn shift_tab_from_the_first_field_moves_to_the_last_button() {
         let mut c = controller();
         let mut backend = crate::tui::backend::TuiBackend::new();
-        let result = c.handle(&tab_event(true), &mut backend);
-        assert_eq!(result, FormDialogEvent::Consumed);
+        let result = c.handle_event(&tab_event(true), &mut backend);
+        assert_eq!(result, Handled::Consumed);
         assert!(!c.is_form_focused());
         assert_eq!(c.focused_button_id().unwrap().as_str(), "create");
     }
@@ -918,14 +983,14 @@ mod tests {
     fn left_right_cycle_buttons_once_focused() {
         let mut c = controller();
         let mut backend = crate::tui::backend::TuiBackend::new();
-        c.handle(&tab_event(false), &mut backend);
-        c.handle(&tab_event(false), &mut backend); // now on "cancel"
+        let _ = c.handle_event(&tab_event(false), &mut backend);
+        let _ = c.handle_event(&tab_event(false), &mut backend); // now on "cancel"
         let right = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Right),
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        c.handle(&right, &mut backend);
+        let _ = c.handle_event(&right, &mut backend);
         assert_eq!(c.focused_button_id().unwrap().as_str(), "create");
     }
 
@@ -934,9 +999,12 @@ mod tests {
         let mut c = controller();
         let mut backend = crate::tui::backend::TuiBackend::new();
         let ev = UiEvent::CharTyped('x');
-        let result = c.handle(&ev, &mut backend);
+        let result = c.handle_event(&ev, &mut backend);
         match result {
-            FormDialogEvent::FormAction(FormEvent::TextInputChanged { id, value }) => {
+            Handled::Event(FormDialogAction::FormAction(FormEvent::TextInputChanged {
+                id,
+                value,
+            })) => {
                 assert_eq!(id.as_str(), "name");
                 assert_eq!(value, "x");
             }
@@ -948,16 +1016,16 @@ mod tests {
     fn enter_on_focused_create_button_resolves_it() {
         let mut c = controller();
         let mut backend = crate::tui::backend::TuiBackend::new();
-        c.handle(&tab_event(true), &mut backend); // shift-tab: focus -> "create"
+        let _ = c.handle_event(&tab_event(true), &mut backend); // shift-tab: focus -> "create"
         let enter = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Enter),
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        let result = c.handle(&enter, &mut backend);
+        let result = c.handle_event(&enter, &mut backend);
         assert_eq!(
             result,
-            FormDialogEvent::ButtonClicked(WidgetId::new("create"))
+            Handled::Event(FormDialogAction::ButtonClicked(WidgetId::new("create")))
         );
     }
 
@@ -970,10 +1038,10 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        let result = c.handle(&esc, &mut backend);
+        let result = c.handle_event(&esc, &mut backend);
         assert_eq!(
             result,
-            FormDialogEvent::ButtonClicked(WidgetId::new("cancel"))
+            Handled::Event(FormDialogAction::ButtonClicked(WidgetId::new("cancel")))
         );
     }
 
@@ -997,10 +1065,10 @@ mod tests {
             position: Point::new(cx, cy),
             modifiers: Modifiers::default(),
         };
-        let result = c.handle(&ev, &mut backend);
+        let result = c.handle_event(&ev, &mut backend);
         assert_eq!(
             result,
-            FormDialogEvent::ButtonClicked(WidgetId::new("create"))
+            Handled::Event(FormDialogAction::ButtonClicked(WidgetId::new("create")))
         );
         assert_eq!(c.focused_button_id().unwrap().as_str(), "create");
     }
@@ -1040,9 +1108,9 @@ mod tests {
     fn other_events_with_buttons_focused_are_ignored() {
         let mut c = controller();
         let mut backend = crate::tui::backend::TuiBackend::new();
-        c.handle(&tab_event(true), &mut backend); // focus -> "create"
+        let _ = c.handle_event(&tab_event(true), &mut backend); // focus -> "create"
         let ev = UiEvent::CharTyped('x');
-        assert_eq!(c.handle(&ev, &mut backend), FormDialogEvent::Ignored);
+        assert_eq!(c.handle_event(&ev, &mut backend), Handled::Ignored);
     }
 
     /// `focus_order` skips `Label`/`ReadOnly`/disabled fields, matching

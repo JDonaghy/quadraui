@@ -241,6 +241,7 @@
 //! id the cached cursor/scrub position resuming is the desired behaviour
 //! rather than a reset.
 
+use crate::compose::Handled;
 use crate::primitives::combo_box::ComboBoxEvent;
 use crate::primitives::date_picker::{CalendarDate, DatePickerEvent};
 use crate::primitives::form::{
@@ -260,8 +261,22 @@ use crate::{
     UiEvent, WidgetId,
 };
 
+/// Semantic payload of [`Handled::Event`] returned by
+/// [`FormController::handle_event`]/[`FormController::handle_cached_event`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum FormControllerAction {
+    /// A field-level event occurred (toggle changed, text input, etc.).
+    FormAction(FormEvent),
+    /// Scrollbar interaction changed the scroll offset.
+    ScrollChanged,
+}
+
 /// What happened after [`FormController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
+#[deprecated(
+    since = "0.9.0",
+    note = "use `FormController::handle_event`/`handle_cached_event`'s `Handled<FormControllerAction>` instead — `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, `FormAction`/`ScrollChanged` move to `FormControllerAction` under `Handled::Event`"
+)]
 pub enum FormControllerEvent {
     /// A field-level event occurred (toggle changed, text input, etc.).
     FormAction(FormEvent),
@@ -271,6 +286,18 @@ pub enum FormControllerEvent {
     Consumed,
     /// Event not relevant to the form.
     Ignored,
+}
+
+/// Convert the internal [`FormControllerEvent`] result into
+/// [`Handled<FormControllerAction>`].
+#[allow(deprecated)] // `FormControllerEvent` is `#[deprecated]`; this is its own adapter.
+fn handled_from_form_controller_event(event: FormControllerEvent) -> Handled<FormControllerAction> {
+    match event {
+        FormControllerEvent::FormAction(e) => Handled::Event(FormControllerAction::FormAction(e)),
+        FormControllerEvent::ScrollChanged => Handled::Event(FormControllerAction::ScrollChanged),
+        FormControllerEvent::Consumed => Handled::Consumed,
+        FormControllerEvent::Ignored => Handled::Ignored,
+    }
 }
 
 /// Live cursor/selection for the field currently being typed into.
@@ -329,6 +356,13 @@ pub struct FormController {
     visibility: FormVisibility,
 }
 
+// `handle_inner` and its private helpers still speak `FormControllerEvent`
+// internally — `handle_event`/`handle_cached_event` below are the
+// `Handled<FormControllerAction>`-returning public surface, adapting the
+// internal result at the boundary via `handled_from_form_controller_event`,
+// so this one block is exempted rather than threading the new type through
+// every match arm of the click/key dispatch tree.
+#[allow(deprecated)]
 impl FormController {
     pub fn new(id: String) -> Self {
         Self {
@@ -487,6 +521,22 @@ impl FormController {
 
     // ── Handle (with backend) ────────────────────────────────────────
 
+    /// Drive the state machine with a backend-neutral [`UiEvent`].
+    pub fn handle_event(
+        &mut self,
+        event: &UiEvent,
+        backend: &mut dyn Backend,
+        rect: Rect,
+    ) -> Handled<FormControllerAction> {
+        let lh = backend.line_height();
+        handled_from_form_controller_event(self.handle_inner(event, rect, lh, Some(backend)))
+    }
+
+    /// Drive the state machine with a backend-neutral [`UiEvent`].
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_event`, which returns `Handled<FormControllerAction>` instead of `FormControllerEvent`"
+    )]
     pub fn handle(
         &mut self,
         event: &UiEvent,
@@ -501,7 +551,23 @@ impl FormController {
 
     /// Backend-free event handler. Requires [`Self::set_backend_info`]
     /// or [`Self::render_and_cache`] called first. Returns
-    /// [`FormControllerEvent::Ignored`] if metrics aren't cached yet.
+    /// [`Handled::Ignored`] if metrics aren't cached yet.
+    pub fn handle_cached_event(
+        &mut self,
+        event: &UiEvent,
+        rect: Rect,
+    ) -> Handled<FormControllerAction> {
+        let Some(lh) = self.cached_lh else {
+            return Handled::Ignored;
+        };
+        handled_from_form_controller_event(self.handle_inner(event, rect, lh, None))
+    }
+
+    /// Backend-free event handler.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_cached_event`, which returns `Handled<FormControllerAction>` instead of `FormControllerEvent`"
+    )]
     pub fn handle_cached(&mut self, event: &UiEvent, rect: Rect) -> FormControllerEvent {
         let Some(lh) = self.cached_lh else {
             return FormControllerEvent::Ignored;
@@ -2208,6 +2274,13 @@ impl crate::primitives::layout_metrics::TextMeasure for CharWidthMeasure {
 }
 
 #[cfg(test)]
+// This whole module exercises `handle`/`handle_cached`/`FormControllerEvent`
+// directly — deliberately, since those are now the deprecated shims and
+// their own test coverage is what "stays passing" means for them. The
+// `Handled<FormControllerAction>`-returning `handle_event`/
+// `handle_cached_event` are thin wrappers around the same `handle_inner`
+// these tests already exercise (see `handled_from_form_controller_event`).
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::primitives::combo_box::ComboBox;

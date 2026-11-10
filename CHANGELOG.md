@@ -130,6 +130,28 @@ only a push to `main` runs this workflow.
   `FolderPickerController::handle_event`, replacing the identical
   `FilePickerEvent`/`FolderPickerEvent` enums each facade used to define
   on its own (see `### Deprecated`).
+- `FormController::{handle_event, handle_cached_event}` and
+  `compose::FormControllerAction` (#2298): one more `compose` controller
+  onto `compose::Handled<E>`. Both return `Handled<FormControllerAction>`
+  (`FormControllerAction` carries just the semantic `FormAction`/
+  `ScrollChanged` payloads `FormControllerEvent` used to mix with its own
+  `Consumed`/`Ignored`). Added alongside the now-deprecated `handle`/
+  `handle_cached`/`FormControllerEvent` originals (see `### Deprecated`).
+- `FormDialogController::handle_event` and `compose::FormDialogAction`
+  (#2298): one more `compose` controller onto `compose::Handled<E>`.
+  `handle_event` returns `Handled<FormDialogAction>` (`FormDialogAction`
+  carries the `ButtonClicked`/`FormAction` payloads `FormDialogEvent` used
+  to mix with its own `Consumed`/`Ignored`). Added alongside the
+  now-deprecated `handle`/`FormDialogEvent` originals (see
+  `### Deprecated`).
+- `ChatController::handle_event` and `compose::ChatControllerAction`
+  (#2298): one more `compose` controller onto `compose::Handled<E>`.
+  `handle_event` returns `Handled<ChatControllerAction>`
+  (`ChatControllerAction` carries the `Submit`/`StreamChunk`/`Cancelled`/
+  `StopRequested`/`KeyPressed`/`TurnClicked` payloads `ChatControllerEvent`
+  used to mix with its own `Consumed`/`Ignored`). Added alongside the
+  now-deprecated `handle`/`ChatControllerEvent` originals (see
+  `### Deprecated`).
 - `quadraui-node`: `QuiApp.armWakeNotify`/`disarmWakeNotify` (#2238) register
   a threadsafe notifier `QuiAppWaker.post`/`wake`/`postAfter`/`wakeAfter`
   fires the instant they deliver, from whatever thread that happens on.
@@ -387,6 +409,43 @@ only a push to `main` runs this workflow.
   `quadraui-gallery`'s file-picker demo) migrates in this PR; `handle`/
   `FilePickerEvent`/`FolderPickerEvent` stay as thin adapters with their
   own tests still passing. Removal target: same as
+  `StatusBarInteraction::handle` above.
+- `FormController::{handle, handle_cached}` / `FormControllerEvent`
+  (#2298): use `handle_event`/`handle_cached_event`, which return
+  `Handled<FormControllerAction>` instead — `Consumed`/`Ignored` are
+  `Handled::Consumed`/`Handled::Ignored`, and the `FormAction`/
+  `ScrollChanged` payloads move to the new `FormControllerAction` under
+  `Handled::Event`. Every in-repo caller (every `examples/common/form_*.rs`
+  app, `quadraui-gallery`'s form demo, `quadraui-binding-core`'s
+  `InteractionEngine`) migrates in this PR; `handle`/`handle_cached`/
+  `FormControllerEvent` stay as thin adapters with their own tests still
+  passing. `FormController`'s own ~1200-line `impl` block and its test
+  module keep calling the deprecated internals directly under a
+  module-scoped `#[allow(deprecated)]` rather than threading the new type
+  through every one of its private helpers — the public boundary
+  (`handle_event`/`handle_cached_event`) is what changed, not every
+  internal call site. Removal target: same as
+  `StatusBarInteraction::handle` above.
+- `FormDialogController::handle` / `FormDialogEvent` (#2298): use
+  `handle_event`, which returns `Handled<FormDialogAction>` instead —
+  `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, and the
+  `ButtonClicked`/`FormAction` payloads move to the new `FormDialogAction`
+  under `Handled::Event`. Every in-repo caller
+  (`examples/common/form_dialog_demo.rs`) migrates in this PR; `handle`/
+  `FormDialogEvent` stay as thin adapters with their own tests still
+  passing. Removal target: same as `StatusBarInteraction::handle` above.
+- `ChatController::handle` / `ChatControllerEvent` (#2298): use
+  `handle_event`, which returns `Handled<ChatControllerAction>` instead —
+  `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, and
+  every other payload moves to the new `ChatControllerAction` under
+  `Handled::Event`. Every in-repo caller (`examples/common/{chat_demo,
+  ai_transcript}.rs`, `quadraui-gallery`'s chat demo) migrates in this PR;
+  `handle`/`ChatControllerEvent` stay as thin adapters with their own
+  tests still passing (the controller's own private helpers
+  (`handle_key`/`handle_click`/`handle_drag`) keep speaking
+  `ChatControllerEvent` internally under a module-scoped
+  `#[allow(deprecated)]`, same as `FormController` above — only the
+  public boundary changed shape). Removal target: same as
   `StatusBarInteraction::handle` above.
 - `TreeController::jump_to_edge` (#2178): use `move_selection_to_edge`,
   which takes the new `Edge::Start`/`Edge::End` enum instead of a

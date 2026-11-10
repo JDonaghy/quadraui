@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
-    ContextMenuController, ContextMenuOutcome, FormController, FormControllerEvent, Handled,
+    ContextMenuController, ContextMenuOutcome, FormController, FormControllerAction, Handled,
     MenuDef, MenuEvent, MenuSystem, MessageDialogController,
 };
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
@@ -175,7 +175,7 @@ pub struct InteractionEngine {
     /// The absolute bounds [`Self::sync_forms`] most recently painted each
     /// [`Self::form_controllers`] entry into, read by
     /// [`InteractionEngine::handle`] so a routed event's position
-    /// resolves against the same `rect` the paint pass used (`FormController::handle`
+    /// resolves against the same `rect` the paint pass used (`FormController::handle_event`
     /// does its own position-relative hit-testing internally, unlike this
     /// engine's `hit_map`-based primitives).
     form_rects: RefCell<HashMap<WidgetId, Rect>>,
@@ -894,7 +894,7 @@ impl InteractionEngine {
             *self.column_drag.borrow_mut() = None;
             self.chrome_pressed.borrow_mut().clear();
             // Mirrors the resets above for a `"form"` extra's own
-            // scrollbar-thumb drag: `FormController::handle`'s `MouseUp`
+            // scrollbar-thumb drag: `FormController::handle_event`'s `MouseUp`
             // arm clears `scroll_drag` unconditionally (it doesn't check
             // position), so trying every cached controller here releases
             // whichever one (if any) is mid-drag instead of leaving its
@@ -904,7 +904,7 @@ impl InteractionEngine {
                 let rect = self.form_rects.borrow().get(id).copied();
                 if let Some(rect) = rect {
                     if let Some(controller) = self.form_controllers.borrow_mut().get_mut(id) {
-                        controller.handle(&event, backend, rect);
+                        let _ = controller.handle_event(&event, backend, rect);
                     }
                 }
             }
@@ -1155,7 +1155,7 @@ impl InteractionEngine {
 
         // A `KeyPressed`/`CharTyped`/`ClipboardPaste` landing on a `"form"`
         // extra that currently holds engine-level focus routes through
-        // that `Form`'s own cached `FormController` — `FormController::handle`'s
+        // that `Form`'s own cached `FormController` — `FormController::handle_event`'s
         // own `has_focus` gate (see its module doc) is what makes this
         // safe to try unconditionally even when no `"form"` extra is
         // focused (or none exists this frame): `form_rects`/`form_controllers`
@@ -1176,8 +1176,8 @@ impl InteractionEngine {
                 if let Some(rect) = self.form_rects.borrow().get(&focused).copied() {
                     if let Some(controller) = self.form_controllers.borrow_mut().get_mut(&focused) {
                         controller.set_has_focus(true);
-                        if let FormControllerEvent::FormAction(form_event) =
-                            controller.handle(&event, backend, rect)
+                        if let Handled::Event(FormControllerAction::FormAction(form_event)) =
+                            controller.handle_event(&event, backend, rect)
                         {
                             event = UiEvent::Form(focused, form_event);
                         }
@@ -1187,7 +1187,7 @@ impl InteractionEngine {
         }
 
         // A `MouseDown` lands on at most one `"form"` extra's own `rect`
-        // (`FormController::handle`'s own `click_inner` returns `Ignored`,
+        // (`FormController::handle_event`'s own `click_inner` returns `Ignored`,
         // with no mutation, for every other one — see its doc), so trying
         // every cached controller, in `form_order`'s deterministic paint
         // order, and stopping at the first non-`Ignored` result is safe
@@ -1211,8 +1211,8 @@ impl InteractionEngine {
                         .form_controllers
                         .borrow_mut()
                         .get_mut(&id)
-                        .map(|controller| controller.handle(&event, backend, rect))?;
-                    (!matches!(outcome, FormControllerEvent::Ignored)).then_some((id, outcome))
+                        .map(|controller| controller.handle_event(&event, backend, rect))?;
+                    (!matches!(outcome, Handled::Ignored)).then_some((id, outcome))
                 });
             if let Some((id, outcome)) = claim {
                 // Mirrors the generic click-to-focus block below: a click
@@ -1228,20 +1228,22 @@ impl InteractionEngine {
                     }
                 }
                 return match outcome {
-                    FormControllerEvent::FormAction(form_event) => focus_reaction.merge(
-                        Reaction::Redraw.merge(sink.dispatch(&UiEvent::Form(id, form_event), None)),
-                    ),
-                    FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => {
+                    Handled::Event(FormControllerAction::FormAction(form_event)) => focus_reaction
+                        .merge(
+                            Reaction::Redraw
+                                .merge(sink.dispatch(&UiEvent::Form(id, form_event), None)),
+                        ),
+                    Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
                         focus_reaction.merge(Reaction::Redraw)
                     }
-                    FormControllerEvent::Ignored => unreachable!("filtered out above"),
+                    Handled::Ignored => unreachable!("filtered out above"),
                 };
             }
         }
 
         // A move with the left button held continues whichever `"form"`
         // extra's own scrollbar-thumb drag (if any) the `MouseDown` claim
-        // above armed — `FormController::handle`'s `MouseMoved` arm
+        // above armed — `FormController::handle_event`'s `MouseMoved` arm
         // no-ops (`Ignored`) for every controller with no `scroll_drag` of
         // its own, so trying all of them here is safe regardless of which
         // one (if any) is actually dragging. Unlike the generic
@@ -1263,8 +1265,8 @@ impl InteractionEngine {
                 if let Some(rect) = rect {
                     if let Some(controller) = self.form_controllers.borrow_mut().get_mut(id) {
                         if matches!(
-                            controller.handle(&event, backend, rect),
-                            FormControllerEvent::Consumed | FormControllerEvent::ScrollChanged
+                            controller.handle_event(&event, backend, rect),
+                            Handled::Consumed | Handled::Event(FormControllerAction::ScrollChanged)
                         ) {
                             consumed = true;
                         }
@@ -1296,8 +1298,8 @@ impl InteractionEngine {
             if let Some((id, rect)) = claim {
                 if let Some(controller) = self.form_controllers.borrow_mut().get_mut(&id) {
                     if matches!(
-                        controller.handle(&event, backend, rect),
-                        FormControllerEvent::Consumed | FormControllerEvent::ScrollChanged
+                        controller.handle_event(&event, backend, rect),
+                        Handled::Consumed | Handled::Event(FormControllerAction::ScrollChanged)
                     ) {
                         return Reaction::Redraw;
                     }

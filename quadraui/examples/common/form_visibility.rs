@@ -37,9 +37,9 @@
 use quadraui::{
     expr::{Expr, Value},
     visibility::{FieldVisibility, FormVisibility},
-    AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerEvent, FormEvent,
-    FormField, InteractionState, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent,
-    WidgetId,
+    AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerAction, FormEvent,
+    FormField, Handled, InteractionState, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
+    UiEvent, WidgetId,
 };
 
 pub struct FormVisibilityApp {
@@ -262,8 +262,8 @@ impl AppLogic for FormVisibilityApp {
         self.fc.set_form(self.build_form());
         self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle_cached(&event, rect) {
-            FormControllerEvent::FormAction(fe) => {
+        match self.fc.handle_cached_event(&event, rect) {
+            Handled::Event(FormControllerAction::FormAction(fe)) => {
                 match fe {
                     FormEvent::ToggleChanged { ref id, value } if id.as_str() == "ship" => {
                         self.ship = value;
@@ -301,8 +301,10 @@ impl AppLogic for FormVisibilityApp {
                 self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
-            FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => Reaction::Redraw,
-            FormControllerEvent::Ignored => Reaction::Continue,
+            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
+                Reaction::Redraw
+            }
+            Handled::Ignored => Reaction::Continue,
         }
     }
 }

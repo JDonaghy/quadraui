@@ -757,11 +757,11 @@ pub use compose::markdown::{
 pub use compose::{
     filter_help_actions, help_actions_to_palette_items, notify_or_toast, AppShell, AppShellEvent,
     AppShellLayout, BackendWidget, BottomBand, BottomPanelConfig, BottomPanelController,
-    BottomPanelEvent, BottomPanelLayout, BottomPanelTab, ChatController, ChatControllerEvent,
+    BottomPanelEvent, BottomPanelLayout, BottomPanelTab, ChatController, ChatControllerAction,
     ChatRole, ChatTurn, ContextMenuController, ContextMenuOutcome, DualModePaletteAction,
     DualModePaletteController, Edge, FilePickerController, FilePickerMode, FocusGroup, FocusRing,
-    FolderPickerController, FormController, FormControllerEvent, FormDialogController,
-    FormDialogEvent, GroupLayout, Handled, HelpAction, HelpNote, HelpOverlayAction,
+    FolderPickerController, FormController, FormControllerAction, FormDialogAction,
+    FormDialogController, GroupLayout, Handled, HelpAction, HelpNote, HelpOverlayAction,
     HelpOverlayController, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent, MenuSystem,
     MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab, PanelDefinition,
     PathPickerAction, SectionKind, ShellPosition, SidebarEvent, SidebarPanelBody,
@@ -772,20 +772,25 @@ pub use compose::{
     PALETTE_CHROME_ROWS,
 };
 // `StatusBarAction`, `MessageDialogEvent`, `ToastStackEvent`, `HelpOverlayEvent`,
-// `DualModePaletteEvent`, `FilePickerEvent` and `FolderPickerEvent` are
+// `DualModePaletteEvent`, `FilePickerEvent`, `FolderPickerEvent`,
+// `FormControllerEvent`, `FormDialogEvent` and `ChatControllerEvent` are
 // `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
 // `Handled<WidgetId>`, `MessageDialogController::handle_event`'s
 // `Handled<MessageDialogChoice>`, `ToastStackController::handle_event`'s
 // `Handled<ToastStackAction>`, `HelpOverlayController::handle_event`'s
 // `Handled<HelpOverlayAction>`, `DualModePaletteController::handle_event`'s
-// `Handled<DualModePaletteAction>`, and `FilePickerController`/
-// `FolderPickerController::handle_event`'s `Handled<PathPickerAction>`
-// instead). Allow them here since `pub use` of a deprecated item is itself a
-// use site.
+// `Handled<DualModePaletteAction>`, `FilePickerController`/
+// `FolderPickerController::handle_event`'s `Handled<PathPickerAction>`,
+// `FormController::handle_event`/`handle_cached_event`'s
+// `Handled<FormControllerAction>`, `FormDialogController::handle_event`'s
+// `Handled<FormDialogAction>`, and `ChatController::handle_event`'s
+// `Handled<ChatControllerAction>` instead). Allow them here since `pub use`
+// of a deprecated item is itself a use site.
 #[allow(deprecated)]
 pub use compose::{
-    DualModePaletteEvent, FilePickerEvent, FolderPickerEvent, HelpOverlayEvent, MessageDialogEvent,
-    StatusBarAction, ToastStackEvent,
+    ChatControllerEvent, DualModePaletteEvent, FilePickerEvent, FolderPickerEvent,
+    FormControllerEvent, FormDialogEvent, HelpOverlayEvent, MessageDialogEvent, StatusBarAction,
+    ToastStackEvent,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,

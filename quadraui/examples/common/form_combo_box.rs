@@ -24,8 +24,8 @@
 
 use quadraui::{
     AppLogic, Backend, Color, ComboBox, CompletionItemMeasure, FieldKind, Form, FormController,
-    FormControllerEvent, FormEvent, FormField, InteractionState, Key, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    FormControllerAction, FormEvent, FormField, Handled, InteractionState, Key, NamedKey, Reaction,
+    Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct FormComboBoxApp {
@@ -188,8 +188,8 @@ impl AppLogic for FormComboBoxApp {
         self.fc.set_form(self.build_form());
         self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle_cached(&event, rect) {
-            FormControllerEvent::FormAction(fe) => {
+        match self.fc.handle_cached_event(&event, rect) {
+            Handled::Event(FormControllerAction::FormAction(fe)) => {
                 match fe {
                     FormEvent::ComboBoxTextChanged { value, .. } => {
                         self.combo.text = value.clone();
@@ -218,8 +218,10 @@ impl AppLogic for FormComboBoxApp {
                 self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
-            FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => Reaction::Redraw,
-            FormControllerEvent::Ignored => Reaction::Continue,
+            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
+                Reaction::Redraw
+            }
+            Handled::Ignored => Reaction::Continue,
         }
     }
 }

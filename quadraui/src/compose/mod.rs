@@ -101,7 +101,12 @@ pub use bottom_panel::{
     BackendWidget, BottomPanelConfig, BottomPanelController, BottomPanelEvent, BottomPanelLayout,
     BottomPanelTab,
 };
-pub use chat_controller::{ChatController, ChatControllerEvent, ChatRole, ChatTurn};
+pub use chat_controller::{ChatController, ChatControllerAction, ChatRole, ChatTurn};
+// `ChatControllerEvent` is `#[deprecated]` (use `ChatController::handle_event`'s
+// `Handled<ChatControllerAction>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use chat_controller::ChatControllerEvent;
 pub use context_menu_controller::{ContextMenuController, ContextMenuOutcome};
 pub use dual_mode_palette::{DualModePaletteAction, DualModePaletteController};
 // `DualModePaletteEvent` is `#[deprecated]` (use
@@ -124,8 +129,18 @@ pub use folder_picker::{FolderPickerController, PALETTE_CHROME_ROWS};
 // deprecated item is itself a use site.
 #[allow(deprecated)]
 pub use folder_picker::FolderPickerEvent;
-pub use form_controller::{FormController, FormControllerEvent};
-pub use form_dialog::{FormDialogController, FormDialogEvent};
+pub use form_controller::{FormController, FormControllerAction};
+// `FormControllerEvent` is `#[deprecated]` (use `FormController::handle_event`/
+// `handle_cached_event`'s `Handled<FormControllerAction>` instead). Allow it
+// here since `pub use` of a deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use form_controller::FormControllerEvent;
+pub use form_dialog::{FormDialogAction, FormDialogController};
+// `FormDialogEvent` is `#[deprecated]` (use `FormDialogController::handle_event`'s
+// `Handled<FormDialogAction>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use form_dialog::FormDialogEvent;
 pub use handled::Handled;
 pub use help_layer::{
     filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote, HelpOverlayAction,

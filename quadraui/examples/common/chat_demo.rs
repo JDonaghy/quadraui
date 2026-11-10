@@ -36,8 +36,8 @@
 //! than timer-owned).
 
 use quadraui::{
-    AppLogic, Backend, ChatController, ChatControllerEvent, ChatRole, ChatTurn, Color, Key,
-    Reaction, Rect, StyledText, UiEvent,
+    AppLogic, Backend, ChatController, ChatControllerAction, ChatRole, ChatTurn, Color, Handled,
+    Key, Reaction, Rect, StyledText, UiEvent,
 };
 use std::time::Duration;
 
@@ -125,10 +125,10 @@ impl AppLogic for ChatDemo {
 
         let vp = backend.viewport();
         let rect = Rect::new(0.0, 0.0, vp.width, vp.height);
-        let ev = self.controller.handle(&event, backend, rect);
+        let ev = self.controller.handle_event(&event, backend, rect);
 
         match ev {
-            ChatControllerEvent::Submit { text } => {
+            Handled::Event(ChatControllerAction::Submit { text }) => {
                 // Append the user turn.
                 self.turns.push(ChatTurn {
                     role: ChatRole::User,
@@ -147,7 +147,7 @@ impl AppLogic for ChatDemo {
                 self.sync_controller();
                 Reaction::Redraw
             }
-            ChatControllerEvent::Cancelled => {
+            Handled::Event(ChatControllerAction::Cancelled) => {
                 if self.controller.input_text().is_empty() {
                     Reaction::Exit
                 } else {
@@ -158,7 +158,7 @@ impl AppLogic for ChatDemo {
             // Clicking the Send segment while it reads "Stop"
             // interrupts the simulated "thinking" reply — a real app would
             // cancel its backend session continuation here instead.
-            ChatControllerEvent::StopRequested => {
+            Handled::Event(ChatControllerAction::StopRequested) => {
                 self.thinking_ticks = 0;
                 self.pending_reply = None;
                 self.sync_controller();
@@ -169,15 +169,15 @@ impl AppLogic for ChatDemo {
             // summary card. A click elsewhere in the body is ignored here —
             // a real consumer (e.g. vimcode's tool-call cards) would resolve
             // `row_in_turn` to a `path:line` location instead.
-            ChatControllerEvent::TurnClicked {
+            Handled::Event(ChatControllerAction::TurnClicked {
                 turn_idx,
                 row_in_turn: 0,
-            } => {
+            }) => {
                 self.controller.toggle_turn_collapsed(turn_idx);
                 self.sync_controller();
                 Reaction::Redraw
             }
-            ChatControllerEvent::Consumed => Reaction::Redraw,
+            Handled::Consumed => Reaction::Redraw,
             _ => {
                 if matches!(event, UiEvent::WindowResized { .. }) {
                     Reaction::Redraw
