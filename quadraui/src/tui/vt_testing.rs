@@ -306,7 +306,7 @@ impl<A: AppLogic> TuiVtDriver<A> {
                 }
             }
             // See `TuiDriver::dispatch`'s identical merge.
-            result = result.merge(outcome.into());
+            result = result.merge(outcome);
         }
         result
     }

@@ -273,12 +273,13 @@ impl BottomPanelController {
     /// Remove the tab with the given `id`. If it was the active tab,
     /// the first remaining tab becomes active; returns `false` when
     /// no tab with that `id` exists.
-    pub fn close_tab(&mut self, id: &str) -> bool {
-        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
+    pub fn close_tab(&mut self, id: impl Into<WidgetId>) -> bool {
+        let id = id.into();
+        let Some(idx) = self.tabs.iter().position(|t| t.id == id.as_str()) else {
             return false;
         };
         self.tabs.remove(idx);
-        if self.active_tab_id == id {
+        if self.active_tab_id == id.as_str() {
             self.active_tab_id = self.tabs.first().map(|t| t.id.clone()).unwrap_or_default();
         }
         true
@@ -632,6 +633,14 @@ mod tests {
         let cfg = make_config(vec![tab("t0", "A", false)], "t0");
         let mut ctrl = BottomPanelController::new(cfg);
         assert!(!ctrl.close_tab("no-such-id"));
+    }
+
+    #[test]
+    fn close_tab_also_accepts_a_widget_id_directly() {
+        let cfg = make_config(vec![tab("t0", "A", true), tab("t1", "B", false)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        assert!(ctrl.close_tab(WidgetId::new("t0")));
+        assert_eq!(ctrl.tabs().len(), 1);
     }
 
     // ── handle_click: no layout primed ────────────────────────────────────────

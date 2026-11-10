@@ -2041,7 +2041,7 @@ impl PlatformServices for TuiPlatformServices {
         let root = opts
             .initial_dir
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-        let picker = RefCell::new(FolderPickerController::new(root, Vec::new(), false));
+        let picker = RefCell::new(FolderPickerController::rooted_at(root, Vec::new()));
         self.run_nested_dialog_loop(
             |backend, viewport| picker.borrow().render(viewport, backend),
             |event, _backend, viewport| {

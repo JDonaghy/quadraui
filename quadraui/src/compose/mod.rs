@@ -136,5 +136,5 @@ pub use tab_group::{
 };
 pub use toast_stack::{ToastStackController, ToastStackEvent};
 pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker, TreeHoverTracker};
-pub use tree_controller::{TreeController, TreeControllerEvent};
+pub use tree_controller::{Edge, TreeController, TreeControllerEvent};
 pub use workspace::{WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout};

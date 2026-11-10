@@ -759,7 +759,7 @@ pub use compose::{
     AppShellLayout, BackendWidget, BottomBand, BottomPanelConfig, BottomPanelController,
     BottomPanelEvent, BottomPanelLayout, BottomPanelTab, ChatController, ChatControllerEvent,
     ChatRole, ChatTurn, ContextMenuController, ContextMenuOutcome, DualModePaletteController,
-    DualModePaletteEvent, FilePickerController, FilePickerEvent, FilePickerMode, FocusGroup,
+    DualModePaletteEvent, Edge, FilePickerController, FilePickerEvent, FilePickerMode, FocusGroup,
     FocusRing, FolderPickerController, FolderPickerEvent, FormController, FormControllerEvent,
     FormDialogController, FormDialogEvent, GroupLayout, Handled, HelpAction, HelpNote,
     HelpOverlayController, HelpOverlayEvent, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent,
@@ -780,7 +780,7 @@ pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
     text_selection_line_range, DragState, DragTarget, ScrollSurface, SurfaceScrollbar, TextRegion,
 };
-pub use modal_stack::{ModalEntry, ModalStack};
+pub use modal_stack::{Focusable, ModalEntry, ModalStack};
 pub use runner::{AppLogic, Reaction, StepOutcome};
 
 /// Crate version, sourced from `Cargo.toml`.

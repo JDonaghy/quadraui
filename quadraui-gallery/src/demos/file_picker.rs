@@ -75,7 +75,7 @@ impl FilePickerDemo {
             open_picker: FilePickerController::new(FilePickerMode::Open, root.clone(), vec![]),
             save_picker: FilePickerController::new(FilePickerMode::Save, root.clone(), vec![])
                 .with_initial_filename("untitled.rs"),
-            folder_picker: FolderPickerController::new(root, vec![], false),
+            folder_picker: FolderPickerController::rooted_at(root, vec![]),
             confirmed: None,
         }
     }
