@@ -19,9 +19,14 @@ browse an arbitrarily deep filesystem without scanning it up front. Folders
 expand and collapse; a folder's children are read the first time it is opened.
 
 The UI is *live*: plain Python attributes hold what changes (the cursor node,
-the split ratio, which folders are open as tabs, the active tab, a transient
-status hint), the event handler mutates them, and `render()` rebuilds the whole
-layout tree from them every frame. Neither callback calls back into `QuiApp`.
+which folders are open as tabs, the active tab, a transient status hint), the
+event handler mutates them, and `render()` rebuilds the whole layout tree from
+them every frame. Neither callback calls back into `QuiApp` -- see
+`QuiApp.widget_state`'s own doc for why. The tree's scroll position and the
+body split's divider ratio are deliberately NOT among those Python attributes:
+both are left uncontrolled in the descriptors `render()` returns, so
+`quadraui`'s own widget-state store derives the scroll that keeps the cursor
+visible and persists a dragged ratio, with no app code for either.
 
 Interaction (keyboard drives, mouse works too):
   Up / Down    move the folder cursor
@@ -130,6 +135,16 @@ def build_root(root_path: Path) -> Node:
     return root
 
 
+# The body split's starting divider position -- always resent as this same
+# literal every frame (never read back from a drag), so the engine's
+# widget-state store sees an unchanging descriptor value once this app's own
+# starting frame has established it as the baseline, and a later drag's own
+# ratio persists across every subsequent render with no app code tracking
+# it. See `quadraui_binding_core::host::resolve_split_ratio`'s own doc for
+# the controlled/uncontrolled rule this relies on.
+BODY_SPLIT_RATIO = 0.3
+
+
 # --- model -> folders-only tree descriptor ----------------------------------
 #
 # The tree pane shows *only directories* -- files live in the details tabs. We
@@ -189,14 +204,16 @@ def folder_rows(root: Node) -> tuple[list[dict], list[Node]]:
     return rows, nodes
 
 
-def tree_leaf(rows: list[dict], *, selected_path: list[int], scroll_offset: int) -> dict:
+def tree_leaf(rows: list[dict], *, selected_path: list[int]) -> dict:
     """A layout-tree *leaf* wrapping the folders-only tree descriptor. A leaf is
     `{"id", "<kind>": <descriptor>}`; the id is unique across the whole tree.
     `has_focus` keeps arrow keys / Enter routed here on the real backends.
-    `scroll_offset` is the index of the first painted row -- the tree is purely
-    declarative (it renders `rows[scroll_offset..]`), so the app owns it and
-    advances it to keep the cursor in view; the backend derives the scrollbar
-    thumb from it."""
+    `selected_path` pins the cursor row (the app still owns *which* folder is
+    selected -- that drives the model's own expand/open/status-bar logic);
+    `scroll_offset` is left at its uncontrolled default (`0`) every frame, so
+    the engine's own widget-state store -- not this app -- derives and keeps
+    the scroll position that holds `selected_path`'s row visible, and the
+    backend derives the scrollbar thumb from that."""
     return {
         "id": "fm:tree",
         "tree": {
@@ -204,7 +221,6 @@ def tree_leaf(rows: list[dict], *, selected_path: list[int], scroll_offset: int)
             "rows": rows,
             "selection_mode": "Single",
             "selected_path": selected_path,
-            "scroll_offset": scroll_offset,
             "has_focus": True,
             "style": TREE_STYLE,
         },
@@ -354,26 +370,11 @@ class FileManager:
         self.root = build_root(root_path)
         self.height = height
         self.cursor: Node = self.root   # the selected folder node
-        self.scroll = 0                 # index of the first painted tree row
-        self.ratio = 0.3                # tree pane width fraction
         self.open: list[Node] = []      # folder nodes shown as tabs, in order
         self.active_tab = 0             # index into self.open
         self.message = ""               # transient status hint
-        # `_tree_capacity` needs these, but `_render` -- which calls it --
-        # cannot query them live: `QuiApp`'s constructor below renders frame
-        # 0 synchronously, before `self.app` itself exists to query, and
-        # every later render runs from inside an active `self.app` call
-        # (`step`/`screen`/`screen_contains`), which cannot be re-entered.
-        # These placeholders cover that first render; overwritten with the
-        # real measured values from `self.app` right after it exists.
-        self._line_height = 1.0
-        self._chrome_line_height = 1.0
-        self._viewport_height = float(height)
         self.app = QuiApp(width, height, render=self._render)
         self.app.set_handler(self._handle)
-        self._line_height = self.app.line_height()
-        self._chrome_line_height = self.app.chrome_line_height()
-        self._viewport_height = self.app.viewport()[1]
 
     # --- navigation helpers --------------------------------------------------
 
@@ -392,29 +393,6 @@ class FileManager:
         rows, nodes = self._visible()
         i = nodes.index(self.cursor)
         self.cursor = nodes[max(0, min(len(nodes) - 1, i + delta))]
-
-    def _tree_capacity(self) -> int:
-        """Painted tree rows that fit: the app's measured viewport height
-        less the three chrome rows above/below the tree -- the toolbar row,
-        the outer split's divider, and the bottom status line -- each
-        `chrome_line_height` tall, converted into tree-row units via
-        `line_height`. Reads the cached metrics `__init__` measured from
-        `self.app` itself (`viewport`/`line_height`/`chrome_line_height`)
-        rather than guessing from the constructor's `height` argument."""
-        chrome_rows = 3 * self._chrome_line_height / self._line_height
-        return max(1, int(self._viewport_height / self._line_height - chrome_rows))
-
-    def _scroll_to_cursor(self, cursor_index: int, row_count: int) -> None:
-        """Advance `scroll` so the cursor row stays within the painted window,
-        then clamp it so the last page never leaves a blank gap. The tree is
-        declarative -- it renders `rows[scroll..]` -- so without this the view
-        never follows the cursor and the scrollbar thumb never moves."""
-        capacity = self._tree_capacity()
-        if cursor_index < self.scroll:
-            self.scroll = cursor_index
-        elif cursor_index >= self.scroll + capacity:
-            self.scroll = cursor_index - capacity + 1
-        self.scroll = max(0, min(self.scroll, max(0, row_count - capacity)))
 
     def _expand(self) -> None:
         """Expand the cursored folder (loading it on demand); if it is already
@@ -570,7 +548,6 @@ class FileManager:
             right = [_segment(f" tab {self.active_tab + 1}/{open_n} ")]
         else:
             right = [_segment(" no tabs ")]
-        right.append(_segment(f" {int(round(self.ratio * 100))}% "))
         return {
             "id": "fm:status",
             "status_bar": {
@@ -588,13 +565,17 @@ class FileManager:
         rows, nodes = self._visible()
         cursor_index = nodes.index(self.cursor)
         selected_path = rows[cursor_index]["path"]
-        self._scroll_to_cursor(cursor_index, len(rows))
         body = {
             "split": {
                 "id": "fm:split",
                 "orientation": "horizontal",  # panes side by side, vertical divider
-                "ratio": self.ratio,
-                "first": tree_leaf(rows, selected_path=selected_path, scroll_offset=self.scroll),
+                # Always the same literal: the engine's widget-state store
+                # resolves this as uncontrolled from the second frame on (its
+                # own value never changes what this app itself asks for), so
+                # a dragged divider's ratio persists with no app code at all
+                # -- see `BODY_SPLIT_RATIO`'s own doc.
+                "ratio": BODY_SPLIT_RATIO,
+                "first": tree_leaf(rows, selected_path=selected_path),
                 "second": self._details_pane(),
             }
         }
@@ -649,12 +630,9 @@ class FileManager:
                 self.active_tab = activation["TabActivated"]["index"]
             elif "TabClosed" in activation:
                 self._close_tab(activation["TabClosed"]["index"])
-        elif "SplitDividerDragged" in event:
-            drag = event["SplitDividerDragged"]
-            # Only the body split is user-resizable; the outer chrome/status
-            # split is fixed, so ignore drags that aren't the body's.
-            if drag.get("tree") == "fm:split":
-                self.ratio = drag["new_ratio"]
+        # No `SplitDividerDragged` branch: `BODY_SPLIT_RATIO`'s own doc
+        # covers why a drag on the body split already persists with no app
+        # code -- the engine's widget-state store handles it.
 
     def _on_key(self, name: str) -> None:
         self.message = ""
@@ -771,8 +749,18 @@ def _run_headless(fm: FileManager) -> None:
         fm.app.step()
     print(fm.app.screen())
     open_names = [n.name for n in fm.open]
+    # `widget_state` reads the engine's own store, called here from outside
+    # any active `fm.app` call (it cannot be called from inside `_render`/
+    # `_handle` themselves -- see `QuiApp.widget_state`'s own doc) -- the
+    # tree's scroll and the split's ratio are both uncontrolled in this
+    # example's own descriptors, so this is the only place either value is
+    # readable at all.
+    tree_state = fm.app.widget_state("fm:tree") or {}
+    split_state = fm.app.widget_state("fm:split") or {}
     print(f"\ncursor={fm.cursor.name}  open_tabs={open_names}  "
-          f"active_tab={fm.active_tab}  ratio={fm.ratio}")
+          f"active_tab={fm.active_tab}  "
+          f"tree_scroll_offset={tree_state.get('scroll_offset')}  "
+          f"split_ratio={split_state.get('ratio')}")
 
 
 if __name__ == "__main__":

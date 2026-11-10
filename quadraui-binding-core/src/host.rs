@@ -1454,6 +1454,105 @@ pub fn resolve_tree_expansion(widget_state: &WidgetState, tree: &TreeView) -> Tr
     }
 }
 
+/// A read-only merge of whatever [`WidgetState`] currently holds for one
+/// id, across every shape this module tracks — [`resolve_tree_cursor`]/
+/// [`resolve_list_cursor`]/[`resolve_data_table_cursor`]'s cursor +
+/// scroll, [`resolve_split_ratio`]'s ratio, [`resolve_tab_bar_active`]/
+/// [`resolve_layout_tabs_active`]'s active tab, and
+/// [`resolve_tree_expansion`]'s per-row expand set — for a binding's own
+/// introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather
+/// than for resolving a frame's descriptor. Each field is independently
+/// `None` when that shape isn't what `id` (or, for `expanded`, `id`'s
+/// derived expansion key — see [`expanded_state_id`]) is storing; a tree
+/// widget populates `selected_path`/`scroll_offset` from its own id and
+/// `expanded` from the derived one in the same snapshot, since both can
+/// be live for the same tree at once.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct WidgetStateSnapshot {
+    /// A `Tree`'s stored cursor row, if `id` is a tree being tracked by
+    /// [`resolve_tree_cursor`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_path: Option<TreePath>,
+    /// A `List`/`DataTable`'s stored cursor row, if `id` is one being
+    /// tracked by [`resolve_list_cursor`]/[`resolve_data_table_cursor`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_idx: Option<usize>,
+    /// A `Tree`/`List`/`DataTable`'s stored scroll offset, alongside
+    /// whichever of `selected_path`/`selected_idx` applies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll_offset: Option<usize>,
+    /// A `Split`'s stored divider ratio, if `id` is one being tracked by
+    /// [`resolve_split_ratio`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ratio: Option<f32>,
+    /// A `TabBar`/`LayoutTabs`' stored active tab index, if `id` is one
+    /// being tracked by [`resolve_tab_bar_active`]/
+    /// [`resolve_layout_tabs_active`]. `None` both when nothing is stored
+    /// for `id` under this shape and when it is stored but nothing is
+    /// currently active — a read-only snapshot has no need to tell those
+    /// two apart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_tab: Option<usize>,
+    /// A `Tree`'s stored set of currently-expanded row paths, if `id` is
+    /// one being tracked by [`resolve_tree_expansion`] — sorted for a
+    /// deterministic read, since the underlying store is a `HashMap`.
+    /// `Some(vec![])` (tracked, nothing expanded) and `None` (not tracked
+    /// at all) are kept distinct.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expanded: Option<Vec<TreePath>>,
+}
+
+/// Reads [`WidgetStateSnapshot`]'s fields back out of [`WidgetState`] for
+/// `id`, or `None` if none of the shapes it tracks have anything stored
+/// for `id` (or its derived expansion key) at all. Never mutates the
+/// store and never marks `id` seen — a snapshot is a side-effect-free
+/// read, unlike every `resolve_*` function above.
+pub fn widget_state_snapshot(
+    widget_state: &WidgetState,
+    id: WidgetId,
+) -> Option<WidgetStateSnapshot> {
+    let mut snapshot = WidgetStateSnapshot::default();
+    let mut found = false;
+
+    if let Some(stored) = widget_state.get::<TreeCursorState>(id) {
+        snapshot.selected_path = stored.selected_path;
+        snapshot.scroll_offset = Some(stored.scroll_offset);
+        found = true;
+    } else if let Some(stored) = widget_state.get::<ListCursorState>(id) {
+        snapshot.selected_idx = stored.selected_idx;
+        snapshot.scroll_offset = Some(stored.scroll_offset);
+        found = true;
+    } else if let Some(stored) = widget_state.get::<DataTableCursorState>(id) {
+        snapshot.selected_idx = stored.selected_idx;
+        snapshot.scroll_offset = Some(stored.scroll_offset);
+        found = true;
+    }
+
+    if let Some(stored) = widget_state.get::<SplitRatioState>(id) {
+        snapshot.ratio = Some(stored.resolved);
+        found = true;
+    }
+
+    if let Some(stored) = widget_state.get::<TabActiveState>(id) {
+        snapshot.active_tab = stored.resolved;
+        found = true;
+    }
+
+    if let Some(stored) = widget_state.get::<TreeExpandedState>(expanded_state_id(id)) {
+        let mut paths: Vec<TreePath> = stored
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.resolved)
+            .map(|(path, _)| path.clone())
+            .collect();
+        paths.sort();
+        snapshot.expanded = Some(paths);
+        found = true;
+    }
+
+    found.then_some(snapshot)
+}
+
 /// The anchored-overlay paint pass every binding's `AppLogic::render` runs
 /// once, after painting its own fixed/additive slots (via [`crate::render::draw_bands`]
 /// or [`crate::render::paint_layout`]) and collecting `hits`: dialog on top of
@@ -4037,5 +4136,99 @@ mod tests {
             Some(true),
             "the toggled expand state must have survived the cursor-nav calls for the same id"
         );
+    }
+
+    /// Nothing stored for an id under any shape — e.g. one that was never
+    /// resolved/applied this process — snapshots to `None`.
+    #[test]
+    fn widget_state_snapshot_is_none_for_an_untouched_id() {
+        let widget_state = WidgetState::new();
+        assert_eq!(
+            widget_state_snapshot(&widget_state, WidgetId::new("host-test:untouched")),
+            None
+        );
+    }
+
+    /// A tree's cursor + scroll read back exactly as `resolve_tree_cursor`
+    /// left them stored.
+    #[test]
+    fn widget_state_snapshot_reads_back_a_tree_cursor() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:tree");
+        let tree = test_tree(10, Some(vec![3_u16]), 0);
+        resolve_tree_cursor(&widget_state, &tree, 4);
+
+        let snapshot = widget_state_snapshot(&widget_state, id).expect("tree cursor stored");
+        assert_eq!(snapshot.selected_path, Some(vec![3_u16]));
+        assert_eq!(snapshot.selected_idx, None);
+        assert!(snapshot.scroll_offset.is_some());
+        assert_eq!(snapshot.ratio, None);
+        assert_eq!(snapshot.active_tab, None);
+        assert_eq!(snapshot.expanded, None);
+    }
+
+    /// A list's cursor + scroll read back exactly as `resolve_list_cursor`
+    /// left them stored.
+    #[test]
+    fn widget_state_snapshot_reads_back_a_list_cursor() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:list");
+        let list = test_list(10, 2, 0);
+        resolve_list_cursor(&widget_state, &list, 4);
+
+        let snapshot = widget_state_snapshot(&widget_state, id).expect("list cursor stored");
+        assert_eq!(snapshot.selected_idx, Some(2));
+        assert_eq!(snapshot.selected_path, None);
+        assert!(snapshot.scroll_offset.is_some());
+    }
+
+    /// A split's ratio reads back exactly as `resolve_split_ratio` left it
+    /// stored, once a drag has moved it off the descriptor's own literal.
+    #[test]
+    fn widget_state_snapshot_reads_back_a_split_ratio() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:split");
+        resolve_split_ratio(&widget_state, &test_split(0.5));
+        apply_split_divider_drag(&widget_state, id, 0, 0.7);
+
+        let snapshot = widget_state_snapshot(&widget_state, id).expect("split ratio stored");
+        assert_eq!(snapshot.ratio, Some(0.7));
+        assert_eq!(snapshot.selected_path, None);
+    }
+
+    /// A tab bar's active tab reads back exactly as `apply_tab_activated`
+    /// left it stored.
+    #[test]
+    fn widget_state_snapshot_reads_back_an_active_tab() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:tab-bar");
+        resolve_tab_bar_active(&widget_state, &test_tab_bar(vec![true, false]));
+        apply_tab_activated(&widget_state, id, 1);
+
+        let snapshot = widget_state_snapshot(&widget_state, id).expect("active tab stored");
+        assert_eq!(snapshot.active_tab, Some(1));
+    }
+
+    /// A tree's expanded-row set reads back exactly as
+    /// `apply_tree_toggle_expand` left it stored, alongside (not instead
+    /// of) that same tree's cursor — the id and its derived expansion key
+    /// coexist in one snapshot since both can be live for the same tree.
+    #[test]
+    fn widget_state_snapshot_reads_back_an_expanded_set_alongside_the_cursor() {
+        let widget_state = WidgetState::new();
+        let id = WidgetId::new("host-test:tree");
+        let path = vec![0_u16];
+        let tree = TreeView {
+            rows: vec![branch_row(path.clone(), false)],
+            selected_path: Some(path.clone()),
+            ..test_tree(1, None, 0)
+        };
+        resolve_tree_expansion(&widget_state, &tree);
+        apply_tree_toggle_expand(&widget_state, id, &path);
+        resolve_tree_cursor(&widget_state, &tree, 4);
+
+        let snapshot = widget_state_snapshot(&widget_state, id).expect("tree state stored");
+        assert_eq!(snapshot.expanded, Some(vec![path.clone()]));
+        assert_eq!(snapshot.selected_path, Some(path));
     }
 }

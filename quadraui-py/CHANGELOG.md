@@ -12,6 +12,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `QuiApp.widget_state(id)` — a read of a widget's current state in the
+  engine's widget-state store: `selected_path`/`selected_idx`, `scroll_offset`,
+  `ratio`, `active_tab` and `expanded`, whichever apply to the id's widget
+  kind, or `None` if the store has nothing for it yet. Only callable from
+  outside any active `render`/`handle` callback (it borrows the app the same
+  way `step()`/`screen()` do). `examples/file_manager.py` relies on the store
+  for its tree's scroll offset and its body split's ratio instead of
+  hand-tracking either.
 - `quadraui.wire` — a `py.typed` `.pyi` stub (no runtime body; import names
   from it inside `if TYPE_CHECKING:`) with a `TypedDict`/`Literal` for every
   layout-tree node, the six core leaf descriptors, `status_bar`, the
