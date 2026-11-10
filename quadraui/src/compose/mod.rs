@@ -183,5 +183,7 @@ pub use toast_stack::{ToastStackAction, ToastStackController};
 #[allow(deprecated)]
 pub use toast_stack::ToastStackEvent;
 pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker, TreeHoverTracker};
-pub use tree_controller::{Edge, TreeController, TreeControllerEvent};
+pub use tree_controller::{
+    classify_tree_nav_key, Edge, TreeController, TreeControllerEvent, TreeNavKey,
+};
 pub use workspace::{WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout};

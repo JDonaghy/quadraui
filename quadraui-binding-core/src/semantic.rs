@@ -50,19 +50,20 @@ fn data_table_key_event(
     Some(UiEvent::DataTable(id, DataTableEvent::RowSelected { idx }))
 }
 
-/// Enter on a focused `List` with at least one row activates the current
-/// selection — the keyboard equivalent of [`data_table_key_event`]'s own
-/// Enter handling, and of a `List` row's pointer double-click
-/// (`ListViewEvent::ItemDoubleClicked`). `selected_idx` is always a valid
+/// Up/Down/vim `j`/`k` navigation and Enter activation for a focused
+/// `List` with at least one row — the `List` counterpart of
+/// [`data_table_key_event`]'s own Up/Down/Enter handling. Enter is the
+/// keyboard equivalent of a row's pointer double-click
+/// (`ListViewEvent::ItemDoubleClicked`); Up/Down/`j`/`k` are the keyboard
+/// equivalent of a single click (`ListViewEvent::SelectionChanged`), per
+/// `ListView`'s own module doc ("Keyboard `j`/`k` move the selection the
+/// same way `SelectionChanged` does"). `selected_idx` is always a valid
 /// index into a non-empty `ListView::items` (the field has no `None`
-/// state), so the only case with nothing to activate is an empty list
+/// state), so the only case with nothing to activate/move is an empty list
 /// (`total_items == 0`), which returns `None` and leaves
 /// [`focus_scoped_key_event`] to fall through to the raw
 /// `ListViewEvent::KeyPressed`. Every other key also returns `None` for the
-/// same fallthrough — `List`'s own Up/Down/`j`/`k` navigation stays the
-/// app's to interpret from that `KeyPressed`, unlike `DataTable`'s, since a
-/// `List`'s selection is tracked by the app already instead of inside this
-/// semantic layer.
+/// same fallthrough.
 fn list_key_event(
     id: WidgetId,
     key: &Key,
@@ -78,7 +79,12 @@ fn list_key_event(
             ListViewEvent::ItemActivated { idx: selected_idx },
         ));
     }
-    None
+    let idx = match key {
+        Key::Named(NamedKey::Down) | Key::Char('j') => (selected_idx + 1).min(total_items - 1),
+        Key::Named(NamedKey::Up) | Key::Char('k') => selected_idx.saturating_sub(1),
+        _ => return None,
+    };
+    Some(UiEvent::List(id, ListViewEvent::SelectionChanged { idx }))
 }
 
 /// Left/Right navigation and Enter/Space activation for a focused `TabBar`

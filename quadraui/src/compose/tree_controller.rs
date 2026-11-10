@@ -91,8 +91,12 @@ pub enum Edge {
 /// key dispatch in `Selection` navigation mode share this so the two key
 /// maps — Up/Down/vim `j`/`k`, Home/End, PageUp/PageDown, Enter, Space —
 /// can't drift between the single-tree and multi-section cases.
+///
+/// `pub` (not `pub(crate)`) so `quadraui-binding-core`'s own `Tree`/`List`/
+/// `DataTable` cursor-navigation key maps can reuse this classification
+/// instead of hand-copying it — see [`classify_tree_nav_key`]'s own doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TreeNavKey {
+pub enum TreeNavKey {
     /// Previous row (`Up` or vim `k`).
     Up,
     /// Next row (`Down` or vim `j`).
@@ -114,7 +118,13 @@ pub(crate) enum TreeNavKey {
 /// Classify a raw `Key` against the shared tree navigation key map.
 /// `vim_keys` gates the `j`/`k` aliases for `Down`/`Up`, mirroring
 /// [`TreeController::vim_keys`].
-pub(crate) fn classify_tree_nav_key(key: &Key, vim_keys: bool) -> Option<TreeNavKey> {
+///
+/// `pub` (not `pub(crate)`) so a caller outside this crate with its own
+/// row-cursor movement (`quadraui-binding-core`'s uncontrolled `Tree`/
+/// `List`/`DataTable` key handling) can classify a key against the exact
+/// same map [`TreeController::handle_key`] uses, instead of maintaining a
+/// second copy that can silently drift from this one.
+pub fn classify_tree_nav_key(key: &Key, vim_keys: bool) -> Option<TreeNavKey> {
     match key {
         Key::Named(NamedKey::Up) => Some(TreeNavKey::Up),
         Key::Char('k') if vim_keys => Some(TreeNavKey::Up),
