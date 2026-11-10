@@ -673,7 +673,7 @@ impl<A: AppLogic> WinDriver<A> {
         self.apply_outcome(reaction)
     }
 
-    /// Shared outcome→[`Reaction`] bookkeeping [`Self::dispatch`] and
+    /// Shared [`EventOutcome`] bookkeeping [`Self::dispatch`] and
     /// [`Self::mouse_down`]/[`Self::mouse_move`]/[`Self::mouse_up`]
     /// all need: repaint on redraw, latch `exited` on exit. Thin wrapper
     /// over [`DriverCore::apply_outcome`] — `render` still

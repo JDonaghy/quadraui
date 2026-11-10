@@ -68,10 +68,15 @@ only a push to `main` runs this workflow.
   `TabGroupController::{switch_tab, close_tab}` (#2178) now take
   `impl Into<WidgetId>` instead of `&str` — a raw string literal still
   works unchanged (`&str`/`String`/`&String` all convert), and a caller
-  that already holds a `WidgetId` no longer needs `.as_str()` first. Pure
+  that already holds a `WidgetId` no longer needs `.as_str()` first. A
   signature widening, not a deprecation: every existing `&str` call site
   across this crate's own tests, examples, and `quadraui-gallery` compiles
-  unchanged.
+  unchanged. Not free at runtime, though — a call that used to compare
+  `&str`s directly now interns its argument into the process-global
+  `WidgetId` table first, so a query called with a string that was never
+  a real widget id (a probe, a typo) permanently grows that table by one
+  entry. Bounded for every in-repo caller today, but worth knowing before
+  calling one of these in a loop over untrusted or unbounded strings.
 - `compose::Handled<E>` (#2174): shared "did you handle it" return type for
   compose controller `handle_*` methods — `Event(E)` (a semantic payload to
   route further), `Consumed` (internal state changed, redraw, nothing to
@@ -223,6 +228,15 @@ only a push to `main` runs this workflow.
   Lets a binding reach the externally-tagged dict/JSON shape a shell-event
   callback expects via a generic `pythonize::pythonize`/`serde_json::to_value`
   call instead of its own hand-rolled, binding-specific tagging function.
+- `Edge` and `Focusable` (#2178): new `#[non_exhaustive]`-free `pub` enums,
+  re-exported at the crate root, that replace a bare positional `bool` on
+  two existing methods (see `### Deprecated`) — `TreeController::
+  move_selection_to_edge(Edge::Start | Edge::End, ..)` and
+  `ModalStack::push_with_focusable(.., Focusable::Yes | Focusable::No)`.
+  `FolderPickerController::rooted_at` and the `with_show_hidden` builder
+  (#2178) replace `FolderPickerController::new`'s trailing `show_hidden:
+  bool` the same way every other `FolderPickerController` option is
+  already set — via a chained `with_*` builder.
 ### Deprecated
 - `Panel`/`PanelAction` (#2229): use [`SidebarPanel`] with a [`Toolbar`]
   header instead — a `Label` title, a `Spacer`, then right-aligned

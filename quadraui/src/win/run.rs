@@ -339,7 +339,7 @@ pub(crate) fn route_mouse_down<A: AppLogic>(
         }
         // Keep the *earliest* `RedrawAfter` deadline seen in
         // this batch rather than the first non-`Continue` one — see
-        // `EventOutcome::merge`'s doc for why that distinction matters.
+        // `Reaction::merge`'s doc for why that distinction matters.
         outcome = outcome.merge(step);
     }
     outcome
@@ -379,7 +379,7 @@ pub(crate) fn route_mouse_move<A: AppLogic>(
         }
         // Keep the *earliest* `RedrawAfter` deadline seen in
         // this batch rather than the first non-`Continue` one — see
-        // `EventOutcome::merge`'s doc for why that distinction matters.
+        // `Reaction::merge`'s doc for why that distinction matters.
         outcome = outcome.merge(step);
     }
     outcome
@@ -422,7 +422,7 @@ pub(crate) fn route_mouse_up<A: AppLogic>(
         }
         // Keep the *earliest* `RedrawAfter` deadline seen in
         // this batch rather than the first non-`Continue` one — see
-        // `EventOutcome::merge`'s doc for why that distinction matters.
+        // `Reaction::merge`'s doc for why that distinction matters.
         outcome = outcome.merge(step);
     }
     outcome

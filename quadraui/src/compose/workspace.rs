@@ -371,7 +371,16 @@ impl WorkspaceController {
     /// for a permanent (promoted or never-preview) document.
     pub fn is_preview(&self, id: impl Into<WidgetId>) -> bool {
         let id = id.into();
-        self.preview.as_deref() == Some(id.as_str())
+        self.is_preview_str(id.as_str())
+    }
+
+    /// [`Self::is_preview`]'s comparison, taken directly on a borrowed
+    /// `&str` — used by [`Self::tab_bar`]'s per-document, per-frame check
+    /// so it stays a plain string compare instead of round-tripping each
+    /// document id through the global [`WidgetId`] interner once per
+    /// frame.
+    fn is_preview_str(&self, id: &str) -> bool {
+        self.preview.as_deref() == Some(id)
     }
 
     /// Scroll offset the last [`Self::render`] resolved — the index of
@@ -661,7 +670,7 @@ impl WorkspaceController {
                     label: d.label.clone(),
                     is_active: self.active == Some(i),
                     is_dirty: d.dirty,
-                    is_preview: self.is_preview(&d.id),
+                    is_preview: self.is_preview_str(&d.id),
                     is_closable: d.closable,
                 })
                 .collect(),
