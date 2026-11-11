@@ -248,6 +248,13 @@ jobs:
     # matching `CHANGELOG.md`'s *Versioning* section — so no extra
     # configuration is needed to get that rule.
     #
+    # `quadraui/Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`
+    # downgrades the `*_now_doc_hidden` lint family to `allow` — the action
+    # reads that package metadata automatically, with no extra flag here —
+    # so marking a per-primitive rasteriser submodule `#[doc(hidden)]`
+    # (`src/{gtk,macos,tui,win}/mod.rs`) never shows up in this diff at all,
+    # on this job or a future macOS-runner one.
+    #
     # No `features:`/`feature-group:` input: left at the action's default,
     # which heuristically enables every non-unstable, non-internal feature
     # (tui, gtk, win, terminal, layout, macos). That is a *larger* surface

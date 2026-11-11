@@ -10,57 +10,118 @@
 //! entry point owns window + run-loop bootstrap, and per-primitive
 //! rasterisers live as sibling modules.
 
+// Per-primitive rasteriser modules below stay `pub mod` (not `pub(crate)`)
+// so every existing `crate::macos::<module>::<item>` path keeps compiling —
+// narrowing to `pub(crate)` is a breaking visibility change this crate's
+// pre-1.0 semver convention (and `cargo-semver-checks`) treats like any
+// other removal. Each one is `#[doc(hidden)]` instead: unstable, not
+// covered by semver, and excluded from rustdoc's module index — a painter
+// internal splitting (or its functions moving between sibling modules) is
+// free to happen without a version bump. The handful of items a consumer
+// actually needs stay documented at their flat `crate::macos::<item>`
+// re-export path in the `pub use` block below, which is unaffected by the
+// `#[doc(hidden)]` on its source module. `Cargo.toml`'s
+// `[package.metadata.cargo-semver-checks.lints]` downgrades the
+// `*_now_doc_hidden` lint family to `allow` so marking one of these hidden
+// for the first time doesn't itself register as a breaking change.
+//
+// `backend`/`events`/`services`/`shell_runner`/`testing`/`text` are the
+// exception: those six are the real, module-qualified stable surface
+// (`crate::macos::testing::MacDriver`, `crate::macos::shell_runner::
+// run_with_shell`, `crate::macos::text::system_monospace_font`, …) that
+// `vimcode` and `coord-tui` already depend on by module path, not just
+// through a flat re-export — mirrors the set `crate::gtk`/`crate::tui`/
+// `crate::win` already keep `pub` (undecorated) for the same reason.
+#[doc(hidden)]
 pub mod activity_bar;
 pub mod backend;
+#[doc(hidden)]
 pub mod board;
+#[doc(hidden)]
 pub mod button;
 pub(crate) mod caret_blink;
 // Shared CoreGraphics FFI bindings + fill/stroke/rect helpers.
 mod cg;
+#[doc(hidden)]
 pub mod chart;
+#[doc(hidden)]
 pub mod command_center;
+#[doc(hidden)]
 pub mod command_line;
+#[doc(hidden)]
 pub mod completions;
+#[doc(hidden)]
 pub mod context_menu;
+#[doc(hidden)]
 pub mod data_table;
+#[doc(hidden)]
 pub mod date_picker;
+#[doc(hidden)]
 pub mod dialog;
+#[doc(hidden)]
 pub mod diff_view;
+#[doc(hidden)]
 pub mod drop_overlay;
+#[doc(hidden)]
 pub mod editor;
 pub mod events;
+#[doc(hidden)]
 pub mod form;
+#[doc(hidden)]
 pub mod headless;
+#[doc(hidden)]
 pub mod image;
+#[doc(hidden)]
 pub mod list;
+#[doc(hidden)]
 pub mod menu_bar;
 pub(crate) mod menu_bar_install;
+#[doc(hidden)]
 pub mod message_list;
+#[doc(hidden)]
 pub mod minimap;
+#[doc(hidden)]
 pub mod multi_section_view;
+#[doc(hidden)]
 pub mod palette;
+#[doc(hidden)]
 pub mod panel;
+#[doc(hidden)]
 pub mod pipeline_view;
+#[doc(hidden)]
 pub mod progress;
+#[doc(hidden)]
 pub mod radio_group;
+#[doc(hidden)]
 pub mod rich_text_popup;
 mod run;
+#[doc(hidden)]
 pub mod scrollbar;
 pub mod services;
 pub mod shell_runner;
+#[doc(hidden)]
 pub mod sidebar_panel;
+#[doc(hidden)]
 pub mod spinner;
+#[doc(hidden)]
 pub mod split;
+#[doc(hidden)]
 pub mod split_tree;
+#[doc(hidden)]
 pub mod status_bar;
+#[doc(hidden)]
 pub mod switch;
 // Shared `PaintSurface` adapter over a bare `CGContextRef`.
 mod surface;
+#[doc(hidden)]
 pub mod tab_bar;
+#[doc(hidden)]
 pub mod terminal;
 pub mod testing;
 pub mod text;
+#[doc(hidden)]
 pub mod text_display;
+#[doc(hidden)]
 pub mod text_input;
 // Text-selection highlight painting — the CoreGraphics twin of
 // `gtk::backend`'s Cairo `fill()` / `win::backend`'s Direct2D
@@ -68,9 +129,13 @@ pub mod text_input;
 // apply_selection_highlight` calls into it, mirroring `menu_bar_install`'s
 // visibility above.
 pub(crate) mod text_selection;
+#[doc(hidden)]
 pub mod toast;
+#[doc(hidden)]
 pub mod toolbar;
+#[doc(hidden)]
 pub mod tooltip;
+#[doc(hidden)]
 pub mod tree;
 // Tray / status-bar icon control — `NSStatusBar`/`NSStatusItem`
 // glue for `Backend::tray`. `pub(crate)`, not `pub`: only

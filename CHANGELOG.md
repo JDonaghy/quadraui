@@ -58,6 +58,18 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+### Changed
+- `quadraui::macos`'s ~40 per-primitive painter submodules (#2355) are now
+  `#[doc(hidden)]` — unstable, not covered by semver — matching the
+  `quadraui::{gtk,tui,win}` backends, which already keep their equivalent
+  submodules private. Every path a consumer previously used still compiles
+  unchanged: the backend struct, `events`, `services`, `shell_runner`,
+  `testing`, and `text` stay `pub` and documented, and the flat
+  `crate::macos::<item>` re-exports (`draw_tab_bar`, `mac_tree_layout`, …)
+  are untouched. `quadraui/Cargo.toml`'s new
+  `[package.metadata.cargo-semver-checks.lints]` table downgrades the
+  `*_now_doc_hidden` lint family to `allow`, so hiding (or later splitting)
+  a painter internal no longer registers as a breaking change.
 
 ## [0.10.0] - 2026-11-10
 ### Added
