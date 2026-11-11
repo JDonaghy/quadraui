@@ -312,14 +312,14 @@ use quadraui_binding_core::{
     is_default_protocol_client, key_pressed_event, login_item_enabled, menu_for_surface,
     merge_overrides, message_dialog_options_from_buttons, paint_layout, pointer_shape,
     record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
-    set_app_identifier, set_as_default_protocol_client, set_dock_menu, set_jump_list,
-    set_login_item, step_driver, take_pending_error as core_take_pending_error,
-    text_display_from_lines, theme_color_value, toast_corner, update_apply_on_quit,
-    update_check_for_update, update_download_and_stage, window_close_reaction, with_tray,
-    with_window, BindingHost, DecodeError, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
-    InteractionEngine, OverrideError, RenderOutput, ServiceError, UpdateInfoWire,
-    WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY,
-    SLOT_TREE,
+    resolve_layout_node, resolve_render_refs, set_app_identifier, set_as_default_protocol_client,
+    set_dock_menu, set_jump_list, set_login_item, step_driver,
+    take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
+    toast_corner, update_apply_on_quit, update_check_for_update, update_download_and_stage,
+    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
+    ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, OverrideError,
+    RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE,
+    SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 #[cfg(test)]
 use quadraui_binding_core::{decode_layout_node, LayoutNode};
@@ -801,22 +801,24 @@ impl AppLogic for NodeAppLogic {
         self.captured_waker.set(Some(backend.waker()));
     }
 
-    /// With no render callback registered, paints [`Self::host`]'s six
-    /// fixed slots plus the anchored overlay pass every binding's `render`
-    /// runs -- see [`render_overlays`]'s own doc. With one registered,
-    /// invokes it instead via [`render_output_from_callback`] and paints
-    /// whatever flat/tree frame it returned, skipping [`Self::host`]
+    /// With no render callback registered, resolves [`Self::host`]'s six
+    /// fixed slots against [`InteractionEngine::widget_state`] via
+    /// [`resolve_render_refs`] (so an uncontrolled `Tree`/`List`/
+    /// `DataTable`'s cursor/scroll, `TabBar`'s active tab, etc. paint this
+    /// frame's resolved value rather than whatever raw descriptor the app
+    /// set) before painting them plus the anchored overlay pass every
+    /// binding's `render` runs -- see [`render_overlays`]'s own doc. With
+    /// a render callback registered, invokes it instead via
+    /// [`render_output_from_callback`] and resolves+paints whatever flat/
+    /// tree frame it returned the identical way, skipping [`Self::host`]
     /// entirely for this frame -- mirrors `quadraui-py`'s own `render`.
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut hits = Vec::new();
         let chrome_interaction = |id: WidgetId| self.engine.chrome_interaction(id);
         let Some(callback) = self.render_callback.as_ref() else {
-            draw_bands(
-                backend,
-                self.host.render_refs(),
-                &mut hits,
-                &chrome_interaction,
-            );
+            let resolved =
+                resolve_render_refs(self.engine.widget_state(), backend, self.host.render_refs());
+            draw_bands(backend, resolved.as_refs(), &mut hits, &chrome_interaction);
             render_overlays(&self.engine, backend, hits);
             return;
         };
@@ -832,11 +834,14 @@ impl AppLogic for NodeAppLogic {
         };
         match render_output_from_callback(env, callback, &self.pending_error) {
             Some(RenderOutput::Flat(frame)) => {
-                draw_bands(backend, frame.as_refs(), &mut hits, &chrome_interaction)
+                let resolved =
+                    resolve_render_refs(self.engine.widget_state(), backend, frame.as_refs());
+                draw_bands(backend, resolved.as_refs(), &mut hits, &chrome_interaction)
             }
-            Some(RenderOutput::Tree(node)) => {
+            Some(RenderOutput::Tree(mut node)) => {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
                 paint_layout(backend, area, &node, &mut hits, &chrome_interaction);
             }
             None => {}
@@ -1602,6 +1607,40 @@ fn encode_via_json<T: Serialize>(env: Env, what: &str, value: &T) -> Result<Unkn
     })?;
     env.to_js_value(&json)
         .map_err(|err| invalid_descriptor_error(format!("{what}: failed to convert to JS: {err}")))
+}
+
+/// The camelCase JS shape `QuiApp::widget_state` encodes
+/// [`quadraui_binding_core::WidgetStateSnapshot`] into -- every other
+/// field this crate hands to JS already reaches it camelCase (`scrollPx`,
+/// `scrollOffset` on the six fixed descriptors themselves), so this
+/// mirrors that rather than exposing the snapshot's own Rust
+/// `snake_case` field names verbatim.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WidgetStateJs {
+    selected_path: Option<Vec<u16>>,
+    selected_index: Option<usize>,
+    scroll_offset: Option<usize>,
+    // Widens through `serde_json::to_value`'s `f32` -> `f64` promotion on
+    // its way to JS, same as every other `f32` this crate hands across the
+    // boundary -- a ratio like `0.3` round-trips as `0.30000001192092896`,
+    // not the shorter decimal a hand-authored `f64` literal would give.
+    split_ratio: Option<f32>,
+    active_tab: Option<usize>,
+    expanded: Option<Vec<Vec<u16>>>,
+}
+
+impl From<quadraui_binding_core::WidgetStateSnapshot> for WidgetStateJs {
+    fn from(snapshot: quadraui_binding_core::WidgetStateSnapshot) -> Self {
+        Self {
+            selected_path: snapshot.selected_path,
+            selected_index: snapshot.selected_idx,
+            scroll_offset: snapshot.scroll_offset,
+            split_ratio: snapshot.ratio,
+            active_tab: snapshot.active_tab,
+            expanded: snapshot.expanded,
+        }
+    }
 }
 
 /// Decodes `descriptor` by first materializing it into one
@@ -2571,6 +2610,26 @@ impl QuiApp {
             app.driver.app().host.set_test_clock_ms(ms.map(u64::from));
             Ok(())
         })
+    }
+
+    /// Reads back `id`'s current resolved widget state from the store --
+    /// a `Tree`/`List`/`DataTable`'s cursor + scroll, a `Split`'s ratio, a
+    /// `TabBar`'s active tab index, or a `Tree`'s expanded row paths,
+    /// whichever apply -- the shape
+    /// [`quadraui_binding_core::widget_state_snapshot`] resolves, camelCased
+    /// via [`WidgetStateJs`]. `id` names exactly one widget kind in
+    /// practice, so the returned object only ever has one group of fields
+    /// populated. Returns `null` when `id` has never been resolved through
+    /// this app's own `render` (the no-callback fixed-slot path via
+    /// [`resolve_render_refs`], or a render-callback's decoded tree via
+    /// [`resolve_layout_node`]) -- `id` names a widget that hasn't
+    /// rendered, or hasn't rendered yet this session.
+    #[napi(js_name = "widgetState")]
+    pub fn widget_state(&self, env: Env, id: String) -> Result<Unknown<'static>> {
+        let snapshot =
+            widget_state_snapshot(self.driver.app().engine.widget_state(), WidgetId::new(id))
+                .map(WidgetStateJs::from);
+        encode_via_json(env, "widgetState", &snapshot)
     }
 
     /// Inserts a `Button` descriptor from a JS object, returning its slot

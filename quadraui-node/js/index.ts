@@ -312,8 +312,51 @@ class QuiApp extends native.QuiApp {
       throw toQuadrauiError(err);
     }
   }
+
+  /**
+   * Narrows `native.QuiApp.prototype.widgetState`'s napi-generated
+   * `unknown` return type to {@link WidgetState} -- the shape
+   * `QuiApp::widget_state` (`quadraui-node/src/lib.rs`) actually encodes,
+   * one layer up from napi's own type erasure at the native boundary. A
+   * thin override, not a reimplementation: delegates straight to the
+   * inherited native method, same as every other wrapped call on this
+   * class's own prototype.
+   */
+  widgetState(id: string): WidgetState | null {
+    return super.widgetState(id) as WidgetState | null;
+  }
 }
 exports.QuiApp = QuiApp;
+
+/**
+ * The resolved widget-state shape `QuiApp.widgetState(id)` returns -- a
+ * `Tree`/`List`/`DataTable`'s cursor + scroll, a `Split`'s ratio, a
+ * `TabBar`'s active tab index, or a `Tree`'s expanded row paths, whichever
+ * apply to the widget `id` names. `id` names exactly one widget kind in
+ * practice, so only one group of fields is ever non-`null` on a given
+ * result. Every field defaults to `null` rather than being omitted, so a
+ * caller can destructure without an `in` check.
+ */
+export interface WidgetState {
+  /** A focused `Tree`'s selected row path, or `null` if none/not a tree. */
+  selectedPath: number[] | null;
+  /** A focused `List`/`DataTable`'s selected row index, or `null`. */
+  selectedIndex: number | null;
+  /** A `Tree`/`List`/`DataTable`'s first visible row index, or `null`. */
+  scrollOffset: number | null;
+  /**
+   * A `Split`'s resolved divider ratio (`0.0`-`1.0`), or `null`. Crosses
+   * the native boundary as an `f32` widened to JS's own `f64` number type
+   * (via `serde_json::to_value`), so an exact-looking value like `0.3`
+   * can arrive as `0.30000001192092896` -- compare with an epsilon, not
+   * `===`.
+   */
+  splitRatio: number | null;
+  /** A `TabBar`'s resolved active tab index, or `null`. */
+  activeTab: number | null;
+  /** A `Tree`'s expanded row paths, sorted, or `null`. */
+  expanded: number[][] | null;
+}
 
 /**
  * A headless `ShellApp`/`ShellConfig`-backed app: an AppShell (activity bar

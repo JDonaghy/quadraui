@@ -81,13 +81,13 @@ pub use host::{
     callback_reaction, callback_reaction_for_render, caret_shape, click_down_up_events,
     color_depth_name, dialog_severity, font_role, guarded, key_pressed_event, menu_for_surface,
     merge_overrides, panic_message, pointer_shape, power_save_kind, record_pending_error,
-    render_overlays, resize_edge, resolve_data_table_cursor, resolve_layout_tabs_active,
-    resolve_list_cursor, resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor,
-    resolve_tree_expansion, step_driver, take_pending_error, text_display_from_lines,
-    theme_color_value, toast_corner, widget_state_snapshot, window_close_reaction, with_tray,
-    with_window, BindingHost, ErasedShellDriver, GuardedFailure, OverrideError,
-    WidgetStateSnapshot, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST,
-    SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
+    render_overlays, resize_edge, resolve_data_table_cursor, resolve_layout_node,
+    resolve_layout_tabs_active, resolve_list_cursor, resolve_render_refs, resolve_split_ratio,
+    resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion, step_driver,
+    take_pending_error, text_display_from_lines, theme_color_value, toast_corner,
+    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost,
+    ErasedShellDriver, GuardedFailure, OverrideError, WidgetStateSnapshot, WindowCloseHandling,
+    SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
 pub use layout::{LayoutPanel, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry};
@@ -97,7 +97,8 @@ pub use render::{
     split_rects,
 };
 pub use render::{
-    list_viewport_rows, split_rects_with_gap, tree_viewport_rows, RenderFrame, RenderRefs,
+    data_table_viewport_rows, list_viewport_rows, split_rects_with_gap, tree_viewport_rows,
+    RenderFrame, RenderRefs,
 };
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
 pub use services::{
