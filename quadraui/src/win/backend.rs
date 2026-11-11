@@ -250,10 +250,16 @@ const DEFAULT_EDITOR_FONT_FAMILY: &str = "Consolas";
 const DEFAULT_UI_FONT_FAMILY: &str = "Segoe UI";
 
 /// Default chrome font size in points, paired with
-/// [`DEFAULT_UI_FONT_FAMILY`] — matches [`WinBackend::editor_font_size_pt`]'s
-/// default.
-#[cfg(target_os = "windows")]
-const DEFAULT_UI_FONT_SIZE_PT: f32 = 11.0;
+/// [`DEFAULT_UI_FONT_FAMILY`]. Unlike macOS (where 1pt == 1px), the Win
+/// backend converts points to DIPs via `pt_to_dip` (`size_pt * 96 / 72`,
+/// see `win/msg.rs`), so this is deliberately not a round point value: it's
+/// chosen so the *rendered* size lands on VS Code's own 13 DIP Windows
+/// chrome text size (`9.75 * 96 / 72 == 13.0`). Not `#[cfg(target_os =
+/// "windows")]`, unlike most consts in this module — [`Backend::default_fonts`]
+/// reads it directly (on every host, per that method's doc) so the font
+/// `WinBackend::new` actually installs and the size `default_fonts()`
+/// advertises can never drift apart again.
+const DEFAULT_UI_FONT_SIZE_PT: f32 = 9.75;
 
 /// Parse a Pango-style font description (e.g. `"Segoe UI 11"`) into a
 /// DirectWrite-ready `(family, size_pt)` pair. A trailing whitespace-separated
@@ -2081,22 +2087,27 @@ impl Backend for WinBackend {
     }
 
     /// Win-GUI's platform-native convention: `Consolas
-    /// 14` for editor content, `Segoe UI 13` for UI chrome — VS Code's
-    /// own Windows defaults, and the same family names
-    /// `DEFAULT_EDITOR_FONT_FAMILY`/`DEFAULT_UI_FONT_FAMILY` already
-    /// fall back to (sizes differ: those exist for the "unset" runtime
-    /// default, `11pt`, not to model this platform recommendation).
-    /// Plain literals rather than those `cfg(target_os = "windows")`
-    /// consts themselves — unlike [`Self::set_ui_font`] above, this
-    /// method has no DirectWrite call to gate, and must type-check on
-    /// every host per this crate's cross-platform commitment (see
-    /// `CLAUDE.md`'s Win-GUI section).
+    /// 14` for editor content, `Segoe UI` (rendered at VS Code's 13 DIP
+    /// chrome size) for UI chrome — VS Code's own Windows defaults.
+    /// `editor_family`/`ui_family` are plain literals rather than the
+    /// `DEFAULT_EDITOR_FONT_FAMILY`/`DEFAULT_UI_FONT_FAMILY` consts
+    /// themselves — unlike [`Self::set_ui_font`] above, this method has no
+    /// DirectWrite call to gate, and must type-check on every host per
+    /// this crate's cross-platform commitment (see `CLAUDE.md`'s Win-GUI
+    /// section) — and `editor_size_pt` stays a plain `14.0` literal: it
+    /// models this platform recommendation, distinct from
+    /// `editor_font_size_pt`'s own `11.0` "unset" runtime default.
+    /// `ui_size_pt` is the one exception: it reads [`DEFAULT_UI_FONT_SIZE_PT`]
+    /// (itself not `cfg`-gated, so it type-checks on every host too)
+    /// rather than a second literal, so the chrome size `WinBackend::new`
+    /// actually installs and the size advertised here can never drift
+    /// apart — see that const's doc.
     fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
         crate::backend::PlatformFontDefaults {
             editor_family: "Consolas".to_string(),
             editor_size_pt: 14.0,
             ui_family: "Segoe UI".to_string(),
-            ui_size_pt: 13.0,
+            ui_size_pt: DEFAULT_UI_FONT_SIZE_PT,
         }
     }
 
@@ -7473,7 +7484,8 @@ mod tests {
     }
 
     /// `default_fonts()` reports Win-GUI's VS-Code-alignment convention
-    /// (`Consolas 14`/`Segoe UI 13`) — cross-platform, no `target_os =
+    /// (`Consolas 14`/`Segoe UI` at `DEFAULT_UI_FONT_SIZE_PT`, which renders
+    /// at VS Code's 13 DIP chrome size) — cross-platform, no `target_os =
     /// "windows"` gate needed, same rationale as
     /// `win_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height` above.
     #[test]
@@ -7483,7 +7495,7 @@ mod tests {
         assert_eq!(defaults.editor_family, "Consolas");
         assert_eq!(defaults.editor_size_pt, 14.0);
         assert_eq!(defaults.ui_family, "Segoe UI");
-        assert_eq!(defaults.ui_size_pt, 13.0);
+        assert_eq!(defaults.ui_size_pt, DEFAULT_UI_FONT_SIZE_PT);
     }
 
     /// A prior `set_editor_font`/`set_ui_font` call must not perturb
@@ -7503,7 +7515,64 @@ mod tests {
         assert_eq!(defaults.editor_family, "Consolas");
         assert_eq!(defaults.editor_size_pt, 14.0);
         assert_eq!(defaults.ui_family, "Segoe UI");
-        assert_eq!(defaults.ui_size_pt, 13.0);
+        assert_eq!(defaults.ui_size_pt, DEFAULT_UI_FONT_SIZE_PT);
+    }
+
+    /// The chrome `ui_font_size_pt` [`WinBackend::new`] installs before any
+    /// [`Backend::set_ui_font`] call must carry the exact point size
+    /// [`Backend::default_fonts`] advertises as `ui_size_pt` — a consumer
+    /// that renders chrome straight off a fresh backend (never calling
+    /// `set_ui_font` itself) still gets the size it would see by reading
+    /// `default_fonts()`, rather than a smaller, un-advertised runtime
+    /// default. And that shared point size must actually render at VS
+    /// Code's 13 DIP Windows chrome text size once converted through
+    /// `pt_to_dip` — not just agree with itself in points while still
+    /// landing on the wrong pixel size.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_installed_ui_font_size_matches_default_fonts_and_renders_at_13_dip() {
+        let backend = WinBackend::new();
+        let advertised = Backend::default_fonts(&backend).ui_size_pt;
+        assert_eq!(
+            backend.ui_font_size_pt, advertised,
+            "WinBackend::new's installed ui_font_size_pt must match \
+             default_fonts().ui_size_pt"
+        );
+        assert_eq!(
+            DEFAULT_UI_FONT_SIZE_PT, advertised,
+            "DEFAULT_UI_FONT_SIZE_PT must stay in lockstep with default_fonts()'s \
+             ui_size_pt so the two cannot drift again"
+        );
+
+        let rendered_dip = super::super::msg::pt_to_dip(advertised);
+        assert!(
+            (rendered_dip - 13.0).abs() < 0.5,
+            "the installed chrome font must render at VS Code's 13 DIP Windows chrome \
+             size (±0.5), got {rendered_dip} DIP from {advertised}pt"
+        );
+    }
+
+    /// Changing the chrome (`ui_font_size_pt`) default must never move the
+    /// 22px list/tree row-height token: row pitch is resolved from
+    /// `Style::row_height`/the *editor* font's line height
+    /// ([`WinBackend::resolved_row_height`]), never from the chrome font
+    /// size this issue adjusts. Asserted against the real resolved row
+    /// height, not just read off `Style::default()`, so a future change
+    /// that *does* wire the chrome font into row pitch would fail this
+    /// test rather than silently drifting.
+    #[test]
+    fn win_backend_default_ui_font_size_change_does_not_move_the_22px_row_token() {
+        let backend = WinBackend::new();
+        let tree = flat_tree(3);
+        // A 200px-tall viewport against 3 rows leaves every row
+        // unclipped, so `bounds.height` is the real resolved row pitch,
+        // not a viewport-truncated remainder.
+        let layout = Backend::tree_layout(&backend, Rect::new(0.0, 0.0, 200.0, 200.0), &tree);
+        assert_eq!(
+            layout.visible_rows[0].bounds.height, 22.0,
+            "tree_layout's resolved row height must stay at the Style::row_height \
+             default (22px) regardless of DEFAULT_UI_FONT_SIZE_PT"
+        );
     }
 
     /// A host-set `TreeStyle::row_height` must be honored

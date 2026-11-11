@@ -78,6 +78,14 @@ only a push to `main` runs this workflow.
   so the drag hit target stays the full 4px; only the pixel backends
   (GTK/win/macOS) are affected, TUI's 1-cell-thick divider already painted
   (and still paints) at its full thickness.
+- Win-GUI's chrome (UI) font now installs at the same size
+  `Backend::default_fonts().ui_size_pt` advertises (#2385): previously the
+  installed `DEFAULT_UI_FONT_SIZE_PT` (`11pt`, ≈14.7 DIP) silently diverged
+  from the `13.0` literal `default_fonts()` reported. Both now read a
+  single `9.75pt` constant, which renders at VS Code's own 13 DIP Windows
+  chrome text size (`size_pt * 96 / 72`) — list/tree row height (22px) is
+  derived from the editor font and `Style::row_height`, not this constant,
+  so it is unaffected.
 
 ### Changed
 - `ButtonMetrics::resolve`'s corner radius (#2368): every pixel-backend
