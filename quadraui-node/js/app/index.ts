@@ -70,6 +70,22 @@
 // reaction value to return and no manual "mark dirty" call in the common
 // case.
 //
+// **Hot reload.** `App.enableHotReload([require.resolve("./view.ts")],
+// {preserve: [myApp]})` re-requires edited source modules while the app
+// runs and keeps component state, the state on a preserved app object, and
+// framework widget state; a broken edit leaves the last good code running
+// and is reported on `App.reloadError`. `./hotReload.ts` documents exactly
+// what survives -- and the one real divergence from Python, which is that
+// a JS view must call *through* the preserved object or the module
+// exports (`{view: () => myApp.view()}`) rather than capture a function.
+//
+// **Testing.** `require("../testing.ts").harness(app)` wraps an `App` for
+// a test that queries by widget id/role/text, synthesises the clicks and
+// keys a user performs, and asserts on the rendered frame -- without a
+// test ever spelling out a wire event or a coordinate. See that module's
+// own doc; it mirrors `quadraui.testing` the same way this file mirrors
+// `quadraui.app`.
+//
 // Runtime exports go through `exports.X = ...` rather than `export`, the
 // same reason `../index.ts`'s own header comment gives.
 
@@ -109,4 +125,4 @@ export type {
   ToolbarOptions,
 } from "./nodes";
 export type { ComponentState } from "./component";
-export type { AppOptions } from "./runtime";
+export type { AppOptions, HotReloadOptions } from "./runtime";

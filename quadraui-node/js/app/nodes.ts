@@ -65,6 +65,14 @@ export interface ComponentLike {
   key?: unknown;
   initialState(): Record<string, unknown>;
   view(state: Record<string, unknown>): Renderable;
+  /**
+   * Optional: called once per surviving state slot on the first render
+   * after `App` hot-reloads this component's code (see `./hotReload.ts`),
+   * returning the state object the reloaded `view(state)` sees from then
+   * on. Left undefined, `walk` merges in any key the current
+   * `initialState()` has that the surviving state lacks.
+   */
+  migrateState?(state: Record<string, unknown>): Record<string, unknown>;
 }
 
 /**
