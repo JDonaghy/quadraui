@@ -46,7 +46,20 @@ type RequireShim = (id: string) => unknown;
 function loadTransformed(absPath: string, shim: RequireShim): Record<string, unknown> {
   const source = fs.readFileSync(absPath, "utf8");
   const loader = absPath.endsWith(".tsx") ? "tsx" : "ts";
-  const { code } = esbuild.transformSync(source, { loader, format: "cjs", target: "es2020" });
+  // `jsx`/`jsxImportSource` matter only for the `.tsx` branch (a `.ts`
+  // file has no JSX syntax to transform), and must match the package
+  // README's own documented config (`"jsx": "react-jsx"`,
+  // `"jsxImportSource": "@quadraui/node"`) so a transformed `.tsx` file's
+  // `require("@quadraui/node/jsx-runtime")` call is exactly what a real
+  // `tsc`/esbuild/Bun consumer emits, for `requireShim` and
+  // `realRequireShim` below to intercept.
+  const { code } = esbuild.transformSync(source, {
+    loader,
+    format: "cjs",
+    target: "es2020",
+    jsx: "automatic",
+    jsxImportSource: "@quadraui/node",
+  });
   const mod: { exports: Record<string, unknown> } = { exports: {} };
   const wrapper = new Function("require", "module", "exports", "__filename", "__dirname", code);
   wrapper(shim, mod, mod.exports, absPath, path.dirname(absPath));
@@ -256,8 +269,16 @@ test("jsx-dev-runtime re-exports the same Fragment marker as jsx-runtime", () =>
 // every other `*.test.ts` file in this directory already documents.
 
 function runTsc(args: string[]): { status: number | null; output: string } {
+  // `node_modules/.bin/tsc` is a POSIX shell shim on every platform (the
+  // Windows executable forms are `tsc.cmd`/`tsc.ps1`), so `execFileSync`
+  // without `shell: true` can't launch it there. Invoking the real script
+  // (`node_modules/typescript/bin/tsc`, a `#!/usr/bin/env node` file) with
+  // this process's own `node` binary works identically on every platform --
+  // the same pattern every other spawning test in this directory already
+  // uses (`live_runner.test.ts`, `live_runner_win.test.ts`, ...).
+  const tscScript = path.join(REPO_ROOT, "node_modules", "typescript", "bin", "tsc");
   try {
-    const output = execFileSync(path.join(REPO_ROOT, "node_modules", ".bin", "tsc"), args, {
+    const output = execFileSync(process.execPath, [tscScript, ...args], {
       cwd: REPO_ROOT,
       encoding: "utf8",
     });
@@ -277,14 +298,18 @@ test("a wrong prop name on an intrinsic element fails tsc --strict", { skip: !fs
   const original = fs.readFileSync(path.join(REPO_ROOT, "examples", "file_manager_app_jsx.tsx"), "utf8");
   assert.ok(original.includes('leftSegments={left}'), "fixture source has drifted -- update this test's own substitution");
   const broken = original.replace("leftSegments={left}", "leftSegmentsTypo={left}");
-  const brokenPath = path.join(REPO_ROOT, "examples", "file_manager_app_jsx.broken_fixture.tsx");
+  // Suffixed with this process's own pid (see the top-level `.gitignore`
+  // entries for these fixtures) so two concurrent runs of this test never
+  // write the same path out from under each other.
+  const suffix = `.${process.pid}`;
+  const brokenPath = path.join(REPO_ROOT, "examples", `file_manager_app_jsx.broken_fixture${suffix}.tsx`);
   fs.writeFileSync(brokenPath, broken);
-  const tsconfigPath = path.join(REPO_ROOT, "tsconfig.jsx.broken_fixture.json");
+  const tsconfigPath = path.join(REPO_ROOT, `tsconfig.jsx.broken_fixture${suffix}.json`);
   try {
     const base = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "tsconfig.jsx.json"), "utf8"));
-    base.include = ["examples/file_manager_app_jsx.broken_fixture.tsx"];
+    base.include = [`examples/file_manager_app_jsx.broken_fixture${suffix}.tsx`];
     fs.writeFileSync(tsconfigPath, JSON.stringify(base));
-    const result = runTsc(["-p", "tsconfig.jsx.broken_fixture.json"]);
+    const result = runTsc(["-p", `tsconfig.jsx.broken_fixture${suffix}.json`]);
     assert.notEqual(result.status, 0);
     assert.match(result.output, /leftSegmentsTypo/);
   } finally {
@@ -292,3 +317,104 @@ test("a wrong prop name on an intrinsic element fails tsc --strict", { skip: !fs
     fs.rmSync(tsconfigPath, { force: true });
   }
 });
+
+// --- the real app layer, end to end ----------------------------------------
+//
+// Every test above substitutes `stubNodeConstructors()` for
+// `./app/nodes.ts`, so none of them would catch a swapped positional pair
+// in one of `INTRINSICS`' own adapters (e.g. `StatusBar`'s two segment
+// lists in the wrong order): a bug like that type-checks and passes every
+// stub-based test above, then silently renders wrong. This test drives the
+// real `../examples/file_manager_app_jsx.tsx` -- transformed through this
+// runtime's own real `require("./app/nodes.ts")`, no stub -- through the
+// same scripted actions as its non-JSX twin, `../examples/
+// file_manager_app.ts`, and asserts the two headless screens stay
+// byte-for-byte identical after every step: the behavioural half of the
+// issue's "behaviour-identical" acceptance bullet that `tsc --strict`
+// alone can't check. Needs the native addon built first, the same
+// precondition the `tsc`-based tests above already document.
+
+const REAL_JSX_RUNTIME_SPECIFIER = "@quadraui/node/jsx-runtime";
+
+let cachedRealRuntime: Record<string, unknown> | null = null;
+
+/** `../js/jsx-runtime.ts`, transformed the same way as {@link loadJsxRuntime} above, but with its own `require("./app/nodes.ts")` resolved to the real module -- what actually builds real wire nodes, not a `{__call, args}` stub. */
+function loadRealJsxRuntime(): Record<string, unknown> {
+  if (cachedRealRuntime === null) {
+    cachedRealRuntime = loadTransformed(JSX_RUNTIME_PATH, realRequireShim(JSX_RUNTIME_PATH));
+  }
+  return cachedRealRuntime;
+}
+
+/** `require`, with every relative id resolved against `fromAbsPath`'s own directory and handed to Node's real `require` (so a plain `.ts` file like `./app/nodes.ts` resolves through Node's own native TypeScript support, the same way every non-JSX `*.test.ts` file in this directory already requires one), and `@quadraui/node/jsx-runtime` resolved to {@link loadRealJsxRuntime} -- exactly the specifier a real `tsc`/esbuild/Bun consumer's own automatic-JSX import would resolve, per the package's `exports` map. */
+function realRequireShim(fromAbsPath: string): RequireShim {
+  const fromDir = path.dirname(fromAbsPath);
+  return (id: string) => {
+    if (id === REAL_JSX_RUNTIME_SPECIFIER) {
+      return loadRealJsxRuntime();
+    }
+    if (id.startsWith(".")) {
+      return require(path.resolve(fromDir, id));
+    }
+    return require(id);
+  };
+}
+
+type FileManagerCtor = new (root: string, width?: number, height?: number) => { app: unknown };
+
+/** The fixed directory tree `../examples/file_manager_app.test.ts`'s own `treeRoot()` builds, duplicated here rather than shared so this test's own tree shape can't drift silently if that helper changes. */
+function exampleTreeRoot(): string {
+  const root = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "quadraui-node-jsx-example-"));
+  const alpha = path.join(root, "alpha");
+  fs.mkdirSync(alpha);
+  fs.writeFileSync(path.join(alpha, "a1.txt"), "one");
+  fs.writeFileSync(path.join(alpha, "a2.txt"), "two");
+  const beta = path.join(root, "beta");
+  fs.mkdirSync(beta);
+  fs.writeFileSync(path.join(beta, "b1.txt"), "bee");
+  fs.writeFileSync(path.join(root, "readme.md"), "# readme");
+  return root;
+}
+
+test(
+  "the JSX file-manager example renders byte-for-byte identical screens to its non-JSX twin",
+  { skip: !fs.existsSync(path.join(REPO_ROOT, "index.d.ts")) },
+  () => {
+    const jsxExamplePath = path.join(REPO_ROOT, "examples", "file_manager_app_jsx.tsx");
+    const jsxExample = loadTransformed(jsxExamplePath, realRequireShim(jsxExamplePath)) as {
+      FileManager: FileManagerCtor;
+    };
+    const plainExample = require("../examples/file_manager_app.ts") as { FileManager: FileManagerCtor };
+    const { harness } = require("../js/testing.ts") as { harness: (app: unknown) => any };
+
+    const root = exampleTreeRoot();
+    try {
+      const jsxHarness = harness(new jsxExample.FileManager(root, 80, 24).app);
+      const plainHarness = harness(new plainExample.FileManager(root, 80, 24).app);
+      assert.equal(jsxHarness.screen(), plainHarness.screen());
+
+      // Walks the tree, opens two folders into details tabs, closes one --
+      // touches every intrinsic the example's own `_view`/`_detailsPane`/
+      // `_statusLeaf` use (`split`, `sidebarPanel`, `tree`, `tabs`,
+      // `table`, `textDisplay`, `statusBar`).
+      const actions: Array<(h: any) => void> = [
+        (h) => h.press("Down"), // root -> alpha
+        (h) => h.press("Right"), // expand alpha (loads it)
+        (h) => h.press("Enter"), // open alpha's details tab
+        (h) => h.press("Down"), // alpha -> sub/a1.txt row depends on tree, stay folders-only -> beta
+        (h) => h.press("Down"),
+        (h) => h.press("Enter"), // open a second details tab
+        (h) => h.press("Tab"), // move focus between tree/details, if bound
+        (h) => h.clickText("alpha"), // click back onto the alpha row
+        (h) => h.press("Enter"),
+      ];
+      for (const action of actions) {
+        action(jsxHarness);
+        action(plainHarness);
+        assert.equal(jsxHarness.screen(), plainHarness.screen());
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

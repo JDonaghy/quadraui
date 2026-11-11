@@ -12,7 +12,7 @@
 // synthesised action is the same `UiEvent` the engine itself would
 // deliver.
 //
-//     const { harness } = require("@quadraui/node/js/testing.ts");
+//     const { harness } = require("@quadraui/node/testing");
 //
 //     const h = harness(app);
 //     h.find({ role: "tree" }).row("alpha").click();

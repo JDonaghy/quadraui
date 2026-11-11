@@ -21,3 +21,10 @@ quadraui-node/index.js
 quadraui-node/index.d.ts
 quadraui-node/*.node
 quadraui-node/node_modules/
+
+# `tests/jsx_runtime.test.ts`'s own broken-prop fixture, written in-tree
+# (not a tmpdir) so its relative `require`s and `tsconfig.jsx.json`
+# `paths` still resolve; removed in that test's own `finally` block, kept
+# here as a backstop against a killed run leaving it behind.
+quadraui-node/examples/file_manager_app_jsx.broken_fixture*.tsx
+quadraui-node/tsconfig.jsx.broken_fixture*.json

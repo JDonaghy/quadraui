@@ -12,8 +12,12 @@
     "./jsx-runtime": "./js/jsx-runtime.ts",
     "./jsx-dev-runtime": "./js/jsx-dev-runtime.ts",
     "./testing": "./js/testing.ts",
-    "./wire": "./js/wire.d.ts",
-    "./app/*": "./js/app/*.ts"
+    "./wire": {
+      "types": "./js/wire.d.ts"
+    },
+    "./app": "./js/app/index.ts",
+    "./app/*": "./js/app/*.ts",
+    "./js/*": "./js/*"
   },
   "files": [
     "README.md",
