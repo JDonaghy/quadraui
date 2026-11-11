@@ -333,15 +333,29 @@ test("clearExtra empties a slot and a later insert can reuse it", () => {
 // render callback returns -- not just through `insertExtra`'s flat-slot
 // path. Each case dispatches the events a real app would push (a focusing
 // click, then a key/char where the kind needs one) and asserts the final
-// event the handler receives. `switch` already has its own dedicated
-// tree-leaf test; `progress`/`spinner`/`image` have no event at all, so
-// neither appears here.
+// event the handler receives. `progress`/`spinner`/`image` have no event
+// at all, so neither appears here.
 const INLINE_LEAF_CASES: Array<{
   name: string;
   tree: unknown;
   events: unknown[];
   expected: Array<null | Record<string, unknown> | [string, unknown]>;
 }> = [
+  {
+    // The leaf's own tree-address id ("leaf:1") deliberately differs
+    // from the `Switch` descriptor's embedded id ("sw:embedded") --
+    // `paint_leaf` keys the painted hit by the leaf id specifically
+    // because a render callback may reuse the same descriptor id across
+    // leaves, so both the click-to-focus `FocusChanged` and the
+    // `ToggleChanged` it emits must agree on "leaf:1".
+    name: "switch",
+    tree: { row: [{ id: "leaf:1", switch: { id: "sw:embedded", value: false } }] },
+    events: [{ MouseDown: { button: "Left", position: { x: 1.0, y: 1.0 }, modifiers: {} } }],
+    expected: [
+      { FocusChanged: "leaf:1" },
+      ["leaf:1", { ToggleChanged: { id: "leaf:1", value: true } }],
+    ],
+  },
   {
     name: "number_input",
     tree: {
