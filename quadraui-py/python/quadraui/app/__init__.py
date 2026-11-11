@@ -56,6 +56,11 @@ a bound-method view's own object, and framework widget state; a broken
 edit leaves the last good code running and is reported on
 `App.reload_error`. `quadraui.app.hot_reload` documents exactly what
 survives a reload.
+
+**Testing.** `quadraui.testing.harness(app)` wraps an `App` for a test
+that queries by widget id/role/text, synthesises the clicks and keys a
+user performs, and asserts on the rendered frame -- without a test ever
+spelling out a wire event or a coordinate. See that module's own doc.
 """
 
 from .component import Component
