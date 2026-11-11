@@ -13,11 +13,15 @@ information a raw `{"tree": {...}}` wire dict carries, plus whichever
 `on_*` callbacks that element's constructor accepts. A `view()` returns a
 tree of these (mixed freely with raw wire dicts, `None`, and lists, for
 escaping to the lower-level API wherever convenient); `App` walks it once
-per render into the wire shape `QuiApp` already expects. Any node whose
-caller didn't give it an explicit `id=` gets a stable one derived from its
-position in the tree -- stable, that is, as long as the tree's own shape
-(sibling count, slot names) doesn't change between renders, the same
-assumption a bare list index relies on anywhere else.
+per render into the wire shape `QuiApp` already expects. Every id-bearing
+constructor's `id=` is optional (`Column`/`Row` have no `id` at all --
+there's nothing on the wire to address): a node whose caller didn't give
+it an explicit `id=` gets a stable one derived from its position in the
+tree -- stable, that is, as long as the tree's own shape (sibling count,
+slot names) doesn't change between renders, the same assumption a bare
+list index relies on anywhere else. `Toolbar` is the one exception --
+see its own docstring for why it falls back to a weaker, call-order-based
+default instead.
 
 **Callbacks.** `Button("Save", on_click=self.save)`, `Tree(rows,
 on_row_click=self.select, on_activate=self.open)` -- each node's own

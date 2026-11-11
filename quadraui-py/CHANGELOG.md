@@ -194,6 +194,17 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   expose `quadraui::PlatformServices`'s OS-wide hotkey seam — headless-only
   for now, and raising `InternalError` until an in-tree backend implements
   a real OS hotkey call.
+- `quadraui.app` — a thin app layer over `QuiApp`'s render/handle seam:
+  typed node constructors (`Split`, `Column`, `Row`, `SidebarPanel`, `Tab`,
+  `Tabs`, `Tree`, `Table`, `StatusBar`, `TextDisplay`, `Button`, `Toolbar`)
+  that build the existing wire dict shapes and accept `on_*` callbacks
+  directly (`Button("Save", on_click=self.save)`), a `Component` base
+  class for view + local state bundled together and keyed by tree
+  position (or an explicit `key=`) so it survives re-render, and an `App`
+  that walks a `view()` tree once per render into an id → callback
+  registry and dispatches events against it — no manual id switching, no
+  scroll/selection bookkeeping (both stay framework-owned widget state).
+  `examples/file_manager_app.py` ports `examples/file_manager.py` onto it.
 
 ### Fixed
 
