@@ -32,8 +32,10 @@
 
 import type { Node, Renderable, ComponentLike } from "./nodes";
 import type { WidgetState, RunHandle } from "../index";
+import type { Poller, ReboundPrototypes, Watcher } from "./hotReload";
 
 const { QuiApp, run } = require("../index.ts");
+const hr = require("./hotReload.ts");
 
 type AnyCallback = (...args: unknown[]) => void;
 type Registry = Record<string, Record<string, AnyCallback>>;
@@ -68,34 +70,60 @@ function isComponentLike(value: unknown): value is ComponentLike {
   );
 }
 
+/**
+ * The state a surviving slot carries into the first render after a hot
+ * reload: the component's own `migrateState` if it defines one, otherwise
+ * every existing value plus any key the current `initialState()` added.
+ */
+function migrateComponentState(
+  component: ComponentLike,
+  state: Record<string, unknown>,
+): Record<string, unknown> {
+  if (component.migrateState !== undefined) {
+    return component.migrateState(state);
+  }
+  for (const [name, value] of Object.entries(component.initialState())) {
+    if (!(name in state)) {
+      state[name] = value;
+    }
+  }
+  return state;
+}
+
 function walk(
   value: Renderable,
   path: ReadonlyArray<string | number>,
   registry: Registry,
   oldStates: ComponentStates,
   newStates: ComponentStates,
+  migrate = false,
 ): unknown {
   if (value === null || value === undefined) {
     return null;
   }
   if (Array.isArray(value)) {
-    return value.map((item, i) => walk(item, [...path, i], registry, oldStates, newStates));
+    return value.map((item, i) => walk(item, [...path, i], registry, oldStates, newStates, migrate));
   }
   if (isComponentLike(value)) {
     const stateKey = value.key !== undefined ? value.key : JSON.stringify(path);
     let state = newStates.get(stateKey);
     if (state === undefined) {
-      state = oldStates.get(stateKey) ?? value.initialState();
+      const surviving = oldStates.get(stateKey);
+      if (surviving === undefined) {
+        state = value.initialState();
+      } else {
+        state = migrate ? migrateComponentState(value, surviving) : surviving;
+      }
       newStates.set(stateKey, state);
     }
     const child = value.view(state);
-    return walk(child, [...path, "component"], registry, oldStates, newStates);
+    return walk(child, [...path, "component"], registry, oldStates, newStates, migrate);
   }
   if (isNode(value)) {
     const nodeId = value.id ?? autoId(path);
     const childrenWire: Record<string, unknown> = {};
     for (const [slot, child] of Object.entries(value.children)) {
-      childrenWire[slot] = walk(child, [...path, slot], registry, oldStates, newStates);
+      childrenWire[slot] = walk(child, [...path, slot], registry, oldStates, newStates, migrate);
     }
     if (Object.keys(value.callbacks).length > 0) {
       registry[nodeId] = value.callbacks;
@@ -212,6 +240,22 @@ export interface AppOptions {
   onEvent?(event: unknown): void;
 }
 
+export interface HotReloadOptions {
+  /**
+   * How often (milliseconds) to stat the watched files; `null` checks
+   * nothing until {@link App.reloadIfChanged} is called by hand.
+   */
+  interval?: number | null;
+  /** Runs after every successful reload, before the first render with the new code. */
+  onReload?(app: App): void;
+  /**
+   * Objects whose class lives in a watched module: each keeps its identity
+   * and its own properties while its prototype is re-pointed at the
+   * reloaded class of the same name, so its methods become the new code.
+   */
+  preserve?: ReadonlyArray<object>;
+}
+
 /**
  * A `QuiApp` driven by a `view()` callback returning `Node`/`Component`
  * trees, with events dispatched to the `on*` callbacks those trees
@@ -230,8 +274,18 @@ class App {
   _registry: Registry = {};
   _componentStates: ComponentStates = new Map();
   _focusedId: string | null = null;
+  /** The exception a failed reload recorded, or `null` after a successful one. */
+  reloadError: unknown = null;
+  /** How many reloads have succeeded and rendered. */
+  reloadCount = 0;
   private _view: () => Renderable;
   private _onEvent: ((event: unknown) => void) | undefined;
+  private _watcher: Watcher | null = null;
+  private _poller: Poller | null = null;
+  private _onReload: ((app: App) => void) | undefined;
+  private _preserve: ReadonlyArray<object> = [];
+  private _rollback: (() => void) | null = null;
+  private _migrateNextRender = false;
 
   constructor(width: number, height: number, options: AppOptions) {
     this._view = options.view;
@@ -264,13 +318,143 @@ class App {
     this._onEvent = onEvent;
   }
 
+  // --- hot reload -----------------------------------------------------------
+
+  /**
+   * Watches `modules` (resolved file paths, re-required in the order
+   * given -- list a dependency before the module importing from it) and
+   * re-requires them when their files change, keeping component,
+   * app-object and widget state; see `./hotReload.ts` for exactly what
+   * survives, and for why the view must call *through* a `preserve`d
+   * object or the module exports rather than capture a function.
+   *
+   * Normally written `app.enableHotReload([require.resolve("./view.ts")],
+   * {preserve: [notes]})` so the caller's own module resolution applies.
+   * With `interval` an unref'd timer stats the files and wakes the event
+   * loop on a change, so a live `runTui()`/`runNative()` session picks an
+   * edit up without any input; with `interval: null` nothing is checked
+   * until `reloadIfChanged()` is called. Calling this again replaces the
+   * watch list.
+   */
+  enableHotReload(modules: ReadonlyArray<string>, options: HotReloadOptions = {}): void {
+    this.disableHotReload();
+    const paths = hr.resolveModules(modules);
+    this._watcher = new hr.ModuleWatcher(paths);
+    this._onReload = options.onReload;
+    this._preserve = options.preserve ?? [];
+    const interval = options.interval === undefined ? 500 : options.interval;
+    if (interval !== null) {
+      const waker = this.qui.waker();
+      this._poller = new hr.PollTimer(this._watcher, interval, () => waker.post(hr.HOT_RELOAD_WAKE));
+    }
+  }
+
+  /** Stops watching (and stops the watcher timer, if any). */
+  disableHotReload(): void {
+    this._poller?.stop();
+    this._poller = null;
+    this._watcher = null;
+  }
+
+  /**
+   * Reloads the watched modules if any file changed since the last check;
+   * `true` when the re-require succeeded, with the same "not yet
+   * rendered" caveat {@link App.reload} documents. Needs
+   * `enableHotReload()` first.
+   */
+  reloadIfChanged(): boolean {
+    if (this._watcher === null) {
+      throw new Error("enableHotReload() has not been called");
+    }
+    if (this._watcher.changed().length === 0) {
+      return false;
+    }
+    return this.reload();
+  }
+
+  /**
+   * Re-requires every watched module now, whether or not it changed, and
+   * re-points every `preserve`d object's prototype at the reloaded class
+   * of the same name. On failure the previous code stays in place, the
+   * exception is stored on `reloadError`, and this returns `false`.
+   *
+   * `true` means the re-require and the prototype swaps succeeded -- *not*
+   * that the new code has rendered, since rendering is driven separately
+   * (the next `step()`). A view that throws on that first render is rolled
+   * back there instead: `reloadError` becomes that exception and
+   * `reloadCount` goes back down, after this call has already returned
+   * `true`. Read `reloadError` after the next render, not this return
+   * value, to know a reload stuck.
+   */
+  reload(): boolean {
+    if (this._watcher === null) {
+      throw new Error("enableHotReload() has not been called");
+    }
+    const paths = this._watcher.paths;
+    this._watcher.snapshot();
+    let saved;
+    try {
+      saved = hr.reloadModules(paths);
+    } catch (error) {
+      // A broken edit must not take the app down.
+      this.reloadError = error;
+      return false;
+    }
+    const rebound: ReboundPrototypes = [];
+    const rollback = () => {
+      hr.restorePrototypes(rebound);
+      hr.restoreModules(saved);
+      this._migrateNextRender = false;
+    };
+    try {
+      hr.repointPrototypes(this._preserve, paths, rebound);
+      this._onReload?.(this);
+    } catch (error) {
+      rollback();
+      this.reloadError = error;
+      return false;
+    }
+    this._rollback = rollback;
+    this._migrateNextRender = true;
+    this.reloadError = null;
+    this.reloadCount += 1;
+    return true;
+  }
+
   // --- render / dispatch ---------------------------------------------------
 
   /** Re-runs `view()` through `walk`, rebuilding `_registry`/`_componentStates`, and returns the wire tree. Exposed (not actually private) for the same reason `_registry` is. */
   _render(): unknown {
+    if (this._rollback === null) {
+      return this._renderOnce();
+    }
+    // The first render with freshly reloaded code: if it throws, put the
+    // last good code back and render that instead, so a broken edit never
+    // takes the running app down.
+    const rollback = this._rollback;
+    this._rollback = null;
+    try {
+      return this._renderOnce();
+    } catch (error) {
+      rollback();
+      this.reloadError = error;
+      this.reloadCount -= 1;
+      return this._renderOnce();
+    }
+  }
+
+  private _renderOnce(): unknown {
     const registry: Registry = {};
     const newStates: ComponentStates = new Map();
-    const wire = walk(this._view(), [], registry, this._componentStates, newStates);
+    const migrate = this._migrateNextRender;
+    this._migrateNextRender = false;
+    let wire;
+    try {
+      wire = walk(this._view(), [], registry, this._componentStates, newStates, migrate);
+    } catch (error) {
+      this._migrateNextRender = migrate;
+      throw error;
+    }
     this._registry = registry;
     this._componentStates = newStates;
     return wire;
@@ -278,6 +462,15 @@ class App {
 
   /** Dispatches one event to a node callback, falling back to `onEvent`. Exposed for driving a focus-scoped event straight through in a test, same as `_render`. */
   _handle(event: unknown): void {
+    if (
+      typeof event === "object" &&
+      event !== null &&
+      (event as Record<string, unknown>).User === hr.HOT_RELOAD_WAKE &&
+      this._watcher !== null
+    ) {
+      this.reloadIfChanged();
+      return;
+    }
     if (typeof event === "object" && event !== null && "FocusChanged" in (event as object)) {
       this._focusedId = (event as Record<string, unknown>).FocusChanged as string | null;
     }
