@@ -1634,9 +1634,9 @@ impl From<quadraui_binding_core::WidgetStateSnapshot> for WidgetStateJs {
     fn from(snapshot: quadraui_binding_core::WidgetStateSnapshot) -> Self {
         Self {
             selected_path: snapshot.selected_path,
-            selected_index: snapshot.selected_index,
+            selected_index: snapshot.selected_idx,
             scroll_offset: snapshot.scroll_offset,
-            split_ratio: snapshot.split_ratio,
+            split_ratio: snapshot.ratio,
             active_tab: snapshot.active_tab,
             expanded: snapshot.expanded,
         }

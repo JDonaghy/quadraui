@@ -6,7 +6,8 @@ itself restricts to top-level script code, since a handler already holds
 this app's one mutable borrow for the whole dispatch that invoked it) and
 has it applied right after that dispatch finishes, instead of raising
 "already borrowed" the way calling the matching `QuiApp` method directly
-from inside the handler would.
+from inside the handler would. `apply_tab_activated` is the one method here
+with no restricted `QuiApp` counterpart at all -- see its own doc.
 
 Run against a built wheel/extension, e.g.:
 
@@ -155,3 +156,36 @@ def test_multiple_actions_queued_from_one_dispatch_all_apply():
 
     assert app.screen_contains("Alpha")
     assert app.screen_contains("Bravo")
+
+
+def test_apply_tab_activated_persists_without_a_click_or_pinning_the_descriptor():
+    """`actions.apply_tab_activated(id, index)` makes `index` the engine's
+    own stored active tab for `id`, the same persisted change a real
+    `TabBar`/`TabActivated` click makes -- without a click, and without the
+    render callback ever marking any tab `is_active` (it never does here,
+    so the descriptor stays uncontrolled throughout, the shape
+    `examples/file_manager.py`'s own `_details_pane` relies on)."""
+
+    def render():
+        return {
+            "tab_bar": {
+                "id": "deferred-test:tabs",
+                "tabs": [{"label": "Tab 1"}, {"label": "Tab 2"}],
+            }
+        }
+
+    app = QuiApp(40, 20, render=render)
+    actions = app.actions()
+    # A `TabBar` slot is tracked (and so present in the snapshot) from its
+    # very first render, same as every other widget kind -- but with
+    # nothing active yet, since the descriptor above never marks one.
+    assert app.widget_state("deferred-test:tabs").get("active_tab") is None
+
+    def on_event(_event):
+        actions.apply_tab_activated("deferred-test:tabs", 1)
+
+    app.set_handler(on_event)
+    app.push_key_event(ord("a"))
+    app.run(1)
+
+    assert app.widget_state("deferred-test:tabs")["active_tab"] == 1

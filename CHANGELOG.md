@@ -58,7 +58,16 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+
+## [0.10.0] - 2026-11-10
 ### Added
+- `quadraui_binding_core::{widget_state_snapshot, WidgetStateSnapshot}` (#2307):
+  a side-effect-free read of a widget's current state in the binding's
+  widget-state store — cursor (`selected_path`/`selected_idx`), scroll
+  offset, split ratio, active tab and expanded set, whichever apply to the
+  id's stored kind — for a host binding to expose read access without
+  reaching into `host.rs`'s private per-kind state structs. Purely
+  additive, backs `quadraui-py`'s new `QuiApp.widget_state`.
 - `compose::{classify_tree_nav_key, TreeNavKey}` (#2305): the key
   classification `TreeController::handle_key`/`SidebarSystem`'s own key
   dispatch already shared internally is now `pub` (was `pub(crate)`), so
