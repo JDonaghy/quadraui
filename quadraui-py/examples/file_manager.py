@@ -57,8 +57,35 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from quadraui import QuiApp
+
+if TYPE_CHECKING:
+    # `quadraui.wire` is a stub-only module (no backing `.py`) -- see its own
+    # module docstring -- so this import only runs under a type checker.
+    from quadraui.wire import (
+        Color,
+        ColumnDescriptor,
+        DataRowDescriptor,
+        DataTableDescriptor,
+        Icon,
+        Key,
+        LayoutNode,
+        LayoutTabEntryNode,
+        LayoutTabsPayload,
+        ListViewEvent,
+        StatusBarSegment,
+        StyledText,
+        TabBarEvent,
+        TextDisplayLineDescriptor,
+        ToolbarDescriptor,
+        TreeEvent,
+        TreeRowDescriptor,
+        TreeStyle,
+        TreeViewDescriptor,
+        UiEvent,
+    )
 
 
 @dataclass
@@ -159,7 +186,7 @@ BODY_SPLIT_RATIO = 0.3
 # subfolders' paths, so a click on a row resolves back to its node. `indent` is
 # folder depth.
 
-TREE_STYLE = {
+TREE_STYLE: "TreeStyle" = {
     "indent": 2,  # columns of indent per depth level
     "show_chevrons": True,  # draw the twisty on directories
     "chevron_expanded": "▾",  # down triangle
@@ -171,34 +198,40 @@ TREE_STYLE = {
 # `fallback` the backend uses when the glyph can't render (so the TUI stays
 # legible without a Nerd Font). `color: None` lets the row's theme foreground
 # through.
-FOLDER_ICON = {"glyph": "\U0001f4c1", "fallback": "/", "color": None}  # folder
-FILE_ICON = {"glyph": "\U0001f4c4", "fallback": " ", "color": None}  # page
+FOLDER_ICON: "Icon" = {"glyph": "\U0001f4c1", "fallback": "/", "color": None}  # folder
+FILE_ICON: "Icon" = {"glyph": "\U0001f4c4", "fallback": " ", "color": None}  # page
 
 
-def _styled_text(text: str) -> dict:
-    """One `StyledText` with a single uncolored span -- the shape tree `text`,
-    data-table cells, and text_display lines all use; the theme picks colors."""
+def _styled_text(text: str) -> "StyledText":
+    """One `StyledText` with a single uncolored span -- the shape tree `text`
+    and data-table cells use; the theme picks colors."""
     return {"spans": [{"text": text, "fg": None, "bg": None}]}
 
 
-def folder_rows(root: Node) -> tuple[list[dict], list[Node]]:
+def _display_line(text: str) -> "TextDisplayLineDescriptor":
+    """One `text_display` line with a single uncolored span -- `TextDisplayLineDescriptor`
+    adds `decoration`/`timestamp` on top of `StyledText`'s own `spans`, so it
+    is its own helper rather than reusing `_styled_text`'s return."""
+    return {"spans": [{"text": text, "fg": None, "bg": None}]}
+
+
+def folder_rows(root: Node) -> tuple[list["TreeRowDescriptor"], list[Node]]:
     """Walk the expanded model into index-aligned `(rows, nodes)`, directories
     only. Recomputed each frame, since expanding/collapsing changes which rows
     are visible."""
-    rows: list[dict] = []
+    rows: list["TreeRowDescriptor"] = []
     nodes: list[Node] = []
 
     def walk(node: Node, path: list[int], indent: int) -> None:
-        rows.append(
-            {
-                "path": path,
-                "indent": indent,
-                "icon": FOLDER_ICON,
-                "text": _styled_text(node.name),
-                "badge": None,
-                "is_expanded": node.expanded,
-            }
-        )
+        row: "TreeRowDescriptor" = {
+            "path": path,
+            "indent": indent,
+            "icon": FOLDER_ICON,
+            "text": _styled_text(node.name),
+            "badge": None,
+            "is_expanded": node.expanded,
+        }
+        rows.append(row)
         nodes.append(node)
         if node.expanded:
             for i, child in enumerate(node.subdirs()):
@@ -208,7 +241,7 @@ def folder_rows(root: Node) -> tuple[list[dict], list[Node]]:
     return rows, nodes
 
 
-def tree_leaf(rows: list[dict], *, selected_path: list[int]) -> dict:
+def tree_leaf(rows: list["TreeRowDescriptor"], *, selected_path: list[int]) -> "LayoutNode":
     """A layout-tree *leaf* wrapping the folders-only tree descriptor. A leaf is
     `{"id", "<kind>": <descriptor>}`; the id is unique across the whole tree.
     `has_focus` keeps arrow keys / Enter routed here on the real backends.
@@ -218,17 +251,15 @@ def tree_leaf(rows: list[dict], *, selected_path: list[int]) -> dict:
     the engine's own widget-state store -- not this app -- derives and keeps
     the scroll position that holds `selected_path`'s row visible, and the
     backend derives the scrollbar thumb from that."""
-    return {
+    tree: "TreeViewDescriptor" = {
         "id": "fm:tree",
-        "tree": {
-            "id": "fm:tree",
-            "rows": rows,
-            "selection_mode": "Single",
-            "selected_path": selected_path,
-            "has_focus": True,
-            "style": TREE_STYLE,
-        },
+        "rows": rows,
+        "selection_mode": "Single",
+        "selected_path": selected_path,
+        "has_focus": True,
+        "style": TREE_STYLE,
     }
+    return {"id": "fm:tree", "tree": tree}
 
 
 # --- folder -> details data_table --------------------------------------------
@@ -256,18 +287,19 @@ def _human_size(n: int | None) -> str:
     return f"{int(size)} {_SIZE_UNITS[i]}" if i == 0 else f"{size:.1f} {_SIZE_UNITS[i]}"
 
 
-def details_table(folder: Node, index: int) -> dict:
+def details_table(folder: Node, index: int) -> "DataTableDescriptor":
     """The data_table descriptor for one opened folder's contents, as the
     content subtree of tab `index`. Row order matches `folder.children`, so a
     `RowDoubleClicked{idx}` maps straight back to a child node."""
     table_id = f"fm:grid:{index}"
-    columns = [
+    columns: list["ColumnDescriptor"] = [
         {"title": "Name", "width": {"Flex": 2.0}, "align": "Left"},
         {"title": "Size", "width": {"Flex": 1.0}, "align": "Right"},
         {"title": "Kind", "width": {"Flex": 1.0}, "align": "Left"},
     ]
 
     children = folder.children or []
+    rows: list["DataRowDescriptor"]
     if not children:
         note = "(unreadable)" if folder.load_error else "(empty folder)"
         rows = [{"cells": [_styled_text(note), _styled_text(""), _styled_text("")]}]
@@ -294,7 +326,7 @@ def details_table(folder: Node, index: int) -> dict:
 # everything. The status bar is a live bottom band, rebuilt from state each
 # frame.
 
-TOOLBAR = {
+TOOLBAR: "ToolbarDescriptor" = {
     "id": "fm:toolbar",
     "buttons": [
         {"Action": {"id": "fm:k:move", "label": "↑↓ Move"}},
@@ -308,12 +340,12 @@ TOOLBAR = {
 # `StatusBarSegment` requires explicit fg + bg (unlike the theme-driven
 # `StyledText` spans elsewhere); the accent foreground highlights the cursored
 # folder's name.
-_STATUS_FG = {"r": 220, "g": 220, "b": 230, "a": 255}
-_STATUS_BG = {"r": 30, "g": 32, "b": 48, "a": 255}
-_STATUS_ACCENT = {"r": 245, "g": 224, "b": 138, "a": 255}
+_STATUS_FG: "Color" = {"r": 220, "g": 220, "b": 230, "a": 255}
+_STATUS_BG: "Color" = {"r": 30, "g": 32, "b": 48, "a": 255}
+_STATUS_ACCENT: "Color" = {"r": 245, "g": 224, "b": 138, "a": 255}
 
 
-def _segment(text: str, *, accent: bool = False, bold: bool = False) -> dict:
+def _segment(text: str, *, accent: bool = False, bold: bool = False) -> "StatusBarSegment":
     """One `StatusBarSegment`: styled text with explicit colors."""
     return {
         "text": text,
@@ -328,40 +360,55 @@ def _segment(text: str, *, accent: bool = False, bold: bool = False) -> dict:
 # event -> handler mutates plain Python attributes -> the runner repaints ->
 # `render()` reads them and returns the whole frame's layout tree.
 
-UP_KEY = {"Named": "Up"}
-DOWN_KEY = {"Named": "Down"}
-LEFT_KEY = {"Named": "Left"}
-RIGHT_KEY = {"Named": "Right"}
-ENTER_KEY = {"Named": "Enter"}
+UP_KEY: "Key" = {"Named": "Up"}
+DOWN_KEY: "Key" = {"Named": "Down"}
+LEFT_KEY: "Key" = {"Named": "Left"}
+RIGHT_KEY: "Key" = {"Named": "Right"}
+ENTER_KEY: "Key" = {"Named": "Enter"}
 
 
-def _key_name(key) -> str | None:
-    """Canonical name of a raw key. A plain `KeyPressed` carries a tagged dict
-    (`{"Named": "Down"}` / `{"Char": "o"}`); a focus-scoped leaf event carries
-    the already-stringified name (`"Down"` / `"o"`). Both collapse to the name."""
+def _key_name(key: "Key | str") -> str | None:
+    """Canonical name of a raw key. A plain `KeyPressed` carries a tagged
+    `Key` dict (`{"Named": "Down"}` / `{"Char": "o"}` / `{"Named": {"F": 2}}`);
+    a focus-scoped leaf event carries the already-stringified name (`"Down"` /
+    `"o"`). Both collapse to the name (a function key becomes `"F2"`)."""
     if isinstance(key, str):
         return key
-    if isinstance(key, dict):
-        return key.get("Named") or key.get("Char")
+    char = key.get("Char")
+    if char is not None:
+        return char
+    named = key.get("Named")
+    if named is None:
+        return None
+    if isinstance(named, dict):
+        return f"F{named['F']}"
+    return named
+
+
+def _leaf_key_name(activation: "TreeEvent | ListViewEvent | TabBarEvent") -> str | None:
+    """The key name out of a focus-scoped leaf activation's own `KeyPressed`
+    variant, or `None` if this activation isn't one."""
+    if "KeyPressed" in activation:
+        return _key_name(activation["KeyPressed"]["key"])
     return None
 
 
-def _event_key(event: dict) -> str | None:
+def _event_key(event: "UiEvent") -> str | None:
     """The canonical key name from a key event in any shape the backends
     deliver: a plain `KeyPressed`, or a focus-scoped `{"Tree"/"List"/"TabBar":
     [id, {"KeyPressed": ...}]}` (the focus manager rewrites a focused leaf's
     keys into its own variant, with the key already stringified). Returns None
     for a non-key event."""
-    pressed = event.get("KeyPressed")
-    if isinstance(pressed, dict):
-        return _key_name(pressed.get("key"))
-    for wrap in ("Tree", "List", "TabBar"):
-        payload = event.get(wrap)
-        if isinstance(payload, list) and len(payload) == 2 and isinstance(payload[1], dict):
-            inner = payload[1].get("KeyPressed")
-            if isinstance(inner, dict):
-                return _key_name(inner.get("key"))
-            return None
+    if isinstance(event, str):
+        return None
+    if "KeyPressed" in event:
+        return _key_name(event["KeyPressed"]["key"])
+    if "Tree" in event:
+        return _leaf_key_name(event["Tree"][1])
+    if "List" in event:
+        return _leaf_key_name(event["List"][1])
+    if "TabBar" in event:
+        return _leaf_key_name(event["TabBar"][1])
     return None
 
 
@@ -389,12 +436,12 @@ class FileManager:
 
     # --- navigation helpers --------------------------------------------------
 
-    def _visible(self) -> tuple[list[dict], list[Node]]:
+    def _visible(self) -> tuple[list["TreeRowDescriptor"], list[Node]]:
         """Current folder rows/nodes, with the cursor pulled back to its nearest
         still-visible ancestor if a collapse hid it."""
         rows, nodes = folder_rows(self.root)
         if self.cursor not in nodes:
-            node = self.cursor
+            node: Node | None = self.cursor
             while node is not None and node not in nodes:
                 node = node.parent
             self.cursor = node or self.root
@@ -522,7 +569,7 @@ class FileManager:
 
     # --- render + handle -----------------------------------------------------
 
-    def _details_pane(self) -> dict:
+    def _details_pane(self) -> "LayoutNode":
         """The body split's second pane: a placeholder until a folder is opened,
         then a closable tabs container with one data_table tab per open folder.
         Omits `"selected"` entirely -- the Rust side defaults it to `0` on
@@ -539,30 +586,30 @@ class FileManager:
                 "id": "fm:empty",
                 "text_display": {
                     "id": "fm:empty",
-                    "lines": [_styled_text("Select a folder and press Enter to open it.")],
+                    "lines": [_display_line("Select a folder and press Enter to open it.")],
                 },
             }
-        return {
-            "id": "fm:tabs",
-            "tabs": {
-                "id": "fm:tabs",
+        tabs: list["LayoutTabEntryNode"] = [
+            {
+                "id": f"tab:{i}",
+                "title": folder.name,
                 "closable": True,
-                "tabs": [
-                    {
-                        "id": f"tab:{i}",
-                        "title": folder.name,
-                        "closable": True,
-                        "content": {
-                            "id": f"fm:grid:{i}",
-                            "data_table": details_table(folder, i),
-                        },
-                    }
-                    for i, folder in enumerate(self.open)
-                ],
-            },
+                "content": {
+                    "id": f"fm:grid:{i}",
+                    "data_table": details_table(folder, i),
+                },
+            }
+            for i, folder in enumerate(self.open)
+        ]
+        tabs_payload: "LayoutTabsPayload" = {
+            "id": "fm:tabs",
+            "closable": True,
+            "tabs": tabs,
         }
+        tabs_node: "LayoutNode" = {"tabs": tabs_payload}
+        return tabs_node
 
-    def _status_leaf(self) -> dict:
+    def _status_leaf(self) -> "LayoutNode":
         """The outer split's bottom pane: a live status bar showing the cursored
         folder, its item count, the open-tab count, and any transient hint.
         Which tab is active is not shown here -- that index lives only in the
@@ -596,7 +643,7 @@ class FileManager:
             },
         }
 
-    def _render(self) -> dict:
+    def _render(self) -> "LayoutNode":
         """Per-frame: rebuild the whole frame from state. An outer vertical split
         stacks the chrome+body (top) over a one-line status bar (bottom); the
         body is the resizable tree/details split, wrapped in a `sidebar_panel`
@@ -604,7 +651,7 @@ class FileManager:
         rows, nodes = self._visible()
         cursor_index = nodes.index(self.cursor)
         selected_path = rows[cursor_index]["path"]
-        body = {
+        body: "LayoutNode" = {
             "split": {
                 "id": "fm:split",
                 "orientation": "horizontal",  # panes side by side, vertical divider
@@ -618,7 +665,7 @@ class FileManager:
                 "second": self._details_pane(),
             }
         }
-        chrome = {
+        chrome: "LayoutNode" = {
             "sidebar_panel": {
                 "id": "fm:chrome",
                 "toolbar": TOOLBAR,  # reserved top slot, one line per backend
@@ -646,7 +693,7 @@ class FileManager:
             }
         }
 
-    def _handle(self, event) -> None:
+    def _handle(self, event: "UiEvent") -> None:
         """Per-event: move the cursor, expand/collapse, open/close tabs, drill
         into folders, resize. Mutates state only; never calls into `QuiApp`."""
         if not isinstance(event, dict):
@@ -658,19 +705,19 @@ class FileManager:
             return
 
         if "DataTable" in event:
-            table_id, activation = event["DataTable"]
-            if "RowDoubleClicked" in activation:
-                self._activate_detail(table_id, activation["RowDoubleClicked"]["idx"])
+            table_id, table_activation = event["DataTable"]
+            if "RowDoubleClicked" in table_activation:
+                self._activate_detail(table_id, table_activation["RowDoubleClicked"]["idx"])
         elif "Tree" in event:
-            activation = event["Tree"][1]
-            if "RowClicked" in activation:
-                self._on_row_click(activation["RowClicked"]["path"])
-            elif "RowToggleExpand" in activation:
-                self._on_row_toggle_expand(activation["RowToggleExpand"]["path"])
+            tree_activation = event["Tree"][1]
+            if "RowClicked" in tree_activation:
+                self._on_row_click(tree_activation["RowClicked"]["path"])
+            elif "RowToggleExpand" in tree_activation:
+                self._on_row_toggle_expand(tree_activation["RowToggleExpand"]["path"])
         elif "TabBar" in event:
-            activation = event["TabBar"][1]
-            if "TabClosed" in activation:
-                self._close_tab(activation["TabClosed"]["index"])
+            tab_bar_activation = event["TabBar"][1]
+            if "TabClosed" in tab_bar_activation:
+                self._close_tab(tab_bar_activation["TabClosed"]["index"])
             # No `TabActivated` branch: `InteractionEngine::handle` already
             # persisted the click in the engine's own widget-state store
             # before this handler ever saw the event -- see
@@ -711,18 +758,21 @@ def _dump(node: Node, indent: int = 0) -> None:
         print(f"{pad}  {node.name}{size}")
 
 
-def _dump_folder_rows(rows: list[dict]) -> None:
+def _dump_folder_rows(rows: list["TreeRowDescriptor"]) -> None:
     """Human-readable dump of the folders-only tree rows."""
     for row in rows:
         pad = "  " * row["indent"]
         chevron = "▾ " if row["is_expanded"] else "▸ "
-        glyph = row["icon"]["glyph"]
+        icon = row["icon"]
+        glyph = "?"
+        if icon is not None and "codicon" not in icon:
+            glyph = icon["glyph"]
         text = row["text"]["spans"][0]["text"]
         path = ",".join(str(i) for i in row["path"]) or "-"
         print(f"  path=[{path:<8}] {pad}{chevron}{glyph} {text}")
 
 
-def _dump_grid(descriptor: dict) -> None:
+def _dump_grid(descriptor: "DataTableDescriptor") -> None:
     """Human-readable dump of a details table."""
     titles = [c["title"] for c in descriptor["columns"]]
     widths = [20, 10, 8]
@@ -758,8 +808,8 @@ def _wrap_quit(fm: FileManager) -> None:
     headless demo (which never sees those keys) untouched."""
     inner = fm._handle
 
-    def handler(event) -> None:
-        key = _event_key(event) if isinstance(event, dict) else None
+    def handler(event: "UiEvent") -> None:
+        key = _event_key(event)
         if key in ("q", "Escape"):
             raise _Quit
         inner(event)
@@ -767,11 +817,11 @@ def _wrap_quit(fm: FileManager) -> None:
     fm.app.set_handler(handler)
 
 
-def _key_event(key: dict) -> dict:
+def _key_event(key: "Key") -> "UiEvent":
     return {
         "KeyPressed": {
             "key": key,
-            "modifiers": {"shift": False, "ctrl": False, "alt": False, "meta": False},
+            "modifiers": {"shift": False, "ctrl": False, "alt": False, "cmd": False},
             "repeat": False,
         }
     }
@@ -781,13 +831,13 @@ def _run_headless(fm: FileManager) -> None:
     """Drive the app with Python owning the loop: expand a folder, open it as a
     tab, drill into a subfolder from its details table, then print the final
     screen -- runnable with no feature build."""
-    steps = [
+    steps: list["UiEvent"] = [
         _key_event(DOWN_KEY),    # cursor onto the first subfolder
         _key_event(RIGHT_KEY),   # expand it (load on demand)
         _key_event(ENTER_KEY),   # open it as a details tab
         # Double-click the first details row (a real double-click would
         # deliver this), drilling into it if it is a subfolder.
-        {"DataTable": ["fm:grid:0", {"RowDoubleClicked": {"idx": 0}}]},
+        {"DataTable": ("fm:grid:0", {"RowDoubleClicked": {"idx": 0}})},
     ]
     for event in steps:
         fm.app.push_event(event)
