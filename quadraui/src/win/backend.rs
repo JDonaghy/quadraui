@@ -13296,14 +13296,18 @@ mod tests {
         );
         // The tooltip's own fill is present at its centre — a positive
         // assertion that `draw_tooltip` actually painted something there,
-        // not just that the ring's colour is absent.
-        let cx = (rect.x + rect.width / 2.0) as u32;
-        let cy = (rect.y + rect.height / 2.0) as u32;
-        let px = surface.pixel_at(cx, cy);
+        // not just that the ring's colour is absent. Probed at mid-height
+        // just inside the right border: the left-aligned "Hover text" label
+        // ends well short of there at any chrome font size, so the pixel
+        // is pure fill rather than a glyph whose position depends on the
+        // installed font metrics.
+        let fx = (rect.x + rect.width - 4.0) as u32;
+        let fy = (rect.y + rect.height / 2.0) as u32;
+        let px = surface.pixel_at(fx, fy);
         assert_eq!(
             (px.r, px.g, px.b),
             (theme.hover_bg.r, theme.hover_bg.g, theme.hover_bg.b),
-            "the tooltip's own fill must paint at its centre",
+            "the tooltip's own fill must paint inside its bounds",
         );
     }
 
