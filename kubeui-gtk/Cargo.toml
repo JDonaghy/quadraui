@@ -12,17 +12,10 @@ name = "kubeui-gtk"
 path = "src/main.rs"
 
 [dependencies]
+# `quadraui::gtk::run` drives `kubeui_core::KubeApp`; it owns the
+# `gtk4::Application`, window, drawing area, and event controllers —
+# this binary has no direct gtk4/pangocairo/tokio dependency of its
+# own (the `tokio::Runtime` the k8s client needs is owned inside
+# `KubeApp`, in `kubeui-core`).
 quadraui = { path = "../quadraui", features = ["gtk"] }
 kubeui-core = { path = "../kubeui-core" }
-
-# Same Tokio + anyhow as TUI binary; runtime is owned here so the
-# reducer's k8s `block_on` calls happen on this binary's runtime.
-tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time", "sync"] }
-anyhow = "1.0"
-
-# GTK + Pango/Cairo for rasterisation. Must track quadraui's `gtk4`/
-# `pangocairo` versions exactly (#796): gtk4-sys sets `links = "gtk-4"`,
-# so cargo's resolver hard-errors if this workspace ever carries two
-# incompatible gtk4 majors at once.
-gtk4 = { version = "0.11", features = ["v4_10"] }
-pangocairo = "0.22"

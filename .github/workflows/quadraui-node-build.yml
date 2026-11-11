@@ -50,9 +50,51 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  bump-shape:
+    # A release's bump PR (`release-X.Y.Z` -> `develop`) only ever touches
+    # `quadraui/Cargo.toml`/`quadraui/src/lib.rs` from the `paths:` entries
+    # above that can trigger this workflow — `scripts/release.py prepare`'s
+    # own file set — so it never touches `quadraui-node`/`quadraui-binding-
+    # core`, yet without this gate it still runs the full native-addon
+    # build + test + pack below. Same detector `ci.yml`'s own `bump-shape`
+    # job uses (`tools/changelog_check.py --print-bump-shape`), duplicated
+    # here rather than shared via a reusable workflow because each caller
+    # needs this as one job inside its own workflow run so its own jobs
+    # can `needs:` it.
+    #
+    # `pull_request`-only: the diff needs a base commit, which only exists
+    # for a PR event. `push`/`workflow_dispatch` both skip this job,
+    # leaving `is_bump` empty — the consuming job's `!= 'true'` condition
+    # treats that as "run normally".
+    name: Detect release-bump PR shape
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    outputs:
+      # Forced `'false'` on a `develop` -> `main` promotion PR even if its
+      # diff happens to be bump-shaped too — see `ci.yml`'s `bump-shape`
+      # job for why a promotion PR must never skip real checks.
+      is_bump: ${{ github.base_ref != 'main' && steps.detect.outputs.bump_shape }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect bump-shaped diff
+        id: detect
+        run: |
+          python3 tools/changelog_check.py --print-bump-shape \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
+
   build:
     name: npm test (plain build) + npm pack
     runs-on: ubuntu-latest
+    needs: bump-shape
+    # Skipped on a bump-shaped PR — see `bump-shape`'s own comment above.
+    # `!cancelled()` is load-bearing: without it, the default `if:
+    # success()` on a `needs:` job would also skip this on `push`/
+    # `workflow_dispatch`, where `bump-shape` itself never runs.
+    if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
     # Sized generously for a cold Rust + napi build; a healthy run is a
     # few minutes once dependencies are warm.
     timeout-minutes: 30

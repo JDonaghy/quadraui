@@ -75,6 +75,10 @@ use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
 use crate::primitives::number_input::{NumberInput, NumberInputLayout};
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
+// `Backend::draw_panel`/`panel_layout` are this type's own plumbing and
+// keep carrying it until every in-repo caller migrates.
+#[allow(deprecated)]
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
@@ -87,11 +91,6 @@ use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::switch::{Switch, SwitchLayout};
-use crate::update::UpdateService;
-// `TabBarHits` is `#[deprecated]` — this trait still returns it from six
-// methods below, so the import itself needs the same allow every use site
-// does.
-#[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBarGlyphs, TabBarHits, TabBarLayout, TabChrome, TabIcon};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_input::{TextInput, TextInputLayout};
@@ -100,6 +99,7 @@ use crate::primitives::toolbar::{Toolbar, ToolbarLayout, ToolbarPaintOptions};
 use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::{TreePaintState, TreeViewLayout};
 use crate::types::{Color, WidgetId};
+use crate::update::UpdateService;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, GlobalShortcutId, ListView, Palette,
     PaletteLayout, StatusBar, TabBar, Terminal, TextDisplay, TreeView,
@@ -168,6 +168,60 @@ pub enum PointerShape {
     /// A vertical (up-down) row-resize cursor — the row/sash counterpart
     /// of [`Self::ColResize`].
     RowResize,
+}
+
+/// Which visual cue wins when a pressable/toggle control can be
+/// hovered, pressed, and/or toggled "on" (active) at the same time.
+///
+/// Every pressable/toggle painter in this crate resolves the same
+/// priority: pressed or toggled-on reads as the strongest cue, hovered
+/// next, resting otherwise — a control can't be mid-press without
+/// also being hovered, and a toggled-on control reads as "on" even
+/// while merely hovered, not just while actively pressed.
+/// `button::native_surface_paint::paint`'s `is_hovered`/`is_pressed`
+/// branches and `ToolbarButton::Action`'s `is_pressed || is_active`
+/// highlight both resolve through [`Self::resolve`] instead of
+/// re-deriving the same `if pressed || active { .. } else if hovered
+/// { .. } else { .. }` chain by hand.
+///
+/// Gated the same as those `native_surface_paint` modules — the one
+/// `PaintSurface` fallback painter every GTK/Win/macOS backend shares.
+/// TUI paints these primitives through its own cell-based renderer
+/// instead, so it has no consumer for this type.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PressableVisual {
+    /// Pressed, or toggled "on" (`is_active`) — the strongest cue.
+    PressedOrActive,
+    /// Hovered, but neither pressed nor toggled on.
+    Hovered,
+    /// Neither pressed, toggled on, nor hovered.
+    Resting,
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl PressableVisual {
+    /// Resolve the three inputs every pressable/toggle painter in this
+    /// crate carries (in some combination) into the one priority order
+    /// they share. `is_active` is the "toggled on" flag — pass `false`
+    /// for a control with no such concept (a plain [`Button`]).
+    pub(crate) fn resolve(is_pressed: bool, is_active: bool, is_hovered: bool) -> Self {
+        if is_pressed || is_active {
+            Self::PressedOrActive
+        } else if is_hovered {
+            Self::Hovered
+        } else {
+            Self::Resting
+        }
+    }
 }
 
 /// Window-state control surface — set/get the title, size, position and
@@ -2652,11 +2706,6 @@ pub trait Backend: sealed::Sealed {
     /// hovered tab's close glyph (the primitive itself carries no
     /// mouse state). Returns [`TabBarHits`] for click dispatch +
     /// scroll-offset reconciliation.
-    ///
-    /// `TabBarHits` itself is `#[deprecated]` — see that struct's doc for
-    /// why the six-method/four-backend swap to [`TabBarLayout`] is
-    /// separate follow-up work.
-    #[allow(deprecated)]
     fn draw_tab_bar(
         &mut self,
         rect: Rect,
@@ -2691,7 +2740,6 @@ pub trait Backend: sealed::Sealed {
     ///
     /// [`ListPaintState`]: crate::primitives::list::ListPaintState
     /// [`TreePaintState`]: crate::primitives::tree::TreePaintState
-    #[allow(deprecated)]
     fn draw_tab_bar_with_state(
         &mut self,
         rect: Rect,
@@ -2703,8 +2751,8 @@ pub trait Backend: sealed::Sealed {
         self.draw_tab_bar(rect, bar, hovered_close_tab)
     }
 
-    /// Draw a tab bar, returning [`TabBarLayout`] instead of the
-    /// deprecated [`TabBarHits`]. Added *alongside* [`Self::draw_tab_bar`]
+    /// Draw a tab bar, returning [`TabBarLayout`] instead of
+    /// [`TabBarHits`]. Added *alongside* [`Self::draw_tab_bar`]
     /// rather than in place of it, so no existing caller breaks.
     /// Paints exactly what [`Self::draw_tab_bar`] paints (icon-less
     /// sidecar of [`Self::draw_tab_bar_icons_layout`]); the two must never
@@ -2733,7 +2781,7 @@ pub trait Backend: sealed::Sealed {
     /// the [`TabBarLayout`]-returning twin of
     /// [`Self::draw_tab_bar_with_state`], reachable from the `py`/`node`
     /// paint path (`quadraui-binding-core`'s renderer calls
-    /// `draw_tab_bar_layout`, never the deprecated `draw_tab_bar`).
+    /// `draw_tab_bar_layout`, not `draw_tab_bar`).
     ///
     /// Additive over [`Self::draw_tab_bar_layout`], not a replacement —
     /// the default forwards to it (ignoring `hovered_tab`/`pressed_tab`),
@@ -2777,8 +2825,6 @@ pub trait Backend: sealed::Sealed {
     /// compile error and fills in a real rasteriser
     /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn draw_tab_bar_icons(
         &mut self,
         rect: Rect,
@@ -2787,7 +2833,7 @@ pub trait Backend: sealed::Sealed {
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits;
     /// Draw a tab bar with per-tab icon glyphs, returning [`TabBarLayout`]
-    /// instead of the deprecated [`TabBarHits`]. The icon-aware twin of
+    /// instead of [`TabBarHits`]. The icon-aware twin of
     /// [`Self::draw_tab_bar_layout`], exactly as
     /// [`Self::draw_tab_bar_icons`] is the twin of [`Self::draw_tab_bar`]
     /// — same `icons` sidecar convention, same bar-relative coordinate
@@ -2818,8 +2864,6 @@ pub trait Backend: sealed::Sealed {
     /// own. The TUI and GTK backends override it and honour
     /// [`crate::TabFrame::Brackets`] in full.
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn draw_tab_bar_with_chrome(
         &mut self,
         rect: Rect,
@@ -2831,7 +2875,7 @@ pub trait Backend: sealed::Sealed {
         self.draw_tab_bar(rect, bar, hovered_close_tab)
     }
     /// Draw a tab bar with an explicit [`TabChrome`] request, returning
-    /// [`TabBarLayout`] instead of the deprecated [`TabBarHits`] — the
+    /// [`TabBarLayout`] instead of [`TabBarHits`] — the
     /// `TabBarLayout`-returning twin of [`Self::draw_tab_bar_with_chrome`].
     ///
     /// Default body **ignores `chrome`** and delegates to
@@ -2860,8 +2904,6 @@ pub trait Backend: sealed::Sealed {
     /// that hasn't opted in to overrides yet. The TUI backend overrides
     /// it and honours `glyphs` in full.
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn draw_tab_bar_with_chrome_and_glyphs(
         &mut self,
         rect: Rect,
@@ -2958,12 +3000,10 @@ pub trait Backend: sealed::Sealed {
     /// [`Self::draw_activity_bar`]'s bar-relative one — deliberate, and
     /// stated on both.
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits;
 
     /// Compute the tab bar layout without painting, returning
-    /// [`TabBarLayout`] instead of the deprecated [`TabBarHits`]. The
+    /// [`TabBarLayout`] instead of [`TabBarHits`]. The
     /// `TabBarLayout`-returning twin of [`Self::tab_bar_layout`], added
     /// alongside it rather than in place of it — every backend already
     /// resolves this geometry internally before narrowing it down to
@@ -2999,8 +3039,6 @@ pub trait Backend: sealed::Sealed {
     /// No default impl — same rule-7 reasoning as
     /// [`Self::draw_tab_bar_icons`].
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn tab_bar_layout_icons(
         &self,
         rect: Rect,
@@ -3009,8 +3047,8 @@ pub trait Backend: sealed::Sealed {
     ) -> TabBarHits;
 
     /// Compute the tab bar layout without painting, for a bar painted
-    /// with per-tab icons, returning [`TabBarLayout`] instead of the
-    /// deprecated [`TabBarHits`]. The icon-aware twin of
+    /// with per-tab icons, returning [`TabBarLayout`] instead of
+    /// [`TabBarHits`]. The icon-aware twin of
     /// [`Self::resolve_tab_bar_layout`], exactly as
     /// [`Self::tab_bar_layout_icons`] is the twin of
     /// [`Self::tab_bar_layout`] — same `icons` sidecar convention, same
@@ -3040,8 +3078,6 @@ pub trait Backend: sealed::Sealed {
     /// [`Self::tab_bar_layout`], matching [`Self::draw_tab_bar_with_chrome`]'s
     /// default.
     ///
-    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
-    #[allow(deprecated)]
     fn tab_bar_layout_with_chrome(
         &self,
         rect: Rect,
@@ -3053,7 +3089,7 @@ pub trait Backend: sealed::Sealed {
     }
 
     /// Compute the tab bar layout without painting, for a bar painted
-    /// with chrome, returning [`TabBarLayout`] instead of the deprecated
+    /// with chrome, returning [`TabBarLayout`] instead of
     /// [`TabBarHits`] — the `TabBarLayout`-returning twin of
     /// [`Self::tab_bar_layout_with_chrome`].
     ///
@@ -3802,6 +3838,7 @@ pub trait Backend: sealed::Sealed {
     /// bar, or content. Content is NOT drawn — hosts paint into
     /// `layout.content_bounds`. Same coordinate frame as
     /// [`Self::panel_layout`] (ABSOLUTE).
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this method is its own plumbing.
     fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout;
 
     /// Compute the panel layout without painting. Hosts call this in
@@ -3809,6 +3846,7 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Coordinate frame: **ABSOLUTE** — `title_bar_bounds` / action /
     /// `content_bounds` are shifted by `rect.x` / `rect.y`.
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this method is its own plumbing.
     fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout;
 
     /// Draw a [`ToastOverlay`] overlay. The backend computes the layout
@@ -3960,6 +3998,29 @@ pub trait Backend: sealed::Sealed {
     /// (ABSOLUTE).
     fn draw_radio_group(&mut self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout;
 
+    /// [`Self::draw_radio_group`], reading hover/pressed state from a
+    /// single [`InteractionState`] keyed by [`crate::types::WidgetId`]
+    /// — one entry per `RadioOption::id`, the same per-option
+    /// resolution a backend would read off
+    /// `interaction.is_hovered(&option.id)` / `is_pressed(&option.id)`.
+    ///
+    /// Additive over [`Self::draw_radio_group`], not a replacement —
+    /// the default forwards to it (ignoring `interaction`), so this
+    /// method is the one new backends/hosts adopt for hover feedback
+    /// while every existing call site and implementor keeps compiling
+    /// unchanged. No backend wires real hover/pressed painting through
+    /// this method yet — that per-backend work is tracked on the
+    /// epic, not this method's own addition. Same coordinate frame as
+    /// [`Self::radio_group_layout`] (ABSOLUTE).
+    fn draw_radio_group_with_state(
+        &mut self,
+        rect: Rect,
+        group: &RadioGroup,
+        _interaction: &InteractionState,
+    ) -> RadioGroupLayout {
+        self.draw_radio_group(rect, group)
+    }
+
     /// Compute radio-group layout without painting. Each backend
     /// supplies its own per-option measure (text extents, cell counts,
     /// or a nominal fallback) — see the implementation for the shape.
@@ -3971,6 +4032,27 @@ pub trait Backend: sealed::Sealed {
     /// [`SwitchLayout`] so hosts can route clicks. Same coordinate
     /// frame as [`Self::switch_layout`] (ABSOLUTE).
     fn draw_switch(&mut self, rect: Rect, switch: &Switch) -> SwitchLayout;
+
+    /// [`Self::draw_switch`], reading hover/pressed state from a
+    /// single [`InteractionState`] keyed by [`crate::types::WidgetId`]
+    /// — `interaction.is_hovered(&switch.id)` / `is_pressed(&switch.id)`.
+    ///
+    /// Additive over [`Self::draw_switch`], not a replacement — the
+    /// default forwards to it (ignoring `interaction`), so this method
+    /// is the one new backends/hosts adopt for hover feedback while
+    /// every existing call site and implementor keeps compiling
+    /// unchanged. No backend wires real hover/pressed painting through
+    /// this method yet — that per-backend work is tracked on the
+    /// epic, not this method's own addition. Same coordinate frame as
+    /// [`Self::switch_layout`] (ABSOLUTE).
+    fn draw_switch_with_state(
+        &mut self,
+        rect: Rect,
+        switch: &Switch,
+        _interaction: &InteractionState,
+    ) -> SwitchLayout {
+        self.draw_switch(rect, switch)
+    }
 
     /// Compute switch layout without painting.
     ///
@@ -4319,10 +4401,6 @@ pub enum ImagePaintResult {
 /// target-surface (absolute) coordinates. Rasterisers and the no-paint
 /// `tab_bar_layout` variants both call this with `rect.x` so the two
 /// paths return the same space.
-///
-/// `TabBarHits` is `#[deprecated]` — see its doc for the replacement
-/// plan.
-#[allow(deprecated)]
 pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
     if dx == 0.0 {
         return;
@@ -4353,19 +4431,13 @@ pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
 ///
 /// `TabBarHits`'s `f64` coordinate fields predate the crate's f32-native
 /// convention (`Point`/`Rect`), and this converter is the thing that
-/// keeps constructing them. Full retirement of `TabBarHits` itself (the
-/// `f64` fields, and the six `Backend` trait methods that return it) is
-/// a separate, much larger follow-up: `vimcode` holds a real,
-/// non-doc-only dependency on `TabBarHits`'s field types
-/// (`src/core/engine/mod.rs`, `src/core/engine/terminal_ops.rs`,
-/// `src/gtk/mod.rs`), and two of the four backends (`macos::tab_bar`,
-/// `win::tab_bar`) construct `TabBarHits` directly without ever computing
-/// an intermediate `TabBarLayout`, so a safe migration needs new native
-/// per-backend rasterisers, not just a signature change.
-///
-/// `TabBarHits` is `#[deprecated]`; this converter is the one place
-/// in-tree still allowed to construct it.
-#[allow(deprecated)]
+/// keeps constructing them. `vimcode` holds a real, non-doc-only
+/// dependency on `TabBarHits`'s field types (`src/core/engine/mod.rs`,
+/// `src/core/engine/terminal_ops.rs`, `src/gtk/mod.rs`), and two of the
+/// four backends (`macos::tab_bar`, `win::tab_bar`) construct
+/// `TabBarHits` directly without ever computing an intermediate
+/// `TabBarLayout` — this converter is the one in-tree spot that builds a
+/// `TabBarHits` from a `TabBarLayout` instead.
 pub fn tab_bar_hits_from_layout(layout: &TabBarLayout, bar: &TabBar) -> TabBarHits {
     let mut slot_positions = vec![(0.0, 0.0); bar.tabs.len()];
     let mut close_bounds = vec![None; bar.tabs.len()];
@@ -4475,11 +4547,102 @@ pub trait BackendWidget: Send + 'static {
     fn render(&self, backend: &mut dyn Backend, rect: Rect);
 }
 
+/// One [`PlatformServices`] capability, for [`PlatformServices::supports`].
+///
+/// `PlatformServices` is a trait object behind [`Backend::services`], with
+/// no [`BackendCaps`] bit of its own to answer "does this backend really
+/// implement X, or just fall through to the trait's `Unsupported`
+/// default" — 16 of this trait's 37 methods have no real implementation
+/// on any in-tree backend today, all silently sharing the same
+/// `Err(BackendError::Unsupported)` default a caller can't tell apart
+/// from "this backend overrode it and *still* couldn't do it this time".
+/// `#[non_exhaustive]`: a future `PlatformServices` method earns its own
+/// variant here without that being a breaking change to every match on
+/// this enum.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServiceKind {
+    /// Guards [`PlatformServices::show_file_open_dialog`].
+    FileOpenDialog,
+    /// Guards [`PlatformServices::show_file_save_dialog`].
+    FileSaveDialog,
+    /// Guards [`PlatformServices::show_folder_open_dialog`].
+    FolderOpenDialog,
+    /// Guards [`PlatformServices::show_message_dialog`].
+    MessageDialog,
+    /// Guards [`PlatformServices::send_notification`].
+    Notifications,
+    /// Guards [`PlatformServices::open_url`] / [`PlatformServices::open_url_result`].
+    OpenUrl,
+    /// Guards [`PlatformServices::reveal_in_file_manager`].
+    RevealInFileManager,
+    /// Guards [`PlatformServices::open_path`].
+    OpenPath,
+    /// Guards [`PlatformServices::move_to_trash`].
+    MoveToTrash,
+    /// Guards [`PlatformServices::restore_from_trash`].
+    RestoreFromTrash,
+    /// Guards [`PlatformServices::beep`].
+    Beep,
+    /// Guards [`PlatformServices::system_theme`].
+    SystemTheme,
+    /// Guards [`PlatformServices::app_path`].
+    AppPath,
+    /// Guards [`PlatformServices::displays`].
+    Displays,
+    /// Guards [`PlatformServices::cursor_screen_point`].
+    CursorScreenPoint,
+    /// Guards [`PlatformServices::on_battery`].
+    OnBattery,
+    /// Guards [`PlatformServices::thermal_state`].
+    ThermalState,
+    /// Guards the [`PlatformServices::begin_power_save_block`] /
+    /// [`PlatformServices::end_power_save_block`] pair.
+    PowerSaveBlock,
+    /// Guards the [`PlatformServices::register_global_shortcut`] /
+    /// [`PlatformServices::unregister_global_shortcut`] /
+    /// [`PlatformServices::unregister_all_global_shortcuts`] trio.
+    GlobalShortcuts,
+    /// Guards [`PlatformServices::begin_drag_out`].
+    DragOut,
+    /// Guards the [`PlatformServices::set_login_item`] /
+    /// [`PlatformServices::login_item_enabled`] pair.
+    LoginItem,
+    /// Guards the [`PlatformServices::set_as_default_protocol_client`] /
+    /// [`PlatformServices::is_default_protocol_client`] /
+    /// [`PlatformServices::remove_as_default_protocol_client`] trio.
+    DefaultProtocolClient,
+    /// Guards the [`PlatformServices::add_recent_document`] /
+    /// [`PlatformServices::clear_recent_documents`] pair.
+    RecentDocuments,
+    /// Guards [`PlatformServices::set_dock_menu`].
+    DockMenu,
+    /// Guards [`PlatformServices::set_jump_list`].
+    JumpList,
+    /// Guards [`PlatformServices::secret_store`].
+    Keyring,
+}
+
 /// Platform services the backend exposes to apps: clipboard, file
 /// dialogs, message/alert dialogs, notifications, URL opening, and the
 /// OS credential store ([`Self::secret_store`]).
 pub trait PlatformServices {
     fn clipboard(&self) -> &dyn Clipboard;
+
+    /// Whether this backend answers `kind` with a real platform-backed
+    /// implementation, rather than silently relying on this trait's own
+    /// no-op/`Unsupported` default — see [`ServiceKind`]'s doc for why
+    /// that distinction has nowhere else to live.
+    ///
+    /// Default: `false` for every kind, matching "no in-tree backend has
+    /// overridden this method yet" — the same starting point every other
+    /// defaulted method on this trait answers from. A backend earns a
+    /// `true` by overriding this *and* genuinely implementing `kind`'s
+    /// method; per-backend adoption (mapping every kind truthfully) is
+    /// follow-on work, not required for this seam to exist and compile.
+    fn supports(&self, _kind: ServiceKind) -> bool {
+        false
+    }
 
     /// Show a native file-open dialog (blocking). Returns `None` if the
     /// user cancelled. TUI backends have no native dialog to show;
@@ -4525,9 +4688,12 @@ pub trait PlatformServices {
     /// per-dialog, whether a given [`Dialog`] can go native at all —
     /// callers should consult that before calling this method, and fall
     /// back to `draw_dialog` when it returns `None`. TUI backends have
-    /// no native dialog to show and unconditionally return `None` (no
-    /// stderr hint is written); the in-canvas `Dialog` primitive stays
-    /// the TUI path.
+    /// no *native* dialog to show; instead they drive an in-canvas
+    /// `MessageDialogController` through the same nested draw-and-read
+    /// loop [`Self::show_file_open_dialog`]'s doc describes, and return
+    /// the id of the button it resolves (or `None` if it's dismissed
+    /// without one) — the in-canvas `Dialog` primitive stays the
+    /// backend-neutral path either way.
     fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice>;
 
     /// Dispatch a system notification — see [`Notification`]'s doc for
@@ -4542,7 +4708,24 @@ pub trait PlatformServices {
     /// emit the event rather than faking it (`macos::services`'s
     /// `send_notification` doc explains why, and what a real
     /// implementation there would need).
-    fn send_notification(&self, n: Notification);
+    ///
+    /// `Err` is the contract for "this call is known to have failed to
+    /// reach any notification channel at all" (no window to parent a GTK
+    /// notification to; a Win toast/balloon that couldn't be created);
+    /// `Ok(())` covers both "delivered" and a backend that hasn't
+    /// adopted that signal yet and still silently degrades to a no-op —
+    /// which is still every existing caller's expectation (see
+    /// [`crate::compose::notification::notify_or_toast`], the one caller
+    /// that actually branches on this). `Err` here is a strictly stronger
+    /// signal than `Ok`, never the other way round, so no existing caller
+    /// that ignored the old infallible return needs to change for
+    /// correctness — only one that wants to notice failure does. Not
+    /// every in-tree backend emits `Err` for every failure mode it could
+    /// in principle detect yet (see each backend's own
+    /// `send_notification` doc for what it actually reports) —
+    /// per-backend adoption of the full failure contract is follow-on
+    /// work, same as [`Self::supports`]'s per-backend truthfulness.
+    fn send_notification(&self, n: Notification) -> ServiceResult<()>;
 
     /// Open a URL in the platform's default browser.
     fn open_url(&self, url: &str);
@@ -4881,8 +5064,9 @@ pub trait PlatformServices {
     /// real inhibitor yet (`IOPMAssertionCreateWithName` on macOS,
     /// `SetThreadExecutionState` on Win-GUI, `org.freedesktop.login1`'s
     /// `Inhibit` call on GTK/Linux are separate, backend-specific
-    /// follow-ons). TUI overrides this with an honest no-op blocker — see
-    /// [`crate::tui::services::TuiPlatformServices::begin_power_save_block`].
+    /// follow-ons). TUI leaves this at the default: a terminal has no
+    /// inhibitor API of its own, and a [`BlockerId`] minted without ever
+    /// asking the OS to stay awake would not be a truthful `Ok`.
     fn begin_power_save_block(&self, kind: PowerSaveKind) -> ServiceResult<BlockerId> {
         let _ = kind;
         Err(BackendError::Unsupported)
@@ -5033,12 +5217,11 @@ pub trait PlatformServices {
     /// `app.getLoginItemSettings().openAtLogin`.
     ///
     /// Default: [`BackendError::Unsupported`], mirroring
-    /// [`Self::set_login_item`]'s default. TUI overrides this with an
-    /// honest no-op that always reports `false` rather than staying
-    /// `Unsupported` — see
-    /// [`crate::tui::services::TuiPlatformServices::login_item_enabled`]
-    /// and [`crate::login_item`]'s module doc for why the query and the
-    /// mutation get different defaults.
+    /// [`Self::set_login_item`]'s default. TUI leaves this at the default
+    /// too: a blanket `Ok(false)` would read as "this app is not
+    /// registered to start at login", which a terminal has no way to
+    /// actually know — a host or packaging step can still have registered
+    /// the binary out of band. See [`crate::login_item`]'s module doc.
     fn login_item_enabled(&self) -> ServiceResult<bool> {
         Err(BackendError::Unsupported)
     }
@@ -5052,11 +5235,8 @@ pub trait PlatformServices {
     /// (reserved names, invalid characters).
     ///
     /// Default: [`BackendError::Unsupported`] on every in-tree backend,
-    /// including TUI. Unlike [`Self::set_login_item`]/
-    /// [`Self::login_item_enabled`] — where TUI can answer
-    /// `login_item_enabled` honestly with `false` because a terminal
-    /// binary's own code path could never have created that registration —
-    /// there is no safe uniform default here on *any* backend: this
+    /// including TUI. There is no safe non-error default here on *any*
+    /// backend: this
     /// scheme may already be claimed by a different installation of this
     /// same app, a different app entirely, or nothing at all, and that
     /// fact lives in OS state (`LSSetDefaultHandlerForURLScheme`'s
@@ -5081,8 +5261,9 @@ pub trait PlatformServices {
     /// OS registration state this seam does not yet touch on any
     /// backend, and a blanket `false` would be actively misleading for a
     /// scheme a previous run, a packaging step, or a different app
-    /// already claimed — not merely incomplete, the way
-    /// [`Self::login_item_enabled`]'s TUI override is.
+    /// already claimed — the same reason
+    /// [`Self::login_item_enabled`] keeps its own `Unsupported` default
+    /// everywhere.
     fn is_default_protocol_client(&self, scheme: &str) -> ServiceResult<bool> {
         let _ = scheme;
         Err(BackendError::Unsupported)
@@ -5668,6 +5849,82 @@ pub struct FileDialogOptions {
     /// [`PlatformServices::show_folder_open_dialog`]: a directory has no
     /// extension to filter on.
     pub filters: Vec<(String, Vec<String>)>,
+}
+
+/// Canonicalize one [`FileDialogOptions::filters`] extension: lowercase,
+/// no leading `.`, `"*"` passed through unchanged.
+///
+/// Every backend that maps `filters` onto a native filter widget owns a
+/// slightly different reading of the same `Vec<(String, Vec<String>)>` —
+/// GTK's `gtk4::FileFilter::add_suffix` and Win's extension match take
+/// the extension literally, so a caller-supplied `".rs"` (leading dot)
+/// never matches a real `foo.rs`, while the in-canvas TUI picker's own
+/// comparison already trims the dot and lowercases first. This is the
+/// one normalization every reader should run an extension through
+/// before comparing or handing it to a native API, so `".rs"`, `"rs"`,
+/// and `"RS"` all mean the same filter everywhere.
+pub fn normalize_filter_extension(ext: &str) -> String {
+    if ext == "*" {
+        return "*".to_string();
+    }
+    ext.trim_start_matches('.').to_lowercase()
+}
+
+/// Run every extension in `filters` through [`normalize_filter_extension`],
+/// keeping each filter's display name untouched.
+pub fn normalize_filters(filters: &[(String, Vec<String>)]) -> Vec<(String, Vec<String>)> {
+    filters
+        .iter()
+        .map(|(name, exts)| {
+            (
+                name.clone(),
+                exts.iter().map(|e| normalize_filter_extension(e)).collect(),
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod filter_normalization_tests {
+    use super::*;
+
+    #[test]
+    fn strips_leading_dots_and_lowercases() {
+        assert_eq!(normalize_filter_extension(".rs"), "rs");
+        assert_eq!(normalize_filter_extension("RS"), "rs");
+        assert_eq!(normalize_filter_extension("rs"), "rs");
+        // `trim_start_matches('.')` strips every leading dot, not just
+        // one — pin the multi-dot case explicitly rather than leaving it
+        // an unstated side effect of the single-dot examples above.
+        assert_eq!(normalize_filter_extension("..rs"), "rs");
+    }
+
+    #[test]
+    fn wildcard_passes_through_unchanged() {
+        assert_eq!(normalize_filter_extension("*"), "*");
+    }
+
+    #[test]
+    fn normalize_filters_keeps_display_names_and_normalizes_every_extension() {
+        let filters = vec![
+            (
+                "Rust files".to_string(),
+                vec![".rs".to_string(), "RS".to_string()],
+            ),
+            ("Everything".to_string(), vec!["*".to_string()]),
+        ];
+        let normalized = normalize_filters(&filters);
+        assert_eq!(
+            normalized,
+            vec![
+                (
+                    "Rust files".to_string(),
+                    vec!["rs".to_string(), "rs".to_string()]
+                ),
+                ("Everything".to_string(), vec!["*".to_string()]),
+            ]
+        );
+    }
 }
 
 /// Options for [`PlatformServices::show_message_dialog`]. Produced from
@@ -6368,65 +6625,18 @@ mod service_default_tests {
     //! [`PlatformServices::begin_drag_out`], [`PlatformServices::
     //! set_login_item`], [`PlatformServices::login_item_enabled`],
     //! [`PlatformServices::set_as_default_protocol_client`],
-    //! [`PlatformServices::is_default_protocol_client`], and
-    //! [`PlatformServices::remove_as_default_protocol_client`] — a
-    //! minimal fake that overrides only the methods with no default of
-    //! its own (same "stands in for a backend that hasn't touched this
-    //! surface at all" reasoning [`clipboard_default_tests`] already
-    //! documents for [`Clipboard`]'s defaulted methods) stands in for "no
-    //! in-tree backend overrides this yet", which is exactly today's
-    //! state per each method's own doc.
+    //! [`PlatformServices::is_default_protocol_client`],
+    //! [`PlatformServices::remove_as_default_protocol_client`], and
+    //! [`PlatformServices::supports`] — [`crate::testing::
+    //! NullPlatformServices`] stands in for "no in-tree backend overrides
+    //! this yet", which is exactly today's state per each method's own
+    //! doc.
     use super::*;
-
-    #[derive(Default)]
-    struct FakeNoopClipboard;
-
-    impl Clipboard for FakeNoopClipboard {
-        fn read_text(&self) -> Option<String> {
-            None
-        }
-
-        fn write_text(&self, _text: &str) {}
-    }
-
-    #[derive(Default)]
-    struct FakePlatformServices {
-        clipboard: FakeNoopClipboard,
-    }
-
-    impl PlatformServices for FakePlatformServices {
-        fn clipboard(&self) -> &dyn Clipboard {
-            &self.clipboard
-        }
-
-        fn show_file_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
-            None
-        }
-
-        fn show_file_save_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
-            None
-        }
-
-        fn show_folder_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
-            None
-        }
-
-        fn show_message_dialog(&self, _opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
-            None
-        }
-
-        fn send_notification(&self, _n: Notification) {}
-
-        fn open_url(&self, _url: &str) {}
-
-        fn platform_name(&self) -> &'static str {
-            "fake"
-        }
-    }
+    use crate::testing::NullPlatformServices;
 
     #[test]
     fn begin_drag_out_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         let payload = DragOutPayload::new().with_files([PathBuf::from("/tmp/a.txt")]);
         assert_eq!(
             services.begin_drag_out(payload),
@@ -6435,8 +6645,15 @@ mod service_default_tests {
     }
 
     #[test]
+    fn supports_defaults_to_false_for_every_kind() {
+        let services = NullPlatformServices::default();
+        assert!(!services.supports(ServiceKind::Notifications));
+        assert!(!services.supports(ServiceKind::FileOpenDialog));
+    }
+
+    #[test]
     fn set_login_item_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.set_login_item(true, LoginItemOptions::default()),
             Err(BackendError::Unsupported)
@@ -6445,7 +6662,7 @@ mod service_default_tests {
 
     #[test]
     fn login_item_enabled_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.login_item_enabled(),
             Err(BackendError::Unsupported)
@@ -6454,7 +6671,7 @@ mod service_default_tests {
 
     #[test]
     fn set_as_default_protocol_client_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.set_as_default_protocol_client("myapp"),
             Err(BackendError::Unsupported)
@@ -6463,7 +6680,7 @@ mod service_default_tests {
 
     #[test]
     fn is_default_protocol_client_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.is_default_protocol_client("myapp"),
             Err(BackendError::Unsupported)
@@ -6472,7 +6689,7 @@ mod service_default_tests {
 
     #[test]
     fn remove_as_default_protocol_client_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.remove_as_default_protocol_client("myapp"),
             Err(BackendError::Unsupported)
@@ -6481,7 +6698,7 @@ mod service_default_tests {
 
     #[test]
     fn add_recent_document_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.add_recent_document(Path::new("/tmp/report.pdf")),
             Err(BackendError::Unsupported)
@@ -6490,7 +6707,7 @@ mod service_default_tests {
 
     #[test]
     fn clear_recent_documents_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         assert_eq!(
             services.clear_recent_documents(),
             Err(BackendError::Unsupported)
@@ -6499,7 +6716,7 @@ mod service_default_tests {
 
     #[test]
     fn set_dock_menu_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         let menu = ContextMenu {
             id: WidgetId::new("dock-menu"),
             items: Vec::new(),
@@ -6515,7 +6732,7 @@ mod service_default_tests {
 
     #[test]
     fn set_jump_list_defaults_to_unsupported() {
-        let services = FakePlatformServices::default();
+        let services = NullPlatformServices::default();
         let items = [JumpListItem::new().with_title("Recent project")];
         assert_eq!(
             services.set_jump_list(&items),

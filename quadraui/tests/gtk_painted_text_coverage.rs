@@ -434,7 +434,7 @@ fn palette_dual_mode_paints_locatable_title_query_and_items() {
 #[test]
 fn panel_app_paints_locatable_title_bar_and_actions() {
     let driver = GtkDriver::new(panel_app::PanelApp::new(), W, H);
-    assert_locatable(&driver, &[("draw_panel", "Demo Panel")]);
+    assert_locatable(&driver, &[("draw_sidebar_panel_interactive", "Demo Panel")]);
 }
 
 #[test]

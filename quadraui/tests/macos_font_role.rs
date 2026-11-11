@@ -67,11 +67,14 @@ use quadraui::macos::testing::MacDriver;
 use quadraui::{
     AppLogic, Backend, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, Decoration,
     DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, FieldKind, Form,
-    FormField, Palette, PaletteItem, Panel, ProgressBar, Reaction, Rect, Spinner, StyledSpan,
-    StyledText, Terminal, TerminalCell, TerminalCursorShape, TextDisplay, TextDisplayLine, Toast,
-    ToastCorner, ToastOverlay, ToastSeverity, Tooltip, TooltipMeasure, TooltipPlacement, UiEvent,
-    WidgetId,
+    FormField, Palette, PaletteItem, ProgressBar, Reaction, Rect, Spinner, StyledSpan, StyledText,
+    Terminal, TerminalCell, TerminalCursorShape, TextDisplay, TextDisplayLine, Toast, ToastCorner,
+    ToastOverlay, ToastSeverity, Tooltip, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
 };
+// `Panel` is `#[deprecated]`; imported separately so the allow stays
+// scoped to the one chrome-font paint case below.
+#[allow(deprecated)]
+use quadraui::Panel;
 
 const W: u32 = 640;
 const H: u32 = 400;
@@ -355,6 +358,7 @@ fn draw_form_paints_in_chrome_font() {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -364,6 +368,7 @@ fn draw_form_paints_in_chrome_font() {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         b.draw_form(area, &form);
     });
@@ -390,6 +395,7 @@ fn draw_toast_overlay_paints_in_chrome_font() {
 }
 
 #[test]
+#[allow(deprecated)] // constructs the deprecated `Panel`
 fn draw_panel_paints_in_chrome_font() {
     assert_paints_in_chrome_font("draw_panel", |b, area| {
         let panel = Panel {

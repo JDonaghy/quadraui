@@ -29,6 +29,11 @@
 //! beside the primitive, not inside it.**
 
 use crate::event::Rect;
+use crate::primitives::toolbar::{
+    Toolbar, ToolbarButton, ToolbarItemKind, ToolbarItemMeasure, ToolbarLayout,
+    ToolbarLayoutOptions, ToolbarOrientation, ToolbarRailStyle,
+};
+use crate::theme::Theme;
 use crate::types::{Color, Icon, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -126,6 +131,217 @@ pub struct ActivityItem {
     /// `ActivityBar::is_keyboard_focused` is `true`.
     #[serde(default)]
     pub is_keyboard_selected: bool,
+}
+
+/// Rebuild this activity bar as the vertical [`Toolbar`] of icon buttons
+/// it's shaped like: `top_items`, then a [`ToolbarButton::Spacer`], then
+/// `bottom_items` — the exact `buttons` order
+/// [`ActivityBar::layout`] packs via [`Toolbar::layout_with_options`]
+/// with [`ToolbarOrientation::Vertical`], reusing the same
+/// trailing-group-wins collision rule this type's own `layout` doc
+/// already specified for its bottom-pinned items.
+///
+/// - `id` carries straight through.
+/// - Each [`ActivityItem`] becomes a [`ToolbarButton::Action`]: `icon`
+///   is the item's `fallback` half — which glyph half paints
+///   (`Icon::glyph` vs `Icon::fallback`) is a paint-time
+///   `nerd_fonts_enabled` decision this conversion has no way to see,
+///   so a caller that needs the glyph half re-reads `ActivityItem::icon`
+///   directly rather than this `Toolbar`'s `icon` field. `is_active`
+///   carries through verbatim — a `Toolbar`-path renderer shows it as
+///   the same pressed/toggled tint a toggled `ToolbarButton::Action`
+///   gets. `enabled` is always `true` (`ActivityItem` has no disabled
+///   state). `tooltip` and `id` carry through; `spec` stays `None`.
+/// - `focused_index` is the flat `buttons` index of whichever item has
+///   `is_keyboard_selected` set (top items first, then the spacer, then
+///   bottom items — the same order `buttons` itself is built in), or
+///   `None` if no item does.
+/// - `bg` stays `None` — picking `theme.tab_bar_bg` instead of a plain
+///   `Toolbar`'s own `theme.header_bg` default is a rasteriser-level
+///   choice, not a property of this conversion.
+///
+/// A host that wants `ActivityItem`'s own `A11yRole::Tab` semantics from
+/// the resulting `Toolbar` calls
+/// [`Toolbar::a11y_children_with_role`]`(`[`ToolbarItemRole::Tab`]`)`.
+///
+/// [`ToolbarItemRole::Tab`]: crate::primitives::toolbar::ToolbarItemRole::Tab
+impl From<&ActivityBar> for Toolbar {
+    fn from(bar: &ActivityBar) -> Toolbar {
+        let mut buttons = Vec::with_capacity(bar.top_items.len() + 1 + bar.bottom_items.len());
+        let mut focused_index = None;
+        for item in &bar.top_items {
+            if item.is_keyboard_selected {
+                focused_index = Some(buttons.len());
+            }
+            buttons.push(activity_item_to_toolbar_button(item));
+        }
+        buttons.push(ToolbarButton::Spacer);
+        for item in &bar.bottom_items {
+            if item.is_keyboard_selected {
+                focused_index = Some(buttons.len());
+            }
+            buttons.push(activity_item_to_toolbar_button(item));
+        }
+        Toolbar::new(bar.id)
+            .with_buttons(buttons)
+            .with_focused_index(focused_index)
+    }
+}
+
+fn activity_item_to_toolbar_button(item: &ActivityItem) -> ToolbarButton {
+    activity_item_to_toolbar_button_with_icon(item, item.icon.fallback.clone())
+}
+
+fn activity_item_to_toolbar_button_with_icon(item: &ActivityItem, icon: String) -> ToolbarButton {
+    ToolbarButton::Action {
+        id: item.id,
+        label: String::new(),
+        icon: Some(icon),
+        key_hint: None,
+        enabled: true,
+        is_active: item.is_active,
+        tooltip: item.tooltip.clone(),
+        spec: None,
+    }
+}
+
+/// Paint-state-preserving twin of `impl From<&ActivityBar> for Toolbar`:
+/// the same `top_items`, `Spacer`, `bottom_items` button order and
+/// `focused_index` derivation, plus the paint state that conversion drops
+/// — returned as a [`ToolbarRailStyle`] sidecar rather than new fields on
+/// `Toolbar`/`ActivityBar*` (see that type's own doc for why).
+///
+/// Unlike `From`, which always bakes in `item.icon.fallback`, each item's
+/// icon here is chosen by `nerd_fonts_enabled` — `item.icon.glyph` when
+/// `true`, `item.icon.fallback` when `false` — the same choice
+/// `native_surface_paint::paint` makes per item today.
+///
+/// Mapping:
+/// - `style.active_bg` → [`ToolbarRailStyle::active_bg`].
+/// - `self.active_accent` → [`ToolbarRailStyle::active_accent`].
+/// - `self.selection_bg` → [`ToolbarRailStyle::selection_bg`].
+/// - `theme.separator` → [`ToolbarRailStyle::trailing_separator`]
+///   (unconditional — every activity-bar rasteriser paints this column
+///   today, so there is no "unset" case to preserve).
+/// - the returned `Toolbar`'s `bg` is `theme.tab_bar_bg` (the activity
+///   bar's own chrome background), not `None` like the plain `From`
+///   conversion — a Toolbar-rail painter that reads `bg` directly gets
+///   the right colour without also needing `theme` passed in separately.
+///
+/// `From<&ActivityBar> for Toolbar` is unchanged and keeps its own
+/// `bg: None` / fallback-icon-only behaviour, because
+/// [`ActivityBar::layout`] depends on it for geometry only — layout never
+/// reads `bg` or any icon string.
+///
+/// No painter reads the returned `ToolbarRailStyle` yet; this method only
+/// carries the state across the conversion boundary.
+impl ActivityBar {
+    pub fn to_toolbar_parts(
+        &self,
+        style: &ActivityBarStyle,
+        theme: &Theme,
+        nerd_fonts_enabled: bool,
+    ) -> (Toolbar, ToolbarRailStyle) {
+        let mut buttons = Vec::with_capacity(self.top_items.len() + 1 + self.bottom_items.len());
+        let mut focused_index = None;
+        let icon_of = |item: &ActivityItem| -> String {
+            if nerd_fonts_enabled {
+                item.icon.glyph.clone()
+            } else {
+                item.icon.fallback.clone()
+            }
+        };
+        for item in &self.top_items {
+            if item.is_keyboard_selected {
+                focused_index = Some(buttons.len());
+            }
+            buttons.push(activity_item_to_toolbar_button_with_icon(
+                item,
+                icon_of(item),
+            ));
+        }
+        buttons.push(ToolbarButton::Spacer);
+        for item in &self.bottom_items {
+            if item.is_keyboard_selected {
+                focused_index = Some(buttons.len());
+            }
+            buttons.push(activity_item_to_toolbar_button_with_icon(
+                item,
+                icon_of(item),
+            ));
+        }
+
+        let toolbar = Toolbar::new(self.id)
+            .with_buttons(buttons)
+            .with_focused_index(focused_index)
+            .with_bg(theme.tab_bar_bg);
+
+        let mut rail_style = ToolbarRailStyle::new().with_trailing_separator(theme.separator);
+        if let Some(active_bg) = style.active_bg {
+            rail_style = rail_style.with_active_bg(active_bg);
+        }
+        if let Some(accent) = self.active_accent {
+            rail_style = rail_style.with_active_accent(accent);
+        }
+        if let Some(selection_bg) = self.selection_bg {
+            rail_style = rail_style.with_selection_bg(selection_bg);
+        }
+
+        (toolbar, rail_style)
+    }
+
+    /// Turn a vertical [`ToolbarLayout`] — built from this bar's own
+    /// [`Self::to_toolbar_parts`] `Toolbar`, via
+    /// [`Toolbar::layout_with_options`] with
+    /// [`ToolbarOrientation::Vertical`] and
+    /// [`ToolbarLayoutOptions::with_pin_trailing_overflow_to_origin`] set,
+    /// at origin `(0.0, 0.0)` — into the row-hit list a
+    /// `draw_activity_bar`-shaped painter returns today.
+    ///
+    /// Order and coordinate space match
+    /// [`native_surface_paint::paint`]'s own return value exactly:
+    /// **bottom-pinned items first (in order), then top-pinned (in
+    /// order)** — the same order [`Self::layout`]'s own
+    /// `ActivityBarLayout::visible_items` uses — and `y_start`/`y_end`
+    /// bar-relative (first row at `0.0`), which only holds when the
+    /// caller's `ToolbarLayout` was itself built at origin `(0.0, 0.0)`.
+    /// Skips non-`Action` items and zero-height clipped items, same as
+    /// [`Self::layout`].
+    pub fn row_hits_from_toolbar_layout(
+        &self,
+        toolbar_layout: &ToolbarLayout,
+    ) -> Vec<ActivityBarRowHit> {
+        let top_len = self.top_items.len();
+        let mut top = Vec::new();
+        let mut bottom = Vec::new();
+
+        for vis in &toolbar_layout.visible_items {
+            if vis.kind != ToolbarItemKind::Action || vis.bounds.height <= 0.0 {
+                continue;
+            }
+            let item = if vis.item_idx < top_len {
+                &self.top_items[vis.item_idx]
+            } else {
+                &self.bottom_items[vis.item_idx - top_len - 1]
+            };
+            let hit = ActivityBarRowHit {
+                y_start: vis.bounds.y,
+                y_end: vis.bounds.y + vis.bounds.height,
+                id: item.id,
+                tooltip: item.tooltip.clone(),
+            };
+            if vis.item_idx < top_len {
+                top.push(hit);
+            } else {
+                bottom.push(hit);
+            }
+        }
+
+        let mut out = Vec::with_capacity(top.len() + bottom.len());
+        out.extend(bottom);
+        out.extend(top);
+        out
+    }
 }
 
 /// Per-frame style overrides for
@@ -343,77 +559,91 @@ impl ActivityBar {
     /// Top items lay out from `y=0` downward until they run out or the
     /// bottom-items region is reached. Bottom items lay out from
     /// `y=viewport_height` upward. If the two groups would overlap,
-    /// **bottom items win** and top items are clipped — matches the
-    /// pre-D6 TUI behaviour (`src/tui_main/quadraui_tui.rs::draw_activity_bar`).
+    /// **bottom items win** and top items are clipped.
+    ///
+    /// Delegates to [`Toolbar::layout_with_options`] (via
+    /// `Toolbar::from(self)`, [`ToolbarOrientation::Vertical`], a fixed
+    /// `item_height`-per-item measurer, and
+    /// [`ToolbarLayoutOptions::pin_trailing_overflow_to_origin`] set):
+    /// that method's own Spacer collision rule — the trailing group
+    /// always paints in full, the leading group clips against the
+    /// trailing group's start — is the exact rule this method's own doc
+    /// describes, by construction (the `Toolbar` built from `self`
+    /// places `bottom_items` as the trailing group). The pinned-overflow
+    /// flag additionally makes a `bottom_items` group that alone is
+    /// taller than `viewport_height` pack from `y=0` downward and drop
+    /// its last item, instead of hanging off the bottom edge and
+    /// dropping its first — see that option's own doc for the worked
+    /// example. Every pixel/cell backend shares this one geometry engine
+    /// with `Toolbar`.
+    ///
+    /// The returned [`ActivityBarLayout::visible_items`] keeps this
+    /// type's own **bottom-pinned-items-first, then top-pinned** order
+    /// (not `Toolbar`'s document order) — see that field's own doc for
+    /// why: hosts derive `hovered_idx` from this exact enumeration.
     pub fn layout(
         &self,
         viewport_width: f32,
         viewport_height: f32,
         item_height: f32,
     ) -> ActivityBarLayout {
-        let mut visible_items: Vec<VisibleActivityItem> = Vec::new();
-        let mut hit_regions: Vec<(Rect, ActivityBarHit)> = Vec::new();
-
         if item_height <= 0.0 || viewport_height <= 0.0 {
             return ActivityBarLayout {
                 viewport_width,
                 viewport_height,
-                visible_items,
-                hit_regions,
+                visible_items: Vec::new(),
+                hit_regions: Vec::new(),
             };
         }
 
-        // Bottom items first (they win on collision): place them pinned
-        // to the bottom edge, working upward.
-        let bottom_count = self.bottom_items.len();
-        let bottom_y_start = (viewport_height - (bottom_count as f32) * item_height).max(0.0);
-        for (i, item) in self.bottom_items.iter().enumerate() {
-            let y = bottom_y_start + (i as f32) * item_height;
-            if y >= viewport_height {
-                break;
+        let top_len = self.top_items.len();
+        let toolbar: Toolbar = self.into();
+        let toolbar_layout = toolbar.layout_with_options(
+            0.0,
+            0.0,
+            viewport_width,
+            viewport_height,
+            ToolbarLayoutOptions::new()
+                .with_orientation(ToolbarOrientation::Vertical)
+                .with_pin_trailing_overflow_to_origin(true),
+            |_btn| ToolbarItemMeasure::new(item_height),
+        );
+
+        let mut top: Vec<VisibleActivityItem> = Vec::new();
+        let mut bottom: Vec<VisibleActivityItem> = Vec::new();
+        for vis in &toolbar_layout.visible_items {
+            if vis.kind != ToolbarItemKind::Action || vis.bounds.height <= 0.0 {
+                continue;
             }
-            let height = item_height.min(viewport_height - y);
-            if height <= 0.0 {
-                break;
+            if vis.item_idx < top_len {
+                top.push(VisibleActivityItem {
+                    side: ActivitySide::Top,
+                    item_idx: vis.item_idx,
+                    bounds: vis.bounds,
+                });
+            } else {
+                bottom.push(VisibleActivityItem {
+                    side: ActivitySide::Bottom,
+                    item_idx: vis.item_idx - top_len - 1,
+                    bounds: vis.bounds,
+                });
             }
-            let bounds = Rect::new(0.0, y, viewport_width, height);
-            visible_items.push(VisibleActivityItem {
-                side: ActivitySide::Bottom,
-                item_idx: i,
-                bounds,
-            });
-            hit_regions.push((bounds, ActivityBarHit::Item(item.id)));
         }
 
-        // Top items: place from top, stop at the bottom-items region.
-        let top_limit = bottom_y_start;
-        for (i, item) in self.top_items.iter().enumerate() {
-            let y = (i as f32) * item_height;
-            if y >= top_limit {
-                break;
-            }
-            let height = item_height.min(top_limit - y);
-            if height <= 0.0 {
-                break;
-            }
-            let bounds = Rect::new(0.0, y, viewport_width, height);
-            // Insert top items before bottom items in `visible_items`
-            // so painting order is top-to-bottom visually. Simpler: just
-            // extend and sort on `bounds.y`, but insertion at index
-            // `bottom-items-inserted-so-far ... wait, easier approach:
-            // collect top first, then extend with bottom — but that
-            // changes the collision logic. Keep it ordered by inserting
-            // top at the front of each visible_items run. Since visually
-            // order of iteration doesn't matter for painting (they don't
-            // overlap), and hit_test walks all regions, insertion order
-            // is inconsequential. Just append.
-            visible_items.push(VisibleActivityItem {
-                side: ActivitySide::Top,
-                item_idx: i,
-                bounds,
-            });
-            hit_regions.push((bounds, ActivityBarHit::Item(item.id)));
-        }
+        let mut visible_items = Vec::with_capacity(top.len() + bottom.len());
+        visible_items.extend(bottom);
+        visible_items.extend(top);
+
+        let hit_regions = visible_items
+            .iter()
+            .map(|vi| {
+                let item = match vi.side {
+                    ActivitySide::Top => &self.top_items[vi.item_idx],
+                    ActivitySide::Bottom => &self.bottom_items[vi.item_idx],
+                };
+                (vi.bounds, ActivityBarHit::Item(item.id))
+            })
+            .collect();
 
         ActivityBarLayout {
             viewport_width,
@@ -455,98 +685,24 @@ pub enum ActivityBarEvent {
     feature = "win"
 ))]
 pub(crate) fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
-    use crate::event::{Key, NamedKey};
+    use crate::event::Key;
     match key {
         Key::Char(c) => c.to_string(),
-        Key::Named(named) => {
-            let s = match named {
-                NamedKey::Escape => "Escape",
-                NamedKey::Tab => "Tab",
-                NamedKey::BackTab => "BackTab",
-                NamedKey::Enter => "Enter",
-                NamedKey::Backspace => "Backspace",
-                NamedKey::Delete => "Delete",
-                NamedKey::Insert => "Insert",
-                NamedKey::Home => "Home",
-                NamedKey::End => "End",
-                NamedKey::PageUp => "PageUp",
-                NamedKey::PageDown => "PageDown",
-                NamedKey::Up => "Up",
-                NamedKey::Down => "Down",
-                NamedKey::Left => "Left",
-                NamedKey::Right => "Right",
-                NamedKey::F(1) => "F1",
-                NamedKey::F(2) => "F2",
-                NamedKey::F(3) => "F3",
-                NamedKey::F(4) => "F4",
-                NamedKey::F(5) => "F5",
-                NamedKey::F(6) => "F6",
-                NamedKey::F(7) => "F7",
-                NamedKey::F(8) => "F8",
-                NamedKey::F(9) => "F9",
-                NamedKey::F(10) => "F10",
-                NamedKey::F(11) => "F11",
-                NamedKey::F(12) => "F12",
-                NamedKey::F(_) => "F?",
-                NamedKey::CapsLock => "CapsLock",
-                NamedKey::NumLock => "NumLock",
-                NamedKey::ScrollLock => "ScrollLock",
-                NamedKey::Menu => "Menu",
-            };
-            s.to_string()
-        }
+        Key::Named(named) => named.name().into_owned(),
     }
 }
 
 // ── PaintSurface Phase 4 slice 5/8 ─────────────────────────────────────────
 //
-// `paint` below is the one shared paint implementation, written against
-// [`crate::paint_surface::PaintSurface`] instead of any one backend's
-// API — see `crate::primitives::toolbar::native_surface_paint` for the
-// same pattern applied one primitive earlier in this issue.
-//
-// Pre-migration, `gtk::activity_bar`, `macos::activity_bar` and
-// `win::activity_bar` agreed on background, right-edge separator (except
-// where noted), active-row fill / accent-line, hover tint, and
-// per-state foreground colouring — but diverged in ways deeper than a
-// cosmetic corner radius:
-//
-// - **Row ordering / the layout twin.** GTK and Windows both derive
-//   `visible_items` from the shared
-//   [`ActivityBar::layout`] (bottom-pinned items first, then top —
-//   see that method's doc), and their own no-paint layout functions
-//   (`gtk_toolbar_layout`'s twin `bar.layout(...)` call, `win_activity_bar_layout`)
-//   call the exact same method, so paint and hit-test can't drift
-//   apart. **macOS instead had a private `row_plan` helper** that
-//   walked top-then-bottom — geometrically identical `y` positions, but
-//   a different `visible_items` order, and thus a different meaning for
-//   the flat index `hovered_idx` is compared against (macOS's own
-//   module doc called this out explicitly as a "known divergence,
-//   deliberately left alone"). Unifying onto one `paint` forces one
-//   `visible_items` order for all three; adopting the GTK/Windows order
-//   is what finally resolves that flagged-but-parked divergence rather
-//   than parking it again. `macos::activity_bar::mac_activity_bar_layout`
-//   now calls [`ActivityBar::layout`] directly too, so paint and layout
-//   stay in lock-step exactly like the other two backends.
-// - **Keyboard-selection highlight.** [`ActivityItem::is_keyboard_selected`]'s
-//   own doc says "Both the TUI and GTK rasterizers honour this flag" —
-//   an admission, not a design choice, that macOS never did: pre-migration
-//   `macos::activity_bar::draw_row` had no `is_keyboard_selected` branch
-//   at all, so keyboard-arrow navigation was invisible on macOS, and its
-//   foreground-colour decision didn't brighten for a selected-but-not-
-//   active/hovered row either (`item.is_active || is_hovered` — GTK/Win's
-//   equivalent OR's in `is_keyboard_selected` too). `paint` adds both,
-//   closing the gap rather than leaving a third of the three backends
-//   without the feature at all.
-// - **Right-edge separator.** GTK and macOS both painted a 1px
-//   `theme.separator` column at the bar's right edge; **Windows did
-//   not** — no doc comment explains why, so this reads as an
-//   oversight rather than a deliberate omission. Adopted for all three.
-//
-// Every other pixel (background fill, active-row fill/accent-line
-// priority order, hover tint, icon glyph selection via
-// `nerd_fonts_enabled`) was already identical in intent across the
-// three, differing only in which native API painted it.
+// `paint` below delegates to `crate::primitives::toolbar::native_surface_paint::paint_rail`,
+// the one shared rail painter every pixel backend (`gtk::activity_bar`,
+// `macos::activity_bar`, `win::activity_bar`) calls through — see that
+// function's own doc for the fill order and per-row foreground rule. This
+// module's job is purely the seam: build the `Toolbar` + `ToolbarRailStyle`
+// pair via [`ActivityBar::to_toolbar_parts`], lay it out with the same
+// options [`ActivityBar::layout`] itself uses, paint, and translate the
+// result back into `Vec<ActivityBarRowHit>` via
+// [`ActivityBar::row_hits_from_toolbar_layout`].
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -557,8 +713,10 @@ pub(crate) mod native_surface_paint {
     use super::{
         ActivityBar, ActivityBarLayout, ActivityBarRowHit, ActivityBarStyle, ActivitySide,
     };
-    use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::toolbar::{
+        self, ToolbarItemMeasure, ToolbarLayoutOptions, ToolbarOrientation,
+    };
     use crate::theme::Theme;
 
     /// Paint an [`ActivityBar`] at its caller-resolved `layout` onto
@@ -567,9 +725,12 @@ pub(crate) mod native_surface_paint {
     /// before hit-testing a click.
     ///
     /// `hovered_idx` indexes into `layout.visible_items` (bottom-pinned
-    /// items first, then top — see [`ActivityBar::layout`]'s doc).
+    /// items first, then top — see [`ActivityBar::layout`]'s doc); it's
+    /// mapped to the matching item's [`crate::WidgetId`] and passed to
+    /// `toolbar::native_surface_paint::paint_rail` as its own `hovered_id`.
     /// `nerd_fonts_enabled` selects `item.icon.glyph` vs
-    /// `item.icon.fallback`.
+    /// `item.icon.fallback` — via [`ActivityBar::to_toolbar_parts`], before
+    /// the painter ever sees either `ActivityBar` or `ActivityItem`.
     pub(crate) fn paint(
         bar: &ActivityBar,
         layout: &ActivityBarLayout,
@@ -579,87 +740,46 @@ pub(crate) mod native_surface_paint {
         hovered_idx: Option<usize>,
         nerd_fonts_enabled: bool,
     ) -> Vec<ActivityBarRowHit> {
-        let width = layout.viewport_width;
-        let height = layout.viewport_height;
+        let (toolbar, rail_style) = bar.to_toolbar_parts(style, theme, nerd_fonts_enabled);
 
-        surface.surface_fill_rect(Rect::new(0.0, 0.0, width, height), theme.tab_bar_bg);
-        surface.surface_fill_rect(Rect::new(width - 1.0, 0.0, 1.0, height), theme.separator);
+        // Every visible row shares one uniform height (the `item_height`
+        // `ActivityBar::layout` was called with); recover it from any row
+        // rather than threading a redundant parameter through this
+        // function's fixed signature.
+        let item_height = layout
+            .visible_items
+            .iter()
+            .map(|vi| vi.bounds.height)
+            .fold(0.0_f32, f32::max);
 
-        let hover_bg = theme.tab_bar_bg.lighten(0.10);
+        let toolbar_layout = toolbar.layout_with_options(
+            0.0,
+            0.0,
+            layout.viewport_width,
+            layout.viewport_height,
+            ToolbarLayoutOptions::new()
+                .with_orientation(ToolbarOrientation::Vertical)
+                .with_pin_trailing_overflow_to_origin(true),
+            |_btn| ToolbarItemMeasure::new(item_height),
+        );
 
-        let mut regions: Vec<ActivityBarRowHit> = Vec::new();
-
-        for (flat_idx, vi) in layout.visible_items.iter().enumerate() {
-            let y = vi.bounds.y;
-            let row_h = vi.bounds.height;
-            let item = match vi.side {
-                ActivitySide::Top => &bar.top_items[vi.item_idx],
-                ActivitySide::Bottom => &bar.bottom_items[vi.item_idx],
-            };
-            let is_hovered = hovered_idx == Some(flat_idx);
-
-            // Active-row fill (VS Code style) — lowest priority,
-            // painted first so hover/selection tints below still win.
-            if item.is_active {
-                if let Some(bg) = style.active_bg {
-                    surface.surface_fill_rect(Rect::new(0.0, y, width, row_h), bg);
-                }
-            }
-
-            // Hover tint — painted before selection so the brighter
-            // selection tint always wins when a row is both hovered and
-            // keyboard-selected.
-            if is_hovered {
-                surface.surface_fill_rect(Rect::new(0.0, y, width, row_h), hover_bg);
-            }
-
-            // Keyboard-selection highlight.
-            if item.is_keyboard_selected {
-                let sel_bg = bar
-                    .selection_bg
-                    .unwrap_or_else(|| theme.tab_bar_bg.lighten(0.20));
-                surface.surface_fill_rect(Rect::new(0.0, y, width, row_h), sel_bg);
-            }
-
-            // Left-edge accent line — only when the bar opts in via
-            // `active_accent`; `None` paints zero accent pixels.
-            if item.is_active {
-                if let Some(accent) = bar.active_accent {
-                    surface.surface_fill_rect(Rect::new(0.0, y, 2.0, row_h), accent);
-                }
-            }
-
-            let icon_str = if nerd_fonts_enabled {
-                item.icon.glyph.as_str()
-            } else {
-                item.icon.fallback.as_str()
-            };
-            let (iw, ih) = surface.surface_measure_text(icon_str);
-            let fg = if item.is_active || is_hovered || item.is_keyboard_selected {
-                theme.foreground
-            } else {
-                theme.inactive_fg
-            };
-            surface.surface_draw_text_run(
-                Rect::new(
-                    (width - iw) / 2.0,
-                    y + (row_h - ih) / 2.0,
-                    iw.max(0.0),
-                    ih.max(0.0),
-                ),
-                icon_str,
-                fg,
-            );
-
-            regions.push(ActivityBarRowHit {
-                y_start: y,
-                y_end: y + row_h,
-                id: item.id,
-                tooltip: item.tooltip.clone(),
+        let hovered_id = hovered_idx
+            .and_then(|idx| layout.visible_items.get(idx))
+            .map(|vi| match vi.side {
+                ActivitySide::Top => bar.top_items[vi.item_idx].id,
+                ActivitySide::Bottom => bar.bottom_items[vi.item_idx].id,
             });
-        }
 
-        regions
+        toolbar::native_surface_paint::paint_rail(
+            &toolbar,
+            &rail_style,
+            &toolbar_layout,
+            surface,
+            theme,
+            hovered_id.as_ref(),
+        );
+
+        bar.row_hits_from_toolbar_layout(&toolbar_layout)
     }
 }
 
@@ -787,6 +907,444 @@ mod tests {
         assert_eq!(layout.hit_test(1.0, 5.0), ActivityBarHit::Empty);
     }
 
+    // ── `From<&ActivityBar> for Toolbar` ────────────────────────────────
+
+    #[test]
+    fn from_activity_bar_orders_buttons_top_spacer_bottom() {
+        let mut explorer = make_activity_item("activity:explorer", 'E');
+        explorer.is_active = true;
+        let mut search = make_activity_item("activity:search", 'S');
+        search.is_keyboard_selected = true;
+        let settings = make_activity_item("activity:settings", 'G');
+
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![explorer, search],
+            bottom_items: vec![settings],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: true,
+        };
+
+        let toolbar: Toolbar = (&bar).into();
+        assert_eq!(toolbar.id, bar.id);
+        assert_eq!(toolbar.buttons.len(), 4, "top(2) + Spacer + bottom(1)");
+        assert!(matches!(toolbar.buttons[2], ToolbarButton::Spacer));
+
+        match &toolbar.buttons[0] {
+            ToolbarButton::Action {
+                id,
+                is_active,
+                enabled,
+                ..
+            } => {
+                assert_eq!(id.as_str(), "activity:explorer");
+                assert!(*is_active, "is_active carries through verbatim");
+                assert!(*enabled, "ActivityItem has no disabled state");
+            }
+            other => panic!("expected Action, got {other:?}"),
+        }
+        match &toolbar.buttons[3] {
+            ToolbarButton::Action { id, .. } => assert_eq!(id.as_str(), "activity:settings"),
+            other => panic!("expected Action, got {other:?}"),
+        }
+
+        // `search` (top_items[1], flat index 1) is the keyboard-selected
+        // item, so `focused_index` must point at it.
+        assert_eq!(toolbar.focused_index, Some(1));
+    }
+
+    #[test]
+    fn from_activity_bar_focused_index_none_when_nothing_selected() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![make_activity_item("activity:settings", 'G')],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let toolbar: Toolbar = (&bar).into();
+        assert_eq!(toolbar.focused_index, None);
+    }
+
+    // ── `ActivityBar::to_toolbar_parts` ─────────────────────────────────
+
+    fn make_activity_item_with_icons(id: &str, glyph: char, fallback: char) -> ActivityItem {
+        ActivityItem {
+            id: WidgetId::new(id),
+            icon: Icon::new(glyph.to_string(), fallback.to_string()),
+            tooltip: String::new(),
+            is_active: false,
+            is_keyboard_selected: false,
+        }
+    }
+
+    #[test]
+    fn to_toolbar_parts_maps_active_bg_set() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new().with_active_bg(Color::rgb(1, 2, 3));
+        let theme = Theme::default();
+        let (_toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(rail_style.active_bg, Some(Color::rgb(1, 2, 3)));
+    }
+
+    #[test]
+    fn to_toolbar_parts_maps_active_bg_unset() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (_toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(rail_style.active_bg, None);
+    }
+
+    #[test]
+    fn to_toolbar_parts_maps_active_accent_set() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: Some(Color::rgb(4, 5, 6)),
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (_toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(rail_style.active_accent, Some(Color::rgb(4, 5, 6)));
+    }
+
+    #[test]
+    fn to_toolbar_parts_maps_active_accent_unset() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (_toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(rail_style.active_accent, None);
+    }
+
+    #[test]
+    fn to_toolbar_parts_maps_selection_bg_set() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: Some(Color::rgb(7, 8, 9)),
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (_toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(rail_style.selection_bg, Some(Color::rgb(7, 8, 9)));
+    }
+
+    #[test]
+    fn to_toolbar_parts_maps_selection_bg_unset() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (_toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(rail_style.selection_bg, None);
+    }
+
+    #[test]
+    fn to_toolbar_parts_bg_is_theme_tab_bar_bg_and_separator_is_trailing() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item("activity:explorer", 'E')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (toolbar, rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        assert_eq!(toolbar.bg, Some(theme.tab_bar_bg));
+        assert_eq!(rail_style.trailing_separator, Some(theme.separator));
+    }
+
+    #[test]
+    fn to_toolbar_parts_icon_is_glyph_when_nerd_fonts_enabled() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item_with_icons("activity:explorer", 'G', 'F')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (toolbar, _rail_style) = bar.to_toolbar_parts(&style, &theme, true);
+        match &toolbar.buttons[0] {
+            ToolbarButton::Action { icon, .. } => {
+                assert_eq!(icon.as_deref(), Some("G"));
+            }
+            other => panic!("expected Action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_toolbar_parts_icon_is_fallback_when_nerd_fonts_disabled() {
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![make_activity_item_with_icons("activity:explorer", 'G', 'F')],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (toolbar, _rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        match &toolbar.buttons[0] {
+            ToolbarButton::Action { icon, .. } => {
+                assert_eq!(icon.as_deref(), Some("F"));
+            }
+            other => panic!("expected Action, got {other:?}"),
+        }
+    }
+
+    // ── `ActivityBar::row_hits_from_toolbar_layout` ─────────────────────
+
+    /// Builds the expected `ActivityBarRowHit` list the same way
+    /// `native_surface_paint::paint` would, directly off
+    /// [`ActivityBar::layout`]'s own `visible_items` (already
+    /// bottom-then-top ordered), so this test doesn't depend on any
+    /// pixel/native-surface feature being enabled.
+    fn expected_row_hits(
+        bar: &ActivityBar,
+        layout: &ActivityBarLayout,
+    ) -> Vec<(f32, f32, WidgetId, String)> {
+        layout
+            .visible_items
+            .iter()
+            .map(|vi| {
+                let item = match vi.side {
+                    ActivitySide::Top => &bar.top_items[vi.item_idx],
+                    ActivitySide::Bottom => &bar.bottom_items[vi.item_idx],
+                };
+                (
+                    vi.bounds.y,
+                    vi.bounds.y + vi.bounds.height,
+                    item.id,
+                    item.tooltip.clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn actual_row_hits(
+        bar: &ActivityBar,
+        width: f32,
+        height: f32,
+        item_height: f32,
+    ) -> Vec<(f32, f32, WidgetId, String)> {
+        let style = ActivityBarStyle::new();
+        let theme = Theme::default();
+        let (toolbar, _rail_style) = bar.to_toolbar_parts(&style, &theme, false);
+        let toolbar_layout = toolbar.layout_with_options(
+            0.0,
+            0.0,
+            width,
+            height,
+            ToolbarLayoutOptions::new()
+                .with_orientation(ToolbarOrientation::Vertical)
+                .with_pin_trailing_overflow_to_origin(true),
+            |_btn| ToolbarItemMeasure::new(item_height),
+        );
+        bar.row_hits_from_toolbar_layout(&toolbar_layout)
+            .into_iter()
+            .map(|hit| (hit.y_start, hit.y_end, hit.id, hit.tooltip))
+            .collect()
+    }
+
+    #[test]
+    fn row_hits_from_toolbar_layout_matches_layout_for_top_and_bottom_bar() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![
+                make_activity_item("activity:explorer", 'E'),
+                make_activity_item("activity:search", 'S'),
+            ],
+            bottom_items: vec![make_activity_item("activity:settings", 'G')],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(3.0, 10.0, 1.0);
+        assert_eq!(
+            expected_row_hits(&bar, &layout),
+            actual_row_hits(&bar, 3.0, 10.0, 1.0)
+        );
+    }
+
+    /// Same bottom-overflow case as
+    /// `activity_bar_layout_bottom_overflow_drops_last_item_not_first`:
+    /// the row-hit helper must drop the same (last) item `ActivityBar::layout`
+    /// drops, not re-derive a different overflow policy of its own.
+    #[test]
+    fn row_hits_from_toolbar_layout_matches_layout_on_bottom_overflow() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![],
+            bottom_items: vec![
+                make_activity_item("bot:0", '0'),
+                make_activity_item("bot:1", '1'),
+                make_activity_item("bot:2", '2'),
+            ],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(3.0, 2.0, 1.0);
+        let expected = expected_row_hits(&bar, &layout);
+        assert_eq!(expected.len(), 2, "only 2 of 3 items fit");
+        assert_eq!(expected, actual_row_hits(&bar, 3.0, 2.0, 1.0));
+    }
+
+    /// [`ActivityBar::layout`] delegates its geometry to
+    /// [`Toolbar::layout_with_options`] under the hood; this pins that
+    /// the two stay bit-for-bit in agreement — same bounds, same flat
+    /// `Toolbar::buttons` index — for a bar whose top and bottom groups
+    /// collide (bottom wins), the case most likely to drift if the two
+    /// engines ever disagree.
+    #[test]
+    fn layout_matches_toolbar_layout_with_options_on_collision() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: (0..5)
+                .map(|i| make_activity_item(&format!("top:{i}"), 'T'))
+                .collect(),
+            bottom_items: (0..3)
+                .map(|i| make_activity_item(&format!("bot:{i}"), 'B'))
+                .collect(),
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(3.0, 6.0, 1.0);
+
+        let toolbar: Toolbar = (&bar).into();
+        let toolbar_layout = toolbar.layout_with_options(
+            0.0,
+            0.0,
+            3.0,
+            6.0,
+            ToolbarLayoutOptions::new()
+                .with_orientation(ToolbarOrientation::Vertical)
+                .with_pin_trailing_overflow_to_origin(true),
+            |_btn| ToolbarItemMeasure::new(1.0),
+        );
+
+        // Every visible `ActivityBar::layout` item has a matching
+        // `Toolbar`-layout entry with the same bounds — catches an
+        // index-mapping slip.
+        for vi in &layout.visible_items {
+            let flat_idx = match vi.side {
+                ActivitySide::Top => vi.item_idx,
+                ActivitySide::Bottom => vi.item_idx + bar.top_items.len() + 1,
+            };
+            let matching = toolbar_layout
+                .visible_items
+                .iter()
+                .find(|t| t.item_idx == flat_idx)
+                .unwrap_or_else(|| panic!("no Toolbar-layout entry for flat index {flat_idx}"));
+            assert_eq!(
+                matching.bounds, vi.bounds,
+                "ActivityBar::layout and Toolbar::layout_with_options must agree \
+                 on bounds for flat index {flat_idx}"
+            );
+        }
+
+        // The visible-item *counts* also agree — catches a dropped item
+        // that the per-entry loop above (which only walks what
+        // `ActivityBar::layout` kept) can't see on its own.
+        let toolbar_visible_actions = toolbar_layout
+            .visible_items
+            .iter()
+            .filter(|t| t.kind == ToolbarItemKind::Action && t.bounds.height > 0.0)
+            .count();
+        assert_eq!(
+            layout.visible_items.len(),
+            toolbar_visible_actions,
+            "ActivityBar::layout must not drop or add items relative to the Toolbar layout"
+        );
+    }
+
+    /// When the bottom-pinned group alone is taller than the viewport
+    /// (no top items in the way), it packs from `y=0` downward and drops
+    /// its *last* item, via
+    /// [`ToolbarLayoutOptions::pin_trailing_overflow_to_origin`] —
+    /// rather than `Toolbar`'s own default of anchoring the trailing
+    /// group to the far edge and dropping its *first* item.
+    #[test]
+    fn activity_bar_layout_bottom_overflow_drops_last_item_not_first() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![],
+            bottom_items: vec![
+                make_activity_item("bot:0", '0'),
+                make_activity_item("bot:1", '1'),
+                make_activity_item("bot:2", '2'),
+            ],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(3.0, 2.0, 1.0);
+
+        assert_eq!(layout.visible_items.len(), 2, "only 2 of 3 items fit");
+        let item0 = layout.hit_test(1.0, 0.5);
+        let item1 = layout.hit_test(1.0, 1.5);
+        assert_eq!(
+            item0,
+            ActivityBarHit::Item(WidgetId::new("bot:0")),
+            "first bottom item still occupies row 0"
+        );
+        assert_eq!(
+            item1,
+            ActivityBarHit::Item(WidgetId::new("bot:1")),
+            "second bottom item still occupies row 1"
+        );
+        for vi in &layout.visible_items {
+            assert_ne!(
+                vi.item_idx, 2,
+                "the third (last) bottom item is the one that drops, not the first"
+            );
+        }
+    }
+
     #[test]
     fn activity_bar_layout_top_only() {
         let bar = ActivityBar {
@@ -881,6 +1439,52 @@ mod tests {
         );
     }
 
+    /// Same overflow rule as
+    /// `activity_bar_layout_bottom_overflow_drops_last_item_not_first`,
+    /// at pixel-backend scale (48px rows, 100px strip): rects are
+    /// `y=0 h=48`, `y=48 h=48`, `y=96 h=4` — the last item clips to the
+    /// 4px left over rather than the group re-anchoring so an earlier
+    /// item clips instead.
+    #[test]
+    fn activity_bar_layout_pixel_bottom_overflow_matches_legacy_rects() {
+        let bar = ActivityBar {
+            id: WidgetId::new("a"),
+            top_items: vec![],
+            bottom_items: vec![
+                make_activity_item("bot:0", '0'),
+                make_activity_item("bot:1", '1'),
+                make_activity_item("bot:2", '2'),
+            ],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let layout = bar.layout(48.0, 100.0, 48.0);
+
+        assert_eq!(layout.visible_items.len(), 3, "all 3 rows paint, clipped");
+        let item0 = layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == 0)
+            .unwrap();
+        let item1 = layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == 1)
+            .unwrap();
+        let item2 = layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == 2)
+            .unwrap();
+        assert_eq!(item0.bounds.y, 0.0);
+        assert_eq!(item0.bounds.height, 48.0);
+        assert_eq!(item1.bounds.y, 48.0);
+        assert_eq!(item1.bounds.height, 48.0);
+        assert_eq!(item2.bounds.y, 96.0);
+        assert_eq!(item2.bounds.height, 4.0, "clipped to the 4px left over");
+    }
+
     #[test]
     fn activity_bar_layout_pixel_units() {
         // GTK-style: 48 px item height, 200 px strip.
@@ -909,5 +1513,159 @@ mod tests {
             .find(|v| v.side == ActivitySide::Bottom)
             .unwrap();
         assert_eq!(bot0.bounds.y, 152.0);
+    }
+}
+
+/// `native_surface_paint::paint`'s own tests — only compiled alongside
+/// that module (gated the same way).
+#[cfg(all(
+    test,
+    any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    )
+))]
+mod native_surface_paint_tests {
+    use super::{native_surface_paint, ActivityBar, ActivityBarStyle, ActivityItem};
+    use crate::event::{Point, Rect, Viewport};
+    use crate::paint_surface::PaintSurface;
+    use crate::theme::Theme;
+    use crate::types::{Color, Icon, WidgetId};
+    use crate::{backend::ImagePaintResult, Image};
+
+    /// Records every fill/text call this module's `paint` makes — enough
+    /// to pin the exact row-hit output and the relative paint order of
+    /// `active_bg` / hover / `selection_bg` / `active_accent`, without a
+    /// Cairo/Core Graphics/Direct2D host.
+    #[derive(Default)]
+    struct RecordingSurface {
+        fills: Vec<(Rect, Color)>,
+    }
+
+    impl PaintSurface for RecordingSurface {
+        fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> Viewport {
+            Viewport::new(48.0, 144.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            14.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            7.0
+        }
+        fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+            (text.chars().count() as f32 * 7.0, 12.0)
+        }
+        fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+            self.fills.push((rect, color));
+        }
+        fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+            self.fills.push((rect, color));
+        }
+        fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+        fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+        fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _sw: f32) {}
+        fn surface_push_clip(&mut self, _rect: Rect) {}
+        fn surface_pop_clip(&mut self) {}
+        fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+            ImagePaintResult::Unsupported
+        }
+    }
+
+    /// Two top items (the first active, keyboard-selected and hovered;
+    /// the second plain) plus one bottom-pinned item — enough rows to
+    /// pin both the seam helper's bottom-first row-hit order and the
+    /// single active row's fill priority.
+    #[test]
+    fn paint_pins_row_hit_order_and_fill_priority() {
+        let active_bg = Color::rgb(10, 20, 30);
+        let selection_bg = Color::rgb(60, 70, 80);
+        let accent = Color::rgb(200, 100, 50);
+
+        let bar = ActivityBar {
+            id: WidgetId::new("bar"),
+            top_items: vec![
+                ActivityItem {
+                    id: WidgetId::new("activity:explorer"),
+                    icon: Icon::new("E", "e"),
+                    tooltip: "Explorer".to_string(),
+                    is_active: true,
+                    is_keyboard_selected: true,
+                },
+                ActivityItem {
+                    id: WidgetId::new("activity:search"),
+                    icon: Icon::new("S", "s"),
+                    tooltip: "Search".to_string(),
+                    is_active: false,
+                    is_keyboard_selected: false,
+                },
+            ],
+            bottom_items: vec![ActivityItem {
+                id: WidgetId::new("activity:settings"),
+                icon: Icon::new("G", "g"),
+                tooltip: "Settings".to_string(),
+                is_active: false,
+                is_keyboard_selected: false,
+            }],
+            active_accent: Some(accent),
+            selection_bg: Some(selection_bg),
+            is_keyboard_focused: false,
+        };
+        let style = ActivityBarStyle::new().with_active_bg(active_bg);
+        let theme = Theme::default();
+        let layout = bar.layout(48.0, 144.0, 48.0);
+        let mut surface = RecordingSurface::default();
+
+        // `layout.visible_items` is bottom-first: settings (0), explorer
+        // (1), search (2) — hover the explorer row.
+        let regions = native_surface_paint::paint(
+            &bar,
+            &layout,
+            &style,
+            &mut surface,
+            &theme,
+            Some(1),
+            false,
+        );
+
+        assert_eq!(
+            regions.len(),
+            3,
+            "row hits were {regions:?}, expected 3 visible rows"
+        );
+        assert_eq!(regions[0].id, WidgetId::new("activity:settings"));
+        assert_eq!(regions[0].y_start, 96.0);
+        assert_eq!(regions[0].y_end, 144.0);
+        assert_eq!(regions[1].id, WidgetId::new("activity:explorer"));
+        assert_eq!(regions[1].tooltip, "Explorer");
+        assert_eq!(regions[1].y_start, 0.0);
+        assert_eq!(regions[1].y_end, 48.0);
+        assert_eq!(regions[2].id, WidgetId::new("activity:search"));
+        assert_eq!(regions[2].y_start, 48.0);
+        assert_eq!(regions[2].y_end, 96.0);
+
+        let hover_bg = theme.tab_bar_bg.lighten(0.10);
+        let pos = |color: Color| {
+            surface
+                .fills
+                .iter()
+                .position(|(_, c)| *c == color)
+                .unwrap_or_else(|| {
+                    panic!("no fill matched {color:?}; fills were {:?}", surface.fills)
+                })
+        };
+        let active_pos = pos(active_bg);
+        let hover_pos = pos(hover_bg);
+        let selection_pos = pos(selection_bg);
+        let accent_pos = pos(accent);
+        assert!(
+            active_pos < hover_pos && hover_pos < selection_pos && selection_pos < accent_pos,
+            "fill order must be active < hover < selection < accent; positions were \
+             active={active_pos} hover={hover_pos} selection={selection_pos} accent={accent_pos}, \
+             fills were {:?}",
+            surface.fills,
+        );
     }
 }

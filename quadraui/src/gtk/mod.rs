@@ -18,6 +18,91 @@ use gtk4::pango;
 
 use crate::types::Color;
 
+/// Serialises every `#[test]`-driven touch of GTK's process-global Pango
+/// state (`pango_cairo_font_map_get_default()` and the caches it owns)
+/// across OS threads — Pango's own docs are explicit that this is not
+/// thread-safe, yet Rust's default test harness runs every `#[test]` fn on
+/// its own spawned OS thread by default, so two tests that each build a
+/// `pango::Context`/`Layout` and shape real text (every GTK paint/
+/// round-trip test does) can do so concurrently against the same shared
+/// font map with no synchronisation of their own. That is a genuine data
+/// race in the C library underneath, not just a Rust-level one.
+///
+/// `self::backend::GtkBackend::enter_frame_scope` holds this for its
+/// entire body, `run::render_frame` holds it across the real Pango work
+/// it does before entering that scope, and `testing::GtkDriver::dispatch`/
+/// `tick` hold it across hit-testing and tick-driven measurement that
+/// reads the stored Pango context outside a frame scope — together, the
+/// paths essentially every paint/round-trip test in this module runs
+/// through, whether directly or via `testing::GtkDriver`. `#[cfg(test)]`-
+/// gated so it costs real apps nothing: GTK's own glib main loop renders
+/// from a single thread in production, so no concurrent holder of this
+/// lock ever exists outside a test binary.
+///
+/// Only the `quadraui` **lib** test binary links this `#[cfg(test)]`
+/// guard; the `quadraui/tests/*` integration binaries and any downstream
+/// consumer's own tests against the public `gtk::testing::GtkDriver` link
+/// the crate compiled without `cfg(test)` and get no protection from it.
+///
+/// Lock order: every guarded path here takes this lock *after*
+/// `app_font`'s own `LOCK`, never before — see that lock's doc for the
+/// cross-thread deadlock this ordering avoids. `enter_frame_scope`'s
+/// caller closure (and anything `GtkDriver::dispatch`/`tick` call into)
+/// must not introduce a path that takes `app_font::LOCK` while another
+/// thread is blocked taking this lock first.
+#[cfg(test)]
+pub(crate) static TEST_RENDER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+// Per-thread re-entrancy depth for `TEST_RENDER_LOCK` — `Mutex` itself
+// isn't re-entrant, but the call graph it guards nests on one thread
+// (`run::render_frame` takes it, then calls `enter_frame_scope`, which
+// takes it again; `app_font::register_font_from_memory` takes its own
+// `LOCK` then this one, and can itself be called from inside a frame
+// scope by app code that registers a font from `render`/`handle`). A
+// depth-zero caller takes the real `Mutex` lock; every nested caller on
+// the same thread just bumps the counter and reuses the outer guard.
+#[cfg(test)]
+thread_local! {
+    static TEST_RENDER_LOCK_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// RAII guard returned by [`test_render_guard`] — see that function's doc.
+#[cfg(test)]
+pub(crate) struct TestRenderGuard {
+    _mutex_guard: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+#[cfg(test)]
+impl Drop for TestRenderGuard {
+    fn drop(&mut self) {
+        TEST_RENDER_LOCK_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+
+/// Acquire [`TEST_RENDER_LOCK`] for the calling thread, re-entrantly.
+/// The first call on a given thread blocks on the real `Mutex`; every
+/// call nested inside it (same thread, guard still live) is a no-op
+/// beyond a counter bump, so the lock can't self-deadlock no matter how
+/// the guarded call sites nest on one thread. A second thread calling
+/// this still blocks on the real `Mutex` as normal.
+#[cfg(test)]
+pub(crate) fn test_render_guard() -> TestRenderGuard {
+    let depth = TEST_RENDER_LOCK_DEPTH.with(std::cell::Cell::get);
+    let mutex_guard = if depth == 0 {
+        Some(
+            TEST_RENDER_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    } else {
+        None
+    };
+    TEST_RENDER_LOCK_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    TestRenderGuard {
+        _mutex_guard: mutex_guard,
+    }
+}
+
 mod activity_bar;
 mod app_font;
 pub mod backend;

@@ -572,7 +572,7 @@ impl PlatformServices for WinPlatformServices {
     /// needs the owning `HWND` [`Self::set_window`] stores, so a call made
     /// from inside `AppLogic::setup`, before any window exists, still
     /// produces nothing if AUMID registration also failed.
-    fn send_notification(&self, n: Notification) {
+    fn send_notification(&self, n: Notification) -> ServiceResult<()> {
         #[cfg(target_os = "windows")]
         {
             let aumid = self.aumid.borrow().clone();
@@ -595,6 +595,7 @@ impl PlatformServices for WinPlatformServices {
         {
             let _ = n;
         }
+        Ok(())
     }
 
     fn open_url(&self, url: &str) {
@@ -604,23 +605,28 @@ impl PlatformServices for WinPlatformServices {
     /// Fallible twin of [`Self::open_url`]: reports
     /// `ShellExecuteW`'s real outcome via
     /// [`crate::desktop::open_with_default`] instead of `open_url`'s
-    /// discarded one — before this override, `open_url_result` fell to
-    /// [`crate::backend::PlatformServices::open_url_result`]'s default
-    /// (`open_url` then always `Ok(())`), so a failed `ShellExecuteW` call
-    /// (e.g. `SE_ERR_FNF` — the target does not exist) was silently
-    /// reported as success.
+    /// discarded one, and first validates `url` through
+    /// [`crate::desktop::validate_open_url`] (via [`open_url_via`]) — the
+    /// same backend-neutral seam the `tui` and `gtk` backends' own
+    /// `open_url_result` run their input through — so a bare path
+    /// (`C:\Windows\System32\calc.exe`) or a `file:` URL pointing at an
+    /// executable is rejected with `Err(BackendError::Unsupported)`
+    /// instead of being handed to `ShellExecuteW`.
     ///
-    /// Note what this still cannot promise: `ShellExecuteW` reports
-    /// whether it *handed the target off*, not whether anything
-    /// subsequently opened. An unregistered URI scheme, for instance,
-    /// returns success (42) because the shell accepted it and will sort
-    /// out the missing handler asynchronously — see this module's
+    /// Note what this still cannot promise once validation passes:
+    /// `ShellExecuteW` reports whether it *handed the target off*, not
+    /// whether anything subsequently opened. An unregistered URI scheme,
+    /// for instance, returns success (42) because the shell accepted it
+    /// and will sort out the missing handler asynchronously — see this
+    /// module's
     /// `open_url_result_and_open_path_report_a_real_shell_execute_failure`
     /// test for the failure this *can* honestly detect.
     fn open_url_result(&self, url: &str) -> ServiceResult<()> {
         #[cfg(target_os = "windows")]
         {
-            crate::desktop::open_with_default(std::ffi::OsStr::new(url))
+            open_url_via(url, |u| {
+                crate::desktop::open_with_default(std::ffi::OsStr::new(u))
+            })
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -2302,13 +2308,31 @@ fn win_send_notification_balloon(owner: Option<HWND>, n: &Notification) {
 
 // ─── open_url / open_path / open_url_result ──────────────────────────────
 //
-// Both go through `crate::desktop::open_with_default` — the
-// crate-wide opener shared with `tui::services`/`macos::services` — rather
-// than a Win-local `ShellExecuteW` call: it hands `"open"` + `target` to
+// `open_url_result` goes through `open_url_via`, which validates its input
+// with `crate::desktop::validate_open_url` before ever calling
+// `crate::desktop::open_with_default` — the crate-wide opener shared with
+// `tui::services`/`gtk::services`/`macos::services` — rather than a
+// Win-local `ShellExecuteW` call: it hands `"open"` + `target` to
 // `ShellExecuteW` through the same minimal hand-written FFI declaration on
-// every backend, so there is nothing Win-specific left to write here. See
-// that function's doc for why it's a hand-written FFI call rather than the
-// `windows` crate's own `ShellExecuteW` binding.
+// every backend, so there is nothing Win-specific left to write here.
+// `open_path` skips validation and calls `open_with_default` directly: it
+// takes a `&Path`, not an arbitrary string, so there is no URL scheme or
+// `file:` executable-extension check for it to run. See
+// `open_with_default`'s own doc for why it's a hand-written FFI call rather
+// than the `windows` crate's own `ShellExecuteW` binding.
+
+/// Shared body of [`WinPlatformServices::open_url_result`]: validates `url`
+/// through [`crate::desktop::validate_open_url`] before ever calling
+/// `open`, mirroring the `tui` and `gtk` backends' own `open_url_via`
+/// seams. `open` is a parameter (not a direct
+/// `crate::desktop::open_with_default` call inline) purely so tests can
+/// swap in a double that records whether it ran, instead of actually
+/// spawning `ShellExecuteW` against a real target.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn open_url_via(url: &str, open: impl FnOnce(&str) -> ServiceResult<()>) -> ServiceResult<()> {
+    crate::desktop::validate_open_url(url)?;
+    open(url)
+}
 
 // ─── reveal_in_file_manager ──────────────────────────────────────────────
 
@@ -2979,7 +3003,7 @@ mod tests {
         assert!(svc
             .show_folder_open_dialog(FileDialogOptions::default())
             .is_none());
-        svc.send_notification(Notification::new("t", "b"));
+        let _ = svc.send_notification(Notification::new("t", "b"));
         assert!(svc
             .show_message_dialog(MessageDialogOptions {
                 title: "t".to_string(),
@@ -3019,6 +3043,58 @@ mod tests {
         // off it.
         assert_eq!(svc.displays(), Err(BackendError::Unsupported));
         assert_eq!(svc.cursor_screen_point(), Err(BackendError::Unsupported));
+    }
+
+    /// `open_url_result` runs `crate::desktop::validate_open_url` before
+    /// ever reaching `ShellExecuteW`: a bare Windows executable path has
+    /// no recognized scheme, so it is rejected with the validator's own
+    /// `BackendError::Unsupported` and never calls the opener at all.
+    /// `#[cfg(target_os = "windows")]`, same reason as
+    /// `open_url_result_and_open_path_report_a_real_shell_execute_failure`
+    /// below: off Windows, `open_url_result` already answers
+    /// `Unsupported` for *every* input (see
+    /// `non_windows_stubs_degrade_gracefully` above), so this assertion
+    /// would pass whether or not the validator ran at all —
+    /// `open_url_via_rejects_a_bare_executable_path_before_invoking_the_opener`
+    /// below pins the validator itself on every host instead.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn open_url_result_rejects_a_bare_executable_path_via_the_shared_validator() {
+        let svc = WinPlatformServices::new();
+        assert_eq!(
+            svc.open_url_result("C:\\Windows\\System32\\calc.exe"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    /// `open_url_via` (the seam [`WinPlatformServices::open_url_result`]
+    /// is built on) rejects a bare executable path before ever calling
+    /// `open` — a double that records whether it ran stands in for the
+    /// real `ShellExecuteW` call, since that call has real side effects
+    /// (actually launching the target) that must not run in a test.
+    #[test]
+    fn open_url_via_rejects_a_bare_executable_path_before_invoking_the_opener() {
+        let opened = std::cell::Cell::new(false);
+        let result = open_url_via("C:\\Windows\\System32\\calc.exe", |_| {
+            opened.set(true);
+            Ok(())
+        });
+        assert_eq!(result, Err(BackendError::Unsupported));
+        assert!(!opened.get());
+    }
+
+    /// An `https:` URL passes `crate::desktop::validate_open_url` and
+    /// reaches `open_url_via`'s `open` closure — unlike the bare
+    /// executable path above, which never calls it at all.
+    #[test]
+    fn open_url_via_passes_an_https_url_through_to_the_opener() {
+        let opened = std::cell::Cell::new(false);
+        let result = open_url_via("https://example.com/quadraui-2144", |_| {
+            opened.set(true);
+            Ok(())
+        });
+        assert_eq!(result, Ok(()));
+        assert!(opened.get());
     }
 
     /// `open_url_result`/`open_path` report a real failure when

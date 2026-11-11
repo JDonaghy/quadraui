@@ -123,34 +123,36 @@
 //!
 //! ## Notifications
 //!
-//! `send_notification` used to be `fn send_notification(&self, _n:
-//! Notification) {}` — a silent, undetectable no-op (`notifications` was
-//! never declared in [`TuiBackend::backend_caps`], so a caller checking
-//! that flag first would at least know not to trust it, but any caller
-//! that skipped the check got nothing with no signal at all). Two
-//! independent, best-effort legs now run on every call, mirroring
-//! [`TuiClipboard::write_text`]'s "every leg best-effort, run
-//! independently" posture rather than trying to pick one:
-//! this crate has no synchronous way to ask a terminal "do you support
-//! OSC 9?", so guessing which single leg to use would just be trading one
-//! silent failure mode for another.
+//! Exactly one delivery leg reaches the user per [`Self::send_notification`]
+//! call — which one is decided by [`terminal_renders_notification_osc`], a
+//! `$TERM`/`$TERM_PROGRAM` allow-list of terminals actually known to render
+//! the OSC 9/777 escapes below, not by whether a write merely *succeeded*.
+//! A write to `/dev/tty` or stdout succeeds on almost any terminal with a
+//! controlling tty regardless of whether that terminal renders the escape
+//! it was handed, so gating on write success alone would silently stop
+//! delivering to the (large) set of terminals — stock macOS Terminal.app,
+//! xterm, most VTE forks — that have a writable tty but no OSC 9/777
+//! support, with [`Self::send_notification`] still reporting `Ok(())`.
 //!
-//! 1. **OSC 9 / OSC 777** ([`emit_notification_osc`]) — two terminal
-//!    escape sequences a capable terminal renders as a native
-//!    notification with no desktop session involved at all: OSC 9
+//! 1. **OSC 9 / OSC 777** ([`emit_notification_osc`]), only when
+//!    [`terminal_renders_notification_osc`] recognizes the current
+//!    terminal — two escape sequences a capable terminal renders as a
+//!    native notification with no desktop session involved at all: OSC 9
 //!    (iTerm2's "Growl-style" extension, also understood by kitty and
 //!    WezTerm) and OSC 777 (rxvt-unicode's `notify` extension, also
-//!    understood by several VTE-based terminals). Both are written to
-//!    stdout and, on Unix, `/dev/tty`, the same dual-write reliability
-//!    reasoning [`TuiClipboard::write_text`]'s OSC 52 leg already uses.
-//!    `n`'s title/body are stripped of raw control characters first
-//!    ([`strip_control_chars`]) — an attacker- or content-derived title
-//!    containing another `ESC` could otherwise break out of the intended
-//!    sequence and inject arbitrary further escapes into a
-//!    capable-but-not-bulletproof terminal, the same class of bug issue
-//!    #969's review caught in `open_url_via`'s OSC 8 fallback.
-//! 2. **Native command-line notifier** — a desktop-level fallback for a
-//!    terminal that renders neither OSC escape:
+//!    understood by several VTE-based terminals). Written to exactly one
+//!    target — `/dev/tty` on Unix when it opens (reaches the real
+//!    terminal even when stdout is redirected to a file or pipe),
+//!    otherwise stdout. `n`'s title/body are stripped of raw control
+//!    characters first ([`strip_control_chars`]) — an attacker- or
+//!    content-derived title containing another `ESC` could otherwise
+//!    break out of the intended sequence and inject arbitrary further
+//!    escapes into a capable-but-not-bulletproof terminal, the same class
+//!    of bug issue #969's review caught in `open_url_via`'s OSC 8
+//!    fallback.
+//! 2. **Native command-line notifier** — tried whenever step 1 wasn't:
+//!    the terminal isn't on the allow-list, or it is but the escape
+//!    write itself still failed (no `/dev/tty`, stdout not writable):
 //!    [`crate::desktop::tui_macos_notify_command`] (`osascript -e
 //!    'display notification …'` on macOS, built from
 //!    [`crate::desktop::display_notification_script`] — shared text with
@@ -159,26 +161,27 @@
 //!    shape and why only `n.is_silent()` of #955's four `Notification`
 //!    fields has anywhere to go) or
 //!    [`crate::desktop::tui_notify_send_command`] (`notify-send` on
-//!    Linux/BSD). Both are split into pure, unspawned command builders —
-//!    same shape as [`crate::desktop::reveal_in_file_manager`]'s
+//!    Linux/BSD, threading [`Notification::tag`] through
+//!    [`crate::desktop::notification_request_id`] as the
+//!    `x-canonical-private-synchronous` replace hint — see that
+//!    function's doc). Both are split into pure, unspawned command
+//!    builders — same shape as [`crate::desktop::reveal_in_file_manager`]'s
 //!    per-platform commands below — specifically so a test can assert on
 //!    the constructed argv without spawning anything. Neither exists as
-//!    a stock Windows Terminal fallback: OSC 9 is natively supported
-//!    there, so the escape leg alone already covers it.
+//!    a stock Windows Terminal fallback: Windows Terminal sets
+//!    `$WT_SESSION`, which [`terminal_renders_notification_osc`] also
+//!    recognizes, so the escape leg alone already covers it.
 //!
-//! Both legs are silent on failure (tool absent, no display, terminal
-//! doesn't understand the escape) — a caller with no way to distinguish
-//! "delivered" from "silently dropped" is exactly [`Self::send_notification`]'s
-//! pre-existing, unavoidable contract (the trait method returns `()`,
-//! see `BackendCaps::notifications`'s own doc for what the capability
-//! flag *does* promise instead), not a regression this issue introduces.
-//! A terminal on a desktop session showing neither the OSC render nor a
-//! native notifier is the one genuinely headless case this can't reach —
-//! there is no further fallback to earn an honest `Unsupported` from,
-//! since `send_notification`'s bare-`()` signature has nowhere to carry
-//! one (see [`BackendCaps::notifications`]'s doc, and
-//! `tests/conformance/caps.rs`'s `PLATFORM_SERVICE_CONTRACTS` entry for
-//! why that's this method's honesty story rather than a `_result` twin).
+//! The native leg is itself silent on failure (tool absent, no display) —
+//! a caller with no way to distinguish "delivered" from "silently
+//! dropped" once both legs have been tried is
+//! [`Self::send_notification`]'s honest ceiling on a terminal with
+//! neither facility, not a regression this degrade introduces. `Err` is
+//! reserved for a write that didn't even reach a writable target; a
+//! terminal that silently ignores a well-formed escape it doesn't
+//! understand still gets `Ok(())` — the same "no further fallback to
+//! earn an honest `Unsupported` from" reasoning `BackendCaps::notifications`'s
+//! own doc gives for why this capability bit stays `false` regardless.
 //!
 //! **`TuiBackend::backend_caps().notifications` stays `false`** despite
 //! this real implementation — see that method's doc
@@ -204,7 +207,13 @@
 //! tray icon, a dock badge); a terminal session on a desktop can launch a
 //! browser perfectly well, so that answer was never earned.
 //!
-//! [`TuiPlatformServices::open_url_result`] now tries, in order:
+//! [`TuiPlatformServices::open_url_result`] first validates `url` through
+//! [`crate::desktop::validate_open_url`] — the backend-neutral seam every
+//! `PlatformServices::open_url` implementation is meant to run its input
+//! through before handing it to a platform opener, so a bare executable
+//! path or app-bundle `file:` URL is rejected with
+//! `Err(BackendError::Unsupported)` instead of being launched. Once a
+//! `url` passes that check, this method tries, in order:
 //!
 //! 1. **The platform opener** ([`crate::desktop::try_open_with_default`],
 //!    issue #1087 — originally this module's own `try_platform_opener`,
@@ -277,20 +286,24 @@
 //!
 //! ## Login items
 //!
-//! `login_item_enabled` overrides the trait default with an honest
-//! no-op that always reports `false`, since a terminal has no OS
-//! login-item registration of its own to query and `set_login_item`
-//! itself stays `Unsupported` on this backend — quadraui itself can
-//! never have created a registration here. This `false` only reflects
-//! that: it says nothing about a registration a host or packaging step
-//! may have created out of band (e.g. a cron/systemd-user entry that
-//! happens to launch this binary), so a settings screen built on this
-//! query can display "off" for an app that does, in fact, start at
-//! login by some other mechanism. `set_login_item` stays at the trait's
-//! `Unsupported` default: there is no honest "success" value for a
-//! mutation with nothing in this backend to mutate. See
-//! [`TuiPlatformServices::login_item_enabled`]'s own doc and
-//! `login_item`'s module doc.
+//! `login_item_enabled` and `set_login_item` both keep the trait's
+//! `Unsupported` default on TUI, matching every other in-tree backend
+//! that doesn't override either: a terminal has no OS login-item
+//! registration of its own to query or mutate, so there is no honest
+//! non-error answer for either — a faked-up `Ok(false)` would read as
+//! "this app is not registered to start at login", which this backend
+//! has no way to actually know (e.g. a cron/systemd-user entry could
+//! still launch it out of band). See `login_item`'s module doc.
+//!
+//! ## Power-save blocking
+//!
+//! `begin_power_save_block`/`end_power_save_block` both keep the
+//! trait's `Unsupported` default on TUI, matching every other in-tree
+//! backend: a terminal has no sleep-inhibitor API to call into, and a
+//! blocker id minted without ever asking the OS to stay awake is not a
+//! truthful `Ok` — a caller needs to be able to tell "this backend
+//! can't hold the machine awake" from "it did". See `power`'s module
+//! doc.
 //!
 //! ## Recent documents / Dock menu
 //!
@@ -304,7 +317,7 @@
 //! all four.
 
 use std::cell::RefCell;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -313,12 +326,11 @@ use crate::backend::{
     MessageDialogOptions, Notification, PlatformServices, ServiceResult, SystemTheme,
 };
 use crate::compose::{
-    FilePickerController, FilePickerEvent, FilePickerMode, FolderPickerController,
-    FolderPickerEvent, MessageDialogController, MessageDialogEvent,
+    FilePickerController, FilePickerMode, FolderPickerController, Handled, MessageDialogController,
+    PathPickerAction,
 };
 use crate::diagnostics;
 use crate::event::{Point, Rect, UiEvent};
-use crate::power::{BlockerId, PowerSaveKind};
 use crate::tui::backend::TuiBackend;
 use crate::update::{StagedUpdate, UpdateInfo, UpdateService};
 use crate::{Key, Modifiers, NamedKey};
@@ -608,38 +620,108 @@ fn emit_notification_osc_to(title: &str, body: &str, writer: &mut dyn std::io::W
         .is_ok()
 }
 
-/// Emit both notification OSC sequences for `n` to stdout and (Unix)
-/// `/dev/tty` — the first leg of
-/// [`TuiPlatformServices::send_notification`]; see the
-/// module doc's "Notifications" section. `title`/`body` are run through
-/// [`strip_control_chars`] first (unlike [`open_url_via`]'s OSC 8
-/// fallback, which rejects the whole write when a control character is
-/// present, this degrade has no fallback of its own to reject *into* —
-/// stripping keeps the notification visible instead of silently dropping
-/// it entirely).
-fn emit_notification_osc(n: &Notification) {
+/// Terminals known to actually render the OSC 9/777 notification escapes
+/// [`emit_notification_osc`] writes, recognized by `$TERM_PROGRAM` (set by
+/// the terminal application itself), `$WT_SESSION` (Windows Terminal), or
+/// a `$TERM` substring — the capability signal
+/// [`TuiPlatformServices::send_notification`] gates its escape leg on,
+/// replacing the unsound "did the write succeed" check the module doc's
+/// "Notifications" section used to rely on: a write to `/dev/tty` or
+/// stdout succeeds on essentially any terminal with a controlling tty,
+/// whether or not that terminal renders the escape it was handed, so write
+/// success alone could never distinguish "delivered" from "silently
+/// ignored by a terminal that doesn't understand OSC 9/777".
+///
+/// Conservative by design — false negatives (an unrecognized but
+/// genuinely capable terminal falls back to the native notifier instead
+/// of the escape) just mean one working leg instead of a slightly
+/// cheaper one, never zero delivery; false positives (an unrecognized
+/// terminal wrongly on this list) would mean a silently dropped
+/// notification, so new entries need an actual terminal's own
+/// documentation confirming OSC 9/777 support, not a guess.
+fn terminal_renders_notification_osc() -> bool {
+    terminal_renders_notification_osc_for(
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+        std::env::var("TERM").ok().as_deref(),
+        std::env::var_os("WT_SESSION").is_some(),
+    )
+}
+
+/// Pure decision [`terminal_renders_notification_osc`] delegates to —
+/// split out so a test can drive every combination without touching
+/// process-wide environment variables.
+fn terminal_renders_notification_osc_for(
+    term_program: Option<&str>,
+    term: Option<&str>,
+    windows_terminal_session: bool,
+) -> bool {
+    if windows_terminal_session {
+        // Windows Terminal natively renders OSC 9; this is the module
+        // doc's "no stock Windows Terminal fallback needed" case.
+        return true;
+    }
+    if matches!(term_program, Some("iTerm.app") | Some("WezTerm")) {
+        return true;
+    }
+    if let Some(term) = term {
+        if term.contains("kitty") || term.contains("rxvt") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether [`TuiPlatformServices::send_notification`] should spawn its
+/// native command-line notifier leg, given
+/// [`terminal_renders_notification_osc`]'s verdict and whether the escape
+/// leg's write actually reached a target. The native leg is the sole
+/// delivery attempt when the terminal isn't on the OSC allow-list at all,
+/// and the fallback when it is but the write itself still failed (no
+/// `/dev/tty`, stdout not writable) — never both legs when the escape
+/// write both reached a target *and* the terminal is known to render it.
+fn should_spawn_native_notifier(terminal_renders_osc: bool, escape_write_succeeded: bool) -> bool {
+    !terminal_renders_osc || !escape_write_succeeded
+}
+
+/// Pure glue from a [`Notification`] to the `(request_id, title, body)`
+/// triple [`TuiPlatformServices::send_notification`]'s non-macOS Unix
+/// native leg hands [`crate::desktop::tui_notify_send_command`] — split
+/// out so a test can assert `n.tag()` actually reaches the replace hint
+/// without spawning `notify-send`. `request_id` is always computed (never
+/// `None`), both for a tagged notification (the `"tag:"`-namespaced id)
+/// and an untagged one (the `"auto:"`-namespaced counter) — giving
+/// [`crate::desktop::notification_request_id`]'s auto-id branch a real
+/// call site instead of only its own unit test.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn notify_send_args(n: &Notification) -> (String, String, String) {
+    let request_id = crate::desktop::notification_request_id(n.tag());
+    (request_id, n.title.clone(), n.body.clone())
+}
+
+/// Emit both notification OSC sequences for `n` through exactly one
+/// writer — the first leg of [`TuiPlatformServices::send_notification`],
+/// only attempted at all when [`terminal_renders_notification_osc`]
+/// recognizes the current terminal; see the module doc's "Notifications"
+/// section. On Unix, `/dev/tty` is tried first (reaches the real terminal
+/// even when stdout is redirected to a file or pipe); stdout otherwise.
+/// `title`/`body` are run through [`strip_control_chars`] first (unlike
+/// [`open_url_via`]'s OSC 8 fallback, which rejects the whole write when a
+/// control character is present, this degrade has no fallback of its own
+/// to reject *into* — stripping keeps the notification visible instead of
+/// silently dropping it entirely). Returns whether the write reached a
+/// target at all, so the caller can fall back to the native command-line
+/// leg only when it didn't.
+fn emit_notification_osc(n: &Notification) -> bool {
     let title = strip_control_chars(&n.title);
     let body = strip_control_chars(&n.body);
-    let _ = emit_notification_osc_to(&title, &body, &mut std::io::stdout());
-    emit_notification_osc_to_tty(&title, &body);
-}
-
-/// The `/dev/tty` half of [`emit_notification_osc`], as a
-/// `cfg`-overloaded pair (the same shape [`emit_osc8_hyperlink_to_tty`]
-/// uses) rather than an inline `#[cfg(unix)]` block — see that
-/// function's doc for the `unused_mut`-on-Windows trap this shape avoids.
-#[cfg(unix)]
-fn emit_notification_osc_to_tty(title: &str, body: &str) {
-    if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
-        let _ = emit_notification_osc_to(title, body, &mut tty);
+    #[cfg(unix)]
+    {
+        if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+            return emit_notification_osc_to(&title, &body, &mut tty);
+        }
     }
+    emit_notification_osc_to(&title, &body, &mut std::io::stdout())
 }
-
-/// Non-Unix: there is no `/dev/tty` to write a second copy to, so the
-/// stdout leg in [`emit_notification_osc`] stands alone. See the `unix`
-/// overload of this same function (above) for the shared doc.
-#[cfg(not(unix))]
-fn emit_notification_osc_to_tty(_title: &str, _body: &str) {}
 
 // ── Native clipboard tool fallback ──────────────────────────────────────────────
 
@@ -1306,6 +1388,73 @@ mod open_url_tests {
         assert_eq!(result, Ok(()));
     }
 
+    /// Acceptance bar: `open_url_result` rejects a bare
+    /// executable path with `Err(BackendError::Unsupported)` and never
+    /// spawns anything, even when an opener binary that *would* succeed
+    /// is sitting right there on `$PATH` — [`crate::desktop::validate_open_url`]
+    /// rejects the input before `open_url_via` ever runs the opener
+    /// closure. Uses the same `$PATH`-stub technique as
+    /// `open_url_result_returns_ok_through_the_real_delegation`, except
+    /// the stub opener here writes a marker file so this test can prove
+    /// it was never invoked, rather than merely assuming so from the
+    /// `Err` return value alone.
+    ///
+    /// **Unix only** — see that test's doc for why Windows has no
+    /// `$PATH`-resolved-binary equivalent to intercept this way.
+    #[cfg(unix)]
+    #[test]
+    fn open_url_result_rejects_a_bare_executable_path_and_spawns_nothing() {
+        let _guard = crate::desktop::PATH_OVERRIDE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        #[cfg(target_os = "macos")]
+        const OPENER_NAME: &str = "open";
+        #[cfg(all(unix, not(target_os = "macos")))]
+        const OPENER_NAME: &str = "xdg-open";
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stub_path = tmp.path().join(OPENER_NAME);
+        let marker_path = tmp.path().join("opener-was-invoked");
+        std::fs::write(
+            &stub_path,
+            format!("#!/bin/sh\ntouch {:?}\nexit 0\n", marker_path),
+        )
+        .expect("write stub opener");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod +x stub opener");
+        }
+
+        let original_path = std::env::var_os("PATH");
+        struct RestorePath(Option<std::ffi::OsString>);
+        impl Drop for RestorePath {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+        let _restore = RestorePath(original_path.clone());
+
+        let mut new_path = std::ffi::OsString::from(tmp.path());
+        if let Some(existing) = &original_path {
+            new_path.push(":");
+            new_path.push(existing);
+        }
+        std::env::set_var("PATH", new_path);
+
+        let services = TuiPlatformServices::new();
+        let result = services.open_url_result("/usr/bin/calc.exe");
+        assert_eq!(result, Err(BackendError::Unsupported));
+        assert!(
+            !marker_path.exists(),
+            "the opener must never be spawned for a bare executable path"
+        );
+    }
+
     /// Before this fix,
     /// `TuiPlatformServices::open_path` hand-rolled its own
     /// `std::process::Command::new(OPENER).arg(path).spawn()` instead of
@@ -1472,10 +1621,11 @@ mod notification_osc_tests {
     }
 
     /// Acceptance bar: a title/body carrying a raw control character must
-    /// never reach the OSC sequences unstripped — this pins that
-    /// [`emit_notification_osc`]'s production call site actually runs both
-    /// through [`strip_control_chars`] first, via the pure sequence builders
-    /// directly (same as the OSC 8 leg's control-character guard).
+    /// never reach the OSC sequences unstripped. Drives
+    /// [`strip_control_chars`] and the pure sequence builders directly
+    /// (same as the OSC 8 leg's control-character guard) — a test on the
+    /// building blocks [`emit_notification_osc`] composes in that same
+    /// order, not an end-to-end capture of its actual output.
     #[test]
     fn stripped_title_and_body_never_carry_a_raw_escape_into_the_sequence() {
         let title = strip_control_chars("t\x1b]0;pwned\x07itle");
@@ -1491,17 +1641,117 @@ mod notification_osc_tests {
         assert_eq!(osc777.matches('\x1b').count(), 1, "{osc777:?}");
     }
 
-    /// Acceptance bar: `send_notification` writes real OSC 9/777 bytes to
-    /// the test process's stdout as a side effect — harmless side effect.
-    /// Doesn't assert a visible notification appeared; only that the call
-    /// doesn't panic and returns.
+    /// Acceptance bar: `send_notification` reaches one of its two legs
+    /// (writing OSC 9/777 bytes to the test process's stdout/`/dev/tty`,
+    /// or — on an unrecognized terminal, which is what a non-interactive
+    /// test process almost always is — spawning the native
+    /// `osascript`/`notify-send` command, itself silent on failure) as a
+    /// side effect — harmless either way. Doesn't assert a visible
+    /// notification appeared; only that the call doesn't panic and
+    /// returns.
     #[test]
     fn send_notification_does_not_panic() {
         let services = TuiPlatformServices::new();
-        services.send_notification(Notification::new(
+        let _ = services.send_notification(Notification::new(
             "quadraui#1092",
             "send_notification smoke test",
         ));
+    }
+
+    /// [`terminal_renders_notification_osc_for`]'s allow-list, pinned
+    /// independently of the real process environment: Windows Terminal,
+    /// iTerm2, WezTerm, kitty and rxvt-derived terminals render the OSC
+    /// escapes; a plain/unset `$TERM` and `$TERM_PROGRAM` — the shape
+    /// almost every CI runner and headless test process presents — don't.
+    #[test]
+    fn terminal_allowlist_recognizes_known_capable_terminals_and_nothing_else() {
+        assert!(terminal_renders_notification_osc_for(None, None, true));
+        assert!(terminal_renders_notification_osc_for(
+            Some("iTerm.app"),
+            None,
+            false
+        ));
+        assert!(terminal_renders_notification_osc_for(
+            Some("WezTerm"),
+            None,
+            false
+        ));
+        assert!(terminal_renders_notification_osc_for(
+            None,
+            Some("xterm-kitty"),
+            false
+        ));
+        assert!(terminal_renders_notification_osc_for(
+            None,
+            Some("rxvt-unicode-256color"),
+            false
+        ));
+        assert!(!terminal_renders_notification_osc_for(
+            Some("Apple_Terminal"),
+            Some("xterm-256color"),
+            false
+        ));
+        assert!(!terminal_renders_notification_osc_for(None, None, false));
+        assert!(!terminal_renders_notification_osc_for(
+            None,
+            Some("xterm"),
+            false
+        ));
+    }
+
+    /// Acceptance bar: exactly one delivery leg fires per call — pinning
+    /// the decision [`should_spawn_native_notifier`] makes, the one
+    /// `send_notification` itself defers to, for every reachable
+    /// combination of "is the terminal on the OSC allow-list" and "did
+    /// the escape write reach a target".
+    #[test]
+    fn exactly_one_leg_is_chosen_for_every_capability_and_write_outcome() {
+        // Unrecognized terminal: the escape leg is never even attempted
+        // (`send_notification` short-circuits on `terminal_renders_osc &&`
+        // before calling `emit_notification_osc` at all), so the native
+        // leg is the sole leg — never both, never neither.
+        assert!(should_spawn_native_notifier(false, false));
+
+        // Recognized terminal, write succeeded: `send_notification`
+        // returns `Ok(())` straight from that branch without ever
+        // consulting this function, but pin the decision anyway — a
+        // capable terminal whose write worked must not *also* get a
+        // native popup stacked on top of the one it already rendered.
+        assert!(!should_spawn_native_notifier(true, true));
+
+        // Recognized terminal, write failed (no `/dev/tty`, stdout not
+        // writable): the native leg is the fallback, so delivery survives
+        // a broken escape channel on an otherwise-capable terminal.
+        assert!(should_spawn_native_notifier(true, false));
+    }
+
+    /// [`notify_send_args`] threads [`Notification::tag`] into the
+    /// `notify-send` replace-hint id end-to-end — the glue the blocking
+    /// review found only the pure [`crate::desktop::tui_notify_send_command`]
+    /// builder covered, not the `Notification` -> id translation feeding it.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn notify_send_args_threads_the_tag_into_the_request_id() {
+        let (request_id, title, body) =
+            notify_send_args(&Notification::new("t", "b").with_tag("build-status"));
+        assert_eq!(
+            request_id,
+            crate::desktop::notification_request_id(Some("build-status"))
+        );
+        assert_eq!(title, "t");
+        assert_eq!(body, "b");
+    }
+
+    /// An untagged notification still gets a real, distinct request id
+    /// each time (the `"auto:"` branch) rather than `None` — the replace
+    /// hint `notify-send` receives, so two untagged notifications never
+    /// collide with each other even without a caller-supplied tag.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn notify_send_args_without_a_tag_still_gets_a_unique_request_id() {
+        let (first, ..) = notify_send_args(&Notification::new("t", "b"));
+        let (second, ..) = notify_send_args(&Notification::new("t", "b"));
+        assert_ne!(first, second);
     }
 }
 
@@ -1520,11 +1770,6 @@ pub struct TuiPlatformServices {
     /// empty queue — means "test mode, never touch the real terminal".
     /// Set via [`Self::queue_dialog_events`].
     scripted_dialog_events: RefCell<Option<VecDeque<UiEvent>>>,
-    /// Ids minted by [`Self::begin_power_save_block`] and not yet passed
-    /// to [`Self::end_power_save_block`] — see `power`'s module doc for
-    /// why TUI tracks this honestly instead of leaving the pair
-    /// `Unsupported`.
-    power_save_blocks: RefCell<HashSet<BlockerId>>,
 }
 
 impl TuiPlatformServices {
@@ -1533,7 +1778,6 @@ impl TuiPlatformServices {
             clipboard: TuiClipboard::new(),
             dialog_surface: RefCell::new(None),
             scripted_dialog_events: RefCell::new(None),
-            power_save_blocks: RefCell::new(HashSet::new()),
         }
     }
 
@@ -1707,7 +1951,14 @@ impl PlatformServices for TuiPlatformServices {
     /// `opts.title`/`opts.initial_filename` don't apply to an *open*
     /// dialog and are ignored, matching
     /// [`crate::backend::FileDialogOptions`]'s own doc ("ignored by
-    /// `show_file_open_dialog`").
+    /// `show_file_open_dialog`"). Every key reaches
+    /// `FilePickerController::handle` first, which — in `Open` mode —
+    /// intercepts `-`, `j` and `k` as navigation before the generic
+    /// typing arm (see `FilePickerController`'s module doc), so a file
+    /// named e.g. `my-app.rs` can't be typed into the filter; arrow keys
+    /// still reach it. Unlike `Open`, [`Self::show_file_save_dialog`]
+    /// disables that interception so the destination filename can
+    /// contain those characters.
     fn show_file_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
         let root = opts
             .initial_dir
@@ -1722,12 +1973,12 @@ impl PlatformServices for TuiPlatformServices {
             |event, _backend, viewport| {
                 let visible_rows = (viewport.height as usize)
                     .saturating_sub(crate::compose::folder_picker::PALETTE_CHROME_ROWS);
-                match picker.borrow_mut().handle(event, visible_rows) {
-                    FilePickerEvent::Confirmed { path } => NestedDialogStep::Resolved(path),
-                    FilePickerEvent::Cancelled => NestedDialogStep::Cancelled,
-                    FilePickerEvent::Consumed | FilePickerEvent::Ignored => {
-                        NestedDialogStep::Continue
+                match picker.borrow_mut().handle_event(event, visible_rows) {
+                    Handled::Event(PathPickerAction::Confirmed { path }) => {
+                        NestedDialogStep::Resolved(path)
                     }
+                    Handled::Event(PathPickerAction::Cancelled) => NestedDialogStep::Cancelled,
+                    Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,
                 }
             },
         )
@@ -1738,7 +1989,12 @@ impl PlatformServices for TuiPlatformServices {
     /// [`Self::show_file_open_dialog`]'s doc for the shared shape.
     /// `opts.initial_filename` seeds the destination filename (the
     /// picker's query field — see `FilePickerController`'s module doc
-    /// for why the two are the same field in Save mode).
+    /// for why the two are the same field in Save mode). Unlike
+    /// [`Self::show_file_open_dialog`] and [`Self::show_folder_open_dialog`],
+    /// `-`/`j`/`k` are *not* intercepted as navigation here: the query
+    /// doubles as the destination filename, so those three characters
+    /// must type in unchanged (`journal.md`, `my-notes.txt`,
+    /// `Makefile-k8s`). Arrow keys still move the selection.
     fn show_file_save_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
         let root = opts
             .initial_dir
@@ -1753,12 +2009,12 @@ impl PlatformServices for TuiPlatformServices {
             |event, _backend, viewport| {
                 let visible_rows = (viewport.height as usize)
                     .saturating_sub(crate::compose::folder_picker::PALETTE_CHROME_ROWS);
-                match picker.borrow_mut().handle(event, visible_rows) {
-                    FilePickerEvent::Confirmed { path } => NestedDialogStep::Resolved(path),
-                    FilePickerEvent::Cancelled => NestedDialogStep::Cancelled,
-                    FilePickerEvent::Consumed | FilePickerEvent::Ignored => {
-                        NestedDialogStep::Continue
+                match picker.borrow_mut().handle_event(event, visible_rows) {
+                    Handled::Event(PathPickerAction::Confirmed { path }) => {
+                        NestedDialogStep::Resolved(path)
                     }
+                    Handled::Event(PathPickerAction::Cancelled) => NestedDialogStep::Cancelled,
+                    Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,
                 }
             },
         )
@@ -1776,27 +2032,27 @@ impl PlatformServices for TuiPlatformServices {
     /// titles the palette `"Open Folder {root}"` with no override. This
     /// does not make `BackendCaps::folder_dialogs` `true` on
     /// `TuiBackend` — see the module doc's "Dialogs" section for why.
-    /// Every key reaches `FolderPickerController::handle` first, which
+    /// Every key reaches `FolderPickerController::handle_event` first, which
     /// intercepts `-`, `j` and `k` as navigation before the generic
-    /// typing arm (see its `handle_key` preamble), so a folder named
-    /// e.g. `my-app` can't be typed into the filter — arrow keys still
-    /// reach it.
+    /// typing arm (see `classify_nav_key`'s doc in
+    /// `compose::path_picker`), so a folder named e.g. `my-app` can't be
+    /// typed into the filter — arrow keys still reach it.
     fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
         let root = opts
             .initial_dir
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-        let picker = RefCell::new(FolderPickerController::new(root, Vec::new(), false));
+        let picker = RefCell::new(FolderPickerController::rooted_at(root, Vec::new()));
         self.run_nested_dialog_loop(
             |backend, viewport| picker.borrow().render(viewport, backend),
             |event, _backend, viewport| {
                 let visible_rows = (viewport.height as usize)
                     .saturating_sub(crate::compose::folder_picker::PALETTE_CHROME_ROWS);
-                match picker.borrow_mut().handle(event, visible_rows) {
-                    FolderPickerEvent::Confirmed { path } => NestedDialogStep::Resolved(path),
-                    FolderPickerEvent::Cancelled => NestedDialogStep::Cancelled,
-                    FolderPickerEvent::Consumed | FolderPickerEvent::Ignored => {
-                        NestedDialogStep::Continue
+                match picker.borrow_mut().handle_event(event, visible_rows) {
+                    Handled::Event(PathPickerAction::Confirmed { path }) => {
+                        NestedDialogStep::Resolved(path)
                     }
+                    Handled::Event(PathPickerAction::Cancelled) => NestedDialogStep::Cancelled,
+                    Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,
                 }
             },
         )
@@ -1810,33 +2066,44 @@ impl PlatformServices for TuiPlatformServices {
         let controller = RefCell::new(MessageDialogController::new(opts));
         self.run_nested_dialog_loop(
             |backend, _viewport| controller.borrow().render(backend),
-            |event, backend, _viewport| match controller.borrow_mut().handle(event, backend) {
-                MessageDialogEvent::Resolved(id) => NestedDialogStep::Resolved(id),
-                MessageDialogEvent::Consumed | MessageDialogEvent::Ignored => {
-                    NestedDialogStep::Continue
-                }
+            |event, backend, _viewport| match controller.borrow_mut().handle_event(event, backend) {
+                Handled::Event(id) => NestedDialogStep::Resolved(id),
+                Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,
             },
         )
     }
 
-    /// A genuine best-effort degrade — see the module
-    /// doc's "Notifications" section for the full two-leg story
-    /// ([`emit_notification_osc`]'s OSC 9/777 escape leg, plus a native
-    /// `osascript`/`notify-send` command-line notifier fallback). Both
-    /// legs are independent and best-effort; this always attempts both
-    /// rather than trying to detect which one a given terminal actually
-    /// renders.
-    fn send_notification(&self, n: Notification) {
-        emit_notification_osc(&n);
-        #[cfg(target_os = "macos")]
-        {
-            let _ =
-                crate::desktop::tui_macos_notify_command(&n.title, &n.body, n.is_silent()).spawn();
+    /// A genuine best-effort degrade — see the module doc's
+    /// "Notifications" section for the full story. Exactly one leg
+    /// delivers per call, chosen by [`terminal_renders_notification_osc`]
+    /// rather than by whether a write merely succeeded: the OSC 9/777
+    /// escape leg ([`emit_notification_osc`]) when the current terminal
+    /// is on that allow-list, the native `osascript`/`notify-send`
+    /// command-line notifier otherwise — including as a fallback when the
+    /// terminal is on the allow-list but the escape write itself still
+    /// didn't reach a target. `n.tag()` carries into the `notify-send` leg
+    /// via [`notify_send_args`]/[`crate::desktop::notification_request_id`]
+    /// as its replace hint.
+    fn send_notification(&self, n: Notification) -> ServiceResult<()> {
+        let terminal_renders_osc = terminal_renders_notification_osc();
+        let escape_write_succeeded = terminal_renders_osc && emit_notification_osc(&n);
+        if escape_write_succeeded {
+            return Ok(());
         }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            let _ = crate::desktop::tui_notify_send_command(&n.title, &n.body).spawn();
+        if should_spawn_native_notifier(terminal_renders_osc, escape_write_succeeded) {
+            #[cfg(target_os = "macos")]
+            {
+                let _ = crate::desktop::tui_macos_notify_command(&n.title, &n.body, n.is_silent())
+                    .spawn();
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                let (request_id, title, body) = notify_send_args(&n);
+                let _ = crate::desktop::tui_notify_send_command(&title, &body, Some(&request_id))
+                    .spawn();
+            }
         }
+        Ok(())
     }
 
     /// Infallible wrapper over [`Self::open_url_result`], discarding its
@@ -1851,16 +2118,22 @@ impl PlatformServices for TuiPlatformServices {
     }
 
     /// Genuinely opens `url`, rather than #949's honest but
-    /// unconditional `Err(BackendError::Unsupported)`. Tries the platform
-    /// URL opener first ([`crate::desktop::try_open_with_default`] —
-    /// `xdg-open`/`open` on Unix, `ShellExecuteW` directly on Windows,
-    /// never a shell); if it can't even launch (no desktop session,
-    /// opener binary missing), falls back to an OSC 8 hyperlink
-    /// ([`emit_osc8_hyperlink`]) so a capable terminal still makes the
-    /// URL clickable. Only reports `Err(BackendError::Unsupported)` when
-    /// *neither* leg reached anything — see the module doc for the full
+    /// unconditional `Err(BackendError::Unsupported)`. First validates
+    /// `url` via [`crate::desktop::validate_open_url`] — rejecting a bare
+    /// path, a `javascript:`/`data:` scheme, or a `file:` URL that points
+    /// at an executable or app bundle, so this method stays "open a URL
+    /// in a browser", not "run whatever string a caller hands it" — then
+    /// tries the platform URL opener
+    /// ([`crate::desktop::try_open_with_default`] — `xdg-open`/`open` on
+    /// Unix, `ShellExecuteW` directly on Windows, never a shell); if it
+    /// can't even launch (no desktop session, opener binary missing),
+    /// falls back to an OSC 8 hyperlink ([`emit_osc8_hyperlink`]) so a
+    /// capable terminal still makes the URL clickable. Only reports
+    /// `Err(BackendError::Unsupported)` when validation fails or *neither*
+    /// opener leg reached anything — see the module doc for the full
     /// three-step story.
     fn open_url_result(&self, url: &str) -> ServiceResult<()> {
+        crate::desktop::validate_open_url(url)?;
         open_url_via(url, |u| {
             crate::desktop::try_open_with_default(std::ffi::OsStr::new(u))
         })
@@ -2003,44 +2276,16 @@ impl PlatformServices for TuiPlatformServices {
         &SERVICE
     }
 
-    /// An honest no-op blocker, not `Unsupported`: a terminal has no
-    /// sleep-inhibitor API to call into, but it can still mint and track
-    /// a real [`BlockerId`] so a TUI app's begin/end lifecycle behaves
-    /// consistently rather than failing on the very first call. See
-    /// `power`'s module doc.
-    fn begin_power_save_block(&self, kind: PowerSaveKind) -> ServiceResult<BlockerId> {
-        let _ = kind;
-        let id = BlockerId::next();
-        self.power_save_blocks.borrow_mut().insert(id);
-        Ok(id)
-    }
-
-    /// Ends a blocker previously started by [`Self::begin_power_save_block`].
-    /// Errors on an unknown or already-ended id rather than silently
-    /// succeeding — the bookkeeping is the whole point of the no-op
-    /// degrade, so it stays honest about what it actually tracked.
-    fn end_power_save_block(&self, id: BlockerId) -> ServiceResult<()> {
-        if self.power_save_blocks.borrow_mut().remove(&id) {
-            Ok(())
-        } else {
-            Err(BackendError::PlatformFailure {
-                context: "end_power_save_block: unknown or already-ended blocker id".to_string(),
-            })
-        }
-    }
-
-    /// An honest no-op, not `Unsupported`: this backend itself never
-    /// creates a login-item registration (`set_login_item` stays
-    /// `Unsupported` on TUI), so `false` is always truthful about *this
-    /// backend's own* state — see this module's "Login items" doc
-    /// section for the caveat that a host or packaging step can still
-    /// have registered the binary out of band, in which case this call
-    /// reports `false` for an app that does start at login some other
-    /// way. `login_item`'s module doc has why `set_login_item` keeps the
-    /// trait's `Unsupported` default while this query does not.
-    fn login_item_enabled(&self) -> ServiceResult<bool> {
-        Ok(false)
-    }
+    // `begin_power_save_block`/`end_power_save_block` and
+    // `login_item_enabled` all fall through to the trait's own
+    // `Unsupported` default — a terminal has no sleep-inhibitor API and
+    // no OS login-item registration to query, so there is no honest
+    // non-error answer to give for any of the three. See this module's
+    // "Login items" doc section and `power`'s module doc. Left
+    // unoverridden (rather than restated here) so that default is the
+    // one place this behavior lives, the same posture
+    // `add_recent_document`/`clear_recent_documents`/`set_dock_menu`
+    // already have below.
 
     // `add_recent_document`, `clear_recent_documents`, and `set_dock_menu`
     // all fall through to the trait's own `Unsupported` default — see
@@ -2122,40 +2367,25 @@ mod update_service_tests {
 #[cfg(test)]
 mod power_save_block_tests {
     use super::*;
+    use crate::power::{BlockerId, PowerSaveKind};
 
+    /// A terminal has no sleep-inhibitor API to call into — `begin`/
+    /// `end_power_save_block` stay at the trait's own `Unsupported`
+    /// default, the same answer GTK/macOS/Win give (none of them
+    /// override either method). Callers must be able to tell "this
+    /// backend can't hold the machine awake" from "it did and is now
+    /// holding it", so a faked-up blocker id that never asked the OS for
+    /// anything is not an honest `Ok`.
     #[test]
-    fn begin_mints_distinct_ids() {
+    fn begin_and_end_stay_unsupported() {
         let service = TuiPlatformServices::new();
-        let a = service
-            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
-            .unwrap();
-        let b = service
-            .begin_power_save_block(PowerSaveKind::PreventAppSuspension)
-            .unwrap();
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn end_succeeds_on_a_just_begun_id() {
-        let service = TuiPlatformServices::new();
-        let id = service
-            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
-            .unwrap();
-        assert_eq!(service.end_power_save_block(id), Ok(()));
-    }
-
-    #[test]
-    fn end_fails_on_an_unknown_or_already_ended_id() {
-        let service = TuiPlatformServices::new();
-        let id = service
-            .begin_power_save_block(PowerSaveKind::PreventDisplaySleep)
-            .unwrap();
-        assert_eq!(service.end_power_save_block(id), Ok(()));
         assert_eq!(
-            service.end_power_save_block(id),
-            Err(BackendError::PlatformFailure {
-                context: "end_power_save_block: unknown or already-ended blocker id".to_string(),
-            })
+            service.begin_power_save_block(PowerSaveKind::PreventDisplaySleep),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(
+            service.end_power_save_block(BlockerId::next()),
+            Err(BackendError::Unsupported)
         );
     }
 
@@ -2338,15 +2568,19 @@ mod message_dialog_tests {
     }
 
     /// A terminal has no OS login-item registration to query — this pins
-    /// the honest no-op degrade: always `Ok(false)`, on every host this
-    /// runs on (no environment dependency, unlike `displays` above).
-    /// See the module doc's "Login items" section for why `false` here
-    /// is not the same claim as "this app is not registered to start at
-    /// login by any mechanism".
+    /// the trait's own `Unsupported` default, the same answer GTK/
+    /// macOS/Win give (none of them override this method either), on
+    /// every host this runs on (no environment dependency, unlike
+    /// `displays` above). A faked-up `Ok(false)` would read as "this app
+    /// is not registered to start at login", which this backend has no
+    /// way to actually know.
     #[test]
-    fn login_item_enabled_always_reports_false_on_tui() {
+    fn login_item_enabled_always_reports_unsupported_on_tui() {
         let services = TuiPlatformServices::new();
-        assert_eq!(services.login_item_enabled(), Ok(false));
+        assert_eq!(
+            services.login_item_enabled(),
+            Err(BackendError::Unsupported)
+        );
     }
 
     /// A terminal has no OS-level recent-documents list to add to — this

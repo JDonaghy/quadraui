@@ -16,9 +16,11 @@
 //!
 //! ## What's in the box
 //!
-//! 49 primitives (one module each under `src/primitives/`), each
-//! declarative + serde-friendly so apps and Lua plugins can describe UI
-//! as data. A representative sample:
+//! 50 primitive modules (one each under `src/primitives/`) — widgets,
+//! each declarative + serde-friendly so apps and Lua plugins can
+//! describe UI as data, plus the `layout_metrics` and `row_stack`
+//! shared-math helpers the widget modules reuse. A representative
+//! sample:
 //!
 //! | Primitive | Use for |
 //! |-----------|---------|
@@ -100,19 +102,20 @@
 //!
 //! ## Status
 //!
-//! `0.9.x` — pre-1.0, published on crates.io. Breaking changes are
+//! `0.10.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
-//! `quadraui/docs/decisions/DECISIONS.md`. 49 primitives shipped. The TUI
-//! and GTK backends have full feature parity and are battle-tested by
-//! vimcode (5000+ tests). The macOS backend implements the whole
-//! `Backend` trait and is built/tested for real on `macos-latest` CI. The
-//! Windows backend's window/event/platform-services infrastructure is
-//! real and CI-blocking on `windows-latest`, and every per-primitive
-//! rasteriser is shipped too, with no `todo!()` left in
-//! `src/win/backend.rs` — builds, tests and the cross-backend conformance
-//! matrix are all blocking on `windows-latest` CI. See the root
-//! `README.md`'s *Status* section for the specifics and issue links.
+//! `quadraui/docs/decisions/DECISIONS.md`. 50 primitive modules
+//! shipped. The TUI and GTK backends have full feature parity and are
+//! battle-tested by vimcode (5000+ tests). The macOS backend
+//! implements the whole `Backend` trait and is built/tested for real
+//! on `macos-latest` CI. The Windows backend's window/event/platform-
+//! services infrastructure is real and CI-blocking on
+//! `windows-latest`, and every per-primitive rasteriser is shipped
+//! too, with no `todo!()` left in `src/win/backend.rs` — builds, tests
+//! and the cross-backend conformance matrix are all blocking on
+//! `windows-latest` CI. See the root `README.md`'s *Status* section
+//! for the specifics and issue links.
 //!
 //! ## Plugin invariants (briefly)
 //!
@@ -446,11 +449,19 @@ pub mod shell_adapter;
 ))]
 mod runtime;
 
-// Shared, backend-neutral desktop-interaction plumbing: window-drag
-// arm/threshold/commit, modal-pump re-entrancy guard, headless smoke-mode
-// predicates, PointerShape enum-walk scaffold. Compiled unconditionally —
-// no toolkit dependency of its own — so a brand-new backend gets it for
-// free. See `desktop`'s module doc and `BACKEND.md` §10.
+// Shared, backend-neutral desktop/OS-service plumbing: window-drag
+// arm/threshold/commit, modal-pump re-entrancy guard, trash, the
+// default-handler opener, notifications, clipboard error mapping, headless
+// smoke-mode predicates, PointerShape enum-walk scaffold, caught-panic
+// reporting. Compiled unconditionally — no toolkit dependency of its own —
+// so a brand-new backend gets it for free. See `platform`'s module doc and
+// `BACKEND.md` §10.
+mod platform;
+
+// Facade re-exporting every `platform` item at its historical
+// `crate::desktop::X` path, so every existing call site across
+// `gtk`/`macos`/`win`/`tui` keeps compiling unchanged. See `desktop`'s
+// module doc.
 mod desktop;
 
 // Shared text-selection state machine: the region registry plus active-selection
@@ -553,8 +564,8 @@ pub use primitives::find_replace::{
 pub use primitives::float::{Float, FloatHit, FloatLayout, FloatMeasure};
 pub use primitives::form::{
     ButtonRowItem, ControlWidth, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
-    FormItemMeasure, FormLayout, LabelAlign, LabelPosition, ToggleGroupItem, ValidationState,
-    VisibleFormField,
+    FormItemMeasure, FormLayout, FormSpacing, LabelAlign, LabelPosition, RowAlign, ToggleGroupItem,
+    ValidationState, VisibleFormField,
 };
 pub use primitives::image::{Image, ImageFit, ImageHit, ImageLayout, ImageSource};
 pub use primitives::list::{
@@ -564,7 +575,10 @@ pub use primitives::list::{
 pub use primitives::menu_bar::{
     MenuBar, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout, VisibleMenuBarItem,
 };
-pub use primitives::message_list::{MessageList, MessageListHit, MessageListMeasure, MessageRow};
+pub use primitives::message_list::{
+    MessageList, MessageListHit, MessageListLayout, MessageListMeasure, MessageRow,
+    VisibleMessageRow,
+};
 pub use primitives::minimap::{
     aggregate_spans, reserved_width, sample_blocks, sample_window, window_start_line, Minimap,
     MinimapGrid, MinimapHit, MinimapLayout, MinimapLine, MinimapScale, MinimapSizing, MinimapSpan,
@@ -583,6 +597,10 @@ pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout, PaletteMode,
     PalettePreview, PaletteScrollbar, VisiblePaletteItem,
 };
+// `Panel`/`PanelAction` are `#[deprecated]` (use `SidebarPanel` + `Toolbar`
+// instead). Allow it here since `pub use` of a deprecated item is itself a
+// use site.
+#[allow(deprecated)]
 pub use primitives::panel::{
     Panel, PanelAction, PanelHit, PanelLayout, PanelMeasure, VisiblePanelAction,
 };
@@ -647,7 +665,8 @@ pub use primitives::toast::{
 };
 pub use primitives::toolbar::{
     Toolbar, ToolbarButton, ToolbarEvent, ToolbarHit, ToolbarIcons, ToolbarItemKind,
-    ToolbarItemMeasure, ToolbarLayout, ToolbarPaintOptions, ToolbarVAlign, VisibleToolbarItem,
+    ToolbarItemMeasure, ToolbarItemRole, ToolbarLayout, ToolbarLayoutOptions, ToolbarOrientation,
+    ToolbarPaintOptions, ToolbarRailStyle, ToolbarVAlign, VisibleToolbarItem,
 };
 pub use primitives::tooltip::{
     ResolvedPlacement, Tooltip, TooltipBorder, TooltipChrome, TooltipHit, TooltipLayout,
@@ -738,24 +757,46 @@ pub use compose::markdown::{
 pub use compose::{
     filter_help_actions, help_actions_to_palette_items, notify_or_toast, AppShell, AppShellEvent,
     AppShellLayout, BackendWidget, BottomBand, BottomPanelConfig, BottomPanelController,
-    BottomPanelEvent, BottomPanelLayout, BottomPanelTab, ChatController, ChatControllerEvent,
-    ChatRole, ChatTurn, ContextMenuController, ContextMenuOutcome, DualModePaletteController,
-    DualModePaletteEvent, FilePickerController, FilePickerEvent, FilePickerMode, FocusGroup,
-    FocusRing, FolderPickerController, FolderPickerEvent, FormController, FormControllerEvent,
-    GroupLayout, HelpAction, HelpNote, HelpOverlayController, HelpOverlayEvent, HelpRegistry,
-    ListHoverTracker, MenuDef, MenuEvent, MenuSystem, MessageDialogController, MessageDialogEvent,
-    NavigationMode, Pane, PaneDragRect, PaneTab, PanelDefinition, SectionKind, ShellPosition,
-    SidebarEvent, SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef,
-    SidebarSystem, StatusBarAction, StatusBarInteraction, TabGroupController, TabGroupEvent,
-    TabGroupLayout, ToastStackController, ToastStackEvent, ToolbarHoverTracker, TreeController,
-    TreeControllerEvent, TreeHoverTracker, ViewHelp, WorkspaceController, WorkspaceDoc,
-    WorkspaceEvent, WorkspaceLayout, PALETTE_CHROME_ROWS,
+    BottomPanelEvent, BottomPanelLayout, BottomPanelTab, ChatController, ChatControllerAction,
+    ChatRole, ChatTurn, ContextMenuController, ContextMenuOutcome, DualModePaletteAction,
+    DualModePaletteController, Edge, FilePickerController, FilePickerMode, FocusGroup, FocusRing,
+    FolderPickerController, FormController, FormControllerAction, FormDialogAction,
+    FormDialogController, GroupLayout, Handled, HelpAction, HelpNote, HelpOverlayAction,
+    HelpOverlayController, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent, MenuSystem,
+    MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab, PanelDefinition,
+    PathPickerAction, SectionKind, ShellPosition, SidebarEvent, SidebarPanelBody,
+    SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef, SidebarSystem,
+    StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout, ToastStackAction,
+    ToastStackController, ToolbarHoverTracker, TreeController, TreeControllerEvent,
+    TreeHoverTracker, ViewHelp, WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout,
+    PALETTE_CHROME_ROWS,
+};
+// `StatusBarAction`, `MessageDialogEvent`, `ToastStackEvent`, `HelpOverlayEvent`,
+// `DualModePaletteEvent`, `FilePickerEvent`, `FolderPickerEvent`,
+// `FormControllerEvent`, `FormDialogEvent` and `ChatControllerEvent` are
+// `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
+// `Handled<WidgetId>`, `MessageDialogController::handle_event`'s
+// `Handled<MessageDialogChoice>`, `ToastStackController::handle_event`'s
+// `Handled<ToastStackAction>`, `HelpOverlayController::handle_event`'s
+// `Handled<HelpOverlayAction>`, `DualModePaletteController::handle_event`'s
+// `Handled<DualModePaletteAction>`, `FilePickerController`/
+// `FolderPickerController::handle_event`'s `Handled<PathPickerAction>`,
+// `FormController::handle_event`/`handle_cached_event`'s
+// `Handled<FormControllerAction>`, `FormDialogController::handle_event`'s
+// `Handled<FormDialogAction>`, and `ChatController::handle_event`'s
+// `Handled<ChatControllerAction>` instead). Allow them here since `pub use`
+// of a deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use compose::{
+    ChatControllerEvent, DualModePaletteEvent, FilePickerEvent, FolderPickerEvent,
+    FormControllerEvent, FormDialogEvent, HelpOverlayEvent, MessageDialogEvent, StatusBarAction,
+    ToastStackEvent,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
     text_selection_line_range, DragState, DragTarget, ScrollSurface, SurfaceScrollbar, TextRegion,
 };
-pub use modal_stack::{ModalEntry, ModalStack};
+pub use modal_stack::{Focusable, ModalEntry, ModalStack};
 pub use runner::{AppLogic, Reaction, StepOutcome};
 
 /// Crate version, sourced from `Cargo.toml`.

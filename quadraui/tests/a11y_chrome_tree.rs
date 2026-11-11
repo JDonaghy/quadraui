@@ -12,12 +12,16 @@ use quadraui::testing::a11y::A11yScenario;
 use quadraui::{
     compute_find_replace_hit_regions, ActivityBar, ActivityItem, Color, CommandCenter, CommandLine,
     ContextMenu, ContextMenuItem, ContextMenuItemMeasure, Dialog, DialogButton, DialogMeasure,
-    DropOverlay, FieldKind, FindReplacePanel, Form, FormField, Icon, MenuBar, MenuBarItem, Panel,
-    PanelAction, ProgressBar, Rect, RichTextLink, RichTextPopup, RichTextPopupMeasure, Scrollbar,
-    Spinner, Split, SplitDirection, SplitTree, StatusBar, StatusBarSegment, StyledText, Surface,
-    TabBar, TabBarSegment, TabItem, Toast, ToastCorner, ToastOverlay, ToastSeverity,
-    ToolbarItemMeasure, Tooltip, TooltipMeasure, ValidationState, WidgetId, FR_PANEL_WIDTH,
+    DropOverlay, FieldKind, FindReplacePanel, Form, FormField, Icon, MenuBar, MenuBarItem,
+    ProgressBar, Rect, RichTextLink, RichTextPopup, RichTextPopupMeasure, Scrollbar, Spinner,
+    Split, SplitDirection, SplitTree, StatusBar, StatusBarSegment, StyledText, Surface, TabBar,
+    TabBarSegment, TabItem, Toast, ToastCorner, ToastOverlay, ToastSeverity, ToolbarItemMeasure,
+    Tooltip, TooltipMeasure, ValidationState, WidgetId, FR_PANEL_WIDTH,
 };
+// `Panel`/`PanelAction` are `#[deprecated]`; imported separately so the
+// allow stays scoped to the one `Surface::Panel` a11y case below.
+#[allow(deprecated)]
+use quadraui::{Panel, PanelAction};
 
 const VIEWPORT: Rect = Rect {
     x: 0.0,
@@ -310,6 +314,7 @@ fn field(id: &str, label: &str, kind: FieldKind) -> FormField {
         tab_index: None,
         control_width: None,
         min_control_width: None,
+        row_align: None,
     }
 }
 
@@ -340,6 +345,7 @@ fn form_fields_carry_role_state_and_a_live_validation_alert() {
         label_width: None,
         control_width: Default::default(),
         min_control_width: None,
+        spacing: Default::default(),
     };
     let snapshot = A11yScenario::new()
         .with_surface(Surface::Form {
@@ -402,6 +408,7 @@ fn a_field_that_owns_its_own_set_size_does_not_borrow_the_forms_position() {
         label_width: None,
         control_width: Default::default(),
         min_control_width: None,
+        spacing: Default::default(),
     };
     let snapshot = A11yScenario::new()
         .with_surface(Surface::Form {
@@ -569,7 +576,7 @@ window \"quadraui\" [focused]
   progress \"Indexing\" [range=0.5/0-1]
     presentation \"Progress track\"
     button \"Cancel\"
-  group \"Split\" [value=\"horizontal\" range=0.5/0-1]
+  splitter \"Split\" [value=\"horizontal\" range=0.5/0-1]
     presentation \"Split divider\"
   scroll_bar \"Vertical scrollbar\" [range=0/0-1]
     presentation \"Scrollbar thumb\"",
@@ -605,6 +612,25 @@ fn overlays_and_containers_report_their_own_structure() {
         fg: None,
         bg: None,
     };
+    // `Panel`/`PanelAction` are `#[deprecated]`; `Surface::Panel` keeps its
+    // own a11y coverage until the two-PR removal lands, matching the
+    // `#[allow(deprecated)]` plumbing already in `frame.rs` and `testing/mod.rs`.
+    #[allow(deprecated)]
+    let panel_surface = Surface::Panel {
+        rect: rect(1.0, 8.0),
+        panel: Panel {
+            id: WidgetId::new("panel"),
+            title: Some(StyledText::plain("Problems")),
+            actions: vec![PanelAction {
+                id: WidgetId::new("panel:filter"),
+                icon: "⚑".to_string(),
+                tooltip: "Filter".to_string(),
+                is_active: true,
+            }],
+            accent: None,
+            collapsed: true,
+        },
+    };
     let snapshot = A11yScenario::new()
         .with_surface(Surface::Spinner {
             rect: rect(0.0, 1.0),
@@ -615,29 +641,15 @@ fn overlays_and_containers_report_their_own_structure() {
                 accent: None,
             },
         })
-        .with_surface(Surface::Panel {
-            rect: rect(1.0, 8.0),
-            panel: Panel {
-                id: WidgetId::new("panel"),
-                title: Some(StyledText::plain("Problems")),
-                actions: vec![PanelAction {
-                    id: WidgetId::new("panel:filter"),
-                    icon: "⚑".to_string(),
-                    tooltip: "Filter".to_string(),
-                    is_active: true,
-                }],
-                accent: None,
-                collapsed: true,
-            },
-        })
+        .with_surface(panel_surface)
         .with_surface(Surface::SplitTree {
             rect: rect(9.0, 10.0),
-            tree: SplitTree::Split {
-                direction: SplitDirection::Vertical,
-                ratio: 0.25,
-                first: Box::new(SplitTree::Leaf(WidgetId::new("editor"))),
-                second: Box::new(SplitTree::Leaf(WidgetId::new("terminal"))),
-            },
+            tree: SplitTree::split(
+                SplitDirection::Vertical,
+                0.25,
+                SplitTree::Leaf(WidgetId::new("editor")),
+                SplitTree::Leaf(WidgetId::new("terminal")),
+            ),
         })
         .with_surface(Surface::Tooltip {
             layout: tooltip.layout(
@@ -667,8 +679,8 @@ window \"quadraui\" [focused]
     presentation \"Spinner\"
   group \"Problems\" [collapsed]
     button \"Filter\" [checked pos=1/1]
-  group \"Split tree\"
-    group \"Split\" [value=\"vertical\" range=0.25/0-1]
+  splitter \"Split tree\"
+    splitter \"Split\" [value=\"vertical\" range=0.25/0-1]
       group \"editor\"
       presentation \"Split divider\"
       group \"terminal\"
@@ -689,36 +701,36 @@ fn nested_split_of_splits_keeps_all_four_panes() {
     let snapshot = A11yScenario::new()
         .with_surface(Surface::SplitTree {
             rect: rect(0.0, 10.0),
-            tree: SplitTree::Split {
-                direction: SplitDirection::Horizontal,
-                ratio: 0.5,
-                first: Box::new(SplitTree::Split {
-                    direction: SplitDirection::Vertical,
-                    ratio: 0.5,
-                    first: Box::new(SplitTree::Leaf(WidgetId::new("top-left"))),
-                    second: Box::new(SplitTree::Leaf(WidgetId::new("bottom-left"))),
-                }),
-                second: Box::new(SplitTree::Split {
-                    direction: SplitDirection::Vertical,
-                    ratio: 0.5,
-                    first: Box::new(SplitTree::Leaf(WidgetId::new("top-right"))),
-                    second: Box::new(SplitTree::Leaf(WidgetId::new("bottom-right"))),
-                }),
-            },
+            tree: SplitTree::split(
+                SplitDirection::Horizontal,
+                0.5,
+                SplitTree::split(
+                    SplitDirection::Vertical,
+                    0.5,
+                    SplitTree::Leaf(WidgetId::new("top-left")),
+                    SplitTree::Leaf(WidgetId::new("bottom-left")),
+                ),
+                SplitTree::split(
+                    SplitDirection::Vertical,
+                    0.5,
+                    SplitTree::Leaf(WidgetId::new("top-right")),
+                    SplitTree::Leaf(WidgetId::new("bottom-right")),
+                ),
+            ),
         })
         .snapshot();
 
     snapshot.assert_matches(
         "\
 window \"quadraui\" [focused]
-  group \"Split tree\"
-    group \"Split\" [value=\"horizontal\" range=0.5/0-1]
-      group \"Split\" [value=\"vertical\" range=0.5/0-1]
+  splitter \"Split tree\"
+    splitter \"Split\" [value=\"horizontal\" range=0.5/0-1]
+      splitter \"Split\" [value=\"vertical\" range=0.5/0-1]
         group \"top-left\"
         presentation \"Split divider\"
         group \"bottom-left\"
       presentation \"Split divider\"
-      group \"Split\" [value=\"vertical\" range=0.5/0-1]
+      splitter \"Split\" [value=\"vertical\" range=0.5/0-1]
         group \"top-right\"
         presentation \"Split divider\"
         group \"bottom-right\"",

@@ -16,7 +16,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { QuiApp, pump } = require("../js/index.ts");
+const { QuiApp, pump, run } = require("../js/index.ts");
 
 /**
  * Races `promise` against a bounded timer, rejecting with `message` if
@@ -154,6 +154,109 @@ test("pump(app) stops itself once step() reports the app has exited", async () =
     stepCalls,
     callsWhenStopped,
     "pump must stop calling step() once the app has exited",
+  );
+});
+
+test("run(app) steps once immediately, then makes no further step() calls while idle", async () => {
+  const app = new QuiApp(5, 5);
+  let stepCalls = 0;
+  app.setTickHandler(() => {
+    stepCalls += 1;
+  });
+
+  // A `fallbackIntervalMs` far longer than this test waits so any call
+  // observed beyond the first, immediate one can only have come from a
+  // real poll -- exactly the regression this test exists to catch.
+  const handle = run(app, 10_000);
+  const callsAfterStart = stepCalls;
+  assert.equal(callsAfterStart, 1, "run(app) must step once immediately");
+
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(
+    stepCalls,
+    callsAfterStart,
+    "run(app) must make no further step() calls while idle (no waker/timer wake, well under fallbackIntervalMs)",
+  );
+
+  handle.stop();
+});
+
+test("run(app) steps promptly in response to waker().wake(), without waiting for fallbackIntervalMs", async () => {
+  const app = new QuiApp(5, 5);
+  let stepCalls = 0;
+  app.setTickHandler(() => {
+    stepCalls += 1;
+  });
+
+  const handle = run(app, 10_000);
+  const callsAfterStart = stepCalls;
+
+  app.waker().wake();
+  await withTimeout(
+    new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        if (stepCalls > callsAfterStart) {
+          clearInterval(check);
+          resolve();
+        }
+      }, 1);
+    }),
+    2_000,
+    "run(app) never stepped in response to waker().wake() -- the wake notify never fired",
+  );
+
+  handle.stop();
+});
+
+test("run(app) stops itself once step() reports the app has exited", async () => {
+  const app = new QuiApp(5, 5);
+  let stepCalls = 0;
+  app.setTickHandler(() => {
+    stepCalls += 1;
+    return stepCalls >= 3 ? false : undefined;
+  });
+
+  await withTimeout(
+    new Promise<void>((resolve) => {
+      run(app, 1);
+      const check = setInterval(() => {
+        if (stepCalls >= 3) {
+          clearInterval(check);
+          resolve();
+        }
+      }, 1);
+    }),
+    5_000,
+    "run(app) never drove step() to the expected 3 calls",
+  );
+
+  const callsWhenStopped = stepCalls;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(
+    stepCalls,
+    callsWhenStopped,
+    "run must stop calling step() once the app has exited",
+  );
+});
+
+test("run(app)'s returned handle disarms the wake notify so a post-stop wake() is a harmless no-op", () => {
+  const app = new QuiApp(5, 5);
+  let stepCalls = 0;
+  app.setTickHandler(() => {
+    stepCalls += 1;
+  });
+
+  const handle = run(app, 10_000);
+  const callsWhenStopped = stepCalls;
+  handle.stop();
+
+  // Still a live waker handle -- `stop()` must disarm the *notify*, not
+  // break the waker itself.
+  app.waker().wake();
+  assert.equal(
+    stepCalls,
+    callsWhenStopped,
+    "a wake() after handle.stop() must not drive any further step() call",
   );
 });
 

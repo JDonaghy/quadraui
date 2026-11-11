@@ -48,7 +48,13 @@ pub fn tui_dialog_layout(dialog: &Dialog, viewport: crate::event::Rect) -> Dialo
         (0.0, 0.0)
     };
 
-    let input_h = if dialog.input.is_some() { 1.0 } else { 0.0 };
+    // A `Form` input needs one row per field, not the single row every
+    // other `DialogInput` variant occupies.
+    let input_h = match &dialog.input {
+        Some(DialogInput::Form(form)) => form.fields.len().max(1) as f32,
+        Some(_) => 1.0,
+        None => 0.0,
+    };
 
     // Dialog width: at least wide enough for the table content.
     let default_w = (viewport.width * 0.5).clamp(30.0, 60.0);
@@ -345,6 +351,11 @@ pub fn draw_dialog_with_nerd_fonts(
                 let toolbar_area = RRect::new(ix, iy, iw, 1);
                 super::toolbar::draw_toolbar(buf, toolbar_area, toolbar, theme, None, None);
             }
+            // `FormDialogController` (`compose::form_dialog`) paints the
+            // embedded form separately, through `Backend::draw_form`
+            // inside `input_bounds`, the same cross-backend path every
+            // other `Form` host uses — nothing to draw here.
+            DialogInput::Form(_) => {}
         }
     }
 

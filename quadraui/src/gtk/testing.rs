@@ -140,6 +140,13 @@ impl<A: AppLogic> GtkDriver<A> {
         // click landed correctly in a real window. Seeding it here makes
         // the harness measure clicks the way production does.
         {
+            // See `super::TEST_RENDER_LOCK`'s doc: this touches the same
+            // process-global Pango font map `GtkBackend::enter_frame_scope`
+            // guards — without the same lock here, a concurrently-running
+            // test's paint could race this seeding step.
+            #[cfg(test)]
+            let _test_render_guard = super::test_render_guard();
+
             let cr = Context::new(&surface).expect("Context::new on headless ImageSurface");
             let pctx = pangocairo::functions::create_context(&cr);
             pctx.set_font_description(&pangocairo::pango::FontDescription::from_string("Sans 11"));
@@ -189,13 +196,19 @@ impl<A: AppLogic> GtkDriver<A> {
             return Reaction::Exit;
         }
         let reaction = {
+            // Tick-driven work (e.g. hover/tooltip layout) measures text
+            // via the stored Pango context the same way `Self::dispatch`'s
+            // hit-testing does — see `super::TEST_RENDER_LOCK`'s doc.
+            #[cfg(test)]
+            let _test_render_guard = super::test_render_guard();
+
             let (backend, app) = self.core.parts_mut();
             app.tick(backend)
         };
         let surface = &self.surface;
         let width = self.width;
         let height = self.height;
-        self.core.apply_outcome(reaction.into(), |backend, app| {
+        self.core.apply_outcome(reaction, |backend, app| {
             let cr = Context::new(surface).expect("Context::new on headless ImageSurface");
             render_frame(backend, app, &cr, width, height);
         })
@@ -208,6 +221,14 @@ impl<A: AppLogic> GtkDriver<A> {
             return Reaction::Exit;
         }
         let outcome = {
+            // Click/hover routing measures hit regions via the stored
+            // Pango context *outside* `enter_frame_scope` (see
+            // `Self::new`'s doc on why) — same process-global font map
+            // `super::TEST_RENDER_LOCK` guards there, so this path needs
+            // the same lock.
+            #[cfg(test)]
+            let _test_render_guard = super::test_render_guard();
+
             let (backend, app) = self.core.parts_mut();
             dispatch_event(event, backend, app)
         };

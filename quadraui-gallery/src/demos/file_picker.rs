@@ -16,9 +16,9 @@
 use std::path::PathBuf;
 
 use quadraui::{
-    Backend, BackendCaps, Color, FilePickerController, FilePickerEvent, FilePickerMode,
-    FolderPickerController, FolderPickerEvent, InteractionState, Reaction, Rect, StatusBar,
-    StatusBarSegment, UiEvent, WidgetId, PALETTE_CHROME_ROWS,
+    Backend, BackendCaps, Color, FilePickerController, FilePickerMode, FolderPickerController,
+    Handled, InteractionState, PathPickerAction, Reaction, Rect, StatusBar, StatusBarSegment,
+    UiEvent, WidgetId, PALETTE_CHROME_ROWS,
 };
 use tempfile::TempDir;
 
@@ -75,7 +75,7 @@ impl FilePickerDemo {
             open_picker: FilePickerController::new(FilePickerMode::Open, root.clone(), vec![]),
             save_picker: FilePickerController::new(FilePickerMode::Save, root.clone(), vec![])
                 .with_initial_filename("untitled.rs"),
-            folder_picker: FolderPickerController::new(root, vec![], false),
+            folder_picker: FolderPickerController::rooted_at(root, vec![]),
             confirmed: None,
         }
     }
@@ -170,41 +170,41 @@ impl Demo for FilePickerDemo {
         let popup_rect = Self::popup_rect(area, backend);
         let visible_rows = Self::visible_rows(popup_rect, backend);
         match variant {
-            0 => match self.open_picker.handle(event, visible_rows) {
-                FilePickerEvent::Confirmed { path } => {
+            0 => match self.open_picker.handle_event(event, visible_rows) {
+                Handled::Event(PathPickerAction::Confirmed { path }) => {
                     self.confirmed = Some(format!("Opened: {}", path.display()));
                     Reaction::Redraw
                 }
-                FilePickerEvent::Cancelled => {
+                Handled::Event(PathPickerAction::Cancelled) => {
                     self.confirmed = Some("Dismissed".into());
                     Reaction::Redraw
                 }
-                FilePickerEvent::Consumed => Reaction::Redraw,
-                FilePickerEvent::Ignored => Reaction::Continue,
+                Handled::Consumed => Reaction::Redraw,
+                Handled::Ignored => Reaction::Continue,
             },
-            1 => match self.save_picker.handle(event, visible_rows) {
-                FilePickerEvent::Confirmed { path } => {
+            1 => match self.save_picker.handle_event(event, visible_rows) {
+                Handled::Event(PathPickerAction::Confirmed { path }) => {
                     self.confirmed = Some(format!("Saved: {}", path.display()));
                     Reaction::Redraw
                 }
-                FilePickerEvent::Cancelled => {
+                Handled::Event(PathPickerAction::Cancelled) => {
                     self.confirmed = Some("Dismissed".into());
                     Reaction::Redraw
                 }
-                FilePickerEvent::Consumed => Reaction::Redraw,
-                FilePickerEvent::Ignored => Reaction::Continue,
+                Handled::Consumed => Reaction::Redraw,
+                Handled::Ignored => Reaction::Continue,
             },
-            _ => match self.folder_picker.handle(event, visible_rows) {
-                FolderPickerEvent::Confirmed { path } => {
+            _ => match self.folder_picker.handle_event(event, visible_rows) {
+                Handled::Event(PathPickerAction::Confirmed { path }) => {
                     self.confirmed = Some(format!("Chose folder: {}", path.display()));
                     Reaction::Redraw
                 }
-                FolderPickerEvent::Cancelled => {
+                Handled::Event(PathPickerAction::Cancelled) => {
                     self.confirmed = Some("Dismissed".into());
                     Reaction::Redraw
                 }
-                FolderPickerEvent::Consumed => Reaction::Redraw,
-                FolderPickerEvent::Ignored => Reaction::Continue,
+                Handled::Consumed => Reaction::Redraw,
+                Handled::Ignored => Reaction::Continue,
             },
         }
     }

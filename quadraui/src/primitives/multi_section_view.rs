@@ -1418,14 +1418,34 @@ fn push_aux_hits(
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{EmptyBody, SectionAux, SectionHeader};
+    use super::{EmptyBody, HeaderAction, SectionAux, SectionHeader};
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::toolbar::action_text;
     use crate::theme::Theme;
     use crate::types::{Color, StyledText};
 
     fn plain_text(t: &StyledText) -> String {
         t.spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    /// Glyph text + resolved foreground for a [`HeaderAction`]'s button.
+    /// `action_text`, not a hand-rolled format, so the glyph composes the
+    /// same way every other action button in this crate does — even
+    /// though a `HeaderAction` only ever supplies the `label` half (no
+    /// separate icon or key hint).
+    fn header_action_glyph_and_fg(
+        action: &HeaderAction,
+        theme: &Theme,
+        enabled_fg: Color,
+    ) -> (String, Color) {
+        let glyph = action_text(&action.icon.fallback, None, None);
+        let fg = if action.enabled {
+            enabled_fg
+        } else {
+            theme.muted_fg
+        };
+        (glyph, fg)
     }
 
     /// Paint a section header row: background fill, optional leading
@@ -1468,20 +1488,15 @@ pub(crate) mod native_surface_paint {
         // Right-aligned actions, right-to-left.
         let mut right_x = bounds.x + bounds.width - 4.0;
         for action in header.actions.iter().rev() {
-            let glyph = action.icon.fallback.as_str();
-            let (gw, gh) = surface.surface_measure_text(glyph);
+            let (glyph, action_fg) = header_action_glyph_and_fg(action, theme, theme.header_fg);
+            let (gw, gh) = surface.surface_measure_text(&glyph);
             right_x -= gw;
             if right_x < left_x {
                 break;
             }
-            let action_fg = if action.enabled {
-                theme.header_fg
-            } else {
-                theme.muted_fg
-            };
             surface.surface_draw_text_run(
                 Rect::new(right_x, row_text_y(gh), gw, gh),
-                glyph,
+                &glyph,
                 action_fg,
             );
             right_x -= 8.0;
@@ -1570,16 +1585,11 @@ pub(crate) mod native_surface_paint {
             SectionAux::Toolbar(actions) => {
                 let mut tx = bounds.x + 4.0;
                 for a in actions {
-                    let glyph = a.icon.fallback.as_str();
-                    let action_fg = if a.enabled {
-                        theme.foreground
-                    } else {
-                        theme.muted_fg
-                    };
-                    let (gw, gh) = surface.surface_measure_text(glyph);
+                    let (glyph, action_fg) = header_action_glyph_and_fg(a, theme, theme.foreground);
+                    let (gw, gh) = surface.surface_measure_text(&glyph);
                     surface.surface_draw_text_run(
                         Rect::new(tx, bounds.y + (bounds.height - gh) / 2.0, gw, gh),
-                        glyph,
+                        &glyph,
                         action_fg,
                     );
                     tx += gw + 8.0;

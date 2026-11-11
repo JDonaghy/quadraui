@@ -17,6 +17,10 @@
 //! - [`FolderPickerController`] — cross-backend directory-browsing modal.
 //! - [`FilePickerController`] — cross-backend file open/save modal.
 //! - [`MessageDialogController`] — cross-backend message/alert-box driver.
+//! - [`FormDialogController`] — a [`crate::primitives::dialog::Dialog`]
+//!   hosting a multi-field [`crate::primitives::form::Form`]
+//!   (`DialogInput::Form`), with Tab/Shift+Tab handed off between the
+//!   form's fields and the dialog's buttons.
 //! - [`DualModePaletteController`] — Palette that toggles between text-input
 //!   mode (free-text confirm) and list/search mode (item selection).
 //! - [`ChatController`] — chat overlay with scrollable transcript + multi-line
@@ -44,6 +48,9 @@
 //!   hover-driven tooltip, sitting on top of [`ToolbarHoverTracker`]/
 //!   [`ListHoverTracker`]/[`TreeHoverTracker`]'s plain "what's hovered"
 //!   answer.
+//! - [`Handled`] — the shared "did you handle it" return type new
+//!   `handle_*` controller methods converge on: a semantic event to
+//!   route, a state-only consumption, or "not mine".
 //!
 //! [`crate::ScrollView`] is a `primitives` type, not a controller here —
 //! it is the generic seam for a host that scrolls content it lays out
@@ -53,25 +60,34 @@
 //! composes [`crate::ScrollView`] the same way these compose their own
 //! primitive instead of duplicating offset/thumb math.
 
+mod activity_bar_controller;
 pub mod app_shell;
 pub mod bottom_panel;
 pub mod chat_controller;
 pub mod context_menu_controller;
+mod divider_drag;
 pub mod dual_mode_palette;
 pub mod file_picker;
 pub mod focus_group;
 pub mod focus_ring;
 pub mod folder_picker;
 pub mod form_controller;
+pub mod form_dialog;
+mod handled;
 pub mod help_layer;
 pub mod hover_tooltip_tracker;
 pub mod markdown;
 pub mod menu_system;
 pub mod message_dialog;
 pub mod notification;
+mod path_picker;
+mod shell_layout;
+mod sidebar_edit;
 pub mod sidebar_panel_body;
+mod sidebar_scroll;
 pub mod sidebar_system;
 pub mod status_bar_interaction;
+mod tab_drag;
 pub mod tab_group;
 pub mod toast_stack;
 pub mod toolbar_hover_tracker;
@@ -85,33 +101,89 @@ pub use bottom_panel::{
     BackendWidget, BottomPanelConfig, BottomPanelController, BottomPanelEvent, BottomPanelLayout,
     BottomPanelTab,
 };
-pub use chat_controller::{ChatController, ChatControllerEvent, ChatRole, ChatTurn};
+pub use chat_controller::{ChatController, ChatControllerAction, ChatRole, ChatTurn};
+// `ChatControllerEvent` is `#[deprecated]` (use `ChatController::handle_event`'s
+// `Handled<ChatControllerAction>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use chat_controller::ChatControllerEvent;
 pub use context_menu_controller::{ContextMenuController, ContextMenuOutcome};
-pub use dual_mode_palette::{DualModePaletteController, DualModePaletteEvent};
-pub use file_picker::{FilePickerController, FilePickerEvent, FilePickerMode};
+pub use dual_mode_palette::{DualModePaletteAction, DualModePaletteController};
+// `DualModePaletteEvent` is `#[deprecated]` (use
+// `DualModePaletteController::handle_event`'s `Handled<DualModePaletteAction>`
+// instead). Allow it here since `pub use` of a deprecated item is itself a
+// use site.
+#[allow(deprecated)]
+pub use dual_mode_palette::DualModePaletteEvent;
+pub use file_picker::{FilePickerController, FilePickerMode};
+// `FilePickerEvent` is `#[deprecated]` (use `FilePickerController::handle_event`'s
+// `Handled<PathPickerAction>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use file_picker::FilePickerEvent;
 pub use focus_group::FocusGroup;
 pub use focus_ring::FocusRing;
-pub use folder_picker::{FolderPickerController, FolderPickerEvent, PALETTE_CHROME_ROWS};
-pub use form_controller::{FormController, FormControllerEvent};
+pub use folder_picker::{FolderPickerController, PALETTE_CHROME_ROWS};
+// `FolderPickerEvent` is `#[deprecated]` (use `FolderPickerController::handle_event`'s
+// `Handled<PathPickerAction>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use folder_picker::FolderPickerEvent;
+pub use form_controller::{FormController, FormControllerAction};
+// `FormControllerEvent` is `#[deprecated]` (use `FormController::handle_event`/
+// `handle_cached_event`'s `Handled<FormControllerAction>` instead). Allow it
+// here since `pub use` of a deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use form_controller::FormControllerEvent;
+pub use form_dialog::{FormDialogAction, FormDialogController};
+// `FormDialogEvent` is `#[deprecated]` (use `FormDialogController::handle_event`'s
+// `Handled<FormDialogAction>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use form_dialog::FormDialogEvent;
+pub use handled::Handled;
 pub use help_layer::{
-    filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote,
-    HelpOverlayController, HelpOverlayEvent, HelpRegistry, ViewHelp,
+    filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote, HelpOverlayAction,
+    HelpOverlayController, HelpRegistry, ViewHelp,
 };
+// `HelpOverlayEvent` is `#[deprecated]` (use `HelpOverlayController::handle_event`'s
+// `Handled<HelpOverlayAction>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use help_layer::HelpOverlayEvent;
 pub use hover_tooltip_tracker::HoverTooltipTracker;
 pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown};
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
-pub use message_dialog::{MessageDialogController, MessageDialogEvent};
+pub use message_dialog::MessageDialogController;
+// `MessageDialogEvent` is `#[deprecated]` (use `MessageDialogController::handle_event`'s
+// `Handled<MessageDialogChoice>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use message_dialog::MessageDialogEvent;
 pub use notification::notify_or_toast;
+pub use path_picker::PathPickerAction;
 pub use sidebar_panel_body::{SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome};
 pub use sidebar_system::{
     NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,
 };
-pub use status_bar_interaction::{StatusBarAction, StatusBarInteraction};
+// `StatusBarAction` is `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
+// `Handled<WidgetId>` instead). Allow it here since `pub use` of a deprecated
+// item is itself a use site.
+#[allow(deprecated)]
+pub use status_bar_interaction::StatusBarAction;
+pub use status_bar_interaction::StatusBarInteraction;
+pub use tab_drag::{resolve_tab_drop, TabDragSource, TabDropInstruction};
 pub use tab_group::{
-    resolve_tab_drop, GroupLayout, Pane, PaneDragRect, PaneTab, TabDragSource, TabDropInstruction,
-    TabGroupController, TabGroupEvent, TabGroupLayout,
+    GroupLayout, Pane, PaneDragRect, PaneTab, TabGroupController, TabGroupEvent, TabGroupLayout,
 };
-pub use toast_stack::{ToastStackController, ToastStackEvent};
+pub use toast_stack::{ToastStackAction, ToastStackController};
+// `ToastStackEvent` is `#[deprecated]` (use `ToastStackController::handle_event`'s
+// `Handled<ToastStackAction>` instead). Allow it here since `pub use` of a
+// deprecated item is itself a use site.
+#[allow(deprecated)]
+pub use toast_stack::ToastStackEvent;
 pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker, TreeHoverTracker};
-pub use tree_controller::{TreeController, TreeControllerEvent};
+pub use tree_controller::{
+    classify_tree_nav_key, Edge, TreeController, TreeControllerEvent, TreeNavKey,
+};
 pub use workspace::{WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout};

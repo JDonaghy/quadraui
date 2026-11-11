@@ -223,6 +223,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -245,6 +246,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -262,6 +264,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -281,6 +284,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -424,6 +428,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -460,6 +465,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -620,6 +626,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -629,6 +636,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let (surface, layout) = paint_via_backend(&form);
         let theme = Theme::default();
@@ -688,6 +696,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -697,6 +706,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let (_surface, layout) = paint_via_backend(&form);
         let vis = &layout.visible_fields[0];
@@ -752,6 +762,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: Some(WidgetId::new("pw")),
             scroll_offset: 0,
@@ -761,6 +772,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let (surface, layout) = paint_via_backend(&form);
         // Locate the field bounds.
@@ -821,6 +833,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: Some(WidgetId::new("name")),
             scroll_offset: 0,
@@ -830,6 +843,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
 
         // Must not panic.
@@ -862,6 +876,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: Some(WidgetId::new("pw")),
             scroll_offset: 0,
@@ -871,6 +886,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
 
         // Must not panic.

@@ -30,10 +30,11 @@
 //! - `b` — reopen picker.
 //! - `q` / `Esc` — quit.
 
+use quadraui::compose::{DualModePaletteAction, Handled};
 use quadraui::{
-    AppLogic, Backend, Color, DualModePaletteController, DualModePaletteEvent, InteractionState,
-    Key, NamedKey, PaletteItem, PaletteMode, Reaction, Rect, StatusBar, StatusBarSegment,
-    StyledSpan, StyledText, UiEvent, WidgetId, PALETTE_CHROME_ROWS,
+    AppLogic, Backend, Color, DualModePaletteController, InteractionState, Key, NamedKey,
+    PaletteItem, PaletteMode, Reaction, Rect, StatusBar, StatusBarSegment, StyledSpan, StyledText,
+    UiEvent, WidgetId, PALETTE_CHROME_ROWS,
 };
 
 /// A fixed list of pretend Git branches for the demo.
@@ -151,16 +152,16 @@ impl AppLogic for PaletteDualModeApp {
             };
             let visible_rows = popup_h_rows.saturating_sub(PALETTE_CHROME_ROWS);
 
-            // Mouse events route through `handle_mouse`; everything else
-            // (keyboard, paste) keeps going through `handle`.
+            // Mouse events route through `handle_mouse_event`; everything
+            // else (keyboard, paste) keeps going through `handle_event`.
             let ev = match &event {
                 UiEvent::MouseDown { .. } => {
-                    picker.handle_mouse(&event, backend, popup_rect, visible_rows)
+                    picker.handle_mouse_event(&event, backend, popup_rect, visible_rows)
                 }
-                _ => picker.handle(&event, visible_rows),
+                _ => picker.handle_event(&event, visible_rows),
             };
             match ev {
-                DualModePaletteEvent::ItemConfirmed { idx } => {
+                Handled::Event(DualModePaletteAction::ItemConfirmed { idx }) => {
                     // Recompute filtered list from current query to map idx
                     // back to a branch name.
                     let query = picker.query().to_lowercase();
@@ -178,7 +179,7 @@ impl AppLogic for PaletteDualModeApp {
                     self.picker = None;
                     return Reaction::Redraw;
                 }
-                DualModePaletteEvent::TextConfirmed { value } => {
+                Handled::Event(DualModePaletteAction::TextConfirmed { value }) => {
                     if !value.is_empty() {
                         self.current_branch = value.clone();
                         self.status = format!(
@@ -189,7 +190,7 @@ impl AppLogic for PaletteDualModeApp {
                     self.picker = None;
                     return Reaction::Redraw;
                 }
-                DualModePaletteEvent::QueryChanged { value } => {
+                Handled::Event(DualModePaletteAction::QueryChanged { value }) => {
                     // Refilter the branch list for List mode.
                     let q = value.to_lowercase();
                     let matching: Vec<&str> = BRANCHES
@@ -200,7 +201,7 @@ impl AppLogic for PaletteDualModeApp {
                     picker.set_items(branches_as_items(&matching));
                     return Reaction::Redraw;
                 }
-                DualModePaletteEvent::ModeToggled { new_mode } => {
+                Handled::Event(DualModePaletteAction::ModeToggled { new_mode }) => {
                     self.status = match new_mode {
                         PaletteMode::Input => {
                             "Input mode: type a new branch name, Enter to create, Tab to switch"
@@ -222,13 +223,13 @@ impl AppLogic for PaletteDualModeApp {
                     }
                     return Reaction::Redraw;
                 }
-                DualModePaletteEvent::Cancelled => {
+                Handled::Event(DualModePaletteAction::Cancelled) => {
                     self.status = "Picker closed  —  press 'b' to reopen, q/Esc to quit".into();
                     self.picker = None;
                     return Reaction::Redraw;
                 }
-                DualModePaletteEvent::Consumed => return Reaction::Redraw,
-                DualModePaletteEvent::Ignored => {}
+                Handled::Consumed => return Reaction::Redraw,
+                Handled::Ignored => {}
             }
         } else {
             // Picker is closed — handle reopen / quit.

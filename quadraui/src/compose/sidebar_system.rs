@@ -27,6 +27,7 @@ use super::focus_group::FocusGroup;
 use super::form_controller::{form_click_event, FormController};
 use super::tree_controller::TreeController;
 use super::tree_controller::TreeControllerEvent;
+use super::tree_controller::{classify_tree_nav_key, Edge, TreeNavKey};
 use crate::primitives::form::{
     FieldKind, Form, FormEvent, FormFieldMeasure, FormItemMeasure, FormLayout,
 };
@@ -35,10 +36,10 @@ use crate::primitives::multi_section_view::{
 };
 use crate::primitives::scrollbar::{wheel_delta, wheel_row_delta, ThumbDrag};
 use crate::{
-    Backend, ButtonMask, Key, Modifiers, MouseButton, MsvAxis, MultiSectionView,
-    MultiSectionViewHit, NamedKey, Point, Rect, ScrollMode, ScrollbarHit, Section, SectionBody,
-    SectionHeader, SectionSize, SelectionMode, StyledText, TreePath, TreeRow, TreeRowEditState,
-    TreeView, TreeViewHit, UiEvent, WidgetId,
+    Backend, ButtonMask, Key, MouseButton, MsvAxis, MultiSectionView, MultiSectionViewHit,
+    NamedKey, Point, Rect, ScrollMode, ScrollbarHit, Section, SectionBody, SectionHeader,
+    SectionSize, SelectionMode, StyledText, TreePath, TreeRow, TreeRowEditState, TreeView,
+    TreeViewHit, UiEvent, WidgetId,
 };
 
 /// How Up/Down keys behave in the sidebar.
@@ -152,15 +153,29 @@ struct BackendInfo {
     metrics: MsvLayoutMetrics,
 }
 
-enum SectionController {
+/// One sidebar section's body controller. `pub(crate)` so the
+/// `sidebar_edit`/`sidebar_scroll` sibling modules can match on it from
+/// their own `impl SidebarSystem` blocks — see [`SidebarSystem::sections`]'s
+/// doc for why that field is `pub(crate)` too.
+pub(crate) enum SectionController {
     Tree(TreeController),
     Form(FormController),
 }
 
 pub struct SidebarSystem {
     defs: Vec<SidebarSectionDef>,
-    sections: Vec<SectionController>,
-    focus: FocusGroup,
+    /// `pub(crate)`: the inline-editing forwarders in `sidebar_edit.rs` and
+    /// the scroll methods in `sidebar_scroll.rs` are `impl SidebarSystem`
+    /// blocks in sibling files, not methods defined inside this module —
+    /// Rust's module-privacy rule only grants a private item's visibility
+    /// to the *defining module and its descendants*, so a sibling module's
+    /// `impl` block needs this field (and [`SectionController`],
+    /// [`Self::compute_layout`], [`Self::viewport_rows_from_layout`])
+    /// widened to `pub(crate)` to reach it. Still crate-private — no
+    /// downstream consumer sees it.
+    pub(crate) sections: Vec<SectionController>,
+    /// `pub(crate)` for the same cross-file reason as [`Self::sections`].
+    pub(crate) focus: FocusGroup,
     collapsed: Vec<bool>,
     visible: Vec<bool>,
     badges: Vec<Option<StyledText>>,
@@ -171,7 +186,9 @@ pub struct SidebarSystem {
     navigation_mode: NavigationMode,
     cached_viewport_rows: Option<(usize, usize)>,
     scroll_mode: ScrollMode,
-    panel_scroll: f32,
+    /// `pub(crate)` for the same cross-file reason as [`Self::sections`] —
+    /// `sidebar_scroll.rs`'s methods read and clamp this directly.
+    pub(crate) panel_scroll: f32,
     backend_info: Option<BackendInfo>,
     cached_form_layouts: Vec<Option<FormLayout>>,
 }
@@ -446,34 +463,6 @@ impl SidebarSystem {
         }
     }
 
-    // ── Inline editing ───────────────────────────────────────────────
-
-    pub fn start_editing(
-        &mut self,
-        section: usize,
-        path: TreePath,
-        initial_text: String,
-        cursor: usize,
-        selection_anchor: Option<usize>,
-        placeholder: Option<String>,
-    ) {
-        if let Some(SectionController::Tree(tc)) = self.sections.get_mut(section) {
-            tc.start_editing(path, initial_text, cursor, selection_anchor, placeholder);
-        }
-    }
-
-    pub fn cancel_editing(&mut self, section: usize) {
-        if let Some(SectionController::Tree(tc)) = self.sections.get_mut(section) {
-            tc.cancel_editing();
-        }
-    }
-
-    pub fn is_editing(&self) -> bool {
-        self.sections
-            .iter()
-            .any(|sc| matches!(sc, SectionController::Tree(tc) if tc.is_editing()))
-    }
-
     // ── Render ────────────────────────────────────────────────────────
 
     pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
@@ -626,7 +615,11 @@ impl SidebarSystem {
 
     // ── Internal helpers ──────────────────────────────────────────────
 
-    fn compute_layout(
+    /// `pub(crate)`: `sidebar_scroll.rs`'s methods call this from a sibling
+    /// module's `impl SidebarSystem` block — see
+    /// [`SidebarSystem::sections`]'s doc for why that needs crate-wide
+    /// visibility rather than private.
+    pub(crate) fn compute_layout(
         &self,
         rect: Rect,
         metrics: &MsvLayoutMetrics,
@@ -706,6 +699,11 @@ impl SidebarSystem {
         }
     }
 
+    /// Dispatches via the same [`classify_tree_nav_key`] key map
+    /// [`TreeController::handle_key`] uses, so the two can't drift: the
+    /// difference between them is which viewport-rows/action methods each
+    /// resolves a [`TreeNavKey`] into (per-section focus tracking here vs.
+    /// a single tree there), not the key map itself.
     fn handle_key_selection(
         &mut self,
         key: &Key,
@@ -721,26 +719,24 @@ impl SidebarSystem {
                 SectionController::Tree(tc) => tc.vim_keys(),
                 SectionController::Form(_) => false,
             });
-        let vim_up = vim && matches!(key, Key::Char('k'));
-        let vim_down = vim && matches!(key, Key::Char('j'));
-        match key {
-            Key::Named(NamedKey::Up) => self.move_selection(-1, rect, lh, metrics),
-            _ if vim_up => self.move_selection(-1, rect, lh, metrics),
-            Key::Named(NamedKey::Down) => self.move_selection(1, rect, lh, metrics),
-            _ if vim_down => self.move_selection(1, rect, lh, metrics),
-            Key::Named(NamedKey::Home) => self.jump_selection_to_edge(true, rect, lh, metrics),
-            Key::Named(NamedKey::End) => self.jump_selection_to_edge(false, rect, lh, metrics),
-            Key::Named(NamedKey::PageUp) => {
+        let Some(nav) = classify_tree_nav_key(key, vim) else {
+            return SidebarEvent::Ignored;
+        };
+        match nav {
+            TreeNavKey::Up => self.move_selection(-1, rect, lh, metrics),
+            TreeNavKey::Down => self.move_selection(1, rect, lh, metrics),
+            TreeNavKey::Home => self.jump_selection_to_edge(Edge::Start, rect, lh, metrics),
+            TreeNavKey::End => self.jump_selection_to_edge(Edge::End, rect, lh, metrics),
+            TreeNavKey::PageUp => {
                 let vr = self.active_viewport_rows(rect, lh, metrics);
                 self.move_selection_by(-((vr.max(1) - 1).max(1) as isize), vr)
             }
-            Key::Named(NamedKey::PageDown) => {
+            TreeNavKey::PageDown => {
                 let vr = self.active_viewport_rows(rect, lh, metrics);
                 self.move_selection_by((vr.max(1) - 1).max(1) as isize, vr)
             }
-            Key::Named(NamedKey::Enter) => self.activate_selection(),
-            Key::Char(' ') => self.toggle_expand_selected(),
-            _ => SidebarEvent::Ignored,
+            TreeNavKey::Enter => self.activate_selection(),
+            TreeNavKey::ToggleExpand => self.toggle_expand_selected(),
         }
     }
 
@@ -776,23 +772,23 @@ impl SidebarSystem {
 
     fn jump_selection_to_edge(
         &mut self,
-        to_start: bool,
+        edge: Edge,
         rect: Rect,
         lh: f32,
         metrics: &MsvLayoutMetrics,
     ) -> SidebarEvent {
         let vr = self.active_viewport_rows(rect, lh, metrics);
-        self.jump_selection_to_edge_by(to_start, vr)
+        self.jump_selection_to_edge_by(edge, vr)
     }
 
-    fn jump_selection_to_edge_by(&mut self, to_start: bool, viewport_rows: usize) -> SidebarEvent {
+    fn jump_selection_to_edge_by(&mut self, edge: Edge, viewport_rows: usize) -> SidebarEvent {
         let Some(idx) = self.focus.active() else {
             return SidebarEvent::Ignored;
         };
         let SectionController::Tree(tc) = &mut self.sections[idx] else {
             return SidebarEvent::Ignored;
         };
-        match tc.jump_to_edge(to_start, viewport_rows) {
+        match tc.move_selection_to_edge(edge, viewport_rows) {
             TreeControllerEvent::RowSelected { path } => {
                 SidebarEvent::RowSelected { section: idx, path }
             }
@@ -834,82 +830,6 @@ impl SidebarSystem {
         }
     }
 
-    // ── Inline editing forwarding ────────────────────────────────────
-
-    fn editing_section(&self) -> Option<usize> {
-        self.sections
-            .iter()
-            .position(|sc| matches!(sc, SectionController::Tree(tc) if tc.is_editing()))
-    }
-
-    fn forward_edit_char(&mut self, ch: char) -> SidebarEvent {
-        let Some(idx) = self.editing_section() else {
-            return SidebarEvent::Ignored;
-        };
-        let SectionController::Tree(tc) = &mut self.sections[idx] else {
-            return SidebarEvent::Ignored;
-        };
-        tc.edit_insert_char_via(ch);
-        self.map_tc_edit_event(idx)
-    }
-
-    fn forward_edit_paste(&mut self, text: &str) -> SidebarEvent {
-        let Some(idx) = self.editing_section() else {
-            return SidebarEvent::Ignored;
-        };
-        let SectionController::Tree(tc) = &mut self.sections[idx] else {
-            return SidebarEvent::Ignored;
-        };
-        tc.edit_insert_str_via(text);
-        self.map_tc_edit_event(idx)
-    }
-
-    fn forward_edit_key(&mut self, key: &Key, modifiers: &Modifiers) -> SidebarEvent {
-        let Some(idx) = self.editing_section() else {
-            return SidebarEvent::Ignored;
-        };
-        let SectionController::Tree(tc) = &mut self.sections[idx] else {
-            return SidebarEvent::Ignored;
-        };
-        let ev = tc.handle_edit_key_via(key, modifiers);
-        Self::map_tc_event(idx, ev)
-    }
-
-    fn map_tc_edit_event(&self, idx: usize) -> SidebarEvent {
-        let SectionController::Tree(tc) = &self.sections[idx] else {
-            return SidebarEvent::Consumed;
-        };
-        if let Some(path) = tc.editing_path() {
-            SidebarEvent::EditChanged {
-                section: idx,
-                path: path.clone(),
-                text: tc.editing_text().unwrap_or_default().to_string(),
-            }
-        } else {
-            SidebarEvent::Consumed
-        }
-    }
-
-    fn map_tc_event(idx: usize, ev: TreeControllerEvent) -> SidebarEvent {
-        match ev {
-            TreeControllerEvent::EditConfirmed { path, new_text } => SidebarEvent::EditConfirmed {
-                section: idx,
-                path,
-                new_text,
-            },
-            TreeControllerEvent::EditCancelled { path } => {
-                SidebarEvent::EditCancelled { section: idx, path }
-            }
-            TreeControllerEvent::EditChanged { path, text } => SidebarEvent::EditChanged {
-                section: idx,
-                path,
-                text,
-            },
-            TreeControllerEvent::Consumed => SidebarEvent::Consumed,
-            _ => SidebarEvent::Ignored,
-        }
-    }
-
     fn active_viewport_rows(&mut self, rect: Rect, lh: f32, metrics: &MsvLayoutMetrics) -> usize {
         let Some(idx) = self.focus.active() else {
             return 0;
@@ -939,7 +859,16 @@ impl SidebarSystem {
         self.viewport_rows_from_layout(body_b, msv_idx, lh)
     }
 
-    fn viewport_rows_from_layout(&self, body_b: Rect, msv_section: usize, lh: f32) -> usize {
+    /// `pub(crate)`: `sidebar_scroll.rs`'s methods call this from a sibling
+    /// module's `impl SidebarSystem` block — see
+    /// [`SidebarSystem::sections`]'s doc for why that needs crate-wide
+    /// visibility rather than private.
+    pub(crate) fn viewport_rows_from_layout(
+        &self,
+        body_b: Rect,
+        msv_section: usize,
+        lh: f32,
+    ) -> usize {
         let (view, _) = self.build_view();
         let SectionBody::Tree(t) = &view.sections[msv_section].body else {
             return 0;
@@ -1005,6 +934,7 @@ impl SidebarSystem {
                         label_width: None,
                         control_width: Default::default(),
                         min_control_width: None,
+                        spacing: Default::default(),
                     });
                     SectionBody::Form(Form {
                         has_focus: form_focus,
@@ -1351,98 +1281,6 @@ impl SidebarSystem {
         }
     }
 
-    fn scroll_panel(&mut self, rect: Rect, dy: f32, lh: f32, metrics: &MsvLayoutMetrics) {
-        let (layout, _) = self.compute_layout(rect, metrics, lh);
-        let total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
-        let max = (total - rect.height).max(0.0);
-        self.panel_scroll = (self.panel_scroll + dy).clamp(0.0, max);
-    }
-
-    fn scroll_to_active_section(&mut self, rect: Rect, lh: f32, metrics: &MsvLayoutMetrics) {
-        let Some(idx) = self.focus.active() else {
-            return;
-        };
-        let (layout, map) = self.compute_layout(rect, metrics, lh);
-        let Some(msv_idx) = map.iter().position(|&s| s == idx) else {
-            return;
-        };
-        if msv_idx >= layout.sections.len() {
-            return;
-        }
-        let total: f32 = layout.sections.iter().map(|s2| s2.resolved_size).sum();
-        let max = (total - rect.height).max(0.0);
-        let s = &layout.sections[msv_idx];
-        let content_top = s.header_bounds.y - rect.y + self.panel_scroll;
-        let content_bottom = content_top + s.resolved_size;
-        if content_top < self.panel_scroll {
-            self.panel_scroll = content_top.clamp(0.0, max);
-        } else if content_bottom > self.panel_scroll + rect.height {
-            self.panel_scroll = (content_bottom - rect.height).clamp(0.0, max);
-        }
-    }
-
-    /// Route a scroll-wheel event to the tree section whose bounds
-    /// contain `position`. Returns `true` when a section was hit and
-    /// its scroll offset updated; returns `false` when the position
-    /// lies outside all sections or over a non-tree section (caller
-    /// falls back to active-section scroll).
-    ///
-    /// Used exclusively from the `PerSection` scroll-mode path in
-    /// `handle_inner` so that hovering over section B while section A
-    /// is active scrolls section B — matching the native desktop
-    /// convention (scroll follows cursor, not focus).
-    fn scroll_section_at(
-        &mut self,
-        position: Point,
-        rect: Rect,
-        rows: isize,
-        lh: f32,
-        metrics: &MsvLayoutMetrics,
-    ) -> bool {
-        let (layout, map) = self.compute_layout(rect, metrics, lh);
-        let msv_idx = match layout.hit_test(position.x, position.y) {
-            MultiSectionViewHit::Body { section }
-            | MultiSectionViewHit::Header { section, .. }
-            | MultiSectionViewHit::Scrollbar { section, .. } => section,
-            _ => return false,
-        };
-        let section = map[msv_idx];
-        let body_b = layout.sections[msv_idx].body_bounds;
-        let viewport_rows = self.viewport_rows_from_layout(body_b, msv_idx, lh);
-        let SectionController::Tree(tc) = &mut self.sections[section] else {
-            return false;
-        };
-        let row_count = tc.rows().len();
-        let max = row_count.saturating_sub(viewport_rows) as isize;
-        let cur = tc.scroll_offset() as isize;
-        let new = (cur + rows).max(0).min(max) as usize;
-        tc.set_scroll_offset(new);
-        true
-    }
-
-    fn scroll_active(&mut self, rect: Rect, delta: isize, lh: f32, metrics: &MsvLayoutMetrics) {
-        let Some(idx) = self.focus.active() else {
-            return;
-        };
-        if !matches!(self.sections[idx], SectionController::Tree(_)) {
-            return;
-        }
-        let (layout, map) = self.compute_layout(rect, metrics, lh);
-        let Some(msv_idx) = map.iter().position(|&s| s == idx) else {
-            return;
-        };
-        let body_b = layout.sections[msv_idx].body_bounds;
-        let viewport_rows = self.viewport_rows_from_layout(body_b, msv_idx, lh);
-        let SectionController::Tree(tc) = &mut self.sections[idx] else {
-            return;
-        };
-        let row_count = tc.rows().len();
-        let max = row_count.saturating_sub(viewport_rows) as isize;
-        let cur = tc.scroll_offset() as isize;
-        let new = (cur + delta).max(0).min(max) as usize;
-        tc.set_scroll_offset(new);
-    }
-
     fn select_first_of_active(&mut self) {
         let Some(idx) = self.focus.active() else {
             return;
@@ -1571,7 +1409,7 @@ fn body_measure(section: &Section, lh: f32) -> SectionMeasure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Decoration;
+    use crate::{Decoration, Modifiers};
 
     fn sample_defs() -> Vec<SidebarSectionDef> {
         vec![
@@ -1757,7 +1595,7 @@ mod tests {
     fn selection_home_jumps_to_first_row() {
         let mut ss = selection_sidebar();
         ss.set_selected_path(0, Some(vec![3]));
-        ss.jump_selection_to_edge_by(true, 10);
+        ss.jump_selection_to_edge_by(Edge::Start, 10);
         assert_eq!(ss.selected_path(0), Some(&vec![0]));
     }
 
@@ -1765,7 +1603,7 @@ mod tests {
     fn selection_end_jumps_to_last_row() {
         let mut ss = selection_sidebar();
         ss.set_selected_path(0, Some(vec![0]));
-        ss.jump_selection_to_edge_by(false, 10);
+        ss.jump_selection_to_edge_by(Edge::End, 10);
         assert_eq!(ss.selected_path(0), Some(&vec![4]));
     }
 
@@ -1971,6 +1809,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("case-sensitive"),
@@ -1985,6 +1824,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
             ],
             focused_field: None,
@@ -1995,6 +1835,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -2232,6 +2073,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2241,6 +2083,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let ev = form_click_event(&form, &WidgetId::new("submit"));
         assert_eq!(
@@ -2282,6 +2125,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2291,6 +2135,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let ev = form_click_event(&form, &WidgetId::new("regex"));
         assert_eq!(
@@ -2328,6 +2173,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2337,6 +2183,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let ev = form_click_event(&form, &WidgetId::new("replace-all"));
         assert_eq!(
@@ -2851,6 +2698,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let m = form_field_measure(&field, 20.0, 10.0);
         assert_eq!(m.item_measures.len(), 2);
@@ -2892,6 +2740,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let m = form_field_measure(&field, 20.0, 10.0);
         assert_eq!(m.item_measures.len(), 2);
@@ -2930,6 +2779,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2939,6 +2789,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let lh: f32 = 16.0;
         let row_h = (lh * 1.4).round();
@@ -2981,6 +2832,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2990,6 +2842,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let ev = form_click_event(&form, &WidgetId::new("case"));
         assert_eq!(

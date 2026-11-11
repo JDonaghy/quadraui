@@ -27,11 +27,13 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 
 use super::text::{char_cell_width, display_width};
-use super::{qc, set_cell};
+use super::{qc, set_cell, set_cell_wide};
 use crate::primitives::toolbar::{
-    Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout, ToolbarPaintOptions, ToolbarVAlign,
+    Toolbar, ToolbarButton, ToolbarItemKind, ToolbarItemMeasure, ToolbarLayout,
+    ToolbarLayoutOptions, ToolbarOrientation, ToolbarPaintOptions, ToolbarRailStyle, ToolbarVAlign,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -87,6 +89,10 @@ pub(crate) fn tui_item_width(btn: &ToolbarButton) -> f32 {
         }
         ToolbarButton::Separator => 2.0,
         ToolbarButton::Label { text, .. } => display_width(text) as f32,
+        // Never consulted by `tui_toolbar_layout` (`Spacer`'s slot is
+        // whatever room is left over) — zero here so a caller that
+        // measures one directly gets an inert result.
+        ToolbarButton::Spacer => 0.0,
     }
 }
 
@@ -99,6 +105,44 @@ pub fn tui_toolbar_layout(bar: &Toolbar, area: Rect) -> ToolbarLayout {
         area.height.max(1) as f32,
         |btn| ToolbarItemMeasure::new(tui_item_width(btn)),
     )
+}
+
+/// [`tui_toolbar_layout`], plus [`ToolbarLayoutOptions`]: a
+/// [`ToolbarOrientation::Vertical`] bar measures every item at a fixed
+/// 1-row height — the "one item per row" degrade this rasteriser uses for
+/// a vertical strip, since a terminal cell has no sub-row granularity to
+/// spend on a taller/shorter item the way a pixel backend could.
+pub fn tui_toolbar_layout_with_options(
+    bar: &Toolbar,
+    area: Rect,
+    options: ToolbarLayoutOptions,
+) -> ToolbarLayout {
+    match options.orientation {
+        ToolbarOrientation::Horizontal => tui_toolbar_layout(bar, area),
+        ToolbarOrientation::Vertical => bar.layout_with_options(
+            area.x as f32,
+            area.y as f32,
+            area.width.max(1) as f32,
+            area.height as f32,
+            options,
+            |_btn| ToolbarItemMeasure::new(1.0),
+        ),
+    }
+}
+
+/// [`ToolbarLayoutOptions`] for the vertical icon-rail shape
+/// [`crate::primitives::activity_bar::ActivityBar::to_toolbar_parts`]
+/// produces: one item per row,
+/// [`ToolbarLayoutOptions::with_pin_trailing_overflow_to_origin`] set —
+/// the same collision rule [`crate::primitives::activity_bar::ActivityBar::layout`]
+/// itself uses for its bottom-pinned group. Shared by
+/// [`draw_toolbar_with_rail_style`] (painting, at the real `area` origin)
+/// and `ActivityBar`'s own TUI rasteriser (hit regions, at origin
+/// `(0.0, 0.0)`) so both agree on exactly the same geometry.
+pub(crate) fn rail_layout_options() -> ToolbarLayoutOptions {
+    ToolbarLayoutOptions::new()
+        .with_orientation(ToolbarOrientation::Vertical)
+        .with_pin_trailing_overflow_to_origin(true)
 }
 
 /// Draw a [`Toolbar`] into `area` on `buf`. Returns the layout for host
@@ -301,6 +345,345 @@ pub fn draw_toolbar_with_options(
                     set_cell(buf, item_x + col, text_row, ch, color, bar_bg);
                     col += cw;
                 }
+            }
+            // A `Spacer`'s slot is painted already (the bar-background
+            // fill loop above), and it is never clickable, so there is
+            // nothing further to draw here.
+            ToolbarButton::Spacer => {}
+        }
+    }
+
+    layout
+}
+
+/// [`draw_toolbar`], plus [`ToolbarLayoutOptions`]: `options.orientation`
+/// picks whether buttons flow left-to-right (delegates straight to
+/// [`draw_toolbar`]) or top-to-bottom, one item per terminal row (see
+/// [`ToolbarOrientation::Vertical`] and [`tui_toolbar_layout_with_options`]).
+///
+/// No `ToolbarPaintOptions`/`valign` parameter: a [`ToolbarVAlign`] choice
+/// only affects a slot taller than one text row, and every vertical item
+/// here is exactly one row tall, so threading it through would be a
+/// knob with no effect — a caller that wants `valign` on a `Horizontal`
+/// bar calls [`draw_toolbar_with_options`] directly instead of this fn.
+///
+/// The vertical degrade paints the same `[ icon label (key) ]` bracket
+/// cells and per-state colouring [`draw_toolbar_with_options`] uses —
+/// just one full-width row per item instead of one column-packed cell
+/// run — so a host that switches a toolbar's orientation keeps its
+/// existing hover/pressed/focused/active/disabled visuals.
+pub fn draw_toolbar_oriented(
+    buf: &mut Buffer,
+    area: Rect,
+    bar: &Toolbar,
+    theme: &Theme,
+    hovered_id: Option<&WidgetId>,
+    pressed_id: Option<&WidgetId>,
+    layout_options: ToolbarLayoutOptions,
+) -> ToolbarLayout {
+    if layout_options.orientation == ToolbarOrientation::Horizontal {
+        return draw_toolbar(buf, area, bar, theme, hovered_id, pressed_id);
+    }
+
+    if area.width == 0 || area.height == 0 {
+        return ToolbarLayout::empty(crate::event::Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ));
+    }
+
+    let layout = tui_toolbar_layout_with_options(bar, area, layout_options);
+
+    let bar_bg = qc(bar.bg.unwrap_or(theme.header_bg));
+    let fg = qc(theme.foreground);
+    let muted = qc(theme.muted_fg);
+    let hover_bg = qc(theme.hover_bg);
+    let hover_fg = qc(theme.hover_fg);
+    let active_bg = qc(theme.selected_bg);
+    let focus_bg = qc(theme.accent_bg);
+
+    for dy in 0..area.height {
+        for dx in 0..area.width {
+            set_cell(buf, area.x + dx, area.y + dy, ' ', fg, bar_bg);
+        }
+    }
+
+    for vis in &layout.visible_items {
+        let row = vis.bounds.y.round() as u16;
+        let row_h = vis.bounds.height.round() as u16;
+        if row_h == 0 {
+            continue;
+        }
+        let btn = &bar.buttons[vis.item_idx];
+
+        match btn {
+            ToolbarButton::Action {
+                id,
+                label,
+                icon,
+                key_hint,
+                enabled,
+                is_active,
+                spec,
+                ..
+            } => {
+                let is_hovered = *enabled && hovered_id == Some(id);
+                let is_pressed = *enabled && pressed_id == Some(id);
+                let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
+                let intent_fg = spec.as_ref().and_then(|s| match s.variant {
+                    crate::primitives::button::ButtonVariant::Danger => Some(theme.error_fg),
+                    crate::primitives::button::ButtonVariant::Warning => Some(theme.warning_fg),
+                    _ => None,
+                });
+                let (cell_fg, cell_bg) = if !*enabled {
+                    (muted, bar_bg)
+                } else if is_pressed || *is_active {
+                    (fg, active_bg)
+                } else if is_hovered {
+                    (hover_fg, hover_bg)
+                } else if is_focused {
+                    (fg, focus_bg)
+                } else if let Some(intent) = intent_fg {
+                    (qc(intent), bar_bg)
+                } else {
+                    (fg, bar_bg)
+                };
+
+                let label_w = display_width(label);
+                let icon_only = icon.is_some() && label_w == 0;
+                let mut cells: Vec<char> = Vec::new();
+                cells.push('[');
+                cells.push(' ');
+                if let Some(icon) = icon {
+                    for ch in icon.chars() {
+                        cells.push(ch);
+                    }
+                    if !icon_only {
+                        cells.push(' ');
+                    }
+                }
+                for ch in label.chars() {
+                    cells.push(ch);
+                }
+                if let Some(hint) = key_hint {
+                    cells.push(' ');
+                    cells.push('(');
+                    for ch in hint.chars() {
+                        cells.push(ch);
+                    }
+                    cells.push(')');
+                }
+                cells.push(' ');
+                cells.push(']');
+
+                for dx in 0..area.width {
+                    set_cell(buf, area.x + dx, row, ' ', cell_fg, cell_bg);
+                }
+                let mut col: u16 = 0;
+                for ch in cells {
+                    let cw = char_cell_width(ch);
+                    if col + cw > area.width {
+                        break;
+                    }
+                    set_cell(buf, area.x + col, row, ch, cell_fg, cell_bg);
+                    col += cw;
+                }
+            }
+            ToolbarButton::Separator => {
+                for dx in 0..area.width {
+                    set_cell(buf, area.x + dx, row, '─', muted, bar_bg);
+                }
+            }
+            ToolbarButton::Label { text, fg: label_fg } => {
+                let color = label_fg.map(qc).unwrap_or(muted);
+                let mut col: u16 = 0;
+                for ch in text.chars() {
+                    let cw = char_cell_width(ch);
+                    if col + cw > area.width {
+                        break;
+                    }
+                    set_cell(buf, area.x + col, row, ch, color, bar_bg);
+                    col += cw;
+                }
+            }
+            // The spacer's rows are already bar-background from the fill
+            // loop above; nothing more to paint, and it's never clickable.
+            ToolbarButton::Spacer => {}
+        }
+    }
+
+    layout
+}
+
+/// Draw a [`Toolbar`] shaped as a vertical icon rail — the shape
+/// [`crate::primitives::activity_bar::ActivityBar::to_toolbar_parts`]
+/// produces — honouring its [`ToolbarRailStyle`] sidecar: the active-row
+/// background fill, the leading-edge `'▎'` accent glyph, the explicit (or
+/// `Modifier::REVERSED` fallback) keyboard-selection fill, and the
+/// trailing-edge separator column. None of those four are something
+/// [`draw_toolbar_with_options`] knows about — a plain `Toolbar` has no
+/// concept of a row fill, an accent line, a selection fill distinct from
+/// hover, or a separator column.
+///
+/// Always lays out [`ToolbarOrientation::Vertical`], one item per row,
+/// via [`rail_layout_options`] — the fixed shape every rail-style
+/// `Toolbar` uses — so this function takes no `ToolbarLayoutOptions` of
+/// its own. `bar.focused_index` is read as the keyboard-selected item;
+/// `hovered_id` and each button's own `is_active` resolve the rest of
+/// the per-row state. Only [`ToolbarButton::Action`] rows paint anything
+/// beyond the bar background; a [`ToolbarButton::Spacer`] row (the only
+/// other variant a rail-shaped `Toolbar` contains) is left as the plain
+/// background fill.
+///
+/// `bar.bg` is the rail's background (`None` falls back to
+/// `theme.header_bg`, same default [`draw_toolbar_with_options`] uses).
+/// The hover tint lightens that background by 10% — the TUI activity-bar
+/// painter's own `theme.tab_bar_bg.lighten(0.10)` formula, carried
+/// through unchanged since `bar.bg` is `theme.tab_bar_bg` for every
+/// caller today.
+///
+/// The leading column (`area.x`) is always reserved for the accent glyph,
+/// whether or not [`ToolbarRailStyle::active_accent`] is set — same
+/// unconditional reservation as the trailing separator column, when
+/// [`ToolbarRailStyle::trailing_separator`] is `Some`. Icon glyphs centre
+/// within the room left between those two columns (or between the
+/// leading column and the bar's trailing edge, when no separator is
+/// requested).
+pub fn draw_toolbar_with_rail_style(
+    buf: &mut Buffer,
+    area: Rect,
+    bar: &Toolbar,
+    rail_style: &ToolbarRailStyle,
+    theme: &Theme,
+    hovered_id: Option<&WidgetId>,
+) -> ToolbarLayout {
+    if area.width == 0 || area.height == 0 {
+        return ToolbarLayout::empty(crate::event::Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ));
+    }
+
+    let layout = tui_toolbar_layout_with_options(bar, area, rail_layout_options());
+
+    let bg = qc(bar.bg.unwrap_or(theme.header_bg));
+    let sep_color = rail_style.trailing_separator.map(qc);
+    let accent = rail_style.active_accent.map(qc);
+    let active_bg = rail_style.active_bg.map(qc);
+    let active_fg = qc(theme.foreground);
+    let inactive_fg = qc(theme.inactive_fg);
+    let hover_bg = qc(theme.tab_bar_bg.lighten(0.10));
+    // Explicit keyboard-selection background, when the sidecar sets one.
+    // `None` falls back to `Modifier::REVERSED` after the icon paint —
+    // terminal-agnostic inversion that works in every colour scheme.
+    let sel_explicit_bg = rail_style.selection_bg.map(qc);
+
+    // Fill background across the whole area.
+    for row in area.y..area.y + area.height {
+        for col in area.x..area.x + area.width {
+            set_cell(buf, col, row, ' ', bg, bg);
+        }
+    }
+
+    // Trailing-edge separator column — only when the sidecar requests one.
+    let sep_col = sep_color.map(|_| area.x + area.width - 1);
+    if let (Some(col), Some(color)) = (sep_col, sep_color) {
+        for row in area.y..area.y + area.height {
+            set_cell(buf, col, row, '│', color, bg);
+        }
+    }
+    let content_start = area.x + 1; // after the leading accent column
+    let content_end = sep_col.unwrap_or(area.x + area.width);
+
+    for vis in &layout.visible_items {
+        if vis.kind != ToolbarItemKind::Action || vis.bounds.height <= 0.0 {
+            continue;
+        }
+        let y = vis.bounds.y.round() as u16;
+        if y >= area.y + area.height {
+            continue;
+        }
+        let (id, icon, is_active) = match &bar.buttons[vis.item_idx] {
+            ToolbarButton::Action {
+                id,
+                icon,
+                is_active,
+                ..
+            } => (id, icon, *is_active),
+            _ => continue,
+        };
+
+        let is_hovered = hovered_id == Some(id);
+        let is_keyboard_selected = bar.focused_index == Some(vis.item_idx);
+
+        // Effective row background priority: explicit keyboard-selection >
+        // hover > the active-row fill. When keyboard-selected with no
+        // explicit `selection_bg`, the row keeps the default/hover
+        // background and `Modifier::REVERSED` is applied after the icon
+        // paint instead (so every cell inverts, giving a clear cursor in
+        // any terminal colour scheme).
+        let row_bg = if is_keyboard_selected {
+            sel_explicit_bg.unwrap_or(if is_hovered { hover_bg } else { bg })
+        } else if is_hovered {
+            hover_bg
+        } else if is_active {
+            active_bg.unwrap_or(bg)
+        } else {
+            bg
+        };
+        let fg = if is_active || is_hovered || is_keyboard_selected {
+            active_fg
+        } else {
+            inactive_fg
+        };
+
+        // Row background fill (hover tint, explicit keyboard-selection
+        // bg, or the active-row fill) — only when there is actually a
+        // tint to apply over the plain bar background.
+        if is_hovered
+            || (is_keyboard_selected && sel_explicit_bg.is_some())
+            || (is_active && active_bg.is_some())
+        {
+            for col in area.x..content_end {
+                set_cell(buf, col, y, ' ', fg, row_bg);
+            }
+        }
+
+        // Leading-edge accent glyph for active items — only when the
+        // sidecar opts in via `active_accent`. `None` paints zero
+        // accent-line pixels.
+        if is_active {
+            if let Some(ac) = accent {
+                set_cell(buf, area.x, y, '▎', ac, row_bg);
+            }
+        }
+
+        // Icon glyph — centred in the room between the leading accent
+        // column and the trailing edge (separator column, when present).
+        let icon_str = icon.as_deref().unwrap_or("");
+        let icon_ch = icon_str.chars().next().unwrap_or(' ');
+        let content_w = content_end.saturating_sub(content_start);
+        let icon_w = char_cell_width(icon_ch).max(1);
+        if content_w >= icon_w {
+            let icon_x = content_start + (content_w - icon_w) / 2;
+            if icon_w >= 2 {
+                set_cell_wide(buf, icon_x, y, icon_ch, fg, row_bg);
+            } else {
+                set_cell(buf, icon_x, y, icon_ch, fg, row_bg);
+            }
+        }
+
+        // Keyboard-selection highlight — `Modifier::REVERSED` fallback
+        // when the sidecar sets no explicit `selection_bg`. Applied last
+        // so it overrides any earlier colour.
+        if is_keyboard_selected && sel_explicit_bg.is_none() {
+            for col in area.x..content_end {
+                let cell = &mut buf[(col, y)];
+                cell.modifier |= Modifier::REVERSED;
             }
         }
     }
@@ -793,5 +1176,126 @@ mod tests {
         draw_toolbar(&mut buf, area, &bar, &theme, None, None);
 
         assert_eq!(cell_fg(&buf, 2, 0), qc(theme.foreground));
+    }
+
+    // ── `ToolbarOrientation::Vertical` / `ToolbarButton::Spacer` ───────
+
+    /// `draw_toolbar_oriented` with the default `Horizontal` orientation
+    /// paints byte-for-byte the same buffer as `draw_toolbar` — no
+    /// behaviour change for every existing horizontal caller.
+    #[test]
+    fn oriented_horizontal_matches_plain_draw_toolbar() {
+        let area = Rect::new(0, 0, 40, 1);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_action("a", "Refine", true), mk_action("b", "Drop", true)],
+            bg: None,
+            focused_index: None,
+        };
+
+        let mut plain_buf = Buffer::empty(area);
+        let plain_layout = draw_toolbar(&mut plain_buf, area, &bar, &Theme::default(), None, None);
+
+        let mut oriented_buf = Buffer::empty(area);
+        let oriented_layout = draw_toolbar_oriented(
+            &mut oriented_buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarLayoutOptions::default(),
+        );
+
+        assert_eq!(plain_buf, oriented_buf);
+        assert_eq!(plain_layout, oriented_layout);
+    }
+
+    /// `ToolbarOrientation::Vertical` degrades to one item per terminal
+    /// row — the first action's bracket cells paint on row 0, the
+    /// second's on row 1.
+    #[test]
+    fn vertical_degrades_to_one_item_per_row() {
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = Buffer::empty(area);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_action("a", "Run", true), mk_action("b", "Stop", true)],
+            bg: None,
+            focused_index: None,
+        };
+        let options = ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical);
+
+        let layout =
+            draw_toolbar_oriented(&mut buf, area, &bar, &Theme::default(), None, None, options);
+
+        assert_eq!(layout.visible_items.len(), 2);
+        assert_eq!(layout.visible_items[0].bounds.y, 0.0);
+        assert_eq!(layout.visible_items[1].bounds.y, 1.0);
+        // Every row spans the full area width.
+        assert_eq!(layout.visible_items[0].bounds.width, 20.0);
+
+        assert_eq!(cell_char(&buf, 0, 0), '[');
+        assert_eq!(cell_char(&buf, 0, 1), '[');
+        // Unused rows stay blank (no stray brackets below the items).
+        assert_ne!(cell_char(&buf, 0, 2), '[');
+
+        let hit = layout.hit_test(1.0, 1.0);
+        match hit {
+            ToolbarHit::Button(id) => assert_eq!(id.as_str(), "b"),
+            _ => panic!("expected row 1 to hit button b, got {hit:?}"),
+        }
+    }
+
+    /// A `Spacer` in a vertical bar still pushes the trailing item to the
+    /// bottom row, same push semantics as the horizontal case.
+    #[test]
+    fn vertical_spacer_pushes_trailing_item_to_the_bottom_row() {
+        let area = Rect::new(0, 0, 10, 5);
+        let mut buf = Buffer::empty(area);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![
+                mk_action("a", "Top", true),
+                ToolbarButton::Spacer,
+                mk_action("b", "Bottom", true),
+            ],
+            bg: None,
+            focused_index: None,
+        };
+        let options = ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical);
+
+        let layout =
+            draw_toolbar_oriented(&mut buf, area, &bar, &Theme::default(), None, None, options);
+
+        assert_eq!(layout.visible_items[0].bounds.y, 0.0);
+        assert_eq!(
+            layout.visible_items[2].bounds.y, 4.0,
+            "flush to the last row"
+        );
+        assert_eq!(cell_char(&buf, 0, 4), '[');
+    }
+
+    /// A zero-height vertical area returns an empty, non-hit-testable
+    /// layout — same degenerate-area contract `draw_toolbar_with_options`
+    /// already has for a zero-height horizontal bar.
+    #[test]
+    fn vertical_zero_height_area_is_noop() {
+        let buf_area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::empty(buf_area);
+        let area = Rect::new(0, 0, 10, 0);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_action("a", "X", true)],
+            bg: None,
+            focused_index: None,
+        };
+        let options = ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical);
+
+        let layout =
+            draw_toolbar_oriented(&mut buf, area, &bar, &Theme::default(), None, None, options);
+
+        assert!(layout.visible_items.is_empty());
+        assert_eq!(layout.hit_test(0.0, 0.0), ToolbarHit::Empty);
     }
 }

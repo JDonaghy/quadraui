@@ -33,7 +33,7 @@ pub(crate) fn toolbar_item(field_id: &WidgetId, btn: &ToolbarButton) -> Option<(
     match btn {
         ToolbarButton::Action { id, label, .. } => Some((*id, label.clone())),
         ToolbarButton::Label { text, .. } => Some((*field_id, text.clone())),
-        ToolbarButton::Separator => None,
+        ToolbarButton::Separator | ToolbarButton::Spacer => None,
     }
 }
 
@@ -201,6 +201,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -216,6 +217,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 

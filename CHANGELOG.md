@@ -59,6 +59,1282 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-10
+### Added
+- `quadraui_binding_core::{widget_state_snapshot, WidgetStateSnapshot}` (#2307):
+  a side-effect-free read of a widget's current state in the binding's
+  widget-state store — cursor (`selected_path`/`selected_idx`), scroll
+  offset, split ratio, active tab and expanded set, whichever apply to the
+  id's stored kind — for a host binding to expose read access without
+  reaching into `host.rs`'s private per-kind state structs. Purely
+  additive, backs `quadraui-py`'s new `QuiApp.widget_state`.
+- `compose::{classify_tree_nav_key, TreeNavKey}` (#2305): the key
+  classification `TreeController::handle_key`/`SidebarSystem`'s own key
+  dispatch already shared internally is now `pub` (was `pub(crate)`), so
+  an out-of-crate caller with its own row-cursor movement
+  (`quadraui-binding-core`'s uncontrolled `Tree`/`List`/`DataTable` cursor
+  navigation) can classify a key against the exact same `Up`/`Down`/vim
+  `j`/`k`/`Home`/`End`/`PageUp`/`PageDown`/`Enter`/`Space` map instead of
+  maintaining a second hand-copied one that can silently drift. Purely
+  additive — no existing call site changes.
+- Binding `Tree`/`List`/`DataTable` row cursor + scroll-into-view, kept in
+  the binding's widget-state store and uncontrolled by default (#2305): a
+  focused tree, list or table moves its own cursor on
+  `Up`/`Down`/`j`/`k`/`Home`/`End`/`PageUp`/`PageDown` and keeps it inside
+  the painted viewport without the app re-sending a descriptor. Supplying a
+  non-zero `scroll_offset` (or a non-zero `ListView::selected_idx` /
+  `Some` `DataTable::selected_idx`) pins that slot to the app instead.
+  Navigation keys still reach the app's own handler as the focus-scoped raw
+  `KeyPressed`, so a controlled app's key handling is unchanged.
+- `WidgetId: From<&String>` (#2178): lets id-taking `compose` methods accept
+  `impl Into<WidgetId>` without breaking an existing call site that passes
+  a borrowed `&String` (the common shape for an owned id threaded through a
+  closure), alongside the pre-existing `From<&str>`/`From<String>`.
+- `WorkspaceController::{index_of, contains, is_preview, promote, activate,
+  close, set_label, set_dirty}`, `BottomPanelController::close_tab`, and
+  `TabGroupController::{switch_tab, close_tab}` (#2178) now take
+  `impl Into<WidgetId>` instead of `&str` — a raw string literal still
+  works unchanged (`&str`/`String`/`&String` all convert), and a caller
+  that already holds a `WidgetId` no longer needs `.as_str()` first. A
+  signature widening, not a deprecation: every existing `&str` call site
+  across this crate's own tests, examples, and `quadraui-gallery` compiles
+  unchanged. Not free at runtime, though — a call that used to compare
+  `&str`s directly now interns its argument into the process-global
+  `WidgetId` table first, so a query called with a string that was never
+  a real widget id (a probe, a typo) permanently grows that table by one
+  entry. Bounded for every in-repo caller today, but worth knowing before
+  calling one of these in a loop over untrusted or unbounded strings.
+- `compose::Handled<E>` (#2174): shared "did you handle it" return type for
+  compose controller `handle_*` methods — `Event(E)` (a semantic payload to
+  route further), `Consumed` (internal state changed, redraw, nothing to
+  route), or `Ignored` (not this controller's event). Replaces the
+  per-controller spellings of the same three-way split (`StatusBarAction`
+  spelled `Consumed` as `Redraw`; `BottomPanelController::handle_click`
+  returned `Option<BottomPanelEvent>` with no way to tell "consumed, no
+  event" apart from "not mine"). `StatusBarInteraction::handle_event` and
+  `BottomPanelController::handle_click_event` are the first two controllers
+  migrated, added alongside their now-deprecated originals (see
+  `### Deprecated`); #2298 migrates the rest of `compose`.
+- `ToastStackController::handle_event` and `MessageDialogController::handle_event`
+  (#2298): two more `compose` controllers onto `compose::Handled<E>`.
+  `ToastStackController::handle_event` returns `Handled<ToastStackAction>`
+  (`ToastStackAction` carries just the semantic `Action`/`Dismiss`/
+  `FocusReturned` payloads `ToastStackEvent` used to mix with its own
+  `Consumed`/`Ignored`); `MessageDialogController::handle_event` returns
+  `Handled<MessageDialogChoice>` directly, reusing the existing choice type
+  as `Handled::Event`'s payload rather than introducing a new one. Added
+  alongside their now-deprecated originals (see `### Deprecated`).
+- `HelpOverlayController::handle_event`/`open_action`/`close_action`/
+  `toggle_action` (#2298): one more `compose` controller onto
+  `compose::Handled<E>`. `handle_event` returns `Handled<HelpOverlayAction>`
+  (`HelpOverlayAction` carries just the semantic `Opened`/`Closed` payloads
+  `HelpOverlayEvent` used to mix with its own `Consumed`/`Ignored`);
+  `open_action`/`close_action`/`toggle_action` return the new
+  `HelpOverlayAction` directly (they're unconditional, so never
+  `Consumed`/`Ignored`). Added alongside their now-deprecated
+  `handle`/`open`/`close`/`toggle` originals (see `### Deprecated`).
+- `DualModePaletteController::handle_event`/`handle_mouse_event` (#2298):
+  one more `compose` controller onto `compose::Handled<E>`. Both return
+  `Handled<DualModePaletteAction>` (`DualModePaletteAction` carries just the
+  semantic `ItemConfirmed`/`TextConfirmed`/`QueryChanged`/`ModeToggled`/
+  `Cancelled` payloads `DualModePaletteEvent` used to mix with its own
+  `Consumed`/`Ignored`). Added alongside their now-deprecated
+  `handle`/`handle_mouse` originals (see `### Deprecated`).
+- `TabGroupController::{handle_click_event, handle_drag_move_event,
+  handle_tab_drop_event}` and `WorkspaceController::{handle_click_event,
+  handle_key_event}` (#2298): the two controllers #2298 names explicitly,
+  onto `compose::Handled<E>`. Both already used plain semantic event enums
+  (`TabGroupEvent`, `WorkspaceEvent`, neither baking in its own
+  `Consumed`/`Ignored`), so no new payload type was needed — only the
+  `Option<E>`/`Vec<E>`-returning methods gain a `Handled`-returning
+  sibling that distinguishes a dead-space interaction
+  (`Handled::Consumed`) from one that wasn't this controller's at all
+  (`Handled::Ignored`), a split `None`/an empty `Vec` couldn't express.
+  Added alongside the five now-deprecated originals (see
+  `### Deprecated`).
+- `compose::path_picker::PathPickerAction` (#2298): shared `Handled<E>`
+  payload for `FilePickerController::handle_event` and
+  `FolderPickerController::handle_event`, replacing the identical
+  `FilePickerEvent`/`FolderPickerEvent` enums each facade used to define
+  on its own (see `### Deprecated`).
+- `FormController::{handle_event, handle_cached_event}` and
+  `compose::FormControllerAction` (#2298): one more `compose` controller
+  onto `compose::Handled<E>`. Both return `Handled<FormControllerAction>`
+  (`FormControllerAction` carries just the semantic `FormAction`/
+  `ScrollChanged` payloads `FormControllerEvent` used to mix with its own
+  `Consumed`/`Ignored`). Added alongside the now-deprecated `handle`/
+  `handle_cached`/`FormControllerEvent` originals (see `### Deprecated`).
+- `FormDialogController::handle_event` and `compose::FormDialogAction`
+  (#2298): one more `compose` controller onto `compose::Handled<E>`.
+  `handle_event` returns `Handled<FormDialogAction>` (`FormDialogAction`
+  carries the `ButtonClicked`/`FormAction` payloads `FormDialogEvent` used
+  to mix with its own `Consumed`/`Ignored`). Added alongside the
+  now-deprecated `handle`/`FormDialogEvent` originals (see
+  `### Deprecated`).
+- `ChatController::handle_event` and `compose::ChatControllerAction`
+  (#2298): one more `compose` controller onto `compose::Handled<E>`.
+  `handle_event` returns `Handled<ChatControllerAction>`
+  (`ChatControllerAction` carries the `Submit`/`StreamChunk`/`Cancelled`/
+  `StopRequested`/`KeyPressed`/`TurnClicked` payloads `ChatControllerEvent`
+  used to mix with its own `Consumed`/`Ignored`). Added alongside the
+  now-deprecated `handle`/`ChatControllerEvent` originals (see
+  `### Deprecated`).
+- `quadraui-node`: `QuiApp.armWakeNotify`/`disarmWakeNotify` (#2238) register
+  a threadsafe notifier `QuiAppWaker.post`/`wake`/`postAfter`/`wakeAfter`
+  fires the instant they deliver, from whatever thread that happens on.
+  `js/index.ts`'s new `run(app, fallbackIntervalMs?)` arms it to step a live
+  `startTui`/`startNative` session wake-driven instead of on a fixed
+  interval: zero `step()` calls while idle with no pending waker/timer work,
+  versus `pump`'s one every tick regardless. `run` becomes the recommended
+  default entry point; `pump` stays exported as the documented fallback for
+  a session that needs every real native keypress/click observed at a
+  steady cadence (real native input doesn't flow through the wake notify —
+  `run`'s `fallbackIntervalMs` safety net, 250ms by default, is the
+  trade-off until a backend exposes a way to wait on that without polling).
+- `FieldKind::NumberInput(NumberInput)` and `FieldKind::RadioGroup(RadioGroup)`
+  (#2251): `Form` can now host the standalone `NumberInput` (#1446) and
+  `RadioGroup` (#1436) primitives as field kinds, following the
+  `ComboBox`/`DatePicker` embedding pattern. `FormController` handles their
+  keys (`NumberInput`: typing, Up/Down step, Enter-to-commit with
+  clamp/round to `[min, max]`/`precision`, Escape-to-cancel; `RadioGroup`:
+  Up/Down/Left/Right move the selection, skipping disabled options) and
+  their clicks (the stepper buttons via a new `item_bounds`-based lookup;
+  each radio option via its own `WidgetId`, through the same per-item path
+  `ToggleGroup`/`ButtonRow` already use), emitting `FormEvent::NumberChanged`/
+  `NumberDraftChanged`/`NumberCommitted`/`NumberCancelled`/`RadioChanged`.
+  Every backend paints both kinds through the primitives' own existing
+  rasterisers (`tui::draw_number_input`/`draw_radio_group`,
+  `number_input`/`radio_group`'s shared `native_surface_paint::paint` for
+  GTK/macOS/Win) rather than a second, form-only paint path — `RadioGroup`'s
+  row is therefore allowed to span one sub-row per option, the first
+  `FieldKind` to do so (see `FormFieldMeasure::vertical` and
+  `FormFieldMeasure::items_start_y`, both new fields defaulting to `false`/
+  `0.0` for every existing item-bearing kind; `FormFieldMeasure` itself is
+  now `#[non_exhaustive]`, so a future field add here stays additive).
+  This is a breaking addition to the non-`#[non_exhaustive]`
+  `FieldKind`/`FormEvent` enums, the same shape #1773/#1689
+  (`ComboBox`/`DatePicker`) already shipped — a downstream exhaustive
+  match on either enum needs a new arm.
+- `DialogInput::Form(Form)` (#328): lets a `Dialog` host a multi-field
+  `Form` (e.g. Name + Description) instead of a single
+  `DialogTextInput`. `compose::FormDialogController` composes the
+  `Dialog` primitive with the existing `FormController`, sizing the
+  input slot via `Backend::form_layout` (so a `TextArea`'s
+  `visible_rows`, a `Top`-labelled field's extra row, and a focused
+  `Dropdown`'s open option list all reserve their real height rather
+  than a flat one-row-per-field estimate), and owns the Tab/Shift-Tab
+  hand-off between the form's fields and the dialog's buttons
+  (stepping past either end cycles into the other, surfacing
+  `FormEvent::FocusChanged` either way so a consumer mirroring
+  `focused_field` stays in sync), Left/Right button cycling,
+  Enter-activates-the-focused-button, Escape-always-resolves-to-
+  cancel/default (except into an open `ComboBox` popup, which claims
+  Escape first), mirroring `MessageDialogController`'s own keyboard
+  model. `FormController::live_form` and the `pub(crate)
+  form_controller::focus_order` helper back the controller's accurate
+  `has_focus` reporting and boundary detection respectively. TUI's
+  `draw_dialog`/`tui_dialog_layout` and the GTK/macOS/Win
+  `native_surface_paint::paint`/`a11y::chrome` plumbing all gained the
+  new variant; existing single-`DialogTextInput`/`DialogInput::Toolbar`
+  dialogs are unaffected. Demo: `examples/tui_form_dialog.rs`
+  (`examples/common/form_dialog_demo.rs`), with `TuiDriver`
+  paint/focus/submit/multi-line round-trips in
+  `tests/tui_example_driver.rs`.
+- Item-level keyboard focus for `FieldKind::ButtonRow`/`ToggleGroup`/
+  `Toolbar` form fields (#2250): `FormController` now tracks which item
+  inside the focused field has keyboard focus (starting on the first
+  enabled item, reseeded on every Tab/Shift-Tab/BackTab move, never
+  written onto `Form` itself). `Left`/`Right` move it, skipping disabled
+  items without wrapping; `Enter`/Space activate it, emitting the same
+  `FormEvent::ButtonClicked`/`ToggleChanged`/`ToolbarButtonClicked` a
+  mouse click on that item already does. Every backend paints a focus
+  ring on the item via the existing `Backend::draw_focus_ring` — TUI's
+  rasteriser now underlines a one-row-tall ring instead of drawing a
+  destructive full-width box. No new public API; `Form`/`FormField`/
+  `ButtonRowItem`/`ToggleGroupItem` are unchanged.
+- `ToolbarRailStyle` (#2220): a `#[non_exhaustive]` sidecar for a
+  `Toolbar` used as a vertical rail, carrying the paint state
+  `ActivityBar`'s painters use that a plain `Toolbar` has no field for
+  (active-row fill, leading-edge active accent, keyboard-selection fill,
+  trailing-edge separator colour). `ActivityBar::to_toolbar_parts` builds
+  one alongside the equivalent `Toolbar`, mapping `ActivityBarStyle::active_bg`
+  / `ActivityBar::active_accent` / `ActivityBar::selection_bg` /
+  `theme.separator` onto it and choosing each item's glyph vs fallback
+  icon by `nerd_fonts_enabled`; `ActivityBar::row_hits_from_toolbar_layout`
+  turns a vertical `ToolbarLayout` built from that `Toolbar` back into the
+  bar-relative `Vec<ActivityBarRowHit>` a `draw_activity_bar`-shaped
+  painter returns today. No field added to `Toolbar`, `ToolbarPaintOptions`,
+  `ActivityBar`, `ActivityItem`, or `ActivityBarStyle`; no painter reads
+  the new sidecar yet.
+- `tui::toolbar::draw_toolbar_with_rail_style` (#2222): the first painter
+  to read `ToolbarRailStyle` — a vertical-rail `Toolbar` paint entry point
+  honouring its active-row fill, leading-edge accent glyph, keyboard-
+  selection fill (or `Modifier::REVERSED` fallback), and trailing-edge
+  separator column. `tui::activity_bar::draw_activity_bar_with_style`'s
+  body is now a thin seam-mapping wrapper around it (via
+  `ActivityBar::to_toolbar_parts` and `ActivityBar::row_hits_from_toolbar_layout`)
+  instead of its own ~145-line bespoke cell painter; `draw_activity_bar`/
+  `draw_activity_bar_with_style` keep their exact signatures and
+  `Vec<ActivityBarRowHit>` return.
+- `SplitTree::Split` gains `first_min`/`second_min` (default `0.0`, set via
+  the new `SplitTree::with_min_sizes` builder — not a `split()` argument, so
+  existing call sites keep compiling) and now honours them in `layout()`
+  through the same proportional-relax formula `Split::layout` uses.
+  `Split::layout` is now a thin wrapper over `SplitTree::layout` applied to
+  a two-leaf tree, so the two primitives can never drift onto two different
+  relax formulas. `DragTarget::SplitDivider`/`UiEvent::SplitDividerDragged`
+  now document and test `Split` usage (`split_index` always `0`), not just
+  `SplitTree`. The `Split { .. }` variant is now `#[non_exhaustive]` —
+  construct it via `SplitTree::split()`, not a struct literal, so it can
+  keep gaining fields like `first_min`/`second_min` without that being
+  breaking for a downstream crate.
+- `SplitLayout::divider_hit_bounds()` — the divider's click/drag target
+  rect, distinct from `divider_bounds` on backends (TUI) that snap the
+  click target to an integer cell. Hosts that hit-test a cached
+  `SplitLayout` by hand instead of calling `SplitLayout::hit_test` should
+  read this field, not `divider_bounds`.
+- `ChatController`'s input box now has `Shift+Arrow`/`Shift+Home`/
+  `Shift+End` selection and `Ctrl+Left`/`Right`/`Backspace`/`Delete` word
+  ops, same as `FormController`'s text fields — the input now routes every
+  edit through a `TextEditor` instead of hand-rolled byte-offset
+  arithmetic. Every existing public accessor (`input_text`/
+  `input_insert_char`/`input_insert_str`/`clear_input`/`input_has_focus`)
+  keeps its signature.
+- `Panel::header_toolbar` (#2223): maps a `Panel`'s title bar onto an
+  equivalent `SidebarPanel` + `Toolbar` header — a title `Label` (keeping
+  `Panel`'s own leading-space inset), a `Spacer`, then one
+  `ToolbarButton::Action` per fitting `PanelAction`, in the same
+  "first action is rightmost" order `Panel::layout` uses, with `accent`
+  mapped onto `Toolbar.bg`. Only the actions `Panel::layout` would keep
+  are included, so laying this header out with a fixed-width
+  `ToolbarItemMeasure` for `Action` buttons produces rects identical to
+  `Panel::layout`'s own `visible_actions`, in order. Pure addition — no
+  backend painter switches over to it yet; `Panel`'s own TUI/GTK/macOS/Win
+  chrome painters are unchanged.
+- `compose::app_shell::AppShellEvent` and `compose::bottom_panel::BottomPanelEvent`
+  now implement `Serialize` (hand-written, not `#[derive(Serialize)]`, so a
+  unit variant still serializes to `{"VariantName": null}` rather than
+  `serde`'s default bare-string external tagging — see each impl's own doc).
+  Lets a binding reach the externally-tagged dict/JSON shape a shell-event
+  callback expects via a generic `pythonize::pythonize`/`serde_json::to_value`
+  call instead of its own hand-rolled, binding-specific tagging function.
+- `Edge` and `Focusable` (#2178): new `#[non_exhaustive]`-free `pub` enums,
+  re-exported at the crate root, that replace a bare positional `bool` on
+  two existing methods (see `### Deprecated`) — `TreeController::
+  move_selection_to_edge(Edge::Start | Edge::End, ..)` and
+  `ModalStack::push_with_focusable(.., Focusable::Yes | Focusable::No)`.
+  `FolderPickerController::rooted_at` and the `with_show_hidden` builder
+  (#2178) replace `FolderPickerController::new`'s trailing `show_hidden:
+  bool` the same way every other `FolderPickerController` option is
+  already set — via a chained `with_*` builder.
+### Deprecated
+- `Panel`/`PanelAction` (#2229): use [`SidebarPanel`] with a [`Toolbar`]
+  header instead — a `Label` title, a `Spacer`, then right-aligned
+  `Action` buttons reproduce the same title-bar-plus-actions shape
+  `Panel::header_toolbar` already maps onto. Every backend
+  (`tui`/`gtk`/`macos`/`win`) already paints `Panel`'s chrome through
+  that mapping (#2223–#2227), so this PR only adds the
+  `#[deprecated(since = "0.9.0", ...)]` attribute and migrates every
+  in-repo caller (`examples/common/panel_app.rs`, the
+  `tui_panel`/`gtk_panel`/`macos_panel`/`win_panel` examples, and
+  `quadraui-gallery`'s "Panel" demo) onto `SidebarPanel` + `Toolbar`
+  directly. `primitives::panel::native_surface_paint` (crate-private,
+  no public API impact) is deleted — no backend painter has called it
+  since those PRs landed. Plumbing that exists only to carry `Panel`
+  (the `Backend::draw_panel`/`panel_layout` trait methods, `frame.rs`'s
+  `Surface`/`OwnedContent::Panel` variants, the `a11y` impl, the
+  `RecordingBackend`/test-double impls, the crate-root/prelude
+  re-exports, and `quadraui-binding-core`'s `"panel"` wire/layout node)
+  keeps `Panel` behind a narrowly-scoped `#[allow(deprecated)]` — none
+  of that is removed by this PR. Removal target: PR 2 of issue #2229's
+  two-PR deprecation protocol, once every in-repo caller (including the
+  `"panel"` wire node, whose removal/retargeting is its own breaking
+  change) has migrated, not before a 0.10.0 bump.
+- `StatusBarInteraction::handle` / `StatusBarAction` (#2174): use
+  `StatusBarInteraction::handle_event`, which returns `Handled<WidgetId>`
+  instead. Every in-repo caller
+  (`examples/common/full_chrome_demo.rs`, `examples/common/multi_tree.rs`)
+  migrates in this PR; `handle`/`StatusBarAction` stay as a thin adapter
+  with their own tests still passing. Removal target: once `Handled<E>`
+  migration of the rest of `compose` lands and no caller needs the old
+  shape, not before a 0.10.0 bump.
+- `BottomPanelController::handle_click` (#2174): use `handle_click_event`,
+  which returns `Handled<BottomPanelEvent>` and — unlike the `Option` it
+  replaces — distinguishes a dead-space click inside the panel
+  (`Handled::Consumed`) from a click outside the panel entirely
+  (`Handled::Ignored`). The in-repo caller (`shell_adapter.rs`) migrates
+  in this PR; `handle_click` stays as a thin adapter with its own tests
+  still passing. Removal target: same as `StatusBarInteraction::handle`
+  above.
+- `ToastStackController::handle` / `ToastStackEvent` (#2298): use
+  `handle_event`, which returns `Handled<ToastStackAction>` instead —
+  `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, and the
+  `Action`/`Dismiss`/`FocusReturned` payloads move to the new
+  `ToastStackAction` under `Handled::Event`. Every in-repo caller
+  (`examples/common/toast_actions_app.rs`, `quadraui-gallery`'s toast demo)
+  migrates in this PR; `handle`/`ToastStackEvent` stay as a thin adapter
+  with their own tests still passing. Removal target: same as
+  `StatusBarInteraction::handle` above.
+- `MessageDialogController::handle` / `MessageDialogEvent` (#2298): use
+  `handle_event`, which returns `Handled<MessageDialogChoice>` instead of
+  wrapping the same choice in a dedicated `Resolved` variant. Every
+  in-repo caller (`examples/common/message_dialog_app.rs`,
+  `quadraui-gallery`'s message-dialog demo, `quadraui-binding-core`'s
+  `InteractionEngine`, `tui::services`'s nested dialog loop) migrates in
+  this PR; `handle`/`MessageDialogEvent` stay as a thin adapter with their
+  own tests still passing. Removal target: same as
+  `StatusBarInteraction::handle` above.
+- `HelpOverlayController::handle`/`open`/`close`/`toggle` /
+  `HelpOverlayEvent` (#2298): use `handle_event`/`open_action`/
+  `close_action`/`toggle_action` instead — `Consumed`/`Ignored` from
+  `handle` are `Handled::Consumed`/`Handled::Ignored`, and the
+  `Opened`/`Closed` payloads move to the new `HelpOverlayAction`, returned
+  directly by the `_action` methods and under `Handled::Event` by
+  `handle_event`. Every in-repo caller (`examples/common/help_layer_demo.rs`,
+  `quadraui-gallery`'s help-overlay demo) migrates in this PR; the four
+  deprecated originals stay as thin adapters with their own tests still
+  passing. Removal target: same as `StatusBarInteraction::handle` above.
+- `DualModePaletteController::handle`/`handle_mouse` / `DualModePaletteEvent`
+  (#2298): use `handle_event`/`handle_mouse_event`, which return
+  `Handled<DualModePaletteAction>` instead — `Consumed`/`Ignored` are
+  `Handled::Consumed`/`Handled::Ignored`, and the
+  `ItemConfirmed`/`TextConfirmed`/`QueryChanged`/`ModeToggled`/`Cancelled`
+  payloads move to the new `DualModePaletteAction` under `Handled::Event`.
+  Every in-repo caller (`examples/common/{palette_dual_mode_app,
+  help_layer_demo}.rs`, `quadraui-gallery`'s command-palette demo) migrates
+  in this PR; `handle`/`handle_mouse`/`DualModePaletteEvent` stay as a thin
+  adapter with their own tests still passing. Removal target: same as
+  `StatusBarInteraction::handle` above.
+- `TabGroupController::{handle_click, handle_drag_move, handle_tab_drop}`
+  (#2298): use `handle_click_event`/`handle_drag_move_event`/
+  `handle_tab_drop_event` instead, which return `Handled<TabGroupEvent>`/
+  `Handled<TabGroupEvent>`/`Handled<Vec<TabGroupEvent>>` — each
+  distinguishes a dead-space interaction (`Handled::Consumed`) from one
+  that wasn't this controller's at all (`Handled::Ignored`), a split the
+  `Option`/`Vec` they replace couldn't express. Every in-repo caller
+  (`examples/common/tab_group_demo.rs`) migrates in this PR; the three
+  originals stay as thin adapters with their own tests still passing.
+  Removal target: same as `StatusBarInteraction::handle` above.
+- `WorkspaceController::{handle_click, handle_key}` (#2298): use
+  `handle_click_event`/`handle_key_event` instead, which return
+  `Handled<Vec<WorkspaceEvent>>`/`Handled<WorkspaceEvent>` and distinguish
+  a dead-space interaction (`Handled::Consumed`) from one outside the
+  strip or not one of the controller's key bindings (`Handled::Ignored`).
+  Every in-repo caller (`examples/common/workspace_demo.rs`,
+  `quadraui-gallery`'s workspace demo) migrates in this PR; `handle_click`/
+  `handle_key` stay as thin adapters with their own tests still passing.
+  Removal target: same as `StatusBarInteraction::handle` above.
+- `FilePickerEvent`/`FolderPickerEvent` (#2298): the two enums were
+  identical (`Confirmed { path }`, `Cancelled`, `Consumed`, `Ignored`) —
+  unified onto `compose::path_picker::PathPickerAction` (`Confirmed`/
+  `Cancelled` only; `Consumed`/`Ignored` are `Handled::Consumed`/
+  `Handled::Ignored`), returned by both controllers' new
+  `handle_event(&mut self, event: &UiEvent, visible_rows: usize) ->
+  Handled<PathPickerAction>`. Every in-repo caller
+  (`examples/common/{file_picker_app,folder_picker_app}.rs`,
+  `tui::services`'s native file/folder-open dialog fallbacks,
+  `quadraui-gallery`'s file-picker demo) migrates in this PR; `handle`/
+  `FilePickerEvent`/`FolderPickerEvent` stay as thin adapters with their
+  own tests still passing. Removal target: same as
+  `StatusBarInteraction::handle` above.
+- `FormController::{handle, handle_cached}` / `FormControllerEvent`
+  (#2298): use `handle_event`/`handle_cached_event`, which return
+  `Handled<FormControllerAction>` instead — `Consumed`/`Ignored` are
+  `Handled::Consumed`/`Handled::Ignored`, and the `FormAction`/
+  `ScrollChanged` payloads move to the new `FormControllerAction` under
+  `Handled::Event`. Every in-repo caller (every `examples/common/form_*.rs`
+  app, `quadraui-gallery`'s form demo, `quadraui-binding-core`'s
+  `InteractionEngine`) migrates in this PR; `handle`/`handle_cached`/
+  `FormControllerEvent` stay as thin adapters with their own tests still
+  passing. `FormController`'s own ~1200-line `impl` block and its test
+  module keep calling the deprecated internals directly under a
+  module-scoped `#[allow(deprecated)]` rather than threading the new type
+  through every one of its private helpers — the public boundary
+  (`handle_event`/`handle_cached_event`) is what changed, not every
+  internal call site. Removal target: same as
+  `StatusBarInteraction::handle` above.
+- `FormDialogController::handle` / `FormDialogEvent` (#2298): use
+  `handle_event`, which returns `Handled<FormDialogAction>` instead —
+  `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, and the
+  `ButtonClicked`/`FormAction` payloads move to the new `FormDialogAction`
+  under `Handled::Event`. Every in-repo caller
+  (`examples/common/form_dialog_demo.rs`) migrates in this PR; `handle`/
+  `FormDialogEvent` stay as thin adapters with their own tests still
+  passing. Removal target: same as `StatusBarInteraction::handle` above.
+- `ChatController::handle` / `ChatControllerEvent` (#2298): use
+  `handle_event`, which returns `Handled<ChatControllerAction>` instead —
+  `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, and
+  every other payload moves to the new `ChatControllerAction` under
+  `Handled::Event`. Every in-repo caller (`examples/common/{chat_demo,
+  ai_transcript}.rs`, `quadraui-gallery`'s chat demo) migrates in this PR;
+  `handle`/`ChatControllerEvent` stay as thin adapters with their own
+  tests still passing (the controller's own private helpers
+  (`handle_key`/`handle_click`/`handle_drag`) keep speaking
+  `ChatControllerEvent` internally under a module-scoped
+  `#[allow(deprecated)]`, same as `FormController` above — only the
+  public boundary changed shape). Removal target: same as
+  `StatusBarInteraction::handle` above.
+- `TreeController::jump_to_edge` (#2178): use `move_selection_to_edge`,
+  which takes the new `Edge::Start`/`Edge::End` enum instead of a
+  `to_start: bool` positional param. Every in-repo caller
+  (`TreeController::handle_key`, `SidebarSystem`'s own selection-mode key
+  dispatch) migrates in this PR; `jump_to_edge` stays as a thin adapter
+  with its own test still passing. Removal target: not before a 0.10.0
+  bump.
+- `ModalStack::push_focusable` (#2178): use `push_with_focusable`, which
+  takes the new `Focusable::Yes`/`Focusable::No` enum instead of a
+  `focusable: bool` positional param. Every in-repo caller (`push`,
+  `push_float`) migrates in this PR; `push_focusable` stays as a thin
+  adapter with its own test still passing. Removal target: not before a
+  0.10.0 bump.
+- `FolderPickerController::new` (#2178): use `rooted_at`, which drops the
+  trailing `show_hidden: bool` positional param — chain
+  `.with_show_hidden(true)` if needed, mirroring the existing
+  `with_id`/`with_ignore_dirs`/`with_max_depth` builders. Every in-repo
+  caller (`examples/common/folder_picker_app.rs`, `tui::services`'s
+  native folder-open dialog fallback, `quadraui-gallery`'s file-picker
+  demo, and this file's own test suite) migrates in this PR; `new` stays
+  as a thin adapter with its own tests still passing. Removal target: not
+  before a 0.10.0 bump.
+
+### Fixed
+- `FilePickerController` (#2172) now shares its query/list/selection/scroll
+  state machine and key map with `FolderPickerController` via a new
+  internal `PathPickerCore` (`compose/path_picker.rs`), closing the drift
+  between the two: `FilePickerController::handle` in
+  `FilePickerMode::Open` now routes the vim-style `-`/`j`/`k` shortcuts
+  the same way `FolderPickerController` does (see `### Changed` below for
+  the behavior consequence), gains a public `navigate_up`, and `refilter`
+  is `pub` on both (previously private on `FilePickerController`). Public
+  method signatures are otherwise unchanged on both controllers.
+  `FilePickerMode::Save` deliberately keeps its pre-existing behavior —
+  `-`/`j`/`k` type into the query unchanged, because the query *is* the
+  destination filename there — via `classify_nav_key`'s new `vim_keys`
+  parameter, gated on the picker's mode.
+- `gtk::app_font::register_font_from_memory` (#2284) now serialises its
+  Fontconfig registration behind a process-wide `Mutex`: two independent
+  `OnceLock`-guarded call sites (`GtkBackend::new`'s codicon registration and
+  the test suite's own icon-font fixture) could land their "first call" on
+  two different OS test threads at once, racing the unsynchronised raw
+  `FcFontSet` reads `register_with_fontconfig` does against Fontconfig's
+  live `FcSetApplication` set — an intermittent, un-attributable SIGSEGV
+  partway through the `gtk` CI job's lib tests. The lock serialises every
+  call against every other, closing that race.
+- The `gtk` CI job's lib tests no longer intermittently `SIGSEGV` partway
+  through the run with no failing test (#2284). Root cause: Pango's
+  process-global default font map (`pango_cairo_font_map_get_default()`)
+  is not thread-safe, but Rust's default test harness runs every `#[test]`
+  fn on its own OS thread, and almost every GTK paint/round-trip test
+  shapes real text against that same shared font map. Two fixes, both
+  reproduced and verified against a real Linux GTK build (dellserver):
+  `gtk::app_font::register_font_from_memory` now serialises its Fontconfig
+  registration (and the font-map invalidation it triggers) behind a
+  process-wide `Mutex` — two independent `OnceLock`-guarded call sites
+  (`GtkBackend::new`'s codicon registration and the test suite's own
+  icon-font fixture) could otherwise land their "first call" on two
+  different OS threads at once, racing the unsynchronised raw `FcFontSet`
+  reads `register_with_fontconfig` does against Fontconfig's live
+  `FcSetApplication` set; and a new `#[cfg(test)]`-only `gtk::TEST_RENDER_LOCK`
+  (acquired re-entrantly per-thread via `gtk::test_render_guard`, so the
+  same thread can hold it across nested guarded calls without
+  self-deadlocking) serialises `GtkBackend::enter_frame_scope`,
+  `gtk::run::render_frame`'s own pre-frame-scope Pango work
+  (`pangocairo::functions::create_context`, font metrics,
+  `measure_char_width_px`, `refresh_chrome_char_width`), and
+  `gtk::testing::GtkDriver::new`/`dispatch`/`tick` (which measure hit
+  regions and tick-driven layout via the stored Pango context outside a
+  frame scope) against each other and against the font-registration
+  path. Zero cost to real apps — gated entirely behind `#[cfg(test)]`,
+  and GTK's own glib main loop only ever renders from one thread in
+  production.
+
+  Verified: 10/10 consecutive `cargo test -p quadraui --features gtk,tui
+  --lib gtk::` runs clean at the harness's default thread count on a
+  real macOS Homebrew GTK4 build (comfortably over the issue's 20-run
+  bar across this and the prior commit's own 140-run verification on
+  Linux). Known residual gaps, left as follow-up rather than blocking
+  this fix: the lock only covers the `quadraui` **lib** test binary —
+  the `quadraui/tests/*` integration binaries and any downstream
+  consumer's own tests against the public `gtk::testing::GtkDriver` link
+  the crate without `cfg(test)` and get none of this protection; and a
+  dozen-odd `GtkBackend` methods that measure text via `self.pango_ctx`
+  outside a frame scope when called directly rather than through
+  `GtkDriver` (`list_char_width`, `resolve_tab_bar_layout`,
+  `menu_bar_layout`, `draw_toolbar_with_options`, …) remain unguarded.
+- A `LabelPosition::Top`-resolved `FieldKind::RadioGroup`/`NumberInput`
+  (#2251) now agrees between paint and click on TUI: `FormFieldMeasure`
+  gains an `items_start_y` field so `Form::layout` skips its item/sub-row
+  stack past the row's own reserved label line instead of starting it at
+  the label's row, and clamps each item's height to the row's own clipped
+  bottom edge so a partially scrolled-off `RadioGroup` never hands a
+  painter a rect past its row. `tui::form`'s `NumberInput`/`RadioGroup`
+  painters also clamp their row count against the viewport's own bottom
+  edge as a second, defensive guard.
+### Changed
+- `FilePickerController::handle` (#2172) in `FilePickerMode::Open` now
+  intercepts `-`/`j`/`k` as vim-style navigation (parent-dir/up/down)
+  before they reach the query, unified with `FolderPickerController`'s
+  existing key map. Previously those three characters typed into the
+  Open-mode filter like any other character; a consumer-side filter
+  query that happened to start with or contain one of them now instead
+  triggers navigation. `FilePickerMode::Save` is unaffected — its query
+  doubles as the destination filename, so it keeps typing priority for
+  all three characters.
+- `GtkBackend::draw_panel` (#2225) paints a `Panel`'s title-bar background
+  and title label through `Panel::header_toolbar`'s mapped `SidebarPanel` +
+  `Toolbar` header (title `Label` only — its `Action` buttons are dropped
+  before the header reaches the delegate), routed through
+  `sidebar_panel::native_surface_paint::paint`, instead of
+  `panel::native_surface_paint::paint`'s own near-duplicate title-bar
+  painter — macOS still calls the latter until its own seam issue lands.
+  `draw_panel`'s returned `PanelLayout` is unaffected (still
+  `gtk_panel_layout(...)`). Action buttons are painted directly against
+  that same `PanelLayout`'s `visible_actions` rects — `header_toolbar`'s
+  own `Action` buttons are measured by `Toolbar`'s text-width-based
+  `measure_button`, not `PanelMeasure::action_button_width`, so routing
+  them through the delegate too would land each glyph at a different rect
+  than `visible_actions[i].bounds` for an icon wider than a single narrow
+  glyph; each button is filled with `theme.accent_bg` when `is_active`
+  else the title bar's own colour, and its glyph is top-aligned and
+  centred horizontally. A glyph wider than its button is left-aligned and
+  clipped to `visible_actions[i].bounds` instead of overflowing both
+  edges, so it can no longer bleed into the title or a neighbouring
+  action (`panel::native_surface_paint::paint` centres it unclamped). The title `Label`'s `fg` and the header `Toolbar`'s `bg` are
+  both resolved explicitly at the call site (`theme.foreground`,
+  `panel.accent.unwrap_or(theme.separator)`) so the title text colour and
+  title-bar background also keep matching that contract. One visible
+  difference is disclosed and pinned by a test: the title text is now
+  vertically centred in the title bar (matching `SidebarPanel`'s `Label`
+  convention) rather than top-aligned as `panel::native_surface_paint::paint`
+  drew it.
+- `WinBackend::draw_panel` (#2227) paints a `Panel`'s title-bar background
+  and title label through the same `Panel::header_toolbar`-mapped
+  `SidebarPanel` + `Toolbar` header `GtkBackend::draw_panel` (#2225) uses,
+  routed through `sidebar_panel::native_surface_paint::paint`, instead of
+  `panel::native_surface_paint::paint`'s own near-duplicate title-bar
+  painter — macOS still calls the latter until its own seam issue lands.
+  `draw_panel`'s returned `PanelLayout` is unaffected (still
+  `win_panel_layout(...)`, agreeing with `panel_layout`'s no-surface path).
+  Action buttons are painted directly against that same `PanelLayout`'s
+  `visible_actions` rects, for the same width-agreement reason #2225's
+  entry above gives; each button is filled with `theme.accent_bg` when
+  `is_active` else the title bar's own colour, and its glyph is top-aligned
+  and centred horizontally — left-aligned instead when the measured text
+  is wider than the button, and clipped to the button's own bounds, the
+  same guard #2225 added for GTK: `PanelAction::icon` is an app-supplied
+  string, so an icon wider than `win_panel_layout`'s fixed-width action
+  buttons is reachable here too, not just for GTK's own text-measured
+  header-toolbar actions. The title `Label`'s `fg` and the header
+  `Toolbar`'s `bg` are both resolved explicitly at the call site
+  (`theme.foreground`, `panel.accent.unwrap_or(theme.separator)`) so the
+  title text colour and title-bar background also keep matching that
+  contract. One visible difference is disclosed and pinned by a test
+  (`draw_panel_paints_title_vertically_centered`): the title text is now
+  vertically centred in the title bar (matching `SidebarPanel`'s `Label`
+  convention) rather than top-aligned as `panel::native_surface_paint::paint`
+  drew it; the action glyphs stay top-aligned, so a title bar much taller
+  than the chrome font now shows the title and actions misaligned with
+  each other (`GtkBackend::draw_panel` has the same shape).
+- `tui::multi_section_view`'s section-header rasteriser derives a
+  `HeaderAction`'s glyph text (and `SectionAux::Toolbar`'s action glyphs)
+  via `primitives::toolbar::action_text`, the same derivation the
+  gtk/macos/win `native_surface_paint` path already uses, instead of
+  hand-iterating `icon.fallback`. Rendered output is unchanged; no public
+  API change.
+- `activity_bar::native_surface_paint::paint`'s body is now a thin seam:
+  build the `Toolbar` + `ToolbarRailStyle` pair via
+  `ActivityBar::to_toolbar_parts`, lay it out with the same options
+  `ActivityBar::layout` uses, paint through the new
+  `toolbar::native_surface_paint::paint_rail` (honouring `ToolbarRailStyle`'s
+  active-row fill, leading-edge accent, keyboard-selection fill and
+  trailing separator), and translate the result back via
+  `ActivityBar::row_hits_from_toolbar_layout`. The bespoke per-row paint
+  loop is gone; `paint`'s signature, `Vec<ActivityBarRowHit>` return, and
+  pixel output are unchanged, so every gtk/macos/win `draw_activity_bar`
+  caller is unaffected. Both `paint` and `paint_rail` stay `pub(crate)` —
+  no public API change.
+- `a11y::tree`'s internal `role_name` helper (the snapshot-line role
+  spelling, e.g. `"text_input"`) is now derived from `A11yRole`'s own
+  `#[serde(rename_all = "snake_case")]` representation via a JSON
+  round-trip, instead of a separately hand-maintained match arm per
+  variant — the two names can no longer drift apart. No observable
+  change: the derived names are identical to the previous table, and
+  `accesskit::Role::from(A11yRole)` stays an explicit, independent
+  mapping.
+- `src/desktop.rs`'s backend-neutral OS-service plumbing (window-drag
+  arming, the modal-pump re-entrancy guard, trash, the default-handler
+  opener, notifications, clipboard error mapping, headless smoke-mode
+  predicates, the paste-keypress predicate, the `PointerShape` enum-walk
+  scaffold, caught-panic reporting) moved into `src/platform/{window_drag,
+  modal_pump, trash, open_with, open_url, reveal, notifications, clipboard,
+  smoke, paste, pointer_shape, panic_report}.rs`, one file per concern.
+  `desktop` is now a thin facade re-exporting every `platform` item at its
+  historical `crate::desktop::X` path — internal-only, no observable
+  behavior change. Four of `open_with`/`reveal`/`notifications`'s
+  `#[cfg_attr(not(..), allow(dead_code))]` dead-code allows on
+  platform-gated helpers (`shell_execute_reports_success`,
+  `windows_explorer_select_parameters`, `encode_windows_segment`,
+  `file_uri_from_windows_path_str`) are now real `#[cfg(any(.., test))]`
+  gates; two more (`encoded_image_extension`, `materialize_notification_icon`)
+  had a redundant allow removed outright. `wide_nul_terminated`'s stays —
+  `win::services` imports it unconditionally outside any `cfg(windows)`
+  guard, so tightening its gate would break that call site.
+- `Split`/`SplitTree`'s own accessibility role moved from `A11yRole::Group`
+  to `A11yRole::Splitter`.
+- `tui::split`'s divider paint now truncates its axis coordinate instead of
+  rounding, matching `tui::split_tree`'s convention so a fractional-ratio
+  divider paints at the same cell both rasterisers would resolve it to.
+  `tui_split_layout`'s returned `SplitLayout::hit_test` now resolves clicks
+  against that same truncated cell (not the untruncated float position
+  `Split::layout` computes), so a divider whose position lands on a
+  fractional cell boundary (e.g. a `0.5` ratio over an odd `available`) is
+  clickable at the exact cell it paints at instead of silently missing
+  every drag. Its `first_bounds`/`second_bounds` are snapped to the same
+  cell too (the first pane ends at the painted divider, the second starts
+  right after it), so pane content can't paint over the divider glyph.
+  `compose::tab_group` reads the new
+  `SplitLayout::divider_hit_bounds()` for the same reason, since it
+  hit-tests its cached divider rects by hand.
+- `compose::tab_group`'s `GroupLayout` divider numbering (`divider_idx` on
+  `TabGroupEvent::DividerResized`, and the index `handle_drag_start`/
+  `handle_drag_move` address) is now pre-order — this node, then `first`'s
+  dividers, then `second`'s — matching `SplitTree::layout`'s `split_index`
+  convention instead of the previous in-order ("first subtree, this node,
+  second subtree") numbering. Only observable for a tree with 3+ panes (2+
+  `Split` nodes); a single divider's index is unaffected.
+- `Form::spacing: FormSpacing` and `FormField::row_align: Option<RowAlign>`
+  (#2233): a form-wide padding inset (`FormSpacing::padding`, applied on
+  all four edges before any field lays out), a form-wide override for
+  every item-bearing field's inter-item gap (`FormSpacing::item_gap` —
+  `ToggleGroup`/`ButtonRow`/`SegmentedControl`/`Toolbar`), and a
+  `RowAlign` (`Start`/`Center`/`End`/`Stretch`) controlling how those
+  same fields' items pack within their row once `FieldKind::ButtonRow`
+  needs e.g. a dialog-footer's buttons flush right. `Form::layout` is
+  the one place `item_gap`/`row_align` resolve, so GTK/macOS/Win (which
+  already paint every row at `Form::layout`'s own `bounds`) and TUI's
+  item-bearing fields (whose `item_bounds` already carried the same
+  offset) pick those two up with no backend-specific code change.
+  `padding`'s *vertical* axis is the same story everywhere; its
+  *horizontal* axis needed one further TUI fix — `tui::form::draw_form`'s
+  plain (non-item) field rows positioned their label/control columns
+  from `area.x` directly rather than consulting `Form::layout`'s
+  per-row `bounds.x`, so `tui::form::build_row_ctx` now takes that
+  offset explicitly (`RowX`) and applies it to every column it
+  computes. A `Form` that never sets `spacing`/`row_align` lays out
+  bit-for-bit identically to before these fields existed on every
+  backend — ships with `examples/common/form_spacing.rs` +
+  `examples/tui_form_spacing.rs` and its `TuiDriver` test. **Breaking**
+  for any consumer constructing
+  `Form`/`FormField` via a full struct literal (not `..Default::default()`)
+  — `vimcode` (crates.io `0.1.x` pin) and `coord-tui` (pinned git rev)
+  both do; see rule 8's *New field on a public struct a consumer
+  constructs* row. `quadraui/src/primitives/form.rs`'s own module-doc
+  doctest and every in-tree construction site are updated in this PR.
+- `primitives::spinner::native_surface_paint::paint`,
+  `primitives::command_center::native_surface_paint::paint`, and
+  `primitives::form::native_surface_paint::paint_settings_chrome` — shared
+  `PaintSurface` painters replacing the per-backend duplication each
+  primitive carried: `Spinner`'s braille frame table (now
+  `primitives::spinner::FRAMES`/`frame_glyph`, with `tui::spinner` the first
+  adopter), `CommandCenter`'s three disagreeing search-box looks (unified on
+  the rounded-fill-plus-icon "VS Code" style), and `Form`'s settings-panel
+  header/search-row chrome. No backend's `draw_spinner`/`draw_command_center`/
+  `draw_settings_chrome` routes through these yet — per-backend adoption
+  (gtk/macos/win) is tracked as follow-on issues.
+- `focus::cycle_index(current, delta, n)` — the one wrap-around index
+  arithmetic every Tab/Shift+Tab-style stepper in the crate now shares
+  (`FocusManager::step`, `FocusGroup::cycle`, and the menu/workspace/
+  message-dialog/toast-stack/form-controller cyclers that each used to
+  carry their own `rem_euclid`/modulo expression). `n == 0` returns `0`
+  instead of panicking.
+
+- `primitives::layout_metrics::pixel` gains the remaining pixel-tab-bar
+  constants every backend already duplicated independently —
+  `TAB_PAD_COMPACT`/`TAB_INNER_GAP_COMPACT`/`TAB_OUTER_GAP_COMPACT`,
+  `TAB_CHIP_INSET_Y`/`TAB_CHIP_RADIUS`, `TAB_ACCENT_THICKNESS`, and
+  `TAB_CLOSE_HOVER_ALPHA`/`TAB_CLOSE_HOVER_PAD`/`TAB_CLOSE_HOVER_RADIUS` —
+  plus `tab_close_hover_bg`, one shared derivation for the close-glyph
+  hover backdrop `gtk::tab_bar` already paints (`win::tab_bar`/
+  `macos::tab_bar` currently diverge; adopting the shared helper there is
+  a per-backend follow-up). `pixel_tab_bar_layout`'s doc now states its
+  one-slot close/dirty-glyph convention explicitly.
+- `Backend::draw_switch_with_state`/`draw_radio_group_with_state` — the
+  `Switch`/`RadioGroup` twins of `Backend::draw_button_with_state`: each takes
+  an `&InteractionState` and defaults to forwarding to the plain
+  `draw_switch`/`draw_radio_group` (no backend breaks). The shared
+  `switch`/`radio_group::native_surface_paint::paint_with_state` helpers tint
+  the track/marker toward `Theme::button_hover_bg`/`button_pressed_bg` through
+  the same pressed-beats-hovered-beats-resting priority
+  `button::native_surface_paint::paint` and `ToolbarButton::Action`'s
+  pressed/active highlight already resolve — no backend wires real hover
+  painting through the new methods yet; that per-backend adoption is tracked
+  on the parent epic.
+- `FormController::field_rect` — resolves where a specific field painted
+  inside a multi-field `Form`, in the same coordinate space as the `rect`
+  passed to `render`/`handle`. A host anchors a `ComboBox`/`DatePicker`/
+  `ColorPicker` popup overlay to that rect and calls `Backend::draw_combo_box`
+  (or the equivalent) directly, instead of approximating the field's
+  position — the whole-form rect only trivially equals one field's rect when
+  the form has exactly one field. Returns `None` when the field id isn't on
+  the stored form, or is scrolled out of the visible viewport.
+- `Toolbar::layout_with_options`/`ToolbarLayoutOptions`/`ToolbarOrientation` —
+  a toolbar can now lay its buttons out top-to-bottom
+  (`ToolbarOrientation::Vertical`) instead of only left-to-right; `Toolbar::layout`
+  is unchanged (equivalent to `layout_with_options` with the `Horizontal`
+  default). `ToolbarButton::Spacer` is a new, flexible gap variant that pushes
+  every item after it to the bar's trailing edge, with the same
+  trailing-group-wins collision rule `ActivityBar::layout` uses for its own
+  bottom-pinned items. `Toolbar::a11y_children_with_role`/`ToolbarItemRole`
+  lets a host render a toolbar's `Action` children as `A11yRole::Tab` (with
+  `is_active` read as `selected`) instead of the default `Button` role, for a
+  toolbar repurposed as an activity-bar-shaped rail. TUI renders
+  `Vertical` via the new `tui::draw_toolbar_oriented`/
+  `tui::tui_toolbar_layout_with_options`, degrading to one item per terminal
+  row; GTK/macOS/Win-GUI painting of `Vertical`/`Spacer` is follow-up,
+  per-backend scope.
+- `crate::desktop::validate_open_url` — a backend-neutral seam that checks a
+  `PlatformServices::open_url` input before any opener spawns it: accepts
+  `http:`/`https:`/`mailto:` unconditionally, accepts `file:` only when the
+  target (after percent-decoding, so `Calculator%2Eapp`/`run%2Eexe` can't
+  dodge the check) isn't an executable, script, shortcut, installer, or
+  `.app`/`.pkg`/`.workflow`-style bundle, and rejects everything else (a bare
+  filesystem path, `javascript:`, `data:`, …) with
+  `BackendError::Unsupported`. `tui::services::TuiPlatformServices::open_url_result`,
+  `gtk::services::GtkPlatformServices::open_url_result`,
+  `win::services::WinPlatformServices::open_url_result`, and
+  `macos::services::PlatformServices::open_url_result` now run every `url`
+  through it before trying the platform opener, so a bare executable path
+  (`"/Applications/Calculator.app"`, `"C:\\Windows\\System32\\calc.exe"`) is
+  rejected instead of launched.
+- `impl From<&ActivityBar> for Toolbar` — rebuilds an activity bar as the
+  vertical `Toolbar` of icon buttons it's shaped like (`top_items`, a
+  `ToolbarButton::Spacer`, then `bottom_items`; `focused_index` from
+  whichever item has `is_keyboard_selected`; `is_active` carried through to
+  `ToolbarButton::Action::is_active`).
+- `ToolbarLayoutOptions::pin_trailing_overflow_to_origin` — when the
+  trailing group alone (the buttons after a `ToolbarButton::Spacer`) is
+  bigger than the bar, anchors it to the bar's leading edge instead of its
+  trailing edge, so overflow clips its *last* item instead of its *first*.
+- `CompletionItem::resolved_icon`/`CompletionKind::default_icon` — every
+  completion now resolves to a real [`Icon`] (the item's own `icon` when
+  set, else a two-letter ASCII mnemonic per `kind`), and the shared
+  `primitives::completions::native_surface_paint::paint` helper (not yet
+  wired into any pixel backend — that per-backend adoption is tracked
+  separately) paints that icon, every `label` span, and right-aligned
+  `detail` onto a `PaintSurface`. `tui::draw_completions` gains the same
+  content on the cell grid: a kind-icon prefix, every label span instead
+  of only the first, and `detail`, which it previously dropped entirely.
+- `MessageList::layout`/`MessageListLayout`/`VisibleMessageRow` — a new,
+  `primitives::row_stack::layout_row_stack`-based layout, the same
+  arithmetic `ListView`/`TreeView`/`Palette` already share.
+  `MessageList::hit_test` now computes its result by walking this layout
+  instead of its own hand-rolled row-index arithmetic, with no observable
+  change to `hit_test`'s own behavior (pinned by existing tests). No
+  rasteriser paints from `MessageList::layout` yet — `tui`, `gtk`, and the
+  shared macOS/Windows `native_surface_paint::paint` still do their own
+  independent `rows.iter().skip(scroll_top)` walk; migrating them onto
+  this layout is follow-up work.
+- `primitives::tab_bar::native_surface_paint::paint` — a shared `&mut dyn
+  PaintSurface` painter for `TabBar`, written against an already-resolved
+  `TabBarLayout`: background, the active tab's rounded chip + top accent,
+  whole-tab hover/pressed tint, a focus-visible ring, the ellipsis-fitted
+  label (italic for preview tabs), a leading icon, the close/dirty glyph
+  (centred inside `VisibleTab::close_bounds` rather than assuming either
+  backend's own leading-gap convention), and new scroll-arrow chevrons for
+  `TabBarLayout::scroll_left`/`scroll_right` (no in-tree pixel backend
+  painted a visible scroll affordance before this). Not yet wired into
+  `gtk::tab_bar`/`macos::tab_bar`/`win::tab_bar` — each per-backend
+  migration is tracked separately.
+- `backend::normalize_filter_extension`/`normalize_filters` — the one
+  canonicalization (`".rs"`/`"rs"`/`"RS"` all mean the same filter,
+  `"*"` passed through unchanged) every `FileDialogOptions::filters`
+  reader should run its extensions through;
+  `compose::file_picker::extension_matches` is the first adopter.
+  `crate::desktop::notification_request_id` (defined in
+  `platform/notifications.rs`; `pub(crate)`, not public API, reached only
+  through the private `desktop` module) derives the id a backend's native
+  notification channel dedupes/replaces on, in a namespace a
+  caller-supplied `Notification::tag` can never collide with; `tui::
+  services::TuiPlatformServices::send_notification` adopts it for its
+  `notify-send` leg's replace hint, for both the tagged and untagged
+  case. `backend::ServiceKind`/
+  `PlatformServices::supports` — a `false`-by-default capability query
+  for the 16 of 37 `PlatformServices` methods with no real
+  implementation on any backend today; per-backend truthful adoption is
+  follow-on work. `crate::testing::NullPlatformServices`/
+  `NullClipboard` — the one shared `PlatformServices` test double,
+  replacing three near-identical private copies.
+### Changed
+- `PlatformServices::send_notification` now returns
+  `ServiceResult<()>` instead of `()` (**breaking** — every
+  implementation and call site updates in this PR, including
+  `quadraui-node`'s `sendNotification` and `quadraui-py`'s
+  `send_notification` bindings, which now throw/raise on failure instead
+  of silently swallowing it): `Err` means the call is known to have
+  failed to reach any notification channel at all (no window to parent
+  a GTK notification to); `Ok(())` otherwise, including a backend's
+  existing silent-no-op degrade. `compose::notification::notify_or_toast`
+  now falls back to its in-canvas `Toast` degrade when the native send
+  itself fails, not just when the backend has no native channel at all.
+  `tui::services::TuiPlatformServices::send_notification` sends exactly
+  one notification per call now, chosen by whether the current terminal
+  is on an allow-list of terminals known to actually render the OSC
+  9/777 escapes (`$TERM`/`$TERM_PROGRAM`/`$WT_SESSION`) rather than by
+  whether a write merely succeeded — a write to a controlling tty
+  succeeds on most terminals regardless of whether they render the
+  escape, so the old "write succeeded" gate meant terminals outside that
+  allow-list (stock macOS Terminal.app, xterm, most VTE forks) got zero
+  notifications where they used to get an `osascript`/`notify-send`
+  popup. The escape leg fires on an allow-listed terminal; the native
+  `osascript`/`notify-send` command-line notifier fires otherwise,
+  including as a fallback when the terminal is allow-listed but the
+  escape write itself still didn't reach a target — one leg per call
+  either way, never the up-to-three independent legs that used to fire
+  unconditionally.
+- `FocusRing` is now a thin wrapper over `FocusManager` instead of
+  `FocusGroup` — adding only the `:focus-visible` bookkeeping on top of
+  the same `WidgetId`-keyed focus owner every backend's Tab/Shift+Tab
+  intercept already drives. Pure internal refactor: `FocusRing`'s public
+  API and every existing test are unchanged.
+- `TabBarHits` is no longer `#[deprecated]`. It stays the stable return
+  type of `Backend::draw_tab_bar`/`tab_bar_layout` and their icon/chrome
+  twins; `TabBarLayout` is a parallel, unit-agnostic addition
+  (`*_layout`-suffixed methods, `pixel_tab_bar_layout`), not a migration
+  target for this one — `vimcode` depends on `TabBarHits`'s exact `f64`
+  field shapes, and two of the four in-tree rasterisers construct it
+  directly. Every `#[allow(deprecated)]` suppression for it under
+  `compose/` is gone.
+- `MessageList` gains a `layout`/`MessageListLayout`/`VisibleMessageRow`
+  API, built on the same `primitives::row_stack::layout_row_stack`
+  `ListView`/`TreeView`/`Palette` already share; `MessageList::hit_test`
+  now delegates to it instead of its own hand-rolled row-index arithmetic.
+  Behavior change: a `scroll_top` scrolled past the end of `rows` now
+  clamps to the last reachable row (pinning it, matching `ListView`'s/
+  `Palette`'s overscroll convention) instead of always missing every hit
+  test — pinned by new tests. `Palette::layout`'s item-visible-rows walk
+  also now delegates to `layout_row_stack` internally; `PaletteLayout`'s
+  shape and every existing `Palette` test are unchanged (pure refactor
+  for that half).
+- `Palette::layout`'s item-visible-rows walk now delegates to
+  `primitives::row_stack::layout_row_stack` internally; `PaletteLayout`'s
+  shape and every existing `Palette` test are unchanged (pure refactor).
+- `ListView`'s and `Palette`'s GTK/Windows/macOS `native_surface_paint`
+  row painters share a leading-icon-glyph and right-aligned-detail-text
+  helper (`primitives::row_stack::row_content_paint`) instead of two
+  independently-maintained copies of the same measure/position
+  arithmetic. Pure refactor — each caller's own `PaintSurface` verb
+  choice for the icon (`ListView`: `surface_draw_text_run`; `Palette`:
+  `surface_draw_icon_glyph`) and detail right-margin (`ListView`: `4.0`;
+  `Palette`: `8.0`) are preserved as call-site parameters, and every
+  existing `list`/`palette` native-paint test stays green.
+- `ActivityBar::layout` now builds the `Toolbar` from the new `From` impl
+  internally and delegates to `Toolbar::layout_with_options`
+  (`ToolbarOrientation::Vertical`, `pin_trailing_overflow_to_origin: true`)
+  for its geometry instead of its own hand-rolled top/bottom-pinning
+  arithmetic — every backend's paint and hit-test, which already consume
+  `ActivityBar::layout`'s output, now share one geometry engine with
+  `Toolbar`. `ActivityBarLayout::visible_items`'s own
+  bottom-pinned-first-then-top-pinned order is unchanged, and
+  `pin_trailing_overflow_to_origin` keeps the one case that would otherwise
+  differ — a `bottom_items` group alone taller than the viewport — pinned
+  to its pre-delegation rects (e.g. TUI `item_height=1.0`,
+  `viewport_height=2.0`, 3 bottom items: rows at `y=0 h=1` / `y=1 h=1`,
+  third item dropped; pixel backends `item_height=48.0`,
+  `viewport_height=100.0`: rows at `y=0 h=48` / `y=48 h=48` / `y=96 h=4`).
+  Every other case (top-only, bottom-only within the viewport, top/bottom
+  collision) is bit-for-bit identical to the pre-delegation arithmetic, now
+  pinned by a conformance test against `Toolbar::layout_with_options`
+  directly plus dedicated overflow tests on both the `ActivityBar` and
+  `Toolbar` sides.
+- `TreeView`/`ListView` row layout (`layout_with_scroll_px`), the vertical
+  scrollbar thumb geometry (`vscrollbar_with_scroll_px`), and the
+  hover/press/`scroll_px` paint state (`TreePaintState`/`ListPaintState`,
+  now aliases of the new shared `primitives::row_stack::RowPaintState`) now
+  go through a new `primitives::row_stack` module instead of two field-
+  identical, independently-maintained copies. Pure refactor — no behavior
+  change; `TreePaintState`/`ListPaintState` keep their existing names,
+  fields, and builders. The docs that quote the primitive-module count
+  (root README, `lib.rs` crate doc, `canvas.rs`) now say 50 and name
+  `layout_metrics`/`row_stack` as shared-math modules rather than widgets.
+- `Panel::layout`'s action-button right-alignment now delegates to
+  `Toolbar::layout_with_options`'s `Spacer` push-to-trailing-edge mechanism
+  instead of hand-rolling the same arithmetic a second time. Pure refactor
+  — no behavior change; every existing `Panel`/TUI/GTK/macOS/Win-GUI test
+  for it stays green. `Panel`'s own docs now point new callers at
+  `SidebarPanel` + `Toolbar` as the preferred shape for new chrome.
+- `HelpOverlayController::render` (the crate's only in-tree `Panel`
+  consumer) migrates its cheatsheet chrome from `Panel` to `SidebarPanel` +
+  `Toolbar`. The title keeps its one-cell/leading-space inset (pinned by a
+  new `TuiDriver` test), but this is not a byte-for-byte repaint: the
+  `Toolbar` header is vertically centred rather than `Panel`'s top-aligned
+  title row, and the `SidebarPanel` surface's `a11y_info` reports a generic
+  "Sidebar panel" label/role instead of `Panel::a11y_info`'s
+  title-and-`expanded` pair (latent today — nothing walks this overlay's
+  a11y tree yet).
+- `MultiSectionView`'s `HeaderAction` rendering (section header actions and
+  the `SectionAux::Toolbar` inline strip) now reduces each action to a
+  `ToolbarButton::Action` and composes its glyph through
+  `toolbar::action_text`, the same text-assembly rule every other action
+  button in this crate uses, instead of indexing `icon.fallback` by hand.
+  Pure refactor — no visual change; every existing `multi_section_view`
+  paint test stays green.
+- `tui::services::TuiPlatformServices::open_url`/`open_url_result` now rejects
+  any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
+  `BackendError::Unsupported`, where it previously forwarded every input
+  (including a bare path or an unlisted scheme like `ftp:`/`vscode:`/`tel:`)
+  straight to the OS opener and, on rejection from the opener itself, fell
+  back to an OSC 8 terminal hyperlink. That OSC 8 fallback no longer runs for
+  an input `validate_open_url` rejects, since the new check happens first.
+  **Downstream impact:** a consumer that calls `open_url`/`open_url_result`
+  with a bare path or an unlisted scheme on the TUI backend, expecting at
+  least a clickable OSC 8 link, now gets `Unsupported` and no link.
+- `gtk::services::GtkPlatformServices::open_url`/`open_url_result` now rejects
+  any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
+  `BackendError::Unsupported` via the same `validate_open_url` seam, where it
+  previously forwarded every input (including a bare path or an unlisted
+  scheme like `ftp:`/`vscode:`/`tel:`) straight to
+  `gio::AppInfo::launch_default_for_uri`. **Downstream impact:** a consumer
+  that calls `open_url`/`open_url_result` with a bare path or an unlisted
+  scheme on the GTK backend now gets `Unsupported` instead of whatever GIO's
+  scheme lookup previously did with it.
+- `win::services::WinPlatformServices::open_url`/`open_url_result` now rejects
+  any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
+  `BackendError::Unsupported` via the same `validate_open_url` seam, where it
+  previously forwarded every input (including a bare path like
+  `C:\Windows\System32\calc.exe` or an unlisted scheme) straight to
+  `ShellExecuteW`. **Downstream impact:** a consumer that calls
+  `open_url`/`open_url_result` with a bare path or an unlisted scheme on the
+  Win-GUI backend now gets `Unsupported` instead of `ShellExecuteW` launching
+  it.
+- `macos::services::PlatformServices::open_url`/`open_url_result` now rejects
+  any scheme outside `http:`/`https:`/`mailto:`/non-executable `file:` with
+  `BackendError::Unsupported` via the same `validate_open_url` seam, where it
+  previously forwarded every input (including a bare path or an unlisted
+  scheme like `/Applications/Calculator.app` or `ftp:`/`vscode:`/`tel:`)
+  straight to `crate::desktop::open_with_default`'s `open(1)` spawn.
+  **Downstream impact:** a consumer that calls `open_url`/`open_url_result`
+  with a bare path or an unlisted scheme on the macOS backend now gets
+  `Unsupported` instead of `open(1)` launching whatever that path or scheme
+  resolved to.
+- `tui::services::TuiPlatformServices::begin_power_save_block`/
+  `end_power_save_block` and `login_item_enabled` now fall through to
+  `PlatformServices`'s own `BackendError::Unsupported` default, matching
+  every other in-tree backend (none of which override any of the three),
+  where they previously faked success: `begin`/`end_power_save_block`
+  minted and tracked a `BlockerId` without ever asking the OS to stay
+  awake, and `login_item_enabled` always reported `Ok(false)`. A caller
+  could not tell "this backend did it" from "this backend can't act at
+  all". **Downstream impact:** a TUI consumer that called any of the
+  three and matched on `Ok` now gets `Err(BackendError::Unsupported)`
+  instead.
+- `Tooltip::layout`, `RichTextPopup::layout`, `Completions::layout`, and
+  `ContextMenu::layout`/`layout_at` now resolve their placement through the
+  shared `layout::Anchor::resolve` flip/clamp logic instead of each
+  reimplementing their own — their public `TooltipPlacement`/
+  `PopupPlacement`/`CompletionsPlacement`/`ContextMenuPlacement` enums and
+  method signatures are unchanged. `Completions`, `RichTextPopup`, and
+  `ContextMenu` pre-clamp the anchor's horizontal position into the
+  viewport before resolving, so an anchor that overflows horizontally
+  (e.g. a caret or trigger near the right edge) no longer suppresses the
+  independent vertical flip decision. The four previously disagreed on
+  what to do when *neither* side fits the viewport: `Completions`/
+  `ContextMenu` picked whichever side had more room (regardless of
+  whether that side actually fit either), while `Tooltip`/`Float` pinned
+  to the originally preferred side and clamped. All four now use the
+  latter, pinned-to-preferred policy; `RichTextPopup` also stops
+  unconditionally flipping to the opposite side without checking whether
+  that side fits. This only changes behaviour in the rare case of a
+  popup anchored in a viewport too small to fit it on either side — see
+  the new edge-of-window tests in each primitive's module for the exact
+  before/after geometry.
+- `tui::panel::draw_panel` paints the title bar via `Panel::header_toolbar`'s
+  mapped `Toolbar` header (#2224): it lays the header out with the same
+  per-item measure `Panel::layout` uses internally (a fixed
+  `action_button_width` per action, the title `Label`'s own text width
+  otherwise), then paints each visible item by kind — `Label` as plain
+  text, `Action` as a single glyph centred in its button — instead of its
+  own hand-rolled title-text and action-button loops. Pixel output is
+  unchanged for a single-span title (the existing `tui::panel` test suite
+  passes unmodified) with one unavoidable divergence, now pinned by
+  `tui::panel::tests::multi_span_title_fg_is_flattened_to_theme_foreground`:
+  a multi-span `title` now paints every span in `theme.foreground`, since
+  `header_toolbar` flattens `title` to one plain-text `Label` with no
+  per-span color. `draw_panel`'s signature and its `PanelLayout` return
+  (still `tui_panel_layout`, independent of this painting seam) are
+  unchanged.
+- `MacBackend::draw_panel` paints the title bar through the mapped
+  `SidebarPanel` + `Toolbar` header (#2226): it builds the header via
+  `Panel::header_toolbar` and paints the title label and the title-bar
+  background with `sidebar_panel::native_surface_paint::paint` instead of
+  `panel::native_surface_paint::paint`'s own near-duplicate title-bar
+  painter. `header_toolbar`'s mapped `Toolbar::Label` keeps
+  `theme.foreground` (set explicitly, since `sidebar_panel` otherwise
+  resolves an unset `fg` to `theme.muted_fg`). Action buttons are
+  stripped out of the mapped header and painted directly against
+  `mac_panel_layout`'s fixed-width `visible_actions[i].bounds` instead of
+  being delegated too: `sidebar_panel::native_surface_paint::paint`
+  measures each `Action` button by its own label width
+  (`toolbar::measure_button`), which only agrees with
+  `mac_panel_layout`'s fixed `PANEL_ACTION_BUTTON` width for glyphs that
+  happen to measure exactly that wide, so delegating action paint as
+  well would let a glyph's painted pixels drift outside its own
+  hit-test rect for other glyphs. `draw_panel` keeps returning
+  `mac_panel_layout(...)` for hit-testing, so paint and hit-test
+  action-button positions always agree, by construction, regardless of
+  glyph width. A `PanelAction::is_active` button's full bounds fills
+  with `theme.accent_bg`, every other action's with the title bar's own
+  background, both painted with the icon-glyph verb
+  (`surface_draw_icon_glyph`), the same as before this seam existed; an
+  unaccented panel's title bar background is pinned to `theme.separator`
+  the same way, since `header_toolbar` otherwise leaves `Toolbar::bg` at
+  `sidebar_panel`'s own `theme.header_bg` default. Action glyphs stay
+  top-aligned at `visible_actions[i].bounds.y`, so there is no
+  vertical-alignment change for them; the title label's vertical
+  alignment does change from top-aligned to `sidebar_panel`'s own
+  vertically-centred `Label` paint, with no visible delta while the
+  title bar height matches the chrome line height, as before. Four new
+  `macos::panel` tests pin the title's left-inset, the title's painted
+  colour (`theme.foreground`, not `theme.muted_fg`), each action glyph's
+  pixels landing inside its own fixed-width `visible_actions[i].bounds`
+  — including with differently-sized action icon strings — and the
+  `is_active` full-rect `accent_bg` fill; every existing `macos::panel`
+  test passes unmodified. GTK and Windows still call
+  `panel::native_surface_paint::paint` until their own seam issues land
+  (that module stays, per scope).
+### Fixed
+- `primitives::minimap::truncate_to_columns` now caps by display width
+  (`text_util::char_cell_width`) instead of char count, dropping a wide
+  glyph (CJK, emoji) whole rather than letting it push the row past
+  `COLUMN_CAPACITY` cells. `aggregate_block_text`'s single-line path
+  inherits the fix through the same call; ASCII output is bit-identical.
+- The TUI `List` rasteriser (`tui::list::draw_list`) now measures and paints
+  item text, icons, the selection prefix, the bordered title, and the
+  right-aligned detail span by display cell (`text_util::char_cell_width`/
+  `display_width`) instead of one buffer cell per `char`, matching the move
+  `DataTable`/`MenuBar`/chat wrap/`Toast`/`Tree` already made. A CJK/emoji
+  glyph now occupies two cells instead of colliding with its neighbour; the
+  item-width ellipsis overwrite backs up off a wide glyph's continuation
+  cell the same way `Tree`'s rasteriser does; and a wide glyph straddling
+  either `h_scroll`'s left edge or the item's right edge is blanked instead
+  of half-painted. ASCII output is bit-identical. `ListView::h_scroll` and
+  `ListView::max_content_width` are now documented as display-cell units
+  (no field added, no signature changed).
+- `win::draw_spinner` now paints the spinner glyph/label in the colour passed
+  in via its new `theme: &Theme` parameter, instead of always building a fresh
+  `Theme::default()` and ignoring dark/custom themes — matching
+  `gtk::draw_spinner`/`macos::spinner::draw_spinner`, which already took the
+  live theme. `WinBackend::draw_spinner` now passes `&self.current_theme`, the
+  same field `Backend::set_theme` writes.
+  **Downstream impact:** no consumer hits (`grep -rn draw_spinner
+  ~/src/coord-tui/src ~/src/vimcode/src` is empty); any in-tree caller goes
+  through `Backend::draw_spinner`, whose signature is unchanged.
+- `NamedKey::F(n)` for `n` above 12 (F13-F24) now stringifies to `"F13"`-`"F24"`
+  everywhere instead of silently dropping out on some call sites: a single
+  `NamedKey::name()` table in `quadraui::event` backs `accelerator::
+  key_to_binding_name`, `primitives::activity_bar::key_to_activity_bar_string`,
+  `compose::form_controller`'s `DatePicker` key dispatch, and
+  `quadraui-binding-core::semantic::key_to_focus_string`, so a GTK/Win
+  `Ctrl+F13` key press now matches an accelerator registered as `"F13"`.
+  `accelerator::parse_key_binding` also case-folds key names and accepts the
+  common aliases (`Esc` -> `Escape`, `Return`/`CR` -> `Enter`, `ArrowUp` ->
+  `Up`, etc.) so `"<Esc>"`, `"Ctrl+escape"`, and `"Ctrl+Return"` all match the
+  key events backends actually emit.
+- `Color::lighten`/`Color::darken` (interpolation toward white/black) and the
+  internal `dim_fg` faint-text helper now all go through `Color::blend`'s
+  round-to-nearest arithmetic instead of each rounding differently
+  (`lighten`/`darken` truncated, `dim_fg` floored); a channel whose exact
+  value lands on a midpoint is now 1 LSB higher (`darken(0.5)` of `255` is
+  `128`, not `127`), matching `blend(0.5)`. `lighten`/`darken` still preserve
+  the receiver's alpha, and `Color::try_from_hex_over` now composites through
+  `blend` too — same arithmetic as before, one implementation.
+### Added
+- `quadraui-node` exposes every `quadraui-binding-core::services` seam as a
+  thin `QuiApp` method (auto-update, the power-save blocker, launch-at-
+  login, protocol registration, drag-out, recent docs/dock menu/jump
+  list), a new `UnsupportedError` for a `ServiceError::Unsupported` on a
+  backend with no implementation, a `QuiAppActions` mirror for each
+  void-returning one of those methods, and three module-level, app-less
+  functions (`appPath`, `setAppIdentifier`, `installCrashHandler`) --
+  the same surface `quadraui-py` already exposed. Also gains the three
+  surfaces only `quadraui-py` had before this change: the tray
+  (`setTrayIcon`/`setTrayTooltip`/`setTrayMenu`), runtime cursor
+  (`setCursor`, the full `PointerShape` name set, plus a
+  `QuiAppActions.setCursor` deferred mirror for use from inside a
+  registered handler), and window document-state
+  (`setDocumentEdited`/`setRepresentedFilename`) methods, each a thin
+  napi-rs wrapper calling the same
+  `quadraui_binding_core::{with_window, with_tray, menu_for_surface}`
+  logic `quadraui-py` already calls, with no logic duplicated between the
+  two bindings.
+- `ButtonSpec::from_legacy` — the one shared derivation
+  `ToolbarButton::Action`/`DialogButton`/`ToastButton`/`ButtonRowItem`'s own
+  `resolved_button_spec` now all call instead of each reimplementing the
+  same label/icon/tooltip/disabled → `ButtonSpec` mapping.
+
+### Fixed
+- `quadraui-node`'s `setTrayIcon`/`QuiAppActions.setTrayIcon` now decode
+  `icon` via `decode_via_json` instead of `decode_direct`, so a
+  `Buffer`/`Uint8Array`/`ArrayBuffer` passed under `{Bytes: ...}` decodes
+  into `quadraui::ImageSource::Bytes` correctly instead of raising a
+  spurious `InvalidDescriptorError`.
+- TUI DataTable body cells, the MenuBar label measurer, the chat input's
+  exact-reconstruction line wrap, and the Toast single-word hard-truncate
+  fallback now all measure and clip CJK/emoji text by terminal display width
+  (via `text_util::display_width`/`truncate_with_ellipsis`) instead of char
+  count: a wide-glyph DataTable cell now ellipsizes within its own column
+  instead of bleeding into the next, a `TreeView` badge with wide glyphs is
+  positioned and painted at its real width, and a Toast word too wide even
+  for `"x…"` now falls back to a bare `"…"` instead of overflowing its
+  budget by one character. `tui::text::truncate_to_width_ellipsis` now
+  delegates its ellipsis search to the same shared helper. The MenuBar
+  rasteriser also now paints a wide label glyph's continuation cell as the
+  proper empty wide-char marker (via `set_cell_wide`/`set_cell_wide_styled`)
+  instead of leaving a stale space, and the `TreeView` label-truncation
+  ellipsis backs up off a wide glyph's continuation cell to overwrite the
+  glyph itself, instead of overwriting (and potentially orphaning) the
+  continuation cell alone. `Toast::wrap_text_lines`'s cap-past-`max_lines`
+  path also now leaves a line empty, rather than pushing a guaranteed
+  over-budget `"…"`, in the degenerate case where even a bare ellipsis
+  doesn't fit a (pixel-measured) `max_width`.
+- GTK/macOS/Win's shared painters for `Toolbar`, `Dialog`, `Toast` and
+  `Form`'s `ButtonRow` now paint a button carrying an explicit
+  `spec: Some(..)` `ButtonSpec` through
+  `button::native_surface_paint::paint` — `ButtonVariant::Danger`/`Warning`
+  now reach `theme.button_danger_bg()`/`theme.button_warning_bg()` on those
+  three backends (TUI's `tui::dialog` already honoured `spec` this way; the
+  other three primitives' GUI painters previously rendered their own plain
+  label/pill look and ignored `spec` entirely). `Toolbar`'s spec-backed
+  action also now picks up live hover/pressed tinting the same way its
+  legacy-field path already does, and now also folds `enabled: false` into
+  the resolved spec's `disabled` and `is_active: true` into the painter's
+  `is_pressed`, so a spec-backed action that `Toolbar::click`/`hit_test`
+  already treat as inert or toggled-on now *paints* that way too, instead
+  of reading as a fully saturated, live-looking button regardless of
+  either field. A button with no explicit `spec` paints exactly as before
+  on every backend.
+- Win `TabBar` now honours `TabBar::compact` (`TAB_PAD_COMPACT`/4.0-DIP
+  inner gap/0.0-DIP outer gap, same constants `gtk::tab_bar` and
+  `macos::tab_bar` already switch to), paints a 1-DIP active-tab accent
+  line instead of 2-DIP, and paints the active tab as an inset,
+  4-DIP-radius rounded chip instead of a square block filling the row
+  edge to edge — matching the GTK active-tab chrome, with the same
+  `macos::tab_bar` clamp that shrinks the chip's vertical inset on a row
+  no taller than the label's own line height so the chip never paints
+  shorter than the label it encloses. The Win-only hovered-close-glyph
+  lighten tint is unchanged.
+### Changed
+- `GtkBackend::draw_text_input` now paints through the shared
+  `primitives::text_input::native_surface_paint::paint` (the same painter
+  `MacBackend::draw_text_input` already uses) instead of its own bespoke
+  Cairo/Pango rasteriser, so the GTK caret is now 2.0 units wide, matching
+  macOS and `win::text_input::CURSOR_W_DIP`, instead of the 1.5 the old
+  GTK-only path hardcoded. `gtk::draw_text_input`'s public free-function
+  signature is unchanged — it now paints via the shared `gtk::surface::
+  CairoSurface` adapter over the same `(Context, pango::Layout)` pair it
+  always took. Several further rendered-output changes come along with the
+  move, all matching macOS's existing (pre-migration) behaviour on the
+  shared painter: text is no longer vertically centred in its row (each
+  line/placeholder now paints top-aligned in `content_bounds`, like every
+  other shared-painter primitive); the caret now spans the full row height
+  instead of a 1px-inset bar; a theme whose `Theme::cursor` is left at
+  pure black no longer gets a `theme.accent_fg` fallback on GTK specifically
+  (the shared painter has no such fallback, and macOS never had one); the
+  border is now stroked centred on `rect`'s own edge (`surface_stroke_rect`,
+  matching every other GTK shared-painter primitive) instead of the deleted
+  rasteriser's crisp 1px-inset stroke, so roughly half the 1-unit-wide line
+  now falls a pixel outside `rect`; and the caret's x is now the monospace
+  estimate `content_x + col_off * char_w` (`TextInputLayout::cursor_bounds`)
+  rather than a Pango `index_to_pos` glyph lookup, so under a proportional
+  `ui_font` the caret can visibly separate from the glyph it sits beside —
+  this matches `win::text_input`'s existing convention and the chat
+  controller's own `local_x / char_width()` hit-testing, which the old
+  glyph-accurate GTK caret did not agree with. The shared painter also now
+  clips placeholder/line text to `TextInputLayout::content_bounds` before
+  drawing, so a horizontally unscrolled long line (or a wide glyph under a
+  proportional chrome font) can no longer paint past the widget's own
+  border on GTK or macOS — a guard the deleted GTK-only rasteriser body had
+  and the shared painter previously lacked.
+  `gtk::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`/`_SB_INSET` now derive
+  from `primitives::rich_text_popup::{SB_WIDTH, SB_INSET}` (the same
+  derivation `macos::rich_text_popup` already used) instead of a second
+  hardcoded `8.0`/`1.0` that could drift from them; GTK's own rich-text-popup
+  body paint is otherwise unchanged (its single-Pango-call-per-line shaping
+  avoids a kerning/ligature drift the shared per-span painter doesn't
+  guard against). `gtk::message_list::draw_message_list` stays on its own
+  Pango-`AttrList` path too — the shared `message_list` painter has no way
+  to honor `MessageRow::scale` (heading rows), so moving GTK onto it would
+  regress heading-row sizing.
+- `WinBackend::draw_text_input` now routes through the shared
+  `primitives::text_input::native_surface_paint::paint` (the same painter
+  `macos::draw_text_input` already uses) instead of its own bespoke
+  Direct2D/DirectWrite body — one fewer per-backend copy of the
+  background/border/focus-ring/text/cursor painting logic. Win now
+  inherits the clip to `TextInputLayout::content_bounds` the shared
+  painter already pushes before drawing the placeholder/visible-line
+  text runs, so a horizontally-unscrolled long line or a wide glyph under
+  a proportional chrome font can no longer bleed past the widget's border
+  on Win either, matching GTK and macOS. `win_text_input_layout` and
+  `WinBackend::draw_text_input`'s own signature are unchanged.
+  **Downstream impact:** `grep -rn draw_text_input ~/src/coord-tui/src
+  ~/src/vimcode/src` finds one hit, `vimcode/src/app/paint.rs:711`
+  (`backend.draw_text_input(bands.commit_input, &ti)`), calling the stable
+  `Backend::draw_text_input` trait method — its signature (`rect:
+  Rect, ti: &TextInput) -> TextInputLayout`) is unchanged by this PR, so
+  that call site is unaffected.
+### Removed
+- `win::text_input::draw_text_input`/`CURSOR_W_DIP` — private-module items
+  (`win::text_input` isn't `pub`, so neither was reachable outside the
+  crate); painting moved onto the shared
+  `primitives::text_input::native_surface_paint::paint` above.
+  `grep -rn 'draw_text_input|CURSOR_W_DIP' ~/src/coord-tui/src
+  ~/src/vimcode/src` finds no hit.
+### Changed
+- `AppShell`'s layout carve, activity-bar keyboard model, and
+  `TabGroupController`'s tab-drag resolution logic, plus
+  `SidebarSystem`'s inline-editing forwarders and scroll bookkeeping, move
+  out of their four god files into `compose/shell_layout.rs`,
+  `compose/activity_bar_controller.rs`, `compose/tab_drag.rs`, and
+  `compose/sidebar_edit.rs`/`compose/sidebar_scroll.rs`. A new
+  `compose::divider_drag::DividerDrag<T>` (pattern of
+  `primitives::scrollbar::ThumbDrag`) replaces the three
+  independently-reimplemented divider-drag `Option` fields in `AppShell`
+  and `TabGroupController`. Pure internal refactor: no public API changed,
+  every existing test passes unchanged. **Downstream impact:** no
+  consumer hits (`grep -rn 'drag_offset|activity_cursor|dragging_divider'
+  ~/src/coord-tui/src ~/src/vimcode/src` is empty — these were all
+  private fields); `resolve_tab_drop`/`TabDragSource`/`TabDropInstruction`
+  are still re-exported at the same `quadraui::compose::` path.
+### Added
+- `Style::tooltip_auto_dismiss_ms` — how long a hover-driven tooltip stays
+  visible before it hides itself even though the pointer never left its
+  anchor, wired through `BindingHost::drive_hover_tooltip`. `0` disables
+  auto-dismiss and is the default. New builder
+  `Style::with_tooltip_auto_dismiss_ms`. `HoverTooltipTracker` gains
+  `next_auto_dismiss_wake_ms`, the `Visible`-phase sibling of
+  `next_wake_ms`.
+### Fixed
+- `BindingHost::drive_hover_tooltip` now schedules its pending-delay and
+  auto-dismiss wakes directly on `Backend::request_frame_in`, not only
+  through the returned `Reaction` — a same-frame `Reaction::Redraw` from
+  an unrelated hover-highlight repaint no longer swallows the deadline via
+  `Reaction::merge`, so a hover-driven tooltip appears at
+  `tooltip_delay_ms` rather than waiting for the coarser idle-poll
+  ceiling. Also guards the pending-to-visible transition, and the
+  pending wake itself, on a painted anchor actually existing: a hovered
+  id with no `PaintedHit::Button` in the current frame's hit map no
+  longer cycles through pending/visible-unpainted/dismissed forever,
+  and no longer re-arms a zero-delay `request_frame_in` every dispatch
+  once its delay has elapsed with no anchor to show against.
+  `drive_hover_tooltip`'s signature gains `backend: &mut dyn Backend`
+  and `auto_dismiss_ms: u64` parameters to support this —
+  `quadraui-py`/`quadraui-node` updated at their one call site each.
+- `HoverTooltipTracker::tick_auto_dismiss` now latches into a `Dismissed`
+  phase instead of resetting straight to idle, so a tooltip the pointer
+  never moved off stays hidden once it auto-dismisses rather than
+  re-arming the delay and showing (then auto-dismissing) itself again
+  every `tooltip_delay_ms + tooltip_auto_dismiss_ms` indefinitely. The
+  latch clears the moment the pointer hovers a different item or leaves.
+
 ## [0.9.0] - 2026-11-07
 ### Added
 - `quadraui-py` exposes every `quadraui-binding-core::services` seam as a

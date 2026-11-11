@@ -17,6 +17,12 @@
 //! can use real cell-width measurement without pulling in the `tui` feature.
 //! See [`crate::text_util::char_cell_width`]'s doc comment for the PUA /
 //! Nerd-Font-width measurement rationale.
+//!
+//! [`truncate_to_width_ellipsis`] delegates its ellipsis-fitting search to
+//! [`crate::text_util::truncate_with_ellipsis`] — the one shared
+//! binary-search-over-display-width algorithm every other overflow-handling
+//! widget (List, Board, DataTable, TabBar, StatusBar) also goes through —
+//! rather than carrying its own copy of that search.
 
 use std::borrow::Cow;
 
@@ -53,14 +59,9 @@ pub fn truncate_to_width_ellipsis(s: &str, max_cols: usize) -> Cow<'_, str> {
     if display_width(s) <= max_cols {
         return Cow::Borrowed(s);
     }
-    if max_cols == 0 {
-        return Cow::Borrowed("");
-    }
-    let body = truncate_to_width(s, max_cols - 1);
-    let mut out = String::with_capacity(body.len() + '…'.len_utf8());
-    out.push_str(body);
-    out.push('…');
-    Cow::Owned(out)
+    let (fitted, _) =
+        crate::text_util::truncate_with_ellipsis(s, max_cols as f32, |t| display_width(t) as f32);
+    Cow::Owned(fitted)
 }
 
 #[cfg(test)]

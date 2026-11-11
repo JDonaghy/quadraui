@@ -15,8 +15,9 @@
 //!
 //! # Theme
 //!
-//! `WinBackend` does not yet carry a live [`Theme`] — see `win::status_bar`'s
-//! module doc for the placeholder theme posture this module shares.
+//! Takes the live theme as a `&Theme` parameter — the
+//! caller ([`crate::win::WinBackend::draw_spinner`]) passes
+//! `&self.current_theme`, the same field `Backend::set_theme` writes.
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
@@ -82,9 +83,9 @@ pub fn draw_spinner(
     dwrite: &DWrite,
     rect: Rect,
     spinner: &Spinner,
+    theme: &Theme,
 ) -> SpinnerLayout {
     let layout = win_spinner_layout(dwrite, rect, spinner);
-    let theme = Theme::default();
     let fg = spinner.accent.unwrap_or(theme.foreground);
     let text = frame_text(spinner);
     let _ = dwrite.draw_text(target, &text, layout.bounds, fg);
@@ -147,7 +148,7 @@ mod tests {
 
         let layout = surface
             .paint(|target| {
-                draw_spinner(target, &dwrite, rect, &spinner);
+                draw_spinner(target, &dwrite, rect, &spinner, &Theme::default());
             })
             .map(|_| win_spinner_layout(&dwrite, rect, &spinner))
             .expect("paint spinner");
@@ -172,8 +173,73 @@ mod tests {
         let surface = HeadlessSurface::new(200, 20).expect("create surface");
         surface
             .paint(|target| {
-                draw_spinner(target, &dwrite, rect, &spinner);
+                draw_spinner(target, &dwrite, rect, &spinner, &Theme::default());
             })
             .expect("paint spinner with accent");
+    }
+
+    /// With no `accent` set, the glyph's ink colour tracks the live
+    /// theme's `foreground`, not [`Theme::default`] — a non-default theme
+    /// passed in must show up in what gets painted. Offsets the rect
+    /// away from the surface's own origin so `(0, 0)` is a reliable
+    /// unpainted background sample (same shape as
+    /// `win::activity_bar`'s `paints_at_rect_origin_not_at_surface_origin`),
+    /// then finds the most-inked pixel (max colour distance from that
+    /// background) per paint and checks it lands nearer the theme that
+    /// was actually passed in than the other one — robust to
+    /// anti-aliasing, unlike an exact-pixel-colour match.
+    #[test]
+    fn theme_foreground_colours_the_glyph() {
+        let custom_theme = Theme {
+            foreground: Color::rgb(30, 160, 230),
+            ..Theme::default()
+        };
+        let default_theme = Theme::default();
+        let spinner = spinner(0);
+        let rect = Rect::new(10.0, 4.0, 0.0, 0.0);
+
+        let dist = |a: (u8, u8, u8), c: Color| {
+            let d = |x: u8, y: u8| (x as i32 - y as i32).pow(2);
+            d(a.0, c.r) + d(a.1, c.g) + d(a.2, c.b)
+        };
+
+        let most_inked = |theme: &Theme| -> (u8, u8, u8) {
+            let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+            let surface = HeadlessSurface::new(220, 24).expect("create surface");
+            surface
+                .paint(|target| {
+                    draw_spinner(target, &dwrite, rect, &spinner, theme);
+                })
+                .expect("paint spinner");
+
+            let bg = surface.pixel_at(0, 0);
+            let bg = (bg.r, bg.g, bg.b);
+            let mut best = bg;
+            let mut best_d = -1i32;
+            for y in 0..24u32 {
+                for x in 0..220u32 {
+                    let px = surface.pixel_at(x, y);
+                    let c = (px.r, px.g, px.b);
+                    let d = (c.0 as i32 - bg.0 as i32).pow(2)
+                        + (c.1 as i32 - bg.1 as i32).pow(2)
+                        + (c.2 as i32 - bg.2 as i32).pow(2);
+                    if d > best_d {
+                        best_d = d;
+                        best = c;
+                    }
+                }
+            }
+            best
+        };
+
+        let custom_ink = most_inked(&custom_theme);
+        assert!(
+            dist(custom_ink, custom_theme.foreground) < dist(custom_ink, default_theme.foreground),
+            "most-inked pixel {custom_ink:?} painted with a non-default \
+             theme should be closer to that theme's foreground \
+             {:?} than to Theme::default()'s {:?}",
+            custom_theme.foreground,
+            default_theme.foreground,
+        );
     }
 }

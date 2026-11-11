@@ -24,8 +24,8 @@
 
 use quadraui::{
     AppLogic, Backend, Color, ComboBox, CompletionItemMeasure, FieldKind, Form, FormController,
-    FormControllerEvent, FormEvent, FormField, InteractionState, Key, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    FormControllerAction, FormEvent, FormField, Handled, InteractionState, Key, NamedKey, Reaction,
+    Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct FormComboBoxApp {
@@ -73,6 +73,7 @@ impl FormComboBoxApp {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: Some(WidgetId::new("fruit")),
             scroll_offset: 0,
@@ -82,6 +83,7 @@ impl FormComboBoxApp {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -97,17 +99,15 @@ impl FormComboBoxApp {
         Rect::new(0.0, (vp.height - status_h).max(0.0), vp.width, status_h)
     }
 
-    /// The combo box's own field row, one row below the form origin —
-    /// matches the single-field `Form`'s own layout exactly, since
-    /// `FormController` never exposes a per-field rect accessor.
-    fn field_bounds(backend: &dyn Backend) -> Rect {
+    /// The combo box field's own on-screen row, resolved through
+    /// [`FormController::field_rect`] rather than assumed — this demo's
+    /// `Form` happens to have exactly one field, but the lookup is the
+    /// same one a multi-field form needs.
+    fn field_bounds(&self, backend: &dyn Backend) -> Rect {
         let form_rect = Self::form_rect(backend);
-        Rect::new(
-            form_rect.x,
-            form_rect.y,
-            form_rect.width,
-            backend.line_height(),
-        )
+        self.fc
+            .field_rect(WidgetId::new("fruit"), backend, form_rect)
+            .unwrap_or(form_rect)
     }
 
     fn build_status_bar(&self) -> StatusBar {
@@ -148,7 +148,7 @@ impl AppLogic for FormComboBoxApp {
         self.fc.render(backend, form_rect);
 
         if self.combo.open {
-            let field_bounds = Self::field_bounds(backend);
+            let field_bounds = self.field_bounds(backend);
             let vp = backend.viewport();
             let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
             let line_height = backend.line_height();
@@ -188,8 +188,8 @@ impl AppLogic for FormComboBoxApp {
         self.fc.set_form(self.build_form());
         self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle_cached(&event, rect) {
-            FormControllerEvent::FormAction(fe) => {
+        match self.fc.handle_cached_event(&event, rect) {
+            Handled::Event(FormControllerAction::FormAction(fe)) => {
                 match fe {
                     FormEvent::ComboBoxTextChanged { value, .. } => {
                         self.combo.text = value.clone();
@@ -218,8 +218,10 @@ impl AppLogic for FormComboBoxApp {
                 self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
-            FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => Reaction::Redraw,
-            FormControllerEvent::Ignored => Reaction::Continue,
+            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
+                Reaction::Redraw
+            }
+            Handled::Ignored => Reaction::Continue,
         }
     }
 }

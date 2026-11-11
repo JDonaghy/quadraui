@@ -12,9 +12,10 @@
 
 use quadraui::{
     Backend, BackendCaps, ButtonRowItem, CalendarDate, Color, DatePicker, FieldKind, FocusRing,
-    Form, FormController, FormControllerEvent, FormEvent, FormField, FormHit, InteractionState,
-    Key, LabelAlign, LabelPosition, MouseButton, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
+    Form, FormController, FormControllerAction, FormEvent, FormField, FormHit, Handled,
+    InteractionState, Key, LabelAlign, LabelPosition, MouseButton, NamedKey, Reaction, Rect,
+    StatusBar, StatusBarSegment, StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent,
+    WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -68,6 +69,7 @@ impl SearchReplaceState {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("toggles"),
@@ -100,6 +102,7 @@ impl SearchReplaceState {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("replace"),
@@ -119,6 +122,7 @@ impl SearchReplaceState {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("buttons"),
@@ -157,6 +161,7 @@ impl SearchReplaceState {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
             ],
             focused_field: self.focus.current().cloned(),
@@ -167,6 +172,7 @@ impl SearchReplaceState {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -224,6 +230,7 @@ fn scroll_form_from_toggles(toggles: &[bool]) -> Form {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         })
         .collect();
     Form {
@@ -237,6 +244,7 @@ fn scroll_form_from_toggles(toggles: &[bool]) -> Form {
         label_width: None,
         control_width: Default::default(),
         min_control_width: None,
+        spacing: Default::default(),
     }
 }
 
@@ -281,6 +289,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("line-numbers"),
@@ -295,6 +304,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("name"),
@@ -314,6 +324,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("save"),
@@ -328,6 +339,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("version"),
@@ -344,6 +356,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("font-size"),
@@ -363,6 +376,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("accent"),
@@ -379,6 +393,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("theme"),
@@ -399,6 +414,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("notes"),
@@ -418,6 +434,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("password"),
@@ -437,6 +454,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("scope"),
@@ -454,6 +472,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("flags"),
@@ -474,6 +493,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("actions"),
@@ -496,6 +516,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("toolbar"),
@@ -523,6 +544,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
             FormField {
                 id: WidgetId::new("due-date"),
@@ -540,6 +562,7 @@ fn build_all_fields_form() -> Form {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             },
         ],
         focused_field: None,
@@ -550,6 +573,7 @@ fn build_all_fields_form() -> Form {
         label_width: None,
         control_width: Default::default(),
         min_control_width: None,
+        spacing: Default::default(),
     }
 }
 
@@ -584,6 +608,7 @@ fn build_label_placement_form() -> Form {
                 control_width: None,
                 min_control_width: None,
                 tab_index: None,
+                row_align: None,
             }
         };
     Form {
@@ -608,6 +633,7 @@ fn build_label_placement_form() -> Form {
                 control_width: None,
                 min_control_width: None,
                 tab_index: None,
+                row_align: None,
             },
         ],
         focused_field: None,
@@ -618,6 +644,7 @@ fn build_label_placement_form() -> Form {
         label_width: None,
         control_width: Default::default(),
         min_control_width: None,
+        spacing: Default::default(),
     }
 }
 
@@ -787,8 +814,10 @@ impl Demo for FormDemo {
                 self.scroll.fc.set_form(self.scroll.build_form());
                 self.scroll.fc.set_backend_info(backend.line_height());
                 let rect = Self::form_rect(area, backend);
-                match self.scroll.fc.handle_cached(event, rect) {
-                    FormControllerEvent::FormAction(FormEvent::ToggleChanged { id, value }) => {
+                match self.scroll.fc.handle_cached_event(event, rect) {
+                    Handled::Event(FormControllerAction::FormAction(
+                        FormEvent::ToggleChanged { id, value },
+                    )) => {
                         if let Ok(idx) = id
                             .as_str()
                             .strip_prefix("toggle-")
@@ -802,14 +831,14 @@ impl Demo for FormDemo {
                         self.scroll.last_action = format!("{} = {value}", id.as_str());
                         Reaction::Redraw
                     }
-                    FormControllerEvent::FormAction(other) => {
+                    Handled::Event(FormControllerAction::FormAction(other)) => {
                         self.scroll.last_action = format!("{other:?}");
                         Reaction::Redraw
                     }
-                    FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => {
+                    Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
                         Reaction::Redraw
                     }
-                    FormControllerEvent::Ignored => Reaction::Continue,
+                    Handled::Ignored => Reaction::Continue,
                 }
             }
         }

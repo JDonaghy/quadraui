@@ -126,7 +126,7 @@ use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{MultiSectionView, Section, SectionBody};
 use crate::primitives::palette::Palette;
 use crate::primitives::pipeline_view::{PipelineStage, PipelineView, StageStatus};
-use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemRole};
 use crate::primitives::tree::{TreeRow, TreeView};
 use crate::types::{StyledText, WidgetId};
 
@@ -537,7 +537,7 @@ impl A11yTree {
         for _ in 0..depth {
             out.push_str("  ");
         }
-        out.push_str(role_name(node.role()));
+        out.push_str(&role_name(node.role()));
         if let Some(label) = node.label() {
             out.push_str(" \"");
             out.push_str(&escape_snapshot_text(label));
@@ -1032,6 +1032,7 @@ fn describe(content: &OwnedContent) -> Described {
         OwnedContent::Scrollbar(sb) => Described::from_primitive(sb),
         OwnedContent::Split(split) => Described::from_primitive(split),
         OwnedContent::SplitTree(tree) => Described::from_primitive(tree),
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`.
         OwnedContent::Panel(panel) => Described::from_primitive(panel),
         OwnedContent::SidebarPanel(panel) => Described::from_primitive(panel),
         OwnedContent::Editor(editor) => Described::from_primitive(editor),
@@ -1098,6 +1099,7 @@ fn content_kind(content: &OwnedContent) -> &'static str {
         OwnedContent::Form(_) => "Form",
         OwnedContent::MenuBar(_) => "Menu bar",
         OwnedContent::Split(_) => "Split",
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`.
         OwnedContent::Panel(_) => "Panel",
         OwnedContent::Scrollbar(_) => "Scrollbar",
         OwnedContent::Palette(_) => "Palette",
@@ -1131,48 +1133,16 @@ fn content_kind(content: &OwnedContent) -> &'static str {
 }
 
 /// Snake-case name of a role, as it appears in a snapshot line.
-fn role_name(role: A11yRole) -> &'static str {
-    match role {
-        A11yRole::Window => "window",
-        A11yRole::Toolbar => "toolbar",
-        A11yRole::Button => "button",
-        A11yRole::Tab => "tab",
-        A11yRole::TabList => "tab_list",
-        A11yRole::Menu => "menu",
-        A11yRole::MenuItem => "menu_item",
-        A11yRole::MenuBar => "menu_bar",
-        A11yRole::Tree => "tree",
-        A11yRole::TreeItem => "tree_item",
-        A11yRole::List => "list",
-        A11yRole::ListItem => "list_item",
-        A11yRole::Table => "table",
-        A11yRole::Row => "row",
-        A11yRole::Cell => "cell",
-        A11yRole::TextInput => "text_input",
-        A11yRole::CheckBox => "check_box",
-        A11yRole::RadioGroup => "radio_group",
-        A11yRole::RadioButton => "radio_button",
-        A11yRole::Slider => "slider",
-        A11yRole::ComboBox => "combo_box",
-        A11yRole::Label => "label",
-        A11yRole::Form => "form",
-        A11yRole::Document => "document",
-        A11yRole::Editor => "editor",
-        A11yRole::Terminal => "terminal",
-        A11yRole::Dialog => "dialog",
-        A11yRole::Status => "status",
-        A11yRole::Alert => "alert",
-        A11yRole::Tooltip => "tooltip",
-        A11yRole::ScrollBar => "scroll_bar",
-        A11yRole::Splitter => "splitter",
-        A11yRole::Progress => "progress",
-        A11yRole::Image => "image",
-        A11yRole::Chart => "chart",
-        A11yRole::Canvas => "canvas",
-        A11yRole::Group => "group",
-        A11yRole::Presentation => "presentation",
-        A11yRole::Heading => "heading",
-        A11yRole::Link => "link",
+///
+/// Derived from [`A11yRole`]'s own `#[serde(rename_all = "snake_case")]`
+/// representation via a JSON round-trip, rather than a hand-maintained
+/// match arm per variant: the snapshot name and the wire name can never
+/// drift apart, because they are the same string. `A11yRole` is a plain
+/// unit-variant enum, so this always serializes to a JSON string.
+fn role_name(role: A11yRole) -> String {
+    match serde_json::to_value(role) {
+        Ok(serde_json::Value::String(name)) => name,
+        _ => unreachable!("A11yRole is a unit-variant enum and always serializes to a string"),
     }
 }
 
@@ -1315,17 +1285,36 @@ impl A11yPrimitive for Toolbar {
     }
 
     fn a11y_children(&self) -> Vec<A11yChild> {
-        self.buttons
-            .iter()
-            .enumerate()
-            .map(|(idx, button)| toolbar_child(idx, button))
-            .collect()
+        self.a11y_children_with_role(ToolbarItemRole::Button)
     }
 
     fn a11y_focus_key(&self) -> Option<String> {
         let idx = self.focused_index?;
         let button = self.buttons.get(idx)?;
         Some(toolbar_child_key(idx, button))
+    }
+}
+
+impl Toolbar {
+    /// [`A11yPrimitive::a11y_children`], but every [`ToolbarButton::Action`]
+    /// child's role is `role` instead of the trait impl's own
+    /// [`ToolbarItemRole::Button`] default.
+    ///
+    /// A knob on this method rather than a stored field on [`Toolbar`]
+    /// itself: [`A11yPrimitive::a11y_children`] takes no extra
+    /// parameters (shared by every chrome primitive), so threading a
+    /// per-bar role through the generic a11y tree walk would need a new
+    /// `Toolbar` field — and, since `Toolbar` is constructed via
+    /// exhaustive struct literals throughout this crate (not just
+    /// downstream), that would force every one of them to name it. A
+    /// host that wants `ActivityBar`-shaped `Tab` semantics calls this
+    /// method directly instead.
+    pub fn a11y_children_with_role(&self, role: ToolbarItemRole) -> Vec<A11yChild> {
+        self.buttons
+            .iter()
+            .enumerate()
+            .map(|(idx, button)| toolbar_child(idx, button, role))
+            .collect()
     }
 }
 
@@ -1336,10 +1325,11 @@ fn toolbar_child_key(idx: usize, button: &ToolbarButton) -> String {
         ToolbarButton::Action { id, .. } => format!("button.{}", id.as_str()),
         ToolbarButton::Separator => format!("separator.{idx}"),
         ToolbarButton::Label { .. } => format!("label.{idx}"),
+        ToolbarButton::Spacer => format!("spacer.{idx}"),
     }
 }
 
-fn toolbar_child(idx: usize, button: &ToolbarButton) -> A11yChild {
+fn toolbar_child(idx: usize, button: &ToolbarButton, role: ToolbarItemRole) -> A11yChild {
     let key = toolbar_child_key(idx, button);
     let info = match button {
         ToolbarButton::Action {
@@ -1349,15 +1339,25 @@ fn toolbar_child(idx: usize, button: &ToolbarButton) -> A11yChild {
             tooltip,
             ..
         } => {
+            let a11y_role = match role {
+                ToolbarItemRole::Button => A11yRole::Button,
+                ToolbarItemRole::Tab => A11yRole::Tab,
+            };
             let mut info = A11yInfo::new()
-                .with_role(A11yRole::Button)
+                .with_role(a11y_role)
                 .with_disabled(!*enabled);
             if let Some(label) = non_empty(label.clone()) {
                 info = info.with_label(label);
             }
-            if *is_active {
-                info = info.with_checked(A11yChecked::True);
-            }
+            info = match role {
+                // `Button`'s existing contract: a toggled-on action
+                // reads as checked.
+                ToolbarItemRole::Button if *is_active => info.with_checked(A11yChecked::True),
+                // `Tab`'s contract (matching `ActivityItem`'s own):
+                // the active item reads as the selected tab.
+                ToolbarItemRole::Tab => info.with_selected(*is_active),
+                ToolbarItemRole::Button => info,
+            };
             if let Some(tooltip) = non_empty(tooltip.clone()) {
                 info = info.with_value(tooltip);
             }
@@ -1375,6 +1375,9 @@ fn toolbar_child(idx: usize, button: &ToolbarButton) -> A11yChild {
             }
             info
         }
+        // A spacer is an invisible layout gap: no node an assistive
+        // technology should ever land on.
+        ToolbarButton::Spacer => A11yInfo::new().with_role(A11yRole::Presentation),
     };
     A11yChild::new(key, info)
 }
@@ -2115,6 +2118,57 @@ mod tests {
         );
     }
 
+    /// [`ToolbarItemRole::Tab`] yields `tab` children instead of the
+    /// `a11y_children` trait method's own `Button` default — matching
+    /// `ActivityItem`'s own role for a toolbar repurposed as an
+    /// activity-bar-shaped rail of view switches. `is_active` reads as
+    /// `selected` under this role, not `checked`.
+    #[test]
+    fn toolbar_with_tab_role_yields_tab_children_with_selected_state() {
+        let bar = Toolbar::new(WidgetId::new("rail")).with_buttons(vec![
+            ToolbarButton::Action {
+                spec: None,
+                id: WidgetId::new("explorer"),
+                label: "Explorer".to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: true,
+                tooltip: String::new(),
+            },
+            ToolbarButton::Action {
+                spec: None,
+                id: WidgetId::new("search"),
+                label: "Search".to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            },
+        ]);
+
+        // The trait method keeps its own `Button` default — untouched by
+        // the role knob.
+        let default_children = bar.a11y_children();
+        assert_eq!(default_children[0].info.a11y_role, Some(A11yRole::Button));
+
+        let tab_children = bar.a11y_children_with_role(ToolbarItemRole::Tab);
+        assert_eq!(tab_children[0].info.a11y_role, Some(A11yRole::Tab));
+        assert_eq!(tab_children[1].info.a11y_role, Some(A11yRole::Tab));
+        assert_eq!(tab_children[0].info.selected, Some(true));
+        assert_eq!(tab_children[1].info.selected, Some(false));
+    }
+
+    /// A [`ToolbarButton::Spacer`] is an invisible layout gap: it never
+    /// gets a node an assistive technology could land on.
+    #[test]
+    fn toolbar_spacer_is_presentation_only() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![ToolbarButton::Spacer]);
+        let children = bar.a11y_children();
+        assert_eq!(children[0].info.a11y_role, Some(A11yRole::Presentation));
+    }
+
     #[test]
     fn unmapped_primitive_is_a_labelled_group() {
         let frame = frame_with(vec![float_surface()]);
@@ -2786,6 +2840,7 @@ mod tests {
                         label_width: None,
                         control_width: Default::default(),
                         min_control_width: None,
+                        spacing: Default::default(),
                     }),
                     aux: None,
                     size: SectionSize::Weight(1.0),
@@ -3016,5 +3071,65 @@ mod tests {
              list_item \"src\" [expanded level=1 pos=1/2]\n    \
              list_item \"main.rs\" [selected value=\"12 lines\" level=2 pos=2/2]\n"
         );
+    }
+
+    /// `role_name` must equal `A11yRole`'s own serde `snake_case` name for
+    /// every variant — the acceptance bar for deriving one from the other
+    /// instead of maintaining two hand-written tables that can drift.
+    #[test]
+    fn role_name_equals_the_serde_name_for_every_variant() {
+        let roles = [
+            A11yRole::Window,
+            A11yRole::Toolbar,
+            A11yRole::Button,
+            A11yRole::Tab,
+            A11yRole::TabList,
+            A11yRole::Menu,
+            A11yRole::MenuItem,
+            A11yRole::MenuBar,
+            A11yRole::Tree,
+            A11yRole::TreeItem,
+            A11yRole::List,
+            A11yRole::ListItem,
+            A11yRole::Table,
+            A11yRole::Row,
+            A11yRole::Cell,
+            A11yRole::TextInput,
+            A11yRole::CheckBox,
+            A11yRole::RadioGroup,
+            A11yRole::RadioButton,
+            A11yRole::Slider,
+            A11yRole::ComboBox,
+            A11yRole::Label,
+            A11yRole::Form,
+            A11yRole::Document,
+            A11yRole::Editor,
+            A11yRole::Terminal,
+            A11yRole::Dialog,
+            A11yRole::Status,
+            A11yRole::Alert,
+            A11yRole::Tooltip,
+            A11yRole::ScrollBar,
+            A11yRole::Splitter,
+            A11yRole::Progress,
+            A11yRole::Image,
+            A11yRole::Chart,
+            A11yRole::Canvas,
+            A11yRole::Group,
+            A11yRole::Presentation,
+            A11yRole::Heading,
+            A11yRole::Link,
+        ];
+        for role in roles {
+            let serde_name = match serde_json::to_value(role).unwrap() {
+                serde_json::Value::String(name) => name,
+                other => panic!("A11yRole must serialize to a JSON string, got {other:?}"),
+            };
+            assert_eq!(
+                role_name(role),
+                serde_name,
+                "role_name({role:?}) must equal its serde name"
+            );
+        }
     }
 }

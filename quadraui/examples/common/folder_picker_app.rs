@@ -24,8 +24,9 @@
 use std::path::PathBuf;
 
 use quadraui::{
-    AppLogic, Backend, Color, FolderPickerController, FolderPickerEvent, InteractionState, Key,
-    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId, PALETTE_CHROME_ROWS,
+    AppLogic, Backend, Color, FolderPickerController, Handled, InteractionState, Key, NamedKey,
+    PathPickerAction, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    PALETTE_CHROME_ROWS,
 };
 
 pub struct FolderPickerApp {
@@ -57,7 +58,7 @@ impl FolderPickerApp {
     /// happens to sit under.
     pub fn with_root(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
-        let picker = FolderPickerController::new(root.clone(), vec![], false);
+        let picker = FolderPickerController::rooted_at(root.clone(), vec![]);
         Self {
             picker: Some(picker),
             confirmed_path: None,
@@ -156,9 +157,9 @@ impl AppLogic for FolderPickerApp {
             };
             let visible_rows = popup_h_rows.saturating_sub(PALETTE_CHROME_ROWS);
 
-            let ev = picker.handle(&event, visible_rows);
+            let ev = picker.handle_event(&event, visible_rows);
             match ev {
-                FolderPickerEvent::Confirmed { path } => {
+                Handled::Event(PathPickerAction::Confirmed { path }) => {
                     self.confirmed_path = Some(path.clone());
                     self.status = format!(
                         "Confirmed: {}  (press 'o' to reopen, q/Esc to quit)",
@@ -167,13 +168,13 @@ impl AppLogic for FolderPickerApp {
                     self.picker = None;
                     return Reaction::Redraw;
                 }
-                FolderPickerEvent::Cancelled => {
+                Handled::Event(PathPickerAction::Cancelled) => {
                     self.status = "Dismissed — press 'o' to reopen, q/Esc to quit".into();
                     self.picker = None;
                     return Reaction::Redraw;
                 }
-                FolderPickerEvent::Consumed => return Reaction::Redraw,
-                FolderPickerEvent::Ignored => {}
+                Handled::Consumed => return Reaction::Redraw,
+                Handled::Ignored => {}
             }
         } else {
             // Picker is closed — handle reopen / quit.
@@ -185,11 +186,8 @@ impl AppLogic for FolderPickerApp {
                     Key::Char('o') => {
                         // Reopen at the root this app was constructed with
                         // (the process's working directory for `new()`).
-                        self.picker = Some(FolderPickerController::new(
-                            self.root.clone(),
-                            vec![],
-                            false,
-                        ));
+                        self.picker =
+                            Some(FolderPickerController::rooted_at(self.root.clone(), vec![]));
                         self.status =
                             "Open Folder picker — navigate and press Enter to confirm".into();
                         return Reaction::Redraw;

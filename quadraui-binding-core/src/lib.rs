@@ -26,7 +26,9 @@ pub mod semantic;
 pub mod services;
 pub mod text_input;
 pub mod tree_edit;
+pub mod widget_state;
 pub mod wire;
+pub mod wire_schema;
 
 /// A wire-decode failure from any decoder in [`wire`] or
 /// [`extra_paint::decode_extra_primitive`] — the core counterpart of a
@@ -50,8 +52,12 @@ impl std::error::Error for DecodeError {}
 /// [`DecodeError`] whose message names `what` — the shared tail every
 /// per-kind decoder in this crate (`wire::decode_layout_node`,
 /// `extra_paint::decode_extra_primitive`, ...) reduces to once it has a
-/// concrete type and a `serde::Deserializer` in hand.
-pub(crate) fn decode_value<'de, T, D>(what: &str, deserializer: D) -> Result<T, DecodeError>
+/// concrete type and a `serde::Deserializer` in hand. Public so a binding
+/// crate with its own fixed-slot descriptor types (`quadraui-ffi`'s
+/// `qui_<kind>_insert` family) can decode straight into them with the same
+/// error shape every decoder in this module already uses, instead of
+/// calling `serde_json`/`serde` directly and inventing its own.
+pub fn decode_value<'de, T, D>(what: &str, deserializer: D) -> Result<T, DecodeError>
 where
     T: serde::Deserialize<'de>,
     D: serde::Deserializer<'de>,
@@ -64,24 +70,36 @@ pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree
 pub use drag::{ActiveDrag, ScrollbarDrag};
 pub use engine::{message_dialog_options_from_buttons, EventSink, InteractionEngine};
 pub use extra_paint::{decode_extra_primitive, extra_as, ExtraPaint, EXTRA_PRIMITIVE_KINDS};
+pub use hit::{data_table_rows_and_viewport, list_rows_and_viewport, tree_rows_and_viewport};
 pub use hit::{event_position, hit_test_painted, set_event_widget};
 pub use hit::{HitDetail, PaintedHit};
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 pub use host::NativeExitPolicy;
 pub use host::{
-    app_path_kind, callback_reaction, callback_reaction_for_render, caret_shape,
-    click_down_up_events, color_depth_name, dialog_severity, font_role, key_pressed_event,
-    menu_for_surface, merge_overrides, panic_message, pointer_shape, power_save_kind,
-    render_overlays, resize_edge, step_driver, text_display_from_lines, theme_color_value,
-    toast_corner, window_close_reaction, with_tray, with_window, BindingHost, ErasedShellDriver,
-    OverrideError, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR,
-    SLOT_TEXT_DISPLAY, SLOT_TREE,
+    app_path_kind, apply_data_table_nav_key, apply_list_nav_key, apply_split_divider_drag,
+    apply_tab_activated, apply_tab_closed, apply_tree_nav_key, apply_tree_toggle_expand,
+    callback_reaction, callback_reaction_for_render, caret_shape, click_down_up_events,
+    color_depth_name, dialog_severity, font_role, guarded, key_pressed_event, menu_for_surface,
+    merge_overrides, panic_message, pointer_shape, power_save_kind, record_pending_error,
+    render_overlays, resize_edge, resolve_data_table_cursor, resolve_layout_node,
+    resolve_layout_tabs_active, resolve_list_cursor, resolve_render_refs, resolve_split_ratio,
+    resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion, step_driver,
+    take_pending_error, text_display_from_lines, theme_color_value, toast_corner,
+    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost,
+    ErasedShellDriver, GuardedFailure, OverrideError, WidgetStateSnapshot, WindowCloseHandling,
+    SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
 pub use layout::{LayoutPanel, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry};
 pub use layout::{LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS};
-pub use render::{draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf, split_rects};
-pub use render::{split_rects_with_gap, tree_viewport_rows, RenderFrame, RenderRefs};
+pub use render::{
+    collect_leaf_tooltips, draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf,
+    split_rects,
+};
+pub use render::{
+    data_table_viewport_rows, list_viewport_rows, split_rects_with_gap, tree_viewport_rows,
+    RenderFrame, RenderRefs,
+};
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
 pub use services::{
     add_recent_document, app_identifier, begin_drag_out, begin_power_save_block,
@@ -94,6 +112,7 @@ pub use services::{
 pub use text_input::{apply_text_input_edit, clamp_cursor, text_input_click_event};
 pub use text_input::{text_input_insert_event, text_input_key_event, TextEditorCache};
 pub use tree_edit::tree_row_rename_key_event;
+pub use widget_state::WidgetState;
 pub use wire::{
     decode_layout_node, decode_render_output, decode_shell_config, RenderOutput, StaticTabContent,
     LAYOUT_NODE_KEYS,

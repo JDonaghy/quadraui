@@ -76,6 +76,70 @@ pub enum TreeControllerEvent {
     ContextMenuRequested { path: TreePath, position: Point },
 }
 
+/// Which end of the row list [`TreeController::move_selection_to_edge`]
+/// moves the selection to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    /// The first row.
+    Start,
+    /// The last row.
+    End,
+}
+
+/// The outcome of classifying a raw `Key` against the tree navigation key
+/// map ([`TreeController::handle_key`] and [`crate::SidebarSystem`]'s own
+/// key dispatch in `Selection` navigation mode share this so the two key
+/// maps — Up/Down/vim `j`/`k`, Home/End, PageUp/PageDown, Enter, Space —
+/// can't drift between the single-tree and multi-section cases.
+///
+/// `pub` (not `pub(crate)`) so `quadraui-binding-core`'s own `Tree`/`List`/
+/// `DataTable` cursor-navigation key maps can reuse this classification
+/// instead of hand-copying it — see [`classify_tree_nav_key`]'s own doc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeNavKey {
+    /// Previous row (`Up` or vim `k`).
+    Up,
+    /// Next row (`Down` or vim `j`).
+    Down,
+    /// First row (`Home`).
+    Home,
+    /// Last row (`End`).
+    End,
+    /// Page up (`PageUp`).
+    PageUp,
+    /// Page down (`PageDown`).
+    PageDown,
+    /// Activate the selected row (`Enter`).
+    Enter,
+    /// Toggle expand/collapse on the selected row (`Space`).
+    ToggleExpand,
+}
+
+/// Classify a raw `Key` against the shared tree navigation key map.
+/// `vim_keys` gates the `j`/`k` aliases for `Down`/`Up`, mirroring
+/// [`TreeController::vim_keys`].
+///
+/// `pub` (not `pub(crate)`) so a caller outside this crate with its own
+/// row-cursor movement (`quadraui-binding-core`'s uncontrolled `Tree`/
+/// `List`/`DataTable` key handling) can classify a key against the exact
+/// same map [`TreeController::handle_key`] uses, instead of maintaining a
+/// second copy that can silently drift from this one.
+pub fn classify_tree_nav_key(key: &Key, vim_keys: bool) -> Option<TreeNavKey> {
+    match key {
+        Key::Named(NamedKey::Up) => Some(TreeNavKey::Up),
+        Key::Char('k') if vim_keys => Some(TreeNavKey::Up),
+        Key::Named(NamedKey::Down) => Some(TreeNavKey::Down),
+        Key::Char('j') if vim_keys => Some(TreeNavKey::Down),
+        Key::Named(NamedKey::Home) => Some(TreeNavKey::Home),
+        Key::Named(NamedKey::End) => Some(TreeNavKey::End),
+        Key::Named(NamedKey::PageUp) => Some(TreeNavKey::PageUp),
+        Key::Named(NamedKey::PageDown) => Some(TreeNavKey::PageDown),
+        Key::Named(NamedKey::Enter) => Some(TreeNavKey::Enter),
+        Key::Char(' ') => Some(TreeNavKey::ToggleExpand),
+        _ => None,
+    }
+}
+
 struct EditingState {
     path: TreePath,
     text: String,
@@ -434,11 +498,31 @@ impl TreeController {
         TreeControllerEvent::RowSelected { path }
     }
 
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `move_selection_to_edge`, which takes `Edge::Start`/`Edge::End` instead of a bool"
+    )]
     pub fn jump_to_edge(&mut self, to_start: bool, viewport_rows: usize) -> TreeControllerEvent {
+        self.move_selection_to_edge(
+            if to_start { Edge::Start } else { Edge::End },
+            viewport_rows,
+        )
+    }
+
+    /// Move the selection to the first (`Edge::Start`) or last (`Edge::End`)
+    /// row, scrolling it into view.
+    pub fn move_selection_to_edge(
+        &mut self,
+        edge: Edge,
+        viewport_rows: usize,
+    ) -> TreeControllerEvent {
         if self.rows.is_empty() {
             return TreeControllerEvent::Ignored;
         }
-        let row = if to_start { 0 } else { self.rows.len() - 1 };
+        let row = match edge {
+            Edge::Start => 0,
+            Edge::End => self.rows.len() - 1,
+        };
         let path = self.rows[row].path.clone();
         self.selected_path = Some(path.clone());
         self.scroll_to_visible(row, viewport_rows);
@@ -506,44 +590,36 @@ impl TreeController {
         if self.editing.is_some() {
             return self.handle_edit_key(key, modifiers);
         }
-        let vim_up = self.vim_keys && matches!(key, Key::Char('k'));
-        let vim_down = self.vim_keys && matches!(key, Key::Char('j'));
-        match key {
-            Key::Named(NamedKey::Up) => {
+        let Some(nav) = classify_tree_nav_key(key, self.vim_keys) else {
+            return TreeControllerEvent::Ignored;
+        };
+        match nav {
+            TreeNavKey::Up => {
                 let vr = self.viewport_rows(backend, rect);
                 self.move_selection_by(-1, vr)
             }
-            _ if vim_up => {
-                let vr = self.viewport_rows(backend, rect);
-                self.move_selection_by(-1, vr)
-            }
-            Key::Named(NamedKey::Down) => {
+            TreeNavKey::Down => {
                 let vr = self.viewport_rows(backend, rect);
                 self.move_selection_by(1, vr)
             }
-            _ if vim_down => {
+            TreeNavKey::Home => {
                 let vr = self.viewport_rows(backend, rect);
-                self.move_selection_by(1, vr)
+                self.move_selection_to_edge(Edge::Start, vr)
             }
-            Key::Named(NamedKey::Home) => {
+            TreeNavKey::End => {
                 let vr = self.viewport_rows(backend, rect);
-                self.jump_to_edge(true, vr)
+                self.move_selection_to_edge(Edge::End, vr)
             }
-            Key::Named(NamedKey::End) => {
-                let vr = self.viewport_rows(backend, rect);
-                self.jump_to_edge(false, vr)
-            }
-            Key::Named(NamedKey::PageUp) => {
+            TreeNavKey::PageUp => {
                 let vr = self.viewport_rows(backend, rect);
                 self.move_selection_by(-((vr.max(1) - 1).max(1) as isize), vr)
             }
-            Key::Named(NamedKey::PageDown) => {
+            TreeNavKey::PageDown => {
                 let vr = self.viewport_rows(backend, rect);
                 self.move_selection_by((vr.max(1) - 1).max(1) as isize, vr)
             }
-            Key::Named(NamedKey::Enter) => self.activate_selection(),
-            Key::Char(' ') => self.toggle_expand_selected(),
-            _ => TreeControllerEvent::Ignored,
+            TreeNavKey::Enter => self.activate_selection(),
+            TreeNavKey::ToggleExpand => self.toggle_expand_selected(),
         }
     }
 
@@ -1178,7 +1254,7 @@ mod tests {
     fn home_jumps_to_first_row() {
         let mut tc = test_controller();
         tc.set_selected_path(Some(vec![3]));
-        tc.jump_to_edge(true, 10);
+        tc.move_selection_to_edge(Edge::Start, 10);
         assert_eq!(tc.selected_path(), Some(&vec![0]));
     }
 
@@ -1186,7 +1262,7 @@ mod tests {
     fn end_jumps_to_last_row() {
         let mut tc = test_controller();
         tc.set_selected_path(Some(vec![0]));
-        tc.jump_to_edge(false, 10);
+        tc.move_selection_to_edge(Edge::End, 10);
         assert_eq!(tc.selected_path(), Some(&vec![4]));
     }
 
@@ -1381,8 +1457,19 @@ mod tests {
     #[test]
     fn jump_to_edge_on_empty_tree_returns_ignored() {
         let mut tc = TreeController::new("t");
-        let ev = tc.jump_to_edge(true, 10);
+        let ev = tc.move_selection_to_edge(Edge::Start, 10);
         assert_eq!(ev, TreeControllerEvent::Ignored);
+    }
+
+    #[test]
+    #[allow(deprecated)] // pins the deprecated bool-taking shim still forwards correctly.
+    fn deprecated_jump_to_edge_still_forwards_to_move_selection_to_edge() {
+        let mut tc = test_controller();
+        tc.set_selected_path(Some(vec![3]));
+        tc.jump_to_edge(true, 10);
+        assert_eq!(tc.selected_path(), Some(&vec![0]));
+        tc.jump_to_edge(false, 10);
+        assert_eq!(tc.selected_path(), Some(&vec![4]));
     }
 
     // ── scroll_by (pub) ─────────────────────────────────────────────

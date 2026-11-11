@@ -10,7 +10,9 @@
 #![cfg(feature = "tui")]
 
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
-use quadraui::{Backend, ButtonMask, Key, Modifiers, NamedKey, Point, Reaction, UiEvent};
+use quadraui::{
+    Backend, ButtonMask, FieldKind, Key, Modifiers, NamedKey, Point, Reaction, UiEvent,
+};
 
 #[path = "../examples/common/shell_app.rs"]
 mod shell_app_ex;
@@ -96,6 +98,8 @@ mod form_combo_box;
 mod form_control_width;
 #[path = "../examples/common/form_date_picker.rs"]
 mod form_date_picker;
+#[path = "../examples/common/form_dialog_demo.rs"]
+mod form_dialog_demo;
 #[path = "../examples/common/form_dropdown.rs"]
 mod form_dropdown;
 #[path = "../examples/common/form_groups.rs"]
@@ -104,6 +108,8 @@ mod form_groups;
 mod form_label_placement;
 #[path = "../examples/common/form_scroll.rs"]
 mod form_scroll;
+#[path = "../examples/common/form_spacing.rs"]
+mod form_spacing;
 #[path = "../examples/common/form_visibility.rs"]
 mod form_visibility;
 #[path = "../examples/common/frame_demo.rs"]
@@ -223,10 +229,12 @@ use form_all_fields::FormAllFieldsApp;
 use form_combo_box::FormComboBoxApp;
 use form_control_width::FormControlWidthApp;
 use form_date_picker::FormDatePickerApp;
+use form_dialog_demo::FormDialogApp;
 use form_dropdown::FormDropdownApp;
 use form_groups::FormGroupsApp;
 use form_label_placement::FormLabelPlacementApp;
 use form_scroll::FormScrollApp;
+use form_spacing::FormSpacingApp;
 use form_visibility::FormVisibilityApp;
 use frame_demo::FrameDemo;
 use full_chrome_demo::FullChromeDemo;
@@ -927,11 +935,11 @@ fn window_control_demo_escape_exits() {
 //
 // `services()` returns `&dyn PlatformServices` directly (never `None`),
 // unlike `WindowControlDemo`'s `window()`, so there's no "no window yet"
-// case to fold in. TUI gives honest real answers for `app_path`, the
-// power-save-block round trip, and `login_item_enabled`, reports a
-// host-dependent real `SystemTheme`/`Unsupported` for `system_theme`, and
-// reports `Unsupported` for everything else — all outcomes are
-// deterministic and assertable headlessly with no live desktop required.
+// case to fold in. TUI gives an honest real answer for `app_path`,
+// reports a host-dependent real `SystemTheme`/`Unsupported` for
+// `system_theme`, and reports `Unsupported` for everything else — all
+// outcomes are deterministic and assertable headlessly with no live
+// desktop required.
 
 #[test]
 fn platform_seams_demo_shows_starting_hint() {
@@ -973,23 +981,25 @@ fn platform_seams_demo_system_theme_surfaces_a_typed_answer_on_tui() {
 }
 
 #[test]
-fn platform_seams_demo_power_save_block_round_trips_on_tui() {
+fn platform_seams_demo_power_save_block_reports_unsupported_on_tui() {
     let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
     driver.type_char('w');
     assert!(
-        driver.screen_contains("power_save_block: ()"),
-        "TUI tracks a real (bookkeeping-only) blocker id end to end:\n{}",
+        driver.screen_contains("power_save_block: Unsupported"),
+        "TUI has no sleep-inhibitor API, so it must not report a blocker it \
+         never actually took out:\n{}",
         driver.screen()
     );
 }
 
 #[test]
-fn platform_seams_demo_login_item_enabled_reports_false_on_tui() {
+fn platform_seams_demo_login_item_enabled_reports_unsupported_on_tui() {
     let mut driver = TuiDriver::new(PlatformSeamsDemo::new(), 100, 20);
     driver.type_char('e');
     assert!(
-        driver.screen_contains("login_item_enabled: false"),
-        "TUI has no login-item registry, so it is honestly never enabled:\n{}",
+        driver.screen_contains("login_item_enabled: Unsupported"),
+        "TUI has no login-item registry to query, so it cannot answer \
+         whether the app starts at login:\n{}",
         driver.screen()
     );
 }
@@ -1886,6 +1896,70 @@ fn panel_maximize_button_click_toggles_collapsed() {
     );
 }
 
+/// `PanelApp` paints its title bar through a `SidebarPanel` with a
+/// `Toolbar` header (a `Label` title, a `Spacer`, then the close/maximize
+/// `Action` buttons) — the same shape `Panel::header_toolbar` maps a
+/// deprecated `Panel` onto. Pins the two visible effects of that shape: the
+/// title still sits exactly one cell right of the panel's own left edge
+/// (the same x the status bar's flush-left leading space paints at — both
+/// rects start at `viewport.x == 0` in `PanelApp::render`), and every
+/// painted action glyph still resolves through `SidebarPanelHit::ToolbarButton`
+/// for its own id, not some other action's.
+#[test]
+fn panel_title_inset_and_action_glyphs_resolve_through_header_toolbar_seam() {
+    let mut driver = TuiDriver::new(PanelApp::new(), 80, 24);
+
+    let (title_x, _) = driver
+        .find("Demo Panel")
+        .unwrap_or_else(|| panic!("panel title not painted:\n{}", driver.screen()));
+    let (edge_x, _) = driver.find(" Click-drag").unwrap_or_else(|| {
+        panic!(
+            "status bar's flush-left leading space not painted:\n{}",
+            driver.screen()
+        )
+    });
+    assert_eq!(
+        title_x,
+        edge_x + 1.0,
+        "title should sit exactly one cell right of the panel's own left \
+         edge, not flush against it:\n{}",
+        driver.screen()
+    );
+
+    // Clicking the maximize glyph resolves to
+    // SidebarPanelHit::ToolbarButton("maximize"), toggling collapsed state —
+    // not SidebarPanelHit::ToolbarButton("close")'s Exit.
+    let (mx, my) = driver
+        .find("□")
+        .unwrap_or_else(|| panic!("maximize action glyph not painted:\n{}", driver.screen()));
+    let reaction = driver.click(mx, my);
+    assert_eq!(reaction, Reaction::Redraw);
+    let collapsed_screen = driver.screen();
+    assert!(
+        collapsed_screen.contains("Collapsed"),
+        "clicking the maximize glyph should resolve to SidebarPanelHit::ToolbarButton(\"maximize\"):\n{collapsed_screen}"
+    );
+
+    // Re-expand via the now-repainted "+" glyph, then click the close glyph —
+    // it must resolve to SidebarPanelHit::ToolbarButton("close")
+    // (Reaction::Exit), proving the two action glyphs hit-test to their own
+    // distinct ids.
+    let (ex, ey) = driver
+        .find("+")
+        .unwrap_or_else(|| panic!("expand action glyph not painted:\n{collapsed_screen}"));
+    driver.click(ex, ey);
+
+    let (cx, cy) = driver
+        .find("×")
+        .unwrap_or_else(|| panic!("close action glyph not painted:\n{}", driver.screen()));
+    let reaction = driver.click(cx, cy);
+    assert_eq!(
+        reaction,
+        Reaction::Exit,
+        "clicking the close glyph should resolve to SidebarPanelHit::ToolbarButton(\"close\")"
+    );
+}
+
 // ─── SelectionDemo (shell-runner path): drag + Ctrl-C via run_with_shell ───────
 //
 // `SelectionDemo` implements `ShellApp` (not `AppLogic` directly) and is
@@ -2396,6 +2470,264 @@ fn dialog_table_esc_exits() {
     let mut driver = TuiDriver::new(DialogTableDemo::new(), 100, 30);
     driver.press_named(NamedKey::Escape);
     assert!(driver.exited(), "Esc should exit the dialog demo");
+}
+
+// ─── FormDialogApp: DialogInput::Form in a Dialog ──────────────────────────
+
+fn form_dialog_shift_tab(driver: &mut TuiDriver<FormDialogApp>) -> Reaction {
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Tab),
+        modifiers: Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+        repeat: false,
+    })
+}
+
+/// Initial screen renders the dialog title and both form field labels,
+/// plus the Cancel/Create buttons.
+#[test]
+fn form_dialog_initial_screen_paints_title_fields_and_buttons() {
+    let driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("Create milestone"),
+        "dialog title should appear:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Name"),
+        "Name field label should be painted:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Description"),
+        "Description field label should be painted:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Cancel"),
+        "Cancel button should be painted:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("Create"),
+        "Create button should be painted:\n{screen}"
+    );
+}
+
+/// Typing while the Name field has initial focus edits that field, not
+/// the Description field.
+#[test]
+fn form_dialog_typing_edits_the_focused_name_field() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    driver.type_char('A');
+    driver.type_char('l');
+    driver.type_char('p');
+    driver.type_char('h');
+    driver.type_char('a');
+    assert!(
+        driver.screen_contains("Alpha"),
+        "typed text should appear in the Name field:\n{}",
+        driver.screen()
+    );
+}
+
+/// Tab cycles focus: Name -> Description -> Cancel -> Create -> (wraps)
+/// Name, a single order across the form and the dialog's buttons.
+#[test]
+fn form_dialog_tab_cycles_through_fields_then_buttons_then_wraps() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    assert!(driver.app().controller().is_form_focused());
+    driver.press_named(NamedKey::Tab); // Name -> Description
+    assert!(driver.app().controller().is_form_focused());
+    driver.press_named(NamedKey::Tab); // Description -> Cancel
+    assert!(!driver.app().controller().is_form_focused());
+    assert_eq!(
+        driver
+            .app()
+            .controller()
+            .focused_button_id()
+            .map(|id| id.as_str()),
+        Some("cancel")
+    );
+    driver.press_named(NamedKey::Tab); // Cancel -> Create
+    assert_eq!(
+        driver
+            .app()
+            .controller()
+            .focused_button_id()
+            .map(|id| id.as_str()),
+        Some("create")
+    );
+    driver.press_named(NamedKey::Tab); // Create -> (wraps) Name
+    assert!(driver.app().controller().is_form_focused());
+}
+
+/// Shift-Tab from the first field (Name) moves focus straight to the
+/// last button (Create), the reverse of the forward wrap.
+#[test]
+fn form_dialog_shift_tab_from_first_field_focuses_last_button() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    form_dialog_shift_tab(&mut driver);
+    assert_eq!(
+        driver
+            .app()
+            .controller()
+            .focused_button_id()
+            .map(|id| id.as_str()),
+        Some("create")
+    );
+}
+
+/// Tabbing to the Create button and pressing Enter submits the form —
+/// the app reads back its own canonical Name/Description state and
+/// shows it as a status line above the form.
+#[test]
+fn form_dialog_enter_on_focused_create_button_submits_the_form() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    driver.type_char('A');
+    driver.type_char('B');
+    driver.press_named(NamedKey::Tab); // Name -> Description
+    driver.press_named(NamedKey::Tab); // Description -> Cancel
+    driver.press_named(NamedKey::Tab); // Cancel -> Create
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        driver.screen_contains("Created:"),
+        "submitting should show a status line:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("AB"),
+        "the status line should carry back the typed Name value:\n{}",
+        driver.screen()
+    );
+    assert!(!driver.exited(), "Create should not exit the demo");
+}
+
+/// Clicking Cancel exits the demo, same as the message-dialog
+/// convention.
+#[test]
+fn form_dialog_cancel_button_click_exits() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    let (cx, cy) = driver
+        .find("Cancel")
+        .expect("Cancel button should be on screen");
+    driver.click(cx, cy);
+    assert!(driver.exited(), "clicking Cancel should exit the demo");
+}
+
+/// Escape always resolves to Cancel and exits, regardless of focus.
+#[test]
+fn form_dialog_esc_exits() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Esc should exit the form dialog demo");
+}
+
+/// `q` quits once focus has moved off the form onto a button — typing
+/// `q` while a field is focused must insert the character instead.
+#[test]
+fn form_dialog_q_quits_only_once_a_button_has_focus() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    driver.type_char('q');
+    assert!(
+        !driver.exited(),
+        "'q' while the Name field is focused should type, not quit"
+    );
+    assert!(
+        driver.screen_contains('q'.to_string().as_str()),
+        "'q' should have been typed into the Name field:\n{}",
+        driver.screen()
+    );
+    driver.press_named(NamedKey::Tab); // Name -> Description
+    driver.press_named(NamedKey::Tab); // Description -> Cancel
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' with a button focused should quit");
+}
+
+/// Re-entering the form from a button (Shift-Tab backward off the first
+/// button) must surface `FormAction(FocusChanged)` so the app's own
+/// `focused_field` mirror — which it feeds back via `set_form` every
+/// frame, per this controller's documented contract — stays in sync.
+/// Without it, typing right after re-entering the form would land in
+/// whichever field the app's stale mirror still names, not the one
+/// actually focused.
+#[test]
+fn form_dialog_entering_form_from_a_button_keeps_the_apps_focus_mirror_in_sync() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    form_dialog_shift_tab(&mut driver); // Name -> (wraps) Create
+    form_dialog_shift_tab(&mut driver); // Create -> Cancel
+    form_dialog_shift_tab(&mut driver); // Cancel -> (wraps back) Description
+    assert!(
+        driver.app().controller().is_form_focused(),
+        "third shift-tab should land back on the form"
+    );
+    assert_eq!(
+        driver
+            .app()
+            .controller()
+            .form()
+            .and_then(|f| f.focused_field)
+            .map(|id| id.as_str()),
+        Some("description"),
+        "focus should land on the last field (Description)"
+    );
+    driver.type_char('a');
+    driver.type_char('b');
+    driver.type_char('c');
+    let form = driver
+        .app()
+        .controller()
+        .form()
+        .expect("controller should have a form set");
+    let name_value = form
+        .fields
+        .iter()
+        .find(|f| f.id.as_str() == "name")
+        .and_then(|f| match &f.kind {
+            FieldKind::TextInput { value, .. } => Some(value.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let description_value = form
+        .fields
+        .iter()
+        .find(|f| f.id.as_str() == "description")
+        .and_then(|f| match &f.kind {
+            FieldKind::TextArea { value, .. } => Some(value.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        name_value, "",
+        "typed text must not leak into the Name field (stale focus mirror)"
+    );
+    assert_eq!(
+        description_value, "abc",
+        "typed text should land in the actually-focused Description field"
+    );
+}
+
+/// `DialogInput::Form`'s input slot must be tall enough for a
+/// `TextArea`'s `visible_rows`, not a flat one-row-per-field estimate —
+/// otherwise a multi-line field's extra rows are clipped and never
+/// reach the screen.
+#[test]
+fn form_dialog_text_area_renders_more_than_its_single_top_row() {
+    let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
+    driver.press_named(NamedKey::Tab); // Name -> Description
+    driver.type_char('L');
+    driver.type_char('1');
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Enter), // TextArea: Enter inserts a newline
+        modifiers: Modifiers::default(),
+        repeat: false,
+    });
+    driver.type_char('L');
+    driver.type_char('2');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("L1") && screen.contains("L2"),
+        "both TextArea lines should be visible, not clipped to one row:\n{screen}"
+    );
 }
 
 /// Shell-runner path: Ctrl-A selects all content lines, Ctrl-C copies them.
@@ -3103,6 +3435,34 @@ fn tab_group_drag_start_does_not_panic() {
     assert!(!driver.exited(), "mouse_up should not cause exit");
 }
 
+/// The default two-pane layout's root divider lands on a half-cell
+/// position at this driver width: `content width = 120`, divider
+/// thickness 1 → `available = 119`, `ratio = 0.5` → `position = 59.5`,
+/// which `tui::split::draw_split` paints at the truncated cell `59`.
+/// `TabGroupController::handle_drag_start` hit-tests
+/// `DividerInfo::divider_bounds` by hand (not through
+/// `SplitLayout::hit_test`), so it must use the backend's snapped click
+/// target rather than the raw unsnapped `59.5` position, or clicking the
+/// visible divider glyph at cell 59 would silently miss.
+#[test]
+fn tab_group_divider_drag_starts_at_the_half_cell_divider_s_painted_cell() {
+    let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
+
+    // Row 10 is inside the pane content area (below the row-0 tab strip,
+    // above the row-29 status bar), clear of any glyph text.
+    let divider_cell_x = 59.0;
+    let y = 10.0;
+
+    driver.mouse_down(divider_cell_x, y);
+    let after = driver.screen();
+    assert!(
+        after.contains("divider drag start"),
+        "clicking the painted divider cell (59) must start a drag:\n{after}"
+    );
+
+    driver.mouse_up(divider_cell_x, y);
+}
+
 #[test]
 fn palette_dual_mode_typing_in_input_mode_updates_query() {
     // Switch to Input mode, type a branch name, assert it appears in the
@@ -3289,6 +3649,109 @@ fn shell_app_k_saturates_at_first_item() {
         !driver.screen_contains("panel:settings"),
         "'k' at top must NOT wrap to the bottom item:\n{}",
         driver.screen()
+    );
+}
+
+/// Pins the painted cells of three different `ActivityBar` rows — one
+/// `is_active`, one keyboard-selected, one mouse-hovered — through
+/// `tui::activity_bar`'s post-migration paint path
+/// (`ActivityBar::to_toolbar_parts` → `tui::toolbar::draw_toolbar_with_rail_style`
+/// → `ActivityBar::row_hits_from_toolbar_layout`). `ShellApp`'s bar sets
+/// neither `active_accent` nor `selection_bg` (both `None`), so this
+/// exercises the two fallbacks those `None`s force: the active row's own
+/// foreground (not a fill, since no `active_bg`/`active_accent` is set)
+/// and the keyboard-selected row's `Modifier::REVERSED` highlight (not an
+/// explicit fill, since no `selection_bg` is set) — plus the hovered
+/// row's lightened background, which has no fallback to begin with.
+#[test]
+fn shell_app_activity_bar_active_hovered_and_keyboard_selected_rows_paint_distinctly() {
+    use quadraui::tui::testing::Modifier;
+
+    let mut driver = TuiDriver::new(ShellAppEx::new(), 100, 30);
+
+    // Explorer (row 0) is the default active panel — no interaction needed.
+    let (ex, ey) = driver
+        .find("E│")
+        .unwrap_or_else(|| panic!("Explorer icon should be painted:\n{}", driver.screen()));
+    let active_cell = driver
+        .style_at(ex as u16, ey as u16)
+        .expect("Explorer icon cell should be on screen");
+
+    // Tab focuses the bar (cursor starts at Explorer); 'j' moves the
+    // keyboard cursor to Search (row 1) without activating it, so Search
+    // is keyboard-selected but not active.
+    driver.press_named(NamedKey::Tab);
+    driver.type_char('j');
+    let (sx, sy) = driver
+        .find("S│")
+        .unwrap_or_else(|| panic!("Search icon should be painted:\n{}", driver.screen()));
+    let selected_cell = driver
+        .style_at(sx as u16, sy as u16)
+        .expect("Search icon cell should be on screen");
+
+    // Hover the mouse over Source Control (row 2) — distinct from both
+    // the active row (0) and the keyboard-selected row (1) above.
+    let (gx, gy) = driver.find("G│").unwrap_or_else(|| {
+        panic!(
+            "Source Control icon should be painted:\n{}",
+            driver.screen()
+        )
+    });
+    driver.mouse_move(gx, gy);
+    driver.render();
+    let hovered_cell = driver
+        .style_at(gx as u16, gy as u16)
+        .expect("Source Control icon cell should be on screen");
+
+    // Baseline: Settings (bottom-pinned) has none of the three states.
+    let (bx, by) = driver
+        .find("*│")
+        .unwrap_or_else(|| panic!("Settings icon should be painted:\n{}", driver.screen()));
+    let resting_cell = driver
+        .style_at(bx as u16, by as u16)
+        .expect("Settings icon cell should be on screen");
+
+    let screen = driver.screen();
+
+    assert_ne!(
+        active_cell.fg, resting_cell.fg,
+        "the active row's icon should paint theme.foreground, distinct \
+         from a resting row's theme.inactive_fg:\n{screen}"
+    );
+    assert_eq!(
+        active_cell.bg, resting_cell.bg,
+        "with no active_bg/active_accent set, the active row keeps the \
+         plain bar background:\n{screen}"
+    );
+
+    assert!(
+        selected_cell.modifiers.contains(Modifier::REVERSED),
+        "with no selection_bg set, the keyboard-selected row should fall \
+         back to Modifier::REVERSED:\n{screen}"
+    );
+    assert!(
+        !resting_cell.modifiers.contains(Modifier::REVERSED),
+        "a row with no keyboard selection must not carry REVERSED:\n{screen}"
+    );
+    assert_eq!(
+        selected_cell.bg, resting_cell.bg,
+        "with no selection_bg set, the keyboard-selected row's bg stays \
+         plain (REVERSED does the visual work, not a bg change):\n{screen}"
+    );
+
+    assert_ne!(
+        hovered_cell.bg, resting_cell.bg,
+        "the hovered row should paint a lightened background, distinct \
+         from a resting row's plain background:\n{screen}"
+    );
+    assert!(
+        !hovered_cell.modifiers.contains(Modifier::REVERSED),
+        "hover alone (no keyboard selection) must not carry REVERSED:\n{screen}"
+    );
+    assert_eq!(
+        hovered_cell.fg, active_cell.fg,
+        "hover, like is_active, paints theme.foreground rather than \
+         theme.inactive_fg:\n{screen}"
     );
 }
 
@@ -4347,6 +4810,35 @@ fn help_layer_demo_question_mark_opens_cheatsheet_for_active_panel() {
     );
 }
 
+/// The cheatsheet title sits one cell to the right of the content area's
+/// own left edge (the "Reference" section header, which paints flush
+/// against `content_bounds.x` — the same x as the toolbar header's own
+/// bounds) rather than flush against the popup's leading edge.
+#[test]
+fn help_layer_demo_cheatsheet_title_keeps_leading_inset() {
+    let config = HelpLayerDemo::config();
+    let mut driver = driver_with_shell(HelpLayerDemo::new(), config, 100, 30);
+
+    driver.type_char('?');
+
+    let (title_x, _) = driver
+        .find("Help — Explorer")
+        .unwrap_or_else(|| panic!("cheatsheet title not found:\n{}", driver.screen()));
+    let (reference_x, _) = driver.find("Reference").unwrap_or_else(|| {
+        panic!(
+            "cheatsheet reference-section header not found:\n{}",
+            driver.screen()
+        )
+    });
+
+    assert_eq!(
+        title_x,
+        reference_x + 1.0,
+        "title should sit exactly one cell right of the content area's \
+         own left edge, not flush against it"
+    );
+}
+
 /// `Escape` closes an open cheatsheet without quitting the demo, and the
 /// entries it was showing disappear from the screen.
 #[test]
@@ -4533,15 +5025,16 @@ fn help_layer_demo_no_registered_help_still_dismisses_via_escape() {
 /// field.
 ///
 /// Clicks land on `find_bounds("│")`'s left edge, not its center like
-/// most tests in this file: `Split::layout`'s divider hit-region for a
-/// 0.5 ratio here is `[39.5, 40.5)`, but `tui/split.rs::draw_split` paints
-/// the glyph at `div.x.round()` = cell 40 (`[40.0, 41.0)`) — the two
-/// spans only overlap in `[40.0, 40.5)`. `find`'s usual cell-center
-/// coordinate (`40.5`) sits exactly on that boundary and resolves to
-/// `SecondPane`, not `Divider` — so a click there would silently miss the
-/// divider it just found painted. The left edge (`40.0`) is inside both
-/// spans regardless of the exact half-cell rounding, so it's the robust
-/// choice here.
+/// most tests in this file: an 80-wide area with a 1-cell divider gives
+/// `available = 79`, so a 0.5 ratio places the divider at the half-cell
+/// position `39.5`. `tui/split.rs::draw_split` paints the glyph at the
+/// truncated cell `39`, and the click target
+/// (`SplitLayout::divider_hit_bounds()`) is snapped to that same cell —
+/// `[39.0, 40.0)` — so either the left edge (`39.0`, used here) or the
+/// center (`39.5`) resolves to `Divider`. The left edge is kept as the
+/// click point because it is robust to either float->cell convention
+/// (truncation or rounding), not because it's the only one that works
+/// today.
 #[test]
 fn split_dragging_divider_moves_it_and_updates_ratio() {
     let mut driver = TuiDriver::new(SplitApp::new(), 80, 24);
@@ -7318,6 +7811,62 @@ fn file_picker_app_save_mode_confirms_seeded_filename() {
     );
 }
 
+/// Open mode: `j`/`k` move the selection the same way `Down`/`Up` do,
+/// driven through the real example path (not just the controller's own
+/// unit tests) so the vim shortcuts unified with `FolderPickerController`
+/// are pinned end to end.
+#[test]
+fn file_picker_app_open_mode_vim_keys_navigate_and_confirm() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    std::fs::write(tmp.path().join("a.rs"), b"").expect("write file");
+    std::fs::write(tmp.path().join("b.rs"), b"").expect("write file");
+
+    let mut driver = TuiDriver::new(FilePickerApp::with_root(tmp.path()), 100, 30);
+    // Entries: [.., a.rs, b.rs] — 'j' twice lands on b.rs, 'k' once back
+    // onto a.rs.
+    driver.type_char('j');
+    driver.type_char('j');
+    driver.type_char('k');
+    driver.press_named(NamedKey::Enter);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("Opened:") && after.contains("a.rs"),
+        "'j'/'k' must navigate the selection in Open mode, confirming a.rs:\n{after}"
+    );
+}
+
+/// Save mode: `-`/`j`/`k` must type into the destination filename, not
+/// navigate — the query *is* the filename in this mode, so routing them
+/// as the vim shortcuts would make real filenames (`my-journal.md`)
+/// untypeable and `-` actively destructive (it would clear the query via
+/// `navigate_up`). Driven through the real example path, pinning the
+/// fix end to end rather than just at the controller's own unit level.
+#[test]
+fn file_picker_app_save_mode_vim_chars_type_into_filename() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let mut driver = TuiDriver::new(FilePickerApp::with_root(tmp.path()), 100, 30);
+
+    // Dismiss the initial Open-mode picker, then reopen in Save mode
+    // (seeded with "untitled.txt") and clear the seeded name.
+    driver.press_named(NamedKey::Escape);
+    driver.type_char('s');
+    for _ in 0.."untitled.txt".len() {
+        driver.press_named(NamedKey::Backspace);
+    }
+
+    for c in "my-journal.md".chars() {
+        driver.type_char(c);
+    }
+    driver.press_named(NamedKey::Enter);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("Saved:") && after.contains("my-journal.md"),
+        "'-'/'j'/'k' must type into the Save-mode filename, not navigate:\n{after}"
+    );
+}
+
 // ─── MessageDialogApp: compose::MessageDialogController demo ──
 //
 // Drives `MessageDialogController` directly — no `PlatformServices`
@@ -7725,7 +8274,7 @@ fn data_table_flipping_sort_direction_reorders_visible_rows() {
 //
 // `tui_bottom_panel`'s real ShellApp is `BottomPanelDemo`, driven through
 // `driver_with_shell` so the full `ShellApp -> ShellAdapter -> dispatch_event`
-// path (including `BottomPanelController::handle_click`) is exercised —
+// path (including `BottomPanelController::handle_click_event`) is exercised —
 // not a hand-built `BottomPanelController` in isolation, which is already
 // covered by `compose::bottom_panel`'s own unit tests.
 
@@ -10550,4 +11099,80 @@ fn codicon_tree_falls_back_to_plain_text_when_nerd_fonts_off() {
             "row label {label:?} should still be visible:\n{screen}"
         );
     }
+}
+
+// ─── FormSpacingApp: FormSpacing (padding/item_gap) + RowAlign ─────────
+//
+// `FormSpacing::padding` (2.0) insets the whole form; the footer
+// `ButtonRow`'s `row_align: Some(RowAlign::End)` pushes "Cancel"/"OK"
+// flush against the (padded) row's right edge instead of the left,
+// like every other `ButtonRow` demo in this crate.
+
+#[test]
+fn form_spacing_padding_insets_a_plain_field_on_every_edge() {
+    let driver = TuiDriver::new(FormSpacingApp::new(), 40, 10);
+    let name = driver
+        .find_bounds("Name")
+        .expect("the Name label is painted");
+    // Row 0: 2 rows of top padding. Column: 2 cells of left padding plus
+    // the form's own universal 1-cell label margin (see
+    // `tui_form_control_width`'s unpadded demo, where the same label
+    // starts at column 1).
+    assert_eq!(
+        (name.x, name.y),
+        (3.0, 2.0),
+        "Name label should sit 2 rows down and 3 columns in (2 padding + 1 margin):\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_spacing_padding_insets_the_control_columns_right_edge_too() {
+    let driver = TuiDriver::new(FormSpacingApp::new(), 40, 10);
+    let row = driver
+        .screen()
+        .lines()
+        .nth(2)
+        .unwrap_or_default()
+        .to_string();
+    // The Name/Email text inputs stretch to the row's right edge
+    // (`ControlWidth::Fill`, the default) — with 2 cells of right
+    // padding, that edge is column 37 (width 40, minus 2 padding,
+    // minus 1 for the closing `]` itself), not column 39.
+    assert_eq!(
+        row.chars().nth(37),
+        Some(']'),
+        "Fill's box should close 2 cells short of the unpadded right edge:\n{}",
+        driver.screen()
+    );
+    assert_eq!(
+        row.chars().nth(38),
+        Some(' '),
+        "the 2 padding columns themselves should be blank:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn form_spacing_row_align_end_pushes_the_button_row_to_the_padded_right_edge() {
+    let driver = TuiDriver::new(FormSpacingApp::new(), 40, 10);
+    let ok = driver
+        .find_bounds("[OK]")
+        .expect("the OK button is painted");
+    // Right content edge is column 38 (width 40 minus 2 padding); "[OK]"
+    // is 4 cells wide, so it starts at 34.
+    assert_eq!(
+        ok.x + ok.width,
+        38.0,
+        "OK's button box should be flush with the padded right edge:\n{}",
+        driver.screen()
+    );
+    let cancel = driver
+        .find_bounds("[Cancel]")
+        .expect("the Cancel button is painted");
+    assert!(
+        cancel.x < ok.x,
+        "Cancel should still sit to the left of OK:\n{}",
+        driver.screen()
+    );
 }

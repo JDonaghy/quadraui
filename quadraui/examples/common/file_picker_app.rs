@@ -26,9 +26,9 @@
 use std::path::PathBuf;
 
 use quadraui::{
-    AppLogic, Backend, Color, FilePickerController, FilePickerEvent, FilePickerMode,
-    InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent,
-    WidgetId, PALETTE_CHROME_ROWS,
+    AppLogic, Backend, Color, FilePickerController, FilePickerMode, Handled, InteractionState, Key,
+    NamedKey, PathPickerAction, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    PALETTE_CHROME_ROWS,
 };
 
 pub struct FilePickerApp {
@@ -130,8 +130,8 @@ impl AppLogic for FilePickerApp {
             };
             let visible_rows = popup_h_rows.saturating_sub(PALETTE_CHROME_ROWS);
 
-            match picker.handle(&event, visible_rows) {
-                FilePickerEvent::Confirmed { path } => {
+            match picker.handle_event(&event, visible_rows) {
+                Handled::Event(PathPickerAction::Confirmed { path }) => {
                     let verb = match picker.mode() {
                         FilePickerMode::Open => "Opened",
                         FilePickerMode::Save => "Saved",
@@ -144,13 +144,13 @@ impl AppLogic for FilePickerApp {
                     self.picker = None;
                     return Reaction::Redraw;
                 }
-                FilePickerEvent::Cancelled => {
+                Handled::Event(PathPickerAction::Cancelled) => {
                     self.status = "Dismissed — 'o'/'s' to reopen, q/Esc to quit".into();
                     self.picker = None;
                     return Reaction::Redraw;
                 }
-                FilePickerEvent::Consumed => return Reaction::Redraw,
-                FilePickerEvent::Ignored => {}
+                Handled::Consumed => return Reaction::Redraw,
+                Handled::Ignored => {}
             }
         } else if let UiEvent::KeyPressed { ref key, .. } = event {
             match key {

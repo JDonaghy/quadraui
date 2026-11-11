@@ -11,13 +11,15 @@ the three module-level, app-less functions (`quadraui.app_path`,
 `quadraui.set_app_identifier`, `quadraui.install_crash_handler`).
 
 Every `QuiApp` method here resolves `quadraui::PlatformServices` off this
-app's own headless `TuiBackend`. `TuiBackend` implements only
-`begin_power_save_block`/`end_power_save_block` (a genuine, if no-op,
-bookkeeping inhibitor) and `login_item_enabled` (always reports `False`,
-truthfully, since this backend itself never registers a login item) for
-real; every other method here falls through to `BackendError::Unsupported`
-on this backend, surfaced as `quadraui.UnsupportedError` rather than a panic
-or a silent no-op -- this file's main acceptance case.
+app's own headless `TuiBackend`, which implements none of them: a terminal
+owns no sleep inhibitor, login-item registration, protocol registration,
+drag source, recent-documents list, dock menu, jump list, or updater. Every
+method here therefore falls through to `BackendError::Unsupported` on this
+backend, surfaced as `quadraui.UnsupportedError` rather than a panic or a
+silent no-op -- this file's main acceptance case. Argument and handle
+validation in `quadraui_binding_core` runs ahead of the service call, so a
+bad `kind` string or an unknown handle still raises
+`quadraui.InvalidDescriptorError` instead.
 
 Run against a built wheel/extension, e.g.:
 
@@ -58,17 +60,17 @@ def test_apply_on_quit_rejects_an_unknown_handle():
 
 # ─── Power-save blocker ─────────────────────────────────────────────────────
 #
-# The one real (non-degraded) `PlatformServices` implementation covered in
-# this file: `TuiBackend` genuinely tracks an inhibitor handle, it just
-# never calls out to the OS to back it with anything.
+# A terminal has no sleep-inhibitor API to call into, so `TuiBackend` keeps
+# the trait's `Unsupported` default here rather than minting a handle it
+# never backs with anything. Argument/handle validation still happens in
+# `quadraui_binding_core` ahead of the service call, so the two rejection
+# cases below are unaffected by that.
 
 
-def test_power_save_block_begin_and_end_round_trip():
+def test_begin_power_save_block_raises_unsupported_on_tui():
     app = QuiApp(10, 10)
-
-    handle = app.begin_power_save_block("prevent_display_sleep")
-
-    app.end_power_save_block(handle)
+    with pytest.raises(UnsupportedError):
+        app.begin_power_save_block("prevent_display_sleep")
 
 
 def test_begin_power_save_block_rejects_an_unknown_kind():
@@ -86,9 +88,10 @@ def test_end_power_save_block_rejects_an_unknown_handle():
 # ─── Launch at login ────────────────────────────────────────────────────────
 
 
-def test_login_item_enabled_reports_false_on_tui():
+def test_login_item_enabled_raises_unsupported_on_tui():
     app = QuiApp(10, 10)
-    assert app.login_item_enabled() is False
+    with pytest.raises(UnsupportedError):
+        app.login_item_enabled()
 
 
 def test_set_login_item_raises_unsupported_on_tui():

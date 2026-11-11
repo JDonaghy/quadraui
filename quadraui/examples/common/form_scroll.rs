@@ -12,7 +12,7 @@
 //! keyboard focus traversal and text editing (see
 //! `compose::form_controller`'s module doc). Note that `handle` below
 //! has no key-decoding arm of its own for the `name` field:
-//! `fc.handle_cached` does all of it, demonstrating "no app-side key
+//! `fc.handle_cached_event` does all of it, demonstrating "no app-side key
 //! plumbing is needed to edit a field".
 //!
 //! Controls:
@@ -26,8 +26,9 @@
 //! - `q` (name not focused) → quit
 
 use quadraui::{
-    AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerEvent, FormField,
-    InteractionState, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerAction, FormField,
+    Handled, InteractionState, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent,
+    WidgetId,
 };
 
 pub struct FormScrollApp {
@@ -43,7 +44,7 @@ impl FormScrollApp {
         let mut fc = FormController::new("settings".into());
         // This demo has exactly one panel, so the form always has
         // keyboard focus — `set_has_focus` is what lets
-        // `FormController::handle_cached` accept `KeyPressed`/
+        // `FormController::handle_cached_event` accept `KeyPressed`/
         // `CharTyped` at all (see `compose::form_controller`'s
         // "Keyboard editing" doc section).
         fc.set_has_focus(true);
@@ -75,6 +76,7 @@ impl FormScrollApp {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }];
         fields.extend(self.toggles.iter().enumerate().map(|(i, &val)| FormField {
             id: WidgetId::new(format!("toggle-{i}")),
@@ -89,6 +91,7 @@ impl FormScrollApp {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }));
 
         Form {
@@ -102,6 +105,7 @@ impl FormScrollApp {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -184,8 +188,8 @@ impl AppLogic for FormScrollApp {
         self.fc.set_form(self.build_form());
         self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle_cached(&event, rect) {
-            FormControllerEvent::FormAction(fe) => {
+        match self.fc.handle_cached_event(&event, rect) {
+            Handled::Event(FormControllerAction::FormAction(fe)) => {
                 match fe {
                     quadraui::FormEvent::ToggleChanged { ref id, value } => {
                         let prefix = "toggle-";
@@ -236,8 +240,10 @@ impl AppLogic for FormScrollApp {
                 self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
-            FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => Reaction::Redraw,
-            FormControllerEvent::Ignored => Reaction::Continue,
+            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
+                Reaction::Redraw
+            }
+            Handled::Ignored => Reaction::Continue,
         }
     }
 }

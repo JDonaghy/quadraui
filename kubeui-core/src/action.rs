@@ -1,31 +1,31 @@
 //! Logical actions that mutate state, plus the [`apply_action`]
 //! reducer.
 //!
-//! Backends translate raw input (crossterm `KeyCode`, GTK key
-//! signals, mouse coordinates) into [`Action`] variants and pass
-//! them here. This is the single place all semantic behaviour lives:
+//! `quadraui::AppLogic::handle` on [`crate::KubeApp`] translates raw
+//! `quadraui::UiEvent`s into [`Action`] variants and passes them
+//! here. This is the single place all semantic behaviour lives:
 //! adding a new feature means adding a variant and an `apply_action`
-//! arm — both backends pick it up the moment they bind a key/click
-//! to the new variant.
+//! arm.
 //!
-//! Coordinate-bearing variants (`StatusBarClick`, `PickerClick`)
-//! carry their geometry already resolved into the relevant logical
-//! coordinates (cells for TUI, pixels for GTK). The reducer doesn't
-//! know which one — it just consults the same `quadraui` primitives
-//! the view-builder produced.
+//! Picker (namespace/resource-kind) key handling does **not** go
+//! through `Action` — while a `PickerOverlay` is open,
+//! [`crate::state::PickerOverlay::handle_key`]/`handle_mouse` consume
+//! the raw event directly (they already know how to turn keystrokes
+//! into query edits / selection moves / confirm / cancel), and
+//! [`crate::KubeApp`] applies the resulting
+//! [`crate::state::PickerOutcome`] via [`open_namespace_picker`],
+//! [`open_kind_picker`] and [`commit_picker_selection`] below.
 
 use quadraui::WidgetId;
 
 use crate::k8s;
-use crate::state::{AppState, Focus, Picker, PickerPurpose, ResourceKind};
-use crate::view;
+use crate::state::{AppState, Focus, PickerOverlay, PickerPurpose, ResourceKind};
 
-/// Every logical mutation the app supports. New features get a new
-/// variant + an arm in [`apply_action`].
+/// Every logical mutation the app supports that isn't routed through
+/// the open picker. New features get a new variant + an
+/// `apply_action` arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// Set `state.should_quit = true`.
-    Quit,
     /// Re-fetch the current resource kind in the current namespace.
     Refresh,
     /// Open the namespace picker.
@@ -43,40 +43,19 @@ pub enum Action {
     YamlPageDown,
     YamlPageUp,
 
-    // ── Picker (modal) actions ────────────────────────────────────
-    /// Apply the picker's current selection.
-    PickerCommit,
-    /// Close the picker without applying.
-    PickerCancel,
-    PickerMoveDown,
-    PickerMoveUp,
-    /// Append a character to the picker's filter query.
-    PickerInput(char),
-    /// Drop the last character from the filter query.
-    PickerBackspace,
-    /// Move the picker's highlight to a specific filtered-row index
-    /// (used by mouse handlers that resolve a click to a row).
-    PickerSelectVisible(usize),
-
     // ── Click resolution helpers ──────────────────────────────────
-    /// A click landed on a status-bar segment — backend has already
-    /// resolved the segment id via `StatusBar::resolve_click`.
+    /// A click landed on a status-bar segment — the caller has
+    /// already resolved the segment id via `StatusBar::layout` +
+    /// `StatusBarLayout::hit_test`.
     StatusBarSegmentClicked(WidgetId),
 }
 
 /// Apply one [`Action`] to `state`. Async k8s calls are run on `rt`.
 ///
-/// Pure with respect to anything other than `state` — backends call
+/// Pure with respect to anything other than `state` — callers call
 /// this freely, then re-render from `state` on the next frame.
 pub fn apply_action(state: &mut AppState, action: Action, rt: &tokio::runtime::Runtime) {
-    // Picker, when open, has highest precedence — its actions are
-    // routed first regardless of focus.
-    if state.picker.is_some() && apply_picker_action(state, &action, rt) {
-        return;
-    }
-
     match action {
-        Action::Quit => state.should_quit = true,
         Action::Refresh => refresh_resources(state, rt),
         Action::OpenNamespacePicker => open_namespace_picker(state),
         Action::OpenKindPicker => open_kind_picker(state),
@@ -119,108 +98,49 @@ pub fn apply_action(state: &mut AppState, action: Action, rt: &tokio::runtime::R
                 open_kind_picker(state);
             }
         }
-        // Picker variants when no picker is open: ignored. Keeps
-        // backends from having to special-case them.
-        Action::PickerCommit
-        | Action::PickerCancel
-        | Action::PickerMoveDown
-        | Action::PickerMoveUp
-        | Action::PickerInput(_)
-        | Action::PickerBackspace
-        | Action::PickerSelectVisible(_) => {}
     }
 }
 
-/// Picker-mode dispatch. Returns true when the action was consumed
-/// here — caller skips the base-layer match in that case.
-fn apply_picker_action(
-    state: &mut AppState,
-    action: &Action,
-    rt: &tokio::runtime::Runtime,
-) -> bool {
-    match action {
-        Action::PickerCancel => {
-            state.picker = None;
-            true
-        }
-        Action::PickerCommit => {
-            commit_picker(state, rt);
-            true
-        }
-        Action::PickerMoveDown => {
-            if let Some(p) = state.picker.as_mut() {
-                p.move_down();
-            }
-            true
-        }
-        Action::PickerMoveUp => {
-            if let Some(p) = state.picker.as_mut() {
-                p.move_up();
-            }
-            true
-        }
-        Action::PickerInput(ch) => {
-            if let Some(p) = state.picker.as_mut() {
-                p.type_char(*ch);
-            }
-            true
-        }
-        Action::PickerBackspace => {
-            if let Some(p) = state.picker.as_mut() {
-                p.backspace();
-            }
-            true
-        }
-        Action::PickerSelectVisible(idx) => {
-            if let Some(p) = state.picker.as_mut() {
-                if *idx < p.visible_indices().len() {
-                    p.selected = *idx;
-                }
-            }
-            commit_picker(state, rt);
-            true
-        }
-        // Some non-picker actions stay live during a picker (e.g.
-        // Quit) — let them fall through.
-        _ => false,
-    }
+/// Current resource-kind index into `ResourceKind::ALL`, for
+/// pre-selecting the kind picker on the row the app is already on.
+fn current_kind_index(state: &AppState) -> Option<usize> {
+    ResourceKind::ALL.iter().position(|k| *k == state.kind)
 }
 
-fn open_namespace_picker(state: &mut AppState) {
-    state.picker = Some(Picker {
-        title: " Namespace ".to_string(),
-        purpose: PickerPurpose::Namespace,
-        items: state.namespaces.clone(),
-        query: String::new(),
-        selected: state.current_ns,
-    });
+pub fn open_namespace_picker(state: &mut AppState) {
+    state.picker = Some(PickerOverlay::new(
+        PickerPurpose::Namespace,
+        "Namespace",
+        state.namespaces.clone(),
+        Some(state.current_ns),
+    ));
 }
 
-fn open_kind_picker(state: &mut AppState) {
+pub fn open_kind_picker(state: &mut AppState) {
     let items: Vec<String> = ResourceKind::ALL
         .iter()
         .map(|k| k.label().to_string())
         .collect();
-    let selected = view::picker_current_index(state, PickerPurpose::ResourceKind).unwrap_or(0);
-    state.picker = Some(Picker {
-        title: " Resource kind ".to_string(),
-        purpose: PickerPurpose::ResourceKind,
+    state.picker = Some(PickerOverlay::new(
+        PickerPurpose::ResourceKind,
+        "Resource kind",
         items,
-        query: String::new(),
-        selected,
-    });
+        current_kind_index(state),
+    ));
 }
 
-/// Apply the picker's current selection — switch namespace or kind
-/// and trigger a refresh.
-fn commit_picker(state: &mut AppState, rt: &tokio::runtime::Runtime) {
-    let Some(p) = state.picker.take() else {
-        return;
-    };
-    let Some(orig) = p.selected_orig_index() else {
-        return;
-    };
-    match p.purpose {
+/// Apply a picker's confirmed selection — switch namespace or kind
+/// and trigger a refresh. `orig` is the `source`-index the picker
+/// confirmed (`PickerOverlay::selected_orig_index`). Called by
+/// [`crate::KubeApp::handle`] when the open `PickerOverlay` reports
+/// `crate::state::PickerOutcome::Confirmed`.
+pub fn commit_picker_selection(
+    state: &mut AppState,
+    purpose: PickerPurpose,
+    orig: usize,
+    rt: &tokio::runtime::Runtime,
+) {
+    match purpose {
         PickerPurpose::Namespace => {
             if orig < state.namespaces.len() {
                 state.current_ns = orig;

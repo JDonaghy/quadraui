@@ -21,9 +21,9 @@
 //! - `Esc` / `q`       → quit
 
 use quadraui::{
-    AppLogic, Backend, CalendarDate, Color, FieldKind, Form, FormController, FormControllerEvent,
-    FormField, InteractionState, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent,
-    WidgetId,
+    AppLogic, Backend, CalendarDate, Color, FieldKind, Form, FormController, FormControllerAction,
+    FormField, Handled, InteractionState, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
+    UiEvent, WidgetId,
 };
 
 pub struct FormDatePickerApp {
@@ -38,7 +38,7 @@ impl FormDatePickerApp {
         let mut fc = FormController::new("due-date-form".into());
         // This demo has exactly one panel, so the form always has
         // keyboard focus — `set_has_focus` is what lets
-        // `FormController::handle_cached` accept `KeyPressed` at all.
+        // `FormController::handle_cached_event` accept `KeyPressed` at all.
         fc.set_has_focus(true);
         let mut app = Self {
             fc,
@@ -73,6 +73,7 @@ impl FormDatePickerApp {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: Some(WidgetId::new("due-date")),
             scroll_offset: 0,
@@ -82,6 +83,7 @@ impl FormDatePickerApp {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -161,8 +163,8 @@ impl AppLogic for FormDatePickerApp {
         self.fc.set_form(self.build_form());
         self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle_cached(&event, rect) {
-            FormControllerEvent::FormAction(fe) => {
+        match self.fc.handle_cached_event(&event, rect) {
+            Handled::Event(FormControllerAction::FormAction(fe)) => {
                 match fe {
                     quadraui::FormEvent::DateChanged { value, .. } => {
                         self.focused = value;
@@ -184,8 +186,10 @@ impl AppLogic for FormDatePickerApp {
                 self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
-            FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => Reaction::Redraw,
-            FormControllerEvent::Ignored => Reaction::Continue,
+            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
+                Reaction::Redraw
+            }
+            Handled::Ignored => Reaction::Continue,
         }
     }
 }

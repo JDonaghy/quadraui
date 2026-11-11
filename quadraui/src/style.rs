@@ -427,15 +427,36 @@ pub struct Style {
     /// of every other token in this struct: it gates *when* a tooltip
     /// appears, not how it's painted once shown.
     ///
-    /// **TUI story: no-op.** A terminal has no continuous pointer-motion
-    /// stream to time a hover delay against — `crate::tui`'s tooltip
-    /// treatment stays keyboard-focus-driven (shown immediately once a
-    /// widget has focus, same as before this field existed), so no TUI
-    /// rasteriser reads this token.
+    /// **TUI story:** no TUI *rasteriser* reads this token — `crate::tui`'s
+    /// own tooltip treatment stays keyboard-focus-driven (shown
+    /// immediately once a widget has focus), with no continuous
+    /// pointer-motion stream to time a hover delay against. It is read
+    /// at the host level, though: [`crate::compose::HoverTooltipTracker`]
+    /// is backend-neutral, and a binding's `BindingHost::drive_hover_tooltip`
+    /// runs it on the TUI backend the same as every other, so a
+    /// mouse-capable terminal's hover-driven tooltip does observe this
+    /// delay even though no `tui` rasteriser consults it directly.
     ///
     /// Default `500` — VS Code's own hover-card delay.
     #[serde(default = "default_tooltip_delay_ms")]
     pub tooltip_delay_ms: u64,
+
+    /// How long a hover-driven tooltip stays visible, in milliseconds,
+    /// before it auto-dismisses even though the pointer never moved off
+    /// it — the third dismissal path [`crate::compose::HoverTooltipTracker::tick_auto_dismiss`]
+    /// implements, alongside pointer-leave and an explicit dismiss.
+    ///
+    /// `0` disables auto-dismiss, and is the default: a shown tooltip
+    /// then stays until the pointer leaves or something else dismisses
+    /// it.
+    ///
+    /// **TUI story:** no TUI rasteriser reads this token, for the same
+    /// reason as [`Self::tooltip_delay_ms`] — but the host-level hover
+    /// driver, `BindingHost::drive_hover_tooltip` in `quadraui-binding-core`,
+    /// does, so a binding's mouse-capable TUI session still observes the
+    /// auto-dismiss timeout.
+    #[serde(default = "default_tooltip_auto_dismiss_ms")]
+    pub tooltip_auto_dismiss_ms: u64,
 }
 
 /// `#[serde(default)]` value for [`Style::tab_height`] — a struct
@@ -501,6 +522,13 @@ fn default_tooltip_delay_ms() -> u64 {
     500
 }
 
+/// `#[serde(default)]` value for [`Style::tooltip_auto_dismiss_ms`] — a
+/// struct serialized before this field existed deserializes with
+/// auto-dismiss disabled, matching [`Style::default`].
+fn default_tooltip_auto_dismiss_ms() -> u64 {
+    0
+}
+
 impl Default for Style {
     fn default() -> Self {
         Self {
@@ -520,6 +548,7 @@ impl Default for Style {
             row_padding_x: 8.0,
             tab_padding_x: 10.0,
             tooltip_delay_ms: 500,
+            tooltip_auto_dismiss_ms: 0,
         }
     }
 }
@@ -645,6 +674,13 @@ impl Style {
     #[must_use]
     pub fn with_tooltip_delay_ms(mut self, tooltip_delay_ms: u64) -> Self {
         self.tooltip_delay_ms = tooltip_delay_ms;
+        self
+    }
+
+    /// Set [`Self::tooltip_auto_dismiss_ms`].
+    #[must_use]
+    pub fn with_tooltip_auto_dismiss_ms(mut self, tooltip_auto_dismiss_ms: u64) -> Self {
+        self.tooltip_auto_dismiss_ms = tooltip_auto_dismiss_ms;
         self
     }
 }
@@ -919,5 +955,40 @@ mod tests {
         let style: Style =
             serde_json::from_str(json).expect("deserialize without tooltip_delay_ms");
         assert_eq!(style.tooltip_delay_ms, 500);
+    }
+
+    /// Pins the "auto-dismiss off by default" contract: a struct built
+    /// before this field existed keeps showing a hovered tooltip until
+    /// the pointer leaves, with no surprise timeout.
+    #[test]
+    fn default_tooltip_auto_dismiss_is_disabled() {
+        assert_eq!(Style::default().tooltip_auto_dismiss_ms, 0);
+    }
+
+    /// Same proof as `with_tooltip_delay_ms_builder_overrides_only_that_field`,
+    /// for [`Style::tooltip_auto_dismiss_ms`].
+    #[test]
+    fn with_tooltip_auto_dismiss_ms_builder_overrides_only_that_field() {
+        let style = Style::default().with_tooltip_auto_dismiss_ms(5_000);
+        assert_eq!(style.tooltip_auto_dismiss_ms, 5_000);
+        assert_eq!(style.tooltip_delay_ms, Style::default().tooltip_delay_ms);
+    }
+
+    /// A JSON payload serialized before [`Style::tooltip_auto_dismiss_ms`]
+    /// existed has no such key; `#[serde(default = "…")]` must deserialize
+    /// it disabled rather than erroring.
+    #[test]
+    fn deserializing_without_tooltip_auto_dismiss_defaults_to_disabled() {
+        let json = r#"{
+            "focus_ring_width": 2.0,
+            "padding": 8.0,
+            "corner_radius": 6.0,
+            "border_width": 1.0,
+            "shadow_elevation": 1,
+            "control_height": 26.0
+        }"#;
+        let style: Style =
+            serde_json::from_str(json).expect("deserialize without tooltip_auto_dismiss_ms");
+        assert_eq!(style.tooltip_auto_dismiss_ms, 0);
     }
 }

@@ -29,6 +29,7 @@
 //! the viewport row count.
 
 use crate::event::Rect;
+use crate::primitives::row_stack::{self, RowPaintState};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::types::{
     Badge, Decoration, Icon, Modifiers, SelectionMode, StyledText, TreePath, TreeStyle, WidgetId,
@@ -354,7 +355,6 @@ impl TreeView {
     where
         F: Fn(usize) -> TreeRowMeasure,
     {
-        let mut visible_rows: Vec<VisibleTreeRow> = Vec::new();
         let mut hit_regions: Vec<(Rect, TreeViewHit)> = Vec::new();
 
         // Border insets: 1 cell/pixel on each side when `style.bordered`
@@ -369,65 +369,57 @@ impl TreeView {
             (0.0, 0.0, viewport_width, viewport_height)
         };
 
-        // Resolve `scroll_offset` vs. `scroll_px` (the latter wins when
-        // set); we still report the clamped row index so the app can
-        // write it back and self-correct. The first row's height is the
-        // uniform row-height basis for the pixel conversion — the same
-        // approximation `vscrollbar` already makes for thumb sizing on
-        // trees with per-row-varying heights (leaf vs. branch). Only
-        // measured when `scroll_px` is actually in play — `measure_row`
-        // can do real text-measurement work (Pango layout on GTK), and
-        // `None` never reads this value.
-        let row_height_basis = if scroll_px.is_none() || self.rows.is_empty() {
-            1.0
-        } else {
-            measure_row(0).height
-        };
-        let (resolved_scroll_offset, scroll_sub_px) =
-            crate::primitives::scrollbar::resolve_scroll_px(
-                self.scroll_offset,
-                scroll_px,
-                self.rows.len(),
-                row_height_basis,
-            );
-
         let rows_y_end = inset_y + rows_h_max;
-        let mut y = inset_y - scroll_sub_px;
-        for i in resolved_scroll_offset..self.rows.len() {
-            if y >= rows_y_end {
-                break;
-            }
-            let m = measure_row(i);
-            // Clip the last row's height to fit inside the viewport.
-            let remaining = rows_y_end - y;
-            let height = m.height.min(remaining).max(0.0);
-            if height <= 0.0 {
-                break;
-            }
-            let bounds = Rect::new(inset_x, y, row_w, height);
-            visible_rows.push(VisibleTreeRow { row_idx: i, bounds });
+        // Per-row extra data is the chevron boundary (if any) — carried
+        // alongside the height so the hit-region split below doesn't
+        // need to re-measure the row.
+        let stack = row_stack::layout_row_stack(
+            self.scroll_offset,
+            scroll_px,
+            self.rows.len(),
+            inset_x,
+            inset_y,
+            rows_y_end,
+            row_w,
+            |i| {
+                let m = measure_row(i);
+                (m.height, m.chevron_end_x)
+            },
+        );
+
+        let visible_rows: Vec<VisibleTreeRow> = stack
+            .visible
+            .iter()
+            .map(|r| VisibleTreeRow {
+                row_idx: r.idx,
+                bounds: r.bounds,
+            })
+            .collect();
+
+        for r in &stack.visible {
+            let i = r.idx;
+            let bounds = r.bounds;
             // Split the hit region into Chevron + Row when the backend
             // supplied a chevron boundary for this branch row.
             let row = &self.rows[i];
-            if let (Some(_), Some(chev_x)) = (row.is_expanded, m.chevron_end_x) {
+            if let (Some(_), Some(chev_x)) = (row.is_expanded, r.extra) {
                 let chev_x = chev_x.clamp(0.0, row_w);
                 if chev_x > 0.0 {
                     hit_regions.push((
-                        Rect::new(inset_x, y, chev_x, height),
+                        Rect::new(bounds.x, bounds.y, chev_x, bounds.height),
                         TreeViewHit::Chevron(i),
                     ));
                 }
                 let body_w = (row_w - chev_x).max(0.0);
                 if body_w > 0.0 {
                     hit_regions.push((
-                        Rect::new(inset_x + chev_x, y, body_w, height),
+                        Rect::new(bounds.x + chev_x, bounds.y, body_w, bounds.height),
                         TreeViewHit::Row(i),
                     ));
                 }
             } else {
                 hit_regions.push((bounds, TreeViewHit::Row(i)));
             }
-            y += m.height;
         }
 
         TreeViewLayout {
@@ -435,8 +427,8 @@ impl TreeView {
             viewport_height,
             visible_rows,
             hit_regions,
-            resolved_scroll_offset,
-            scroll_sub_px,
+            resolved_scroll_offset: stack.resolved_scroll_offset,
+            scroll_sub_px: stack.scroll_sub_px,
         }
     }
 
@@ -529,64 +521,25 @@ impl TreeView {
         // `scroll_px` wins over `scroll_offset` when set, so the thumb
         // moves smoothly alongside the sub-row paint shift
         // `layout_with_scroll_px` applies.
-        let (resolved_scroll_offset, scroll_sub_px) =
-            crate::primitives::scrollbar::resolve_scroll_px(
-                self.scroll_offset,
-                scroll_px,
-                self.rows.len(),
-                row_height,
-            );
-        let scroll_rows = resolved_scroll_offset as f32 + scroll_sub_px / row_height;
-        Some(Scrollbar::vertical(
+        Some(row_stack::vscrollbar_thumb(
             self.id,
             track,
-            scroll_rows,
-            total,
-            visible,
+            self.scroll_offset,
+            scroll_px,
+            self.rows.len(),
             row_height,
+            visible,
         ))
     }
 }
 
 /// Per-frame paint-time state for a `TreeView` — hover/press row
 /// tracking plus a pixel-precise scroll position, none of which live on
-/// the declarative [`TreeView`] descriptor itself (see
-/// [`crate::primitives::list::ListPaintState`]'s doc for why — the same
-/// rule applies here).
-///
-/// `#[non_exhaustive]`: construct via [`Default::default`] plus the
-/// `with_*` builders, so a future field here is additive.
-///
-/// `scroll_px: None` paints exactly as [`TreeView::layout`] /
-/// [`TreeView::vscrollbar`] already do (whole-row from
-/// `scroll_offset`); `Some(px)` wins and is resolved via
-/// [`crate::primitives::scrollbar::resolve_scroll_px`] into a
-/// `scroll_offset` plus a sub-row remainder — see
-/// [`TreeView::layout_with_scroll_px`].
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct TreePaintState {
-    pub hovered_idx: Option<usize>,
-    pub pressed_idx: Option<usize>,
-    pub scroll_px: Option<f32>,
-}
-
-impl TreePaintState {
-    pub fn with_hovered_idx(mut self, idx: Option<usize>) -> Self {
-        self.hovered_idx = idx;
-        self
-    }
-
-    pub fn with_pressed_idx(mut self, idx: Option<usize>) -> Self {
-        self.pressed_idx = idx;
-        self
-    }
-
-    pub fn with_scroll_px(mut self, px: Option<f32>) -> Self {
-        self.scroll_px = px;
-        self
-    }
-}
+/// the declarative [`TreeView`] descriptor itself. Field-identical to
+/// [`crate::primitives::list::ListPaintState`], so both are aliases of
+/// the shared [`RowPaintState`] — see that type's doc for the full
+/// rationale and the `scroll_px` resolution rule.
+pub type TreePaintState = RowPaintState;
 
 // Shared `PaintSurface` implementation for rendering rows, chevrons,
 // icons, badges, and scrollbars across GTK, macOS, and Windows backends.

@@ -1,12 +1,14 @@
 //! `Panel` demo — adapted from `quadraui/examples/common/panel_app.rs`.
 //!
-//! A titled panel with a close and a maximize/collapse action, plus a
-//! content area painted into `PanelLayout::content_bounds` the way any
-//! `Panel` host paints its own content below the chrome.
+//! Reproduces the `Panel` title-bar shape (title, close and
+//! maximize/collapse actions) with a [`SidebarPanel`] + [`Toolbar`]
+//! header, plus a content area painted into
+//! `SidebarPanelLayout::content_bounds` the way any `SidebarPanel`
+//! host paints its own content below the chrome.
 
 use quadraui::{
-    Backend, BackendCaps, Color, InteractionState, Panel, PanelAction, PanelHit, Reaction, Rect,
-    StatusBar, StatusBarSegment, StyledSpan, StyledText, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, InteractionState, Reaction, Rect, SidebarPanel, SidebarPanelHit,
+    StatusBar, StatusBarSegment, Toolbar, ToolbarButton, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -39,45 +41,64 @@ impl PanelDemo {
 
     /// Variant 2 drops the accent colour and the maximize action — a
     /// minimal panel with only a close button, the shape a transient
-    /// popover host would use.
-    fn panel(&self, variant: usize) -> Panel {
+    /// popover host would use. Close is listed last so it lands
+    /// rightmost, matching the old `Panel::actions` convention (first
+    /// action is rightmost).
+    fn toolbar(&self, variant: usize) -> Toolbar {
         let collapsed = self.collapsed[variant];
-        let mut actions = vec![PanelAction {
-            id: WidgetId::new("gallery:panel:close"),
-            icon: "×".into(),
-            tooltip: "Close".into(),
-            is_active: false,
-        }];
+        let mut buttons = vec![
+            ToolbarButton::Label {
+                text: " Demo Panel".into(),
+                fg: None,
+            },
+            ToolbarButton::Spacer,
+        ];
         if variant != 2 {
-            actions.push(PanelAction {
+            buttons.push(ToolbarButton::Action {
+                spec: None,
                 id: WidgetId::new("gallery:panel:maximize"),
-                icon: if collapsed { "+" } else { "□" }.into(),
-                tooltip: if collapsed { "Expand" } else { "Maximize" }.into(),
+                label: if collapsed { "+" } else { "□" }.into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
                 is_active: collapsed,
+                tooltip: if collapsed { "Expand" } else { "Maximize" }.into(),
             });
         }
-        Panel {
+        buttons.push(ToolbarButton::Action {
+            spec: None,
+            id: WidgetId::new("gallery:panel:close"),
+            label: "×".into(),
+            icon: None,
+            key_hint: None,
+            enabled: true,
+            is_active: false,
+            tooltip: "Close".into(),
+        });
+
+        let mut toolbar =
+            Toolbar::new(WidgetId::new("gallery:panel:toolbar")).with_buttons(buttons);
+        if variant != 2 {
+            toolbar = toolbar.with_bg(Color::rgb(40, 80, 120));
+        }
+        toolbar
+    }
+
+    fn panel(&self, variant: usize) -> SidebarPanel {
+        SidebarPanel {
             id: WidgetId::new("gallery:panel"),
-            title: Some(StyledText {
-                spans: vec![StyledSpan::plain("Demo Panel")],
-            }),
-            actions,
-            accent: if variant == 2 {
-                None
-            } else {
-                Some(Color::rgb(40, 80, 120))
-            },
-            collapsed,
+            toolbar: Some(self.toolbar(variant)),
+            toolbar_height: None,
         }
     }
 
-    fn dispatch_action(&mut self, variant: usize, hit: PanelHit) -> bool {
+    fn dispatch_action(&mut self, variant: usize, hit: SidebarPanelHit) -> bool {
         match hit {
-            PanelHit::Action(id) if id.as_str() == "gallery:panel:close" => {
+            SidebarPanelHit::ToolbarButton(id) if id.as_str() == "gallery:panel:close" => {
                 self.last_message = "Close clicked".into();
                 true
             }
-            PanelHit::Action(id) if id.as_str() == "gallery:panel:maximize" => {
+            SidebarPanelHit::ToolbarButton(id) if id.as_str() == "gallery:panel:maximize" => {
                 self.collapsed[variant] = !self.collapsed[variant];
                 self.last_message = if self.collapsed[variant] {
                     "Collapsed".into()
@@ -86,7 +107,7 @@ impl PanelDemo {
                 };
                 true
             }
-            PanelHit::TitleBar(_) => {
+            SidebarPanelHit::ToolbarEmpty => {
                 self.last_message = "Title bar clicked".into();
                 true
             }
@@ -132,30 +153,33 @@ impl Demo for PanelDemo {
         let lh = backend.line_height();
         let panel_rect = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
         let panel = self.panel(variant);
-        let layout = backend.draw_panel(panel_rect, &panel);
+        let layout =
+            backend.draw_sidebar_panel_interactive(panel_rect, &panel, &InteractionState::new());
 
-        let cb = layout.content_bounds;
-        for (i, line) in CONTENT_LINES.iter().enumerate() {
-            let y = cb.y + i as f32 * lh;
-            if y + lh > cb.y + cb.height {
-                break;
+        if !self.collapsed[variant] {
+            let cb = layout.content_bounds;
+            for (i, line) in CONTENT_LINES.iter().enumerate() {
+                let y = cb.y + i as f32 * lh;
+                if y + lh > cb.y + cb.height {
+                    break;
+                }
+                let bar = StatusBar {
+                    id: WidgetId::new(format!("gallery:panel:line:{i}")),
+                    left_segments: vec![StatusBarSegment {
+                        text: format!(" {line} "),
+                        fg: Color::rgb(210, 210, 210),
+                        bg: Color::rgb(20, 20, 35),
+                        bold: false,
+                        action_id: None,
+                    }],
+                    right_segments: vec![],
+                };
+                let _ = backend.draw_status_bar_interactive(
+                    Rect::new(cb.x, y, cb.width, lh),
+                    &bar,
+                    &InteractionState::new(),
+                );
             }
-            let bar = StatusBar {
-                id: WidgetId::new(format!("gallery:panel:line:{i}")),
-                left_segments: vec![StatusBarSegment {
-                    text: format!(" {line} "),
-                    fg: Color::rgb(210, 210, 210),
-                    bg: Color::rgb(20, 20, 35),
-                    bold: false,
-                    action_id: None,
-                }],
-                right_segments: vec![],
-            };
-            let _ = backend.draw_status_bar_interactive(
-                Rect::new(cb.x, y, cb.width, lh),
-                &bar,
-                &InteractionState::new(),
-            );
         }
 
         let hint_rect = Rect::new(area.x, area.y + panel_rect.height, area.width, lh);
@@ -178,7 +202,7 @@ impl Demo for PanelDemo {
                 let lh = backend.line_height();
                 let panel_rect = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
                 let panel = self.panel(variant);
-                let layout = backend.panel_layout(panel_rect, &panel);
+                let layout = backend.sidebar_panel_layout(panel_rect, &panel);
                 let hit = layout.hit_test(position.x, position.y);
                 if self.dispatch_action(variant, hit) {
                     Reaction::Redraw
@@ -211,22 +235,22 @@ mod tests {
     #[test]
     fn maximize_action_toggles_collapsed() {
         let mut demo = PanelDemo::new();
-        assert!(!demo.panel(0).collapsed);
+        assert!(!demo.collapsed[0]);
         let maximize = WidgetId::new("gallery:panel:maximize");
-        assert!(demo.dispatch_action(0, PanelHit::Action(maximize)));
-        assert!(demo.panel(0).collapsed);
-        assert!(demo.dispatch_action(0, PanelHit::Action(maximize)));
-        assert!(!demo.panel(0).collapsed);
+        assert!(demo.dispatch_action(0, SidebarPanelHit::ToolbarButton(maximize)));
+        assert!(demo.collapsed[0]);
+        assert!(demo.dispatch_action(0, SidebarPanelHit::ToolbarButton(maximize)));
+        assert!(!demo.collapsed[0]);
     }
 
     #[test]
     fn variant_two_has_no_maximize_action() {
         let demo = PanelDemo::new();
-        let panel = demo.panel(2);
-        assert!(panel.accent.is_none());
-        assert!(!panel
-            .actions
-            .iter()
-            .any(|a| a.id.as_str() == "gallery:panel:maximize"));
+        let toolbar = demo.toolbar(2);
+        assert!(toolbar.bg.is_none());
+        assert!(!toolbar.buttons.iter().any(|b| matches!(
+            b,
+            ToolbarButton::Action { id, .. } if id.as_str() == "gallery:panel:maximize"
+        )));
     }
 }

@@ -342,8 +342,11 @@ pub(crate) mod native_surface_paint {
 
     /// The text currently shown in the field: the in-progress
     /// [`NumberInput::draft`] verbatim when one is pending, otherwise
-    /// `value` formatted to `precision` decimal places.
-    fn display_text(number_input: &NumberInput) -> String {
+    /// `value` formatted to `precision` decimal places. `pub(crate)` so
+    /// [`crate::primitives::form`]'s embedded `FieldKind::NumberInput`
+    /// painter sizes its control column from the same text this module's
+    /// own [`paint`] draws, instead of a second copy of this formula.
+    pub(crate) fn display_text(number_input: &NumberInput) -> String {
         match &number_input.draft {
             Some(draft) => draft.clone(),
             None => format!("{:.*}", number_input.precision as usize, number_input.value),

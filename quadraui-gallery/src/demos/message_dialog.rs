@@ -24,11 +24,11 @@
 //!   no branch in this demo's own code. [`Demo::caps_note`] reports the
 //!   degrade.
 
+use quadraui::compose::Handled;
 use quadraui::{
     native_dialog_options, Backend, BackendCaps, Color, Dialog, DialogButton, DialogSeverity,
-    InteractionState, Key, MessageDialogButton, MessageDialogController, MessageDialogEvent,
-    MessageDialogOptions, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent,
-    WidgetId,
+    InteractionState, Key, MessageDialogButton, MessageDialogController, MessageDialogOptions,
+    Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
@@ -184,14 +184,14 @@ impl Demo for MessageDialogDemo {
     ) -> Reaction {
         if variant == 0 {
             if let Some(ref mut dialog) = self.dialog {
-                match dialog.handle(event, backend) {
-                    MessageDialogEvent::Resolved(id) => {
+                match dialog.handle_event(event, backend) {
+                    Handled::Event(id) => {
                         self.status = format!("Resolved: {}", id.as_str());
                         self.dialog = None;
                         return Reaction::Redraw;
                     }
-                    MessageDialogEvent::Consumed => return Reaction::Redraw,
-                    MessageDialogEvent::Ignored => {}
+                    Handled::Consumed => return Reaction::Redraw,
+                    Handled::Ignored => {}
                 }
             } else if let UiEvent::KeyPressed {
                 key: Key::Named(quadraui::NamedKey::Enter),

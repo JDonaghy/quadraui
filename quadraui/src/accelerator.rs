@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 use crate::backend::{BackendError, ServiceResult};
-use crate::event::{Key, NamedKey};
+use crate::event::Key;
 use crate::types::{Modifiers, WidgetId};
 
 /// Stable identifier for a registered accelerator. Apps match on this in the
@@ -221,16 +221,58 @@ fn parse_plus_style(s: &str) -> Option<ParsedBinding> {
     })
 }
 
-/// Normalise a key name to the canonical form used by backends.
+/// Normalise a key name to the canonical form [`key_to_binding_name`]
+/// produces, so a binding written with a common alias or in any case
+/// still matches the key event a backend actually emits.
 ///
 /// - Single letters → lowercase (`T` → `t`).
-/// - Named keys → TitleCase preserved (`Escape`, `F5`, `Left`).
+/// - Named keys → case-folded, then mapped through [`canonical_alias`] and
+///   TitleCased (`esc` / `ctrl+ESCAPE` / `Esc` → `Escape`, `return` →
+///   `Enter`, `arrowup` → `Up`, `f13` → `F13`).
 fn normalise_key_name(s: &str) -> String {
     if s.chars().count() == 1 {
-        s.to_ascii_lowercase()
-    } else {
-        s.to_string()
+        return s.to_ascii_lowercase();
     }
+    canonical_alias(s).unwrap_or_else(|| s.to_string())
+}
+
+/// Map a case-insensitive alias to the canonical [`NamedKey::name`]
+/// spelling, or `None` for a name that's already canonical (or unknown —
+/// unparseable literals are left as-is so `render_literal` can still show
+/// the raw string the app wrote).
+fn canonical_alias(s: &str) -> Option<String> {
+    let lower = s.to_ascii_lowercase();
+    let canonical = match lower.as_str() {
+        "esc" | "escape" => "Escape",
+        "return" | "cr" | "enter" => "Enter",
+        "tab" => "Tab",
+        "backtab" => "BackTab",
+        "backspace" | "bs" => "Backspace",
+        "delete" | "del" => "Delete",
+        "insert" | "ins" => "Insert",
+        "home" => "Home",
+        "end" => "End",
+        "pageup" | "pgup" => "PageUp",
+        "pagedown" | "pgdn" | "pgdown" => "PageDown",
+        "up" | "arrowup" => "Up",
+        "down" | "arrowdown" => "Down",
+        "left" | "arrowleft" => "Left",
+        "right" | "arrowright" => "Right",
+        "capslock" => "CapsLock",
+        "numlock" => "NumLock",
+        "scrolllock" => "ScrollLock",
+        "menu" => "Menu",
+        _ => {
+            // `f1`..`f24` (any case) → `F1`..`F24`.
+            if let Some(digits) = lower.strip_prefix('f') {
+                if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                    return Some(format!("F{digits}"));
+                }
+            }
+            return None;
+        }
+    };
+    Some(canonical.to_string())
 }
 
 // ─── Matching ───────────────────────────────────────────────────────────────
@@ -279,48 +321,7 @@ pub fn key_to_binding_name(key: &Key) -> String {
                 c.to_string()
             }
         }
-        Key::Named(named) => named_key_to_binding_name(*named).to_string(),
-    }
-}
-
-/// Map a [`NamedKey`] to the canonical name [`parse_key_binding`]
-/// produces. Letter case follows [`normalise_key_name`]: single letters
-/// lowercase, named keys TitleCase-preserved.
-fn named_key_to_binding_name(named: NamedKey) -> &'static str {
-    use NamedKey::*;
-    match named {
-        Escape => "Escape",
-        Tab => "Tab",
-        BackTab => "BackTab",
-        Enter => "Enter",
-        Backspace => "Backspace",
-        Delete => "Delete",
-        Insert => "Insert",
-        Home => "Home",
-        End => "End",
-        PageUp => "PageUp",
-        PageDown => "PageDown",
-        Up => "Up",
-        Down => "Down",
-        Left => "Left",
-        Right => "Right",
-        F(1) => "F1",
-        F(2) => "F2",
-        F(3) => "F3",
-        F(4) => "F4",
-        F(5) => "F5",
-        F(6) => "F6",
-        F(7) => "F7",
-        F(8) => "F8",
-        F(9) => "F9",
-        F(10) => "F10",
-        F(11) => "F11",
-        F(12) => "F12",
-        F(_) => "",
-        CapsLock => "CapsLock",
-        NumLock => "NumLock",
-        ScrollLock => "ScrollLock",
-        Menu => "Menu",
+        Key::Named(named) => named.name().into_owned(),
     }
 }
 
@@ -484,9 +485,10 @@ impl GlobalShortcutId {
 /// [`crate::PlatformServices::register_global_shortcut`] override (Win32
 /// `RegisterHotKey`, Carbon/Cocoa `RegisterEventHotKey`, the
 /// `org.freedesktop.portal.GlobalShortcuts` XDG portal on GTK/Linux) is
-/// expected to wrap its native call around this registry, mirroring the
-/// way `tui::services::TuiPlatformServices::begin_power_save_block` wraps
-/// [`crate::power::BlockerId::next`] in `power.rs` — those are the epic's
+/// expected to wrap its native call around this registry, the same way a
+/// [`crate::PlatformServices::begin_power_save_block`] override is
+/// expected to wrap [`crate::power::BlockerId::next`] in `power.rs` —
+/// those are the epic's
 /// backend-specific follow-ons, out of scope here. TUI has no OS-wide
 /// hotkey of its own to register, so it inherits
 /// [`crate::PlatformServices::register_global_shortcut`]'s default
@@ -566,6 +568,7 @@ impl GlobalShortcutRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::NamedKey;
 
     fn mods(ctrl: bool, shift: bool, alt: bool, cmd: bool) -> Modifiers {
         Modifiers {
@@ -791,6 +794,56 @@ mod tests {
         assert_eq!(key_to_binding_name(&Key::Named(NamedKey::F(5))), "F5");
         let parsed = parse_key_binding("<F5>").unwrap();
         assert_eq!(key_to_binding_name(&Key::Named(NamedKey::F(5))), parsed.key);
+    }
+
+    #[test]
+    fn f13_and_above_round_trip_through_key_to_binding_name() {
+        // `key_to_binding_name` defers to `NamedKey::name`, which has no
+        // F-key upper bound, so a GTK/Win `Ctrl+F13` press matches an
+        // accelerator registered as `F13`.
+        for n in [13_u8, 24] {
+            let name = key_to_binding_name(&Key::Named(NamedKey::F(n)));
+            assert_eq!(name, format!("F{n}"));
+            let parsed = parse_key_binding(&format!("Ctrl+F{n}")).unwrap();
+            assert_eq!(parsed.key, name);
+        }
+    }
+
+    #[test]
+    fn common_aliases_normalise_to_the_canonical_spelling() {
+        for (alias, canonical) in [
+            ("Ctrl+Esc", "Escape"),
+            ("ctrl+escape", "Escape"),
+            ("Ctrl+Return", "Enter"),
+            ("ctrl+return", "Enter"),
+            ("Ctrl+ArrowUp", "Up"),
+            ("Alt+f13", "F13"),
+        ] {
+            let parsed =
+                parse_key_binding(alias).unwrap_or_else(|| panic!("failed to parse {alias}"));
+            assert_eq!(parsed.key, canonical, "alias was {alias}");
+        }
+    }
+
+    #[test]
+    fn alias_binding_matches_the_canonical_key_event() {
+        let parsed = parse_key_binding("Ctrl+Esc").unwrap();
+        assert_eq!(
+            parsed.key,
+            key_to_binding_name(&Key::Named(NamedKey::Escape))
+        );
+
+        let parsed = parse_key_binding("ctrl+return").unwrap();
+        assert_eq!(
+            parsed.key,
+            key_to_binding_name(&Key::Named(NamedKey::Enter))
+        );
+
+        let parsed = parse_key_binding("Ctrl+F13").unwrap();
+        assert_eq!(
+            parsed.key,
+            key_to_binding_name(&Key::Named(NamedKey::F(13)))
+        );
     }
 
     // ─── Global shortcuts ───────────────────────────────────────────────

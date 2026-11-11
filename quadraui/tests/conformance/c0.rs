@@ -37,16 +37,20 @@ use quadraui::{
     EditorStyledSpan, FieldKind, FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField,
     Image, ImageFit, ImageSource, InteractionState, ListItem, ListView, MenuBar, MenuBarItem,
     MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette,
-    PaletteItem, PaletteMode, Panel, PipelineStage, PipelineView, PopupPlacement, ProgressBar,
-    RadioGroup, RadioOption, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis,
-    ScrollMode, Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series,
-    Side, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus, StatusBar,
+    PaletteItem, PaletteMode, PipelineStage, PipelineView, PopupPlacement, ProgressBar, RadioGroup,
+    RadioOption, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode,
+    Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side,
+    SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus, StatusBar,
     StatusBarSegment, StyledSpan, StyledText, Switch, TabBar, TabChrome, TabFrame, TabIcon,
     TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, Toast, ToastCorner,
     ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarPaintOptions,
     ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
     TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
+// `Panel` is `#[deprecated]`; imported separately so the allow stays
+// scoped to the one `draw_panel` back-compat case below.
+#[allow(deprecated)]
+use quadraui::Panel;
 
 use super::runner::{DriverFactory, DynDriver};
 
@@ -824,6 +828,7 @@ pub const CASES: &[Case] = &[
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 }],
                 focused_field: None,
                 scroll_offset: 0,
@@ -833,6 +838,7 @@ pub const CASES: &[Case] = &[
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             };
             b.draw_form(area, &form);
         },
@@ -1400,6 +1406,11 @@ pub const CASES: &[Case] = &[
         method: "draw_panel",
         needle: Some("c0panl"),
         paint: |b, area| {
+            // `Panel` is `#[deprecated]`; `draw_panel` itself is not yet
+            // removed, so this row keeps proving the backend trait method
+            // still paints its argument until the follow-up removal PR
+            // drops both.
+            #[allow(deprecated)]
             let panel = Panel {
                 id: id("panel"),
                 title: Some(StyledText::plain("c0panl")),
@@ -1407,6 +1418,7 @@ pub const CASES: &[Case] = &[
                 accent: None,
                 collapsed: false,
             };
+            #[allow(deprecated)]
             let _ = b.draw_panel(area, &panel);
         },
     },
@@ -1486,6 +1498,29 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_radio_group(Rect::new(0.0, 0.0, area.width, lh * 2.0), &group);
         },
     },
+    // `draw_radio_group_with_state` is an additive trait default that forwards
+    // to `draw_radio_group`, ignoring the passed `InteractionState`, until a
+    // backend overrides it to tint the hovered/pressed option's marker. This
+    // row proves the default reaches a rasteriser and still paints observable
+    // content on every backend.
+    Case {
+        method: "draw_radio_group_with_state",
+        needle: Some("c0radiohv"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let option_id = id("radio-option-hover");
+            let group = RadioGroup::new(
+                id("radio-group-hover"),
+                vec![RadioOption::new(option_id, "c0radiohv")],
+            );
+            let interaction = InteractionState::from_parts(Some(option_id), None);
+            let _ = b.draw_radio_group_with_state(
+                Rect::new(0.0, 0.0, area.width, lh * 2.0),
+                &group,
+                &interaction,
+            );
+        },
+    },
     Case {
         method: "draw_switch",
         needle: None,
@@ -1493,6 +1528,26 @@ pub const CASES: &[Case] = &[
             let lh = b.line_height();
             let switch = Switch::new(id("switch"));
             let _ = b.draw_switch(Rect::new(0.0, 0.0, area.width, lh), &switch);
+        },
+    },
+    // `draw_switch_with_state` is an additive trait default that forwards to
+    // `draw_switch`, ignoring the passed `InteractionState`, until a backend
+    // overrides it to tint the hovered/pressed track. This row proves the
+    // default reaches a rasteriser and still paints observable content on
+    // every backend. Chrome-only like `draw_switch`, so no text needle.
+    Case {
+        method: "draw_switch_with_state",
+        needle: None,
+        paint: |b, area| {
+            let lh = b.line_height();
+            let switch_id = id("switch-hover");
+            let switch = Switch::new(switch_id);
+            let interaction = InteractionState::from_parts(Some(switch_id), None);
+            let _ = b.draw_switch_with_state(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &switch,
+                &interaction,
+            );
         },
     },
     Case {

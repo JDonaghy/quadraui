@@ -118,6 +118,96 @@
 //! - A disabled focused `ComboBox` does not intercept its keys at all,
 //!   the same as a disabled `DatePicker`.
 //!
+//! ## Number input fields
+//!
+//! `FieldKind::NumberInput` needs no shadow-state struct, the same as
+//! `ComboBox` above: the embedded input's own `value`/`draft`/`focused`
+//! are already the live state the app feeds back each frame.
+//! `handle_number_input_key` clones the focused field's `NumberInput`,
+//! forces its `focused` flag to match `Form::focused_field`, and calls
+//! its own `handle_key` directly — `Up`/`Down` step the value, digits/
+//! `Backspace` edit the draft, `Enter` commits, `Escape` cancels.
+//!
+//! - Stepper clicks (the increment/decrement buttons `FieldKind::NumberInput`
+//!   paints through the real `NumberInput::layout`/backend rasteriser —
+//!   see `primitives/form.rs`'s doc) are resolved in [`Self::click_inner`]
+//!   via [`number_input_click_event`], which reads the clicked field's
+//!   single [`crate::primitives::form::VisibleFormField::item_bounds`]
+//!   entry for the control's exact on-screen rect — the same rect
+//!   `native_surface_paint::paint`/`tui::form::draw_field_number_input`
+//!   painted, so a click always lands where the stepper visually is.
+//! - A disabled focused `NumberInput` does not intercept its keys at
+//!   all, the same as a disabled `ComboBox`/`DatePicker`.
+//!
+//! ## Radio group fields
+//!
+//! `FieldKind::RadioGroup` also needs no shadow state: the embedded
+//! group's `selected`/`focused` are the live state. `handle_radio_group_key`
+//! mirrors `handle_number_input_key` — clone, force `focused`, call the
+//! embedded group's own `handle_key` (`Up`/`Left` previous option,
+//! `Down`/`Right` next, wrapping and skipping disabled options).
+//!
+//! - A click on one of the group's options resolves through the *generic*
+//!   per-item click path: each `RadioOption` gets its own
+//!   [`crate::primitives::form::VisibleFormField::item_bounds`] entry
+//!   (one per option, stacked vertically — see
+//!   [`crate::primitives::form::FormFieldMeasure::vertical`]'s doc), so
+//!   [`form_click_event`]'s `FieldKind::RadioGroup` arm resolves the
+//!   clicked option's own id directly, the same way a `ToggleGroup`
+//!   item's click already does — no extra geometry lookup needed, unlike
+//!   `NumberInput`'s stepper buttons above.
+//!
+//! ## Item-level keyboard focus
+//!
+//! `FieldKind::ButtonRow` / `ToggleGroup` / `Toolbar` each pack more than
+//! one clickable item under a single field id — mouse clicks already
+//! resolve to the individual item via [`form_click_event`], but keyboard
+//! focus only ever named the *field*, with no way to reach any item past
+//! the first without a mouse. `self.item_focus` fixes that: an index into
+//! [`crate::primitives::form::focusable_items`]'s enumeration of the
+//! focused field's items, owned by the controller the same way
+//! `text_edit`/`date_edit` are — never by the app, and never written onto
+//! `Form` itself (see `primitives/form.rs`'s "Item-level keyboard focus"
+//! doc note for why: a per-item focus flag doesn't belong on the
+//! declarative descriptor any more than a text cursor does).
+//!
+//! - While the focused field is one of the three kinds above and isn't
+//!   disabled, `Left`/`Right` move `item_focus` by one, skipping any
+//!   disabled item, **without wrapping** — Left at the first enabled item
+//!   (or Right at the last) is a no-op, unlike [`Self::move_focus`]'s
+//!   field-to-field wrap. `Enter`/Space activate the item currently
+//!   named by `item_focus`, emitting the same event a mouse click on that
+//!   item already does (`FormEvent::ButtonClicked`/`ToggleChanged`/
+//!   `ToolbarButtonClicked` — see [`Self::activate_item_event`]).
+//! - [`Self::move_focus`] (Tab/Shift-Tab/BackTab) reseeds `item_focus` to
+//!   the newly-focused field's first enabled item (`None` if it has none,
+//!   or isn't one of the three kinds), and clears it when focus leaves —
+//!   mirroring how it already reseeds `text_edit`/`date_edit`. Tab/
+//!   BackTab never step *into* an item — they keep moving between fields
+//!   only, the same traversal every other field kind already gets.
+//! - [`Self::current_item_focus`] is the single reader both
+//!   [`Self::handle_item_row_key`] and [`Self::render`]'s focus-ring
+//!   overlay call: if `item_focus` is stale (a different field is
+//!   focused, or its index has run past a shorter item list — e.g. after
+//!   a `set_form` push that shrank it) it falls back to the first
+//!   enabled item rather than panicking or silently focusing nothing, so
+//!   a direct `focused_field` assignment that skips `move_focus`
+//!   entirely (an app-constructed `Form`, or a test) still gets a sane
+//!   starting item the first time a key/render touches it.
+//! - Painting reuses [`Backend::draw_focus_ring`] — the same chrome
+//!   `Button`/`TextInput` already draw their own ring through — rather
+//!   than growing `primitives/form.rs`'s painters with a bespoke
+//!   per-item indicator. [`Self::render`] resolves the focused item's
+//!   on-screen rect via [`Backend::form_layout`]'s `item_bounds` (the
+//!   same lookup [`Self::field_rect`] already does for a whole field)
+//!   and calls `draw_focus_ring` on it once, after `draw_form` paints the
+//!   row — a no-op while nothing is item-focused.
+//! - Mouse clicks on an item are unchanged: [`Self::click_inner`] still
+//!   resolves straight to the clicked item's `FormEvent` via
+//!   `form_click_event`, without touching `item_focus` at all. The next
+//!   keystroke still resolves a sane item through the fallback above
+//!   rather than one left stale from a previous keyboard session.
+//!
 //! ## Declarative validation
 //!
 //! [`FormController::set_rules`] attaches a [`crate::validation::FormRules`]
@@ -151,11 +241,15 @@
 //! id the cached cursor/scrub position resuming is the desired behaviour
 //! rather than a reset.
 
+use crate::compose::Handled;
 use crate::primitives::combo_box::ComboBoxEvent;
 use crate::primitives::date_picker::{CalendarDate, DatePickerEvent};
 use crate::primitives::form::{
-    FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
+    focusable_items, FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
+    FormLayout,
 };
+use crate::primitives::number_input::NumberInputEvent;
+use crate::primitives::radio_group::RadioGroupEvent;
 use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
 use crate::primitives::text_input::{EditOp, TextEditor, TextInput};
 use crate::text_util::snap_to_char_boundary;
@@ -167,8 +261,22 @@ use crate::{
     UiEvent, WidgetId,
 };
 
+/// Semantic payload of [`Handled::Event`] returned by
+/// [`FormController::handle_event`]/[`FormController::handle_cached_event`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum FormControllerAction {
+    /// A field-level event occurred (toggle changed, text input, etc.).
+    FormAction(FormEvent),
+    /// Scrollbar interaction changed the scroll offset.
+    ScrollChanged,
+}
+
 /// What happened after [`FormController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
+#[deprecated(
+    since = "0.9.0",
+    note = "use `FormController::handle_event`/`handle_cached_event`'s `Handled<FormControllerAction>` instead — `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, `FormAction`/`ScrollChanged` move to `FormControllerAction` under `Handled::Event`"
+)]
 pub enum FormControllerEvent {
     /// A field-level event occurred (toggle changed, text input, etc.).
     FormAction(FormEvent),
@@ -178,6 +286,18 @@ pub enum FormControllerEvent {
     Consumed,
     /// Event not relevant to the form.
     Ignored,
+}
+
+/// Convert the internal [`FormControllerEvent`] result into
+/// [`Handled<FormControllerAction>`].
+#[allow(deprecated)] // `FormControllerEvent` is `#[deprecated]`; this is its own adapter.
+fn handled_from_form_controller_event(event: FormControllerEvent) -> Handled<FormControllerAction> {
+    match event {
+        FormControllerEvent::FormAction(e) => Handled::Event(FormControllerAction::FormAction(e)),
+        FormControllerEvent::ScrollChanged => Handled::Event(FormControllerAction::ScrollChanged),
+        FormControllerEvent::Consumed => Handled::Consumed,
+        FormControllerEvent::Ignored => Handled::Ignored,
+    }
 }
 
 /// Live cursor/selection for the field currently being typed into.
@@ -204,6 +324,24 @@ struct DateEditState {
     visible_month: CalendarDate,
 }
 
+/// Which item inside the focused `ButtonRow`/`ToggleGroup`/`Toolbar`
+/// field currently holds keyboard item-focus — see this module's
+/// "Item-level keyboard focus" doc section. `item_idx` indexes into
+/// [`crate::primitives::form::focusable_items`]'s enumeration of
+/// `field_id`'s items, not into the field's items directly (they're the
+/// same order, but going through that one shared enumeration keeps this
+/// state from drifting out of sync with [`FormController::current_item_focus`]'s
+/// own reading of it).
+struct ItemFocusState {
+    field_id: WidgetId,
+    item_idx: usize,
+}
+
+/// [`FormController::current_item_focus`]'s return shape: the focused
+/// field's id, the focused item's index into `focusable_items`'s
+/// enumeration, and that enumeration itself.
+type ItemFocusLookup = (WidgetId, usize, Vec<(WidgetId, bool)>);
+
 pub struct FormController {
     id: String,
     form: Option<Form>,
@@ -213,10 +351,18 @@ pub struct FormController {
     cached_lh: Option<f32>,
     text_edit: Option<TextEditState>,
     date_edit: Option<DateEditState>,
+    item_focus: Option<ItemFocusState>,
     rules: FormRules,
     visibility: FormVisibility,
 }
 
+// `handle_inner` and its private helpers still speak `FormControllerEvent`
+// internally — `handle_event`/`handle_cached_event` below are the
+// `Handled<FormControllerAction>`-returning public surface, adapting the
+// internal result at the boundary via `handled_from_form_controller_event`,
+// so this one block is exempted rather than threading the new type through
+// every match arm of the click/key dispatch tree.
+#[allow(deprecated)]
 impl FormController {
     pub fn new(id: String) -> Self {
         Self {
@@ -228,6 +374,7 @@ impl FormController {
             cached_lh: None,
             text_edit: None,
             date_edit: None,
+            item_focus: None,
             rules: FormRules::default(),
             visibility: FormVisibility::default(),
         }
@@ -276,6 +423,24 @@ impl FormController {
 
     pub fn form(&self) -> Option<&Form> {
         self.form.as_ref()
+    }
+
+    /// The `Form` this controller actually renders/exposes to a11y this
+    /// frame: [`Self::form`]'s stored descriptor overlaid with the live
+    /// render-only state [`Self::render`] bakes in before painting
+    /// (`has_focus`, in-progress text/date-edit cursor, scroll offset,
+    /// required-field markers) — see [`Self::build_form`]. Distinct from
+    /// `form()` so a composing controller that embeds this `Form` inside
+    /// its *own* descriptor (e.g.
+    /// [`crate::compose::form_dialog::FormDialogController::dialog`])
+    /// reports the state that's actually on screen rather than the raw
+    /// one the consumer last pushed via [`Self::set_form`] (which may
+    /// have gone stale — e.g. `has_focus` toggled by [`Self::set_has_focus`]
+    /// since).
+    pub fn live_form(&self) -> Option<Form> {
+        self.form
+            .as_ref()
+            .map(|_| self.build_form(Rect::default(), None))
     }
 
     pub fn id(&self) -> &str {
@@ -331,6 +496,7 @@ impl FormController {
         let theme = backend.theme();
         let form = self.build_form(form_rect, Some(&theme));
         backend.draw_form(form_rect, &form);
+        self.draw_item_focus_ring(backend, form_rect, &form);
         if let Some(sb_rect) = sb_rect {
             let sb = build_scrollbar_lh(
                 &self.id,
@@ -355,6 +521,22 @@ impl FormController {
 
     // ── Handle (with backend) ────────────────────────────────────────
 
+    /// Drive the state machine with a backend-neutral [`UiEvent`].
+    pub fn handle_event(
+        &mut self,
+        event: &UiEvent,
+        backend: &mut dyn Backend,
+        rect: Rect,
+    ) -> Handled<FormControllerAction> {
+        let lh = backend.line_height();
+        handled_from_form_controller_event(self.handle_inner(event, rect, lh, Some(backend)))
+    }
+
+    /// Drive the state machine with a backend-neutral [`UiEvent`].
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_event`, which returns `Handled<FormControllerAction>` instead of `FormControllerEvent`"
+    )]
     pub fn handle(
         &mut self,
         event: &UiEvent,
@@ -369,7 +551,23 @@ impl FormController {
 
     /// Backend-free event handler. Requires [`Self::set_backend_info`]
     /// or [`Self::render_and_cache`] called first. Returns
-    /// [`FormControllerEvent::Ignored`] if metrics aren't cached yet.
+    /// [`Handled::Ignored`] if metrics aren't cached yet.
+    pub fn handle_cached_event(
+        &mut self,
+        event: &UiEvent,
+        rect: Rect,
+    ) -> Handled<FormControllerAction> {
+        let Some(lh) = self.cached_lh else {
+            return Handled::Ignored;
+        };
+        handled_from_form_controller_event(self.handle_inner(event, rect, lh, None))
+    }
+
+    /// Backend-free event handler.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_cached_event`, which returns `Handled<FormControllerAction>` instead of `FormControllerEvent`"
+    )]
     pub fn handle_cached(&mut self, event: &UiEvent, rect: Rect) -> FormControllerEvent {
         let Some(lh) = self.cached_lh else {
             return FormControllerEvent::Ignored;
@@ -401,6 +599,37 @@ impl FormController {
 
     pub fn viewport_rows(&self, backend: &dyn Backend, rect: Rect) -> usize {
         viewport_rows_lh(backend.line_height(), rect)
+    }
+
+    /// Resolve where field `id` paints inside `rect` (the same rect
+    /// passed to [`Self::render`]/[`Self::handle`]), in `rect`'s own
+    /// coordinate space. `None` if `id` isn't a field on the currently
+    /// stored form, or is scrolled out of the visible viewport.
+    ///
+    /// For a multi-field `Form`, the field's own rect is *not* the whole
+    /// form rect — a popup-anchored field kind (`ComboBox`, `DatePicker`,
+    /// `ColorPicker`) paints only its compact row; the host paints the
+    /// open popup itself as a separate overlay (see this module's
+    /// "ComboBox fields" doc section) and needs the row's on-screen
+    /// position to anchor it. This is that lookup: it reruns the same
+    /// [`Backend::form_layout`] call [`Self::click_inner`] already uses
+    /// for hit-testing, then offsets the matching field's layout-relative
+    /// `bounds` by `rect`'s origin (and the scrollbar-split form rect's,
+    /// if a scrollbar is present) to hand back an on-screen rect the host
+    /// can pass straight to `Backend::draw_combo_box` or the equivalent.
+    pub fn field_rect(&self, id: WidgetId, backend: &dyn Backend, rect: Rect) -> Option<Rect> {
+        let lh = backend.line_height();
+        let (form_rect, _sb_rect) = split_rect_lh(self.field_count(), lh, rect);
+        let form = self.build_form(form_rect, None);
+        let layout = backend.form_layout(form_rect, &form);
+        layout.visible_fields.iter().find(|f| f.id == id).map(|f| {
+            Rect::new(
+                form_rect.x + f.bounds.x,
+                form_rect.y + f.bounds.y,
+                f.bounds.width,
+                f.bounds.height,
+            )
+        })
     }
 
     // ── Internal: shared handle dispatch ─────────────────────────────
@@ -516,6 +745,7 @@ impl FormController {
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             },
         }
     }
@@ -545,7 +775,7 @@ impl FormController {
         if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd {
             if let Some(key_name) = date_picker_key_name(key) {
                 if self.focused_field_is_enabled_date_picker() {
-                    return self.handle_date_picker_key(key_name);
+                    return self.handle_date_picker_key(&key_name);
                 }
             }
             // `ComboBox` has no pre-filtered key set the way
@@ -573,6 +803,32 @@ impl FormController {
             // combo-box key does.
             if self.focused_field_is_enabled_dropdown() {
                 if let Some(result) = self.handle_dropdown_key(key) {
+                    return result;
+                }
+            }
+            // `ButtonRow`/`ToggleGroup`/`Toolbar` item focus — see this
+            // module's "Item-level keyboard focus" doc section.
+            // `handle_item_row_key` returns `None` for every key it
+            // doesn't claim (Tab/BackTab among them), which falls
+            // through to the match below exactly like an unclaimed
+            // combo-box/dropdown key does.
+            if self.focused_field_is_enabled_item_row() {
+                if let Some(result) = self.handle_item_row_key(key) {
+                    return result;
+                }
+            }
+            // `NumberInput`/`RadioGroup` — see this module's "Number
+            // input fields"/"Radio group fields" doc sections. Both
+            // return `Option` for the same reason `handle_combo_box_key`
+            // does: an unclaimed key (Tab/BackTab among them) must fall
+            // through to the generic dispatch below.
+            if self.focused_field_is_enabled_number_input() {
+                if let Some(result) = self.handle_number_input_key(key, modifiers) {
+                    return result;
+                }
+            }
+            if self.focused_field_is_enabled_radio_group() {
+                if let Some(result) = self.handle_radio_group_key(key, modifiers) {
                     return result;
                 }
             }
@@ -780,6 +1036,121 @@ impl FormController {
         }
     }
 
+    /// Whether the currently-focused field is a non-disabled
+    /// `NumberInput` — gates `handle_key`'s number-input-key
+    /// interception. Mirrors [`Self::focused_field_is_enabled_combo_box`].
+    fn focused_field_is_enabled_number_input(&self) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let Some(focused_id) = &form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| &f.id == focused_id)
+            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::NumberInput(_)))
+    }
+
+    /// Route `key`/`modifiers` into the focused `NumberInput`'s own
+    /// [`crate::primitives::number_input::NumberInput::handle_key`] and
+    /// translate the result into a `FormEvent::Number*` variant. Needs no
+    /// shadow-state struct — see this module's "Number input fields" doc
+    /// section.
+    fn handle_number_input_key(
+        &mut self,
+        key: &Key,
+        modifiers: &Modifiers,
+    ) -> Option<FormControllerEvent> {
+        let form = self.form.as_ref()?;
+        let focused_id = form.focused_field?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+        if field.disabled {
+            return None;
+        }
+        let FieldKind::NumberInput(number) = &field.kind else {
+            return None;
+        };
+
+        // `NumberInput::focused` is documented as "set by the host's
+        // focus-traversal logic" — `Form::focused_field` already singled
+        // this field out above, so force it here rather than depending
+        // on the app to have mirrored that onto the embedded primitive
+        // itself (mirrors `handle_combo_box_key`'s identical override).
+        let mut number = number.clone();
+        number.focused = true;
+
+        match number.handle_key(key, modifiers)? {
+            NumberInputEvent::ValueChanged { value, .. } => {
+                Some(FormControllerEvent::FormAction(FormEvent::NumberChanged {
+                    id: focused_id,
+                    value,
+                }))
+            }
+            NumberInputEvent::DraftChanged { draft, .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::NumberDraftChanged {
+                    id: focused_id,
+                    draft,
+                },
+            )),
+            NumberInputEvent::Committed { value, .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::NumberCommitted {
+                    id: focused_id,
+                    value,
+                },
+            )),
+            NumberInputEvent::Cancelled { .. } => Some(FormControllerEvent::FormAction(
+                FormEvent::NumberCancelled { id: focused_id },
+            )),
+        }
+    }
+
+    /// Whether the currently-focused field is a non-disabled
+    /// `RadioGroup` — gates `handle_key`'s radio-group-key interception.
+    /// Mirrors [`Self::focused_field_is_enabled_number_input`].
+    fn focused_field_is_enabled_radio_group(&self) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let Some(focused_id) = &form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| &f.id == focused_id)
+            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::RadioGroup(_)))
+    }
+
+    /// Route `key`/`modifiers` into the focused `RadioGroup`'s own
+    /// [`crate::primitives::radio_group::RadioGroup::handle_key`] and
+    /// translate the result into [`FormEvent::RadioChanged`]. Needs no
+    /// shadow-state struct — see this module's "Radio group fields" doc
+    /// section.
+    fn handle_radio_group_key(
+        &mut self,
+        key: &Key,
+        modifiers: &Modifiers,
+    ) -> Option<FormControllerEvent> {
+        let form = self.form.as_ref()?;
+        let focused_id = form.focused_field?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+        if field.disabled {
+            return None;
+        }
+        let FieldKind::RadioGroup(group) = &field.kind else {
+            return None;
+        };
+
+        let mut group = group.clone();
+        group.focused = true;
+
+        let RadioGroupEvent::SelectionChanged { index } = group.handle_key(key, modifiers)?;
+        Some(FormControllerEvent::FormAction(FormEvent::RadioChanged {
+            id: focused_id,
+            selected: index,
+        }))
+    }
+
     /// Whether the currently-focused field is a non-disabled, non-empty
     /// `Dropdown` — gates `handle_key`'s Up/Down interception. Mirrors
     /// [`Self::focused_field_is_enabled_combo_box`]; an empty `options`
@@ -842,6 +1213,139 @@ impl FormController {
         ))
     }
 
+    /// Whether the currently-focused field is a non-disabled
+    /// `ButtonRow`/`ToggleGroup`/`Toolbar` with at least one *enabled*
+    /// item — gates `handle_key`'s Left/Right/Enter/Space interception.
+    /// Mirrors [`Self::focused_field_is_enabled_dropdown`]; an
+    /// all-disabled item list excludes itself the same way an empty
+    /// `options` list does there, so those keys fall through to the
+    /// generic dispatch rather than being swallowed with nothing
+    /// reachable to move to or activate.
+    fn focused_field_is_enabled_item_row(&self) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let Some(focused_id) = &form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| &f.id == focused_id)
+            .is_some_and(|f| {
+                !f.disabled
+                    && focusable_items(&f.kind).is_some_and(|items| items.iter().any(|(_, en)| *en))
+            })
+    }
+
+    /// The focused field's current item-focus: its id, the index into
+    /// [`focusable_items`]'s enumeration, and that enumeration itself.
+    /// Reads `self.item_focus` when it still names this field at a
+    /// still-valid index, otherwise falls back to the first enabled item
+    /// — see this module's "Item-level keyboard focus" doc section for
+    /// why a stale/missing cache falls back instead of focusing nothing.
+    /// `None` when there's no focused field, it's disabled, it isn't one
+    /// of the three item-bearing kinds, or every one of its items is
+    /// disabled.
+    fn current_item_focus(&self, form: &Form) -> Option<ItemFocusLookup> {
+        let focused_id = form.focused_field?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+        if field.disabled {
+            return None;
+        }
+        let items = focusable_items(&field.kind)?;
+        let idx = match &self.item_focus {
+            Some(s)
+                if s.field_id == focused_id && items.get(s.item_idx).is_some_and(|(_, en)| *en) =>
+            {
+                s.item_idx
+            }
+            _ => first_enabled_item_idx(&items)?,
+        };
+        Some((focused_id, idx, items))
+    }
+
+    /// Left/Right move the focused field's item-focus by one, skipping
+    /// any disabled item, without wrapping; Enter/Space activate the
+    /// item `self.item_focus` currently names. Any other key (including
+    /// Left at the first enabled item, or Right at the last) returns
+    /// `None`, which `handle_key` falls through to its generic dispatch
+    /// — a no-op there, since none of the three item-bearing kinds have
+    /// editable text.
+    fn handle_item_row_key(&mut self, key: &Key) -> Option<FormControllerEvent> {
+        let form = self.form.as_ref()?;
+        let (focused_id, cur_idx, items) = self.current_item_focus(form)?;
+        let field = form.fields.iter().find(|f| f.id == focused_id)?;
+
+        match key {
+            Key::Named(NamedKey::Left) => {
+                let new_idx = prev_enabled_item_idx(&items, cur_idx)?;
+                self.item_focus = Some(ItemFocusState {
+                    field_id: focused_id,
+                    item_idx: new_idx,
+                });
+                Some(FormControllerEvent::Consumed)
+            }
+            Key::Named(NamedKey::Right) => {
+                let new_idx = next_enabled_item_idx(&items, cur_idx)?;
+                self.item_focus = Some(ItemFocusState {
+                    field_id: focused_id,
+                    item_idx: new_idx,
+                });
+                Some(FormControllerEvent::Consumed)
+            }
+            Key::Named(NamedKey::Enter) | Key::Char(' ') => {
+                self.item_focus = Some(ItemFocusState {
+                    field_id: focused_id,
+                    item_idx: cur_idx,
+                });
+                let (item_id, _) = items[cur_idx];
+                Some(FormControllerEvent::FormAction(activate_item_event(
+                    field, item_id,
+                )))
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolve the focused item's on-screen rect (if any — see
+    /// [`Self::current_item_focus`]) via `backend.form_layout`'s
+    /// `item_bounds`, the same per-item geometry
+    /// [`crate::primitives::form::form_click_event`]'s caller already
+    /// hit-tests against, and paint it through
+    /// [`Backend::draw_focus_ring`] — see this module's "Item-level
+    /// keyboard focus" doc section for why painting goes through that
+    /// shared chrome primitive instead of `primitives/form.rs`'s own
+    /// painters. Called by [`Self::render`] right after `draw_form`; a
+    /// no-op while `!self.has_focus` or nothing is item-focused.
+    fn draw_item_focus_ring(&self, backend: &mut dyn Backend, form_rect: Rect, form: &Form) {
+        if !self.has_focus {
+            return;
+        }
+        let Some((focused_id, idx, items)) = self.current_item_focus(form) else {
+            return;
+        };
+        let Some((item_id, _)) = items.get(idx).copied() else {
+            return;
+        };
+        let layout = backend.form_layout(form_rect, form);
+        let Some(vf) = layout.visible_fields.iter().find(|vf| {
+            form.fields
+                .get(vf.field_idx)
+                .is_some_and(|f| f.id == focused_id)
+        }) else {
+            return;
+        };
+        let Some((_, item_rect)) = vf.item_bounds.iter().find(|(id, _)| *id == item_id) else {
+            return;
+        };
+        backend.draw_focus_ring(Rect::new(
+            form_rect.x + item_rect.x,
+            form_rect.y + item_rect.y,
+            item_rect.width,
+            item_rect.height,
+        ));
+    }
+
     /// Move focus to the next/previous non-`Label`, non-`ReadOnly`,
     /// non-disabled field, wrapping around, and scroll it into view.
     /// Emits [`FormEvent::FocusChanged`] — the app persists the new
@@ -851,33 +1355,20 @@ impl FormController {
         let Some(form) = &self.form else {
             return FormControllerEvent::Ignored;
         };
-        // Explicit `tab_index` wins; a field that leaves it `None` keeps
-        // its natural position in `fields` as its sort key, so a form
-        // where nobody sets `tab_index` still traverses in plain `Vec`
-        // order (see `FormField::tab_index`'s doc).
-        let mut ordered: Vec<(i32, usize, &WidgetId)> = form
-            .fields
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| field_is_focusable(f))
-            .map(|(i, f)| (f.tab_index.unwrap_or(i as i32), i, &f.id))
-            .collect();
-        ordered.sort_by_key(|&(tab_index, i, _)| (tab_index, i));
-        let stops: Vec<&WidgetId> = ordered.into_iter().map(|(_, _, id)| id).collect();
+        let stops = focus_order(form);
         if stops.is_empty() {
             return FormControllerEvent::Ignored;
         }
-        let n = stops.len() as isize;
+        let n = stops.len();
         let cur_idx = form
             .focused_field
-            .as_ref()
             .and_then(|id| stops.iter().position(|fid| *fid == id));
         let next_idx = match cur_idx {
-            Some(i) => (((i as isize + delta) % n + n) % n) as usize,
+            Some(i) => crate::focus::cycle_index(i, delta, n),
             None if delta >= 0 => 0,
-            None => stops.len() - 1,
+            None => n - 1,
         };
-        let id = *stops[next_idx];
+        let id = stops[next_idx];
         // The stop's index among `stops` isn't necessarily its index in
         // `form.fields` (non-focusable fields are filtered out above),
         // so re-find its field index for scrolling and for seeding the
@@ -915,12 +1406,26 @@ impl FormController {
                     }),
                     _ => None,
                 });
+        // Reseed item-focus to the newly-focused field's first enabled
+        // item (see this module's "Item-level keyboard focus" doc
+        // section) — `None` both clears a stale index left over from
+        // the field being left, and leaves it cleared for a field that
+        // isn't one of the three item-bearing kinds.
+        let new_item_focus = field_idx
+            .and_then(|i| form.fields.get(i))
+            .and_then(|f| focusable_items(&f.kind))
+            .and_then(|items| first_enabled_item_idx(&items))
+            .map(|item_idx| ItemFocusState {
+                field_id: id,
+                item_idx,
+            });
 
         if let Some(field_idx) = field_idx {
             self.scroll_to_field(field_idx, viewport_rows);
         }
         self.text_edit = new_text_edit;
         self.date_edit = new_date_edit;
+        self.item_focus = new_item_focus;
         FormControllerEvent::FormAction(FormEvent::FocusChanged { id })
     }
 
@@ -1043,9 +1548,23 @@ impl FormController {
                     form_field_measure(&form.fields[i], row_h, char_w)
                 })
             };
-            match layout.hit_test(x - form_rect.x, y - form_rect.y) {
+            let local_x = x - form_rect.x;
+            let local_y = y - form_rect.y;
+            match layout.hit_test(local_x, local_y) {
                 FormHit::Field(id) => {
-                    let event = form_click_event(&form, &id);
+                    // `NumberInput`'s stepper buttons are sub-regions of
+                    // its single `item_bounds` entry, not separate
+                    // `WidgetId`s the way a `RadioGroup` option or a
+                    // `ToggleGroup` item is — so unlike
+                    // `form_click_event`'s generic per-id dispatch, this
+                    // needs the clicked field's exact on-screen rect (see
+                    // this module's "Number input fields" doc section).
+                    // `None` (not a `NumberInput`, or the click landed
+                    // outside the stepper) falls through to the generic
+                    // path, which still resolves a plain field click to
+                    // `FocusChanged`.
+                    let event = number_input_click_event(&form, &layout, &id, local_x, local_y)
+                        .unwrap_or_else(|| form_click_event(&form, &id));
                     FormControllerEvent::FormAction(event)
                 }
                 FormHit::Empty => FormControllerEvent::Consumed,
@@ -1168,8 +1687,127 @@ pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent 
                 };
             }
         }
+        // Each `RadioOption` carries its own `WidgetId` (one
+        // `item_bounds` entry per option — see this module's "Radio
+        // group fields" doc section), so a click resolves directly to
+        // the option's index, the same generic per-item path
+        // `ToggleGroup` above uses. `RadioGroup::select` already gates
+        // on the option's own `disabled` flag, so a disabled option's
+        // click falls through to focusing the field instead of
+        // selecting it.
+        if let FieldKind::RadioGroup(group) = &field.kind {
+            if let Some(idx) = group.options.iter().position(|o| &o.id == clicked_id) {
+                if let Some(RadioGroupEvent::SelectionChanged { index }) = group.select(idx) {
+                    return FormEvent::RadioChanged {
+                        id: field.id,
+                        selected: index,
+                    };
+                }
+                return FormEvent::FocusChanged { id: field.id };
+            }
+        }
     }
     FormEvent::FocusChanged { id: *clicked_id }
+}
+
+/// `FieldKind::NumberInput`'s stepper buttons are sub-regions of its
+/// single `item_bounds` entry rather than separate `WidgetId`s, so
+/// resolving a click needs the clicked field's exact on-screen rect —
+/// unlike [`form_click_event`]'s generic per-id dispatch, which only
+/// needs `clicked_id`. Returns `None` for every other `FieldKind`, or a
+/// `NumberInput` click that landed outside the stepper (text area, or no
+/// `item_bounds` entry at all) — [`FormController::click_inner`] falls
+/// through to [`form_click_event`] in both cases, which still resolves a
+/// plain click there to `FormEvent::FocusChanged`.
+fn number_input_click_event(
+    form: &Form,
+    layout: &FormLayout,
+    clicked_id: &WidgetId,
+    x: f32,
+    y: f32,
+) -> Option<FormEvent> {
+    let field = form.fields.iter().find(|f| &f.id == clicked_id)?;
+    if field.disabled {
+        return None;
+    }
+    let FieldKind::NumberInput(number) = &field.kind else {
+        return None;
+    };
+    let vf = layout
+        .visible_fields
+        .iter()
+        .find(|vf| &vf.id == clicked_id)?;
+    let (_, control_rect) = vf.item_bounds.first()?;
+    let hit = number.layout(*control_rect).hit_test(Point::new(x, y));
+    let NumberInputEvent::ValueChanged { value, .. } = number.click(hit)? else {
+        return None;
+    };
+    Some(FormEvent::NumberChanged {
+        id: *clicked_id,
+        value,
+    })
+}
+
+// ── Item-level keyboard focus helpers ─────────────────────────────────
+//
+// See `FormController`'s "Item-level keyboard focus" doc section.
+
+/// The first enabled item's index in `items` (as enumerated by
+/// [`focusable_items`]), or `None` if every item is disabled.
+fn first_enabled_item_idx(items: &[(WidgetId, bool)]) -> Option<usize> {
+    items.iter().position(|(_, enabled)| *enabled)
+}
+
+/// The nearest enabled item's index *before* `cur`, or `None` if `cur`
+/// is already the first enabled item — the "no wrap" half of Left's
+/// contract (see this module's "Item-level keyboard focus" doc section).
+fn prev_enabled_item_idx(items: &[(WidgetId, bool)], cur: usize) -> Option<usize> {
+    items[..cur]
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, (_, enabled))| *enabled)
+        .map(|(i, _)| i)
+}
+
+/// The nearest enabled item's index *after* `cur`, or `None` if `cur` is
+/// already the last enabled item — the "no wrap" half of Right's
+/// contract (see this module's "Item-level keyboard focus" doc section).
+fn next_enabled_item_idx(items: &[(WidgetId, bool)], cur: usize) -> Option<usize> {
+    items
+        .iter()
+        .enumerate()
+        .skip(cur + 1)
+        .find(|(_, (_, enabled))| *enabled)
+        .map(|(i, _)| i)
+}
+
+/// The `FormEvent` a mouse click on this item already emits via
+/// [`form_click_event`] — reused by [`FormController::handle_item_row_key`]
+/// so Enter/Space activates the keyboard-focused item identically to a
+/// click on it. `field.kind` must be one of the three kinds
+/// [`focusable_items`] recognizes (every caller already established that
+/// via [`FormController::current_item_focus`]/
+/// [`FormController::focused_field_is_enabled_item_row`]).
+fn activate_item_event(field: &crate::primitives::form::FormField, item_id: WidgetId) -> FormEvent {
+    match &field.kind {
+        FieldKind::ButtonRow { .. } => FormEvent::ButtonClicked { id: item_id },
+        FieldKind::ToggleGroup { toggles } => {
+            let value = toggles
+                .iter()
+                .find(|t| t.id == item_id)
+                .map(|t| !t.value)
+                .unwrap_or(true);
+            FormEvent::ToggleChanged { id: item_id, value }
+        }
+        FieldKind::Toolbar(_) => FormEvent::ToolbarButtonClicked {
+            field_id: field.id,
+            button_id: item_id,
+        },
+        _ => unreachable!(
+            "activate_item_event is only called for a field focusable_items recognized"
+        ),
+    }
 }
 
 // ── Keyboard editing helpers ──────────────────────────────────────────
@@ -1182,6 +1820,31 @@ pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent 
 /// read-only row either.
 fn field_is_focusable(field: &crate::primitives::form::FormField) -> bool {
     !matches!(field.kind, FieldKind::Label | FieldKind::ReadOnly { .. }) && !field.disabled
+}
+
+/// Focusable field ids of `form`, in Tab-order: explicit `tab_index`
+/// wins, a field that leaves it `None` keeps its natural position in
+/// `fields` as its sort key (so a form where nobody sets `tab_index`
+/// still traverses in plain `Vec` order — see `FormField::tab_index`'s
+/// doc), and [`field_is_focusable`] filters out `Label`/`ReadOnly`/
+/// disabled fields.
+///
+/// Shared by [`FormController::move_focus`] (which wraps within the
+/// form) and [`crate::compose::form_dialog::FormDialogController`]
+/// (which needs to detect stepping off either end *before* forwarding
+/// a Tab/Shift-Tab keypress into the form, so it can hand focus to its
+/// own button row instead — something `move_focus`'s own wrap-within-
+/// the-form traversal can't signal).
+pub(crate) fn focus_order(form: &Form) -> Vec<WidgetId> {
+    let mut ordered: Vec<(i32, usize, WidgetId)> = form
+        .fields
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| field_is_focusable(f))
+        .map(|(i, f)| (f.tab_index.unwrap_or(i as i32), i, f.id))
+        .collect();
+    ordered.sort_by_key(|&(tab_index, i, _)| (tab_index, i));
+    ordered.into_iter().map(|(_, _, id)| id).collect()
 }
 
 /// The editable text of a `TextInput` / `TextArea` / `PasswordInput`
@@ -1273,15 +1936,21 @@ fn overlay_required_marker(form: &mut Form, rules: &FormRules, theme: Option<&Th
 /// Maps a key to the string name [`crate::primitives::date_picker::DatePicker::navigate`]
 /// recognises, or `None` for a key it doesn't act on (e.g. `Tab`, so focus
 /// traversal off a `DatePicker` field keeps working in `handle_key`).
-fn date_picker_key_name(key: &Key) -> Option<&'static str> {
+///
+/// The name itself comes from the shared [`NamedKey::name`] table — this
+/// function only narrows *which* keys `DatePicker` claims, not how they're
+/// spelled.
+fn date_picker_key_name(key: &Key) -> Option<std::borrow::Cow<'static, str>> {
     match key {
-        Key::Named(NamedKey::Left) => Some("Left"),
-        Key::Named(NamedKey::Right) => Some("Right"),
-        Key::Named(NamedKey::Up) => Some("Up"),
-        Key::Named(NamedKey::Down) => Some("Down"),
-        Key::Named(NamedKey::PageUp) => Some("PageUp"),
-        Key::Named(NamedKey::PageDown) => Some("PageDown"),
-        Key::Named(NamedKey::Enter) => Some("Enter"),
+        Key::Named(
+            named @ (NamedKey::Left
+            | NamedKey::Right
+            | NamedKey::Up
+            | NamedKey::Down
+            | NamedKey::PageUp
+            | NamedKey::PageDown
+            | NamedKey::Enter),
+        ) => Some(named.name()),
         _ => None,
     }
 }
@@ -1540,6 +2209,52 @@ fn form_field_measure(
         FieldKind::TextArea { visible_rows, .. } => {
             FormFieldMeasure::new(row_h * *visible_rows as f32)
         }
+        // See `click_inner`/`number_input_click_event`'s doc: the single
+        // item (the field's own id, not a synthetic one) exists purely
+        // so this fallback's `item_bounds` lookup finds the same control
+        // rect a live backend's `form_layout` would.
+        FieldKind::NumberInput(number) => {
+            let label_w = field.label.visible_width() as f32 * char_w;
+            let start_x = if label_w > 0.0 {
+                label_w + char_w * 2.0
+            } else {
+                char_w
+            };
+            let text = match &number.draft {
+                Some(draft) => draft.clone(),
+                None => format!("{:.*}", number.precision as usize, number.value),
+            };
+            let width = (text.chars().count() as f32 + 5.0) * char_w;
+            let items = vec![FormItemMeasure {
+                id: field.id,
+                width,
+            }];
+            FormFieldMeasure::with_items(row_h, start_x, 0.0, items)
+        }
+        // One item per `RadioOption`, stacked vertically — see
+        // `FormFieldMeasure::vertical`'s doc; the field's row is `row_h`
+        // *per option*, not a single `row_h`.
+        FieldKind::RadioGroup(group) => {
+            let label_w = field.label.visible_width() as f32 * char_w;
+            let start_x = if label_w > 0.0 {
+                label_w + char_w * 2.0
+            } else {
+                char_w
+            };
+            let items: Vec<FormItemMeasure> = group
+                .options
+                .iter()
+                .map(|o| FormItemMeasure {
+                    id: o.id,
+                    width: row_h,
+                })
+                .collect();
+            FormFieldMeasure::with_vertical_items(
+                row_h * group.options.len().max(1) as f32,
+                start_x,
+                items,
+            )
+        }
         _ => FormFieldMeasure::new(row_h),
     }
 }
@@ -1559,10 +2274,19 @@ impl crate::primitives::layout_metrics::TextMeasure for CharWidthMeasure {
 }
 
 #[cfg(test)]
+// This whole module exercises `handle`/`handle_cached`/`FormControllerEvent`
+// directly — deliberately, since those are now the deprecated shims and
+// their own test coverage is what "stays passing" means for them. The
+// `Handled<FormControllerAction>`-returning `handle_event`/
+// `handle_cached_event` are thin wrappers around the same `handle_inner`
+// these tests already exercise (see `handled_from_form_controller_event`).
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::primitives::combo_box::ComboBox;
-    use crate::primitives::form::{FieldKind, FormField};
+    use crate::primitives::form::{FieldKind, FormField, ToggleGroupItem};
+    use crate::primitives::number_input::NumberInput;
+    use crate::primitives::radio_group::{RadioGroup, RadioOption};
     use crate::types::StyledText;
 
     fn make_fields(n: usize) -> Vec<FormField> {
@@ -1580,6 +2304,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             })
             .collect()
     }
@@ -1596,6 +2321,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -1710,6 +2436,7 @@ mod tests {
                         tab_index: None,
                         control_width: None,
                         min_control_width: None,
+                        row_align: None,
                     },
                     text_field("email", "", None),
                 ],
@@ -1721,6 +2448,7 @@ mod tests {
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             }
         }
 
@@ -1905,6 +2633,129 @@ mod tests {
         let mut fc = test_controller(20);
         fc.scroll_to_field(10, 0);
         assert_eq!(fc.scroll_offset(), 0);
+    }
+
+    // ── field_rect ───────────────────────────────────────────────────
+    //
+    // Drives a real `TuiBackend` (not a hand-rolled mock — see
+    // `context_menu_controller.rs`'s tests module doc for why): the one
+    // thing `field_rect` needs from a `Backend` is `line_height` +
+    // `form_layout`, both cheap and headless on `TuiBackend::new()`.
+
+    #[cfg(feature = "tui")]
+    mod field_rect_tests {
+        use super::*;
+        use crate::tui::TuiBackend;
+
+        #[test]
+        fn resolves_second_field_below_the_first() {
+            let fc = test_controller(3);
+            let backend = TuiBackend::new();
+            let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+            let r0 = fc
+                .field_rect(WidgetId::new("field-0"), &backend, rect)
+                .unwrap();
+            let r1 = fc
+                .field_rect(WidgetId::new("field-1"), &backend, rect)
+                .unwrap();
+            // Same column (and width) as the first field, strictly below
+            // it — this is the whole point of the lookup: a multi-field
+            // form's second field is *not* at the form's own rect.
+            assert_eq!(r0.x, r1.x);
+            assert_eq!(r0.width, r1.width);
+            assert!(r1.y > r0.y);
+        }
+
+        #[test]
+        fn offsets_by_the_passed_rect_origin() {
+            let fc = test_controller(1);
+            let backend = TuiBackend::new();
+            let origin_rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+            let shifted_rect = Rect::new(5.0, 7.0, 40.0, 20.0);
+            let at_origin = fc
+                .field_rect(WidgetId::new("field-0"), &backend, origin_rect)
+                .unwrap();
+            let shifted = fc
+                .field_rect(WidgetId::new("field-0"), &backend, shifted_rect)
+                .unwrap();
+            assert_eq!(shifted.x, at_origin.x + 5.0);
+            assert_eq!(shifted.y, at_origin.y + 7.0);
+        }
+
+        #[test]
+        fn unknown_field_id_returns_none() {
+            let fc = test_controller(3);
+            let backend = TuiBackend::new();
+            let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+            assert_eq!(
+                fc.field_rect(WidgetId::new("no-such-field"), &backend, rect),
+                None
+            );
+        }
+
+        // The rect handed back has to be the *same* rect the controller's
+        // own hit-testing resolves to that field — a host that anchors a
+        // popup to it and then routes the user's next click back through
+        // `handle` depends on the two agreeing. Click the centre of every
+        // reported rect and assert the click lands on that field rather
+        // than a neighbour.
+        #[test]
+        fn reported_rect_round_trips_through_hit_testing() {
+            let rect = Rect::new(3.0, 2.0, 40.0, 20.0);
+            let mut backend = TuiBackend::new();
+            for i in 0..3 {
+                let id = WidgetId::new(format!("field-{i}"));
+                let mut fc = test_controller(3);
+                let field = fc.field_rect(id, &backend, rect).unwrap();
+                let ev = fc.handle(
+                    &UiEvent::MouseDown {
+                        widget: None,
+                        button: MouseButton::Left,
+                        position: crate::Point {
+                            x: field.x + field.width / 2.0,
+                            y: field.y + field.height / 2.0,
+                        },
+                        modifiers: Default::default(),
+                    },
+                    &mut backend,
+                    rect,
+                );
+                match ev {
+                    FormControllerEvent::FormAction(FormEvent::ToggleChanged {
+                        id: hit, ..
+                    }) => {
+                        assert_eq!(hit, id, "field-{i}'s reported rect hit-tested elsewhere");
+                    }
+                    other => panic!("expected ToggleChanged for field-{i}, got {other:?}"),
+                }
+            }
+        }
+
+        #[test]
+        fn empty_controller_returns_none() {
+            let fc = FormController::new("fc".into());
+            let backend = TuiBackend::new();
+            let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+            assert_eq!(
+                fc.field_rect(WidgetId::new("field-0"), &backend, rect),
+                None
+            );
+        }
+
+        #[test]
+        fn scrolled_out_of_view_field_returns_none() {
+            let mut fc = test_controller(20);
+            // One row per field at `TuiBackend`'s line height leaves a
+            // 20.0-tall viewport room for only a handful of rows — scroll
+            // far enough that field-0 is no longer among the visible ones.
+            fc.set_scroll_offset(15);
+            let backend = TuiBackend::new();
+            let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+            assert_eq!(
+                fc.field_rect(WidgetId::new("field-0"), &backend, rect),
+                None
+            );
+        }
     }
 
     // ── build_form injects controller state ──────────────────────────
@@ -2444,6 +3295,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -2461,6 +3313,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -2478,6 +3331,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -2498,6 +3352,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -2541,6 +3396,43 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
+        }
+    }
+
+    fn number_field(id: &str, number: NumberInput, disabled: bool) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::default(),
+            kind: FieldKind::NumberInput(number),
+            hint: StyledText::default(),
+            disabled,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        }
+    }
+
+    fn radio_group_field(id: &str, group: RadioGroup, disabled: bool) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::default(),
+            kind: FieldKind::RadioGroup(group),
+            hint: StyledText::default(),
+            disabled,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -2566,6 +3458,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -2582,6 +3475,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         });
         // The controller's own `has_focus` gates `KeyPressed`/`CharTyped`/
         // `ClipboardPaste` (not `Form.has_focus` above, which only
@@ -2753,6 +3647,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         });
 
         let ev2 = fc.handle_cached(&key_event(Key::Char('d'), Modifiers::default()), RECT);
@@ -2833,6 +3728,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             Some("name"),
         );
@@ -2891,6 +3787,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         });
 
         let rendered = fc.build_form(RECT, None);
@@ -2931,6 +3828,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let mut fc = controller_with(vec![field], Some("notes"));
         let ev = fc.handle_cached(&key_event(Key::Char('X'), Modifiers::default()), RECT);
@@ -3010,6 +3908,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let mut fc = controller_with(vec![field], Some("name"));
         // Must not panic. `EditOp::MoveRight` with `extend: false` drops
@@ -3070,6 +3969,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         });
 
         let ev2 = fc.handle_cached(
@@ -3189,6 +4089,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         });
 
         let ev = fc.handle_cached(
@@ -3313,6 +4214,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         });
 
         let form = fc.build_form(RECT, None);
@@ -3603,6 +4505,427 @@ mod tests {
         );
     }
 
+    // ── NumberInput routing ─────────────────────────────────────────
+
+    #[test]
+    fn up_arrow_steps_a_focused_number_input_value_up() {
+        let mut fc = controller_with(
+            vec![number_field(
+                "n",
+                NumberInput::new(WidgetId::new("n"), 0.0, 10.0),
+                false,
+            )],
+            Some("n"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Up), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberChanged {
+                id: WidgetId::new("n"),
+                value: 1.0,
+            })
+        );
+    }
+
+    #[test]
+    fn down_arrow_steps_a_focused_number_input_value_down_clamped_at_min() {
+        let mut fc = controller_with(
+            vec![number_field(
+                "n",
+                NumberInput::new(WidgetId::new("n"), 0.0, 10.0),
+                false,
+            )],
+            Some("n"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberChanged {
+                id: WidgetId::new("n"),
+                value: 0.0,
+            }),
+            "decrementing below `min` must clamp, not go negative"
+        );
+    }
+
+    #[test]
+    fn up_arrow_on_a_number_input_already_at_max_clamps_instead_of_overshooting() {
+        let mut n = NumberInput::new(WidgetId::new("n"), 0.0, 10.0);
+        n.value = 9.0;
+        n.step = 5.0;
+        let mut fc = controller_with(vec![number_field("n", n, false)], Some("n"));
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Up), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberChanged {
+                id: WidgetId::new("n"),
+                value: 10.0,
+            }),
+            "a step past `max` must clamp to `max`, not overshoot to 14.0"
+        );
+    }
+
+    #[test]
+    fn typed_digit_on_a_focused_number_input_updates_its_draft() {
+        let mut fc = controller_with(
+            vec![number_field(
+                "n",
+                NumberInput::new(WidgetId::new("n"), 0.0, 100.0),
+                false,
+            )],
+            Some("n"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Char('5'), Modifiers::default()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberDraftChanged {
+                id: WidgetId::new("n"),
+                draft: "5".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn enter_commits_the_focused_number_inputs_draft_clamped_and_rounded() {
+        let mut n = NumberInput::new(WidgetId::new("n"), 0.0, 10.0);
+        n.draft = Some("999.456".into());
+        n.precision = 1;
+        let mut fc = controller_with(vec![number_field("n", n, false)], Some("n"));
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberCommitted {
+                id: WidgetId::new("n"),
+                value: 10.0,
+            }),
+            "the draft must clamp to `max` on commit"
+        );
+    }
+
+    #[test]
+    fn escape_cancels_a_focused_number_inputs_pending_draft() {
+        let mut n = NumberInput::new(WidgetId::new("n"), 0.0, 10.0);
+        n.draft = Some("3".into());
+        let mut fc = controller_with(vec![number_field("n", n, false)], Some("n"));
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Escape), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberCancelled {
+                id: WidgetId::new("n"),
+            })
+        );
+    }
+
+    #[test]
+    fn disabled_number_input_field_ignores_its_keys() {
+        let mut fc = controller_with(
+            vec![number_field(
+                "n",
+                NumberInput::new(WidgetId::new("n"), 0.0, 10.0),
+                true,
+            )],
+            Some("n"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Up), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn tab_moves_focus_away_from_a_focused_number_input_field_normally() {
+        let mut fc = controller_with(
+            vec![
+                number_field("n", NumberInput::new(WidgetId::new("n"), 0.0, 10.0), false),
+                toggle_field("t", false),
+            ],
+            Some("n"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("t")
+            }),
+            "Tab isn't one of NumberInput's claimed keys, so focus traversal \
+             off a focused NumberInput field still works"
+        );
+    }
+
+    /// `lh=10.0` → `row_h=14.0`, `char_w=6.0`; an unlabelled `NumberInput`
+    /// (no label, so `items_start_x = char_w = 6.0`) showing "0" sizes its
+    /// single item to `(1 + 5) * 6.0 = 36.0` wide — see
+    /// `form_field_measure`'s `FieldKind::NumberInput` arm — so its
+    /// control rect spans x in `[6, 42)`. `NumberInput::layout` then
+    /// splits off a 3-wide stepper column at the right: increment is
+    /// `[39, 42) x [0, 7)`, decrement is `[39, 42) x [7, 14)`.
+    #[test]
+    fn stepper_click_increments_a_number_inputs_value() {
+        let mut fc = controller_with(
+            vec![number_field(
+                "n",
+                NumberInput::new(WidgetId::new("n"), 0.0, 10.0),
+                false,
+            )],
+            None,
+        );
+        fc.set_backend_info(10.0);
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 40.0, y: 2.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberChanged {
+                id: WidgetId::new("n"),
+                value: 1.0,
+            })
+        );
+    }
+
+    #[test]
+    fn stepper_click_decrements_a_number_inputs_value() {
+        let mut n = NumberInput::new(WidgetId::new("n"), 0.0, 10.0);
+        n.value = 5.0;
+        let mut fc = controller_with(vec![number_field("n", n, false)], None);
+        fc.set_backend_info(10.0);
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 40.0, y: 10.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::NumberChanged {
+                id: WidgetId::new("n"),
+                value: 4.0,
+            })
+        );
+    }
+
+    #[test]
+    fn stepper_click_on_a_disabled_number_input_just_focuses_the_field() {
+        let mut fc = controller_with(
+            vec![number_field(
+                "n",
+                NumberInput::new(WidgetId::new("n"), 0.0, 10.0),
+                true,
+            )],
+            None,
+        );
+        fc.set_backend_info(10.0);
+        let ev = fc.handle_cached(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point { x: 40.0, y: 2.0 },
+                modifiers: Default::default(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 14.0),
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("n"),
+            }),
+            "a disabled NumberInput's stepper click must not step the value"
+        );
+    }
+
+    // ── RadioGroup routing ──────────────────────────────────────────
+
+    fn radio_group(selected: Option<usize>) -> RadioGroup {
+        let mut group = RadioGroup::new(
+            WidgetId::new("theme"),
+            vec![
+                RadioOption::new(WidgetId::new("theme:light"), "Light"),
+                RadioOption::new(WidgetId::new("theme:dark"), "Dark"),
+            ],
+        );
+        group.selected = selected;
+        group
+    }
+
+    #[test]
+    fn down_arrow_moves_a_focused_radio_groups_selection() {
+        let mut fc = controller_with(
+            vec![radio_group_field("g", radio_group(Some(0)), false)],
+            Some("g"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::RadioChanged {
+                id: WidgetId::new("g"),
+                selected: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn left_arrow_moves_a_focused_radio_groups_selection_back() {
+        let mut fc = controller_with(
+            vec![radio_group_field("g", radio_group(Some(1)), false)],
+            Some("g"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Left), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::RadioChanged {
+                id: WidgetId::new("g"),
+                selected: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn disabled_radio_group_field_ignores_its_keys() {
+        let mut fc = controller_with(
+            vec![radio_group_field("g", radio_group(Some(0)), true)],
+            Some("g"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Down), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn tab_moves_focus_away_from_a_focused_radio_group_field_normally() {
+        let mut fc = controller_with(
+            vec![
+                radio_group_field("g", radio_group(Some(0)), false),
+                toggle_field("t", false),
+            ],
+            Some("g"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("t")
+            }),
+            "Tab isn't one of RadioGroup's claimed keys, so focus traversal \
+             off a focused RadioGroup field still works"
+        );
+    }
+
+    #[test]
+    fn click_radio_group_option_emits_radio_changed_with_the_field_id() {
+        let mut form = make_form(1);
+        form.fields[0] = radio_group_field("g", radio_group(Some(0)), false);
+        let ev = form_click_event(&form, &WidgetId::new("theme:dark"));
+        assert_eq!(
+            ev,
+            FormEvent::RadioChanged {
+                id: WidgetId::new("g"),
+                selected: 1,
+            },
+            "the event must carry the *field's* id, not the clicked option's"
+        );
+    }
+
+    #[test]
+    fn click_disabled_radio_group_option_focuses_the_field_instead_of_selecting() {
+        let mut group = radio_group(Some(0));
+        group.options[1].disabled = true;
+        let mut form = make_form(1);
+        form.fields[0] = radio_group_field("g", group, false);
+        let ev = form_click_event(&form, &WidgetId::new("theme:dark"));
+        assert_eq!(
+            ev,
+            FormEvent::FocusChanged {
+                id: WidgetId::new("g"),
+            }
+        );
+    }
+
+    /// A real `MouseDown`, routed through `Form::layout`/`hit_test` via
+    /// `TuiBackend` (not `form_click_event` called directly, which
+    /// bypasses layout entirely) — a `LabelPosition::Top`-resolved
+    /// `RadioGroup`'s painted "Light" row must select "Light", not the
+    /// option one row below it (see `tui_form_layout_with_label_width`'s
+    /// `FieldKind::RadioGroup` arm and `items_start_y` on
+    /// `FormFieldMeasure`).
+    #[test]
+    #[cfg(feature = "tui")]
+    fn click_on_a_top_labelled_radio_groups_painted_row_selects_the_right_option() {
+        use crate::primitives::form::LabelPosition;
+        use crate::tui::TuiBackend;
+
+        let mut field = radio_group_field("g", radio_group(Some(0)), false);
+        field.label = StyledText::plain("Theme");
+        field.label_position = Some(LabelPosition::Top);
+        let mut fc = controller_with(vec![field], None);
+        let mut backend = TuiBackend::new();
+        let rect = Rect::new(0.0, 0.0, 40.0, 10.0);
+
+        // Row 0 of the field's own bounds is the label ("Theme"); row 1
+        // is "Light" (the first, currently-selected option); row 2 is
+        // "Dark".
+        let field_rect = fc.field_rect(WidgetId::new("g"), &backend, rect).unwrap();
+        let light_y = field_rect.y + 1.0;
+        let ev = fc.handle(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: crate::Point {
+                    x: field_rect.x + 1.0,
+                    y: light_y + 0.5,
+                },
+                modifiers: Default::default(),
+            },
+            &mut backend,
+            rect,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::RadioChanged {
+                id: WidgetId::new("g"),
+                selected: 0,
+            }),
+            "a click on the row painted \"Light\" must select \"Light\" (index 0), not \"Dark\""
+        );
+    }
+
     // ── Dropdown routing ───────────────────────────────────────────
 
     #[test]
@@ -3736,6 +5059,707 @@ mod tests {
                 assert_eq!(*selected_idx, 0, "selection must not have changed")
             }
             other => panic!("expected Dropdown, got {other:?}"),
+        }
+    }
+
+    // ── Item-level keyboard focus ──────────────────────────────────────
+    //
+    // See this module's "Item-level keyboard focus" doc section.
+
+    fn button_row_field(id: &str, buttons: &[(&str, bool)]) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::default(),
+            kind: FieldKind::ButtonRow {
+                buttons: buttons
+                    .iter()
+                    .map(|(bid, disabled)| crate::primitives::form::ButtonRowItem {
+                        id: WidgetId::new(*bid),
+                        label: (*bid).to_string(),
+                        disabled: *disabled,
+                        icon: None,
+                        spec: None,
+                    })
+                    .collect(),
+            },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        }
+    }
+
+    fn toggle_group_field(id: &str, toggles: &[(&str, bool)]) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::default(),
+            kind: FieldKind::ToggleGroup {
+                toggles: toggles
+                    .iter()
+                    .map(|(tid, value)| ToggleGroupItem {
+                        id: WidgetId::new(*tid),
+                        label: (*tid).to_string(),
+                        value: *value,
+                    })
+                    .collect(),
+            },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        }
+    }
+
+    fn toolbar_field(id: &str, buttons: &[(&str, bool)]) -> FormField {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::default(),
+            kind: FieldKind::Toolbar(Toolbar {
+                id: WidgetId::new(format!("{id}-toolbar")),
+                buttons: buttons
+                    .iter()
+                    .map(|(bid, enabled)| ToolbarButton::Action {
+                        spec: None,
+                        id: WidgetId::new(*bid),
+                        label: (*bid).to_string(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: *enabled,
+                        is_active: false,
+                        tooltip: String::new(),
+                    })
+                    .collect(),
+                bg: None,
+                focused_index: None,
+            }),
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        }
+    }
+
+    #[test]
+    fn right_then_enter_activates_the_second_button_in_a_button_row() {
+        let mut fc = controller_with(
+            vec![button_row_field("row", &[("a", false), ("b", false)])],
+            Some("row"),
+        );
+        let moved = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(moved, FormControllerEvent::Consumed);
+        let activated = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            activated,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("b")
+            })
+        );
+    }
+
+    #[test]
+    fn space_also_activates_the_focused_button() {
+        let mut fc = controller_with(
+            vec![button_row_field("row", &[("a", false), ("b", false)])],
+            Some("row"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Char(' '), Modifiers::default()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("a")
+            }),
+            "Space activates the first (default-focused) item without a prior Right"
+        );
+    }
+
+    #[test]
+    fn disabled_first_button_item_focus_starts_on_the_second() {
+        let mut fc = controller_with(
+            vec![button_row_field("row", &[("a", true), ("b", false)])],
+            Some("row"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("b")
+            }),
+            "item-focus must skip the disabled first button and default to \
+             the second, with no prior Right keypress needed"
+        );
+    }
+
+    #[test]
+    fn right_skips_a_disabled_middle_button() {
+        let mut fc = controller_with(
+            vec![button_row_field(
+                "row",
+                &[("a", false), ("b", true), ("c", false)],
+            )],
+            Some("row"),
+        );
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("c")
+            }),
+            "Right from 'a' must land on 'c', skipping disabled 'b'"
+        );
+    }
+
+    #[test]
+    fn right_at_the_last_enabled_item_is_a_noop() {
+        let mut fc = controller_with(
+            vec![button_row_field("row", &[("a", false), ("b", false)])],
+            Some("row"),
+        );
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::Ignored,
+            "no wrap: Right at the last item stays put"
+        );
+        let activated = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            activated,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("b")
+            }),
+            "item-focus is still on 'b', not pushed past it"
+        );
+    }
+
+    #[test]
+    fn left_at_the_first_enabled_item_is_a_noop() {
+        let mut fc = controller_with(
+            vec![button_row_field("row", &[("a", false), ("b", false)])],
+            Some("row"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Left), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::Ignored,
+            "no wrap: Left at the first item stays put"
+        );
+    }
+
+    #[test]
+    fn ctrl_modified_right_falls_through_instead_of_moving_item_focus() {
+        let mut fc = controller_with(
+            vec![button_row_field("row", &[("a", false), ("b", false)])],
+            Some("row"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Named(NamedKey::Right), ctrl()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::Ignored,
+            "Ctrl+Right is a host accelerator candidate, not item navigation"
+        );
+        let activated = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            activated,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("a")
+            }),
+            "item-focus must still be on the first item — Ctrl+Right never moved it"
+        );
+    }
+
+    #[test]
+    fn disabled_button_row_field_ignores_item_navigation_keys() {
+        let mut fc = controller_with(
+            vec![FormField {
+                disabled: true,
+                ..button_row_field("row", &[("a", false), ("b", false)])
+            }],
+            Some("row"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn tab_moves_focus_away_from_a_button_row_normally() {
+        let mut fc = controller_with(
+            vec![
+                button_row_field("row", &[("a", false), ("b", false)]),
+                toggle_field("t", false),
+            ],
+            Some("row"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("t")
+            }),
+            "Tab moves between fields, never into an item"
+        );
+    }
+
+    #[test]
+    fn tab_into_a_button_row_seeds_item_focus_on_the_first_enabled_item() {
+        let mut fc = controller_with(
+            vec![
+                toggle_field("t", false),
+                button_row_field("row", &[("a", true), ("b", false)]),
+            ],
+            Some("t"),
+        );
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        // `move_focus` only emits `FocusChanged` — the app persists the new
+        // `focused_field` itself (this module's "Keyboard editing" doc
+        // section) — so push it back before the next keystroke.
+        fc.set_form(Form {
+            focused_field: Some(WidgetId::new("row")),
+            ..make_form_with(vec![
+                toggle_field("t", false),
+                button_row_field("row", &[("a", true), ("b", false)]),
+            ])
+        });
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ButtonClicked {
+                id: WidgetId::new("b")
+            }),
+            "Tab onto the row must seed item-focus on 'b', skipping disabled 'a'"
+        );
+    }
+
+    #[test]
+    fn item_focus_resets_when_leaving_and_returning_to_a_toggle_group() {
+        let fields = || {
+            vec![
+                toggle_group_field("toggles", &[("x", false), ("y", false)]),
+                toggle_field("t", false),
+            ]
+        };
+        let mut fc = controller_with(fields(), Some("toggles"));
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        // Tab away, then Tab back (BackTab), round-tripping through the app
+        // persisting `focused_field` the same way `tab_into_a_button_row_...`
+        // above does.
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        fc.set_form(Form {
+            focused_field: Some(WidgetId::new("t")),
+            ..make_form_with(fields())
+        });
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::BackTab), Modifiers::default()),
+            RECT,
+        );
+        fc.set_form(Form {
+            focused_field: Some(WidgetId::new("toggles")),
+            ..make_form_with(fields())
+        });
+
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ToggleChanged {
+                id: WidgetId::new("x"),
+                value: true,
+            }),
+            "returning to the toggle group must reset item-focus to the \
+             first item, not resume at 'y' from before Tab left"
+        );
+    }
+
+    #[test]
+    fn right_then_enter_activates_the_second_toggle_in_a_toggle_group() {
+        let mut fc = controller_with(
+            vec![toggle_group_field("toggles", &[("x", true), ("y", false)])],
+            Some("toggles"),
+        );
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ToggleChanged {
+                id: WidgetId::new("y"),
+                value: true,
+            }),
+            "activating 'y' must flip its own value, not 'x's"
+        );
+    }
+
+    #[test]
+    fn enter_activates_the_focused_toolbar_button() {
+        let mut fc = controller_with(
+            vec![toolbar_field("tb", &[("reset", true), ("export", true)])],
+            Some("tb"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ToolbarButtonClicked {
+                field_id: WidgetId::new("tb"),
+                button_id: WidgetId::new("reset"),
+            })
+        );
+    }
+
+    #[test]
+    fn right_skips_a_disabled_toolbar_button() {
+        let mut fc = controller_with(
+            vec![toolbar_field(
+                "tb",
+                &[("reset", true), ("broken", false), ("export", true)],
+            )],
+            Some("tb"),
+        );
+        fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::ToolbarButtonClicked {
+                field_id: WidgetId::new("tb"),
+                button_id: WidgetId::new("export"),
+            }),
+            "Right from 'reset' must land on 'export', skipping the \
+             disabled ('enabled: false') 'broken' button"
+        );
+    }
+
+    #[test]
+    fn mouse_click_on_an_item_does_not_touch_item_focus_state() {
+        // Mouse behaviour is unchanged: `form_click_event` resolves a click
+        // straight to the clicked item's event without going through
+        // `item_focus` at all.
+        let form = make_form_with(vec![button_row_field("row", &[("a", false), ("b", false)])]);
+        let ev = form_click_event(&form, &WidgetId::new("b"));
+        assert_eq!(
+            ev,
+            FormEvent::ButtonClicked {
+                id: WidgetId::new("b")
+            }
+        );
+    }
+
+    fn make_form_with(fields: Vec<FormField>) -> Form {
+        Form {
+            id: WidgetId::new("form"),
+            fields,
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        }
+    }
+
+    // ── Item-level keyboard focus: painted focus ring ───────────────────
+    //
+    // Drives a real backend through a minimal `AppLogic` wrapper — see
+    // `field_rect_tests`'s doc comment above for why a hand-rolled
+    // `Backend` mock won't do: `RecordingBackend::form_layout` is
+    // `unimplemented!()`, so the ring's rect (resolved via
+    // `Backend::form_layout`'s `item_bounds`, same as
+    // `Self::draw_item_focus_ring`'s doc describes) needs a backend with
+    // a real layout algorithm. `ItemFocusRingApp` is backend-agnostic
+    // (it only ever sees `&mut dyn Backend`), shared by the TUI and GTK
+    // driver tests below it — the two backends disagree on what a
+    // "reasonable" rect looks like (cells vs. device pixels), so each
+    // picks its own.
+    #[cfg(any(feature = "tui", feature = "gtk"))]
+    struct ItemFocusRingApp {
+        fc: FormController,
+        rect: Rect,
+    }
+
+    #[cfg(any(feature = "tui", feature = "gtk"))]
+    impl ItemFocusRingApp {
+        fn new(buttons: &[(&str, bool)], rect: Rect) -> Self {
+            Self::with_field(button_row_field("row", buttons), rect)
+        }
+
+        fn new_toolbar(buttons: &[(&str, bool)], rect: Rect) -> Self {
+            Self::with_field(toolbar_field("row", buttons), rect)
+        }
+
+        fn with_field(field: FormField, rect: Rect) -> Self {
+            let mut fc = FormController::new("row-fc".into());
+            fc.set_form(Form {
+                focused_field: Some(WidgetId::new("row")),
+                ..make_form_with(vec![field])
+            });
+            fc.set_has_focus(true);
+            Self { fc, rect }
+        }
+    }
+
+    #[cfg(any(feature = "tui", feature = "gtk"))]
+    impl crate::runner::AppLogic for ItemFocusRingApp {
+        type AreaId = ();
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            self.fc.render(backend, self.rect);
+        }
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> crate::runner::Reaction {
+            self.fc.handle(&event, backend, self.rect);
+            crate::runner::Reaction::Redraw
+        }
+    }
+
+    #[cfg(feature = "tui")]
+    mod item_focus_ring_tui_tests {
+        use super::*;
+        use crate::tui::testing::{Modifier, TuiDriver};
+
+        const ITEM_ROW_RECT: Rect = Rect::new(0.0, 0.0, 40.0, 3.0);
+
+        fn driver(buttons: &[(&str, bool)]) -> TuiDriver<ItemFocusRingApp> {
+            TuiDriver::new(ItemFocusRingApp::new(buttons, ITEM_ROW_RECT), 40, 3)
+        }
+
+        fn underlined_at(driver: &TuiDriver<ItemFocusRingApp>, needle: &str) -> bool {
+            let bounds = driver
+                .find_bounds(needle)
+                .unwrap_or_else(|| panic!("{needle:?} not painted on screen"));
+            driver
+                .style_at(bounds.x as u16, bounds.y as u16)
+                .is_some_and(|s| s.modifiers.contains(Modifier::UNDERLINED))
+        }
+
+        #[test]
+        fn the_ring_starts_on_the_first_enabled_button() {
+            let driver = driver(&[("Connect", false), ("Cancel", false)]);
+            assert!(underlined_at(&driver, "Connect"));
+            assert!(!underlined_at(&driver, "Cancel"));
+        }
+
+        #[test]
+        fn right_moves_the_ring_to_the_second_button() {
+            let mut driver = driver(&[("Connect", false), ("Cancel", false)]);
+            driver.press_named(NamedKey::Right);
+            assert!(
+                !underlined_at(&driver, "Connect"),
+                "the ring must leave the first button"
+            );
+            assert!(
+                underlined_at(&driver, "Cancel"),
+                "the ring must land on the second button"
+            );
+        }
+
+        #[test]
+        fn disabled_first_button_the_ring_starts_on_the_second() {
+            let driver = driver(&[("Connect", true), ("Cancel", false)]);
+            assert!(!underlined_at(&driver, "Connect"));
+            assert!(underlined_at(&driver, "Cancel"));
+        }
+
+        #[test]
+        fn right_moves_the_ring_between_toolbar_buttons_too() {
+            let mut driver = TuiDriver::new(
+                ItemFocusRingApp::new_toolbar(&[("Reset", true), ("Export", true)], ITEM_ROW_RECT),
+                40,
+                3,
+            );
+            assert!(underlined_at(&driver, "Reset"));
+            driver.press_named(NamedKey::Right);
+            assert!(
+                !underlined_at(&driver, "Reset"),
+                "the ring must leave the first toolbar button"
+            );
+            assert!(
+                underlined_at(&driver, "Export"),
+                "the ring must land on the second toolbar button"
+            );
+        }
+    }
+
+    // GTK: `Backend::draw_focus_ring` strokes the exact rect it's given
+    // (`GtkBackend::draw_focus_ring`, via `surface_stroke_rect`) rather
+    // than TUI's border-box/underline special case, so — unlike the TUI
+    // tests above — this samples pixel colour instead of a cell
+    // modifier: `theme.accent_fg` at the stroke's edge when the ring
+    // paints there, the row's own background otherwise.
+    #[cfg(feature = "gtk")]
+    mod item_focus_ring_gtk_tests {
+        use super::*;
+        use crate::gtk::testing::GtkDriver;
+
+        const ITEM_ROW_RECT: Rect = Rect::new(0.0, 0.0, 400.0, 120.0);
+
+        fn driver(buttons: &[(&str, bool)]) -> GtkDriver<ItemFocusRingApp> {
+            GtkDriver::new(ItemFocusRingApp::new(buttons, ITEM_ROW_RECT), 400, 120)
+        }
+
+        /// `needle`'s item's own rect (not its text glyph's, which sits
+        /// well inside the item's padded background) — the same
+        /// `Backend::form_layout` lookup `FormController::draw_item_focus_ring`
+        /// uses, so the sample point agrees with what the ring actually
+        /// outlines.
+        fn item_rect(driver: &GtkDriver<ItemFocusRingApp>, item_id: &str) -> Rect {
+            let app = driver.app();
+            let form = app.fc.form().expect("form set").clone();
+            let layout = driver.backend().form_layout(app.rect, &form);
+            let vf = layout
+                .visible_fields
+                .iter()
+                .find(|vf| form.fields[vf.field_idx].id == WidgetId::new("row"))
+                .expect("row field painted");
+            let (_, r) = vf
+                .item_bounds
+                .iter()
+                .find(|(id, _)| id.as_str() == item_id)
+                .unwrap_or_else(|| panic!("item {item_id:?} not in item_bounds"));
+            Rect::new(app.rect.x + r.x, app.rect.y + r.y, r.width, r.height)
+        }
+
+        /// Sample one pixel on the stroke along `item_id`'s left edge —
+        /// `focus_ring_width` defaults to 2.0px (`Style::default`), and
+        /// `GtkBackend::draw_focus_ring` strokes centred on the rect's
+        /// own edge, so the rect's left-edge column, vertically centred,
+        /// lands solidly inside the stroke band when the ring painted
+        /// there.
+        fn ring_painted_at(driver: &mut GtkDriver<ItemFocusRingApp>, item_id: &str) -> bool {
+            let r = item_rect(driver, item_id);
+            let theme = driver.backend().theme();
+            let accent = (theme.accent_fg.r, theme.accent_fg.g, theme.accent_fg.b);
+            let x = r.x.round().max(0.0) as i32;
+            let y = (r.y + r.height / 2.0).round() as i32;
+            driver.pixel(x, y) == accent
+        }
+
+        #[test]
+        fn the_ring_starts_on_the_first_enabled_button() {
+            let mut driver = driver(&[("Connect", false), ("Cancel", false)]);
+            assert!(ring_painted_at(&mut driver, "Connect"));
+            assert!(!ring_painted_at(&mut driver, "Cancel"));
+        }
+
+        #[test]
+        fn right_moves_the_ring_to_the_second_button() {
+            let mut driver = driver(&[("Connect", false), ("Cancel", false)]);
+            driver.press_named(NamedKey::Right);
+            assert!(
+                !ring_painted_at(&mut driver, "Connect"),
+                "the ring must leave the first button"
+            );
+            assert!(
+                ring_painted_at(&mut driver, "Cancel"),
+                "the ring must land on the second button"
+            );
+        }
+
+        #[test]
+        fn disabled_first_button_the_ring_starts_on_the_second() {
+            let mut driver = driver(&[("Connect", true), ("Cancel", false)]);
+            assert!(!ring_painted_at(&mut driver, "Connect"));
+            assert!(ring_painted_at(&mut driver, "Cancel"));
+        }
+
+        #[test]
+        fn right_moves_the_ring_between_toolbar_buttons_too() {
+            let mut driver = GtkDriver::new(
+                ItemFocusRingApp::new_toolbar(&[("Reset", true), ("Export", true)], ITEM_ROW_RECT),
+                400,
+                120,
+            );
+            assert!(ring_painted_at(&mut driver, "Reset"));
+            driver.press_named(NamedKey::Right);
+            assert!(
+                !ring_painted_at(&mut driver, "Reset"),
+                "the ring must leave the first toolbar button"
+            );
+            assert!(
+                ring_painted_at(&mut driver, "Export"),
+                "the ring must land on the second toolbar button"
+            );
         }
     }
 }

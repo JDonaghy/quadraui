@@ -66,6 +66,16 @@ enum Phase<T> {
     /// `item`'s tooltip is showing, and has been since `since_ms` (used
     /// by [`HoverTooltipTracker::tick_auto_dismiss`]'s timeout).
     Visible { item: T, since_ms: u64 },
+    /// `item`'s tooltip auto-dismissed while the pointer was still
+    /// hovering it. A latch, not a reset to [`Phase::Idle`]: as long as
+    /// the pointer keeps hovering the same `item`, [`Self::on_hover`]
+    /// stays in this phase instead of re-arming [`Phase::Pending`], so
+    /// the tooltip stays hidden rather than showing again
+    /// `tooltip_delay_ms` later and auto-dismissing again in an endless
+    /// cycle. Hovering a *different* item, or leaving every hoverable
+    /// zone, clears the latch the same way either would reset any other
+    /// phase.
+    Dismissed { item: T },
 }
 
 /// Delay + auto-dismiss state machine for a hover-driven tooltip, generic
@@ -114,6 +124,10 @@ impl<T: Clone + PartialEq> HoverTooltipTracker<T> {
                 self.phase = Phase::Idle;
                 true
             }
+            (Phase::Dismissed { .. }, None) => {
+                self.phase = Phase::Idle;
+                false
+            }
             (Phase::Idle, Some(item)) => {
                 self.phase = Phase::Pending {
                     item,
@@ -139,6 +153,19 @@ impl<T: Clone + PartialEq> HoverTooltipTracker<T> {
                         since_ms: now_ms,
                     };
                     true
+                }
+            }
+            (Phase::Dismissed { item: cur }, Some(item)) => {
+                if *cur == item {
+                    // Still hovering the item whose tooltip auto-dismissed --
+                    // stay latched shut rather than re-arming the delay.
+                    false
+                } else {
+                    self.phase = Phase::Pending {
+                        item,
+                        since_ms: now_ms,
+                    };
+                    false
                 }
             }
         }
@@ -170,10 +197,17 @@ impl<T: Clone + PartialEq> HoverTooltipTracker<T> {
     /// third dismissal path the module doc names alongside pointer-leave
     /// and an explicit [`Self::dismiss`]. Returns `true` if a tooltip
     /// was just auto-dismissed.
+    ///
+    /// Transitions to [`Phase::Dismissed`], not [`Phase::Idle`]: the
+    /// pointer hasn't moved, so a plain reset would let the very next
+    /// [`Self::on_hover`] call for the same item re-arm [`Phase::Pending`]
+    /// and show the tooltip again `delay_ms` later, auto-dismissing again
+    /// after that — a permanent flicker rather than a dismiss. The latch
+    /// only clears once the pointer hovers a different item or leaves.
     pub fn tick_auto_dismiss(&mut self, timeout_ms: u64, now_ms: u64) -> bool {
-        if let Phase::Visible { since_ms, .. } = &self.phase {
+        if let Phase::Visible { item, since_ms } = &self.phase {
             if now_ms.saturating_sub(*since_ms) >= timeout_ms {
-                self.phase = Phase::Idle;
+                self.phase = Phase::Dismissed { item: item.clone() };
                 return true;
             }
         }
@@ -207,7 +241,7 @@ impl<T: Clone + PartialEq> HoverTooltipTracker<T> {
     pub fn visible_item(&self) -> Option<&T> {
         match &self.phase {
             Phase::Visible { item, .. } => Some(item),
-            Phase::Idle | Phase::Pending { .. } => None,
+            Phase::Idle | Phase::Pending { .. } | Phase::Dismissed { .. } => None,
         }
     }
 
@@ -238,7 +272,27 @@ impl<T: Clone + PartialEq> HoverTooltipTracker<T> {
                 let deadline = since_ms.saturating_add(delay_ms);
                 Some(deadline.saturating_sub(now_ms))
             }
-            Phase::Idle | Phase::Visible { .. } => None,
+            Phase::Idle | Phase::Visible { .. } | Phase::Dismissed { .. } => None,
+        }
+    }
+
+    /// Milliseconds until a [`Phase::Visible`] tooltip's
+    /// [`Self::tick_auto_dismiss`] timeout fires — the `Visible`-phase
+    /// sibling of [`Self::next_wake_ms`], for a host that wants the exact
+    /// `Reaction::RedrawAfter(Duration)` wake a shown tooltip needs to
+    /// hide itself on schedule, instead of waiting for some unrelated
+    /// event to call [`Self::tick_auto_dismiss`] again. `None` while idle
+    /// or still pending — callers that treat `timeout_ms == 0` as
+    /// "auto-dismiss disabled" (e.g. [`crate::Style::tooltip_auto_dismiss_ms`]'s
+    /// own default) should not call this at all rather than scheduling a
+    /// wake for a timeout that will never fire.
+    pub fn next_auto_dismiss_wake_ms(&self, now_ms: u64, timeout_ms: u64) -> Option<u64> {
+        match &self.phase {
+            Phase::Visible { since_ms, .. } => {
+                let deadline = since_ms.saturating_add(timeout_ms);
+                Some(deadline.saturating_sub(now_ms))
+            }
+            Phase::Idle | Phase::Pending { .. } | Phase::Dismissed { .. } => None,
         }
     }
 }
@@ -362,6 +416,73 @@ mod tests {
     }
 
     #[test]
+    fn auto_dismiss_latches_shut_while_the_same_item_stays_hovered() {
+        let mut t: HoverTooltipTracker<WidgetId> = HoverTooltipTracker::new();
+        t.on_hover(Some(WidgetId::new("a")), 0);
+        t.tick(500, 500);
+        assert!(t.tick_auto_dismiss(5_000, 5_500));
+        assert_eq!(t.visible_item(), None);
+
+        // The pointer never moved -- re-feeding the same item must not
+        // re-arm Pending, or the tooltip would show (and auto-dismiss)
+        // again every delay+timeout cycle forever.
+        for n in 0..5u64 {
+            let now_ms = 5_500 + n * 1_000;
+            let changed = t.on_hover(Some(WidgetId::new("a")), now_ms);
+            assert!(
+                !changed,
+                "iteration {n}: re-hovering the same item must not redraw"
+            );
+            assert_eq!(t.visible_item(), None, "iteration {n}: must stay hidden");
+            assert!(
+                !t.is_pending(),
+                "iteration {n}: must not re-arm the pending delay"
+            );
+            assert!(
+                !t.tick(500, now_ms + 10_000),
+                "iteration {n}: tick must not promote a latched dismissal \
+                 to Visible even much later"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_dismiss_latch_clears_on_a_different_item() {
+        let mut t: HoverTooltipTracker<WidgetId> = HoverTooltipTracker::new();
+        t.on_hover(Some(WidgetId::new("a")), 0);
+        t.tick(500, 500);
+        assert!(t.tick_auto_dismiss(5_000, 5_500));
+
+        let changed = t.on_hover(Some(WidgetId::new("b")), 5_600);
+        assert!(
+            !changed,
+            "nothing was visible to hide -- moving off a latched dismissal \
+             is not itself a redraw"
+        );
+        assert!(t.is_pending());
+        assert!(t.tick(500, 6_100));
+        assert_eq!(t.visible_item(), Some(&WidgetId::new("b")));
+    }
+
+    #[test]
+    fn auto_dismiss_latch_clears_on_pointer_leave() {
+        let mut t: HoverTooltipTracker<WidgetId> = HoverTooltipTracker::new();
+        t.on_hover(Some(WidgetId::new("a")), 0);
+        t.tick(500, 500);
+        assert!(t.tick_auto_dismiss(5_000, 5_500));
+
+        assert!(!t.on_hover(None, 5_600));
+        assert!(!t.is_pending());
+        assert_eq!(t.visible_item(), None);
+
+        // Hovering the same item again afterwards starts a fresh delay.
+        t.on_hover(Some(WidgetId::new("a")), 5_700);
+        assert!(t.is_pending());
+        assert!(t.tick(500, 6_200));
+        assert_eq!(t.visible_item(), Some(&WidgetId::new("a")));
+    }
+
+    #[test]
     fn auto_dismiss_for_duration_matches_the_millisecond_form() {
         let mut t: HoverTooltipTracker<WidgetId> = HoverTooltipTracker::new();
         t.on_hover(Some(WidgetId::new("a")), 0);
@@ -391,6 +512,24 @@ mod tests {
         t.on_hover(Some(WidgetId::new("a")), 0);
         t.tick(500, 500);
         assert_eq!(t.next_wake_ms(500, 500), None);
+    }
+
+    #[test]
+    fn next_auto_dismiss_wake_ms_is_none_while_idle_or_pending() {
+        let mut t: HoverTooltipTracker<WidgetId> = HoverTooltipTracker::new();
+        assert_eq!(t.next_auto_dismiss_wake_ms(0, 5_000), None);
+        t.on_hover(Some(WidgetId::new("a")), 0);
+        assert_eq!(t.next_auto_dismiss_wake_ms(0, 5_000), None);
+    }
+
+    #[test]
+    fn next_auto_dismiss_wake_ms_counts_down_to_the_timeout_while_visible() {
+        let mut t: HoverTooltipTracker<WidgetId> = HoverTooltipTracker::new();
+        t.on_hover(Some(WidgetId::new("a")), 0);
+        t.tick(500, 500);
+        assert_eq!(t.next_auto_dismiss_wake_ms(500, 5_000), Some(5_000));
+        assert_eq!(t.next_auto_dismiss_wake_ms(3_000, 5_000), Some(2_500));
+        assert_eq!(t.next_auto_dismiss_wake_ms(5_500, 5_000), Some(0));
     }
 
     #[test]

@@ -23,6 +23,7 @@
 
 use crate::accelerator::Accelerator;
 use crate::event::Rect;
+use crate::layout::{Anchor, ResolvedSide, Side};
 use crate::types::{Color, Icon, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -184,6 +185,11 @@ pub enum ContextMenuPlacement {
 
 /// Resolved placement after the layout decided whether to flip the
 /// preferred [`ContextMenuPlacement`].
+///
+/// When the menu's height fits on neither `Below` nor `Above`, this
+/// reports the *preferred* side rather than whichever side the box was
+/// actually pinned against — the box is still clamped fully inside the
+/// viewport, just not necessarily on the side this value names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolvedContextMenuPlacement {
     AnchorPoint,
@@ -391,77 +397,50 @@ impl ContextMenu {
             (0..self.items.len()).map(&measure_item).collect();
         let total_height: f32 = measures.iter().map(|m| m.height).sum();
 
-        // Horizontal positioning (same for all placement modes): align
-        // the menu's left edge with the anchor's left edge, but shift
-        // left if the menu would overflow the viewport's right side.
-        let x = if anchor.x + menu_width > viewport.x + viewport.width {
-            (viewport.x + viewport.width - menu_width).max(viewport.x)
-        } else {
-            anchor.x.max(viewport.x)
+        // Horizontal position is clamped into the viewport *before*
+        // `Anchor::resolve` runs, independently of the vertical flip
+        // decision below. `Anchor::resolve`'s `fits` predicate tests
+        // both axes together, so an anchor `x` that is already outside
+        // the viewport would make the horizontal overflow fail the fit
+        // test on whichever vertical side is tried, masking the
+        // `Below`/`Above` flip. This clamp is the same left-align-then-
+        // shift for every placement mode, `AnchorPoint` included —
+        // pre-clamping is a no-op for `AnchorPoint` since
+        // [`Side::AtPoint`] clamps `rect.x` again on its own.
+        let ax = anchor.x.clamp(
+            viewport.x,
+            (viewport.x + viewport.width - menu_width).max(viewport.x),
+        );
+
+        // Placement, via the shared `Anchor` flip/clamp resolver. The
+        // anchor rect's width is set to `menu_width` so `Anchor::resolve`'s
+        // cross-axis centering (`(rect.width - w) * 0.5`) collapses to
+        // zero and `x` stays left-aligned with `ax` rather than
+        // centered. `rect.height` carries `anchor.height` through for
+        // the `Below`/`Above` candidates' `r.y + r.height` / `r.y - h`
+        // formulas; `AnchorPoint` maps to [`Side::AtPoint`], which
+        // ignores both and only clamps `rect.x`/`rect.y` directly,
+        // matching this mode's "menu top-left IS the anchor point"
+        // contract.
+        let side = match self.placement {
+            ContextMenuPlacement::AnchorPoint => Side::AtPoint,
+            ContextMenuPlacement::Below => Side::Bottom,
+            ContextMenuPlacement::Above => Side::Top,
+        };
+        let anchor_rect = Rect::new(ax, anchor.y, menu_width, anchor.height);
+        let (origin, resolved_side) =
+            Anchor::new(anchor_rect, side).resolve((menu_width, total_height), viewport);
+        let (x, y) = (origin.x, origin.y);
+        let resolved_placement = match resolved_side {
+            ResolvedSide::AtPoint => ResolvedContextMenuPlacement::AnchorPoint,
+            ResolvedSide::Bottom => ResolvedContextMenuPlacement::Below,
+            ResolvedSide::Top => ResolvedContextMenuPlacement::Above,
+            ResolvedSide::Left | ResolvedSide::Right => {
+                unreachable!("ContextMenuPlacement never maps to Side::Left/Right")
+            }
         };
 
-        // Vertical positioning depends on placement mode.
-        let viewport_top = viewport.y;
         let viewport_bottom = viewport.y + viewport.height;
-        let (y, resolved_placement) = match self.placement {
-            ContextMenuPlacement::AnchorPoint => {
-                // Right-click default: anchor IS the click point;
-                // menu top-left aligns with anchor; shift up to fit if
-                // the menu would overflow the viewport bottom.
-                let y_pref = anchor.y;
-                let y = if y_pref + total_height > viewport_bottom {
-                    (viewport_bottom - total_height).max(viewport_top)
-                } else {
-                    y_pref.max(viewport_top)
-                };
-                (y, ResolvedContextMenuPlacement::AnchorPoint)
-            }
-            ContextMenuPlacement::Below => {
-                // Dropdown opens below the trigger. Menu's top is at
-                // the trigger's bottom edge. Auto-flip to Above if it
-                // would overflow the viewport bottom AND there's more
-                // room above than below.
-                let space_below = viewport_bottom - (anchor.y + anchor.height);
-                let space_above = anchor.y - viewport_top;
-                if total_height > space_below && space_above > space_below {
-                    // Flip to Above.
-                    let y_pref = anchor.y - total_height;
-                    let y = y_pref.max(viewport_top);
-                    (y, ResolvedContextMenuPlacement::Above)
-                } else {
-                    let y_pref = anchor.y + anchor.height;
-                    let y = if y_pref + total_height > viewport_bottom {
-                        (viewport_bottom - total_height).max(viewport_top)
-                    } else {
-                        y_pref.max(viewport_top)
-                    };
-                    (y, ResolvedContextMenuPlacement::Below)
-                }
-            }
-            ContextMenuPlacement::Above => {
-                // Dropdown opens above the trigger (kubeui's status-bar
-                // segment). Menu's bottom is at the trigger's top edge.
-                // Auto-flip to Below if it would overflow the viewport
-                // top AND there's more room below than above.
-                let space_below = viewport_bottom - (anchor.y + anchor.height);
-                let space_above = anchor.y - viewport_top;
-                if total_height > space_above && space_below > space_above {
-                    // Flip to Below.
-                    let y_pref = anchor.y + anchor.height;
-                    let y = if y_pref + total_height > viewport_bottom {
-                        (viewport_bottom - total_height).max(viewport_top)
-                    } else {
-                        y_pref.max(viewport_top)
-                    };
-                    (y, ResolvedContextMenuPlacement::Below)
-                } else {
-                    let y_pref = anchor.y - total_height;
-                    let y = y_pref.max(viewport_top);
-                    (y, ResolvedContextMenuPlacement::Above)
-                }
-            }
-        };
-
         let clipped_height = total_height.min(viewport_bottom - y);
         let bounds = Rect::new(x, y, menu_width, clipped_height);
 
@@ -1278,6 +1257,86 @@ mod tests {
         );
         // Menu y = 99 - 60 = 39.
         assert_eq!(layout.bounds.y, 39.0);
+    }
+
+    #[test]
+    fn context_menu_layout_above_flips_below_when_no_room() {
+        // Trigger near the top edge; `Above` has no room, flips to `Below`.
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: (0..3).map(|i| cm_action(&format!("i{i}"), "X")).collect(),
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::Above,
+        };
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = menu.layout_at(Rect::new(10.0, 5.0, 80.0, 1.0), viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(
+            layout.resolved_placement,
+            ResolvedContextMenuPlacement::Below
+        );
+        // Menu's top sits at the trigger's bottom edge → y = 5 + 1 = 6.
+        assert_eq!(layout.bounds.y, 6.0);
+    }
+
+    #[test]
+    fn context_menu_layout_below_pins_to_preferred_when_neither_side_fits() {
+        // Trigger near the middle of a short viewport: a 60-tall menu
+        // fits neither fully below (40px room) nor fully above (55px
+        // room), even though above has more room than below.
+        //
+        // When neither side fits, the menu pins to the preferred side
+        // (`Below`, matching `Tooltip`/`Float`/`Completions`) and
+        // clamps — landing pinned to the viewport's bottom edge (y=40,
+        // i.e. `bounds.y + bounds.height == 100`).
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: (0..3).map(|i| cm_action(&format!("i{i}"), "X")).collect(),
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::Below,
+        };
+        let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let layout = menu.layout_at(Rect::new(10.0, 55.0, 80.0, 5.0), viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(
+            layout.resolved_placement,
+            ResolvedContextMenuPlacement::Below
+        );
+        assert_eq!(layout.bounds.y, 40.0);
+        assert_eq!(layout.bounds.height, 60.0);
+    }
+
+    #[test]
+    fn context_menu_layout_below_flips_above_when_trigger_overflows_both_axes() {
+        // Trigger in the bottom-right corner of the viewport: overflows
+        // horizontally (menu_width 100 past anchor.x 180 in a 200-wide
+        // viewport) AND the preferred `Below` candidate overflows
+        // vertically (trigger near the bottom). The vertical flip to
+        // `Above` must still happen — horizontal overflow is clamped
+        // independently and must not suppress it.
+        let menu = ContextMenu {
+            id: WidgetId::new("m"),
+            items: vec![cm_action("a", "A"), cm_action("b", "B")],
+            selected_idx: 0,
+            bg: None,
+            placement: ContextMenuPlacement::Below,
+        };
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let layout = menu.layout_at(Rect::new(180.0, 180.0, 20.0, 10.0), viewport, 100.0, |_| {
+            ContextMenuItemMeasure::new(20.0)
+        });
+        assert_eq!(
+            layout.resolved_placement,
+            ResolvedContextMenuPlacement::Above
+        );
+        // x clamps to the right edge: 200 - 100 = 100.
+        assert_eq!(layout.bounds.x, 100.0);
+        // Flips above: y = anchor.y - menu_height = 180 - 40 = 140.
+        assert_eq!(layout.bounds.y, 140.0);
     }
 
     #[test]

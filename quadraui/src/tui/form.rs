@@ -253,9 +253,80 @@ fn tui_form_layout_with_label_width(
                     .collect();
                 FormFieldMeasure::with_items(1.0 + extra_row, start_x, 1.0, items)
             }
+            // Unlike every compact `FieldKind` above, `NumberInput`'s row
+            // reuses the real standalone `tui::draw_number_input` box
+            // painter (see `draw_field_number_input`), which needs room
+            // for a top border, a content line, and a bottom border — 3
+            // cells, not 1. The whole control is a single item (carrying
+            // the *field's* own id, not a synthetic one) purely so its
+            // on-screen rect is available via `VisibleFormField::item_bounds`
+            // for click routing, mirroring how `FormController` resolves
+            // every other item-bearing kind's clicks.
+            FieldKind::NumberInput(number) => {
+                let start_x = field_items_start_x(form, field, left_label_width, 1);
+                let width = (number_input_display_text(number).chars().count() + 2 + 3) as f32;
+                let items = vec![FormItemMeasure {
+                    id: field.id,
+                    width,
+                }];
+                FormFieldMeasure::with_items(3.0 + extra_row, start_x, 0.0, items)
+                    .with_items_start_y(extra_row)
+            }
+            // `RadioGroup` is the one `FieldKind` whose row spans one
+            // sub-row per option (see `FormFieldMeasure::vertical`'s doc)
+            // instead of staying a single compact row — there is no popup
+            // to keep collapsed, so the real `RadioOption`s are always on
+            // screen. Each item carries its *option's* own id, resolving
+            // a click straight to `form_click_event`'s existing
+            // `FieldKind::RadioGroup` arm the same way a `ToggleGroup`
+            // item's click already does.
+            FieldKind::RadioGroup(group) => {
+                let start_x = field_items_start_x(form, field, left_label_width, 1);
+                let items: Vec<FormItemMeasure> = group
+                    .options
+                    .iter()
+                    .map(|o| FormItemMeasure {
+                        id: o.id,
+                        width: 1.0,
+                    })
+                    .collect();
+                let rows = group.options.len().max(1) as f32;
+                FormFieldMeasure::with_vertical_items(rows + extra_row, start_x, items)
+                    .with_items_start_y(extra_row)
+            }
             _ => FormFieldMeasure::new(1.0 + extra_row),
         }
     })
+}
+
+/// The text currently shown in `number`: the in-progress
+/// [`crate::primitives::number_input::NumberInput::draft`] verbatim when
+/// one is pending, otherwise `value` formatted to `precision` decimal
+/// places — mirrors [`crate::tui::number_input`]'s own private copy (that
+/// module isn't reachable from here without duplicating this one-liner,
+/// since both are plain private helpers in sibling modules).
+fn number_input_display_text(number: &crate::primitives::number_input::NumberInput) -> String {
+    match &number.draft {
+        Some(draft) => draft.clone(),
+        None => format!("{:.*}", number.precision as usize, number.value),
+    }
+}
+
+/// A row's horizontal content span within `area`, in cells — `offset`
+/// from `area.x` (`FormSpacing::padding`, the same for every row) and
+/// the row's own `width` (`VisibleFormField::bounds.width`, already
+/// shrunk by the same padding on the right edge). [`build_row_ctx`]
+/// adds `offset` on top of every label/control column it computes —
+/// the item-bearing kinds (`ToggleGroup`/`ButtonRow`/`SegmentedControl`/
+/// `Toolbar`) need no such adjustment here: their own
+/// `VisibleFormField::item_bounds` already carry the same offset from
+/// `Form::layout`, added to `ctx.area.x` directly in `draw_field_button_row`
+/// and friends — adding it a second time by shifting `ctx.area` itself
+/// would double-count it.
+#[derive(Clone, Copy)]
+struct RowX {
+    offset: usize,
+    width: usize,
 }
 
 /// Shared paint context for one form-field row, threaded through the
@@ -325,6 +396,10 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
         // case so it never writes past `area`, and skip the per-kind
         // input paint below entirely.
         let input_fits = input_y < area_bottom;
+        let row_x = RowX {
+            offset: visible_field.bounds.x.round() as usize,
+            width: visible_field.bounds.width.round() as usize,
+        };
         let ctx = build_row_ctx(
             buf,
             area,
@@ -335,6 +410,7 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
             theme,
             &colors,
             left_label_width,
+            row_x,
         );
 
         if !input_fits {
@@ -387,9 +463,13 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                 options,
                 selected_idx,
             } => draw_field_segmented_control(buf, &ctx, visible_field, options, *selected_idx),
+            FieldKind::NumberInput(number) => {
+                draw_field_number_input(buf, &ctx, visible_field, number)
+            }
+            FieldKind::RadioGroup(group) => draw_field_radio_group(buf, &ctx, visible_field, group),
         }
 
-        paint_validation_indicator(buf, area, input_y, ctx.row_bg, field, theme);
+        paint_validation_indicator(buf, area, row_x.offset, input_y, ctx.row_bg, field, theme);
     }
 }
 
@@ -439,9 +519,14 @@ fn build_row_ctx<'a>(
     theme: &'a Theme,
     colors: &FormColors,
     left_label_width: usize,
+    row_x: RowX,
 ) -> RowCtx<'a> {
     let is_focused = field_is_focused(form, field);
     let is_header = matches!(field.kind, FieldKind::Label);
+    let RowX {
+        offset: row_x_offset,
+        width: row_width,
+    } = row_x;
 
     let (default_fg, row_bg) = match (is_header, is_focused) {
         // `fg` (`theme.foreground`, the editor-body text
@@ -456,11 +541,13 @@ fn build_row_ctx<'a>(
         (false, false) => (colors.fg, colors.bg),
     };
 
-    for x in area.x..area.x + area.width {
+    let row_left = area.x + row_x_offset as u16;
+    let row_right = row_left + row_width as u16;
+    for x in row_left..row_right {
         set_cell(buf, x, input_y, ' ', default_fg, row_bg);
     }
     if label_y != input_y {
-        for x in area.x..area.x + area.width {
+        for x in row_left..row_right {
             set_cell(buf, x, label_y, ' ', default_fg, row_bg);
         }
     }
@@ -490,7 +577,7 @@ fn build_row_ctx<'a>(
                     buf,
                     area,
                     label_y,
-                    1,
+                    row_x_offset + 1,
                     &field.label,
                     field_fg,
                     row_bg,
@@ -502,7 +589,7 @@ fn build_row_ctx<'a>(
             }
             LabelPosition::Left => {
                 let col_width = left_label_width.max(label_w);
-                let offset = match form.resolved_label_align(field) {
+                let align_offset = match form.resolved_label_align(field) {
                     LabelAlign::Start => 0,
                     LabelAlign::Center => col_width.saturating_sub(label_w) / 2,
                     LabelAlign::End => col_width.saturating_sub(label_w),
@@ -511,7 +598,7 @@ fn build_row_ctx<'a>(
                     buf,
                     area,
                     input_y,
-                    1 + offset,
+                    row_x_offset + 1 + align_offset,
                     &field.label,
                     field_fg,
                     row_bg,
@@ -520,14 +607,14 @@ fn build_row_ctx<'a>(
                 );
                 // The reserved column's end, not the painted text's end,
                 // so every row in the column leaves the same input start.
-                (1 + col_width, false)
+                (row_x_offset + 1 + col_width, false)
             }
             LabelPosition::Inline => {
                 let end = draw_styled_text(
                     buf,
                     area,
                     input_y,
-                    1,
+                    row_x_offset + 1,
                     &field.label,
                     field_fg,
                     row_bg,
@@ -543,11 +630,16 @@ fn build_row_ctx<'a>(
     // the same column for every field regardless of `FieldKind`, which
     // is what gives the row a single aligned control edge instead of
     // each kind separately hugging the row's right edge. Fields with no
-    // reserved label column (`no_label`) start their control at column
-    // 1, mirroring `field_items_start_x`'s `no_label_fallback` for the
-    // item-based kinds.
-    let control_start = if no_label { 1 } else { label_end + 1 };
-    let available = (area.width as usize).saturating_sub(control_start);
+    // reserved label column (`no_label`) start their control at
+    // `row_x_offset + 1`, mirroring `field_items_start_x`'s
+    // `no_label_fallback` for the item-based kinds (offset by the same
+    // `FormSpacing::padding` every other column in this row honours).
+    let control_start = if no_label {
+        row_x_offset + 1
+    } else {
+        label_end + 1
+    };
+    let available = (row_x_offset + row_width).saturating_sub(control_start);
     let control_width = resolved_control_width_cells(form, field, available);
 
     RowCtx {
@@ -572,6 +664,7 @@ fn build_row_ctx<'a>(
 fn paint_validation_indicator(
     buf: &mut Buffer,
     area: Rect,
+    row_x_offset: usize,
     y: u16,
     row_bg: ratatui::style::Color,
     field: &crate::primitives::form::FormField,
@@ -584,7 +677,14 @@ fn paint_validation_indicator(
         ValidationState::Error(_) => ('!', ratatui_color(theme.error_fg)),
         ValidationState::Warning(_) => ('\u{26A0}', ratatui_color(theme.warning_fg)),
     };
-    set_cell(buf, area.x, y, indicator, v_fg, row_bg);
+    set_cell(
+        buf,
+        area.x + row_x_offset as u16,
+        y,
+        indicator,
+        v_fg,
+        row_bg,
+    );
 }
 
 fn draw_field_toggle(buf: &mut Buffer, ctx: &RowCtx, value: bool) {
@@ -1163,6 +1263,127 @@ fn draw_field_combo_box(
     }
 }
 
+/// Renders the embedded [`crate::primitives::number_input::NumberInput`]
+/// through the real [`crate::tui::draw_number_input`] rasteriser — the
+/// bordered box plus stepper buttons, not a compact summary, since
+/// (unlike `DatePicker`/`ComboBox`) there is no popup to keep collapsed.
+/// `visible_field.item_bounds`'s single entry (populated by
+/// `tui_form_layout_with_label_width`'s `FieldKind::NumberInput` arm) is
+/// the control's on-screen rect — the same lookup `FormController`'s click
+/// routing uses, so paint and click always agree.
+fn draw_field_number_input(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    visible_field: &crate::primitives::form::VisibleFormField,
+    number: &crate::primitives::number_input::NumberInput,
+) {
+    let RowCtx {
+        area,
+        y,
+        default_fg,
+        row_bg,
+        theme,
+        ..
+    } = *ctx;
+
+    let Some((_, item_rect)) = visible_field.item_bounds.first() else {
+        return;
+    };
+    // `item_rect.height` is already the control's own height, not the
+    // row's — see `tui_form_layout_with_label_width`'s `NumberInput` arm
+    // and `items_start_y`'s doc on `FormFieldMeasure`. Clamp against
+    // `area`'s own bottom edge too, so a control whose row got clipped
+    // by scrolling never paints past the viewport.
+    let rows = item_rect
+        .height
+        .round()
+        .max(1.0)
+        .min((area.y + area.height).saturating_sub(y) as f32) as u16;
+    if rows == 0 {
+        return;
+    }
+    // Row 0 was already cleared by `build_row_ctx`'s single-row fill;
+    // clear the rest of the control's rows here, the same pattern
+    // `draw_field_text_area` uses for its own multi-row field.
+    for r in 1..rows {
+        let row_y = y + r;
+        if row_y >= area.y + area.height {
+            break;
+        }
+        for x in area.x..area.x + area.width {
+            set_cell(buf, x, row_y, ' ', default_fg, row_bg);
+        }
+    }
+
+    let abs_x = area.x as f32 + item_rect.x;
+    let rect = crate::event::Rect::new(abs_x, y as f32, item_rect.width, rows as f32);
+    let layout = number.layout(rect);
+    super::draw_number_input(buf, number, &layout, theme);
+}
+
+/// Renders the embedded [`crate::primitives::radio_group::RadioGroup`]
+/// through the real [`crate::tui::draw_radio_group`] rasteriser, one row
+/// per option — `visible_field.item_bounds` (populated by
+/// `tui_form_layout_with_label_width`'s `FieldKind::RadioGroup` arm, one
+/// entry per [`crate::primitives::radio_group::RadioOption`]) gives the
+/// control's on-screen rect via its first entry; `FormController`'s click
+/// routing resolves a click straight to the clicked option's own entry.
+fn draw_field_radio_group(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    visible_field: &crate::primitives::form::VisibleFormField,
+    group: &crate::primitives::radio_group::RadioGroup,
+) {
+    let RowCtx {
+        area,
+        y,
+        default_fg,
+        row_bg,
+        theme,
+        is_focused,
+        ..
+    } = *ctx;
+
+    if visible_field.item_bounds.is_empty() {
+        return;
+    }
+    // `item_bounds` is already clipped to the row's own clipped bottom
+    // edge by `Form::layout` (see `items_start_y`'s doc), so this is a
+    // second, defensive clamp against `area`'s own bottom edge rather
+    // than the only one.
+    let rows =
+        (visible_field.item_bounds.len() as u16).min((area.y + area.height).saturating_sub(y));
+    if rows == 0 {
+        return;
+    }
+    // Row 0 was already cleared by `build_row_ctx`'s single-row fill;
+    // clear the remaining option rows here.
+    for r in 1..rows {
+        let row_y = y + r;
+        if row_y >= area.y + area.height {
+            break;
+        }
+        for x in area.x..area.x + area.width {
+            set_cell(buf, x, row_y, ' ', default_fg, row_bg);
+        }
+    }
+
+    // While this row is focused, the embedded group's own `focused` flag
+    // drives the selected option's marker colour (see
+    // `tui::radio_group::draw_radio_group`) — the app isn't expected to
+    // mirror `Form::focused_field` onto the embedded primitive itself,
+    // the same contract `FormController`'s `ComboBox`/`DatePicker`
+    // handling already documents.
+    let mut group = group.clone();
+    group.focused = is_focused;
+
+    let (_, first_rect) = &visible_field.item_bounds[0];
+    let abs_x = (area.x as f32 + first_rect.x).round() as u16;
+    let width = first_rect.width.round() as u16;
+    let radio_area = Rect::new(abs_x, y, width, rows);
+    super::draw_radio_group(buf, radio_area, &group, theme);
+}
+
 fn draw_field_toolbar(
     buf: &mut Buffer,
     ctx: &RowCtx,
@@ -1537,6 +1758,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("wrap"),
@@ -1551,6 +1773,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
             ],
             focused_field: Some(WidgetId::new("wrap")),
@@ -1561,6 +1784,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -1622,6 +1846,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("dd"),
@@ -1639,6 +1864,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
             ],
             focused_field: if focused {
@@ -1653,6 +1879,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -1737,6 +1964,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: Some(WidgetId::new("note")),
             scroll_offset: 0,
@@ -1746,6 +1974,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         // `Theme::default()` sets `header_fg == foreground` (both the
         // neutral dark `fg` literal), which would make this test pass
@@ -1840,6 +2069,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -1849,6 +2079,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
         draw_form(&mut buf, Rect::new(0, 0, 30, 3), &f, &Theme::default());
@@ -1903,6 +2134,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -1912,6 +2144,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -2061,6 +2294,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2070,6 +2304,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -2282,6 +2517,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2291,6 +2527,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
@@ -2327,6 +2564,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2336,6 +2574,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
@@ -2368,6 +2607,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2377,6 +2617,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
@@ -2406,6 +2647,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2415,6 +2657,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 3));
         let vis = &layout.visible_fields[0];
@@ -2453,6 +2696,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2462,6 +2706,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 6), &form, &Theme::default());
         let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 6));
@@ -2493,6 +2738,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2502,6 +2748,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 5));
         draw_form(&mut buf, Rect::new(0, 0, 40, 5), &form, &Theme::default());
@@ -2549,6 +2796,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2558,6 +2806,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let col0 = cell_char(&buf, 0, 0);
@@ -2587,6 +2836,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2596,6 +2846,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
         let col0 = cell_char(&buf, 0, 0);
@@ -2652,6 +2903,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2661,6 +2913,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -2808,6 +3061,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2817,6 +3071,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -2867,6 +3122,238 @@ mod tests {
         assert_eq!(ev, back);
     }
 
+    // ── FieldKind::NumberInput paint round-trip ───────────────────────────
+
+    use crate::primitives::number_input::NumberInput;
+    use crate::primitives::radio_group::{RadioGroup, RadioOption};
+
+    fn make_number_input_form(number: NumberInput) -> Form {
+        Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("volume"),
+                label: label("Volume"),
+                kind: FieldKind::NumberInput(number),
+                hint: label(""),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        }
+    }
+
+    /// `FieldKind::NumberInput` paints through the real
+    /// `tui::draw_number_input` box rasteriser — a bordered control with
+    /// stepper glyphs, not a compact one-cell summary like `DatePicker`/
+    /// `ComboBox` — and reserves the 3 cell rows that box needs.
+    #[test]
+    fn number_input_field_paints_bordered_box_with_steppers() {
+        let mut number = NumberInput::new(WidgetId::new("volume"), 0.0, 100.0);
+        number.value = 42.0;
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        let f = make_number_input_form(number);
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let rows: Vec<String> = (0..3)
+            .map(|y| (0..40).map(|x| cell_char(&buf, x, y)).collect())
+            .collect();
+        assert!(
+            rows.iter().any(|r| r.contains('4') && r.contains('2')),
+            "committed value must be painted; rows: {rows:?}"
+        );
+        assert!(rows.iter().any(|r| r.contains('+')));
+        assert!(rows.iter().any(|r| r.contains('-')));
+    }
+
+    /// A `LabelPosition::Top`-resolved `NumberInput` reserves one extra
+    /// row above the control for the label line (`extra_row`), but the
+    /// control itself is still exactly 3 rows tall — not 3 + `extra_row`
+    /// — so it ends exactly at the end of its own field row and never
+    /// overdraws into the next field's row.
+    #[test]
+    fn number_input_with_top_label_control_box_is_exactly_three_rows() {
+        let mut number = NumberInput::new(WidgetId::new("volume"), 0.0, 100.0);
+        number.value = 42.0;
+        let mut top_field = field("volume", "Volume", FieldKind::NumberInput(number));
+        top_field.label_position = Some(LabelPosition::Top);
+        let after = field("after", "After", FieldKind::Toggle { value: false });
+        let f = Form {
+            id: WidgetId::new("f"),
+            fields: vec![top_field, after],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        };
+        // Row 0: label. Rows 1-3: the 3-row control. Row 4: the next field.
+        let area = Rect::new(0, 0, 30, 5);
+        let mut buf = Buffer::empty(area);
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let layout = tui_form_layout(&f, area);
+        let vis = &layout.visible_fields[0];
+        let (_, item_rect) = vis.item_bounds.first().expect("NumberInput has one item");
+        assert_eq!(item_rect.y, 1.0, "control starts right after the label row");
+        assert_eq!(
+            item_rect.height, 3.0,
+            "control height must be fixed at 3 rows, not the row's full height"
+        );
+
+        // Row 4 belongs to the "After" field, not the NumberInput's
+        // bordered box — it must not have been cleared/overdrawn by
+        // `draw_field_number_input`.
+        let row4: String = (0..30).map(|x| cell_char(&buf, x, 4)).collect();
+        assert!(row4.contains("After"), "row 4 (next field): {row4:?}");
+    }
+
+    // ── FieldKind::RadioGroup paint round-trip ────────────────────────────
+
+    fn make_radio_group_form(group: RadioGroup) -> Form {
+        Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("theme"),
+                label: label("Theme"),
+                kind: FieldKind::RadioGroup(group),
+                hint: label(""),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        }
+    }
+
+    /// `FieldKind::RadioGroup` paints every option on its own row through
+    /// the real `tui::draw_radio_group` rasteriser — unlike every other
+    /// field kind, the row is allowed to span more than one cell tall
+    /// (see `FormFieldMeasure::vertical`'s doc).
+    #[test]
+    fn radio_group_field_paints_one_row_per_option() {
+        let mut group = RadioGroup::new(
+            WidgetId::new("theme"),
+            vec![
+                RadioOption::new(WidgetId::new("theme:light"), "Light"),
+                RadioOption::new(WidgetId::new("theme:dark"), "Dark"),
+            ],
+        );
+        group.selected = Some(1);
+        let area = Rect::new(0, 0, 40, 2);
+        let mut buf = Buffer::empty(area);
+        let f = make_radio_group_form(group);
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let row0: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        let row1: String = (0..40).map(|x| cell_char(&buf, x, 1)).collect();
+        assert!(row0.contains("Light"), "row 0: {row0:?}");
+        assert!(row1.contains("Dark"), "row 1: {row1:?}");
+        assert!(
+            row1.contains('\u{2022}'),
+            "selected option's marker should paint; row 1: {row1:?}"
+        );
+    }
+
+    /// A `LabelPosition::Top`-resolved `RadioGroup` reserves one extra
+    /// row above its options for the label line (`extra_row`, see
+    /// `tui_form_layout_with_label_width`'s doc). Each option's painted
+    /// row must agree with its own hit region — before `items_start_y`
+    /// existed, the hit regions started at the row's top (the label's
+    /// own line), one row above where `draw_field_radio_group` actually
+    /// painted each option, so a click on the row showing "Light"
+    /// resolved to "Dark" instead.
+    #[test]
+    fn radio_group_with_top_label_paints_and_hit_tests_agree() {
+        use crate::primitives::form::FormHit;
+
+        let mut group = RadioGroup::new(
+            WidgetId::new("theme"),
+            vec![
+                RadioOption::new(WidgetId::new("theme:light"), "Light"),
+                RadioOption::new(WidgetId::new("theme:dark"), "Dark"),
+            ],
+        );
+        group.selected = Some(1);
+        let mut f = make_radio_group_form(group);
+        f.fields[0].label_position = Some(LabelPosition::Top);
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        draw_form(&mut buf, area, &f, &Theme::default());
+
+        let row0: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
+        let row1: String = (0..40).map(|x| cell_char(&buf, x, 1)).collect();
+        let row2: String = (0..40).map(|x| cell_char(&buf, x, 2)).collect();
+        assert!(row0.contains("Theme"), "row 0 (label): {row0:?}");
+        assert!(row1.contains("Light"), "row 1: {row1:?}");
+        assert!(row2.contains("Dark"), "row 2: {row2:?}");
+
+        let layout = tui_form_layout(&f, area);
+        let vis = &layout.visible_fields[0];
+        assert_eq!(
+            vis.item_bounds.len(),
+            2,
+            "both options must get a hit region: {:?}",
+            vis.item_bounds
+        );
+        let (light_id, light_rect) = &vis.item_bounds[0];
+        let (dark_id, dark_rect) = &vis.item_bounds[1];
+        assert_eq!(light_id, &WidgetId::new("theme:light"));
+        assert_eq!(dark_id, &WidgetId::new("theme:dark"));
+        assert_eq!(
+            light_rect.y, 1.0,
+            "\"Light\"'s hit region must start on row 1, not the label row"
+        );
+        assert_eq!(
+            dark_rect.y, 2.0,
+            "\"Dark\"'s hit region must start on row 2"
+        );
+
+        assert_eq!(
+            layout.hit_test(light_rect.x + 1.0, light_rect.y + 0.5),
+            FormHit::Field(WidgetId::new("theme:light")),
+            "a click on the row painted \"Light\" must resolve to \"Light\""
+        );
+        assert_eq!(
+            layout.hit_test(dark_rect.x + 1.0, dark_rect.y + 0.5),
+            FormHit::Field(WidgetId::new("theme:dark")),
+            "a click on the row painted \"Dark\" must resolve to \"Dark\""
+        );
+    }
+
     // ── CJK label paint↔measure agreement ───────────────────────────────
     //
     // `tui_form_layout` reserves `label.visible_width()` (display-width-aware)
@@ -2896,6 +3383,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2905,6 +3393,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
@@ -2973,6 +3462,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }],
             focused_field: None,
             scroll_offset: 0,
@@ -2982,6 +3472,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
@@ -3022,6 +3513,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -3041,6 +3533,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let area = Rect::new(0, 0, 30, 4);
         let mut buf = Buffer::empty(area);
@@ -3084,6 +3577,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         // Force an explicit column width wider than either label so
         // `End` alignment has room to shift "ID" rightward within it.
@@ -3126,6 +3620,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let area = Rect::new(0, 0, 30, 2);
         let mut buf = Buffer::empty(area);
@@ -3169,6 +3664,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);

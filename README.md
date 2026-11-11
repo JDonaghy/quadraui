@@ -84,7 +84,7 @@ The full version is `quadraui/examples/hello.rs`:
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
   silently doing nothing.
-- **Heavily tested.** Around 6,800 tests, including headless
+- **Heavily tested.** Around 7,200 tests, including headless
   paint-then-click round trips on all four backends, an end-to-end
   `TuiDriver` that drives real example apps through the event loop, and
   benchmarks for 100k-row tables and trees and a 4k-line editor.
@@ -113,7 +113,7 @@ comfortable with a pre-1.0 API.
 
 ## Status
 
-`0.9.x` — pre-1.0, published on crates.io. Breaking changes are grouped
+`0.10.x` — pre-1.0, published on crates.io. Breaking changes are grouped
 into scheduled minor releases and recorded in `CHANGELOG.md`. What a `0.x`
 release may change is D-019 in
 [`quadraui/docs/decisions/DECISIONS.md`](quadraui/docs/decisions/DECISIONS.md);
@@ -155,7 +155,7 @@ tracker.
 
 ```toml
 [dependencies]
-quadraui = { version = "0.9", features = ["tui", "gtk"] }
+quadraui = { version = "0.10", features = ["tui", "gtk"] }
 ```
 
 Feature flags, the system packages each backend needs, and every
@@ -207,11 +207,14 @@ Pick the backends you ship; `terminal` is independent of them.
 
 ## What's in the box
 
-**49 primitives**, one module each under `quadraui/src/primitives/`: a
+**50 primitive modules**, one each under `quadraui/src/primitives/`: a
 declarative description and a shared layout, each with a rasteriser per
 backend — except `DatePicker`, which currently ships layout/hit-test
 logic only and has no backend rasteriser yet (it is a seam, exercised
-headlessly via `quadraui/tests/date_picker_driver.rs`). Among them:
+headlessly via `quadraui/tests/date_picker_driver.rs`), and the two
+shared-math modules `layout_metrics` and `row_stack`, which hold
+arithmetic several primitives reuse rather than a widget of their own.
+Among them:
 
 - Content: `TreeView`, `ListView`, `DataTable`, `Form`, `Editor`,
   `TextDisplay`, `MessageList`, `DiffView`, `Chart`, `Board`, `Terminal`,
@@ -242,6 +245,7 @@ machines, so an app matches on semantic events (`MenuEvent::Activated`,
 | `SidebarPanelBody` | The standard layers of a sidebar panel body, composed. |
 | `TreeController` | A keyboard-navigable tree: selection, expand/collapse, scroll-follow. |
 | `FormController` | A form's focus, editing and validation. |
+| `FormDialogController` | A modal dialog hosting a multi-field form: field editing plus focus hand-off to the dialog's buttons. |
 | `DualModePaletteController` | A command palette that switches between modes. |
 | `ChatController` | A chat overlay: transcript plus input. |
 | `FilePickerController` / `FolderPickerController` | In-app file and folder pickers for backends without a native dialog. |

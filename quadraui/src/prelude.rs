@@ -49,9 +49,9 @@ pub use crate::frame::{ScreenLayout, Surface};
 // ── AppShell — the VS Code-style activity-bar/sidebar/editor frame.
 // `AppShellLayout` is what `ShellApp::render_content` receives each
 // frame (see the crate root `README.md` hello-world); `PanelDefinition`
-// and `FormController`/`FormControllerEvent` are the other `compose`
+// and `FormController`/`FormControllerAction` are the other `compose`
 // pieces a typical multi-pane app wires up alongside it.
-pub use crate::compose::{AppShellLayout, FormController, FormControllerEvent, PanelDefinition};
+pub use crate::compose::{AppShellLayout, FormController, FormControllerAction, PanelDefinition};
 
 // ── A representative sample of primitives (the crate root table's own
 // "representative sample", kept in sync with it — see `lib.rs`'s module
@@ -60,6 +60,9 @@ pub use crate::compose::{AppShellLayout, FormController, FormControllerEvent, Pa
 // has; this list is deliberately not exhaustive.
 pub use crate::primitives::form::{FieldKind, Form, FormField, FormLayout};
 pub use crate::primitives::list::{ListItem, ListView, ListViewLayout};
+// `Panel`/`PanelAction` are `#[deprecated]` (use `SidebarPanel` + `Toolbar`
+// instead); `pub use` of a deprecated item is itself a use site.
+#[allow(deprecated)]
 pub use crate::primitives::panel::{Panel, PanelAction, PanelLayout};
 pub use crate::primitives::split::{Split, SplitDirection, SplitLayout};
 pub use crate::primitives::status_bar::{StatusBar, StatusBarLayout, StatusBarSegment};

@@ -4110,6 +4110,7 @@ impl Backend for TuiBackend {
         crate::tui::tui_split_tree_layout(tree, area)
     }
 
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
     fn draw_panel(
         &mut self,
         rect: QRect,
@@ -4127,6 +4128,7 @@ impl Backend for TuiBackend {
         crate::tui::draw_panel(frame.buffer_mut(), area, panel, &theme)
     }
 
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
     fn panel_layout(
         &self,
         rect: QRect,
@@ -4672,9 +4674,7 @@ impl crate::backend::WindowControl for TuiBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{
-        Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions, Notification,
-    };
+    use crate::backend::MessageDialogOptions;
     use crate::{
         ListItem, ListView, Palette, PaletteItem, StyledSpan, StyledText, TerminalCursorShape,
         WidgetId,
@@ -4686,47 +4686,6 @@ mod tests {
     enum DrawCall {
         List { rect: QRect, item_count: usize },
         Palette { rect: QRect, item_count: usize },
-    }
-
-    struct NoopClipboard;
-    impl Clipboard for NoopClipboard {
-        fn read_text(&self) -> Option<String> {
-            None
-        }
-        fn write_text(&self, _t: &str) {}
-    }
-
-    struct MockServices {
-        clipboard: NoopClipboard,
-    }
-    impl MockServices {
-        fn new() -> Self {
-            Self {
-                clipboard: NoopClipboard,
-            }
-        }
-    }
-    impl PlatformServices for MockServices {
-        fn clipboard(&self) -> &dyn Clipboard {
-            &self.clipboard
-        }
-        fn show_file_open_dialog(&self, _opts: FileDialogOptions) -> Option<std::path::PathBuf> {
-            None
-        }
-        fn show_file_save_dialog(&self, _opts: FileDialogOptions) -> Option<std::path::PathBuf> {
-            None
-        }
-        fn show_folder_open_dialog(&self, _opts: FileDialogOptions) -> Option<std::path::PathBuf> {
-            None
-        }
-        fn show_message_dialog(&self, _opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
-            None
-        }
-        fn send_notification(&self, _n: Notification) {}
-        fn open_url(&self, _url: &str) {}
-        fn platform_name(&self) -> &'static str {
-            "mock"
-        }
     }
 
     /// An empty [`TabBarLayout`] for this mock's issue #919 stubs —
@@ -4749,7 +4708,7 @@ mod tests {
         calls: Vec<DrawCall>,
         modal_stack: Rc<RefCell<ModalStack>>,
         drag_state: Rc<RefCell<DragState>>,
-        services: MockServices,
+        services: crate::testing::NullPlatformServices,
         viewport: Viewport,
         theme: crate::Theme,
         focus: crate::focus::FocusManager,
@@ -4762,7 +4721,7 @@ mod tests {
                 calls: Vec::new(),
                 modal_stack: Rc::new(RefCell::new(ModalStack::new())),
                 drag_state: Rc::new(RefCell::new(DragState::new())),
-                services: MockServices::new(),
+                services: crate::testing::NullPlatformServices::new(),
                 viewport: Viewport::new(80.0, 24.0, 1.0),
                 theme: crate::Theme::default(),
                 focus: crate::focus::FocusManager::new(),
@@ -5242,6 +5201,7 @@ mod tests {
             )
         }
 
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this test double is its own plumbing.
         fn draw_panel(
             &mut self,
             _r: QRect,
@@ -5251,6 +5211,7 @@ mod tests {
             panel.layout(bounds, crate::primitives::panel::PanelMeasure::new(1.0))
         }
 
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this test double is its own plumbing.
         fn panel_layout(
             &self,
             _r: QRect,
@@ -6614,6 +6575,13 @@ mod tests {
         assert_eq!(
             key_to_activity_bar_string(&Key::Named(NamedKey::Down)),
             "Down"
+        );
+        // F13+ round-trips to "F13" rather than collapsing to a generic
+        // placeholder — the shared `NamedKey::name` table has no F-key
+        // upper bound.
+        assert_eq!(
+            key_to_activity_bar_string(&Key::Named(NamedKey::F(13))),
+            "F13"
         );
     }
 

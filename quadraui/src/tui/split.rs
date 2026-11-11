@@ -12,8 +12,9 @@ use ratatui::layout::Rect;
 
 use super::split_junction::upgrade_junctions;
 use super::{ratatui_color, set_cell};
-use crate::primitives::split::{Split, SplitDirection, SplitLayout, SplitMeasure};
+use crate::primitives::split::{Split, SplitDirection, SplitHit, SplitLayout, SplitMeasure};
 use crate::theme::Theme;
+use crate::types::WidgetId;
 
 const TUI_DIVIDER_THICKNESS: f32 = 1.0;
 
@@ -25,7 +26,79 @@ pub fn tui_split_layout(split: &Split, area: Rect) -> SplitLayout {
         area.width as f32,
         area.height as f32,
     );
-    split.layout(bounds, SplitMeasure::new(TUI_DIVIDER_THICKNESS))
+    let layout = split.layout(bounds, SplitMeasure::new(TUI_DIVIDER_THICKNESS));
+    snap_divider_hit_region_to_painted_cell(layout, split.direction, split.id)
+}
+
+/// Snaps the pane bounds and `layout.hit_regions` to the integer cell
+/// `draw_split` paints the divider at — `[trunc(position),
+/// trunc(position) + thickness)` — instead of the continuous
+/// `[position, position + thickness)` band `Split::layout` computes.
+///
+/// A TUI mouse click is always reported at an integer cell, and pane
+/// content is painted into whole cells, so with a fractional ratio
+/// (e.g. `0.5` over an odd `available`, landing on `39.5`) the float
+/// bounds would both miss the painted divider cell on click and let the
+/// first pane's content paint over it. After snapping, `first_bounds`
+/// ends exactly at the painted divider cell and `second_bounds` starts
+/// right after it. `divider_bounds` and `resolved_ratio` keep
+/// `Split::layout`'s precise float values.
+fn snap_divider_hit_region_to_painted_cell(
+    mut layout: SplitLayout,
+    direction: SplitDirection,
+    id: WidgetId,
+) -> SplitLayout {
+    match direction {
+        SplitDirection::Horizontal => {
+            let trunc_x = layout.divider_bounds.x.max(0.0).trunc();
+            let thickness = layout.divider_bounds.width;
+            let divider_hit = crate::event::Rect::new(
+                trunc_x,
+                layout.divider_bounds.y,
+                thickness,
+                layout.divider_bounds.height,
+            );
+            let second_right = layout.second_bounds.x + layout.second_bounds.width;
+            let second_hit = crate::event::Rect::new(
+                trunc_x + thickness,
+                layout.second_bounds.y,
+                (second_right - (trunc_x + thickness)).max(0.0),
+                layout.second_bounds.height,
+            );
+            layout.first_bounds.width = (trunc_x - layout.first_bounds.x).max(0.0);
+            layout.second_bounds = second_hit;
+            layout.hit_regions = vec![
+                (divider_hit, SplitHit::Divider(id)),
+                (layout.first_bounds, SplitHit::FirstPane(id)),
+                (second_hit, SplitHit::SecondPane(id)),
+            ];
+        }
+        SplitDirection::Vertical => {
+            let trunc_y = layout.divider_bounds.y.max(0.0).trunc();
+            let thickness = layout.divider_bounds.height;
+            let divider_hit = crate::event::Rect::new(
+                layout.divider_bounds.x,
+                trunc_y,
+                layout.divider_bounds.width,
+                thickness,
+            );
+            let second_bottom = layout.second_bounds.y + layout.second_bounds.height;
+            let second_hit = crate::event::Rect::new(
+                layout.second_bounds.x,
+                trunc_y + thickness,
+                layout.second_bounds.width,
+                (second_bottom - (trunc_y + thickness)).max(0.0),
+            );
+            layout.first_bounds.height = (trunc_y - layout.first_bounds.y).max(0.0);
+            layout.second_bounds = second_hit;
+            layout.hit_regions = vec![
+                (divider_hit, SplitHit::Divider(id)),
+                (layout.first_bounds, SplitHit::FirstPane(id)),
+                (second_hit, SplitHit::SecondPane(id)),
+            ];
+        }
+    }
+    layout
 }
 
 /// Draw a [`Split`] divider into `area` on `buf`. Returns the layout
@@ -44,7 +117,12 @@ pub fn draw_split(buf: &mut Buffer, area: Rect, split: &Split, theme: &Theme) ->
 
     match split.direction {
         SplitDirection::Horizontal => {
-            let x = div.x.round() as u16;
+            // Truncate (not round) the divider's own axis coordinate —
+            // the same float->cell convention as
+            // `SplitTreeDivider::cell_position`, so a fractional-ratio
+            // `Split` divider paints at the same cell a `SplitTree`
+            // divider at the same position would.
+            let x = div.x.max(0.0) as u16;
             let start_y = div.y.round() as u16;
             let h = div.height.round() as u16;
             let cells: Vec<(u16, u16)> = (0..h).map(|dy| (x, start_y + dy)).collect();
@@ -54,7 +132,8 @@ pub fn draw_split(buf: &mut Buffer, area: Rect, split: &Split, theme: &Theme) ->
             upgrade_junctions(buf, &cells, true, fg, bg);
         }
         SplitDirection::Vertical => {
-            let y = div.y.round() as u16;
+            // See the `Horizontal` arm above for why this truncates.
+            let y = div.y.max(0.0) as u16;
             let start_x = div.x.round() as u16;
             let w = div.width.round() as u16;
             let cells: Vec<(u16, u16)> = (0..w).map(|dx| (start_x + dx, y)).collect();
@@ -234,5 +313,66 @@ mod tests {
         assert_eq!(cell_char(&buf, div_x, 0), '│');
         assert_eq!(cell_char(&buf, div_x - 1, 0), ' ');
         assert_eq!(cell_char(&buf, div_x + 1, 0), ' ');
+    }
+
+    /// Pins the TUI divider float->cell conversion to truncation, not
+    /// rounding — the same rule `tui::split_tree`'s
+    /// `fractional_ratio_round_trip_at` pins for `SplitTree`. A ratio
+    /// chosen so the divider position is NOT cell-aligned (20.7, not
+    /// 20.0 or 21.0) makes a round-vs-truncate regression visible: with
+    /// `.round()` this would paint at column 21, not 20.
+    #[test]
+    fn divider_position_truncates_for_a_fractional_ratio() {
+        let area = Rect::new(0, 0, 101, 10); // available = 100
+        let mut buf = Buffer::empty(area);
+        let split = hsplit(0.207); // position = 20.7
+        let layout = draw_split(&mut buf, area, &split, &Theme::default());
+        assert!((layout.divider_bounds.x - 20.7).abs() < 0.01);
+
+        assert_eq!(cell_char(&buf, 20, 0), '│');
+        assert_eq!(cell_char(&buf, 21, 0), ' ');
+    }
+
+    /// A fractional divider position that lands exactly on a half-cell
+    /// boundary (`0.5` ratio over an odd `available`, e.g. 79) must still
+    /// be clickable at the cell it actually paints at — the integer
+    /// mouse coordinate a real TUI backend reports. Before
+    /// `snap_divider_hit_region_to_painted_cell`, the painted cell
+    /// (`39`, from truncating `39.5`) fell just outside the continuous
+    /// `[39.5, 40.5)` hit band, so this exact click silently missed.
+    #[test]
+    fn divider_is_clickable_at_the_cell_it_paints_at_for_a_half_cell_ratio() {
+        let area = Rect::new(0, 0, 80, 10); // available = 79, position = 39.5
+        let mut buf = Buffer::empty(area);
+        let split = hsplit(0.5);
+        let layout = draw_split(&mut buf, area, &split, &Theme::default());
+        assert!((layout.divider_bounds.x - 39.5).abs() < 0.01);
+
+        let painted_cell = 39u16;
+        assert_eq!(cell_char(&buf, painted_cell, 5), '│');
+        assert_eq!(
+            layout.hit_test(painted_cell as f32, 5.0),
+            SplitHit::Divider(split.id),
+            "clicking the exact painted cell must register as the divider"
+        );
+        assert_eq!(
+            layout.hit_test(40.0, 5.0),
+            SplitHit::SecondPane(split.id),
+            "the cell just past the divider is the second pane, not a dead zone"
+        );
+    }
+
+    /// Pane bounds abut the painted divider cell exactly, so content
+    /// painted into `first_bounds` can never cover the divider glyph.
+    #[test]
+    fn pane_bounds_abut_the_painted_divider_cell_for_a_half_cell_ratio() {
+        let area = Rect::new(0, 0, 20, 4); // available = 19, position = 9.5
+        let mut buf = Buffer::empty(area);
+        let layout = draw_split(&mut buf, area, &hsplit(0.5), &Theme::default());
+        assert_eq!(cell_char(&buf, 9, 0), '│');
+        assert_eq!(layout.first_bounds.x, 0.0);
+        assert_eq!(layout.first_bounds.width, 9.0);
+        assert_eq!(layout.second_bounds.x, 10.0);
+        assert_eq!(layout.second_bounds.width, 10.0);
     }
 }

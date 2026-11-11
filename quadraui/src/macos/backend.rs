@@ -80,6 +80,9 @@ use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead);
+// `MacBackend::draw_panel`/`panel_layout` are this type's own plumbing.
+#[allow(deprecated)]
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::radio_group::{
@@ -4289,6 +4292,7 @@ impl Backend for MacBackend {
             rect.height as f64,
         )
     }
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
     fn draw_panel(&mut self, rect: Rect, panel: &Panel) -> PanelLayout {
         let theme = self.current_theme;
         let line_height = self.current_line_height;
@@ -4300,9 +4304,88 @@ impl Backend for MacBackend {
             rect.height as f64,
             line_height,
         );
-        crate::primitives::panel::native_surface_paint::paint(panel, &layout, self, &theme);
+
+        // Paint the title bar through the mapped `SidebarPanel` +
+        // `Toolbar` header instead of `panel::native_surface_paint::
+        // paint`'s own title-bar painter. `layout` itself (this method's
+        // hit-test contract) stays `mac_panel_layout(...)`, unaffected
+        // by the swap.
+        //
+        // Only the title label and the title-bar background go through
+        // the delegate (`sidebar_panel::native_surface_paint::paint`).
+        // Action buttons are stripped out of the mapped header and
+        // painted here directly against `layout.visible_actions[i]`
+        // instead: the delegate measures each `Action` button by its
+        // own label width (`toolbar::measure_button`), while
+        // `layout.visible_actions` comes from `mac_panel_layout`'s fixed
+        // `PANEL_ACTION_BUTTON` width — the two widths only agree for
+        // glyphs that happen to measure exactly `PANEL_ACTION_BUTTON`
+        // wide, so delegating action paint too would let a glyph's
+        // painted pixels land outside its own hit-test rect.
+        if let Some(tb) = layout.title_bar_bounds {
+            let measure = crate::primitives::panel::PanelMeasure {
+                title_bar_height: tb.height,
+                action_button_width: crate::primitives::layout_metrics::pixel::PANEL_ACTION_BUTTON,
+                content_padding: 0.0,
+            };
+            if let Some(mut header) = panel.header_toolbar(tb, measure) {
+                // `header_toolbar` maps `panel.accent` straight onto
+                // `Toolbar::bg`, leaving it `None` (backend-picked
+                // default) when `panel.accent` is unset. `panel::
+                // native_surface_paint::paint`'s own contract instead
+                // fell back to `theme.separator` in that case — pin
+                // that default explicitly so an unaccented panel's
+                // title bar keeps its separator-coloured background
+                // rather than `sidebar_panel`'s own `theme.header_bg`
+                // default.
+                header.bg = Some(panel.accent.unwrap_or(theme.separator));
+                // `sidebar_panel`'s `ToolbarButton::Label` resolves an
+                // unset `fg` to `theme.muted_fg`; the title keeps
+                // `theme.foreground`, the same colour
+                // `panel::native_surface_paint::paint` drew it in.
+                if let Some(crate::ToolbarButton::Label { fg, .. }) = header.buttons.first_mut() {
+                    *fg = Some(theme.foreground);
+                }
+                // Drop the mapped `Action` buttons — painted below with
+                // the fixed-width hit-test bounds instead, see this
+                // block's own doc.
+                header
+                    .buttons
+                    .retain(|b| !matches!(b, crate::ToolbarButton::Action { .. }));
+                let sidebar = crate::primitives::sidebar_panel::SidebarPanel {
+                    id: panel.id,
+                    toolbar: Some(header),
+                    toolbar_height: Some(tb.height),
+                };
+                crate::primitives::sidebar_panel::native_surface_paint::paint(
+                    &sidebar, self, &theme, tb, tb.height, None, None,
+                );
+
+                let title_bg = panel.accent.unwrap_or(theme.separator);
+                for va in &layout.visible_actions {
+                    let Some(action) = panel.actions.get(va.action_idx) else {
+                        continue;
+                    };
+                    let action_bg = if action.is_active {
+                        theme.accent_bg
+                    } else {
+                        title_bg
+                    };
+                    self.surface_fill_rect(va.bounds, action_bg);
+                    let (gw, gh) = self.surface_measure_text(&action.icon);
+                    let glyph_x = va.bounds.x + (va.bounds.width - gw) / 2.0;
+                    self.surface_draw_icon_glyph(
+                        Rect::new(glyph_x, va.bounds.y, gw, gh),
+                        &action.icon,
+                        theme.foreground,
+                    );
+                }
+            }
+        }
+
         layout
     }
+    #[allow(deprecated)] // `Panel` is `#[deprecated]`; this backend impl is its own plumbing.
     fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout {
         super::panel::mac_panel_layout(
             panel,
@@ -8239,6 +8322,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             }
         }
 
@@ -8292,6 +8376,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
 
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);

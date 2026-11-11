@@ -782,16 +782,17 @@ impl PlatformServices for MacPlatformServices {
     /// itself is unit-testable without a live mac; only the
     /// `Command::spawn` below needs one. Shared with `tui::services` for
     /// its own macOS notification fallback leg.
-    fn send_notification(&self, n: Notification) {
+    fn send_notification(&self, n: Notification) -> ServiceResult<()> {
         let bundle_identifier = NSBundle::mainBundle()
             .bundleIdentifier()
             .map(|s| s.to_string());
         if should_use_notification_center(bundle_identifier.as_deref()) {
             self.send_notification_via_notification_center(&n);
-            return;
+            return Ok(());
         }
         let script = crate::desktop::display_notification_script(&n.title, &n.body, n.is_silent());
         let _ = Command::new("osascript").arg("-e").arg(&script).spawn();
+        Ok(())
     }
 
     fn open_url(&self, url: &str) {
@@ -800,14 +801,17 @@ impl PlatformServices for MacPlatformServices {
 
     /// Fallible twin of [`Self::open_url`], via
     /// [`crate::desktop::open_with_default`] — reports whether `open`
-    /// genuinely spawned instead of `open_url`'s discarded outcome.
-    /// Before this override, `open_url_result` fell to
-    /// [`crate::backend::PlatformServices::open_url_result`]'s default
-    /// (`open_url` then always `Ok(())`), so a `Command::spawn` failure
-    /// (e.g. `open` missing from `$PATH`) was silently reported as
-    /// success.
+    /// genuinely spawned instead of `open_url`'s discarded outcome. First
+    /// validates `url` through [`crate::desktop::validate_open_url`] (via
+    /// [`open_url_via`]), the same backend-neutral seam the `tui` and
+    /// `gtk` backends' own `open_url_result` run their input through, so a
+    /// bare path or a `file:` URL pointing at an executable or app bundle
+    /// is rejected with `Err(BackendError::Unsupported)` instead of being
+    /// handed to `open(1)`.
     fn open_url_result(&self, url: &str) -> ServiceResult<()> {
-        crate::desktop::open_with_default(std::ffi::OsStr::new(url))
+        open_url_via(url, |u| {
+            crate::desktop::open_with_default(std::ffi::OsStr::new(u))
+        })
     }
 
     /// `NSWorkspace::activateFileViewerSelectingURLs` on `path`'s
@@ -939,6 +943,19 @@ impl PlatformServices for MacPlatformServices {
     fn platform_name(&self) -> &'static str {
         "macos"
     }
+}
+
+// ── URL opening ──────────────────────────────────────────────────────────
+
+/// Shared body of [`MacPlatformServices::open_url_result`]: validates `url`
+/// through [`crate::desktop::validate_open_url`] before ever calling
+/// `open`, mirroring the `tui` and `gtk` backends' own `open_url_via` seam.
+/// `open` is a parameter (not a direct `crate::desktop::open_with_default`
+/// call inline) purely so tests can swap in a double that records whether
+/// it ran, instead of actually spawning `open(1)` against a live `NSWorkspace`.
+fn open_url_via(url: &str, open: impl FnOnce(&str) -> ServiceResult<()>) -> ServiceResult<()> {
+    crate::desktop::validate_open_url(url)?;
+    open(url)
 }
 
 /// Convert an AppKit `NSRect` (`CGRect`: `f64` origin + size) to
@@ -1324,6 +1341,64 @@ mod tests {
 
         let svc = MacPlatformServices::new();
         assert!(svc.open_url_result("https://example.com/1087").is_err());
+    }
+
+    /// `open_url_result` runs `crate::desktop::validate_open_url` before
+    /// ever touching `open(1)`: a bare filesystem path has no recognized
+    /// scheme, so it is rejected with the validator's own
+    /// `BackendError::Unsupported` and never reaches
+    /// `crate::desktop::open_with_default` at all. Needs no `$PATH`
+    /// manipulation, unlike the test above, since rejection happens before
+    /// any opener is spawned.
+    #[test]
+    fn open_url_result_rejects_a_bare_path_via_the_shared_validator() {
+        let svc = MacPlatformServices::new();
+        assert_eq!(
+            svc.open_url_result("/Applications/Calculator.app"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    /// `open_url_result` rejects a bare, non-`.app` path through the same
+    /// validator as the bundle-path case above — a bare path has no
+    /// scheme at all, so it's rejected regardless of extension.
+    #[test]
+    fn open_url_result_rejects_a_bare_non_bundle_path() {
+        let svc = MacPlatformServices::new();
+        assert_eq!(
+            svc.open_url_result("/etc/passwd"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    /// `open_url_via` (the seam [`MacPlatformServices::open_url_result`]
+    /// is built on) rejects a bare path before ever calling `open` — a
+    /// double that records whether it ran stands in for the real
+    /// `crate::desktop::open_with_default` call, since asserting "reached
+    /// the opener" against the live call would spawn `open(1)` for real.
+    #[test]
+    fn open_url_via_rejects_a_bare_path_before_invoking_the_opener() {
+        let opened = std::cell::Cell::new(false);
+        let result = open_url_via("/Applications/Calculator.app", |_| {
+            opened.set(true);
+            Ok(())
+        });
+        assert_eq!(result, Err(BackendError::Unsupported));
+        assert!(!opened.get());
+    }
+
+    /// An `https:` URL passes `crate::desktop::validate_open_url` and
+    /// reaches `open_url_via`'s `open` closure — unlike the bare-path
+    /// case above, which never calls it at all.
+    #[test]
+    fn open_url_via_passes_an_https_url_through_to_the_opener() {
+        let opened = std::cell::Cell::new(false);
+        let result = open_url_via("https://example.com/2143", |_| {
+            opened.set(true);
+            Ok(())
+        });
+        assert_eq!(result, Ok(()));
+        assert!(opened.get());
     }
 
     // ── Clipboard image/html/file-list/clear ───────────────────────────

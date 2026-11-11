@@ -375,13 +375,17 @@ impl BoardModel {
         None
     }
 
+    /// `key` is the string a backend's `key_to_binding_name`/
+    /// `key_to_focus_string` produces — [`crate::event::NamedKey::name`]'s
+    /// spellings (`"Down"`, `"Left"`, …), never the DOM `KeyboardEvent.key`
+    /// `"Arrow*"` family no quadraui backend emits.
     pub fn handle_key(&self, key: &str, _modifiers: Modifiers) -> Option<BoardAction> {
         let selected = self.selected_card_id.as_ref();
         match key {
-            "j" | "Down" | "ArrowDown" => Some(BoardAction::MoveSelection(MoveDir::Down)),
-            "k" | "Up" | "ArrowUp" => Some(BoardAction::MoveSelection(MoveDir::Up)),
-            "h" | "Left" | "ArrowLeft" => Some(BoardAction::MoveSelection(MoveDir::Left)),
-            "l" | "Right" | "ArrowRight" => Some(BoardAction::MoveSelection(MoveDir::Right)),
+            "j" | "Down" => Some(BoardAction::MoveSelection(MoveDir::Down)),
+            "k" | "Up" => Some(BoardAction::MoveSelection(MoveDir::Up)),
+            "h" | "Left" => Some(BoardAction::MoveSelection(MoveDir::Left)),
+            "l" | "Right" => Some(BoardAction::MoveSelection(MoveDir::Right)),
             "Enter" => selected.map(|id| BoardAction::OpenIssue(*id)),
             "g" => Some(BoardAction::JumpToTop),
             "G" => Some(BoardAction::JumpToBottom),
@@ -1619,6 +1623,22 @@ mod tests {
     fn handle_key_unknown_returns_none() {
         let m = make_model();
         assert_eq!(m.handle_key("Escape", Modifiers::default()), None);
+    }
+
+    /// No quadraui backend ever stringifies `NamedKey::Up`/`Down`/… as
+    /// `"ArrowUp"`/`"ArrowDown"`/… (`NamedKey::name` always produces
+    /// `"Up"`/`"Down"`), so `handle_key` does not special-case that
+    /// alias — it would never fire from a real key event.
+    #[test]
+    fn handle_key_does_not_accept_dom_arrow_key_spelling() {
+        let m = make_model();
+        for key in ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"] {
+            assert_eq!(
+                m.handle_key(key, Modifiers::default()),
+                None,
+                "key {key:?} is not a spelling any backend emits"
+            );
+        }
     }
 
     /// The keymap does not consume former workflow verb keys (`r`, `d`, `P`, `m`, `b`),

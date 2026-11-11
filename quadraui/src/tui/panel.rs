@@ -3,26 +3,38 @@
 //! Paints panel chrome: title bar (background + title text + action
 //! glyphs) and content-region background. Content itself is the app's
 //! responsibility — it draws into `layout.content_bounds`.
+//!
+//! Title bar painting routes through [`Panel::header_toolbar`]'s mapped
+//! [`crate::Toolbar`] header: the title/spacer/action positions come
+//! from [`Toolbar::layout_with_options`] rather than this module
+//! re-deriving them, so the only TUI-specific work left here is
+//! choosing how each [`ToolbarButton`] kind paints onto cells — a
+//! `Label` as plain text, an `Action` as a single glyph centred in its
+//! button (matching this crate's own chrome everywhere else a
+//! `PanelAction` paints), never the bracketed `[ icon label ]` style
+//! [`super::draw_toolbar`] uses for a standalone `Toolbar`.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::{qc, ratatui_color, set_cell};
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead); this
+// whole module is `Panel`'s own TUI rasteriser plumbing.
+#[allow(deprecated)]
 use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
+use crate::primitives::toolbar::{ToolbarButton, ToolbarItemMeasure, ToolbarLayoutOptions};
 use crate::theme::Theme;
 
 const TUI_TITLE_BAR_HEIGHT: f32 = 1.0;
 const TUI_ACTION_BUTTON_WIDTH: f32 = 3.0;
 
-/// Compute the TUI cell-unit layout for a [`Panel`] without painting.
-pub fn tui_panel_layout(panel: &Panel, area: Rect) -> PanelLayout {
-    let bounds = crate::event::Rect::new(
-        area.x as f32,
-        area.y as f32,
-        area.width as f32,
-        area.height as f32,
-    );
-    let measure = PanelMeasure {
+/// TUI chrome measurements for `panel` — shared by [`tui_panel_layout`]
+/// (hit-test layout, via [`Panel::layout`]) and [`draw_panel`] (paint,
+/// via [`Panel::header_toolbar`]) so both agree on the exact same
+/// title-bar height and action-button width.
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; this fn is its own plumbing.
+fn tui_panel_measure(panel: &Panel) -> PanelMeasure {
+    PanelMeasure {
         title_bar_height: if panel.title.is_some() {
             TUI_TITLE_BAR_HEIGHT
         } else {
@@ -30,13 +42,25 @@ pub fn tui_panel_layout(panel: &Panel, area: Rect) -> PanelLayout {
         },
         action_button_width: TUI_ACTION_BUTTON_WIDTH,
         content_padding: 0.0,
-    };
-    panel.layout(bounds, measure)
+    }
+}
+
+/// Compute the TUI cell-unit layout for a [`Panel`] without painting.
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; this fn is its own plumbing.
+pub fn tui_panel_layout(panel: &Panel, area: Rect) -> PanelLayout {
+    let bounds = crate::event::Rect::new(
+        area.x as f32,
+        area.y as f32,
+        area.width as f32,
+        area.height as f32,
+    );
+    panel.layout(bounds, tui_panel_measure(panel))
 }
 
 /// Draw a [`Panel`] chrome into `area` on `buf`. Returns the layout
 /// for host click dispatch. Content is NOT painted — the app draws
 /// into `layout.content_bounds`.
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; this fn is its own plumbing.
 pub fn draw_panel(buf: &mut Buffer, area: Rect, panel: &Panel, theme: &Theme) -> PanelLayout {
     let layout = tui_panel_layout(panel, area);
 
@@ -44,66 +68,98 @@ pub fn draw_panel(buf: &mut Buffer, area: Rect, panel: &Panel, theme: &Theme) ->
         return layout;
     }
 
+    let bounds = crate::event::Rect::new(
+        area.x as f32,
+        area.y as f32,
+        area.width as f32,
+        area.height as f32,
+    );
+    let measure = tui_panel_measure(panel);
+
     let title_bg = panel
         .accent
         .map(ratatui_color)
         .unwrap_or_else(|| qc(theme.separator));
     let title_fg = ratatui_color(theme.foreground);
 
-    // Paint title bar.
-    if let Some(tb) = layout.title_bar_bounds {
+    // Paint title bar, when present — `header_toolbar` returns `None`
+    // in exactly the cases `layout.title_bar_bounds` is `None` too.
+    if let (Some(tb), Some(header)) = (
+        layout.title_bar_bounds,
+        panel.header_toolbar(bounds, measure),
+    ) {
         let y = tb.y.round() as u16;
         let x_start = tb.x.round() as u16;
         let w = tb.width.round() as u16;
 
-        // Fill title bar background.
+        // Fill the whole title bar with its background first; the
+        // per-item loop below only overwrites action-button cells.
         for dx in 0..w {
             set_cell(buf, x_start + dx, y, ' ', title_fg, title_bg);
         }
 
-        // Title text (left-aligned, skip 1 cell padding).
-        if let Some(ref title) = panel.title {
-            let mut col = x_start + 1;
-            let end_x = x_start + w;
-            // Leave room for action buttons.
-            let text_end = layout
-                .visible_actions
-                .first()
-                .map(|a| a.bounds.x.round() as u16)
-                .unwrap_or(end_x);
-            for span in &title.spans {
-                for ch in span.text.chars() {
-                    if col >= text_end {
-                        break;
-                    }
-                    let fg = span.fg.map(ratatui_color).unwrap_or(title_fg);
-                    set_cell(buf, col, y, ch, fg, title_bg);
-                    col += 1;
+        // Lay the mapped header out with the same per-kind measure
+        // `Panel::header_toolbar`'s own doc promises matches
+        // `Panel::layout`'s action bounds: a fixed `action_button_width`
+        // per `Action`, the `Label`'s own text width otherwise. This is
+        // also what naturally reproduces the old "clip the title before
+        // it reaches the action buttons" behaviour — `Toolbar`'s own
+        // leading/trailing collision rule, not a hand-rolled `text_end`.
+        let header_layout = header.layout_with_options(
+            tb.x,
+            tb.y,
+            tb.width,
+            tb.height,
+            ToolbarLayoutOptions::default(),
+            |btn| match btn {
+                ToolbarButton::Action { .. } => {
+                    ToolbarItemMeasure::new(measure.action_button_width)
                 }
+                ToolbarButton::Label { text, .. } => {
+                    ToolbarItemMeasure::new(text.chars().count() as f32)
+                }
+                _ => ToolbarItemMeasure::new(0.0),
+            },
+        );
+
+        for vis in &header_layout.visible_items {
+            let vx = vis.bounds.x.round() as u16;
+            let vw = vis.bounds.width.round() as u16;
+            if vw == 0 {
+                continue;
             }
-        }
+            match &header.buttons[vis.item_idx] {
+                ToolbarButton::Label { text, fg } => {
+                    let color = fg.map(ratatui_color).unwrap_or(title_fg);
+                    for (col, ch) in (0u16..vw).zip(text.chars()) {
+                        set_cell(buf, vx + col, y, ch, color, title_bg);
+                    }
+                }
+                ToolbarButton::Action {
+                    label, is_active, ..
+                } => {
+                    let action_bg = if *is_active {
+                        ratatui_color(theme.accent_bg)
+                    } else {
+                        title_bg
+                    };
 
-        // Action buttons (right-aligned in title bar).
-        for va in &layout.visible_actions {
-            let ax = va.bounds.x.round() as u16;
-            let ay = va.bounds.y.round() as u16;
-            let aw = va.bounds.width.round() as u16;
-            let action = &panel.actions[va.action_idx];
-            let action_bg = if action.is_active {
-                ratatui_color(theme.accent_bg)
-            } else {
-                title_bg
-            };
+                    // Fill action button background.
+                    for dx in 0..vw {
+                        set_cell(buf, vx + dx, y, ' ', title_fg, action_bg);
+                    }
 
-            // Fill action button background.
-            for dx in 0..aw {
-                set_cell(buf, ax + dx, ay, ' ', title_fg, action_bg);
-            }
-
-            // Centre the first glyph of the icon in the button.
-            if let Some(glyph) = action.icon.chars().next() {
-                let gx = ax + aw / 2;
-                set_cell(buf, gx, ay, glyph, title_fg, action_bg);
+                    // Centre the first glyph of the icon (mapped onto
+                    // the button's `label`) in the button.
+                    if let Some(glyph) = label.chars().next() {
+                        let gx = vx + vw / 2;
+                        set_cell(buf, gx, y, glyph, title_fg, action_bg);
+                    }
+                }
+                // Already painted by the whole-bar background fill
+                // above; a `Toolbar` built by `header_toolbar` never
+                // contains a `Separator`.
+                ToolbarButton::Spacer | ToolbarButton::Separator => {}
             }
         }
     }
@@ -112,6 +168,7 @@ pub fn draw_panel(buf: &mut Buffer, area: Rect, panel: &Panel, theme: &Theme) ->
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // `Panel`/`PanelAction` are `#[deprecated]`; these tests cover their TUI rasteriser directly.
 mod tests {
     use super::*;
     use crate::primitives::panel::{Panel, PanelAction, PanelHit};
@@ -310,5 +367,30 @@ mod tests {
 
         let hit = layout.hit_test(glyph_x as f32 + 0.5, 0.5);
         assert_eq!(hit, PanelHit::Action(WidgetId::new("maximize")));
+    }
+
+    /// Pins the one visual divergence the `header_toolbar` seam introduces:
+    /// a multi-span title loses its per-span `fg` once mapped onto the
+    /// header's single [`crate::primitives::toolbar::ToolbarButton::Label`]
+    /// (`Panel::header_toolbar` flattens `title` to one plain string), so
+    /// every span paints in `theme.foreground` instead of its own color.
+    #[test]
+    fn multi_span_title_fg_is_flattened_to_theme_foreground() {
+        use crate::types::Color;
+
+        let area = Rect::new(0, 0, 30, 10);
+        let mut buf = Buffer::empty(area);
+        let mut panel = titled_panel();
+        let red = Color::rgb(200, 0, 0);
+        panel.title = Some(StyledText {
+            spans: vec![StyledSpan::with_fg("Red", red), StyledSpan::plain(" Plain")],
+        });
+        let theme = Theme::default();
+        draw_panel(&mut buf, area, &panel, &theme);
+
+        // Every title cell paints in `theme.foreground`, regardless of
+        // the span's own `fg`.
+        assert_eq!(buf[(1, 0)].fg, ratatui_color(theme.foreground));
+        assert_ne!(buf[(1, 0)].fg, ratatui_color(red));
     }
 }

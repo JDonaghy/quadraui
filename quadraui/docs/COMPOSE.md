@@ -86,6 +86,11 @@ the controller for you; you supply `BackendWidget` content per tab.
 
 **Events (`BottomPanelEvent`):** `TabActivated(String)`,
 `TabClosed(String)`, `MaximiseToggled`, `Resized(f32)`.
+`handle_click_event` returns `Handled<BottomPanelEvent>`: `Event(..)`
+for a tab activation/close/maximise toggle, `Consumed` for a dead-space
+click inside the tab strip, `Ignored` for a click outside the strip
+entirely. The older `handle_click` (returns `Option<BottomPanelEvent>`)
+is deprecated in favour of `handle_click_event`.
 
 **Smallest wiring:**
 
@@ -333,6 +338,50 @@ if let FormControllerEvent::FormAction(ev) = form.handle(&event, backend) {
 (`examples/common/form_scroll.rs`) — its `name` field demonstrates
 keyboard editing end to end; `FormScrollApp::handle` has no key-decoding
 arm of its own for it.
+
+---
+
+## `FormDialogController` — `src/compose/form_dialog.rs`
+
+**Owns:** a modal `Dialog` hosting a multi-field `Form` in its
+`DialogInput::Form` slot, plus the one piece neither primitive has
+alone: keyboard focus moving back and forth between the form's fields
+and the dialog's buttons. Field editing, validation and visibility are
+delegated to a `FormController`, so an embedded form behaves exactly
+like a full-page one. Push field data per frame via `set_form`, call
+`render` + `handle`.
+
+**Events (`FormDialogEvent`):** `ButtonClicked(WidgetId)` (a click, or
+Enter/Escape resolving to a button), `FormAction(FormEvent)` (field-level
+change/submit/focus from the embedded `Form`), `Consumed`, `Ignored`.
+
+**Keyboard model:** Tab / Shift+Tab traverse the form's focusable fields
+first, then step onto the first button (or, going backwards, the last)
+— one cyclic order across both widgets. Left / Right cycle among the
+buttons once a button has focus, mirroring `MessageDialogController`.
+Enter activates the focused button, or is forwarded to the form when no
+button has focus. Escape always resolves to the dialog's cancel button,
+falling back to its default button. Unlike a bare `FormController`
+consumer, this controller applies `FormEvent::FocusChanged` to its own
+stored form — a dialog is a self-contained modal — while still bubbling
+the event up as `FormAction`.
+
+**Smallest wiring:**
+
+```ignore
+let mut dialog = FormDialogController::new("create_milestone", "Create milestone")
+    .with_buttons(vec![cancel_button, create_button]);
+dialog.set_form(my_form_descriptor);
+dialog.render(backend);
+match dialog.handle(&event, backend) {
+    FormDialogEvent::ButtonClicked(id) if id.as_str() == "create" => submit(),
+    FormDialogEvent::FormAction(ev) => apply_field_change(ev),
+    _ => {}
+}
+```
+
+**Example:** `examples/tui_form_dialog.rs`
+(`examples/common/form_dialog_demo.rs`).
 
 ---
 
@@ -610,15 +659,18 @@ mouse event plus the bar's rect; read `hovered_id()` / `pressed_id()`
 at render time and pass them to `Backend::draw_status_bar`. Eliminates
 per-backend status-bar hover routing.
 
-**Events (`StatusBarAction`):** `Clicked(WidgetId)`, `Redraw`,
-`Ignored`.
+**Events (`Handled<WidgetId>` via `handle_event`):** `Event(WidgetId)`
+(a segment was clicked), `Consumed` (hover/press state changed, caller
+should redraw), `Ignored` (not relevant to the status bar). The older
+`handle` + `StatusBarAction` (`Clicked(WidgetId)`, `Redraw`, `Ignored`)
+is deprecated in favour of `handle_event`.
 
 **Smallest wiring:**
 
 ```ignore
-let action = self.status_interaction.handle(&event, bar_rect);
+let handled = self.status_interaction.handle_event(&event, bar_rect);
 backend.draw_status_bar(bar_rect, &segments, self.status_interaction.hovered_id());
-if let StatusBarAction::Clicked(id) = action { run_segment_command(id); }
+if let Handled::Event(id) = handled { run_segment_command(id); }
 ```
 
 **Example:** `examples/tui_full_chrome_demo.rs` / `examples/gtk_full_chrome_demo.rs`

@@ -148,11 +148,11 @@
 //! kind-dispatched decoder in this crate uses -- `&serde_json::Value`
 //! implements `serde::Deserializer` directly, so no extra wrapper is
 //! needed) and builds the [`NodeShellApp`]/driver pair around it.
-//! `AppShellEvent`/`BottomPanelEvent` have no `Serialize` derive upstream
-//! (same reason `quadraui-py` hand-builds their Python dict shape), so
-//! [`app_shell_event_to_json`]/[`bottom_panel_event_to_json`] hand-build
-//! the same externally-tagged JSON shape [`encode_via_json`] would give a
-//! derived enum, then convert that through `Env::to_js_value` directly.
+//! `AppShellEvent`/`BottomPanelEvent` each have their own hand-written
+//! `Serialize` impl upstream (not derived -- see that impl's own doc for
+//! why), so this binding converts them through `serde_json::to_value` +
+//! `Env::to_js_value` directly, the same `encode_via_json` shape every
+//! other derived-`Serialize` enum in this file gets.
 //!
 //! **Live run loop (`startTui`/`startNative`) / waker.** [`QuiApp`]
 //! otherwise only ever drives a headless `quadraui::tui::testing::TuiDriver`.
@@ -231,25 +231,35 @@
 //! the wrapped `JsonValue` via `UserPayload::downcast_ref` and delivering
 //! `{"User": value}` to the registered handler.
 //!
-//! No `ThreadsafeFunction` is needed to deliver a wake promptly: `TuiBackend`'s
-//! own `waker()` doc already spells out the embedding contract every host
-//! (this one included) gets for free -- a background post lands in a
-//! plain queue `poll_events`/`wait_events` drain unconditionally, with no
-//! way to interrupt an in-progress blocking wait early, so "prompt" means
-//! "observed on the next `step()` call" and a host that wants tighter
-//! latency keeps its own poll cadence short rather than relying on an
-//! early wake. [`QuiAppWaker::post_after`]/`::wake_after` spawn their own
-//! background thread purely to delay *when* the same already-thread-safe
-//! waker closure is called, reusing it rather than adding a second,
-//! TSFN-based notification path whose only addressable gain -- shaving the
-//! few milliseconds between that thread waking and the JS-side `pump`
-//! loop's next tick -- is already covered by `pump`'s own `intervalMs`
-//! knob.
+//! **Wake-driven stepping (`armWakeNotify`/`js/index.ts`'s `run`).**
+//! [`QuiApp::arm_wake_notify`] registers a no-argument [`ThreadsafeFunction`]
+//! that [`QuiAppWaker::post`]/`::wake`/`::post_after`/`::wake_after` each
+//! fire (via [`QuiAppWaker::notify`]) right after delivering into the plain
+//! queue `poll_events`/`wait_events` already drain -- the `uv_async_send`
+//! analog this module's own doc once argued was unnecessary, back when the
+//! only addressable gain was shaving a few milliseconds off a short poll
+//! cadence. `js/index.ts`'s `run` arms this once per live session and calls
+//! `step()` the instant it fires instead of polling on a fixed interval, so
+//! a session with no pending waker/timer work makes zero `step()` calls
+//! between wakes rather than one every `pump` tick. This covers two of the
+//! three wake sources a live session can have -- a background thread's
+//! `waker()` post, and a `postAfter`/`wake_after` timer, both already
+//! funneled through this same closure -- but not the third: real native
+//! input (a keypress, a mouse click) arriving on an idle `startNative`
+//! window. No backend exposes a poll-able OS handle a background thread
+//! could wait on without owning the window (`GtkRunner`/`MacRunner`/
+//! `WinRunner` are thread-affine, and moving one to a dedicated non-JS
+//! thread would still need every `AppLogic` callback it drives to cross
+//! back to the JS thread, which is a bigger seam than one `Backend` trait
+//! method); `run` falls back to a long-period safety-net poll for that case
+//! until a backend grows one. [`QuiAppWaker::post_after`]/`::wake_after`
+//! still spawn their own background thread purely to delay *when* the
+//! same already-thread-safe waker closure (and the notify alongside it) is
+//! called, reusing both rather than building a separate delay mechanism.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::io;
-use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -257,6 +267,7 @@ use std::thread;
 use std::time::Duration;
 
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
 use serde::de::DeserializeOwned;
@@ -267,9 +278,9 @@ use quadraui::tui::testing::{driver_with_shell, TuiDriver};
 use quadraui::tui::{RunConfig, StepOutcome, TuiRunner};
 use quadraui::{
     AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps, BottomPanelEvent, Button,
-    ContextMenuItem, DataTable, DialogButton, FloatMeasure, ListView, Notification, Point,
-    Reaction, Rect, RgbaImage, ShellApp, ShellConfig, ShellContext, TabBar, TextDisplay, Toast,
-    ToastCorner, TreeView, UiEvent, UserPayload, WidgetId,
+    ContextMenuItem, DataTable, DialogButton, FloatMeasure, ImageSource, ListView, Notification,
+    Point, PointerShape, Reaction, Rect, RgbaImage, ShellApp, ShellConfig, ShellContext, TabBar,
+    TextDisplay, Toast, ToastCorner, Tooltip, TreeView, UiEvent, UserPayload, WidgetId,
 };
 #[cfg(test)]
 use quadraui_binding_core::callback_reaction;
@@ -294,14 +305,21 @@ use quadraui_binding_core::callback_reaction;
 ))]
 use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
-    callback_reaction_for_render, caret_shape, click_down_up_events, color_depth_name,
+    add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction_for_render,
+    caret_shape, clear_recent_documents, click_down_up_events, color_depth_name,
     decode_extra_primitive, decode_render_output, decode_shell_config, dialog_severity, draw_bands,
-    font_role, key_pressed_event, merge_overrides, message_dialog_options_from_buttons,
-    paint_layout, panic_message, render_overlays, step_driver, text_display_from_lines,
-    theme_color_value, toast_corner, window_close_reaction, BindingHost, DecodeError,
-    ErasedShellDriver, EventSink, HitDetail, InteractionEngine, OverrideError, RenderOutput,
-    WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY,
-    SLOT_TREE,
+    end_power_save_block, font_role, guarded as core_guarded, install_crash_handler,
+    is_default_protocol_client, key_pressed_event, login_item_enabled, menu_for_surface,
+    merge_overrides, message_dialog_options_from_buttons, paint_layout, pointer_shape,
+    record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
+    resolve_layout_node, resolve_render_refs, set_app_identifier, set_as_default_protocol_client,
+    set_dock_menu, set_jump_list, set_login_item, step_driver,
+    take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
+    toast_corner, update_apply_on_quit, update_check_for_update, update_download_and_stage,
+    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
+    ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, OverrideError,
+    RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE,
+    SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 #[cfg(test)]
 use quadraui_binding_core::{decode_layout_node, LayoutNode};
@@ -335,6 +353,32 @@ type NodeCallback = FunctionRef<Unknown<'static>, Unknown<'static>>;
 /// held for the instant of a clone or a swap, never across a call into the
 /// wrapped closure itself.
 type SharedWaker = Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>;
+
+/// The threadsafe function [`QuiApp::arm_wake_notify`] registers, called
+/// with no arguments every time [`QuiAppWaker::notify`] runs -- shared
+/// (like [`SharedWaker`]) between every [`QuiAppWaker`] handle this app
+/// hands out, so arming it once covers every handle regardless of which
+/// one a background thread happens to call `post`/`wake`/`postAfter`/
+/// `wakeAfter` through. `None` until `arm_wake_notify` is called, and
+/// again after `disarm_wake_notify` or this app being dropped (dropping
+/// the last `Arc<WakeNotifyFn>` releases its underlying
+/// `napi_threadsafe_function`, unblocking the event loop it was keeping
+/// alive). An `Arc` around the `ThreadsafeFunction` itself, not a bare
+/// value: `ThreadsafeFunction` has no public way to construct a second
+/// handle to the same underlying call target outside this crate, so
+/// every clone of this cell's content needs to share the one instance
+/// `arm_wake_notify` built.
+type WakeNotify = Arc<Mutex<Option<Arc<WakeNotifyFn>>>>;
+
+/// The exact `ThreadsafeFunction` instantiation [`QuiApp::arm_wake_notify`]
+/// builds -- `CalleeHandled = false` (the `build_threadsafe_function`
+/// builder's own default, unlike [`ThreadsafeFunction`]'s bare-type
+/// default of `true`) is spelled out explicitly here rather than left
+/// implicit, since the two callers on [`QuiAppWaker`] (an infallible,
+/// no-payload "please step soon" ping) need [`ThreadsafeFunction::call`]'s
+/// `CalleeHandled = false` overload, which takes `T` directly rather than
+/// `Result<T, ErrorStatus>`.
+type WakeNotifyFn = ThreadsafeFunction<(), (), (), Status, false>;
 
 /// A single [`Backend::waker`] closure, captured once by
 /// [`NodeAppLogic::setup`] and read back exactly once by
@@ -561,24 +605,47 @@ fn request_exit_before_drop(live: &mut LiveRunner) {
 
 /// One action a [`QuiAppActions`] method recorded, already decoded and
 /// validated, waiting for [`flush_deferred_actions`] to apply it -- the
-/// napi-rs analog of `quadraui-py`'s own `DeferredAction`, covering the
-/// subset of its variants this crate's `actions()` exposes today
-/// (dialogs/menus/toasts/notifications/OS file actions; no window-control
-/// or tray surface exists on this crate's `QuiApp` yet to mirror). Each
-/// variant carries exactly the already-decoded arguments the matching
+/// napi-rs analog of `quadraui-py`'s own `DeferredAction`. Each variant
+/// carries exactly the already-decoded arguments the matching
 /// [`QuiAppActions`] method passes to the same underlying
 /// `quadraui`/`quadraui_binding_core` call, so applying one in
 /// [`flush_deferred_actions`] is a direct Rust call with no further
-/// decoding or validation left to do.
+/// decoding or validation left to do -- except [`Self::SetDockMenu`]/
+/// [`Self::SetJumpList`], whose own `quadraui_binding_core::services` call
+/// still does its own items decode at flush time, same as every other
+/// variant's matching `QuiApp` method does synchronously -- see
+/// `quadraui-py`'s `test_deferred_actions.py` module doc for why that one
+/// exception exists. [`Self::HideTooltip`] carries no argument at all --
+/// `QuiApp::hideTooltip` itself takes none -- so [`flush_deferred_actions`]
+/// applies it via the same [`InteractionEngine::hide_tooltip`] call that
+/// method makes directly.
 enum DeferredAction {
     MessageDialog(quadraui::MessageDialogOptions),
     ContextMenu(Vec<ContextMenuItem>, Point),
     Toast(Toast, ToastCorner),
+    Tooltip(Tooltip, Rect),
+    HideTooltip,
     Notification(Notification),
     OpenPath(PathBuf),
     RevealInFileManager(PathBuf),
     MoveToTrash(PathBuf),
     RestoreFromTrash(PathBuf),
+    ApplyUpdateOnQuit(u64),
+    EndPowerSaveBlock(u64),
+    SetLoginItem(bool, bool, Vec<String>),
+    SetAsDefaultProtocolClient(String),
+    RemoveAsDefaultProtocolClient(String),
+    BeginDragOut(Vec<String>, Option<String>),
+    AddRecentDocument(PathBuf),
+    ClearRecentDocuments,
+    SetDockMenu(JsonValue),
+    SetJumpList(JsonValue),
+    TrayIcon(ImageSource),
+    TrayTooltip(String),
+    TrayMenu(Vec<ContextMenuItem>),
+    DocumentEdited(bool),
+    RepresentedFilename(Option<PathBuf>),
+    Cursor(PointerShape),
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin napi-rs leaf around
@@ -690,18 +757,29 @@ impl NodeAppLogic {
 
     /// Drives [`Self::host`]'s hover-tooltip tracker for this dispatch —
     /// [`BindingHost::drive_hover_tooltip`] fed [`BindingHost::now_ms`]'s
-    /// own real wall clock and [`Self::host`]'s own `style.tooltip_delay_ms`
-    /// (or the behaviour-preserving default when no style has been set) —
-    /// mirrors `quadraui-py`'s own `PyAppLogic::drive_hover_tooltip`.
+    /// own real wall clock, or a test-pinned value once
+    /// `QuiApp.setTestClockMs` has set [`BindingHost::test_clock_ms`] (see
+    /// that field's own doc), and [`Self::host`]'s own
+    /// `style.tooltip_delay_ms`/`tooltip_auto_dismiss_ms` (or the
+    /// behaviour-preserving defaults when no style has been set) —
+    /// mirrors `quadraui-py`'s own `PyAppLogic::drive_hover_tooltip`,
+    /// including forwarding `backend` so the pending/auto-dismiss wake
+    /// reaches `backend.request_frame_in` directly rather than only
+    /// through the returned [`Reaction`].
     /// Called from both [`AppLogic::handle`] (so a hover change is
     /// noticed the same frame) and [`AppLogic::tick`] (so the delay still
     /// elapses with the pointer held still and no further event
     /// arriving).
-    fn drive_hover_tooltip(&mut self) -> Reaction {
+    fn drive_hover_tooltip(&mut self, backend: &mut dyn Backend) -> Reaction {
         let now_ms = self.host.now_ms();
-        let delay_ms = self.host.style.unwrap_or_default().tooltip_delay_ms;
-        self.host
-            .drive_hover_tooltip(&mut self.engine, now_ms, delay_ms)
+        let style = self.host.style.unwrap_or_default();
+        self.host.drive_hover_tooltip(
+            &mut self.engine,
+            backend,
+            now_ms,
+            style.tooltip_delay_ms,
+            style.tooltip_auto_dismiss_ms,
+        )
     }
 }
 
@@ -723,22 +801,24 @@ impl AppLogic for NodeAppLogic {
         self.captured_waker.set(Some(backend.waker()));
     }
 
-    /// With no render callback registered, paints [`Self::host`]'s six
-    /// fixed slots plus the anchored overlay pass every binding's `render`
-    /// runs -- see [`render_overlays`]'s own doc. With one registered,
-    /// invokes it instead via [`render_output_from_callback`] and paints
-    /// whatever flat/tree frame it returned, skipping [`Self::host`]
+    /// With no render callback registered, resolves [`Self::host`]'s six
+    /// fixed slots against [`InteractionEngine::widget_state`] via
+    /// [`resolve_render_refs`] (so an uncontrolled `Tree`/`List`/
+    /// `DataTable`'s cursor/scroll, `TabBar`'s active tab, etc. paint this
+    /// frame's resolved value rather than whatever raw descriptor the app
+    /// set) before painting them plus the anchored overlay pass every
+    /// binding's `render` runs -- see [`render_overlays`]'s own doc. With
+    /// a render callback registered, invokes it instead via
+    /// [`render_output_from_callback`] and resolves+paints whatever flat/
+    /// tree frame it returned the identical way, skipping [`Self::host`]
     /// entirely for this frame -- mirrors `quadraui-py`'s own `render`.
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut hits = Vec::new();
         let chrome_interaction = |id: WidgetId| self.engine.chrome_interaction(id);
         let Some(callback) = self.render_callback.as_ref() else {
-            draw_bands(
-                backend,
-                self.host.render_refs(),
-                &mut hits,
-                &chrome_interaction,
-            );
+            let resolved =
+                resolve_render_refs(self.engine.widget_state(), backend, self.host.render_refs());
+            draw_bands(backend, resolved.as_refs(), &mut hits, &chrome_interaction);
             render_overlays(&self.engine, backend, hits);
             return;
         };
@@ -754,11 +834,14 @@ impl AppLogic for NodeAppLogic {
         };
         match render_output_from_callback(env, callback, &self.pending_error) {
             Some(RenderOutput::Flat(frame)) => {
-                draw_bands(backend, frame.as_refs(), &mut hits, &chrome_interaction)
+                let resolved =
+                    resolve_render_refs(self.engine.widget_state(), backend, frame.as_refs());
+                draw_bands(backend, resolved.as_refs(), &mut hits, &chrome_interaction)
             }
-            Some(RenderOutput::Tree(node)) => {
+            Some(RenderOutput::Tree(mut node)) => {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
                 paint_layout(backend, area, &node, &mut hits, &chrome_interaction);
             }
             None => {}
@@ -795,7 +878,7 @@ impl AppLogic for NodeAppLogic {
             }
             _ => Reaction::Continue,
         };
-        let reaction = reaction.merge(self.drive_hover_tooltip());
+        let reaction = reaction.merge(self.drive_hover_tooltip(backend));
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw
@@ -822,7 +905,7 @@ impl AppLogic for NodeAppLogic {
             }
             _ => Reaction::Continue,
         };
-        let reaction = reaction.merge(self.drive_hover_tooltip());
+        let reaction = reaction.merge(self.drive_hover_tooltip(backend));
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw
@@ -834,16 +917,14 @@ impl AppLogic for NodeAppLogic {
 
 /// Records `err` into `pending_error`, but only if no earlier error in the
 /// same dispatch already claimed the slot -- the napi-rs analog of
-/// `quadraui-py`'s own `record_error`. Without this, a handler raise
+/// `quadraui-py`'s own `record_error`, via [`record_pending_error`]'s
+/// shared "first error wins" contract. Without this, a handler raise
 /// (recorded first) followed by the render callback also raising while
 /// painting the same frame would have the render error silently clobber the
 /// handler's -- the one a caller actually wants to see, since it is closer
 /// to the root cause.
 fn record_error(pending_error: &Rc<RefCell<Option<Error>>>, err: Error) {
-    let mut slot = pending_error.borrow_mut();
-    if slot.is_none() {
-        *slot = Some(err);
-    }
+    record_pending_error(&mut pending_error.borrow_mut(), err);
 }
 
 /// Takes and re-raises any error a registered callback recorded during the
@@ -859,10 +940,7 @@ fn take_pending_error(app: &mut NodeAppLogic) -> Result<()> {
 /// whose own `NodeAppLogic` is reachable only through a [`NativeLiveState`]
 /// clone of this same cell, never the real [`NodeAppLogic`] itself.
 fn take_pending_error_cell(pending_error: &Rc<RefCell<Option<Error>>>) -> Result<()> {
-    if let Some(err) = pending_error.borrow_mut().take() {
-        return Err(err);
-    }
-    Ok(())
+    core_take_pending_error(&mut pending_error.borrow_mut())
 }
 
 /// Calls `callback` (borrowed back from its stored [`NodeCallback`] via
@@ -1122,40 +1200,175 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app: &mut NodeAppLogic) -> 
             DeferredAction::Toast(toast, corner) => {
                 app.engine.show_toast(toast, corner);
             }
+            DeferredAction::Tooltip(tooltip, anchor) => {
+                app.engine.show_tooltip(tooltip, anchor);
+            }
+            DeferredAction::HideTooltip => {
+                app.engine.hide_tooltip();
+            }
             DeferredAction::Notification(notification) => {
-                backend.services().send_notification(notification);
+                if let Err(err) = service_result(
+                    "send_notification",
+                    backend.services().send_notification(notification),
+                ) {
+                    record_error(&app.pending_error, err);
+                }
             }
             DeferredAction::OpenPath(path) => {
-                if let Err(err) = backend.services().open_path(&path) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("open_path: {err:?}")),
-                    );
+                if let Err(err) = service_result("open_path", backend.services().open_path(&path)) {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::RevealInFileManager(path) => {
-                if let Err(err) = backend.services().reveal_in_file_manager(&path) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("reveal_in_file_manager: {err:?}")),
-                    );
+                if let Err(err) = service_result(
+                    "reveal_in_file_manager",
+                    backend.services().reveal_in_file_manager(&path),
+                ) {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::MoveToTrash(path) => {
-                if let Err(err) = backend.services().move_to_trash(&path) {
-                    record_error(
-                        &app.pending_error,
-                        internal_error(format!("move_to_trash: {err:?}")),
-                    );
+                if let Err(err) =
+                    service_result("move_to_trash", backend.services().move_to_trash(&path))
+                {
+                    record_error(&app.pending_error, err);
                 }
             }
             DeferredAction::RestoreFromTrash(path) => {
-                if let Err(err) = backend.services().restore_from_trash(&path) {
+                if let Err(err) = service_result(
+                    "restore_from_trash",
+                    backend.services().restore_from_trash(&path),
+                ) {
+                    record_error(&app.pending_error, err);
+                }
+            }
+            DeferredAction::ApplyUpdateOnQuit(handle) => {
+                if let Err(err) = update_apply_on_quit(backend.services(), handle) {
                     record_error(
                         &app.pending_error,
-                        internal_error(format!("restore_from_trash: {err:?}")),
+                        service_error_to_napi("apply_on_quit", err),
                     );
                 }
+            }
+            DeferredAction::EndPowerSaveBlock(handle) => {
+                if let Err(err) = end_power_save_block(backend.services(), handle) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("end_power_save_block", err),
+                    );
+                }
+            }
+            DeferredAction::SetLoginItem(enabled, open_hidden, args) => {
+                if let Err(err) = set_login_item(backend.services(), enabled, open_hidden, args) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("set_login_item", err),
+                    );
+                }
+            }
+            DeferredAction::SetAsDefaultProtocolClient(scheme) => {
+                if let Err(err) = set_as_default_protocol_client(backend.services(), &scheme) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("set_as_default_protocol_client", err),
+                    );
+                }
+            }
+            DeferredAction::RemoveAsDefaultProtocolClient(scheme) => {
+                if let Err(err) = remove_as_default_protocol_client(backend.services(), &scheme) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("remove_as_default_protocol_client", err),
+                    );
+                }
+            }
+            DeferredAction::BeginDragOut(files, text) => {
+                if let Err(err) = begin_drag_out(backend.services(), files, text) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("begin_drag_out", err),
+                    );
+                }
+            }
+            DeferredAction::AddRecentDocument(path) => {
+                if let Err(err) = add_recent_document(backend.services(), &path.to_string_lossy()) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("add_recent_document", err),
+                    );
+                }
+            }
+            DeferredAction::ClearRecentDocuments => {
+                if let Err(err) = clear_recent_documents(backend.services()) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("clear_recent_documents", err),
+                    );
+                }
+            }
+            DeferredAction::SetDockMenu(items) => {
+                if let Err(err) = set_dock_menu(backend.services(), items) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("set_dock_menu", err),
+                    );
+                }
+            }
+            DeferredAction::SetJumpList(items) => {
+                if let Err(err) = set_jump_list(backend.services(), items) {
+                    record_error(
+                        &app.pending_error,
+                        service_error_to_napi("set_jump_list", err),
+                    );
+                }
+            }
+            DeferredAction::TrayIcon(icon) => {
+                if let Err(err) =
+                    service_result("set_tray_icon", with_tray(backend, |t| t.set_icon(icon)))
+                {
+                    record_error(&app.pending_error, err);
+                }
+            }
+            DeferredAction::TrayTooltip(tooltip) => {
+                if let Err(err) = service_result(
+                    "set_tray_tooltip",
+                    with_tray(backend, |t| t.set_tooltip(&tooltip)),
+                ) {
+                    record_error(&app.pending_error, err);
+                }
+            }
+            DeferredAction::TrayMenu(items) => {
+                let menu = menu_for_surface(WidgetId::new("qui-tray-menu"), items);
+                if let Err(err) =
+                    service_result("set_tray_menu", with_tray(backend, |t| t.set_menu(&menu)))
+                {
+                    record_error(&app.pending_error, err);
+                }
+            }
+            DeferredAction::DocumentEdited(edited) => {
+                if let Err(err) = service_result(
+                    "set_document_edited",
+                    with_window(backend, |w| w.set_document_edited(edited)),
+                ) {
+                    record_error(&app.pending_error, err);
+                }
+            }
+            DeferredAction::RepresentedFilename(path) => {
+                if let Err(err) = service_result(
+                    "set_represented_filename",
+                    with_window(backend, |w| w.set_represented_filename(path.as_deref())),
+                ) {
+                    record_error(&app.pending_error, err);
+                }
+            }
+            DeferredAction::Cursor(shape) => {
+                // Fire-and-forget, the same shape `quadraui-py`'s own
+                // `DeferredAction::Cursor` arm uses: whether the glyph was
+                // actually applied is only observable synchronously via
+                // `QuiApp::set_cursor`'s own return value, and a deferred
+                // action by definition isn't applied until after that
+                // return value would already be gone.
+                let _ = backend.set_cursor(shape);
             }
         }
     }
@@ -1203,6 +1416,55 @@ fn slot_occupied_error(detail: impl std::fmt::Display) -> Error {
 /// `quadraui-py`'s `InternalError` exception subclass.
 fn internal_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("InternalError: {detail}"))
+}
+
+/// Mirrors [`invalid_descriptor_error`] for a
+/// [`quadraui_binding_core::services::ServiceError::Unsupported`] --
+/// this backend has no implementation at all for the platform-services
+/// seam called, distinct from a genuine failure ([`internal_error`]) --
+/// the napi-rs analog of `quadraui-py`'s `UnsupportedError` exception
+/// subclass.
+fn unsupported_error(detail: impl std::fmt::Display) -> Error {
+    Error::from_reason(format!("UnsupportedError: {detail}"))
+}
+
+/// Maps a `quadraui_binding_core::services` call's [`ServiceError`] to this
+/// binding's own tagged-`Error` taxonomy, prefixed with `what` -- the one
+/// place every platform-services method this crate exposes (update,
+/// power-save blocker, launch-at-login, protocol registration, drag-out,
+/// recent documents/dock menu/jump list, `appPath`, `installCrashHandler`)
+/// routes its `Err` through, the napi-rs analog of `quadraui-py`'s
+/// `service_error_to_py`. [`ServiceError::Unsupported`] becomes
+/// [`unsupported_error`] (this backend has no implementation at all --
+/// distinct from a genuine failure); [`ServiceError::Failure`] becomes
+/// [`internal_error`] (the backend tried and it broke);
+/// [`ServiceError::InvalidArgument`] becomes [`invalid_descriptor_error`]
+/// (a wire argument -- an enum-name string, a descriptor object -- never
+/// even reached a service call).
+fn service_error_to_napi(what: &str, err: ServiceError) -> Error {
+    match err {
+        ServiceError::Unsupported => {
+            unsupported_error(format!("{what}: unsupported on this backend"))
+        }
+        ServiceError::Failure(context) => internal_error(format!("{what}: {context}")),
+        ServiceError::InvalidArgument(message) => {
+            invalid_descriptor_error(format!("{what}: {message}"))
+        }
+        // `ServiceError` is `#[non_exhaustive]`: a future core variant this
+        // leaf doesn't know about yet still raises a tagged error rather
+        // than failing to compile.
+        other => internal_error(format!("{what}: {other}")),
+    }
+}
+
+/// Maps a [`quadraui::ServiceResult`] failure to [`internal_error`],
+/// prefixed with `what` -- the one place every `PlatformServices`/
+/// `WindowControl`/`TrayService` method this crate exposes
+/// (`openPath`/`moveToTrash`/.../`setTrayIcon`/`setDocumentEdited`/...)
+/// routes its `Err` through, the napi-rs analog of `quadraui-py`'s own
+/// `service_result`.
+fn service_result(what: &str, result: quadraui::ServiceResult<()>) -> Result<()> {
+    result.map_err(|err| internal_error(format!("{what}: {err:?}")))
 }
 
 /// Mirrors [`invalid_descriptor_error`] for a byte buffer whose length
@@ -1345,6 +1607,40 @@ fn encode_via_json<T: Serialize>(env: Env, what: &str, value: &T) -> Result<Unkn
     })?;
     env.to_js_value(&json)
         .map_err(|err| invalid_descriptor_error(format!("{what}: failed to convert to JS: {err}")))
+}
+
+/// The camelCase JS shape `QuiApp::widget_state` encodes
+/// [`quadraui_binding_core::WidgetStateSnapshot`] into -- every other
+/// field this crate hands to JS already reaches it camelCase (`scrollPx`,
+/// `scrollOffset` on the six fixed descriptors themselves), so this
+/// mirrors that rather than exposing the snapshot's own Rust
+/// `snake_case` field names verbatim.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WidgetStateJs {
+    selected_path: Option<Vec<u16>>,
+    selected_index: Option<usize>,
+    scroll_offset: Option<usize>,
+    // Widens through `serde_json::to_value`'s `f32` -> `f64` promotion on
+    // its way to JS, same as every other `f32` this crate hands across the
+    // boundary -- a ratio like `0.3` round-trips as `0.30000001192092896`,
+    // not the shorter decimal a hand-authored `f64` literal would give.
+    split_ratio: Option<f32>,
+    active_tab: Option<usize>,
+    expanded: Option<Vec<Vec<u16>>>,
+}
+
+impl From<quadraui_binding_core::WidgetStateSnapshot> for WidgetStateJs {
+    fn from(snapshot: quadraui_binding_core::WidgetStateSnapshot) -> Self {
+        Self {
+            selected_path: snapshot.selected_path,
+            selected_index: snapshot.selected_idx,
+            scroll_offset: snapshot.scroll_offset,
+            split_ratio: snapshot.ratio,
+            active_tab: snapshot.active_tab,
+            expanded: snapshot.expanded,
+        }
+    }
 }
 
 /// Decodes `descriptor` by first materializing it into one
@@ -1583,6 +1879,36 @@ impl QuiAppActions {
         Ok(())
     }
 
+    /// Queues a [`DeferredAction::Tooltip`] -- same arguments, same
+    /// decoding, as `QuiApp.showTooltip`. `tooltip` decodes as a plain
+    /// object shaped like [`Tooltip`]; `anchor` as a plain
+    /// `{x, y, width, height}` object.
+    #[napi(js_name = "showTooltip")]
+    pub fn show_tooltip(&self, env: Env, tooltip: Unknown, anchor: Unknown) -> Result<()> {
+        let tooltip: Tooltip = decode_direct(env, "showTooltip", tooltip)?;
+        let anchor: Rect = decode_direct(env, "showTooltip", anchor)?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Tooltip(tooltip, anchor));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::HideTooltip`] -- no arguments, same as
+    /// `QuiApp.hideTooltip`. For a tooltip source with no `Button` to carry
+    /// it (a toolbar action's own `tooltip`, or a tree/data-table row), the
+    /// handler is the only thing that knows when to dismiss it -- typically
+    /// on the hit-tested `MouseLeft` for the widget it showed on
+    /// `MouseEntered`. Calling `app.hideTooltip()` straight from inside that
+    /// same handler would raise `ReentrantCallError`; this queues the exact
+    /// same engine call instead.
+    #[napi(js_name = "hideTooltip")]
+    pub fn hide_tooltip(&self) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::HideTooltip);
+        Ok(())
+    }
+
     /// Queues a [`DeferredAction::Notification`] -- same arguments, same
     /// decoding, as `quadraui-py`'s `send_notification`.
     #[napi(js_name = "sendNotification")]
@@ -1644,6 +1970,204 @@ impl QuiAppActions {
             .push_back(DeferredAction::RestoreFromTrash(PathBuf::from(path)));
         Ok(())
     }
+
+    /// Queues a [`DeferredAction::ApplyUpdateOnQuit`] -- same argument as
+    /// `quadraui-py`'s `apply_on_quit`. `handle` is `i64`, not `u64`:
+    /// napi-rs has no `FromNapiValue`/`ToNapiValue` for a bare `u64` (unlike
+    /// `i64`, which it maps to/from a JS `number`), and every handle this
+    /// crate's registries mint (see `quadraui_binding_core::services`'s
+    /// module doc) fits well inside `i64::MAX` in practice.
+    #[napi(js_name = "applyOnQuit")]
+    pub fn apply_on_quit(&self, handle: i64) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ApplyUpdateOnQuit(handle as u64));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::EndPowerSaveBlock`] -- same argument as
+    /// `quadraui-py`'s `end_power_save_block`. Same `i64`-not-`u64` story
+    /// as [`Self::apply_on_quit`].
+    #[napi(js_name = "endPowerSaveBlock")]
+    pub fn end_power_save_block(&self, handle: i64) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::EndPowerSaveBlock(handle as u64));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetLoginItem`] -- same arguments as
+    /// `quadraui-py`'s `set_login_item`.
+    #[napi(js_name = "setLoginItem")]
+    pub fn set_login_item(
+        &self,
+        enabled: bool,
+        open_hidden: Option<bool>,
+        args: Option<Vec<String>>,
+    ) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetLoginItem(
+                enabled,
+                open_hidden.unwrap_or(false),
+                args.unwrap_or_default(),
+            ));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetAsDefaultProtocolClient`] -- same
+    /// argument as `quadraui-py`'s `set_as_default_protocol_client`.
+    #[napi(js_name = "setAsDefaultProtocolClient")]
+    pub fn set_as_default_protocol_client(&self, scheme: String) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetAsDefaultProtocolClient(scheme));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::RemoveAsDefaultProtocolClient`] -- same
+    /// argument as `quadraui-py`'s `remove_as_default_protocol_client`.
+    #[napi(js_name = "removeAsDefaultProtocolClient")]
+    pub fn remove_as_default_protocol_client(&self, scheme: String) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::RemoveAsDefaultProtocolClient(scheme));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::BeginDragOut`] -- same arguments as
+    /// `quadraui-py`'s `begin_drag_out`.
+    #[napi(js_name = "beginDragOut")]
+    pub fn begin_drag_out(&self, files: Option<Vec<String>>, text: Option<String>) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::BeginDragOut(
+                files.unwrap_or_default(),
+                text,
+            ));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::AddRecentDocument`] -- same argument as
+    /// `quadraui-py`'s `add_recent_document`.
+    #[napi(js_name = "addRecentDocument")]
+    pub fn add_recent_document(&self, path: String) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::AddRecentDocument(PathBuf::from(path)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::ClearRecentDocuments`] -- same argument
+    /// (none) as `quadraui-py`'s `clear_recent_documents`.
+    #[napi(js_name = "clearRecentDocuments")]
+    pub fn clear_recent_documents(&self) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ClearRecentDocuments);
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetDockMenu`] -- same argument, same
+    /// decoding, as `quadraui-py`'s `set_dock_menu`. `items` is only
+    /// materialized into a [`JsonValue`] here; the actual item-list shape
+    /// is decoded by `quadraui_binding_core::set_dock_menu` when
+    /// [`flush_deferred_actions`] applies it -- see [`DeferredAction`]'s
+    /// own doc for why.
+    #[napi(js_name = "setDockMenu")]
+    pub fn set_dock_menu(&self, items: Unknown) -> Result<()> {
+        let items = to_descriptor_value(items)
+            .map_err(|detail| invalid_descriptor_error(format!("setDockMenu: {detail}")))?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetDockMenu(items));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::SetJumpList`] -- same argument, same
+    /// decoding, as `quadraui-py`'s `set_jump_list`. Same decode-at-flush-
+    /// time story as [`Self::set_dock_menu`].
+    #[napi(js_name = "setJumpList")]
+    pub fn set_jump_list(&self, items: Unknown) -> Result<()> {
+        let items = to_descriptor_value(items)
+            .map_err(|detail| invalid_descriptor_error(format!("setJumpList: {detail}")))?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::SetJumpList(items));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::TrayIcon`] -- same argument, same
+    /// decoding, as `quadraui-py`'s `set_tray_icon`. `icon` decodes via
+    /// [`decode_via_json`], not [`decode_direct`]: a `Buffer`/`Uint8Array`
+    /// `{Bytes: ...}` source needs the byte-array materialization
+    /// [`to_descriptor_value`] does -- see [`QuiApp::set_tray_icon`]'s own
+    /// doc.
+    #[napi(js_name = "setTrayIcon")]
+    pub fn set_tray_icon(&self, icon: Unknown) -> Result<()> {
+        let icon: ImageSource = decode_via_json("setTrayIcon", icon)?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::TrayIcon(icon));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::TrayTooltip`] -- same argument as
+    /// `quadraui-py`'s `set_tray_tooltip`.
+    #[napi(js_name = "setTrayTooltip")]
+    pub fn set_tray_tooltip(&self, tooltip: String) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::TrayTooltip(tooltip));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::TrayMenu`] -- same argument, same
+    /// decoding, as `quadraui-py`'s `set_tray_menu`.
+    #[napi(js_name = "setTrayMenu")]
+    pub fn set_tray_menu(&self, env: Env, items: Unknown) -> Result<()> {
+        let items: Vec<ContextMenuItem> = decode_direct(env, "setTrayMenu", items)?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::TrayMenu(items));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::DocumentEdited`] -- same argument as
+    /// `quadraui-py`'s `set_document_edited`.
+    #[napi(js_name = "setDocumentEdited")]
+    pub fn set_document_edited(&self, edited: bool) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::DocumentEdited(edited));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::RepresentedFilename`] -- same argument as
+    /// `quadraui-py`'s `set_represented_filename`.
+    #[napi(js_name = "setRepresentedFilename")]
+    pub fn set_represented_filename(&self, path: Option<String>) -> Result<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::RepresentedFilename(path.map(PathBuf::from)));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::Cursor`] -- same arguments, same
+    /// decoding, as `quadraui-py`'s `QuiAppActions.set_cursor`. Unlike
+    /// [`QuiApp::set_cursor`], this has no return value: whether the glyph
+    /// was actually applied is only observable synchronously, and a
+    /// deferred action by definition isn't applied until after this call
+    /// returns.
+    #[napi(js_name = "setCursor")]
+    pub fn set_cursor(&self, shape: String, edge: Option<String>) -> Result<()> {
+        let shape: PointerShape = pointer_shape(&shape, edge.as_deref())
+            .map_err(|err| invalid_descriptor_error(format!("setCursor: {err}")))?;
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::Cursor(shape));
+        Ok(())
+    }
 }
 
 /// A thread-safe handle, returned by [`QuiApp::waker`], that a background
@@ -1662,9 +2186,12 @@ impl QuiAppActions {
 /// exit is simply never observed -- there is no receiver left to drain
 /// it). Ordinary `Send + Sync` Rust state (`SharedWaker` is
 /// `Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>`), unlike `QuiApp`
-/// itself, which napi-rs pins to the thread that created it.
+/// itself, which napi-rs pins to the thread that created it. The second
+/// field mirrors [`QuiApp::wake_notify`] the same way the first mirrors
+/// [`QuiApp::current_waker`] -- see this module's doc's "Wake-driven
+/// stepping" section.
 #[napi]
-pub struct QuiAppWaker(SharedWaker);
+pub struct QuiAppWaker(SharedWaker, WakeNotify);
 
 impl QuiAppWaker {
     /// Delivers `value` (already materialized into a `Send`-safe
@@ -1673,10 +2200,26 @@ impl QuiAppWaker {
     /// decode step calls into, and this crate's own background-thread test
     /// coverage calls directly, with no live napi `Env` needed (see
     /// [`Self::post`]'s doc for why a raw JS value can't cross this
-    /// boundary at all).
+    /// boundary at all). Calls [`Self::notify`] afterwards, same as every
+    /// other wake path on this type.
     fn post_value(&self, value: JsonValue) {
         let waker = self.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
         waker(UserPayload::new(value));
+        self.notify();
+    }
+
+    /// Fires the threadsafe function [`QuiApp::arm_wake_notify`] registered
+    /// (if any), with no arguments, in non-blocking mode -- queues the call
+    /// without waiting for it to actually run on the JS thread, which is
+    /// what lets this be called from this method's own background-thread
+    /// callers (`post_after`/`wake_after`'s spawned sleep-then-wake thread)
+    /// with no risk of deadlocking against a JS thread that is itself
+    /// blocked waiting on something this background thread would otherwise
+    /// need to produce first.
+    fn notify(&self) {
+        if let Some(tsfn) = self.1.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            tsfn.call((), ThreadsafeFunctionCallMode::NonBlocking);
+        }
     }
 }
 
@@ -1723,10 +2266,14 @@ impl QuiAppWaker {
         let value = to_descriptor_value(value)
             .map_err(|detail| invalid_descriptor_error(format!("postAfter: {detail}")))?;
         let shared = Arc::clone(&self.0);
+        let notify = Arc::clone(&self.1);
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(u64::from(delay_ms)));
             let waker = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
             waker(UserPayload::new(value));
+            if let Some(tsfn) = notify.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                tsfn.call((), ThreadsafeFunctionCallMode::NonBlocking);
+            }
         });
         Ok(())
     }
@@ -1736,10 +2283,14 @@ impl QuiAppWaker {
     #[napi(js_name = "wakeAfter")]
     pub fn wake_after(&self, delay_ms: u32) {
         let shared = Arc::clone(&self.0);
+        let notify = Arc::clone(&self.1);
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(u64::from(delay_ms)));
             let waker = shared.lock().unwrap_or_else(|e| e.into_inner()).clone();
             waker(UserPayload::new(JsonValue::Null));
+            if let Some(tsfn) = notify.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                tsfn.call((), ThreadsafeFunctionCallMode::NonBlocking);
+            }
         });
     }
 }
@@ -1808,6 +2359,10 @@ pub struct QuiApp {
     /// that live runner's own backend's waker for the duration of its
     /// session. See [`SharedWaker`]'s own doc.
     current_waker: SharedWaker,
+    /// The threadsafe function [`Self::arm_wake_notify`] registers, shared
+    /// with every [`QuiAppWaker`] handle [`Self::waker`] has ever returned
+    /// -- see [`WakeNotify`]'s own doc.
+    wake_notify: WakeNotify,
 }
 
 #[napi]
@@ -1827,7 +2382,37 @@ impl QuiApp {
             live: None,
             live_exited: Cell::new(false),
             current_waker,
+            wake_notify: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// Registers `callback` as a threadsafe, no-argument notifier
+    /// [`QuiAppWaker::notify`] fires every time a handle this app's
+    /// [`Self::waker`] has ever returned delivers a post/wake/postAfter/
+    /// wakeAfter, from whatever thread that happened on -- see this
+    /// module's doc's "Wake-driven stepping" section. `js/index.ts`'s `run`
+    /// arms this once per live session to call `step()` promptly instead of
+    /// polling on a fixed interval.
+    ///
+    /// Replaces any callback a previous call armed; there is only ever one
+    /// slot. Does **not** raise `LiveRunnerActiveError` while a live
+    /// session is running (unlike most configuration methods) -- arming
+    /// this is exactly what a live session's own run loop needs to do
+    /// right after `startTui`/`startNative` returns.
+    #[napi(js_name = "armWakeNotify")]
+    pub fn arm_wake_notify(&self, callback: Function<'_, (), ()>) -> Result<()> {
+        let tsfn = callback.build_threadsafe_function::<()>().build()?;
+        *self.wake_notify.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(tsfn));
+        Ok(())
+    }
+
+    /// Clears whatever callback [`Self::arm_wake_notify`] last registered, if
+    /// any -- a harmless no-op if none is armed. Releases the underlying
+    /// `napi_threadsafe_function` (once every [`QuiAppWaker`] clone holding
+    /// it is also dropped), unblocking the event loop it was keeping alive.
+    #[napi(js_name = "disarmWakeNotify")]
+    pub fn disarm_wake_notify(&self) {
+        *self.wake_notify.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Resizes the underlying cell grid to `width`x`height`. Raises if
@@ -2008,6 +2593,43 @@ impl QuiApp {
         Ok(QuiAppActions {
             queue: Rc::clone(&self.driver.app().deferred_actions),
         })
+    }
+
+    /// Test-oriented override for [`BindingHost::now_ms`] -- the headless
+    /// clock [`NodeAppLogic::drive_hover_tooltip`] feeds
+    /// [`BindingHost::drive_hover_tooltip`]'s own `now_ms` parameter.
+    /// `ms` pins it to that absolute millisecond value until the next call
+    /// to this method; omitting it (`undefined`) reverts to the real wall
+    /// clock. Lets a test drive the hover-tooltip delay and auto-dismiss
+    /// deadlines deterministically -- advancing past
+    /// `tooltipDelayMs`/`tooltipAutoDismissMs` by raising `ms` -- instead
+    /// of a real `setTimeout` wait.
+    #[napi(js_name = "setTestClockMs")]
+    pub fn set_test_clock_ms(&mut self, env: Env, ms: Option<u32>) -> Result<()> {
+        self.guarded(env, |app| {
+            app.driver.app().host.set_test_clock_ms(ms.map(u64::from));
+            Ok(())
+        })
+    }
+
+    /// Reads back `id`'s current resolved widget state from the store --
+    /// a `Tree`/`List`/`DataTable`'s cursor + scroll, a `Split`'s ratio, a
+    /// `TabBar`'s active tab index, or a `Tree`'s expanded row paths,
+    /// whichever apply -- the shape
+    /// [`quadraui_binding_core::widget_state_snapshot`] resolves, camelCased
+    /// via [`WidgetStateJs`]. `id` names exactly one widget kind in
+    /// practice, so the returned object only ever has one group of fields
+    /// populated. Returns `null` when `id` has never been resolved through
+    /// this app's own `render` (the no-callback fixed-slot path via
+    /// [`resolve_render_refs`], or a render-callback's decoded tree via
+    /// [`resolve_layout_node`]) -- `id` names a widget that hasn't
+    /// rendered, or hasn't rendered yet this session.
+    #[napi(js_name = "widgetState")]
+    pub fn widget_state(&self, env: Env, id: String) -> Result<Unknown<'static>> {
+        let snapshot =
+            widget_state_snapshot(self.driver.app().engine.widget_state(), WidgetId::new(id))
+                .map(WidgetStateJs::from);
+        encode_via_json(env, "widgetState", &snapshot)
     }
 
     /// Inserts a `Button` descriptor from a JS object, returning its slot
@@ -2601,7 +3223,10 @@ impl QuiApp {
                 "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
             ));
         }
-        Ok(QuiAppWaker(Arc::clone(&self.current_waker)))
+        Ok(QuiAppWaker(
+            Arc::clone(&self.current_waker),
+            Arc::clone(&self.wake_notify),
+        ))
     }
 
     /// Which native *feature* (if any) this build was compiled with -- `gtk`
@@ -2811,22 +3436,23 @@ impl QuiApp {
     /// to call back into JS with -- see [`NodeAppLogic::env`]'s doc.
     fn guarded<T>(&mut self, env: Env, body: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         self.check_not_dispatching()?;
-        if self.poisoned {
-            return Err(poisoned_error(
-                "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
-            ));
-        }
-        self.set_active_env(env);
-        self.in_dispatch.set(true);
-        let result = panic::catch_unwind(AssertUnwindSafe(|| body(self)));
-        self.in_dispatch.set(false);
-        match result {
-            Ok(result) => result,
-            Err(payload) => {
-                self.poisoned = true;
-                Err(panic_error(panic_message(&*payload)))
-            }
-        }
+        core_guarded(
+            self,
+            |s| s.poisoned,
+            |s| s.poisoned = true,
+            |s| {
+                s.set_active_env(env);
+                s.in_dispatch.set(true);
+            },
+            |s| s.in_dispatch.set(false),
+            |failure| match failure {
+                GuardedFailure::Poisoned => poisoned_error(
+                    "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
+                ),
+                GuardedFailure::Panic(msg) => panic_error(msg),
+            },
+            body,
+        )
     }
 
     /// Dispatches the oldest queued event, or ticks if none is queued, then
@@ -2923,16 +3549,16 @@ struct ShellState {
     /// `None` paints nothing into the main content area -- the shell
     /// chrome still renders either way.
     render_content: Option<NodeCallback>,
-    /// Invoked with one JS-converted `AppShellEvent` payload (see
-    /// [`app_shell_event_to_json`]) whenever [`ShellApp::on_shell_event_ctx`]
-    /// fires -- a panel switch, the sidebar being hidden/resized, the
-    /// bottom panel being resized/hidden, or a bottom-item (no-panel)
-    /// activity-bar click.
+    /// Invoked with one JS-converted `AppShellEvent` payload (via
+    /// `Env::to_js_value`, using `AppShellEvent`'s own `Serialize` impl)
+    /// whenever [`ShellApp::on_shell_event_ctx`] fires -- a panel switch,
+    /// the sidebar being hidden/resized, the bottom panel being
+    /// resized/hidden, or a bottom-item (no-panel) activity-bar click.
     on_shell_event: Option<NodeCallback>,
-    /// Invoked with one JS-converted `BottomPanelEvent` payload (see
-    /// [`bottom_panel_event_to_json`]) whenever [`ShellApp::on_bottom_panel_event`]
-    /// fires. Only ever fires when this app's `config` included a
-    /// `"bottom_panel"` entry.
+    /// Invoked with one JS-converted `BottomPanelEvent` payload (via
+    /// `Env::to_js_value`, using `BottomPanelEvent`'s own `Serialize` impl)
+    /// whenever [`ShellApp::on_bottom_panel_event`] fires. Only ever fires
+    /// when this app's `config` included a `"bottom_panel"` entry.
     on_bottom_panel_event: Option<NodeCallback>,
     /// The live `Env` for whichever [`QuiShellApp`] method call is
     /// currently driving this app, set by [`QuiShellApp::guarded`] right
@@ -2951,53 +3577,13 @@ struct ShellState {
 
 impl ShellState {
     /// Records `err` as this session's pending error, but only if no
-    /// earlier error already claimed the slot -- mirrors the free
-    /// [`record_error`] function's "first error wins" contract, as a
-    /// method here since `ShellState` holds its `pending_error` as a plain
-    /// field rather than its own `Rc<RefCell<_>>`.
+    /// earlier error already claimed the slot -- [`record_pending_error`]'s
+    /// "first error wins" contract, mirroring the free [`record_error`]
+    /// function's own use of it. A method here (not a free function, like
+    /// [`record_error`]) since `ShellState` holds its `pending_error` as a
+    /// plain field rather than its own `Rc<RefCell<_>>`.
     fn record_error(&mut self, err: Error) {
-        if self.pending_error.is_none() {
-            self.pending_error = Some(err);
-        }
-    }
-}
-
-/// Converts one [`AppShellEvent`] into the externally-tagged JSON shape
-/// [`encode_via_json`] would give a `#[derive(Serialize)]` enum, e.g.
-/// `{"PanelChanged": {"panel_id": "panel:explorer"}}` or
-/// `{"SidebarHidden": null}` -- hand-built since `AppShellEvent` has no
-/// such derive upstream, mirrors `quadraui-py`'s own `app_shell_event_to_py`.
-fn app_shell_event_to_json(event: &AppShellEvent) -> JsonValue {
-    match event {
-        AppShellEvent::PanelChanged { panel_id } => {
-            serde_json::json!({"PanelChanged": {"panel_id": panel_id.as_str()}})
-        }
-        AppShellEvent::SidebarHidden => serde_json::json!({"SidebarHidden": null}),
-        AppShellEvent::SidebarResized { new_width } => {
-            serde_json::json!({"SidebarResized": {"new_width": new_width}})
-        }
-        AppShellEvent::BottomPanelResized { new_height } => {
-            serde_json::json!({"BottomPanelResized": {"new_height": new_height}})
-        }
-        AppShellEvent::BottomPanelHidden => serde_json::json!({"BottomPanelHidden": null}),
-        AppShellEvent::BottomItemClicked { id } => {
-            serde_json::json!({"BottomItemClicked": {"id": id.as_str()}})
-        }
-        AppShellEvent::Consumed => serde_json::json!({"Consumed": null}),
-        AppShellEvent::Ignored => serde_json::json!({"Ignored": null}),
-    }
-}
-
-/// Converts one [`BottomPanelEvent`] into the externally-tagged JSON shape,
-/// e.g. `{"TabActivated": "bp:terminal"}` or `{"MaximiseToggled": null}` --
-/// see [`app_shell_event_to_json`]'s doc for why this is hand-built rather
-/// than derived.
-fn bottom_panel_event_to_json(event: &BottomPanelEvent) -> JsonValue {
-    match event {
-        BottomPanelEvent::TabActivated(id) => serde_json::json!({"TabActivated": id}),
-        BottomPanelEvent::TabClosed(id) => serde_json::json!({"TabClosed": id}),
-        BottomPanelEvent::MaximiseToggled => serde_json::json!({"MaximiseToggled": null}),
-        BottomPanelEvent::Resized(height) => serde_json::json!({"Resized": height}),
+        record_pending_error(&mut self.pending_error, err);
     }
 }
 
@@ -3104,7 +3690,7 @@ impl ShellApp for NodeShellApp {
         let Some(func) = Self::callback(&self.state, |s| &s.on_shell_event, &env) else {
             return;
         };
-        let payload: Unknown<'static> = match env.to_js_value(&app_shell_event_to_json(event)) {
+        let payload: Unknown<'static> = match env.to_js_value(event) {
             Ok(value) => value,
             Err(err) => {
                 self.state.borrow_mut().record_error(err);
@@ -3123,7 +3709,7 @@ impl ShellApp for NodeShellApp {
         let Some(func) = Self::callback(&self.state, |s| &s.on_bottom_panel_event, &env) else {
             return;
         };
-        let payload: Unknown<'static> = match env.to_js_value(&bottom_panel_event_to_json(event)) {
+        let payload: Unknown<'static> = match env.to_js_value(event) {
             Ok(value) => value,
             Err(err) => {
                 self.state.borrow_mut().record_error(err);
@@ -3165,10 +3751,7 @@ impl ShellApp for NodeShellApp {
 /// Takes and returns this session's pending callback-raised error, if any
 /// -- the `ShellState` counterpart of [`take_pending_error`].
 fn take_pending_shell_error(state: &Rc<RefCell<ShellState>>) -> Result<()> {
-    if let Some(err) = state.borrow_mut().pending_error.take() {
-        return Err(err);
-    }
-    Ok(())
+    core_take_pending_error(&mut state.borrow_mut().pending_error)
 }
 
 /// Decodes `runShell`'s `config` object into a [`ShellConfig`] via the
@@ -3246,9 +3829,9 @@ impl QuiShellApp {
     }
 
     /// Registers `callback` as the callable invoked with one JS-converted
-    /// `AppShellEvent` payload (see [`app_shell_event_to_json`]) whenever a
-    /// panel switch, sidebar show/hide/resize, or bottom-panel resize/hide
-    /// occurs. Raises if called re-entrantly.
+    /// `AppShellEvent` payload whenever a panel switch, sidebar show/hide/
+    /// resize, or bottom-panel resize/hide occurs. Raises if called
+    /// re-entrantly.
     #[napi(js_name = "setOnShellEvent")]
     pub fn set_on_shell_event(
         &mut self,
@@ -3260,10 +3843,9 @@ impl QuiShellApp {
     }
 
     /// Registers `callback` as the callable invoked with one JS-converted
-    /// `BottomPanelEvent` payload (see [`bottom_panel_event_to_json`])
-    /// whenever the bottom-panel tab strip is interacted with. Only ever
-    /// fires when this app's `config` included a `"bottom_panel"` entry.
-    /// Raises if called re-entrantly.
+    /// `BottomPanelEvent` payload whenever the bottom-panel tab strip is
+    /// interacted with. Only ever fires when this app's `config` included
+    /// a `"bottom_panel"` entry. Raises if called re-entrantly.
     #[napi(js_name = "setOnBottomPanelEvent")]
     pub fn set_on_bottom_panel_event(
         &mut self,
@@ -3407,22 +3989,25 @@ impl QuiShellApp {
     /// callback `body` reaches has a live `Env` to call back into JS with.
     fn guarded<T>(&mut self, env: Env, body: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         self.check_not_dispatching()?;
-        if self.poisoned {
-            return Err(poisoned_error(
-                "this QuiShellApp is poisoned by an earlier caught panic and can no longer be used",
-            ));
-        }
-        self.state.borrow_mut().env = Some(env);
-        self.in_dispatch.set(true);
-        let result = panic::catch_unwind(AssertUnwindSafe(|| body(self)));
-        self.in_dispatch.set(false);
-        match result {
-            Ok(result) => result,
-            Err(payload) => {
-                self.poisoned = true;
-                Err(panic_error(panic_message(&*payload)))
+        core_guarded(
+            self,
+            |s| s.poisoned,
+            |s| s.poisoned = true,
+            |s| {
+                s.state.borrow_mut().env = Some(env);
+                s.in_dispatch.set(true);
+            },
+            |s| s.in_dispatch.set(false),
+            |failure| {
+                match failure {
+                GuardedFailure::Poisoned => poisoned_error(
+                    "this QuiShellApp is poisoned by an earlier caught panic and can no longer be used",
+                ),
+                GuardedFailure::Panic(msg) => panic_error(msg),
             }
-        }
+            },
+            body,
+        )
     }
 
     /// Mirrors [`QuiApp::step_once`], minus the `User`/waker path a
@@ -3960,59 +4545,66 @@ mod tests {
         assert!(matches!(output, RenderOutput::Tree(_)));
     }
 
-    /// [`app_shell_event_to_json`] gives every [`AppShellEvent`] variant
-    /// the same externally-tagged shape `quadraui-py`'s own
-    /// `app_shell_event_to_py` builds -- a struct-like variant's payload
-    /// nested under its tag, a unit variant tagged with `null`. Pure JSON
-    /// construction, so this needs no live napi `Env` and is covered here
-    /// rather than in `quadraui-node/tests/`.
+    /// [`AppShellEvent`]'s own `Serialize` impl gives every variant the
+    /// same externally-tagged shape `quadraui-py`'s identical impl does --
+    /// a struct-like variant's payload nested under its tag, a unit
+    /// variant tagged with `null`. Pure JSON construction, so this needs
+    /// no live napi `Env` and is covered here rather than in
+    /// `quadraui-node/tests/`; `quadraui`'s own
+    /// `app_shell_event_serializes_to_the_externally_tagged_dict_shape`
+    /// pins the same shape at the source.
     #[test]
     fn app_shell_event_to_json_tags_every_variant() {
         assert_eq!(
-            app_shell_event_to_json(&AppShellEvent::PanelChanged {
+            serde_json::to_value(AppShellEvent::PanelChanged {
                 panel_id: WidgetId::new("panel:files")
-            }),
+            })
+            .unwrap(),
             serde_json::json!({"PanelChanged": {"panel_id": "panel:files"}})
         );
         assert_eq!(
-            app_shell_event_to_json(&AppShellEvent::SidebarHidden),
+            serde_json::to_value(AppShellEvent::SidebarHidden).unwrap(),
             serde_json::json!({"SidebarHidden": null})
         );
         assert_eq!(
-            app_shell_event_to_json(&AppShellEvent::SidebarResized { new_width: 12.5 }),
+            serde_json::to_value(AppShellEvent::SidebarResized { new_width: 12.5 }).unwrap(),
             serde_json::json!({"SidebarResized": {"new_width": 12.5}})
         );
         assert_eq!(
-            app_shell_event_to_json(&AppShellEvent::BottomItemClicked {
+            serde_json::to_value(AppShellEvent::BottomItemClicked {
                 id: WidgetId::new("bottom:terminal")
-            }),
+            })
+            .unwrap(),
             serde_json::json!({"BottomItemClicked": {"id": "bottom:terminal"}})
         );
         assert_eq!(
-            app_shell_event_to_json(&AppShellEvent::Consumed),
+            serde_json::to_value(AppShellEvent::Consumed).unwrap(),
             serde_json::json!({"Consumed": null})
         );
     }
 
-    /// [`bottom_panel_event_to_json`] tags a payload-carrying variant with
-    /// its bare payload (no nested object), and a unit variant with
-    /// `null` -- mirrors `quadraui-py`'s own `bottom_panel_event_to_py`.
+    /// [`BottomPanelEvent`]'s own `Serialize` impl tags a payload-carrying
+    /// variant with its bare payload (no nested object), and a unit
+    /// variant with `null` -- mirrors `quadraui-py`'s identical impl;
+    /// `quadraui`'s own
+    /// `bottom_panel_event_serializes_to_the_externally_tagged_dict_shape`
+    /// pins the same shape at the source.
     #[test]
     fn bottom_panel_event_to_json_tags_every_variant() {
         assert_eq!(
-            bottom_panel_event_to_json(&BottomPanelEvent::TabActivated("bp:a".to_string())),
+            serde_json::to_value(BottomPanelEvent::TabActivated("bp:a".to_string())).unwrap(),
             serde_json::json!({"TabActivated": "bp:a"})
         );
         assert_eq!(
-            bottom_panel_event_to_json(&BottomPanelEvent::TabClosed("bp:b".to_string())),
+            serde_json::to_value(BottomPanelEvent::TabClosed("bp:b".to_string())).unwrap(),
             serde_json::json!({"TabClosed": "bp:b"})
         );
         assert_eq!(
-            bottom_panel_event_to_json(&BottomPanelEvent::MaximiseToggled),
+            serde_json::to_value(BottomPanelEvent::MaximiseToggled).unwrap(),
             serde_json::json!({"MaximiseToggled": null})
         );
         assert_eq!(
-            bottom_panel_event_to_json(&BottomPanelEvent::Resized(8.0)),
+            serde_json::to_value(BottomPanelEvent::Resized(8.0)).unwrap(),
             serde_json::json!({"Resized": 8.0})
         );
     }

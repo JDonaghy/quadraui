@@ -29,12 +29,12 @@
 //!
 //! // In AppLogic::handle, before any other keyboard routing (so the
 //! // controller can claim navigation keys while it has focus):
-//! match controller.handle(&event, &stack) {
-//!     ToastStackEvent::Action(id) => { /* run the action named by `id` */ }
-//!     ToastStackEvent::Dismiss(id) => { toasts.retain(|t| t.id != id); }
-//!     ToastStackEvent::FocusReturned => { /* nothing to do — focus already cleared */ }
-//!     ToastStackEvent::Consumed => { /* redraw */ }
-//!     ToastStackEvent::Ignored => { /* fall through to normal app key routing */ }
+//! match controller.handle_event(&event, &stack) {
+//!     Handled::Event(ToastStackAction::Action(id)) => { /* run the action named by `id` */ }
+//!     Handled::Event(ToastStackAction::Dismiss(id)) => { toasts.retain(|t| t.id != id); }
+//!     Handled::Event(ToastStackAction::FocusReturned) => { /* nothing to do — focus already cleared */ }
+//!     Handled::Consumed => { /* redraw */ }
+//!     Handled::Ignored => { /* fall through to normal app key routing */ }
 //! }
 //! ```
 //!
@@ -47,14 +47,14 @@
 //!   [`ToastOverlay::toasts`] (temporal, oldest-first) order, clamping at
 //!   either end rather than wrapping, and reset the in-toast cursor back
 //!   to the dismiss button.
-//! - Enter activates the focused control: [`ToastStackEvent::Dismiss`]
-//!   for `×`, [`ToastStackEvent::Action`] (carrying that action's own
+//! - Enter activates the focused control: [`ToastStackAction::Dismiss`]
+//!   for `×`, [`ToastStackAction::Action`] (carrying that action's own
 //!   [`crate::types::WidgetId`]) otherwise.
 //! - Escape dismisses the focused toast *and* clears focus — both
 //!   "dismiss the toast" and "return focus to the app" in one keystroke,
 //!   since there is nothing left to keep focused once its toast is gone.
 //! - Every other key, and every key while nothing is focused, is
-//!   [`ToastStackEvent::Ignored`] — the controller never claims focus for
+//!   [`Handled::Ignored`] — the controller never claims focus for
 //!   itself, and never consumes a key it isn't the target of.
 //!
 //! # Mouse clicks are unaffected
@@ -73,13 +73,38 @@
 //! control — see `primitives::toast::native_surface_paint::paint_toast`
 //! and `tui::toast::paint_toast`.
 
+use crate::compose::Handled;
 use crate::primitives::toast::{ToastFocus, ToastFocusTarget, ToastOverlay};
 use crate::types::WidgetId;
 use crate::{Key, NamedKey, UiEvent};
 
+/// Semantic payload of [`Handled::Event`] returned by
+/// [`ToastStackController::handle_event`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastStackAction {
+    /// Enter activated the focused action button — carries that
+    /// action's own [`WidgetId`] (matching [`crate::primitives::toast::ToastHit::Action`]'s
+    /// shape, so the app dispatches identically whether the action was
+    /// reached by mouse or keyboard).
+    Action(WidgetId),
+    /// Enter activated the focused dismiss `×`, or Escape dismissed the
+    /// focused toast — carries the toast's own `WidgetId` (matching
+    /// [`crate::primitives::toast::ToastHit::Dismiss`]'s shape).
+    Dismiss(WidgetId),
+    /// Escape cleared focus with no toast to dismiss (defensive —
+    /// reachable if `handle_event` is called after the focused toast
+    /// already vanished from `stack` by some other path; see
+    /// [`ToastStackController::handle_event`]'s stale-focus resync).
+    FocusReturned,
+}
+
 /// What happened after [`ToastStackController::handle`] processed an
 /// event.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[deprecated(
+    since = "0.9.0",
+    note = "use `ToastStackController::handle_event`'s `Handled<ToastStackAction>` instead — `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, the other variants move to `ToastStackAction` under `Handled::Event`"
+)]
 pub enum ToastStackEvent {
     /// Enter activated the focused action button — carries that
     /// action's own [`WidgetId`] (matching [`crate::primitives::toast::ToastHit::Action`]'s
@@ -163,20 +188,23 @@ impl ToastStackController {
 
     /// Drive the state machine with a backend-neutral [`UiEvent`]. Only
     /// [`UiEvent::KeyPressed`] is ever consumed — every other event
-    /// variant, and every key while unfocused, is
-    /// [`ToastStackEvent::Ignored`].
-    pub fn handle(&mut self, event: &UiEvent, stack: &ToastOverlay) -> ToastStackEvent {
+    /// variant, and every key while unfocused, is [`Handled::Ignored`].
+    pub fn handle_event(
+        &mut self,
+        event: &UiEvent,
+        stack: &ToastOverlay,
+    ) -> Handled<ToastStackAction> {
         let UiEvent::KeyPressed { key, modifiers, .. } = event else {
-            return ToastStackEvent::Ignored;
+            return Handled::Ignored;
         };
         self.resync(stack);
         let Some(focus) = self.focus.clone() else {
-            return ToastStackEvent::Ignored;
+            return Handled::Ignored;
         };
         let Some(toast_idx) = stack.toasts.iter().position(|t| t.id == focus.toast_id) else {
             // Resync above should have already cleared this; defensive.
             self.focus = None;
-            return ToastStackEvent::Ignored;
+            return Handled::Ignored;
         };
         let control_count = 1 + stack.toasts[toast_idx].actions.len();
         let cur = target_to_index(focus.target);
@@ -184,45 +212,69 @@ impl ToastStackController {
         match key {
             Key::Named(NamedKey::Escape) => {
                 self.focus = None;
-                ToastStackEvent::Dismiss(focus.toast_id)
+                Handled::Event(ToastStackAction::Dismiss(focus.toast_id))
             }
             Key::Named(NamedKey::Enter) => match focus.target {
-                ToastFocusTarget::Dismiss => ToastStackEvent::Dismiss(focus.toast_id),
+                ToastFocusTarget::Dismiss => {
+                    Handled::Event(ToastStackAction::Dismiss(focus.toast_id))
+                }
                 ToastFocusTarget::Action(i) => match stack.toasts[toast_idx].actions.get(i) {
-                    Some(a) => ToastStackEvent::Action(a.id),
-                    None => ToastStackEvent::Consumed,
+                    Some(a) => Handled::Event(ToastStackAction::Action(a.id)),
+                    None => Handled::Consumed,
                 },
             },
             Key::Named(NamedKey::Left) => {
-                self.set_index(&focus.toast_id, (cur + control_count - 1) % control_count);
-                ToastStackEvent::Consumed
+                self.set_index(
+                    &focus.toast_id,
+                    crate::focus::cycle_index(cur, -1, control_count),
+                );
+                Handled::Consumed
             }
             Key::Named(NamedKey::Right) => {
-                self.set_index(&focus.toast_id, (cur + 1) % control_count);
-                ToastStackEvent::Consumed
+                self.set_index(
+                    &focus.toast_id,
+                    crate::focus::cycle_index(cur, 1, control_count),
+                );
+                Handled::Consumed
             }
             Key::Named(NamedKey::Tab) => {
-                let next = if modifiers.shift {
-                    (cur + control_count - 1) % control_count
-                } else {
-                    (cur + 1) % control_count
-                };
+                let next = crate::focus::cycle_index(
+                    cur,
+                    if modifiers.shift { -1 } else { 1 },
+                    control_count,
+                );
                 self.set_index(&focus.toast_id, next);
-                ToastStackEvent::Consumed
+                Handled::Consumed
             }
             Key::Named(NamedKey::Up) => {
                 if toast_idx > 0 {
                     self.focus_toast_at(stack, toast_idx - 1);
                 }
-                ToastStackEvent::Consumed
+                Handled::Consumed
             }
             Key::Named(NamedKey::Down) => {
                 if toast_idx + 1 < stack.toasts.len() {
                     self.focus_toast_at(stack, toast_idx + 1);
                 }
-                ToastStackEvent::Consumed
+                Handled::Consumed
             }
-            _ => ToastStackEvent::Ignored,
+            _ => Handled::Ignored,
+        }
+    }
+
+    /// Drive the state machine with a backend-neutral [`UiEvent`].
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_event`, which returns `Handled<ToastStackAction>` instead of `ToastStackEvent`"
+    )]
+    #[allow(deprecated)] // `ToastStackEvent` is `#[deprecated]`; this method is its own shim.
+    pub fn handle(&mut self, event: &UiEvent, stack: &ToastOverlay) -> ToastStackEvent {
+        match self.handle_event(event, stack) {
+            Handled::Event(ToastStackAction::Action(id)) => ToastStackEvent::Action(id),
+            Handled::Event(ToastStackAction::Dismiss(id)) => ToastStackEvent::Dismiss(id),
+            Handled::Event(ToastStackAction::FocusReturned) => ToastStackEvent::FocusReturned,
+            Handled::Consumed => ToastStackEvent::Consumed,
+            Handled::Ignored => ToastStackEvent::Ignored,
         }
     }
 
@@ -351,7 +403,7 @@ mod tests {
             NamedKey::Enter,
             NamedKey::Escape,
         ] {
-            assert_eq!(c.handle(&key(k), &s), ToastStackEvent::Ignored);
+            assert_eq!(c.handle_event(&key(k), &s), Handled::Ignored);
         }
         assert!(!c.is_focused());
     }
@@ -385,13 +437,13 @@ mod tests {
         c.give_focus(&s);
         assert_eq!(c.focus().unwrap().target, ToastFocusTarget::Dismiss);
 
-        c.handle(&key(NamedKey::Tab), &s);
+        let _ = c.handle_event(&key(NamedKey::Tab), &s);
         assert_eq!(c.focus().unwrap().target, ToastFocusTarget::Action(0));
 
-        c.handle(&key(NamedKey::Tab), &s);
+        let _ = c.handle_event(&key(NamedKey::Tab), &s);
         assert_eq!(c.focus().unwrap().target, ToastFocusTarget::Action(1));
 
-        c.handle(&key(NamedKey::Tab), &s);
+        let _ = c.handle_event(&key(NamedKey::Tab), &s);
         assert_eq!(
             c.focus().unwrap().target,
             ToastFocusTarget::Dismiss,
@@ -404,7 +456,7 @@ mod tests {
         let mut c = ToastStackController::new();
         let s = stack(vec![toast_with_actions("t1", &["a"])]);
         c.give_focus(&s);
-        c.handle(&shift_key(NamedKey::Tab), &s);
+        let _ = c.handle_event(&shift_key(NamedKey::Tab), &s);
         assert_eq!(
             c.focus().unwrap().target,
             ToastFocusTarget::Action(0),
@@ -417,9 +469,9 @@ mod tests {
         let mut c = ToastStackController::new();
         let s = stack(vec![toast_with_actions("t1", &["a"])]);
         c.give_focus(&s);
-        c.handle(&key(NamedKey::Right), &s);
+        let _ = c.handle_event(&key(NamedKey::Right), &s);
         assert_eq!(c.focus().unwrap().target, ToastFocusTarget::Action(0));
-        c.handle(&key(NamedKey::Left), &s);
+        let _ = c.handle_event(&key(NamedKey::Left), &s);
         assert_eq!(c.focus().unwrap().target, ToastFocusTarget::Dismiss);
     }
 
@@ -428,10 +480,10 @@ mod tests {
         let mut c = ToastStackController::new();
         let s = stack(vec![toast("t1"), toast_with_actions("t2", &["a"])]);
         c.give_focus(&s); // seeds t2 (newest)
-        c.handle(&key(NamedKey::Right), &s); // t2/Action(0)
+        let _ = c.handle_event(&key(NamedKey::Right), &s); // t2/Action(0)
         assert_eq!(c.focus().unwrap().toast_id, WidgetId::new("t2"));
 
-        c.handle(&key(NamedKey::Up), &s);
+        let _ = c.handle_event(&key(NamedKey::Up), &s);
         assert_eq!(
             c.focus(),
             Some(ToastFocus {
@@ -441,10 +493,10 @@ mod tests {
         );
 
         // Up again at the first toast is a no-op (clamped, not wrapped).
-        c.handle(&key(NamedKey::Up), &s);
+        let _ = c.handle_event(&key(NamedKey::Up), &s);
         assert_eq!(c.focus().unwrap().toast_id, WidgetId::new("t1"));
 
-        c.handle(&key(NamedKey::Down), &s);
+        let _ = c.handle_event(&key(NamedKey::Down), &s);
         assert_eq!(c.focus().unwrap().toast_id, WidgetId::new("t2"));
         assert_eq!(c.focus().unwrap().target, ToastFocusTarget::Dismiss);
     }
@@ -455,8 +507,8 @@ mod tests {
         let s = stack(vec![toast("t1")]);
         c.give_focus(&s);
         assert_eq!(
-            c.handle(&key(NamedKey::Enter), &s),
-            ToastStackEvent::Dismiss(WidgetId::new("t1"))
+            c.handle_event(&key(NamedKey::Enter), &s),
+            Handled::Event(ToastStackAction::Dismiss(WidgetId::new("t1")))
         );
     }
 
@@ -465,10 +517,10 @@ mod tests {
         let mut c = ToastStackController::new();
         let s = stack(vec![toast_with_actions("t1", &["install", "skip"])]);
         c.give_focus(&s);
-        c.handle(&key(NamedKey::Tab), &s); // -> Action(0) = "install"
+        let _ = c.handle_event(&key(NamedKey::Tab), &s); // -> Action(0) = "install"
         assert_eq!(
-            c.handle(&key(NamedKey::Enter), &s),
-            ToastStackEvent::Action(WidgetId::new("install"))
+            c.handle_event(&key(NamedKey::Enter), &s),
+            Handled::Event(ToastStackAction::Action(WidgetId::new("install")))
         );
     }
 
@@ -478,8 +530,8 @@ mod tests {
         let s = stack(vec![toast("t1")]);
         c.give_focus(&s);
         assert_eq!(
-            c.handle(&key(NamedKey::Escape), &s),
-            ToastStackEvent::Dismiss(WidgetId::new("t1"))
+            c.handle_event(&key(NamedKey::Escape), &s),
+            Handled::Event(ToastStackAction::Dismiss(WidgetId::new("t1")))
         );
         assert!(!c.is_focused());
     }
@@ -491,25 +543,19 @@ mod tests {
         c.give_focus(&s);
         c.take_focus();
         assert!(!c.is_focused());
-        assert_eq!(
-            c.handle(&key(NamedKey::Enter), &s),
-            ToastStackEvent::Ignored
-        );
+        assert_eq!(c.handle_event(&key(NamedKey::Enter), &s), Handled::Ignored);
     }
 
     /// A toast removed by some other path (e.g. a mouse click dismissing
-    /// it) drops stale focus instead of letting `handle` keep resolving
-    /// events against a toast that's gone.
+    /// it) drops stale focus instead of letting `handle_event` keep
+    /// resolving events against a toast that's gone.
     #[test]
     fn handle_resyncs_when_focused_toast_vanished() {
         let mut c = ToastStackController::new();
         let s1 = stack(vec![toast("t1")]);
         c.give_focus(&s1);
         let s2 = stack(vec![]); // t1 dismissed by some other path
-        assert_eq!(
-            c.handle(&key(NamedKey::Enter), &s2),
-            ToastStackEvent::Ignored
-        );
+        assert_eq!(c.handle_event(&key(NamedKey::Enter), &s2), Handled::Ignored);
         assert!(!c.is_focused());
     }
 
@@ -519,8 +565,8 @@ mod tests {
         let s = stack(vec![toast("t1")]);
         c.give_focus(&s);
         assert_eq!(
-            c.handle(&UiEvent::CharTyped('x'), &s),
-            ToastStackEvent::Ignored
+            c.handle_event(&UiEvent::CharTyped('x'), &s),
+            Handled::Ignored
         );
         // Focus untouched by an irrelevant event.
         assert!(c.is_focused());
@@ -536,7 +582,24 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        assert_eq!(c.handle(&ev, &s), ToastStackEvent::Ignored);
+        assert_eq!(c.handle_event(&ev, &s), Handled::Ignored);
         assert!(c.is_focused());
+    }
+
+    #[test]
+    #[allow(deprecated)] // covers the `handle` shim kept for pre-`Handled` callers.
+    fn deprecated_handle_still_adapts_to_toast_stack_event() {
+        let mut c = ToastStackController::new();
+        let s = stack(vec![toast("t1")]);
+        c.give_focus(&s);
+        assert_eq!(
+            c.handle(&key(NamedKey::Escape), &s),
+            ToastStackEvent::Dismiss(WidgetId::new("t1"))
+        );
+        assert!(!c.is_focused());
+        assert_eq!(
+            c.handle(&key(NamedKey::Enter), &s),
+            ToastStackEvent::Ignored
+        );
     }
 }

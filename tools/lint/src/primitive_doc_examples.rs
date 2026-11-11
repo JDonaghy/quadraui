@@ -60,9 +60,9 @@ use crate::common::quadraui_dir;
 
 /// Primitive modules with no declarative struct/enum of their own, so
 /// they are deliberately absent from [`PRIMITIVES`] rather than padded
-/// with a placeholder. `layout_metrics` is shared pixel-layout *math*
-/// (see its own module doc), not a widget.
-const EXEMPT: &[&str] = &["layout_metrics"];
+/// with a placeholder. `layout_metrics` and `row_stack` are shared
+/// layout *math* (see each module's own doc), not widgets.
+const EXEMPT: &[&str] = &["layout_metrics", "row_stack"];
 
 /// `(module file stem, primitive type name)` for every primitive module
 /// in `src/primitives/mod.rs` except [`EXEMPT`]. Order matches that
@@ -158,6 +158,18 @@ fn doc_lines_for_item(source: &str, type_name: &str) -> Option<Vec<String>> {
             // Attribute between the doc block and the item — keep
             // walking up through it.
             continue;
+        } else if trimmed.ends_with(']') && !trimmed.is_empty() {
+            // Closing line of a multi-line attribute (e.g. a
+            // `#[deprecated(\n since = …,\n note = …,\n)]` block) — skip
+            // up to its `#[` opener, giving up at a blank line.
+            match (0..i)
+                .rev()
+                .take_while(|&j| !lines[j].trim().is_empty())
+                .find(|&j| lines[j].trim_start().starts_with("#["))
+            {
+                Some(open) => i = open,
+                None => break,
+            }
         } else {
             break;
         }
@@ -314,6 +326,27 @@ mod tests {
 /// ```
 #[non_exhaustive]
 #[derive(Debug)]
+pub struct Widget {
+    pub id: u32,
+}
+";
+        assert_eq!(has_examples_heading(src, "Widget"), Some(true));
+    }
+
+    #[test]
+    fn finds_examples_heading_past_a_multi_line_attribute() {
+        let src = "\
+/// # Examples
+///
+/// ```
+/// let x = 1;
+/// ```
+#[derive(Debug)]
+#[deprecated(
+    since = \"0.9.0\",
+    note = \"use Other instead\"
+)]
+#[allow(deprecated)]
 pub struct Widget {
     pub id: u32,
 }

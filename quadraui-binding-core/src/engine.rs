@@ -14,8 +14,8 @@ use std::collections::HashMap;
 
 use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
-    ContextMenuController, ContextMenuOutcome, FormController, FormControllerEvent, MenuDef,
-    MenuEvent, MenuSystem, MessageDialogController, MessageDialogEvent,
+    ContextMenuController, ContextMenuOutcome, FormController, FormControllerAction, Handled,
+    MenuDef, MenuEvent, MenuSystem, MessageDialogController,
 };
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{
@@ -23,8 +23,9 @@ use quadraui::{
     CompletionsLayout, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, EditOp,
     Float, FloatLayout, FloatMeasure, Form, InteractionState, Key, MenuBar, MessageDialogButton,
     Modifiers, NamedKey, Point, Rect, RichTextPopup, RichTextPopupHit, RichTextPopupLayout,
-    RichTextPopupMeasure, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit, ToastOverlay,
-    ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, UiEvent, WidgetId,
+    RichTextPopupMeasure, TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit,
+    ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent, UiEvent,
+    WidgetId,
 };
 
 use crate::drag::{
@@ -33,10 +34,16 @@ use crate::drag::{
 };
 use crate::extra_paint::extra_as;
 use crate::hit::{
-    chrome_hover_hit, event_position, hit_test_painted, set_event_widget, HitDetail, PaintedHit,
+    chrome_hover_hit, data_table_rows_and_viewport, event_position, hit_test_painted,
+    list_rows_and_viewport, set_event_widget, tree_rows_and_viewport, HitDetail, PaintedHit,
+};
+use crate::host::{
+    apply_data_table_nav_key, apply_list_nav_key, apply_split_divider_drag, apply_tab_activated,
+    apply_tab_closed, apply_tree_nav_key, apply_tree_toggle_expand,
 };
 use crate::semantic::{focus_scoped_key_event, number_input_click_event, semantic_event_for_hit};
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
+use crate::widget_state::WidgetState;
 
 /// `backend.viewport()`, as a `(0, 0)`-origin [`Rect`] — the shape every
 /// anchored-overlay layout call here (`Tooltip`/`Completions`/`Float`/
@@ -117,6 +124,23 @@ pub struct InteractionEngine {
     /// [`crate::text_input::apply_text_input_edit`]'s own doc for why a
     /// cache is needed at all, including its own `undo_stack`.
     text_editors: TextEditorCache,
+    /// Framework-owned per-widget state store, keyed by `WidgetId`,
+    /// surviving across frames — see [`crate::widget_state::WidgetState`]'s
+    /// own module doc for its controlled/uncontrolled resolution and GC
+    /// policies. [`Self::set_hits`] sweeps it every frame alongside
+    /// [`Self::text_editors`]'s own pruning. [`Self::handle`]'s own
+    /// `KeyPressed` routing writes a focused `Tree`'s cursor through it via
+    /// [`crate::host::apply_tree_nav_key`]; a binding's own `render` reads
+    /// it back (merged with whatever the descriptor pins) via
+    /// [`crate::host::resolve_tree_cursor`]. [`Self::handle`]'s final
+    /// dispatch also writes a divider drag's ratio, a clicked tab's active
+    /// index, and a toggled tree row's expand state through
+    /// [`crate::host::apply_split_divider_drag`]/[`crate::host::apply_tab_activated`]/
+    /// [`crate::host::apply_tree_toggle_expand`]; a binding's own `render`
+    /// reads each back the same way, via
+    /// [`crate::host::resolve_split_ratio`]/[`crate::host::resolve_tab_bar_active`]/
+    /// [`crate::host::resolve_tree_expansion`].
+    widget_state: WidgetState,
     /// Owns the in-window dropdown behind a `"menu_bar"` extra: the
     /// open/close/keyboard-nav/submenu state machine that turns a click on
     /// a top-level item into an open dropdown and a selection into
@@ -175,7 +199,7 @@ pub struct InteractionEngine {
     /// The absolute bounds [`Self::sync_forms`] most recently painted each
     /// [`Self::form_controllers`] entry into, read by
     /// [`InteractionEngine::handle`] so a routed event's position
-    /// resolves against the same `rect` the paint pass used (`FormController::handle`
+    /// resolves against the same `rect` the paint pass used (`FormController::handle_event`
     /// does its own position-relative hit-testing internally, unlike this
     /// engine's `hit_map`-based primitives).
     form_rects: RefCell<HashMap<WidgetId, Rect>>,
@@ -236,6 +260,15 @@ impl InteractionEngine {
         self.hit_map.borrow()
     }
 
+    /// This engine's own per-widget state store — a binding's `render`
+    /// passes this to [`crate::host::resolve_tree_cursor`] (right before
+    /// painting a `Tree`) so the cursor [`Self::handle`]'s `KeyPressed`
+    /// routing moved via [`crate::host::apply_tree_nav_key`] is what
+    /// actually gets painted.
+    pub fn widget_state(&self) -> &WidgetState {
+        &self.widget_state
+    }
+
     /// Replaces this frame's painted hits. Call once per render, after the
     /// binding's own paint pass (`draw_bands`/`paint_layout`) has fully
     /// populated `hits`.
@@ -247,6 +280,10 @@ impl InteractionEngine {
     /// rendering (its host removes it, navigates away, ...) leaves its
     /// cached [`quadraui::TextEditor`] — buffer, cursor, and up to
     /// `UNDO_HISTORY_LIMIT` full undo snapshots — in the map forever.
+    ///
+    /// Also sweeps [`Self::widget_state`] via [`WidgetState::gc`] — its own
+    /// "seen this frame" marks, not `hits`, drive what survives; see that
+    /// type's own module doc.
     pub fn set_hits(&self, hits: Vec<PaintedHit>) {
         let live_text_inputs: Vec<WidgetId> = hits
             .iter()
@@ -260,6 +297,7 @@ impl InteractionEngine {
         self.text_editors
             .borrow_mut()
             .retain(|id, _| live_text_inputs.contains(id));
+        self.widget_state.gc();
         *self.hit_map.borrow_mut() = hits;
     }
 
@@ -894,7 +932,7 @@ impl InteractionEngine {
             *self.column_drag.borrow_mut() = None;
             self.chrome_pressed.borrow_mut().clear();
             // Mirrors the resets above for a `"form"` extra's own
-            // scrollbar-thumb drag: `FormController::handle`'s `MouseUp`
+            // scrollbar-thumb drag: `FormController::handle_event`'s `MouseUp`
             // arm clears `scroll_drag` unconditionally (it doesn't check
             // position), so trying every cached controller here releases
             // whichever one (if any) is mid-drag instead of leaving its
@@ -904,7 +942,7 @@ impl InteractionEngine {
                 let rect = self.form_rects.borrow().get(id).copied();
                 if let Some(rect) = rect {
                     if let Some(controller) = self.form_controllers.borrow_mut().get_mut(id) {
-                        controller.handle(&event, backend, rect);
+                        let _ = controller.handle_event(&event, backend, rect);
                     }
                 }
             }
@@ -968,11 +1006,12 @@ impl InteractionEngine {
         // the menu-bar/context-menu checks below are never simultaneously
         // "open" in practice; the ordering here is what makes that
         // invariant hold even if that changes.
-        // `MessageDialogController::handle` reports `Ignored` immediately
-        // when nothing is open, so this is safe to run unconditionally.
+        // `MessageDialogController::handle_event` reports `Handled::Ignored`
+        // immediately when nothing is open, so this is safe to run
+        // unconditionally.
         if let Some(dialog) = self.dialog.as_mut() {
-            match dialog.handle(&event, &*backend) {
-                MessageDialogEvent::Resolved(choice) => {
+            match dialog.handle_event(&event, &*backend) {
+                Handled::Event(choice) => {
                     // The dialog is closing regardless of what `sink`
                     // itself returns — force the repaint that takes it off
                     // screen, same as the `ContextMenuOutcome::Event` arm
@@ -981,8 +1020,8 @@ impl InteractionEngine {
                     return Reaction::Redraw
                         .merge(sink.dispatch(&UiEvent::MessageDialogResolved(choice), None));
                 }
-                MessageDialogEvent::Consumed => return Reaction::Redraw,
-                MessageDialogEvent::Ignored => {}
+                Handled::Consumed => return Reaction::Redraw,
+                Handled::Ignored => {}
             }
         }
 
@@ -1154,7 +1193,7 @@ impl InteractionEngine {
 
         // A `KeyPressed`/`CharTyped`/`ClipboardPaste` landing on a `"form"`
         // extra that currently holds engine-level focus routes through
-        // that `Form`'s own cached `FormController` — `FormController::handle`'s
+        // that `Form`'s own cached `FormController` — `FormController::handle_event`'s
         // own `has_focus` gate (see its module doc) is what makes this
         // safe to try unconditionally even when no `"form"` extra is
         // focused (or none exists this frame): `form_rects`/`form_controllers`
@@ -1175,8 +1214,8 @@ impl InteractionEngine {
                 if let Some(rect) = self.form_rects.borrow().get(&focused).copied() {
                     if let Some(controller) = self.form_controllers.borrow_mut().get_mut(&focused) {
                         controller.set_has_focus(true);
-                        if let FormControllerEvent::FormAction(form_event) =
-                            controller.handle(&event, backend, rect)
+                        if let Handled::Event(FormControllerAction::FormAction(form_event)) =
+                            controller.handle_event(&event, backend, rect)
                         {
                             event = UiEvent::Form(focused, form_event);
                         }
@@ -1186,7 +1225,7 @@ impl InteractionEngine {
         }
 
         // A `MouseDown` lands on at most one `"form"` extra's own `rect`
-        // (`FormController::handle`'s own `click_inner` returns `Ignored`,
+        // (`FormController::handle_event`'s own `click_inner` returns `Ignored`,
         // with no mutation, for every other one — see its doc), so trying
         // every cached controller, in `form_order`'s deterministic paint
         // order, and stopping at the first non-`Ignored` result is safe
@@ -1210,8 +1249,8 @@ impl InteractionEngine {
                         .form_controllers
                         .borrow_mut()
                         .get_mut(&id)
-                        .map(|controller| controller.handle(&event, backend, rect))?;
-                    (!matches!(outcome, FormControllerEvent::Ignored)).then_some((id, outcome))
+                        .map(|controller| controller.handle_event(&event, backend, rect))?;
+                    (!matches!(outcome, Handled::Ignored)).then_some((id, outcome))
                 });
             if let Some((id, outcome)) = claim {
                 // Mirrors the generic click-to-focus block below: a click
@@ -1227,20 +1266,22 @@ impl InteractionEngine {
                     }
                 }
                 return match outcome {
-                    FormControllerEvent::FormAction(form_event) => focus_reaction.merge(
-                        Reaction::Redraw.merge(sink.dispatch(&UiEvent::Form(id, form_event), None)),
-                    ),
-                    FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => {
+                    Handled::Event(FormControllerAction::FormAction(form_event)) => focus_reaction
+                        .merge(
+                            Reaction::Redraw
+                                .merge(sink.dispatch(&UiEvent::Form(id, form_event), None)),
+                        ),
+                    Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
                         focus_reaction.merge(Reaction::Redraw)
                     }
-                    FormControllerEvent::Ignored => unreachable!("filtered out above"),
+                    Handled::Ignored => unreachable!("filtered out above"),
                 };
             }
         }
 
         // A move with the left button held continues whichever `"form"`
         // extra's own scrollbar-thumb drag (if any) the `MouseDown` claim
-        // above armed — `FormController::handle`'s `MouseMoved` arm
+        // above armed — `FormController::handle_event`'s `MouseMoved` arm
         // no-ops (`Ignored`) for every controller with no `scroll_drag` of
         // its own, so trying all of them here is safe regardless of which
         // one (if any) is actually dragging. Unlike the generic
@@ -1262,8 +1303,8 @@ impl InteractionEngine {
                 if let Some(rect) = rect {
                     if let Some(controller) = self.form_controllers.borrow_mut().get_mut(id) {
                         if matches!(
-                            controller.handle(&event, backend, rect),
-                            FormControllerEvent::Consumed | FormControllerEvent::ScrollChanged
+                            controller.handle_event(&event, backend, rect),
+                            Handled::Consumed | Handled::Event(FormControllerAction::ScrollChanged)
                         ) {
                             consumed = true;
                         }
@@ -1295,8 +1336,8 @@ impl InteractionEngine {
             if let Some((id, rect)) = claim {
                 if let Some(controller) = self.form_controllers.borrow_mut().get_mut(&id) {
                     if matches!(
-                        controller.handle(&event, backend, rect),
-                        FormControllerEvent::Consumed | FormControllerEvent::ScrollChanged
+                        controller.handle_event(&event, backend, rect),
+                        Handled::Consumed | Handled::Event(FormControllerAction::ScrollChanged)
                     ) {
                         return Reaction::Redraw;
                     }
@@ -1421,8 +1462,44 @@ impl InteractionEngine {
         // wrapped into that leaf's own `KeyPressed` variant so the binding's
         // own handler sees a focus-scoped event instead of a backend-global
         // one.
+        //
+        // For a focused `Tree`/`List`/`DataTable`, a recognized navigation
+        // key (Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown) is tried
+        // against [`apply_tree_nav_key`]/[`apply_list_nav_key`]/
+        // [`apply_data_table_nav_key`] first: it moves and scrolls-into-view
+        // the id's cursor in [`Self::widget_state`] (controlled or not — see
+        // those functions' own doc), using the hit's own row/viewport
+        // geometry rather than a stale descriptor. `tree_rows_and_viewport`
+        // returns `None` while the focused tree's selected row is mid-rename
+        // (`editing.is_some()`), so a rename's own text-editing keys
+        // (`Home`/`End` included) are never also interpreted as cursor
+        // navigation. This never changes what reaches `sink` (still the same
+        // `focus_scoped_key_event` result a binding always got), only
+        // forces the redraw that paints the moved cursor, even when the
+        // binding's own `sink.dispatch` leaves the key unhandled.
         if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
             if let Some(focused) = backend.focus_manager().focused().copied() {
+                let nav_applied = if let Some((row_paths, viewport_rows)) =
+                    tree_rows_and_viewport(&self.hit_map.borrow(), focused)
+                {
+                    apply_tree_nav_key(&self.widget_state, focused, &row_paths, viewport_rows, key)
+                } else if let Some((total_items, viewport_rows)) =
+                    list_rows_and_viewport(&self.hit_map.borrow(), focused)
+                {
+                    apply_list_nav_key(&self.widget_state, focused, total_items, viewport_rows, key)
+                } else if let Some((total_rows, viewport_rows)) =
+                    data_table_rows_and_viewport(&self.hit_map.borrow(), focused)
+                {
+                    apply_data_table_nav_key(
+                        &self.widget_state,
+                        focused,
+                        total_rows,
+                        viewport_rows,
+                        key,
+                    )
+                } else {
+                    false
+                };
                 event = focus_scoped_key_event(
                     focused,
                     key,
@@ -1430,6 +1507,9 @@ impl InteractionEngine {
                     &self.hit_map.borrow(),
                     &self.text_editors,
                 );
+                if nav_applied {
+                    return Reaction::Redraw.merge(sink.dispatch(&event, None));
+                }
             }
         }
 
@@ -1730,6 +1810,47 @@ impl InteractionEngine {
             }
         }
 
+        // Persists the handful of events `Self::widget_state` tracks
+        // uncontrolled-by-default, regardless of what `sink` goes on to do
+        // with them: a divider drag's resolved ratio
+        // ([`crate::host::resolve_split_ratio`]'s own counterpart), a
+        // clicked tab becoming active or a closed tab shifting whichever
+        // index was active ([`crate::host::resolve_tab_bar_active`]'s), or
+        // a toggled tree row's expand state
+        // ([`crate::host::resolve_tree_expansion`]'s). Never changes
+        // `event` itself — a controlled app's own handling of the same
+        // event is unaffected. `persisted_state` mirrors the Tree-cursor
+        // hook above (`nav_applied`'s own `Reaction::Redraw.merge`): a
+        // binding with no render callback of its own (so
+        // `host::callback_reaction_for_render`'s render-triggered redraw
+        // never kicks in) still needs the frame that paints the persisted
+        // change forced here, even when `sink.dispatch` below leaves the
+        // event itself unhandled.
+        let mut persisted_state = Reaction::Continue;
+        match &event {
+            UiEvent::SplitDividerDragged {
+                tree,
+                split_index,
+                new_ratio,
+            } => {
+                apply_split_divider_drag(&self.widget_state, *tree, *split_index, *new_ratio);
+                persisted_state = Reaction::Redraw;
+            }
+            UiEvent::TabBar(id, TabBarEvent::TabActivated { index }) => {
+                apply_tab_activated(&self.widget_state, *id, *index);
+                persisted_state = Reaction::Redraw;
+            }
+            UiEvent::TabBar(id, TabBarEvent::TabClosed { index }) => {
+                apply_tab_closed(&self.widget_state, *id, *index);
+                persisted_state = Reaction::Redraw;
+            }
+            UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }) => {
+                apply_tree_toggle_expand(&self.widget_state, *id, path);
+                persisted_state = Reaction::Redraw;
+            }
+            _ => {}
+        }
+
         let hit_detail = if attach_hit {
             hit.as_ref().map(|(_, detail)| detail)
         } else {
@@ -1746,6 +1867,7 @@ impl InteractionEngine {
             .merge(hover_reaction)
             .merge(focus_reaction)
             .merge(event_reaction)
+            .merge(persisted_state)
     }
 }
 
@@ -1799,21 +1921,32 @@ pub fn message_dialog_options_from_buttons(
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // `Panel`/`PanelAction` are `#[deprecated]`; `PanelLogic` and its tests cover `LayoutNode::Panel`'s own plumbing directly.
 mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
-        AppLogic, Backend, Button, DataTable, Key, Modifiers, MouseButton, NamedKey, Point,
-        Reaction, Rect, ToolbarEvent, UiEvent, WidgetId,
+        AppLogic, Backend, Button, DataTable, Key, ListView, Modifiers, MouseButton, NamedKey,
+        Point, Reaction, Rect, Split, TabBar, TabBarEvent, TabBarHit, ToolbarEvent, TreeEvent,
+        TreeView, UiEvent, WidgetId,
     };
 
     use super::{EventSink, InteractionEngine};
     use crate::drag::find_split_tree_layout;
     use crate::hit::HitDetail;
-    use crate::layout::{LayoutLeaf, LayoutNode, LayoutPanel, LayoutSplitTree, LeafDescriptor};
-    use crate::render::{draw_bands, paint_layout, RenderRefs};
+    use crate::host::{
+        resolve_data_table_cursor, resolve_layout_tabs_active, resolve_list_cursor,
+        resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion,
+    };
+    use crate::layout::{
+        LayoutLeaf, LayoutNode, LayoutPanel, LayoutSplit, LayoutSplitTree, LayoutTabEntry,
+        LayoutTabs, LeafDescriptor, Spacing,
+    };
+    use crate::render::{
+        draw_bands, list_viewport_rows, paint_layout, tree_viewport_rows, RenderRefs,
+    };
 
     /// Records every event [`InteractionEngine::handle`] dispatches, in
     /// order, so a test can assert on the orchestration's decisions (e.g.
@@ -1954,6 +2087,7 @@ mod tests {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             })
             .collect();
         let form = quadraui::Form {
@@ -1967,6 +2101,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
 
         let logic = FormLogic {
@@ -2703,6 +2838,631 @@ mod tests {
         );
     }
 
+    /// A minimal [`AppLogic`] painting a single `Tree`, for the
+    /// widget-state cursor/scroll coverage below — mirrors
+    /// [`DataTableLogic`], swapping the data-table band for a tree one.
+    /// `tree` is the raw descriptor an app would hand a binding (never
+    /// mutated by navigation); `render` resolves its cursor through
+    /// [`resolve_tree_cursor`] before painting, exactly as a real
+    /// binding's own `render` is expected to.
+    struct TreeLogic {
+        tree: TreeView,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for TreeLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let line_height = backend.line_height();
+            // Mirrors `draw_bands`'s own tree-band allocation (4 lines) —
+            // the only slot painted here, so it always starts at `y = 0.0`.
+            let tree_rect = Rect::new(
+                0.0,
+                0.0,
+                viewport.width,
+                (4.0 * line_height).min(viewport.height),
+            );
+            let viewport_rows = tree_viewport_rows(backend, tree_rect, &self.tree);
+            let resolved =
+                resolve_tree_cursor(self.engine.widget_state(), &self.tree, viewport_rows);
+
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: None,
+                    text_display: None,
+                    list: None,
+                    tree: Some(&resolved),
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Builds a `row_count`-row `Tree` with no selection/scroll set
+    /// (fully uncontrolled when `selected_path`/`scroll_offset` are left
+    /// at `None`/`0`) and drives it through a [`TuiDriver`] — mirrors
+    /// [`data_table_driver`]. `scroll_offset` lets a caller build a
+    /// controlled-scroll tree instead.
+    fn tree_driver(
+        row_count: usize,
+        selected_path: Option<quadraui::TreePath>,
+        scroll_offset: usize,
+    ) -> TuiDriver<TreeLogic> {
+        use quadraui::{StyledText, TreeRow};
+
+        let rows: Vec<TreeRow> = (0..row_count)
+            .map(|i| TreeRow {
+                path: vec![i as u16],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain(format!("row {i}")),
+                badge: None,
+                is_expanded: None,
+                decoration: Default::default(),
+                edit: None,
+            })
+            .collect();
+
+        let tree = TreeView {
+            id: WidgetId::new("tree"),
+            rows,
+            selection_mode: quadraui::SelectionMode::Single,
+            selected_path,
+            scroll_offset,
+            style: Default::default(),
+            has_focus: false,
+        };
+        let logic = TreeLogic {
+            tree,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 24, 8)
+    }
+
+    /// A 500-row `Tree` left fully uncontrolled (no `selected_path`, no
+    /// `scroll_offset`) must still move its cursor and keep it scrolled
+    /// into view purely from arrow-key presses — the cursor and its
+    /// scroll both live in the widget-state store, not the app, per this
+    /// module's own doc.
+    #[test]
+    fn uncontrolled_tree_moves_the_cursor_and_scrolls_it_into_view_on_down() {
+        let mut driver = tree_driver(500, None, 0);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("tree"))),
+                "the tree is a tab stop and must accept focus"
+            );
+        }
+
+        for _ in 0..40 {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
+
+        // 40 Downs starting from no selection land on row index 39 (the
+        // first Down selects row 0, each of the other 39 moves by one).
+        // Checked against the viewport capacity the same hit records
+        // (not the literal screen, which a focused tab stop's own
+        // separately-painted focus ring can cosmetically overdraw at this
+        // tiny band's edges — orthogonal to whether the cursor's row is
+        // within the scrolled window this module is responsible for).
+        let hits = driver.app().engine.hit_map();
+        let tree_hit = hits.iter().find_map(|hit| match hit {
+            crate::hit::PaintedHit::Tree {
+                id,
+                scroll_offset,
+                viewport_rows,
+                ..
+            } if *id == WidgetId::new("tree") => Some((*scroll_offset, *viewport_rows)),
+            _ => None,
+        });
+        let (scroll_offset, viewport_rows) =
+            tree_hit.expect("the tree must still be painted after 40 Down presses");
+        assert!(
+            scroll_offset > 0,
+            "500 rows in a {viewport_rows}-row tree viewport must have scrolled: {scroll_offset}"
+        );
+        assert!(
+            (scroll_offset..scroll_offset + viewport_rows).contains(&39),
+            "row 39 (the moved cursor) must be within the scrolled window [{scroll_offset}, {})",
+            scroll_offset + viewport_rows
+        );
+    }
+
+    /// A `Tree` whose descriptor pins a non-zero `scroll_offset` keeps
+    /// that exact value every frame, even while arrow keys move its
+    /// (uncontrolled) selection far enough that an uncontrolled scroll
+    /// would have followed it — controlled mode wins outright, per
+    /// [`resolve_tree_cursor`]'s own doc.
+    #[test]
+    fn controlled_tree_scroll_offset_is_pinned_and_not_moved_by_navigation_keys() {
+        let mut driver = tree_driver(500, None, 50);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("tree"))),
+                "the tree is a tab stop and must accept focus"
+            );
+        }
+
+        for _ in 0..10 {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
+
+        let hits = driver.app().engine.hit_map();
+        let scroll_offset = hits.iter().find_map(|hit| match hit {
+            crate::hit::PaintedHit::Tree {
+                id, scroll_offset, ..
+            } if *id == WidgetId::new("tree") => Some(*scroll_offset),
+            _ => None,
+        });
+        assert_eq!(
+            scroll_offset,
+            Some(50),
+            "a controlled scroll_offset must stay pinned at the descriptor's own value: {:?}",
+            scroll_offset
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single `ListView` through
+    /// [`resolve_list_cursor`] — the `List` counterpart of [`TreeLogic`],
+    /// for the widget-state cursor/scroll coverage below.
+    struct ListCursorLogic {
+        list: ListView,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for ListCursorLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let line_height = backend.line_height();
+            // Mirrors `draw_bands`'s own list-band allocation (4 lines).
+            let list_rect = Rect::new(
+                0.0,
+                0.0,
+                viewport.width,
+                (4.0 * line_height).min(viewport.height),
+            );
+            let viewport_rows = list_viewport_rows(backend, list_rect, &self.list);
+            let resolved =
+                resolve_list_cursor(self.engine.widget_state(), &self.list, viewport_rows);
+
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: None,
+                    text_display: None,
+                    list: Some(&resolved),
+                    tree: None,
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Builds a `row_count`-row `ListView` with the given
+    /// `selected_idx`/`scroll_offset` and drives it through a
+    /// [`TuiDriver`] — mirrors [`tree_driver`].
+    fn list_cursor_driver(
+        row_count: usize,
+        selected_idx: usize,
+        scroll_offset: usize,
+    ) -> TuiDriver<ListCursorLogic> {
+        use quadraui::{ListItem, StyledText};
+
+        let list = ListView {
+            id: WidgetId::new("list-cursor"),
+            title: None,
+            items: (0..row_count)
+                .map(|i| ListItem {
+                    text: StyledText::plain(format!("row {i}")),
+                    icon: None,
+                    detail: None,
+                    decoration: Default::default(),
+                })
+                .collect(),
+            selected_idx,
+            scroll_offset,
+            has_focus: false,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        let logic = ListCursorLogic {
+            list,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 24, 8)
+    }
+
+    /// A 500-row `List` left fully uncontrolled (`selected_idx: 0`,
+    /// `scroll_offset: 0`) must still move its cursor and keep it
+    /// scrolled into view purely from arrow-key presses — the `List`
+    /// counterpart of
+    /// [`uncontrolled_tree_moves_the_cursor_and_scrolls_it_into_view_on_down`].
+    #[test]
+    fn uncontrolled_list_moves_the_cursor_and_scrolls_it_into_view_on_down() {
+        let mut driver = list_cursor_driver(500, 0, 0);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("list-cursor"))),
+                "the list is a tab stop and must accept focus"
+            );
+        }
+
+        for _ in 0..40 {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
+
+        let hits = driver.app().engine.hit_map();
+        let list_hit = hits.iter().find_map(|hit| match hit {
+            crate::hit::PaintedHit::List {
+                id,
+                selected_idx,
+                scroll_offset,
+                viewport_rows,
+                ..
+            } if *id == WidgetId::new("list-cursor") => {
+                Some((*selected_idx, *scroll_offset, *viewport_rows))
+            }
+            _ => None,
+        });
+        let (selected_idx, scroll_offset, viewport_rows) =
+            list_hit.expect("the list must still be painted after 40 Down presses");
+        assert_eq!(
+            selected_idx, 39,
+            "40 Downs starting from no selection must land exactly on row 39"
+        );
+        assert!(
+            (scroll_offset..scroll_offset + viewport_rows).contains(&39),
+            "row 39 (the moved cursor) must be within the scrolled window [{scroll_offset}, {})",
+            scroll_offset + viewport_rows
+        );
+    }
+
+    /// A `List` whose descriptor pins a non-zero `scroll_offset` keeps
+    /// that exact value every frame, even while arrow keys move its
+    /// (uncontrolled) selection — the `List` counterpart of
+    /// [`controlled_tree_scroll_offset_is_pinned_and_not_moved_by_navigation_keys`].
+    #[test]
+    fn controlled_list_scroll_offset_is_pinned_and_not_moved_by_navigation_keys() {
+        let mut driver = list_cursor_driver(500, 0, 50);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("list-cursor"))),
+                "the list is a tab stop and must accept focus"
+            );
+        }
+
+        for _ in 0..10 {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
+
+        let hits = driver.app().engine.hit_map();
+        let scroll_offset = hits.iter().find_map(|hit| match hit {
+            crate::hit::PaintedHit::List {
+                id, scroll_offset, ..
+            } if *id == WidgetId::new("list-cursor") => Some(*scroll_offset),
+            _ => None,
+        });
+        assert_eq!(
+            scroll_offset,
+            Some(50),
+            "a controlled scroll_offset must stay pinned at the descriptor's own value: {:?}",
+            scroll_offset
+        );
+    }
+
+    /// Moving a `List`'s stored cursor is invisible to the app's own event
+    /// handler: a navigation key still arrives as the focus-scoped raw
+    /// `ListViewEvent::KeyPressed`, never as a synthesised
+    /// `SelectionChanged`. That is what an app tracking its own
+    /// `ListView::selected_idx` (the controlled shape) needs in order to
+    /// move that selection itself, so the widget-state cursor must not take
+    /// the event away from it.
+    #[test]
+    fn list_navigation_keys_reach_the_app_as_the_raw_key_pressed_event() {
+        use quadraui::ListViewEvent;
+
+        let mut driver = list_cursor_driver(500, 0, 0);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("list-cursor"))),
+                "the list is a tab stop and must accept focus"
+            );
+        }
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Down),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let dispatched = driver.app().sink.borrow().dispatched.clone();
+        let list_events: Vec<_> = dispatched
+            .iter()
+            .filter_map(|(event, _)| match event {
+                UiEvent::List(id, inner) if *id == WidgetId::new("list-cursor") => Some(inner),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            list_events.len(),
+            1,
+            "exactly one list event must reach the app: {dispatched:?}"
+        );
+        assert!(
+            matches!(list_events[0], ListViewEvent::KeyPressed { .. }),
+            "Down must stay a raw focus-scoped KeyPressed: {:?}",
+            list_events[0]
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single `DataTable` through
+    /// [`resolve_data_table_cursor`] — the `DataTable` counterpart of
+    /// [`TreeLogic`]/[`ListCursorLogic`], for the widget-state
+    /// cursor/scroll coverage below.
+    struct DataTableCursorLogic {
+        table: DataTable,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for DataTableCursorLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let line_height = backend.line_height();
+            // Mirrors `draw_bands`'s own data-table-band allocation (4 lines).
+            let table_rect = Rect::new(
+                0.0,
+                0.0,
+                viewport.width,
+                (4.0 * line_height).min(viewport.height),
+            );
+            let viewport_rows = backend
+                .data_table_layout(table_rect, &self.table)
+                .visible_rows;
+            let resolved =
+                resolve_data_table_cursor(self.engine.widget_state(), &self.table, viewport_rows);
+
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            draw_bands(
+                backend,
+                RenderRefs {
+                    button: None,
+                    text_display: None,
+                    list: None,
+                    tree: None,
+                    data_table: Some(&resolved),
+                    tab_bar: None,
+                    extra: &extra,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Builds a `row_count`-row `DataTable` with the given
+    /// `selected_idx`/`scroll_offset` and drives it through a
+    /// [`TuiDriver`] — mirrors [`tree_driver`]/[`list_cursor_driver`].
+    fn data_table_cursor_driver(
+        row_count: usize,
+        selected_idx: Option<usize>,
+        scroll_offset: usize,
+    ) -> TuiDriver<DataTableCursorLogic> {
+        use quadraui::{Column, DataRow, StyledText};
+
+        let table = DataTable {
+            id: WidgetId::new("table-cursor"),
+            columns: vec![Column {
+                title: "Col".to_string(),
+                width: Default::default(),
+                align: Default::default(),
+            }],
+            rows: (0..row_count)
+                .map(|i| DataRow {
+                    cells: vec![StyledText::plain(format!("row {i}"))],
+                    decoration: Default::default(),
+                })
+                .collect(),
+            selected_idx,
+            scroll_offset,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+        };
+        let logic = DataTableCursorLogic {
+            table,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 24, 8)
+    }
+
+    /// A 500-row `DataTable` left fully uncontrolled (`selected_idx: None`,
+    /// `scroll_offset: 0`) must still move its cursor and keep it
+    /// scrolled into view purely from arrow-key presses — the `DataTable`
+    /// counterpart of
+    /// [`uncontrolled_tree_moves_the_cursor_and_scrolls_it_into_view_on_down`].
+    #[test]
+    fn uncontrolled_data_table_moves_the_cursor_and_scrolls_it_into_view_on_down() {
+        let mut driver = data_table_cursor_driver(500, None, 0);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("table-cursor"))),
+                "the data table is a tab stop and must accept focus"
+            );
+        }
+
+        for _ in 0..40 {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
+
+        let hits = driver.app().engine.hit_map();
+        let table_hit = hits.iter().find_map(|hit| match hit {
+            crate::hit::PaintedHit::DataTable {
+                id,
+                selected_idx,
+                scroll_offset,
+                viewport_rows,
+                ..
+            } if *id == WidgetId::new("table-cursor") => {
+                Some((*selected_idx, *scroll_offset, *viewport_rows))
+            }
+            _ => None,
+        });
+        let (selected_idx, scroll_offset, viewport_rows) =
+            table_hit.expect("the table must still be painted after 40 Down presses");
+        assert_eq!(
+            selected_idx,
+            Some(39),
+            "40 Downs starting from no selection must land exactly on row 39"
+        );
+        assert!(
+            (scroll_offset..scroll_offset + viewport_rows).contains(&39),
+            "row 39 (the moved cursor) must be within the scrolled window [{scroll_offset}, {})",
+            scroll_offset + viewport_rows
+        );
+    }
+
+    /// A `DataTable` whose descriptor pins a non-zero `scroll_offset`
+    /// keeps that exact value every frame, even while arrow keys move its
+    /// (uncontrolled) selection — the `DataTable` counterpart of
+    /// [`controlled_tree_scroll_offset_is_pinned_and_not_moved_by_navigation_keys`].
+    #[test]
+    fn controlled_data_table_scroll_offset_is_pinned_and_not_moved_by_navigation_keys() {
+        let mut driver = data_table_cursor_driver(500, None, 50);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            assert!(
+                backend.set_focus(Some(WidgetId::new("table-cursor"))),
+                "the data table is a tab stop and must accept focus"
+            );
+        }
+
+        for _ in 0..10 {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
+
+        let hits = driver.app().engine.hit_map();
+        let scroll_offset = hits.iter().find_map(|hit| match hit {
+            crate::hit::PaintedHit::DataTable {
+                id, scroll_offset, ..
+            } if *id == WidgetId::new("table-cursor") => Some(*scroll_offset),
+            _ => None,
+        });
+        assert_eq!(
+            scroll_offset,
+            Some(50),
+            "a controlled scroll_offset must stay pinned at the descriptor's own value: {:?}",
+            scroll_offset
+        );
+    }
+
     /// A minimal [`AppLogic`] painting a single `ListView`, for the
     /// Enter-activates-the-selection coverage below — mirrors
     /// [`DataTableLogic`], swapping the data-table band for a list one.
@@ -3168,6 +3928,425 @@ mod tests {
         assert!(
             (new_ratio - expected_ratio).abs() < 0.001,
             "expected a ratio around {expected_ratio}, got {new_ratio}"
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single two-pane `quadraui::Split`
+    /// node (via [`paint_layout`]'s `LayoutNode::Split` arm), resolving the
+    /// ratio through [`resolve_split_ratio`] before every render — the
+    /// `Split` counterpart of [`SplitTreeLogic`]. `split` is the raw
+    /// descriptor an app would hand a binding (never mutated by a drag),
+    /// mirroring [`TreeLogic::tree`].
+    struct SplitLogic {
+        split: Split,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for SplitLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let resolved = resolve_split_ratio(self.engine.widget_state(), &self.split);
+            let mut hits = Vec::new();
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let node = LayoutNode::Split(LayoutSplit {
+                split: resolved,
+                first: Box::new(LayoutNode::Leaf(LayoutLeaf {
+                    id: "left".to_string(),
+                    descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("left-btn"), "L")),
+                    scroll_px: None,
+                })),
+                second: Box::new(LayoutNode::Leaf(LayoutLeaf {
+                    id: "right".to_string(),
+                    descriptor: LeafDescriptor::Button(Button::new(
+                        WidgetId::new("right-btn"),
+                        "R",
+                    )),
+                    scroll_px: None,
+                })),
+                spacing: Spacing::default(),
+            });
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Dragging a two-pane `Split`'s divider persists the resolved ratio
+    /// into the widget-state store, so a later render with the app's own
+    /// `Split::ratio` left at its original, never-updated `0.5` (the
+    /// "uncontrolled, no app state" shape this module's own doc describes)
+    /// still paints the dragged ratio — this crate's acceptance contract
+    /// for the split-ratio half of the widget-state store, exercised
+    /// end-to-end through [`InteractionEngine::handle`] rather than only
+    /// at the [`resolve_split_ratio`]/[`crate::host::apply_split_divider_drag`]
+    /// unit level `crate::host::tests` already covers.
+    #[test]
+    fn dragging_a_split_divider_persists_the_ratio_into_the_widget_state_store() {
+        let split = Split {
+            id: WidgetId::new("split"),
+            direction: quadraui::SplitDirection::Horizontal,
+            ratio: 0.5,
+            first_min: 0.0,
+            second_min: 0.0,
+        };
+        let logic = SplitLogic {
+            split,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 10);
+        driver.render();
+
+        let divider_bounds = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    crate::hit::PaintedHit::Split { layout } => Some(layout.divider_bounds),
+                    _ => None,
+                })
+                .expect("the split should have painted a divider")
+        };
+        // `divider_bounds.x` itself, not its midpoint: at an exact `0.5`
+        // ratio on an even-width viewport the midpoint lands on the exact
+        // boundary with the second pane's hit region, which wins the tie
+        // (`SplitLayout::hit_test` checks regions in order) and the click
+        // lands on a button instead of the divider.
+        let divider_point = Point::new(
+            divider_bounds.x,
+            divider_bounds.y + divider_bounds.height / 2.0,
+        );
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: divider_point,
+            modifiers: Modifiers::default(),
+        });
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(divider_point.x + 15.0, divider_point.y),
+            buttons: quadraui::ButtonMask {
+                left: true,
+                right: false,
+                middle: false,
+            },
+        });
+
+        let dragged_ratio = {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            dispatched
+                .iter()
+                .find_map(|(event, _)| match event {
+                    UiEvent::SplitDividerDragged {
+                        tree, new_ratio, ..
+                    } if *tree == WidgetId::new("split") => Some(*new_ratio),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("expected a SplitDividerDragged event: {:?}", dispatched))
+        };
+        assert_ne!(
+            dragged_ratio, 0.5,
+            "the drag must have actually moved the ratio away from its starting 0.5"
+        );
+
+        // The app's own `Split` descriptor is never touched by the drag —
+        // this render still hands `paint_layout` the exact same `ratio:
+        // 0.5` it always has, the "uncontrolled, no app state" shape this
+        // test is about.
+        driver.render();
+        let resolved_ratio = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    crate::hit::PaintedHit::Split { layout } => Some(layout.resolved_ratio),
+                    _ => None,
+                })
+                .expect("the split should still have painted a divider")
+        };
+        assert!(
+            (resolved_ratio - dragged_ratio).abs() < 0.001,
+            "the dragged ratio must survive a render whose descriptor still says 0.5: got {resolved_ratio}, expected {dragged_ratio}"
+        );
+    }
+
+    /// Clicking a tab (`TabBarEvent::TabActivated`, dispatched the same
+    /// already-semantic shape a real click on a tab body resolves to)
+    /// persists the active index into the widget-state store, so a later
+    /// render with the app's own `TabBar` descriptor left exactly as it
+    /// started (no tab marked active — "uncontrolled, no app state") still
+    /// shows the clicked tab active. Exercises
+    /// [`InteractionEngine::handle`]'s own persistence hook directly,
+    /// rather than only [`resolve_tab_bar_active`]/
+    /// [`crate::host::apply_tab_activated`] at the `crate::host::tests`
+    /// unit level.
+    #[test]
+    fn clicking_a_tab_persists_the_active_index_into_the_widget_state_store() {
+        let id = WidgetId::new("tabs");
+        let mut engine = InteractionEngine::new();
+        let mut sink = RecordingSink::default();
+        let mut backend = quadraui::tui::TuiBackend::new();
+
+        engine.handle(
+            UiEvent::TabBar(id, TabBarEvent::TabActivated { index: 2 }),
+            &mut backend,
+            &mut sink,
+        );
+
+        let tab_bar = quadraui::TabBar {
+            id,
+            tabs: (0..4)
+                .map(|i| quadraui::TabItem {
+                    label: format!("tab {i}"),
+                    ..Default::default()
+                })
+                .collect(),
+            scroll_offset: 0,
+            right_segments: Vec::new(),
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+        let resolved = resolve_tab_bar_active(engine.widget_state(), &tab_bar);
+        assert!(
+            resolved.tabs[2].is_active,
+            "the clicked tab must stay active even though the descriptor never marks any tab active"
+        );
+    }
+
+    /// A minimal [`AppLogic`] painting a single `LayoutTabs` tab group (via
+    /// [`paint_layout`]'s `LayoutNode::Tabs` arm), resolving it through
+    /// [`resolve_layout_tabs_active`] before every render — the `LayoutTabs`
+    /// counterpart of [`SplitLogic`]. Rebuilds a fresh [`LayoutTabs`] from
+    /// `tab_count` on every render (never mutated by a click), mirroring
+    /// [`SplitLogic::split`]'s "raw descriptor an app would hand a binding"
+    /// shape; `LayoutNode` isn't `Clone` (see [`crate::host::resolve_layout_tabs_active`]'s
+    /// own doc), so there's no stored `LayoutTabs` field to clone from
+    /// instead.
+    struct TabsLogic {
+        tab_count: usize,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl TabsLogic {
+        fn build_tabs(&self) -> LayoutTabs {
+            let tab_bar = TabBar {
+                id: WidgetId::new("tabs"),
+                tabs: (0..self.tab_count)
+                    .map(|i| quadraui::TabItem {
+                        label: format!("Tab {i}"),
+                        ..Default::default()
+                    })
+                    .collect(),
+                scroll_offset: 0,
+                right_segments: Vec::new(),
+                active_accent: None,
+                show_tab_close: false,
+                compact: false,
+            };
+            let entries = (0..self.tab_count)
+                .map(|i| LayoutTabEntry {
+                    id: format!("content-{i}"),
+                    content: Box::new(LayoutNode::Leaf(LayoutLeaf {
+                        id: format!("content-{i}-btn"),
+                        descriptor: LeafDescriptor::Button(Button::new(
+                            WidgetId::new(format!("content-{i}-btn")),
+                            format!("Tab {i} body"),
+                        )),
+                        scroll_px: None,
+                    })),
+                })
+                .collect();
+            LayoutTabs {
+                tab_bar,
+                entries,
+                selected: 0,
+                spacing: Spacing::default(),
+                focused_index: None,
+            }
+        }
+    }
+
+    impl AppLogic for TabsLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut tabs = self.build_tabs();
+            resolve_layout_tabs_active(self.engine.widget_state(), &mut tabs);
+            let mut hits = Vec::new();
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let node = LayoutNode::Tabs(tabs);
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// Clicking a tab body inside a `LayoutTabs` tab group — with no app
+    /// state at all, the descriptor keeps rebuilding the exact same
+    /// `selected: 0` every render — moves BOTH the strip's own active
+    /// highlight AND the content pane `paint_layout`'s `LayoutNode::Tabs`
+    /// arm paints underneath it. This is the acceptance case
+    /// `resolve_tab_bar_active` alone cannot satisfy: a binding that
+    /// resolved only the strip would highlight tab 1 while this render
+    /// kept painting tab 0's own body underneath it.
+    #[test]
+    fn clicking_a_tab_in_a_layout_tabs_group_moves_both_the_strip_and_the_content_pane() {
+        let logic = TabsLogic {
+            tab_count: 3,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 10);
+        driver.render();
+
+        // Starts on tab 0's own content, never tab 1's.
+        {
+            let hits = driver.app().engine.hit_map();
+            assert!(hits.iter().any(|hit| matches!(
+                hit,
+                crate::hit::PaintedHit::Button { id, .. } if *id == WidgetId::new("content-0-btn")
+            )));
+        }
+
+        let (strip_area, strip_layout) = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    crate::hit::PaintedHit::TabBar { area, layout, .. } => {
+                        Some((*area, layout.clone()))
+                    }
+                    _ => None,
+                })
+                .expect("the tab strip should have painted")
+        };
+        let tab1_rect = strip_layout
+            .hit_regions
+            .iter()
+            .find_map(|(rect, hit)| match hit {
+                TabBarHit::Tab(1) => Some(*rect),
+                _ => None,
+            })
+            .expect("tab 1 should have its own hit region");
+        let click_point = Point::new(
+            strip_area.x + tab1_rect.x + tab1_rect.width / 2.0,
+            strip_area.y + tab1_rect.y + tab1_rect.height / 2.0,
+        );
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: click_point,
+            modifiers: Modifiers::default(),
+        });
+        driver.dispatch(UiEvent::MouseUp {
+            widget: None,
+            button: MouseButton::Left,
+            position: click_point,
+        });
+
+        // The app's own `LayoutTabs` is never touched by the click — every
+        // render still rebuilds the exact same `selected: 0` it always
+        // has, the "uncontrolled, no app state" shape this test is about.
+        driver.render();
+        let hits = driver.app().engine.hit_map();
+        assert!(
+            hits.iter().any(|hit| matches!(
+                hit,
+                crate::hit::PaintedHit::Button { id, .. } if *id == WidgetId::new("content-1-btn")
+            )),
+            "the content pane must follow the clicked tab, not stay on the descriptor's own tab 0"
+        );
+        assert!(
+            !hits.iter().any(|hit| matches!(
+                hit,
+                crate::hit::PaintedHit::Button { id, .. } if *id == WidgetId::new("content-0-btn")
+            )),
+            "tab 0's own content must stop painting once tab 1 is active"
+        );
+        assert!(
+            strip_layout
+                .hit_regions
+                .iter()
+                .any(|(_, hit)| matches!(hit, TabBarHit::Tab(1))),
+            "sanity: tab 1 must have been clickable in the first place"
+        );
+    }
+
+    /// Toggling a tree row's expand state (`TreeEvent::RowToggleExpand`,
+    /// dispatched the same already-semantic shape a real click on a
+    /// chevron resolves to) persists it into the widget-state store, so a
+    /// later render with the app's own `TreeView` descriptor left exactly
+    /// as it started ("uncontrolled, no app state") still shows the row
+    /// expanded. Exercises [`InteractionEngine::handle`]'s own persistence
+    /// hook directly, rather than only [`resolve_tree_expansion`]/
+    /// [`crate::host::apply_tree_toggle_expand`] at the `crate::host::tests`
+    /// unit level.
+    #[test]
+    fn toggling_a_tree_row_persists_the_expand_state_into_the_widget_state_store() {
+        let id = WidgetId::new("tree");
+        let path = vec![0_u16];
+        let mut engine = InteractionEngine::new();
+        let mut sink = RecordingSink::default();
+        let mut backend = quadraui::tui::TuiBackend::new();
+
+        let tree = TreeView {
+            id,
+            rows: vec![quadraui::TreeRow {
+                path: path.clone(),
+                indent: 0,
+                icon: None,
+                text: quadraui::StyledText::plain("row"),
+                badge: None,
+                is_expanded: Some(false),
+                decoration: Default::default(),
+                edit: None,
+            }],
+            selection_mode: quadraui::SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: 0,
+            style: Default::default(),
+            has_focus: false,
+        };
+        // A render always happens before a click can land on a chevron —
+        // this seeds `resolve_tree_expansion`'s own baseline from the
+        // descriptor's starting `is_expanded: Some(false)`.
+        resolve_tree_expansion(engine.widget_state(), &tree);
+
+        engine.handle(
+            UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }),
+            &mut backend,
+            &mut sink,
+        );
+
+        let resolved = resolve_tree_expansion(engine.widget_state(), &tree);
+        assert_eq!(
+            resolved.rows[0].is_expanded,
+            Some(true),
+            "the toggled row must stay expanded even though the descriptor never changes"
         );
     }
 

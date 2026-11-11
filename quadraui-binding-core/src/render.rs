@@ -107,6 +107,33 @@ pub struct RenderRefs<'a> {
     pub data_table_scroll_px: Option<f32>,
 }
 
+/// Allocates the next `lines`-tall band (scaled by `line_height`),
+/// starting at the mutable cursor `*y` and never exceeding `viewport`'s
+/// remaining height — the sequential top-to-bottom allocation [`draw_bands`]
+/// uses for each of its six fixed slots plus every additive primitive.
+/// [`crate::host::resolve_render_refs`] calls this directly too, so it
+/// computes each occupied slot's pre-paint rect from the exact same band
+/// order and sizes `draw_bands` itself paints into, rather than a second,
+/// independently-drifting copy of this sequence. Returns `None` once the
+/// viewport has run out of vertical room; `*y` is only advanced when a
+/// band is actually returned.
+pub(crate) fn next_band(
+    y: &mut f32,
+    viewport_width: f32,
+    viewport_height: f32,
+    line_height: f32,
+    lines: f32,
+) -> Option<Rect> {
+    let remaining = viewport_height - *y;
+    if remaining <= 0.0 {
+        return None;
+    }
+    let band_height = (lines * line_height).min(remaining);
+    let rect = Rect::new(0.0, *y, viewport_width, band_height);
+    *y += band_height;
+    Some(rect)
+}
+
 /// Paints each present slot top-to-bottom in a fixed-height band, skipping
 /// any slot once the viewport runs out of room. Appends a [`PaintedHit`] to
 /// `hits` for every slot painted, so a later pointer event can be routed to
@@ -130,19 +157,12 @@ pub fn draw_bands(
     // tall on native.
     let line_height = backend.line_height();
     let mut y = 0.0_f32;
-    let mut next_band = |lines: f32| -> Option<Rect> {
-        let remaining = viewport.height - y;
-        if remaining <= 0.0 {
-            return None;
-        }
-        let band_height = (lines * line_height).min(remaining);
-        let rect = Rect::new(0.0, y, viewport.width, band_height);
-        y += band_height;
-        Some(rect)
+    let mut band = |lines: f32| -> Option<Rect> {
+        next_band(&mut y, viewport.width, viewport.height, line_height, lines)
     };
 
     if let Some(button) = refs.button {
-        if let Some(rect) = next_band(3.0) {
+        if let Some(rect) = band(3.0) {
             let layout = backend.draw_button(rect, button);
             hits.push(PaintedHit::Button {
                 id: button.id,
@@ -151,7 +171,7 @@ pub fn draw_bands(
         }
     }
     if let Some(text_display) = refs.text_display {
-        if let Some(rect) = next_band(3.0) {
+        if let Some(rect) = band(3.0) {
             hits.push(draw_text_display_hit(
                 backend,
                 text_display.id,
@@ -161,21 +181,24 @@ pub fn draw_bands(
         }
     }
     if let Some(list) = refs.list {
-        if let Some(rect) = next_band(4.0) {
+        if let Some(rect) = band(4.0) {
             let state = quadraui::ListPaintState::default().with_scroll_px(refs.list_scroll_px);
             backend.draw_list_with_state(rect, list, &state, false);
             let layout = backend.list_layout(rect, list);
+            let viewport_rows = list_viewport_rows(backend, rect, list);
             hits.push(PaintedHit::List {
                 id: list.id,
                 area: rect,
                 layout,
                 selected_idx: list.selected_idx,
                 total_items: list.items.len(),
+                scroll_offset: list.scroll_offset,
+                viewport_rows,
             });
         }
     }
     if let Some(tree) = refs.tree {
-        if let Some(rect) = next_band(4.0) {
+        if let Some(rect) = band(4.0) {
             let (content_rect, scrollbar, viewport_rows) =
                 draw_tree_with_scrollbar_and_state(backend, rect, tree, refs.tree_scroll_px);
             let layout = backend.tree_layout(content_rect, tree);
@@ -195,10 +218,11 @@ pub fn draw_bands(
         }
     }
     if let Some(data_table) = refs.data_table {
-        if let Some(rect) = next_band(4.0) {
+        if let Some(rect) = band(4.0) {
             let state =
                 quadraui::DataTablePaintState::default().with_scroll_px(refs.data_table_scroll_px);
             let layout = backend.draw_data_table_with_state(rect, data_table, &state);
+            let viewport_rows = layout.visible_rows;
             hits.push(PaintedHit::DataTable {
                 id: data_table.id,
                 area: rect,
@@ -206,11 +230,12 @@ pub fn draw_bands(
                 scroll_offset: data_table.scroll_offset,
                 total_rows: data_table.rows.len(),
                 selected_idx: data_table.selected_idx,
+                viewport_rows,
             });
         }
     }
     if let Some(tab_bar) = refs.tab_bar {
-        if let Some(rect) = next_band(3.0) {
+        if let Some(rect) = band(3.0) {
             let layout = backend.draw_tab_bar_layout(rect, tab_bar, None);
             hits.push(PaintedHit::TabBar {
                 id: tab_bar.id,
@@ -225,7 +250,7 @@ pub fn draw_bands(
     // the output is deterministic regardless of `HashMap` iteration order.
     for kind in crate::extra_paint::EXTRA_PRIMITIVE_KINDS {
         if let Some(extra) = refs.extra.get(kind) {
-            if let Some(rect) = next_band(3.0) {
+            if let Some(rect) = band(3.0) {
                 let interaction = chrome_interaction(extra.id());
                 let chrome_hits = extra.paint_chrome(backend, rect, &interaction);
                 hits.push(PaintedHit::Extra {
@@ -492,6 +517,7 @@ pub fn paint_layout(
                 );
             }
         }
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this arm is its own plumbing.
         LayoutNode::Panel(panel_node) => {
             let char_width = backend.char_width();
             let line_height = backend.line_height();
@@ -553,7 +579,7 @@ pub fn paint_layout(
 /// matching `Split::first_min`/`second_min`'s "a minimum applies to the
 /// pane" contract. [`apply_split_gap`] reinserts the carved-out space
 /// after painting.
-fn shrink_main_axis(area: Rect, horizontal: bool, gap: f32) -> Rect {
+pub(crate) fn shrink_main_axis(area: Rect, horizontal: bool, gap: f32) -> Rect {
     if horizontal {
         Rect::new(area.x, area.y, (area.width - gap).max(0.0), area.height)
     } else {
@@ -570,7 +596,7 @@ fn shrink_main_axis(area: Rect, horizontal: bool, gap: f32) -> Rect {
 /// panes end up visually separated by blank space rather than both
 /// touching the divider. A no-op when `gap` is `0.0`, the overwhelmingly
 /// common case.
-fn apply_split_gap(layout: &mut SplitLayout, horizontal: bool, gap: f32) {
+pub(crate) fn apply_split_gap(layout: &mut SplitLayout, horizontal: bool, gap: f32) {
     if gap <= 0.0 {
         return;
     }
@@ -691,6 +717,31 @@ pub fn tree_viewport_rows(backend: &mut dyn Backend, rect: Rect, tree: &TreeView
     backend.tree_layout(rect, &shadow).visible_rows.len()
 }
 
+/// How many items of `list` fit in `rect` at a zero scroll offset — the
+/// viewport's true row capacity, mirroring [`tree_viewport_rows`] for the
+/// identical reason: `ListViewLayout::visible_items.len()` at `list`'s
+/// ACTUAL offset can be shorter near the end of a long list. Paints into
+/// no backend at all — only queries `Backend::list_layout` against a
+/// scratch clone — so computing this never disturbs the real paint.
+pub fn list_viewport_rows(backend: &mut dyn Backend, rect: Rect, list: &ListView) -> usize {
+    let mut shadow = list.clone();
+    shadow.scroll_offset = 0;
+    backend.list_layout(rect, &shadow).visible_items.len()
+}
+
+/// How many rows of `table` fit in `rect` at a zero scroll offset,
+/// mirroring [`tree_viewport_rows`]/[`list_viewport_rows`] for the
+/// identical reason: [`quadraui::DataTableLayout::visible_rows`] at
+/// `table`'s ACTUAL offset can be shorter near the end of a long table.
+/// Paints into no backend at all — only queries `Backend::data_table_layout`
+/// against a scratch clone — so computing this never disturbs the real
+/// paint.
+pub fn data_table_viewport_rows(backend: &mut dyn Backend, rect: Rect, table: &DataTable) -> usize {
+    let mut shadow = table.clone();
+    shadow.scroll_offset = 0;
+    backend.data_table_layout(rect, &shadow).visible_rows
+}
+
 /// Paints `tree` into `area`, reserving a right-hand gutter for its
 /// vertical scrollbar when one is needed, and returns `(content_rect,
 /// scrollbar, viewport_rows)` so the caller can hit-test against the SAME
@@ -773,6 +824,53 @@ pub fn draw_tree_with_scrollbar_and_state(
     (content_rect, Some(scrollbar), viewport_rows)
 }
 
+/// Walks `node`'s layout tree collecting the tree-address `id` ->
+/// `Button::tooltip` text of every `Button` leaf that sets one — the
+/// layout-tree counterpart of a `BindingHost`'s own `button` slot read.
+/// [`paint_leaf`] keys a layout-tree leaf's [`PaintedHit::Button`] by this
+/// same tree-address id (not the descriptor's own embedded `Button::id`,
+/// which a render callback may leave at its default and reuse across
+/// leaves — see [`paint_leaf`]'s own doc), so a binding that paints
+/// through [`paint_layout`] calls this once per render and feeds the
+/// result to `crate::host::BindingHost::set_leaf_tooltips`: one
+/// `crate::host::BindingHost::hover_tooltip_text` lookup then resolves a
+/// hovered id from either paint path. A tab not currently selected still
+/// contributes its own leaves here even though [`paint_layout`] never
+/// paints them — harmless, since no [`PaintedHit`] for an unpainted leaf
+/// ever exists for [`crate::host::BindingHost::hover_anchor`] to find.
+pub fn collect_leaf_tooltips(node: &LayoutNode, out: &mut HashMap<WidgetId, String>) {
+    match node {
+        LayoutNode::Row(container) | LayoutNode::Column(container) => {
+            for child in &container.children {
+                collect_leaf_tooltips(child, out);
+            }
+        }
+        LayoutNode::Leaf(leaf) => {
+            if let LeafDescriptor::Button(button) = &leaf.descriptor {
+                if let Some(tooltip) = &button.tooltip {
+                    out.insert(WidgetId::new(leaf.id.clone()), tooltip.clone());
+                }
+            }
+        }
+        LayoutNode::Split(split) => {
+            collect_leaf_tooltips(&split.first, out);
+            collect_leaf_tooltips(&split.second, out);
+        }
+        LayoutNode::Tabs(tabs) => {
+            for entry in &tabs.entries {
+                collect_leaf_tooltips(&entry.content, out);
+            }
+        }
+        LayoutNode::Panel(panel_node) => collect_leaf_tooltips(&panel_node.content, out),
+        LayoutNode::SidebarPanel(sidebar_node) => collect_leaf_tooltips(&sidebar_node.content, out),
+        LayoutNode::SplitTree(split_tree) => {
+            for leaf in &split_tree.leaves {
+                collect_leaf_tooltips(leaf, out);
+            }
+        }
+    }
+}
+
 /// Paints one leaf's descriptor into the whole `area` its container gave
 /// it. Appends a [`PaintedHit`] for it, keyed by the leaf's own tree-address
 /// `id` (not the descriptor's embedded `id`, which a render callback may
@@ -798,12 +896,15 @@ pub fn paint_leaf(
             let state = quadraui::ListPaintState::default().with_scroll_px(leaf.scroll_px);
             backend.draw_list_with_state(area, list, &state, false);
             let layout = backend.list_layout(area, list);
+            let viewport_rows = list_viewport_rows(backend, area, list);
             hits.push(PaintedHit::List {
                 id,
                 area,
                 layout,
                 selected_idx: list.selected_idx,
                 total_items: list.items.len(),
+                scroll_offset: list.scroll_offset,
+                viewport_rows,
             });
         }
         LeafDescriptor::Tree(tree) => {
@@ -827,6 +928,7 @@ pub fn paint_leaf(
         LeafDescriptor::DataTable(data_table) => {
             let state = quadraui::DataTablePaintState::default().with_scroll_px(leaf.scroll_px);
             let layout = backend.draw_data_table_with_state(area, data_table, &state);
+            let viewport_rows = layout.visible_rows;
             hits.push(PaintedHit::DataTable {
                 id,
                 area,
@@ -834,6 +936,7 @@ pub fn paint_leaf(
                 scroll_offset: data_table.scroll_offset,
                 total_rows: data_table.rows.len(),
                 selected_idx: data_table.selected_idx,
+                viewport_rows,
             });
         }
         LeafDescriptor::TabBar(tab_bar) => {

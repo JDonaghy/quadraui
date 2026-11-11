@@ -101,7 +101,8 @@
 //! escape hatch for the overlay/OS-call/window-control methods this
 //! module doc's "cannot call back into `QuiApp`" note above otherwise
 //! rules out from inside a handler: `show_message_dialog`,
-//! `show_context_menu`, `show_toast`, `show_tooltip`, `send_notification`,
+//! `show_context_menu`, `show_toast`, `show_tooltip`, `hide_tooltip`,
+//! `send_notification`,
 //! `open_path`, `reveal_in_file_manager`, `move_to_trash`,
 //! `restore_from_trash`, `set_title`, `set_document_edited`,
 //! `set_represented_filename`, `set_tray_icon`, `set_tray_tooltip`,
@@ -116,22 +117,20 @@
 //! driver for `step`/`run`, the live terminal for `run_tui`, and the live
 //! window for `run_native` (`gtk`/`macos`/`win`) alike, since all four
 //! paths call through the same [`AppLogic`] trait methods.
-// Only spelled in this crate's own code inside `run_native`'s real
-// `target_os = "macos"` arm and in `#[cfg(test)]` coverage for the
-// downgrade `NativeExitPolicy` (aliased below as `NativeAppLogic`)
-// performs on this feature -- genuinely unused on a `macos`-feature,
-// non-Apple-`target_os` build (e.g. `cargo check --features macos` on
-// Linux), which `run_native`'s own non-Apple arm exists to keep buildable
-// without ever opening a real window.
-#[cfg(all(feature = "macos", not(feature = "gtk")))]
-#[allow(unused_imports)]
+// Needed for `CapturedWaker`'s `Cell` on the `macos`/`win` features (see
+// that type alias's own doc), and for the `exit_requested: Rc<Cell<bool>>`
+// `run_native`'s real `target_os = "macos"` arm and its `#[cfg(test)]`
+// coverage for the downgrade `NativeExitPolicy` (aliased below as
+// `NativeAppLogic`) performs on that feature. Used unconditionally
+// whenever this feature gate is active, including the non-native-`target_os`
+// typecheck arms, since `CapturedWaker` itself is defined and referenced at
+// that same gate.
+#[cfg(any(feature = "macos", feature = "win"))]
 use std::cell::Cell;
 use std::cell::RefCell;
-#[cfg(test)]
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io;
-use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -184,33 +183,51 @@ use quadraui_binding_core::tree_scroll_state;
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
-    add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction, caret_shape,
-    clear_recent_documents, click_down_up_events, color_depth_name, decode_extra_primitive,
-    dialog_severity, draw_bands, end_power_save_block, font_role, is_default_protocol_client,
-    key_pressed_event, login_item_enabled, menu_for_surface, merge_overrides,
-    message_dialog_options_from_buttons, paint_layout, panic_message, pointer_shape,
-    remove_as_default_protocol_client, render_overlays, resolve_app_path,
+    add_recent_document, apply_tab_activated, begin_drag_out, begin_power_save_block,
+    callback_reaction, caret_shape, clear_recent_documents, click_down_up_events,
+    collect_leaf_tooltips, color_depth_name, data_table_rows_and_viewport, decode_extra_primitive,
+    dialog_severity, draw_bands, end_power_save_block, font_role, guarded as core_guarded,
+    is_default_protocol_client, key_pressed_event, list_rows_and_viewport, login_item_enabled,
+    menu_for_surface, merge_overrides, message_dialog_options_from_buttons, paint_layout,
+    pointer_shape, record_pending_error, remove_as_default_protocol_client, render_overlays,
+    resolve_app_path, resolve_data_table_cursor, resolve_layout_tabs_active, resolve_list_cursor,
+    resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion,
     set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
-    text_display_from_lines, theme_color_value, toast_corner, update_apply_on_quit,
-    update_check_for_update, update_download_and_stage, window_close_reaction, with_tray,
-    with_window, BindingHost, ErasedShellDriver, EventSink, HitDetail, InteractionEngine,
-    OverrideError, RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling,
+    take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
+    toast_corner, tree_rows_and_viewport, update_apply_on_quit, update_check_for_update,
+    update_download_and_stage, widget_state_snapshot, window_close_reaction, with_tray,
+    with_window, BindingHost, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
+    InteractionEngine, LayoutLeaf, LayoutNode, LeafDescriptor, OverrideError, PaintedHit,
+    RenderFrame, RenderOutput, ServiceError, UpdateInfoWire, WindowCloseHandling,
 };
 
-/// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`)
-/// between a [`QuiApp`] and every [`QuiAppWaker`] handed out by
-/// [`QuiApp::waker`]. Factored into a named alias rather than spelled out
-/// inline on both of those — `clippy::type_complexity` rejects the bare
-/// nested `Arc<Mutex<Arc<dyn Fn(...) + Send + Sync>>>` spelling under
-/// `-D warnings`.
+/// A [`Backend::waker`] closure, shared (and swapped, by `QuiApp::run_tui`
+/// and `QuiApp::run_native`) between a [`QuiApp`] and every [`QuiAppWaker`]
+/// handed out by [`QuiApp::waker`]. Factored into a named alias rather than
+/// spelled out inline on both of those — `clippy::type_complexity` rejects
+/// the bare nested `Arc<Mutex<Arc<dyn Fn(...) + Send + Sync>>>` spelling
+/// under `-D warnings`.
 type SharedWaker = Arc<Mutex<Arc<dyn Fn(UserPayload) + Send + Sync>>>;
 
+/// A single [`Backend::waker`] closure, captured once by
+/// [`PyAppLogic::setup`] and read back exactly once by [`QuiApp::run_native`]'s
+/// `macos`/`win` arms, which — unlike `gtk`'s own `GtkRunner::waker()` — expose
+/// no post-construction accessor to reach a live `MacRunner`/`WinRunner`'s
+/// backend once its `AppLogic` has moved in. `Cell` rather than
+/// [`SharedWaker`]'s `Mutex`: this never needs to be `Sync`, since it is only
+/// ever written (inside `setup`, on the same thread constructing the runner)
+/// and taken (right after that same constructor call returns) from plain,
+/// single-threaded Rust code, never from a background thread the way a live
+/// `QuiAppWaker` clone is.
+#[cfg(any(feature = "macos", feature = "win"))]
+type CapturedWaker = Rc<Cell<Option<Arc<dyn Fn(UserPayload) + Send + Sync>>>>;
+
 /// Restores a [`SharedWaker`] cell to its previous value when dropped —
-/// used by [`QuiApp::run_tui`] around its `current_waker` swap so the
-/// restore runs whether `py.detach`'s pump loop returns normally *or*
-/// panics and unwinds through this scope. Without it, a panic there would
-/// poison the app (via [`QuiApp::guarded`]'s `catch_unwind`) but leave
-/// `current_waker` pointing at this dropped `TuiRunner`'s backend; most
+/// used by [`QuiApp::run_tui`]/[`QuiApp::run_native`] around their
+/// `current_waker` swap so the restore runs whether the pump loop returns
+/// normally *or* panics and unwinds through this scope. Without it, a panic
+/// there would poison the app (via [`QuiApp::guarded`]'s `catch_unwind`) but
+/// leave `current_waker` pointing at this dropped runner's backend; most
 /// `QuiApp` methods then immediately raise `PoisonedError` and never touch
 /// it again, but [`QuiApp::waker`] bypasses `guarded` by design (see its
 /// own poisoned check) and would otherwise still hand out a handle whose
@@ -387,7 +404,7 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 /// validated, waiting for [`flush_deferred_actions`] to apply it. Each
 /// variant mirrors one of the `QuiApp` methods [`QuiAppActions`]'s own
 /// doc names (`show_message_dialog`, `show_context_menu`, `show_toast`,
-/// `show_tooltip`, `send_notification`, `open_path`,
+/// `show_tooltip`, `hide_tooltip`, `send_notification`, `open_path`,
 /// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
 /// `set_title`, `set_document_edited`, `set_represented_filename`,
 /// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
@@ -396,6 +413,12 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 /// `quadraui`/`quadraui_binding_core` call, so applying one is a direct call
 /// with no further decoding or validation left to do.
 ///
+/// [`DeferredAction::HideTooltip`] is the one variant with no matching
+/// `QuiApp` method argument to carry — `QuiApp::hide_tooltip` itself takes
+/// none — so it stores nothing; [`flush_deferred_actions`] applies it via
+/// the same [`InteractionEngine::hide_tooltip`] call `QuiApp::hide_tooltip`
+/// makes directly.
+///
 /// `Theme`'s overrides are one exception: unlike `QuiApp::set_theme`,
 /// [`QuiAppActions::set_theme`] has no live backend to merge onto at queue
 /// time (that's the whole problem this type exists to solve), so each
@@ -403,6 +426,18 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 /// only — [`flush_deferred_actions`] re-merges the stored `(field, value)`
 /// pairs onto the real live backend's current theme right before applying
 /// it.
+///
+/// [`DeferredAction::ActivateTab`] is a third exception: it mirrors no
+/// `QuiApp` method at all (there is no reentrancy-restricted
+/// `QuiApp::apply_tab_activated` it stands in for), since the engine's
+/// widget-state store had no write-side binding surface before
+/// [`QuiAppActions::apply_tab_activated`] added one. [`flush_deferred_actions`]
+/// applies it via the exact same
+/// [`quadraui_binding_core::apply_tab_activated`] call
+/// `InteractionEngine::handle` itself makes for a real `TabActivated`
+/// click, so a programmatic "make tab N active" persists in the store the
+/// identical way, with no round trip through the next render's descriptor
+/// needed.
 ///
 /// The ten platform-services variants below (`ApplyUpdateOnQuit` through
 /// `SetJumpList`) are a second exception, for the same underlying reason:
@@ -419,6 +454,7 @@ enum DeferredAction {
     ContextMenu(Vec<ContextMenuItem>, Point),
     Toast(Toast, ToastCorner),
     Tooltip(Tooltip, Rect),
+    HideTooltip,
     Notification(Notification),
     OpenPath(PathBuf),
     RevealInFileManager(PathBuf),
@@ -449,6 +485,7 @@ enum DeferredAction {
     ClearRecentDocuments,
     SetDockMenu(serde_json::Value),
     SetJumpList(serde_json::Value),
+    ActivateTab(WidgetId, usize),
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
@@ -504,6 +541,21 @@ struct PyAppLogic {
     /// a queued action must be applied as a direct Rust call rather than
     /// through another `QuiApp` method call.
     deferred_actions: Rc<RefCell<VecDeque<DeferredAction>>>,
+    /// Captured by [`AppLogic::setup`] off the live `backend` every runner
+    /// hands it exactly once, synchronously, before returning
+    /// (`TuiRunner::new`/`GtkRunner::new_with`/`MacRunner::new_with`/
+    /// `WinRunner::new_with` all call `app.setup(&mut backend)` before this
+    /// whole `PyAppLogic` moves anywhere else). `TuiRunner`/`GtkRunner`
+    /// expose their own post-construction `.backend().waker()`/`.waker()`
+    /// accessor `run_tui`/`run_native`'s `gtk` arm reads instead and never
+    /// touch this field; `MacRunner`/`WinRunner` expose no such accessor
+    /// once the `AppLogic` has moved in, so this is the only window in
+    /// which anything outside the runner can still get at that session's
+    /// waker — `run_native`'s `macos`/`win` arms clone this `Rc` before
+    /// `MacRunner::new_with`/`WinRunner::new_with` moves the rest of this
+    /// struct, then `take()` it right after that call returns.
+    #[cfg(any(feature = "macos", feature = "win"))]
+    captured_waker: CapturedWaker,
 }
 
 impl PyAppLogic {
@@ -534,20 +586,29 @@ impl PyAppLogic {
 
     /// Drives [`Self::host`]'s hover-tooltip tracker for this dispatch —
     /// [`BindingHost::drive_hover_tooltip`] fed [`BindingHost::now_ms`]'s
-    /// own real wall clock (there is no fake one to inject from Python; a
-    /// test instead uses a short real [`Self::host`]-level
-    /// `tooltip_delay_ms` override, same as this crate's existing
-    /// `QuiAppWaker::post_after`/`wake_after` timer tests) and
-    /// [`Self::host`]'s own `style.tooltip_delay_ms` (or the
-    /// behaviour-preserving default when no style has been set). Called
-    /// from both [`AppLogic::handle`] (so a hover change is noticed the
-    /// same frame) and [`AppLogic::tick`] (so the delay still elapses
+    /// own real wall clock, or a test-pinned value once `QuiApp.set_test_clock_ms`
+    /// has set [`BindingHost::test_clock_ms`] (see that field's own doc) —
+    /// and [`Self::host`]'s own `style.tooltip_delay_ms`/`tooltip_auto_dismiss_ms`
+    /// (or the behaviour-preserving defaults when no style has been set).
+    /// Called from both [`AppLogic::handle`] (so a hover change is noticed
+    /// the same frame) and [`AppLogic::tick`] (so the delay still elapses
     /// with the pointer held still and no further event arriving).
-    fn drive_hover_tooltip(&mut self) -> Reaction {
+    ///
+    /// `backend` is forwarded to [`BindingHost::drive_hover_tooltip`] so
+    /// its own pending/auto-dismiss wake reaches `backend.request_frame_in`
+    /// directly, surviving even when this call's returned [`Reaction`]
+    /// gets merged away by a same-frame `Reaction::Redraw` from `handle`'s
+    /// own dispatch.
+    fn drive_hover_tooltip(&mut self, backend: &mut dyn Backend) -> Reaction {
         let now_ms = self.host.now_ms();
-        let delay_ms = self.host.style.unwrap_or_default().tooltip_delay_ms;
-        self.host
-            .drive_hover_tooltip(&mut self.engine, now_ms, delay_ms)
+        let style = self.host.style.unwrap_or_default();
+        self.host.drive_hover_tooltip(
+            &mut self.engine,
+            backend,
+            now_ms,
+            style.tooltip_delay_ms,
+            style.tooltip_auto_dismiss_ms,
+        )
     }
 }
 
@@ -603,16 +664,14 @@ fn reaction_from_window_close_return(
 }
 
 /// Records `err` into `pending_error`, but only if no earlier error in the
-/// same dispatch already claimed the slot. Without this, a handler raise
-/// (recorded first) followed by the render callback also raising while
-/// painting the same frame would have the render error silently clobber
-/// the handler's — the one a caller actually wants to see, since it is
-/// closer to the root cause.
+/// same dispatch already claimed the slot — [`record_pending_error`]'s
+/// "first error wins" contract. Without this, a handler raise (recorded
+/// first) followed by the render callback also raising while painting the
+/// same frame would have the render error silently clobber the handler's
+/// — the one a caller actually wants to see, since it is closer to the
+/// root cause.
 fn record_error(pending_error: &Rc<RefCell<Option<PyErr>>>, err: PyErr) {
-    let mut slot = pending_error.borrow_mut();
-    if slot.is_none() {
-        *slot = Some(err);
-    }
+    record_pending_error(&mut pending_error.borrow_mut(), err);
 }
 
 /// Decodes `QuiApp::show_message_dialog`'s `severity` string into a
@@ -694,8 +753,14 @@ impl AppLogic for PyAppLogic {
     /// `MacRunner::new`, `WinRunner::new_with`) calls
     /// `app.setup(&mut backend)` right after building its backend and
     /// before the first frame, so this hook reaches all four.
+    ///
+    /// Also stashes `backend`'s own [`Backend::waker`] into
+    /// [`Self::captured_waker`] on the `macos`/`win` features -- see that
+    /// field's own doc for why.
     fn setup(&mut self, backend: &mut dyn Backend) {
         self.host.setup(backend);
+        #[cfg(any(feature = "macos", feature = "win"))]
+        self.captured_waker.set(Some(backend.waker()));
     }
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
@@ -708,17 +773,41 @@ impl AppLogic for PyAppLogic {
                 &mut hits,
                 &chrome_interaction,
             );
+            // No render callback: nothing painted through `paint_layout`
+            // this frame, so there is no layout-tree leaf tooltip to
+            // resolve -- clears out anything a previously registered
+            // callback's tree may have left behind.
+            self.host.set_leaf_tooltips(HashMap::new());
             render_overlays(&self.engine, backend, hits);
             return;
         };
         match render_output_from_callback(callback, &self.pending_error) {
-            Some(RenderOutput::Flat(frame)) => {
-                draw_bands(backend, frame.as_refs(), &mut hits, &chrome_interaction)
+            Some(RenderOutput::Flat(mut frame)) => {
+                // Merges the engine's own stored cursor/scroll/active-tab
+                // into whatever the callback's `tree`/`list`/`data_table`/
+                // `tab_bar` slot left uncontrolled, so an arrow key or a
+                // click a prior `handle` call already applied to
+                // `InteractionEngine::widget_state` is what actually
+                // paints this frame -- see `resolve_render_frame_state`'s
+                // own doc.
+                resolve_render_frame_state(&self.engine, &mut frame);
+                draw_bands(backend, frame.as_refs(), &mut hits, &chrome_interaction);
+                self.host.set_leaf_tooltips(HashMap::new());
             }
-            Some(RenderOutput::Tree(node)) => {
+            Some(RenderOutput::Tree(mut node)) => {
+                // The layout-tree counterpart of the `resolve_render_frame_state`
+                // call above.
+                resolve_layout_node_state(&self.engine, &mut node);
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
                 paint_layout(backend, area, &node, &mut hits, &chrome_interaction);
+                // Refreshed every render so a hovered layout-tree button's
+                // tooltip resolves against this frame's tree, keyed by
+                // each leaf's own tree-address id -- see
+                // `collect_leaf_tooltips`'s own doc.
+                let mut leaf_tooltips = HashMap::new();
+                collect_leaf_tooltips(&node, &mut leaf_tooltips);
+                self.host.set_leaf_tooltips(leaf_tooltips);
             }
             None => {}
         }
@@ -760,7 +849,7 @@ impl AppLogic for PyAppLogic {
                 self.engine.handle(event, backend, &mut sink)
             }
         };
-        let reaction = reaction.merge(self.drive_hover_tooltip());
+        let reaction = reaction.merge(self.drive_hover_tooltip(backend));
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw
@@ -787,7 +876,7 @@ impl AppLogic for PyAppLogic {
                 })
             }
         };
-        let reaction = reaction.merge(self.drive_hover_tooltip());
+        let reaction = reaction.merge(self.drive_hover_tooltip(backend));
         let applied = flush_deferred_actions(backend, self);
         reaction.merge(if applied {
             Reaction::Redraw
@@ -969,16 +1058,17 @@ struct ShellState {
     /// way, since that is `AppShell`'s own unconditional chrome paint, not
     /// part of [`crate::ShellApp::render_content`].
     render_content: Option<Py<PyAny>>,
-    /// Invoked with one pythonized `AppShellEvent` dict (see
-    /// [`app_shell_event_to_py`]) whenever [`crate::ShellApp::on_shell_event_ctx`]
-    /// fires — a panel switch, the sidebar being hidden/resized, the bottom
-    /// panel being resized/hidden, or a bottom-item (no-panel) activity-bar
-    /// click.
+    /// Invoked with one pythonized `AppShellEvent` dict (via
+    /// `pythonize::pythonize`, using `AppShellEvent`'s own `Serialize` impl)
+    /// whenever [`crate::ShellApp::on_shell_event_ctx`] fires — a panel
+    /// switch, the sidebar being hidden/resized, the bottom panel being
+    /// resized/hidden, or a bottom-item (no-panel) activity-bar click.
     on_shell_event: Option<Py<PyAny>>,
-    /// Invoked with one pythonized `BottomPanelEvent` dict (see
-    /// [`bottom_panel_event_to_py`]) whenever [`crate::ShellApp::on_bottom_panel_event`]
-    /// fires — a tab activated, a tab closed, maximise toggled, or a
-    /// drag-resize. Only ever fires when `run_shell`'s `config` included a
+    /// Invoked with one pythonized `BottomPanelEvent` dict (via
+    /// `pythonize::pythonize`, using `BottomPanelEvent`'s own `Serialize`
+    /// impl) whenever [`crate::ShellApp::on_bottom_panel_event`] fires — a
+    /// tab activated, a tab closed, maximise toggled, or a drag-resize.
+    /// Only ever fires when `run_shell`'s `config` included a
     /// `"bottom_panel"` entry.
     on_bottom_panel_event: Option<Py<PyAny>>,
     /// Set by any of the callbacks above when the Python callable they
@@ -989,71 +1079,12 @@ struct ShellState {
 
 impl ShellState {
     /// Records `err` as this session's pending error, but only if no
-    /// earlier error already claimed the slot — mirrors [`record_error`]'s
-    /// "first error wins" contract for [`PyAppLogic::pending_error`].
+    /// earlier error already claimed the slot — [`record_pending_error`]'s
+    /// "first error wins" contract, mirroring [`record_error`]'s own use
+    /// of it for [`PyAppLogic::pending_error`].
     fn record_error(&mut self, err: PyErr) {
-        if self.pending_error.is_none() {
-            self.pending_error = Some(err);
-        }
+        record_pending_error(&mut self.pending_error, err);
     }
-}
-
-/// Pythonizes one [`AppShellEvent`] as an externally-tagged `dict`, e.g.
-/// `{"PanelChanged": {"panel_id": "panel:explorer"}}` or
-/// `{"SidebarHidden": None}` — the same shape `pythonize::pythonize` would
-/// give a `#[derive(Serialize)]` enum, hand-built here since `AppShellEvent`
-/// has no such derive upstream (see this module's "ShellApp /
-/// `QuiApp.run_shell`" doc for why this binding doesn't add one).
-fn app_shell_event_to_py<'py>(
-    py: Python<'py>,
-    event: &AppShellEvent,
-) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    match event {
-        AppShellEvent::PanelChanged { panel_id } => {
-            let inner = PyDict::new(py);
-            inner.set_item("panel_id", panel_id.as_str())?;
-            dict.set_item("PanelChanged", inner)?;
-        }
-        AppShellEvent::SidebarHidden => dict.set_item("SidebarHidden", py.None())?,
-        AppShellEvent::SidebarResized { new_width } => {
-            let inner = PyDict::new(py);
-            inner.set_item("new_width", new_width)?;
-            dict.set_item("SidebarResized", inner)?;
-        }
-        AppShellEvent::BottomPanelResized { new_height } => {
-            let inner = PyDict::new(py);
-            inner.set_item("new_height", new_height)?;
-            dict.set_item("BottomPanelResized", inner)?;
-        }
-        AppShellEvent::BottomPanelHidden => dict.set_item("BottomPanelHidden", py.None())?,
-        AppShellEvent::BottomItemClicked { id } => {
-            let inner = PyDict::new(py);
-            inner.set_item("id", id.as_str())?;
-            dict.set_item("BottomItemClicked", inner)?;
-        }
-        AppShellEvent::Consumed => dict.set_item("Consumed", py.None())?,
-        AppShellEvent::Ignored => dict.set_item("Ignored", py.None())?,
-    }
-    Ok(dict)
-}
-
-/// Pythonizes one [`BottomPanelEvent`] as an externally-tagged `dict`, e.g.
-/// `{"TabActivated": "bp:terminal"}` or `{"MaximiseToggled": None}` — see
-/// [`app_shell_event_to_py`]'s doc for why this is hand-built rather than
-/// derived.
-fn bottom_panel_event_to_py<'py>(
-    py: Python<'py>,
-    event: &BottomPanelEvent,
-) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    match event {
-        BottomPanelEvent::TabActivated(id) => dict.set_item("TabActivated", id)?,
-        BottomPanelEvent::TabClosed(id) => dict.set_item("TabClosed", id)?,
-        BottomPanelEvent::MaximiseToggled => dict.set_item("MaximiseToggled", py.None())?,
-        BottomPanelEvent::Resized(height) => dict.set_item("Resized", height)?,
-    }
-    Ok(dict)
 }
 
 /// `WidgetId` string `quadraui::compose::bottom_panel::BottomPanelController::build_tab_bar`
@@ -1141,10 +1172,14 @@ impl ShellApp for PyShellApp {
             return;
         };
         Python::attach(|py| {
-            let payload = match app_shell_event_to_py(py, event) {
+            let payload = match pythonize::pythonize(py, event) {
                 Ok(value) => value,
                 Err(err) => {
-                    self.state.borrow_mut().record_error(err);
+                    self.state
+                        .borrow_mut()
+                        .record_error(InternalError::new_err(format!(
+                            "failed to pythonize shell event: {err}"
+                        )));
                     return;
                 }
             };
@@ -1159,10 +1194,14 @@ impl ShellApp for PyShellApp {
             return;
         };
         Python::attach(|py| {
-            let payload = match bottom_panel_event_to_py(py, event) {
+            let payload = match pythonize::pythonize(py, event) {
                 Ok(value) => value,
                 Err(err) => {
-                    self.state.borrow_mut().record_error(err);
+                    self.state
+                        .borrow_mut()
+                        .record_error(InternalError::new_err(format!(
+                            "failed to pythonize bottom-panel event: {err}"
+                        )));
                     return;
                 }
             };
@@ -1203,10 +1242,7 @@ fn shell_config_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<ShellConfig> {
 /// Takes and returns this session's pending callback-raised error, if any
 /// — the `ShellState` counterpart to [`take_pending_error`].
 fn take_pending_shell_error(state: &Rc<RefCell<ShellState>>) -> PyResult<()> {
-    if let Some(err) = state.borrow_mut().pending_error.take() {
-        return Err(err);
-    }
-    Ok(())
+    core_take_pending_error(&mut state.borrow_mut().pending_error)
 }
 
 /// Headless [`ShellApp`]-backed app: an AppShell (activity bar + sidebar +
@@ -1253,17 +1289,16 @@ impl QuiShellApp {
     }
 
     /// Registers `callback` as the callable invoked with one pythonized
-    /// `AppShellEvent` dict (see [`app_shell_event_to_py`]) whenever a
-    /// panel switch, sidebar show/hide/resize, or bottom-panel resize/hide
-    /// occurs.
+    /// `AppShellEvent` dict whenever a panel switch, sidebar show/hide/
+    /// resize, or bottom-panel resize/hide occurs.
     fn set_on_shell_event(&mut self, callback: Py<PyAny>) {
         self.state.borrow_mut().on_shell_event = Some(callback);
     }
 
     /// Registers `callback` as the callable invoked with one pythonized
-    /// `BottomPanelEvent` dict (see [`bottom_panel_event_to_py`]) whenever
-    /// the bottom-panel tab strip is interacted with. Only ever fires when
-    /// this app's `config` included a `"bottom_panel"` entry.
+    /// `BottomPanelEvent` dict whenever the bottom-panel tab strip is
+    /// interacted with. Only ever fires when this app's `config` included a
+    /// `"bottom_panel"` entry.
     fn set_on_bottom_panel_event(&mut self, callback: Py<PyAny>) {
         self.state.borrow_mut().on_bottom_panel_event = Some(callback);
     }
@@ -1375,20 +1410,27 @@ impl QuiShellApp {
 
 impl QuiShellApp {
     /// Mirrors [`QuiApp::guarded`]: catches a Rust panic instead of letting
-    /// it unwind across the PyO3 boundary, poisoning this app on one.
+    /// it unwind across the PyO3 boundary, poisoning this app on one. A
+    /// thin wrapper over [`core_guarded`]; see that function's own doc for
+    /// the shared "catch panic, poison on panic, refuse once poisoned"
+    /// shape every binding's `guarded` builds on.
     fn guarded<T>(&mut self, body: impl FnOnce(&mut Self) -> PyResult<T>) -> PyResult<T> {
-        if self.poisoned {
-            return Err(PoisonedError::new_err(
-                "this QuiShellApp is poisoned by an earlier caught panic and can no longer be used",
-            ));
-        }
-        match panic::catch_unwind(AssertUnwindSafe(|| body(self))) {
-            Ok(result) => result,
-            Err(payload) => {
-                self.poisoned = true;
-                Err(PanicError::new_err(panic_message(&*payload)))
+        core_guarded(
+            self,
+            |s| s.poisoned,
+            |s| s.poisoned = true,
+            |_s| {},
+            |_s| {},
+            |failure| {
+                match failure {
+                GuardedFailure::Poisoned => PoisonedError::new_err(
+                    "this QuiShellApp is poisoned by an earlier caught panic and can no longer be used",
+                ),
+                GuardedFailure::Panic(msg) => PanicError::new_err(msg),
             }
-        }
+            },
+            body,
+        )
     }
 
     /// Mirrors [`QuiApp::step_once`], minus the `User`/waker path `run_shell`
@@ -1455,6 +1497,196 @@ fn render_output_from_callback(
             }
         }
     })
+}
+
+/// A leaf's own painted `(rows_or_items, viewport_rows)` from the most
+/// recent frame's hit map, via `viewport_rows_fn`
+/// (`tree_rows_and_viewport`/`list_rows_and_viewport`/
+/// `data_table_rows_and_viewport`) -- the same previous-frame geometry
+/// `InteractionEngine::handle`'s own `apply_tree_nav_key`/
+/// `apply_list_nav_key`/`apply_data_table_nav_key` calls already resolve a
+/// keyboard move against, reused here so a `resolve_tree_cursor`/
+/// `resolve_list_cursor`/`resolve_data_table_cursor` call agrees with
+/// whatever cursor move just landed in the store. Falls back to
+/// `fallback_rows` (the leaf's own row/item count this frame, floored at
+/// `1`) on the very first render -- before any frame has painted this id
+/// at all -- so an uncontrolled scroll offset starts at `0` rather than
+/// panicking or guessing a viewport size out of thin air.
+fn resolved_viewport_rows(
+    engine: &InteractionEngine,
+    id: WidgetId,
+    fallback_rows: usize,
+    viewport_rows_fn: impl FnOnce(&[PaintedHit], WidgetId) -> Option<(usize, usize)>,
+) -> usize {
+    viewport_rows_fn(&engine.hit_map(), id)
+        .map(|(_, viewport_rows)| viewport_rows)
+        .unwrap_or_else(|| fallback_rows.max(1))
+}
+
+/// Resolves a decoded [`RenderFrame`]'s `tree`/`list`/`data_table`/
+/// `tab_bar` slots against [`InteractionEngine::widget_state`] in place --
+/// the flat six-slot counterpart of [`resolve_layout_node_state`], called
+/// right before [`draw_bands`] paints `frame.as_refs()` so an uncontrolled
+/// cursor/scroll/active-tab/expanded-set a key press or click just moved in
+/// the store (via [`InteractionEngine::handle`]'s own `apply_*` calls) is
+/// what actually gets painted this frame, with no app code needed to track
+/// it. A slot the render callback left `None` is untouched; a slot whose
+/// descriptor pins an explicit value keeps winning outright, since every
+/// `resolve_*` call below returns a controlled value unchanged -- see each
+/// one's own "controlled / uncontrolled" doc.
+fn resolve_render_frame_state(engine: &InteractionEngine, frame: &mut RenderFrame) {
+    let widget_state = engine.widget_state();
+    if let Some(tree) = frame.tree.take() {
+        // Expansion first: a collapsed ancestor prunes its descendants from
+        // `rows`, so the cursor's own scroll-to-visible search below walks
+        // the same row list that actually gets painted, not the
+        // not-yet-collapsed one.
+        let tree = resolve_tree_expansion(widget_state, &tree);
+        let viewport_rows = resolved_viewport_rows(
+            engine,
+            tree.id,
+            tree.rows.len(),
+            tree_rows_and_viewport_for_resolve,
+        );
+        frame.tree = Some(resolve_tree_cursor(widget_state, &tree, viewport_rows));
+    }
+    if let Some(list) = frame.list.take() {
+        let viewport_rows = resolved_viewport_rows(
+            engine,
+            list.id,
+            list.items.len(),
+            list_rows_and_viewport_for_resolve,
+        );
+        frame.list = Some(resolve_list_cursor(widget_state, &list, viewport_rows));
+    }
+    if let Some(table) = frame.data_table.take() {
+        let viewport_rows = resolved_viewport_rows(
+            engine,
+            table.id,
+            table.rows.len(),
+            data_table_rows_and_viewport_for_resolve,
+        );
+        frame.data_table = Some(resolve_data_table_cursor(
+            widget_state,
+            &table,
+            viewport_rows,
+        ));
+    }
+    if let Some(tab_bar) = frame.tab_bar.take() {
+        frame.tab_bar = Some(resolve_tab_bar_active(widget_state, &tab_bar));
+    }
+}
+
+/// Resolves every `Tree`/`List`/`DataTable`/`Split`/`Tabs` encountered
+/// while walking a decoded layout tree, in place -- the layout-tree
+/// counterpart of [`resolve_render_frame_state`], called right before
+/// [`paint_layout`] paints `node`. See that function's own doc for why
+/// this never needs to special-case a controlled leaf.
+fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) {
+    match node {
+        LayoutNode::Row(container) | LayoutNode::Column(container) => {
+            for child in &mut container.children {
+                resolve_layout_node_state(engine, child);
+            }
+        }
+        LayoutNode::Leaf(leaf) => resolve_layout_leaf_state(engine, leaf),
+        LayoutNode::Split(split_node) => {
+            split_node.split = resolve_split_ratio(engine.widget_state(), &split_node.split);
+            resolve_layout_node_state(engine, &mut split_node.first);
+            resolve_layout_node_state(engine, &mut split_node.second);
+        }
+        LayoutNode::Tabs(tabs_node) => {
+            resolve_layout_tabs_active(engine.widget_state(), tabs_node);
+            for entry in &mut tabs_node.entries {
+                resolve_layout_node_state(engine, &mut entry.content);
+            }
+        }
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this arm is its own wire plumbing.
+        LayoutNode::Panel(panel_node) => {
+            resolve_layout_node_state(engine, &mut panel_node.content);
+        }
+        LayoutNode::SidebarPanel(sidebar_node) => {
+            resolve_layout_node_state(engine, &mut sidebar_node.content);
+        }
+        LayoutNode::SplitTree(split_tree_node) => {
+            for leaf in &mut split_tree_node.leaves {
+                resolve_layout_node_state(engine, leaf);
+            }
+        }
+    }
+}
+
+/// One [`LayoutLeaf`]'s own resolution -- the per-leaf step
+/// [`resolve_layout_node_state`]'s `LayoutNode::Leaf` arm defers to, mirroring
+/// [`resolve_render_frame_state`]'s per-slot handling for the four leaf
+/// kinds the widget-state store tracks. A `Button`/`TextDisplay`/`Extra`
+/// leaf is untouched -- none of those have cursor/scroll/active-tab/
+/// expanded-set state.
+fn resolve_layout_leaf_state(engine: &InteractionEngine, leaf: &mut LayoutLeaf) {
+    match &mut leaf.descriptor {
+        LeafDescriptor::Tree(tree) => {
+            // Expansion first -- see `resolve_render_frame_state`'s own
+            // `tree` branch for why collapse has to run before scroll-into-
+            // view's row-position search.
+            let expanded = resolve_tree_expansion(engine.widget_state(), tree);
+            let viewport_rows = resolved_viewport_rows(
+                engine,
+                expanded.id,
+                expanded.rows.len(),
+                tree_rows_and_viewport_for_resolve,
+            );
+            *tree = resolve_tree_cursor(engine.widget_state(), &expanded, viewport_rows);
+        }
+        LeafDescriptor::List(list) => {
+            let viewport_rows = resolved_viewport_rows(
+                engine,
+                list.id,
+                list.items.len(),
+                list_rows_and_viewport_for_resolve,
+            );
+            *list = resolve_list_cursor(engine.widget_state(), list, viewport_rows);
+        }
+        LeafDescriptor::DataTable(table) => {
+            let viewport_rows = resolved_viewport_rows(
+                engine,
+                table.id,
+                table.rows.len(),
+                data_table_rows_and_viewport_for_resolve,
+            );
+            *table = resolve_data_table_cursor(engine.widget_state(), table, viewport_rows);
+        }
+        LeafDescriptor::TabBar(tab_bar) => {
+            *tab_bar = resolve_tab_bar_active(engine.widget_state(), tab_bar);
+        }
+        LeafDescriptor::Button(_) | LeafDescriptor::TextDisplay(_) | LeafDescriptor::Extra(_) => {}
+    }
+}
+
+/// Thin by-value wrappers over `quadraui_binding_core::{tree,list,data_table}_rows_and_viewport`
+/// matching [`resolved_viewport_rows`]'s `impl FnOnce` parameter -- the
+/// core functions themselves take `id: WidgetId` positionally after the
+/// hit map, exactly the shape these wrappers already have, but naming them
+/// keeps each `resolved_viewport_rows` call site readable about which
+/// widget kind it's resolving.
+fn tree_rows_and_viewport_for_resolve(
+    hit_map: &[PaintedHit],
+    id: WidgetId,
+) -> Option<(usize, usize)> {
+    tree_rows_and_viewport(hit_map, id).map(|(rows, viewport_rows)| (rows.len(), viewport_rows))
+}
+
+fn list_rows_and_viewport_for_resolve(
+    hit_map: &[PaintedHit],
+    id: WidgetId,
+) -> Option<(usize, usize)> {
+    list_rows_and_viewport(hit_map, id)
+}
+
+fn data_table_rows_and_viewport_for_resolve(
+    hit_map: &[PaintedHit],
+    id: WidgetId,
+) -> Option<(usize, usize)> {
+    data_table_rows_and_viewport(hit_map, id)
 }
 
 /// Wraps [`PyAppLogic`] for `run_native`'s native runner loop (`GtkRunner`
@@ -1541,22 +1773,20 @@ struct QuiApp {
     /// starts, rather than only to the dormant headless driver (`run_tui`
     /// blocks the Python thread that calls it and `QuiApp` is `unsendable`,
     /// so there is no reachable way to call `waker()` *during* the call —
-    /// only before it). `run_native` does not swap this: a window
-    /// opened via `run_native` has no `Backend::waker`-reachable accessor
-    /// on `GtkRunner`/`MacRunner`/`WinRunner` today, so a `QuiAppWaker`
-    /// obtained while a native window is open still points at the dormant
-    /// headless backend — a post made then queues rather than being lost,
-    /// and is only delivered once the window closes and `step`/`run`
-    /// resumes driving the headless driver again. That queue
-    /// (`UserEventQueue`, an unbounded `VecDeque`) is not actually free to
-    /// leave filling, though: each queued post holds a strong `Py<PyAny>`
-    /// reference, so a background thread posting periodically for a long
-    /// `run_native` session accumulates Python objects for the window's
-    /// whole lifetime and delivers the entire backlog in one burst on the
-    /// first `step`/`run` call after it closes. An app that posts during a
-    /// native window's lifetime and cares about that backlog should drain
-    /// it with repeated `step()` calls right after `run_native` returns,
-    /// or avoid posting while the window is open.
+    /// only before or after it). `run_native` swaps this the same way: on
+    /// `gtk`, to `GtkRunner::waker()`, read right after construction; on
+    /// `macos`/`win`, to the one closure [`PyAppLogic::setup`] captured into
+    /// [`PyAppLogic::captured_waker`] while building the real
+    /// `MacRunner`/`WinRunner` (neither exposes a post-construction
+    /// accessor the way `GtkRunner` does) — and only when `setup` actually
+    /// ran and captured one; if `captured_waker.take()` comes back `None`
+    /// (e.g. construction failed before `setup` was reached), this field is
+    /// left untouched and no restore is scheduled. Either way, a
+    /// `QuiAppWaker` obtained before or after `run_native` is called
+    /// delivers straight into the live native loop for as long as the
+    /// window is open, and is swapped back to the dormant headless driver
+    /// once `run_native` returns — see [`RestoreWakerOnDrop`]'s doc for why
+    /// that swap-back runs even if the pump loop panics.
     ///
     /// A `Mutex` rather than a bare field: [`QuiAppWaker`] must be
     /// `Send + Sync` so a background thread can hold and call it, which
@@ -1643,12 +1873,15 @@ impl QuiAppWaker {
 /// A handle, returned by [`QuiApp::actions`], that queues exactly the
 /// overlay/OS-call/window-control methods `QuiApp` itself restricts to
 /// top-level script code — `show_message_dialog`, `show_context_menu`,
-/// `show_toast`, `show_tooltip`, `send_notification`, `open_path`,
+/// `show_toast`, `show_tooltip`, `hide_tooltip`, `send_notification`,
+/// `open_path`,
 /// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
 /// `set_title`, `set_document_edited`, `set_represented_filename`,
 /// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
-/// `set_theme` — so a registered event handler can request one of them
-/// without re-entering `QuiApp`'s own PyO3 cell.
+/// `set_theme` — plus [`Self::apply_tab_activated`], a write into the
+/// engine's own widget-state store with no restricted `QuiApp` method of
+/// its own at all (see its own doc) — so a registered event handler can
+/// request one of them without re-entering `QuiApp`'s own PyO3 cell.
 ///
 /// A handler already holds `QuiApp`'s one mutable borrow for the whole
 /// dispatch that invoked it (the same wall `show_message_dialog`'s own doc
@@ -1754,6 +1987,22 @@ impl QuiAppActions {
         self.queue
             .borrow_mut()
             .push_back(DeferredAction::Tooltip(tooltip, anchor));
+        Ok(())
+    }
+
+    /// Queues a [`DeferredAction::HideTooltip`] — no arguments, same as
+    /// `QuiApp::hide_tooltip`. For a tooltip source with no `Button` to
+    /// carry it (a toolbar action's own `tooltip`, or a tree/data-table
+    /// row), the handler is the only thing that knows when to dismiss it —
+    /// typically on the hit-tested `MouseLeft` for the widget it showed on
+    /// `MouseEntered`. Calling `app.hide_tooltip()` straight from inside
+    /// that same handler would hit the same "already borrowed" wall
+    /// [`Self::show_tooltip`]'s own doc describes; this queues the exact
+    /// same engine call instead.
+    fn hide_tooltip(&self) -> PyResult<()> {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::HideTooltip);
         Ok(())
     }
 
@@ -2029,6 +2278,24 @@ impl QuiAppActions {
             .push_back(DeferredAction::SetJumpList(items));
         Ok(())
     }
+
+    /// Queues a [`DeferredAction::ActivateTab`]: makes tab `index` of the
+    /// `TabBar`/`LayoutTabs` widget `id` the active one in the engine's own
+    /// widget-state store, the same persisted change a real click on that
+    /// tab makes via `InteractionEngine::handle`. For a `render` callback
+    /// that leaves its tabs widget uncontrolled (never pins `"selected"`/
+    /// marks a tab `is_active` from frame to frame — see
+    /// [`quadraui_binding_core::resolve_tab_bar_active`]'s own doc for why
+    /// that matters), this is how an app drives which tab is active from
+    /// its own business logic (e.g. "open this folder as a new tab and
+    /// focus it") without resorting to pinning the active index in the
+    /// descriptor itself, which would make every later render controlled
+    /// and defeat click-driven switching.
+    fn apply_tab_activated(&self, id: &str, index: usize) {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ActivateTab(WidgetId::new(id), index));
+    }
 }
 
 /// Applies every action queued on `app_logic.deferred_actions` directly
@@ -2073,8 +2340,16 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
             DeferredAction::Tooltip(tooltip, anchor) => {
                 app_logic.engine.show_tooltip(tooltip, anchor);
             }
+            DeferredAction::HideTooltip => {
+                app_logic.engine.hide_tooltip();
+            }
             DeferredAction::Notification(notification) => {
-                backend.services().send_notification(notification);
+                if let Err(err) = backend.services().send_notification(notification) {
+                    record_error(
+                        &app_logic.pending_error,
+                        InternalError::new_err(format!("send_notification: {err:?}")),
+                    );
+                }
             }
             DeferredAction::OpenPath(path) => {
                 if let Err(err) = backend.services().open_path(&path) {
@@ -2257,6 +2532,9 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
                         service_error_to_py("set_jump_list", err),
                     );
                 }
+            }
+            DeferredAction::ActivateTab(id, index) => {
+                apply_tab_activated(app_logic.engine.widget_state(), id, index);
             }
         }
     }
@@ -2487,7 +2765,8 @@ impl QuiApp {
 
     /// Returns a [`QuiAppActions`] handle: an object a registered event
     /// handler can call `show_message_dialog`/`show_context_menu`/
-    /// `show_toast`/`show_tooltip`/`send_notification`/`open_path`/
+    /// `show_toast`/`show_tooltip`/`hide_tooltip`/`send_notification`/
+    /// `open_path`/
     /// `reveal_in_file_manager`/`move_to_trash`/`restore_from_trash` on
     /// instead of this `QuiApp` itself, since the handler already holds
     /// this app's one mutable borrow for the whole dispatch that invoked
@@ -2662,6 +2941,15 @@ impl QuiApp {
     /// `py.check_signals()` call between waits so a Ctrl-C at the
     /// controlling terminal still raises `KeyboardInterrupt` promptly
     /// instead of only being noticed once the window closes on its own.
+    /// Window construction itself — `GtkRunner::new_with`'s GTK/GApplication
+    /// registration and display round trips, `WinRunner::new_with`'s
+    /// `create_window` — runs with the GIL still held, before that release:
+    /// a deliberate trade for being able to read the live backend's waker
+    /// (`GtkRunner::waker()`, or the one `setup` stashes into
+    /// `PyAppLogic::captured_waker` on `macos`/`win`) back out and swap it
+    /// onto this `QuiApp`'s shared waker before the pump loop starts, at
+    /// the cost of blocking every other Python thread for the window's
+    /// open latency.
     /// On GTK, when that happens, `GtkRunner::request_exit()` tears the
     /// window down before the loop returns, so a Ctrl-C closes the window
     /// rather than leaving it open with a dead event loop behind it;
@@ -2782,7 +3070,26 @@ impl QuiApp {
                     config = config.with_icon_name(icon_name);
                 }
                 config = config.with_single_instance(single_instance);
-                let wrapped = AssertUngil((app_logic, config, loop_error));
+                // Built before `py.detach` below (not inside its closure)
+                // specifically so this call can read `runner.waker()` and
+                // swap it onto `app.current_waker` for the pump loop's
+                // whole duration — a `QuiAppWaker` obtained before, during,
+                // or after this call then wakes the real GTK loop promptly
+                // instead of queuing into the dormant headless driver's
+                // backend. Mirrors `run_tui`'s own swap; see
+                // `RestoreWakerOnDrop`'s doc for why it, not a bare
+                // post-loop write-back, restores the previous waker.
+                let runner =
+                    quadraui::gtk::GtkRunner::new_with(NativeAppLogic { inner: app_logic }, config);
+                let previous_waker = std::mem::replace(
+                    &mut *app.current_waker.lock().unwrap_or_else(|e| e.into_inner()),
+                    runner.waker(),
+                );
+                let _restore_waker = RestoreWakerOnDrop {
+                    current_waker: &app.current_waker,
+                    previous: Some(previous_waker),
+                };
+                let wrapped = AssertUngil((runner, loop_error));
                 py.detach(move || {
                     // Bind the whole `wrapped` first so the closure captures the
                     // `AssertUngil`-wrapped value itself rather than `wrapped.0`
@@ -2790,11 +3097,7 @@ impl QuiApp {
                     // capture just the field, which isn't `Send` on its own and
                     // defeats the point of the wrapper.
                     let wrapped = wrapped;
-                    let (app_logic, config, loop_error) = wrapped.0;
-                    let mut runner = quadraui::gtk::GtkRunner::new_with(
-                        NativeAppLogic { inner: app_logic },
-                        config,
-                    );
+                    let (mut runner, loop_error) = wrapped.0;
                     let poll_interval = std::time::Duration::from_millis(50);
                     loop {
                         if runner.pump(poll_interval) == quadraui::gtk::StepOutcome::Exited {
@@ -2832,6 +3135,7 @@ impl QuiApp {
                         }
                     }
                 });
+                drop(_restore_waker);
                 if let Some(err) = native_error.borrow_mut().take() {
                     return Err(err);
                 }
@@ -2862,21 +3166,56 @@ impl QuiApp {
                 let app_logic = std::mem::take(app.driver.app_mut());
                 let native_error = app_logic.pending_error.clone();
                 let loop_error = app_logic.pending_error.clone();
+                // Cloned before `MacRunner::new_with` moves `app_logic`
+                // itself — the same `Rc` `app_logic.setup()` writes into,
+                // synchronously, inside that call (see
+                // `PyAppLogic::captured_waker`'s own doc). `take()` right
+                // after reads back the one `Backend::waker` this live
+                // session's `MacBackend` will ever hand out, since nothing
+                // outside `MacRunner` can reach it again once this call
+                // returns.
+                let captured_waker = app_logic.captured_waker.clone();
                 let config = quadraui::macos::RunConfig::new(
                     title.unwrap_or(quadraui::macos::RunConfig::default().title),
                 );
-                let wrapped = AssertUngil((app_logic, config, loop_error));
+                // Built before `py.detach` below (not inside its closure)
+                // specifically so this call can read `captured_waker` back
+                // and swap it onto `app.current_waker` for the pump loop's
+                // whole duration — mirrors the `gtk` arm's own
+                // `runner.waker()` swap above; see `RestoreWakerOnDrop`'s
+                // doc for why it, not a bare post-loop write-back, restores
+                // the previous waker.
+                let exit_requested = Rc::new(Cell::new(false));
+                let runner = quadraui::macos::MacRunner::new_with(
+                    NativeAppLogic {
+                        inner: app_logic,
+                        exit_requested: exit_requested.clone(),
+                    },
+                    config,
+                );
+                let previous_waker = captured_waker.take().map(|waker| {
+                    std::mem::replace(
+                        &mut *app.current_waker.lock().unwrap_or_else(|e| e.into_inner()),
+                        waker,
+                    )
+                });
+                let _restore_waker = previous_waker.map(|previous| RestoreWakerOnDrop {
+                    current_waker: &app.current_waker,
+                    previous: Some(previous),
+                });
+                // `exit_requested` is bundled into the same `AssertUngil`
+                // tuple as `runner`/`loop_error` rather than captured
+                // directly: it is an `Rc<Cell<bool>>`, which is neither
+                // `Send` nor `Sync`, so a bare capture would make this
+                // closure not `Send` and therefore not `Ungil` (the trait
+                // `Python::detach` requires with the `nightly` feature off,
+                // which is this crate's only configuration) — an `E0277` on
+                // every build of this arm. `loop_error`'s own doc on this
+                // wrapper, two arms up, is the precedent.
+                let wrapped = AssertUngil((runner, loop_error, exit_requested));
                 py.detach(move || {
                     let wrapped = wrapped;
-                    let (app_logic, config, loop_error) = wrapped.0;
-                    let exit_requested = Rc::new(Cell::new(false));
-                    let mut runner = quadraui::macos::MacRunner::new_with(
-                        NativeAppLogic {
-                            inner: app_logic,
-                            exit_requested: exit_requested.clone(),
-                        },
-                        config,
-                    );
+                    let (mut runner, loop_error, exit_requested) = wrapped.0;
                     let poll_interval = std::time::Duration::from_millis(50);
                     loop {
                         if runner.pump(poll_interval) == quadraui::macos::StepOutcome::Exited {
@@ -2905,6 +3244,7 @@ impl QuiApp {
                         }
                     }
                 });
+                drop(_restore_waker);
                 if let Some(err) = native_error.borrow_mut().take() {
                     return Err(err);
                 }
@@ -2958,26 +3298,64 @@ impl QuiApp {
                 let app_logic = std::mem::take(app.driver.app_mut());
                 let native_error = app_logic.pending_error.clone();
                 let loop_error = app_logic.pending_error.clone();
+                // Cloned before `WinRunner::new_with` moves `app_logic`
+                // itself — the same `Rc` `app_logic.setup()` writes into,
+                // synchronously, inside that call (see
+                // `PyAppLogic::captured_waker`'s own doc). `take()` right
+                // after reads back the one `Backend::waker` this live
+                // session's `WinBackend` will ever hand out, since nothing
+                // outside `WinRunner` can reach it again once this call
+                // returns.
+                let captured_waker = app_logic.captured_waker.clone();
                 let defaults = quadraui::win::RunConfig::default();
                 let config = quadraui::win::RunConfig::new(title.unwrap_or(defaults.title));
-                let wrapped = AssertUngil((app_logic, config, loop_error));
+                // SAFETY: `new_with`/`pump` require constructing and
+                // stepping the runner on the same OS thread for its whole
+                // lifetime, with no other window on that thread — building
+                // this here (before `py.detach` below) rather than inside
+                // its closure keeps execution on the exact same calling
+                // thread either way, and nothing else on it touches a
+                // `WinRunner` until that closure returns.
+                let runner = match unsafe {
+                    quadraui::win::WinRunner::new_with(NativeAppLogic { inner: app_logic }, &config)
+                } {
+                    Ok(runner) => runner,
+                    Err(err) => {
+                        // `new_with` calls `create_window`, which calls
+                        // `app.setup()` synchronously before it can ever
+                        // produce this `Err` — a real Python exception
+                        // raised from `setup` may already be sitting in
+                        // `native_error` by the time construction fails.
+                        // Prefer surfacing that over the generic
+                        // construction-failure message, same as the
+                        // post-`py.detach` check below.
+                        if let Some(err) = native_error.borrow_mut().take() {
+                            return Err(err);
+                        }
+                        return Err(InternalError::new_err(format!("run_native: {err}")));
+                    }
+                };
+                // Built before `py.detach` below (not inside its closure)
+                // specifically so this call can read `captured_waker` back
+                // and swap it onto `app.current_waker` for the pump loop's
+                // whole duration — mirrors the `gtk`/`macos` arms' own
+                // swap above; see `RestoreWakerOnDrop`'s doc for why it,
+                // not a bare post-loop write-back, restores the previous
+                // waker.
+                let previous_waker = captured_waker.take().map(|waker| {
+                    std::mem::replace(
+                        &mut *app.current_waker.lock().unwrap_or_else(|e| e.into_inner()),
+                        waker,
+                    )
+                });
+                let _restore_waker = previous_waker.map(|previous| RestoreWakerOnDrop {
+                    current_waker: &app.current_waker,
+                    previous: Some(previous),
+                });
+                let wrapped = AssertUngil((runner, loop_error));
                 let pump_result: Result<(), String> = py.detach(move || {
                     let wrapped = wrapped;
-                    let (app_logic, config, loop_error) = wrapped.0;
-                    // SAFETY: `new_with`/`pump` require constructing and
-                    // stepping the runner on the same OS thread for its
-                    // whole lifetime, with no other window on that thread —
-                    // exactly what this `detach` closure does: `detach`
-                    // keeps execution on the calling thread, and nothing
-                    // else on it touches a `WinRunner` for the closure's
-                    // duration.
-                    let mut runner = unsafe {
-                        quadraui::win::WinRunner::new_with(
-                            NativeAppLogic { inner: app_logic },
-                            &config,
-                        )
-                    }
-                    .map_err(|err| err.to_string())?;
+                    let (mut runner, loop_error) = wrapped.0;
                     let poll_interval = std::time::Duration::from_millis(50);
                     loop {
                         let outcome = runner.pump(poll_interval).map_err(|err| err.to_string())?;
@@ -3003,6 +3381,7 @@ impl QuiApp {
                     }
                     Ok(())
                 });
+                drop(_restore_waker);
                 if let Some(err) = native_error.borrow_mut().take() {
                     return Err(err);
                 }
@@ -3864,6 +4243,39 @@ impl QuiApp {
         })
     }
 
+    /// The engine's own stored state for widget `id` -- a `Tree`/`List`/
+    /// `DataTable`'s cursor + scroll, a `Split`'s dragged ratio, a
+    /// `TabBar`/tab group's active tab, and/or a `Tree`'s expanded row
+    /// set, whichever apply -- as a `dict` holding only the keys that do
+    /// (`selected_path`, `selected_idx`, `scroll_offset`, `ratio`,
+    /// `active_tab`, `expanded`), or `None` if `id` isn't being tracked
+    /// under any of those shapes at all.
+    ///
+    /// Reads back what the render callback's own `render` resolves every
+    /// frame (see `resolve_render_frame_state`/`resolve_layout_node_state`)
+    /// merged with whatever a key press or click already applied via
+    /// `InteractionEngine::handle` -- an app that leaves a tree's
+    /// `selected_path`/`scroll_offset` uncontrolled calls this after an
+    /// event to read back where the cursor landed, instead of tracking it
+    /// by hand. Renders first (like `screen`/`screen_contains`), so this
+    /// reflects a just-applied move even before the next `step`/`run`
+    /// call would otherwise repaint.
+    fn widget_state(&mut self, py: Python<'_>, id: &str) -> PyResult<Option<Py<PyAny>>> {
+        self.guarded(|app| {
+            app.driver.render();
+            take_pending_error(app.driver.app_mut())?;
+            let snapshot =
+                widget_state_snapshot(app.driver.app().engine.widget_state(), WidgetId::new(id));
+            snapshot
+                .map(|snapshot| {
+                    pythonize::pythonize(py, &snapshot)
+                        .map(|value| value.unbind())
+                        .map_err(|err| InternalError::new_err(format!("widget_state: {err}")))
+                })
+                .transpose()
+        })
+    }
+
     // ─── Metrics & capabilities ─────────────────────────────────────────
     //
     // Every method below reads this `QuiApp`'s own headless `TuiBackend` --
@@ -4404,6 +4816,24 @@ impl QuiApp {
         })
     }
 
+    /// Test-oriented override for [`BindingHost::now_ms`] -- the headless
+    /// clock [`PyAppLogic::drive_hover_tooltip`] feeds
+    /// [`BindingHost::drive_hover_tooltip`]'s own `now_ms` parameter.
+    /// `ms=<int>` pins it to that absolute millisecond value until the next
+    /// call to this method; `ms=None` (the default) reverts to the real
+    /// wall clock. Lets a test drive the hover-tooltip delay and
+    /// auto-dismiss deadlines deterministically -- advancing past
+    /// `tooltip_delay_ms`/`tooltip_auto_dismiss_ms` by raising `ms` --
+    /// instead of a real `time.sleep`.
+    #[pyo3(signature = (ms=None))]
+    fn set_test_clock_ms(&mut self, ms: Option<u64>) -> PyResult<()> {
+        self.guarded(|app| {
+            let (_backend, app_logic) = app.driver.parts_mut();
+            app_logic.host.set_test_clock_ms(ms);
+            Ok(())
+        })
+    }
+
     /// Whether `family` is already installed on this platform as a system
     /// font -- [`Backend::has_font_family`]. Always `None` on the headless
     /// `TuiBackend` -- see that method's own doc for why `None` means
@@ -4569,10 +4999,11 @@ impl QuiApp {
     /// Dispatches a system notification --
     /// [`quadraui::PlatformServices::send_notification`]. On the headless
     /// `TuiBackend` this is a genuine best-effort degrade (an OSC 9/777
-    /// escape sequence plus a native `osascript`/`notify-send` spawn where
-    /// available), not a no-op -- see `quadraui::tui::services`'s module
-    /// doc's "Notifications" section. Fire-and-forget: there is no return
-    /// value to assert on, and no error this binding can observe.
+    /// escape sequence, falling back to a native `osascript`/`notify-send`
+    /// spawn only when that write didn't even reach a terminal), not a
+    /// no-op -- see `quadraui::tui::services`'s module doc's
+    /// "Notifications" section. Raises [`InternalError`] when this call is
+    /// known to have failed to reach any notification channel at all.
     #[pyo3(signature = (title, body, urgent=false, silent=false, tag=None))]
     fn send_notification(
         &mut self,
@@ -4588,8 +5019,10 @@ impl QuiApp {
                 n = n.with_tag(tag);
             }
             n.urgent = urgent;
-            app.driver.backend().services().send_notification(n);
-            Ok(())
+            service_result(
+                "send_notification",
+                app.driver.backend().services().send_notification(n),
+            )
         })
     }
 
@@ -5023,10 +5456,7 @@ fn ratatui_rgb(color: quadraui::tui::testing::Color) -> (u8, u8, u8) {
 /// `insert_*`, `slot_clear` — calls this right after rendering so a render
 /// callback's exception is never silently swallowed.
 fn take_pending_error(app: &mut PyAppLogic) -> PyResult<()> {
-    if let Some(err) = app.pending_error.borrow_mut().take() {
-        return Err(err);
-    }
-    Ok(())
+    core_take_pending_error(&mut app.pending_error.borrow_mut())
 }
 
 impl QuiApp {
@@ -5035,20 +5465,23 @@ impl QuiApp {
     /// unchanged; on a panic, poisons this app and raises `PanicError`. If
     /// this app is already poisoned (an earlier call panicked), raises
     /// `PoisonedError` without running `body` at all — mirrors
-    /// `quadraui-ffi`'s `with_app`/`boundary` pair.
+    /// `quadraui-ffi`'s `with_app`/`boundary` pair. A thin wrapper over
+    /// [`core_guarded`]; see that function's own doc for the shared shape.
     fn guarded<T>(&mut self, body: impl FnOnce(&mut Self) -> PyResult<T>) -> PyResult<T> {
-        if self.poisoned {
-            return Err(PoisonedError::new_err(
-                "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
-            ));
-        }
-        match panic::catch_unwind(AssertUnwindSafe(|| body(self))) {
-            Ok(result) => result,
-            Err(payload) => {
-                self.poisoned = true;
-                Err(PanicError::new_err(panic_message(&*payload)))
-            }
-        }
+        core_guarded(
+            self,
+            |s| s.poisoned,
+            |s| s.poisoned = true,
+            |_s| {},
+            |_s| {},
+            |failure| match failure {
+                GuardedFailure::Poisoned => PoisonedError::new_err(
+                    "this QuiApp is poisoned by an earlier caught panic and can no longer be used",
+                ),
+                GuardedFailure::Panic(msg) => PanicError::new_err(msg),
+            },
+            body,
+        )
     }
 
     /// Returns this app's lazily constructed, lifetime-persistent
@@ -5672,6 +6105,34 @@ mod tests {
                 Reaction::Redraw,
                 "applying a deferred action must still force a repaint even \
                 though the handler itself returned no explicit reaction"
+            );
+        });
+    }
+
+    /// On `macos`/`win`, `PyAppLogic::setup` stashes the live backend's
+    /// `Backend::waker` into `captured_waker` so `run_native`'s real arms
+    /// can read it straight back out, once `GtkRunner`-equivalent
+    /// construction (`MacRunner::new`/`WinRunner::new_with`) returns, and
+    /// swap it onto `QuiApp::current_waker` for the pump loop's whole
+    /// duration -- see that field's own doc. Driven through `TuiDriver::new`
+    /// purely as a headless `AppLogic` harness here, since it calls
+    /// `setup` exactly the way every real runner does; no real window or
+    /// `target_os` gate is involved, so this pins the capture itself on
+    /// every host, including the Linux CI leg that only ever typechecks
+    /// this feature's non-native arm.
+    #[cfg(any(feature = "macos", feature = "win"))]
+    #[test]
+    fn setup_captures_waker_for_run_native_to_read_back() {
+        Python::attach(|_py| {
+            let app_logic = PyAppLogic::default();
+            let captured_waker = app_logic.captured_waker.clone();
+            let _driver = TuiDriver::new(app_logic, 10, 10);
+
+            assert!(
+                captured_waker.take().is_some(),
+                "setup must stash a waker for run_native's macos/win arms \
+                to read back and swap onto QuiApp::current_waker before \
+                its pump loop starts"
             );
         });
     }

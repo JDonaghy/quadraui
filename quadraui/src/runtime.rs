@@ -109,86 +109,12 @@ use crate::runner::Reaction;
 /// What the frame/event loop should do after one event — or the
 /// periodic `tick` — has been handled by the app.
 ///
-/// One definition shared by every backend runner; each
-/// used to declare this verbatim. `Copy`/`Clone`/`Eq` so
-/// [`EventOutcome::merge`]'s tests can reuse a value across multiple
-/// assertions instead of constructing it fresh each time, mirroring
-/// [`Reaction`]'s identical derive list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EventOutcome {
-    /// No redraw needed; keep looping.
-    Continue,
-    /// State changed; schedule a redraw before the next event drain.
-    Redraw,
-    /// No redraw needed now; schedule a wake (and another `tick`/dispatch
-    /// pass) after `Duration` — see [`Reaction::RedrawAfter`].
-    RedrawAfter(Duration),
-    /// The app requested exit.
-    Exit,
-}
-
-impl EventOutcome {
-    /// Combine two `EventOutcome`s produced within the same
-    /// synthesized-event batch (e.g. a drag gesture's `MouseDown` +
-    /// synthetic `TextSelectionChanged`, dispatched in one loop) into the
-    /// single outcome the caller returns.
-    ///
-    /// `Exit` always wins, `Redraw` beats `RedrawAfter` (paint *now* is at
-    /// least as good as a future wake), and two `RedrawAfter`s keep the
-    /// *earlier* deadline — mirroring [`FrameScheduler::request`]'s own
-    /// coalescing and [`Reaction::merge`], its `Reaction`-side twin. That
-    /// last case is the one worth spelling out: "first non-`Continue`
-    /// wins" (this method's predecessor at every call site) silently
-    /// drops a shorter, more urgent deadline that arrives after a longer
-    /// one in the same batch, producing a wake later than the app
-    /// explicitly asked for — narrower than [`Reaction::RedrawAfter`]'s
-    /// own doc promise that the backend "never" wakes later.
-    #[cfg_attr(
-        not(any(feature = "win", all(feature = "macos", target_os = "macos"))),
-        allow(dead_code)
-    )]
-    pub(crate) fn merge(self, next: EventOutcome) -> EventOutcome {
-        match (self, next) {
-            (EventOutcome::Exit, _) | (_, EventOutcome::Exit) => EventOutcome::Exit,
-            (EventOutcome::Redraw, _) | (_, EventOutcome::Redraw) => EventOutcome::Redraw,
-            (EventOutcome::RedrawAfter(a), EventOutcome::RedrawAfter(b)) => {
-                EventOutcome::RedrawAfter(a.min(b))
-            }
-            (EventOutcome::RedrawAfter(d), EventOutcome::Continue)
-            | (EventOutcome::Continue, EventOutcome::RedrawAfter(d)) => {
-                EventOutcome::RedrawAfter(d)
-            }
-            (EventOutcome::Continue, EventOutcome::Continue) => EventOutcome::Continue,
-        }
-    }
-}
-
-impl From<Reaction> for EventOutcome {
-    fn from(r: Reaction) -> Self {
-        match r {
-            Reaction::Continue => EventOutcome::Continue,
-            Reaction::Redraw => EventOutcome::Redraw,
-            Reaction::RedrawAfter(d) => EventOutcome::RedrawAfter(d),
-            Reaction::Exit => EventOutcome::Exit,
-        }
-    }
-}
-
-/// The reverse of the conversion above — needed by drivers (`TuiDriver`,
-/// `TuiVtDriver`) that dispatch a batch of `UiEvent`s through
-/// [`preprocess_event`] (yielding an `EventOutcome` per event) but
-/// accumulate their own result as a public-facing [`Reaction`], via
-/// [`Reaction::merge`].
-impl From<EventOutcome> for Reaction {
-    fn from(o: EventOutcome) -> Self {
-        match o {
-            EventOutcome::Continue => Reaction::Continue,
-            EventOutcome::Redraw => Reaction::Redraw,
-            EventOutcome::RedrawAfter(d) => Reaction::RedrawAfter(d),
-            EventOutcome::Exit => Reaction::Exit,
-        }
-    }
-}
+/// A plain alias for [`Reaction`]: the two are the same four outcomes
+/// under two names, so [`Reaction::merge`] is the one merge
+/// implementation both the public `AppLogic::handle` contract and this
+/// crate-internal plumbing share, and no conversion is needed at the
+/// boundary between them.
+pub(crate) type EventOutcome = Reaction;
 
 /// A live window/view that an [`EventOutcome`] can be applied to:
 /// `Redraw` schedules a repaint, `Exit` tears the runner down. Each
@@ -224,13 +150,12 @@ pub(crate) trait ReactionSink {
     fn request_frame_in(&self, delay: Duration);
 }
 
-/// Apply an outcome — an [`EventOutcome`] or anything that converts into
-/// one, e.g. a raw [`Reaction`] — to a [`ReactionSink`]. Replaces what
-/// used to be up to three near-identical `match` functions (GTK had two,
-/// macOS had one) with a single definition.
+/// Apply an [`EventOutcome`] to a [`ReactionSink`]: the single definition
+/// every GTK and macOS call site shares instead of its own near-identical
+/// `match`.
 #[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
-pub(crate) fn apply_outcome(outcome: impl Into<EventOutcome>, sink: &impl ReactionSink) {
-    match outcome.into() {
+pub(crate) fn apply_outcome(outcome: EventOutcome, sink: &impl ReactionSink) {
+    match outcome {
         EventOutcome::Continue => {}
         EventOutcome::Redraw => sink.request_redraw(),
         EventOutcome::RedrawAfter(d) => sink.request_frame_in(d),
@@ -429,7 +354,7 @@ where
                     modifiers,
                 },
             );
-            return app.handle(bar_ev, backend).into();
+            return app.handle(bar_ev, backend);
         }
     }
 
@@ -453,7 +378,7 @@ where
                 };
                 if changed {
                     let focused = backend.focus_manager().focused().cloned();
-                    return app.handle(UiEvent::FocusChanged(focused), backend).into();
+                    return app.handle(UiEvent::FocusChanged(focused), backend);
                 }
                 // Claimed but no-op (e.g. a single-widget tab order) —
                 // swallow it rather than letting it fall through to
@@ -485,7 +410,7 @@ where
             let text = backend.selection_text_for_copy();
             backend.services().clipboard().write_text(&text);
             backend.clear_text_selection();
-            return app.handle(UiEvent::TextCopied(text), backend).into();
+            return app.handle(UiEvent::TextCopied(text), backend);
         }
     }
 
@@ -498,7 +423,7 @@ where
     {
         if is_paste_keypress(key, modifiers, backend.paste_modifier()) {
             return match backend.services().clipboard().read_text() {
-                Some(text) => app.handle(UiEvent::ClipboardPaste(text), backend).into(),
+                Some(text) => app.handle(UiEvent::ClipboardPaste(text), backend),
                 None => EventOutcome::Continue,
             };
         }
@@ -511,7 +436,7 @@ where
     } = &event
     {
         if let Some(text) = backend.services().clipboard().read_primary_selection() {
-            return app.handle(UiEvent::ClipboardPaste(text), backend).into();
+            return app.handle(UiEvent::ClipboardPaste(text), backend);
         }
     }
 
@@ -566,7 +491,7 @@ where
     }
 
     // ── Normal app dispatch ──────────────────────────────────────────────
-    let outcome: EventOutcome = app.handle(event, backend).into();
+    let outcome: EventOutcome = app.handle(event, backend);
     if force_redraw {
         match outcome {
             // The selection-highlight update this event caused needs to
@@ -1059,13 +984,6 @@ mod reaction_sink_tests {
         assert_eq!(sink.exits.get(), 1);
     }
 
-    #[test]
-    fn apply_outcome_accepts_a_raw_reaction() {
-        let sink = RecordingSink::new();
-        apply_outcome(Reaction::Redraw, &sink);
-        assert_eq!(sink.redraws.get(), 1);
-    }
-
     /// `RedrawAfter` must reach `request_frame_in`, not
     /// `request_redraw` — the whole point is *not* forcing a repaint now.
     #[test]
@@ -1080,16 +998,6 @@ mod reaction_sink_tests {
         assert_eq!(
             *sink.frame_requests.borrow(),
             vec![Duration::from_millis(100)]
-        );
-    }
-
-    #[test]
-    fn apply_outcome_accepts_a_raw_redraw_after_reaction() {
-        let sink = RecordingSink::new();
-        apply_outcome(Reaction::RedrawAfter(Duration::from_millis(50)), &sink);
-        assert_eq!(
-            *sink.frame_requests.borrow(),
-            vec![Duration::from_millis(50)]
         );
     }
 }

@@ -59,10 +59,13 @@ fn data_table_key_event(
 /// (`total_items == 0`), which returns `None` and leaves
 /// [`focus_scoped_key_event`] to fall through to the raw
 /// `ListViewEvent::KeyPressed`. Every other key also returns `None` for the
-/// same fallthrough — `List`'s own Up/Down/`j`/`k` navigation stays the
-/// app's to interpret from that `KeyPressed`, unlike `DataTable`'s, since a
-/// `List`'s selection is tracked by the app already instead of inside this
-/// semantic layer.
+/// same fallthrough — in particular Up/Down/vim `j`/`k`, which move the
+/// `List`'s row cursor inside [`crate::host::apply_list_nav_key`]'s own
+/// `WidgetState` entry rather than through an event. A binding's handler
+/// therefore keeps seeing navigation keys as `ListViewEvent::KeyPressed`,
+/// which is what an app that tracks its own `ListView::selected_idx`
+/// (the controlled shape, since `selected_idx` is a required descriptor
+/// field) needs in order to move that selection itself.
 fn list_key_event(
     id: WidgetId,
     key: &Key,
@@ -426,31 +429,7 @@ pub fn semantic_event_for_hit(
 pub fn key_to_focus_string(key: &Key) -> String {
     match key {
         Key::Char(c) => c.to_string(),
-        Key::Named(named) => {
-            let s = match named {
-                NamedKey::Escape => "Escape".to_string(),
-                NamedKey::Tab => "Tab".to_string(),
-                NamedKey::BackTab => "BackTab".to_string(),
-                NamedKey::Enter => "Enter".to_string(),
-                NamedKey::Backspace => "Backspace".to_string(),
-                NamedKey::Delete => "Delete".to_string(),
-                NamedKey::Insert => "Insert".to_string(),
-                NamedKey::Home => "Home".to_string(),
-                NamedKey::End => "End".to_string(),
-                NamedKey::PageUp => "PageUp".to_string(),
-                NamedKey::PageDown => "PageDown".to_string(),
-                NamedKey::Up => "Up".to_string(),
-                NamedKey::Down => "Down".to_string(),
-                NamedKey::Left => "Left".to_string(),
-                NamedKey::Right => "Right".to_string(),
-                NamedKey::F(n) => format!("F{n}"),
-                NamedKey::CapsLock => "CapsLock".to_string(),
-                NamedKey::NumLock => "NumLock".to_string(),
-                NamedKey::ScrollLock => "ScrollLock".to_string(),
-                NamedKey::Menu => "Menu".to_string(),
-            };
-            s
-        }
+        Key::Named(named) => named.name().into_owned(),
     }
 }
 
@@ -593,6 +572,17 @@ pub fn focus_scoped_key_event(
 mod tests {
     use super::*;
     use quadraui::{Rect, TabBarLayout};
+
+    /// `key_to_focus_string` defers to the shared `NamedKey::name` table,
+    /// so an F13+ press stringifies to `"F13"` rather than any
+    /// binding-core-local spelling drifting from the other three call
+    /// sites that stringify the same `NamedKey`.
+    #[test]
+    fn key_to_focus_string_matches_the_shared_named_key_table() {
+        assert_eq!(key_to_focus_string(&Key::Named(NamedKey::Escape)), "Escape");
+        assert_eq!(key_to_focus_string(&Key::Named(NamedKey::F(13))), "F13");
+        assert_eq!(key_to_focus_string(&Key::Char('a')), "a");
+    }
 
     /// A minimal [`PaintedHit::TabBar`] with `tab_count` tabs and no
     /// close/scroll/right-segment chrome — the `hit_test`-reachable fields

@@ -79,6 +79,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 /// Register `bytes` (raw TTF/OTF/TTC data) as an application font for the
 /// lifetime of this process — with Fontconfig (`FcConfigAppFontAddFile`)
@@ -106,6 +107,59 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// reporting success there would reproduce the exact silent-tofu state
 /// this function exists to prevent.
 pub(crate) fn register_font_from_memory(bytes: &[u8]) -> Option<Vec<String>> {
+    // Serialises every call against every other: `register_with_fontconfig`
+    // below reads `FcFontSet.nfont`/`.fonts` as raw struct fields straight
+    // off Fontconfig's live `FcSetApplication` set (see its own doc), with
+    // no locking of its own — `FcConfigAppFontAddFile` only guarantees the
+    // mutation itself is safe to call concurrently, not that the fontset it
+    // mutates stays stable for a second thread's unsynchronised read
+    // in-between. `GtkBackend::new` calls this (via `ensure_codicon_registered`)
+    // from essentially every GTK test, and `app_font::tests` calls it again
+    // directly for its own fixture (via `registered_icon_font_names`) —
+    // each guarded by its own, independent `OnceLock`, so nothing stops
+    // both "first calls" landing on two different OS test threads at the
+    // same moment. Without this lock that's a genuine data race on
+    // Fontconfig's internal `fonts` array (one thread's `FcConfigAppFontAddFile`
+    // can reallocate it while another is mid-iteration reading stale
+    // pointers out of it in `new_app_font_family_names`) — intermittent,
+    // and only reproduces on a build where real rendering also drives
+    // Fontconfig concurrently (Linux's `PangoFcFontMap`; macOS's
+    // `PangoCoreTextFontMap` never touches Fontconfig for shaping, so the
+    // same race is latent but silent there).
+    //
+    // Lock order: this function always takes `LOCK` *before*
+    // `super::TEST_RENDER_LOCK` (below). `GtkBackend::enter_frame_scope`
+    // takes `TEST_RENDER_LOCK` and then runs arbitrary caller code —
+    // if that caller code calls this function from a *different*
+    // thread than the one already inside `enter_frame_scope`, and a
+    // third thread is meanwhile blocked on `LOCK` from inside this
+    // function waiting to take `TEST_RENDER_LOCK`, the two orderings
+    // can deadlock. No in-tree caller does this today (every
+    // `register_font_from_memory` call site runs outside a frame
+    // scope), but a future test that registers a font from inside
+    // `render`/`handle` on one thread while another thread calls this
+    // function directly needs to preserve this ordering, not take
+    // `TEST_RENDER_LOCK` first.
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // In a `#[cfg(test)]` build, also take `super::TEST_RENDER_LOCK`
+    // (re-entrantly, via `super::test_render_guard`) — `notify_fontmap_
+    // config_changed` below invalidates the same process-global Pango
+    // font map that `GtkBackend::enter_frame_scope` guards for real text
+    // shaping. `LOCK` above only serialises this function against
+    // itself; without also taking `TEST_RENDER_LOCK`, a concurrently-
+    // running test's `enter_frame_scope`-protected paint on another
+    // thread could still have its font map invalidated mid-shape by this
+    // call, which can surface as a wrong *measurement* (text sized for
+    // the wrong font) rather than a crash. Re-entrant because this
+    // function itself can run from inside a frame scope (an app
+    // registers a font from `render`/`handle`), which on the same
+    // thread already holds this lock — taking it a second time here
+    // must not self-deadlock.
+    #[cfg(test)]
+    let _test_render_guard = super::test_render_guard();
+
     let path = create_temp_font_file(bytes)?;
 
     let names = register_with_fontconfig(&path);
@@ -279,8 +333,12 @@ fn app_font_count(config: *mut fontconfig_sys::FcConfig) -> usize {
 /// The family name(s) of every `FcPattern` Fontconfig appended to
 /// `config`'s application font set since it held `before` entries —
 /// i.e. exactly the pattern(s) the just-returned `FcConfigAppFontAddFile`
-/// call added, assuming (true within this module — GTK's glib main loop
-/// is single-threaded) no concurrent registration raced it.
+/// call added. In production, GTK's glib main loop is single-threaded so
+/// no concurrent registration can race this; in a `#[cfg(test)]` build,
+/// every caller of this function's own caller
+/// ([`register_font_from_memory`]) holds that function's process-wide
+/// `LOCK` for the same reason, so the invariant holds there too, enforced
+/// rather than assumed.
 fn new_app_font_family_names(config: *mut fontconfig_sys::FcConfig, before: usize) -> Vec<String> {
     // SAFETY: same live, non-null `FcConfig` guarantee as `app_font_count`.
     let set = unsafe { fontconfig_sys::FcConfigGetFonts(config, fontconfig_sys::FcSetApplication) };
@@ -626,23 +684,29 @@ mod macos_core_text {
                 std::ptr::null_mut(),
             )
         };
-        if !registered {
-            return Registration {
-                registered: false,
-                family: None,
-            };
-        }
-
-        // SAFETY: `url.as_concrete_TypeRef()` is the same live `CFURLRef`
-        // just registered above; `CTFontManagerCreateFontDescriptorsFromURL`
-        // is a real `core-text` binding (unlike
-        // `CTFontManagerRegisterFontsForURL` above), so no hand-rolled
-        // signature risk here.
+        // Read the descriptor back even when `registered` is false:
+        // `CTFontManagerRegisterFontsForURL` fails for a font whose
+        // PostScript name is already registered under a *different* URL
+        // in this process (e.g. this same byte-identical font registered
+        // from an earlier temp file), but
+        // `CTFontManagerCreateFontDescriptorsFromURL` parses `path`
+        // directly rather than consulting the registration database, so
+        // it still resolves the family in that case. Without this, a
+        // caller that registers the same font bytes more than once in
+        // one process (every repeat call to [`super::register_font_from_memory`]
+        // with identical bytes — a real pattern this module's own
+        // concurrent-callers regression test exercises) would see
+        // `family: None` and report failure for every call after the
+        // first, even though the font is, in fact, resolvable.
+        //
+        // SAFETY: `url.as_concrete_TypeRef()` is a valid, live `CFURLRef`
+        // for the duration of this call — `core-text`'s own binding, so
+        // no hand-rolled signature risk here.
         let descriptors_ref =
             unsafe { CTFontManagerCreateFontDescriptorsFromURL(url.as_concrete_TypeRef()) };
         if descriptors_ref.is_null() {
             return Registration {
-                registered: true,
+                registered,
                 family: None,
             };
         }
@@ -820,6 +884,40 @@ mod tests {
                  should parse",
             )
         })
+    }
+
+    /// Regression guard for the data race `register_font_from_memory`'s own
+    /// doc describes: two independent `OnceLock`-guarded call sites
+    /// (`ensure_codicon_registered` and this file's
+    /// `registered_icon_font_names`) each call this function exactly once,
+    /// but nothing previously stopped those two "first calls" landing on
+    /// different OS test threads at the same moment and racing
+    /// `register_with_fontconfig`'s unsynchronised raw `FcFontSet` reads —
+    /// an intermittent SIGSEGV in CI with no failing test (the crash kills
+    /// the whole process). `registered_icon_font_names`'s own `OnceLock`
+    /// can't exercise that race directly (concurrent callers of one
+    /// `OnceLock` block on each other), so this spawns several real OS
+    /// threads that each call [`register_font_from_memory`] directly,
+    /// bypassing every `OnceLock`, forcing genuinely concurrent
+    /// `FcConfigAppFontAddFile` calls against the same process-wide
+    /// `FcConfig`. Every call must still resolve the real fixture; if the
+    /// internal lock this test guards against regresses, this either
+    /// crashes the process or panics, not just fails an assertion.
+    #[test]
+    fn register_font_from_memory_is_safe_under_concurrent_callers() {
+        let threads: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(|| register_font_from_memory(ICON_FONT_BYTES)))
+            .collect();
+        for t in threads {
+            let names = t
+                .join()
+                .expect("register_font_from_memory must not panic under concurrent callers")
+                .expect("a real font must register even when called concurrently");
+            assert!(
+                !names.is_empty(),
+                "a real font must resolve at least one family name"
+            );
+        }
     }
 
     /// A real, parseable font must always register on every platform.

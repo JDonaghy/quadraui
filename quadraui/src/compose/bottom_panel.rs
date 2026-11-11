@@ -66,11 +66,13 @@
 //! — dragging it emits `AppShellEvent::BottomPanelResized`, which the
 //! shell runner maps to [`BottomPanelEvent::Resized`] for the app.
 
+use serde::ser::SerializeMap;
+use serde::{Serialize, Serializer};
+
 pub use crate::backend::BackendWidget;
-// `TabBarHits` is `#[deprecated]` — this controller caches
-// exactly what `Backend::draw_tab_bar` returns for click dispatch. See
-// that struct's doc for the replacement plan.
-#[allow(deprecated)]
+use crate::compose::Handled;
+// This controller caches exactly what `Backend::draw_tab_bar` returns for
+// click dispatch — see `TabBarHits`'s own doc for its stability contract.
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarSegment, TabItem};
 use crate::types::WidgetId;
 use crate::{Backend, Rect};
@@ -148,6 +150,31 @@ pub enum BottomPanelEvent {
     Resized(f32),
 }
 
+/// Externally-tagged, one-entry-map shape: `{"TabActivated": "bp:terminal"}`,
+/// `{"MaximiseToggled": null}`, etc. Hand-written rather than derived for
+/// the same reason [`crate::compose::app_shell::AppShellEvent`]'s own impl
+/// is: `serde`'s default external tagging would serialize the unit variant
+/// [`BottomPanelEvent::MaximiseToggled`] as a bare string, not the
+/// dict-with-`null` shape a binding's own `on_bottom_panel_event` callback
+/// already observes. Written once here rather than once per binding — a
+/// binding reaches this via a generic `pythonize::pythonize`/
+/// `serde_json::to_value` call, not its own hand-rolled match.
+impl Serialize for BottomPanelEvent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(1))?;
+        match self {
+            BottomPanelEvent::TabActivated(id) => map.serialize_entry("TabActivated", id)?,
+            BottomPanelEvent::TabClosed(id) => map.serialize_entry("TabClosed", id)?,
+            BottomPanelEvent::MaximiseToggled => map.serialize_entry("MaximiseToggled", &())?,
+            BottomPanelEvent::Resized(height) => map.serialize_entry("Resized", height)?,
+        }
+        map.end()
+    }
+}
+
 /// Resolved panel regions for one rendered frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BottomPanelLayout {
@@ -188,7 +215,6 @@ pub struct BottomPanelController {
     /// backend's `draw_tab_bar` actually painted against, so paint and click
     /// agree on tab / close-button / maximise positions. Positions are in
     /// target-surface (viewport-absolute) coordinates, matching the click.
-    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
     last_hits: Option<TabBarHits>,
     last_strip_bounds: Option<Rect>,
 }
@@ -247,12 +273,13 @@ impl BottomPanelController {
     /// Remove the tab with the given `id`. If it was the active tab,
     /// the first remaining tab becomes active; returns `false` when
     /// no tab with that `id` exists.
-    pub fn close_tab(&mut self, id: &str) -> bool {
-        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
+    pub fn close_tab(&mut self, id: impl Into<WidgetId>) -> bool {
+        let id = id.into();
+        let Some(idx) = self.tabs.iter().position(|t| t.id == id.as_str()) else {
             return false;
         };
         self.tabs.remove(idx);
-        if self.active_tab_id == id {
+        if self.active_tab_id == id.as_str() {
             self.active_tab_id = self.tabs.first().map(|t| t.id.clone()).unwrap_or_default();
         }
         true
@@ -270,7 +297,6 @@ impl BottomPanelController {
     ///
     /// `panel_bounds` must be in the backend's native units (cells for
     /// TUI, pixels for GTK). All returned rects use the same unit.
-    #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
     pub fn render(&mut self, backend: &mut dyn Backend, panel_bounds: Rect) -> BottomPanelLayout {
         let lh = backend.chrome_line_height();
 
@@ -321,19 +347,34 @@ impl BottomPanelController {
     /// Resolve a mouse click at `(x, y)` in viewport coordinates.
     ///
     /// Applies any resulting state change (tab activation, close, maximise
-    /// toggle) to the controller and returns the event for the app. Returns
-    /// `None` when the click is outside the tab strip or on dead space.
+    /// toggle) to the controller and returns [`Handled::Event`] with the
+    /// event for the app. Returns [`Handled::Consumed`] when the click
+    /// landed inside the tab strip but on dead space (a non-closable tab's
+    /// × region, or the already-active tab's body) — nothing to route, but
+    /// the click was this controller's to handle. Returns
+    /// [`Handled::Ignored`] when the click was outside the tab strip
+    /// entirely.
     ///
     /// Call this from the shell runner's mouse-down handler after
     /// [`AppShell::handle`] returns [`AppShellEvent::Ignored`].
-    #[allow(deprecated)] // TODO(#823): remove `#[allow(deprecated)]` when `TabBarHits` is removed
-    pub fn handle_click(&mut self, x: f32, y: f32) -> Option<BottomPanelEvent> {
-        let strip = self.last_strip_bounds?;
-        // Check vertical bounds.
+    pub fn handle_click_event(&mut self, x: f32, y: f32) -> Handled<BottomPanelEvent> {
+        let Some(strip) = self.last_strip_bounds else {
+            return Handled::Ignored;
+        };
+        // Check vertical and horizontal bounds — the strip spans only the
+        // panel's own column (`AppShell` docks the bottom panel under the
+        // main column, not the full viewport width), so a click at the
+        // strip's `y` but outside its `x` range (e.g. the activity bar or
+        // sidebar) is not this controller's to claim.
         if y < strip.y || y >= strip.y + strip.height {
-            return None;
+            return Handled::Ignored;
         }
-        let hits = self.last_hits.as_ref()?;
+        if x < strip.x || x >= strip.x + strip.width {
+            return Handled::Ignored;
+        }
+        let Some(hits) = self.last_hits.as_ref() else {
+            return Handled::Ignored;
+        };
 
         // `TabBarHits` positions are in target-surface (viewport-absolute)
         // coordinates — the same space as the incoming click — so compare
@@ -350,10 +391,10 @@ impl BottomPanelController {
                         if tab.closable {
                             let id = tab.id.clone();
                             self.close_tab(&id);
-                            return Some(BottomPanelEvent::TabClosed(id));
+                            return Handled::Event(BottomPanelEvent::TabClosed(id));
                         }
                     }
-                    return None;
+                    return Handled::Consumed;
                 }
             }
         }
@@ -361,7 +402,7 @@ impl BottomPanelController {
         // Right segments — the only one we emit is the maximise toggle.
         if hits.right_segment_bounds.iter().copied().any(in_range) {
             self.toggle_maximised();
-            return Some(BottomPanelEvent::MaximiseToggled);
+            return Handled::Event(BottomPanelEvent::MaximiseToggled);
         }
 
         // Tab bodies.
@@ -371,13 +412,26 @@ impl BottomPanelController {
                     let id = tab.id.clone();
                     if id != self.active_tab_id {
                         self.activate_tab(id.clone());
-                        return Some(BottomPanelEvent::TabActivated(id));
+                        return Handled::Event(BottomPanelEvent::TabActivated(id));
                     }
                 }
-                return None;
+                return Handled::Consumed;
             }
         }
-        None
+        Handled::Consumed
+    }
+
+    /// Resolve a mouse click at `(x, y)` in viewport coordinates.
+    ///
+    /// Applies any resulting state change (tab activation, close, maximise
+    /// toggle) to the controller and returns the event for the app. Returns
+    /// `None` when the click is outside the tab strip or on dead space.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_click_event`, which returns `Handled<BottomPanelEvent>` and distinguishes dead-space clicks (`Handled::Consumed`) from clicks outside the panel (`Handled::Ignored`)"
+    )]
+    pub fn handle_click(&mut self, x: f32, y: f32) -> Option<BottomPanelEvent> {
+        self.handle_click_event(x, y).into_event()
     }
 
     // ── Helpers ────────────────────────────────────────────────────
@@ -470,7 +524,6 @@ mod tests {
     /// without a real backend render. Measurement: each tab = 6 cells total
     /// (4 label + 2 padding/close), maximise segment = 3 cells. Converted to
     /// `TabBarHits` exactly as a backend's `draw_tab_bar` would return them.
-    #[allow(deprecated)] // builds the deprecated `TabBarHits` test fixture — issue #823
     fn prime_layout(ctrl: &mut BottomPanelController, strip_x: f32, strip_y: f32, bar_w: f32) {
         use crate::backend::tab_bar_hits_from_layout;
         use crate::primitives::tab_bar::{SegmentMeasure, TabMeasure};
@@ -582,9 +635,18 @@ mod tests {
         assert!(!ctrl.close_tab("no-such-id"));
     }
 
+    #[test]
+    fn close_tab_also_accepts_a_widget_id_directly() {
+        let cfg = make_config(vec![tab("t0", "A", true), tab("t1", "B", false)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        assert!(ctrl.close_tab(WidgetId::new("t0")));
+        assert_eq!(ctrl.tabs().len(), 1);
+    }
+
     // ── handle_click: no layout primed ────────────────────────────────────────
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn handle_click_without_render_returns_none() {
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
         let mut ctrl = BottomPanelController::new(cfg);
@@ -594,6 +656,7 @@ mod tests {
     // ── handle_click: outside strip ──────────────────────────────────────────
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn handle_click_above_strip_is_none() {
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
         let mut ctrl = BottomPanelController::new(cfg);
@@ -602,6 +665,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn handle_click_below_strip_is_none() {
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
         let mut ctrl = BottomPanelController::new(cfg);
@@ -612,6 +676,7 @@ mod tests {
     // ── handle_click: tab body ────────────────────────────────────────────────
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_inactive_tab_emits_tab_activated() {
         // t0 = [0..6], t1 = [6..12], maximise = [77..80]
         let cfg = make_config(
@@ -626,6 +691,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_already_active_tab_returns_none() {
         let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
         let mut ctrl = BottomPanelController::new(cfg);
@@ -637,6 +703,7 @@ mod tests {
     // ── handle_click: close button ────────────────────────────────────────────
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_close_button_emits_tab_closed_and_removes_tab() {
         // tab0 closable: total=6, close=2 → close region [4..6]
         let cfg = make_config(vec![tab("t0", "AAAA", true)], "t0");
@@ -648,6 +715,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_non_closable_tab_close_area_returns_none() {
         // tab0 NOT closable but measurement still gives it 6 cells total/0 close
         let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
@@ -662,6 +730,7 @@ mod tests {
     // ── handle_click: non-zero strip origin (panel docked in main column) ─────
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_switches_and_closes_when_strip_offset_from_origin() {
         // Regression: the bottom panel docks in the main column, so the strip's
         // x origin is non-zero. Hits are in absolute coords, so clicks must be
@@ -689,6 +758,7 @@ mod tests {
     // ── handle_click: maximise button ────────────────────────────────────────
 
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_maximise_toggles_and_emits_event() {
         // Maximise segment at [77..80] in 80-cell bar
         let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
@@ -750,6 +820,7 @@ mod tests {
     /// (which has no close bounds) falls through to tab-body click → returns None
     /// (already active). A closable tab's close region still emits TabClosed.
     #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn mixed_closable_tabs_only_closable_tab_emits_close_event() {
         // t0: non-closable (close_w=0 → no close bounds)
         // t1: closable (close_w=2 → close region [10..12] in strip [0..80])
@@ -849,5 +920,129 @@ mod tests {
         backend.set_style(crate::Style::default().with_tab_height(50.0));
         let layout = ctrl.render(&mut backend, Rect::new(0.0, 0.0, 80.0, 24.0));
         assert_eq!(layout.tab_strip_bounds.height, 1.0);
+    }
+
+    /// Golden shape for every [`BottomPanelEvent`] variant's [`Serialize`]
+    /// impl — pins the externally-tagged, one-entry-map JSON a binding's
+    /// own `on_bottom_panel_event` dict/JSON payload must keep matching
+    /// byte-for-byte, the same pinning `app_shell`'s own golden test gives
+    /// [`crate::compose::app_shell::AppShellEvent`].
+    #[test]
+    fn bottom_panel_event_serializes_to_the_externally_tagged_dict_shape() {
+        let cases = [
+            (
+                BottomPanelEvent::TabActivated("bp:terminal".to_string()),
+                serde_json::json!({"TabActivated": "bp:terminal"}),
+            ),
+            (
+                BottomPanelEvent::TabClosed("bp:logs".to_string()),
+                serde_json::json!({"TabClosed": "bp:logs"}),
+            ),
+            (
+                BottomPanelEvent::MaximiseToggled,
+                serde_json::json!({"MaximiseToggled": null}),
+            ),
+            (
+                BottomPanelEvent::Resized(12.5),
+                serde_json::json!({"Resized": 12.5}),
+            ),
+        ];
+        for (event, expected) in cases {
+            let actual = serde_json::to_value(&event).expect("BottomPanelEvent always serializes");
+            assert_eq!(actual, expected, "{event:?}");
+        }
+    }
+
+    // ── handle_click_event: Handled<BottomPanelEvent> ─────────────────────────
+
+    #[test]
+    fn handle_click_event_without_render_is_ignored() {
+        let cfg = make_config(vec![tab("t0", "T", false)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        assert_eq!(ctrl.handle_click_event(0.0, 0.0), Handled::Ignored);
+    }
+
+    #[test]
+    fn handle_click_event_outside_strip_is_ignored() {
+        let cfg = make_config(vec![tab("t0", "T", false)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 0.0, 10.0, 80.0);
+        assert_eq!(ctrl.handle_click_event(5.0, 5.0), Handled::Ignored); // above strip
+        assert_eq!(ctrl.handle_click_event(5.0, 12.0), Handled::Ignored); // below strip
+    }
+
+    #[test]
+    fn handle_click_event_outside_strip_horizontally_is_ignored() {
+        // Strip starts at x=20 (docked under the main column, as `AppShell`
+        // does), so a click at the strip's `y` but left or right of its `x`
+        // range (the activity bar / sidebar columns) must not be claimed.
+        let cfg = make_config(vec![tab("t0", "T", false)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 20.0, 0.0, 40.0);
+        assert_eq!(ctrl.handle_click_event(5.0, 0.5), Handled::Ignored); // left of strip
+        assert_eq!(ctrl.handle_click_event(70.0, 0.5), Handled::Ignored); // right of strip
+    }
+
+    #[test]
+    fn handle_click_event_on_inactive_tab_is_event() {
+        let cfg = make_config(
+            vec![tab("t0", "AAAA", false), tab("t1", "BBBB", false)],
+            "t0",
+        );
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
+        let outcome = ctrl.handle_click_event(9.0, 0.5); // x=9 → tab1
+        assert_eq!(
+            outcome,
+            Handled::Event(BottomPanelEvent::TabActivated("t1".to_string()))
+        );
+    }
+
+    #[test]
+    fn handle_click_event_on_already_active_tab_is_consumed() {
+        let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
+        // Inside the panel's tab strip, but dead space — the already-active
+        // tab's own body — so this is `Consumed`, not `Ignored`.
+        assert_eq!(ctrl.handle_click_event(2.0, 0.5), Handled::Consumed);
+    }
+
+    #[test]
+    fn handle_click_event_on_non_closable_close_area_is_consumed() {
+        let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
+        assert_eq!(ctrl.handle_click_event(5.0, 0.5), Handled::Consumed);
+    }
+
+    #[test]
+    fn handle_click_event_on_close_button_is_event() {
+        let cfg = make_config(vec![tab("t0", "AAAA", true)], "t0");
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
+        let outcome = ctrl.handle_click_event(5.0, 0.5); // close region of tab0
+        assert_eq!(
+            outcome,
+            Handled::Event(BottomPanelEvent::TabClosed("t0".to_string()))
+        );
+        assert_eq!(ctrl.tabs().len(), 0);
+    }
+
+    #[test]
+    #[allow(deprecated)] // exercises the `handle_click` shim directly.
+    fn deprecated_handle_click_still_adapts_to_option() {
+        let cfg = make_config(
+            vec![tab("t0", "AAAA", false), tab("t1", "BBBB", false)],
+            "t0",
+        );
+        let mut ctrl = BottomPanelController::new(cfg);
+        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
+        assert_eq!(
+            ctrl.handle_click(9.0, 0.5),
+            Some(BottomPanelEvent::TabActivated("t1".to_string()))
+        );
+        assert_eq!(ctrl.handle_click(9.0, 0.5), None); // already active now — consumed, no event
+        assert_eq!(ctrl.handle_click(5.0, 5.0), None); // ignored, outside strip
     }
 }

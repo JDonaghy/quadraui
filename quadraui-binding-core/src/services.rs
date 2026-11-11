@@ -407,6 +407,7 @@ mod tests {
     use super::*;
     use quadraui::backend::{
         Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions, Notification,
+        ServiceResult,
     };
 
     /// Serialises this module's [`install_crash_handler`] tests: that
@@ -457,7 +458,9 @@ mod tests {
             None
         }
 
-        fn send_notification(&self, _n: Notification) {}
+        fn send_notification(&self, _n: Notification) -> ServiceResult<()> {
+            Ok(())
+        }
 
         fn open_url(&self, _url: &str) {}
 

@@ -1,9 +1,11 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::Panel`].
 //!
-//! Painting is implemented in the shared
-//! [`crate::primitives::panel::native_surface_paint::paint`] — see that fn's doc
-//! for details. This module carries [`win_panel_layout`] for pure layout
-//! queries needed by `WinBackend::panel_layout`.
+//! `WinBackend::draw_panel` paints the title bar through the mapped
+//! `SidebarPanel` + `Toolbar` header — see that method's own doc. This
+//! module carries [`win_panel_layout`] for the pure layout queries
+//! `WinBackend::panel_layout`'s no-paint hit-test path and
+//! `draw_panel`'s own painting path (surfaced and no-surface alike)
+//! need.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod panel;` and `backend.rs`'s module
@@ -12,33 +14,32 @@
 //!
 //! # Theme
 //!
-//! `WinBackend::draw_panel` passes `&self.current_theme` to the shared
-//! [`crate::primitives::panel::native_surface_paint::paint`] — the same
-//! live theme `Backend::set_theme` writes, the same shape
+//! `WinBackend::draw_panel` passes `&self.current_theme` to the delegate
+//! — the same live theme `Backend::set_theme` writes, the same shape
 //! `win::status_bar`'s module doc documents.
 
-#[cfg(test)]
-use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::layout_metrics::pixel_panel_layout;
+// `Panel` is `#[deprecated]` (use `SidebarPanel` + `Toolbar` instead); this
+// whole module is `Panel`'s own Windows rasteriser plumbing.
+#[allow(deprecated)]
 use crate::primitives::panel::{Panel, PanelLayout};
-#[cfg(test)]
-use crate::theme::Theme;
 
 /// Compute a [`Panel`]'s layout without painting — used by
 /// `WinBackend::panel_layout` for no-paint hit-test queries.
 /// Shares its action-button width with `gtk_panel_layout` / `mac_panel_layout` via
 /// [`pixel_panel_layout`].
+#[allow(deprecated)] // `Panel` is `#[deprecated]`; this fn is its own plumbing.
 pub fn win_panel_layout(rect: Rect, panel: &Panel, line_height: f32) -> PanelLayout {
     pixel_panel_layout(panel, rect.x, rect.y, rect.width, rect.height, line_height)
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // `Panel`/`PanelAction` are `#[deprecated]`; these tests cover their Windows layout plumbing directly.
 mod tests {
     use super::*;
     use crate::primitives::panel::{PanelAction, PanelHit};
     use crate::types::{StyledText, WidgetId};
-    use crate::win::testing::HeadlessSurface;
 
     const W: u32 = 200;
     const H: u32 = 100;
@@ -59,58 +60,25 @@ mod tests {
         }
     }
 
-    /// Paint `panel` via the shared
-    /// [`crate::primitives::panel::native_surface_paint::paint`] through
-    /// a [`super::super::surface::D2dSurface`] over `surface`'s headless target — the same
-    /// adapter the now-removed `draw_panel` shim used,
-    /// exercised here directly.
-    fn paint(surface: &HeadlessSurface, dwrite: &DWrite, rect: Rect, panel: &Panel) -> PanelLayout {
-        let layout = win_panel_layout(rect, panel, LINE_HEIGHT);
-        surface
-            .paint(|target| {
-                let mut raw = super::super::surface::D2dSurface {
-                    target,
-                    dwrite: Some(dwrite),
-                };
-                crate::primitives::panel::native_surface_paint::paint(
-                    panel,
-                    &layout,
-                    &mut raw,
-                    &Theme::default(),
-                );
-            })
-            .expect("paint panel");
-        layout
-    }
-
-    /// Paint↔click round trip: title bar, action button, and content
-    /// area each paint their own bg (or, for content, are simply left
-    /// unpainted chrome) at the bounds `hit_test` resolves to the
-    /// matching `PanelHit` variant.
+    /// Layout↔click round trip: title bar, action button, and content
+    /// area each hit-test to the matching `PanelHit` variant at the
+    /// bounds `win_panel_layout` reports. `WinBackend::draw_panel`'s own
+    /// paint↔hit-test coverage (through the production
+    /// `SidebarPanel` + `Toolbar` delegate) lives in
+    /// `win::backend::tests`, Windows-only.
     #[test]
-    fn paint_and_hit_test_round_trip() {
-        let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+    fn hit_test_round_trip() {
         let panel = panel();
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = win_panel_layout(rect, &panel, LINE_HEIGHT);
 
-        let layout = paint(&surface, &dwrite, rect, &panel);
-        let theme = Theme::default();
-
-        // Title bar: painted bg matches theme.separator (no accent
-        // override), and a click on the body (left of the action
-        // button) resolves to `TitleBar`.
+        // Title bar body (left of the action button) resolves to
+        // `TitleBar`.
         let tb = layout.title_bar_bounds.expect("title bar present");
-        let tb_px = surface.pixel_at(2, (tb.y + tb.height / 2.0) as u32);
-        assert_eq!(
-            (tb_px.r, tb_px.g, tb_px.b),
-            (theme.separator.r, theme.separator.g, theme.separator.b)
-        );
         let title_hit = layout.hit_test(2.0, tb.y + tb.height / 2.0);
         assert_eq!(title_hit, PanelHit::TitleBar(WidgetId::new("p")));
 
-        // Action button: painted at its own bounds, hit-tests to
-        // `Action`.
+        // Action button resolves to `Action`.
         let va = &layout.visible_actions[0];
         let action_hit = layout.hit_test(
             va.bounds.x + va.bounds.width / 2.0,
@@ -118,7 +86,7 @@ mod tests {
         );
         assert_eq!(action_hit, PanelHit::Action(WidgetId::new("p:close")));
 
-        // Content area: below the title bar, hit-tests to `Content`.
+        // Content area, below the title bar, resolves to `Content`.
         let cb = layout.content_bounds;
         assert!(cb.height > 0.0, "content area should be non-empty");
         let content_hit = layout.hit_test(cb.x + 2.0, cb.y + 2.0);
@@ -133,28 +101,29 @@ mod tests {
         panel.title = None;
         panel.actions = Vec::new();
 
-        let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
-
-        let layout = paint(&surface, &dwrite, rect, &panel);
+        let layout = win_panel_layout(rect, &panel, LINE_HEIGHT);
 
         assert!(layout.title_bar_bounds.is_none());
         assert_eq!(layout.content_bounds.height, H as f32);
     }
 
-    /// `win_panel_layout` (no-paint) must produce the same layout
-    /// as `paint` — same panel, same rect, same line height.
+    /// `win_panel_layout` must agree with `Panel::layout` given the same
+    /// pixel-shaped measure — the twin `gtk_panel_layout`/`mac_panel_layout`
+    /// tests make the same assertion for their own backends.
     #[test]
-    fn no_paint_layout_matches_paint_layout() {
+    fn matches_panel_layout_directly() {
         let panel = panel();
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
-        let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
-        let painted = paint(&surface, &dwrite, rect, &panel);
-        let no_paint = win_panel_layout(rect, &panel, LINE_HEIGHT);
+        let via_helper = win_panel_layout(rect, &panel, LINE_HEIGHT);
+        let measure = crate::primitives::panel::PanelMeasure {
+            title_bar_height: LINE_HEIGHT,
+            action_button_width: crate::primitives::layout_metrics::pixel::PANEL_ACTION_BUTTON,
+            content_padding: 0.0,
+        };
+        let direct = panel.layout(rect, measure);
 
-        assert_eq!(painted, no_paint);
+        assert_eq!(via_helper, direct);
     }
 }

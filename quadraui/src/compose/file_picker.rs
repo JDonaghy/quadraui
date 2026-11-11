@@ -17,18 +17,29 @@
 //! by an app (no `PlatformServices` involved), and `crate::tui::services`'s
 //! own tests for the `PlatformServices`-level round trip.
 //!
-//! # Deliberately drops the folder picker's vim navigation keys
+//! # Shares its key map with the folder picker — mode-aware
 //!
-//! [`FolderPickerController`] intercepts `-`/`j`/`k` as parent-dir/up/down
-//! shortcuts *before* the generic typing arm — a documented trade-off
-//! there because directory names rarely start with those characters.
-//! Real filenames routinely do (`my-notes.txt`, `journal.md`), especially
-//! in save mode where the query *is* the destination name, so this
-//! controller does not repeat that trade-off: only the named `Up`/`Down`
-//! arrow keys navigate the list, and every printable character reaches
-//! the query/filename field unconditionally.
+//! Key dispatch is routed through the same `classify_nav_key` both
+//! [`FolderPickerController`] and this controller use, so the two never
+//! drift apart on the keys they *do* share. But the vim-style `-`/`j`/`k`
+//! shortcuts are gated by [`classify_nav_key`]'s `vim_keys` parameter,
+//! which this controller sets from [`mode`](Self::mode):
+//!
+//! - [`FilePickerMode::Open`]: `vim_keys` is `true` — `-`/`j`/`k` navigate
+//!   (parent-dir/up/down), matching the folder picker, because there is
+//!   nothing to type a name into.
+//! - [`FilePickerMode::Save`]: `vim_keys` is `false` — `-`/`j`/`k` type
+//!   into the query like any other character, because the query *is*
+//!   the destination filename there (see "Save-mode semantics" below)
+//!   and real filenames routinely contain all three (`my-notes.txt`,
+//!   `journal.md`, `Makefile-k8s`).
+//!
+//! A consumer that needs typing-priority in `Open` mode too (rather than
+//! switching mode) can call [`push_char`](Self::push_char) directly
+//! instead of routing through `handle()`.
 //!
 //! [`FolderPickerController`]: crate::compose::FolderPickerController
+//! [`classify_nav_key`]: super::path_picker::classify_nav_key
 //!
 //! # Save-mode semantics
 //!
@@ -55,21 +66,23 @@
 //!
 //! // In AppLogic::handle:
 //! let visible_rows = popup_rect.height as usize - PALETTE_CHROME_ROWS;
-//! match picker.handle(&event, visible_rows) {
-//!     FilePickerEvent::Confirmed { path } => { /* open/save `path` */ }
-//!     FilePickerEvent::Cancelled           => { /* dismiss modal */ }
-//!     FilePickerEvent::Consumed            => { /* redraw */ }
-//!     FilePickerEvent::Ignored             => {}
+//! match picker.handle_event(&event, visible_rows) {
+//!     Handled::Event(PathPickerAction::Confirmed { path }) => { /* open/save `path` */ }
+//!     Handled::Event(PathPickerAction::Cancelled)          => { /* dismiss modal */ }
+//!     Handled::Consumed                                    => { /* redraw */ }
+//!     Handled::Ignored                                      => {}
 //! }
 //! ```
 
-use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 
+use super::path_picker::{
+    classify_nav_key, dir_entry_is_dir, NavKey, PathPickerAction, PathPickerCore,
+};
 use crate::compose::folder_picker::{DEFAULT_IGNORE_DIRS, DEFAULT_MAX_DEPTH};
+use crate::compose::Handled;
 use crate::{
-    Backend, Icon, Key, Modifiers, NamedKey, Palette, PaletteItem, Rect, StyledText, UiEvent,
-    WidgetId,
+    Backend, Icon, Key, Modifiers, Palette, PaletteItem, Rect, StyledText, UiEvent, WidgetId,
 };
 
 /// Whether a [`FilePickerController`] is choosing a file to open (must
@@ -85,6 +98,10 @@ pub enum FilePickerMode {
 
 /// What happened after [`FilePickerController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
+#[deprecated(
+    since = "0.9.0",
+    note = "use `FilePickerController::handle_event`'s `Handled<PathPickerAction>` instead — `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, `Confirmed`/`Cancelled` move to `PathPickerAction` under `Handled::Event`"
+)]
 pub enum FilePickerEvent {
     /// The user confirmed a file path — an existing file in
     /// [`FilePickerMode::Open`], or `root.join(query)` in
@@ -104,22 +121,12 @@ pub enum FilePickerEvent {
 pub struct FilePickerController {
     id: WidgetId,
     mode: FilePickerMode,
-    /// Current browsing root. Changes on `navigate_to`.
-    root: PathBuf,
-    /// Live query string — fuzzy filter (`Open`) and/or destination
-    /// filename (`Save`).
-    query: String,
+    /// Shared query/list/selection/scroll state.
+    core: PathPickerCore,
     /// Extension filters — `(display_name, &[ext])` pairs, mirroring
     /// [`crate::backend::FileDialogOptions::filters`]. Empty means "show
     /// every file". Directories are never filtered out.
     filters: Vec<(String, Vec<String>)>,
-    /// All candidate entries relative to `root` (unfiltered, stable) —
-    /// directories and files both.
-    all_entries: Vec<PathBuf>,
-    /// Currently filtered + ranked entries (subset of `all_entries`).
-    filtered: Vec<PathBuf>,
-    selected: usize,
-    scroll_top: usize,
     show_hidden: bool,
     ignore_dirs: Vec<String>,
     max_depth: usize,
@@ -146,17 +153,11 @@ impl FilePickerController {
         let show_hidden = false;
         let all_entries =
             collect_file_entries(&root, show_hidden, &ignore_dirs, &filters, max_depth);
-        let filtered = all_entries.iter().take(50).cloned().collect();
         Self {
             id: WidgetId::new("file_picker"),
             mode,
-            root,
-            query: String::new(),
+            core: PathPickerCore::new(root, all_entries),
             filters,
-            all_entries,
-            filtered,
-            selected: 0,
-            scroll_top: 0,
             show_hidden,
             ignore_dirs,
             max_depth,
@@ -168,7 +169,7 @@ impl FilePickerController {
     /// [`crate::backend::FileDialogOptions::initial_filename`]. Returns
     /// `self` for builder-style chaining.
     pub fn with_initial_filename(mut self, name: impl Into<String>) -> Self {
-        self.query = name.into();
+        self.core.query = name.into();
         self
     }
 
@@ -187,87 +188,82 @@ impl FilePickerController {
     }
 
     pub fn root(&self) -> &Path {
-        &self.root
+        &self.core.root
     }
 
     pub fn query(&self) -> &str {
-        &self.query
+        &self.core.query
     }
 
     pub fn filtered(&self) -> &[PathBuf] {
-        &self.filtered
+        &self.core.filtered
     }
 
     pub fn selected(&self) -> usize {
-        self.selected
+        self.core.selected
     }
 
     pub fn scroll_top(&self) -> usize {
-        self.scroll_top
+        self.core.scroll_top
     }
 
     fn is_dir_entry(&self, rel: &Path) -> bool {
-        rel.as_os_str() == ".." || self.root.join(rel).is_dir()
+        rel.as_os_str() == ".." || self.core.root.join(rel).is_dir()
     }
 
     // ── Navigation ────────────────────────────────────────────────────
 
     /// Navigate to `new_root`, clearing the query and reloading entries.
     pub fn navigate_to(&mut self, new_root: PathBuf) {
-        self.root = new_root;
-        self.query.clear();
-        self.all_entries = collect_file_entries(
-            &self.root,
+        let all_entries = collect_file_entries(
+            &new_root,
             self.show_hidden,
             &self.ignore_dirs,
             &self.filters,
             self.max_depth,
         );
-        self.filtered = self.all_entries.iter().take(50).cloned().collect();
-        self.selected = 0;
-        self.scroll_top = 0;
+        self.core.navigate_to(new_root, all_entries);
+    }
+
+    /// Navigate to the parent directory (no-op at filesystem root).
+    ///
+    /// Shared with [`FolderPickerController::navigate_up`] via the `-`
+    /// key in `classify_nav_key`.
+    ///
+    /// [`FolderPickerController::navigate_up`]: crate::compose::FolderPickerController::navigate_up
+    pub fn navigate_up(&mut self) {
+        if let Some(parent) = self.core.root.parent() {
+            self.navigate_to(parent.to_path_buf());
+        }
     }
 
     // ── Query editing ─────────────────────────────────────────────────
 
     pub fn push_char(&mut self, c: char) {
-        self.query.push(c);
-        self.refilter();
+        self.core.push_char(c);
     }
 
     pub fn pop_char(&mut self) {
-        self.query.pop();
-        self.refilter();
+        self.core.pop_char();
     }
 
-    fn refilter(&mut self) {
-        self.filtered = filter_file_entries(&self.all_entries, &self.query);
-        self.selected = 0;
-        self.scroll_top = 0;
+    /// Re-compute `filtered` from `all_entries` and the current `query`.
+    pub fn refilter(&mut self) {
+        self.core.refilter();
     }
 
     // ── Selection movement ────────────────────────────────────────────
 
     pub fn move_up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        self.core.move_up();
     }
 
     pub fn move_down(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected = (self.selected + 1).min(self.filtered.len() - 1);
-        }
+        self.core.move_down();
     }
 
     pub fn sync_scroll(&mut self, visible_rows: usize) {
-        if visible_rows == 0 {
-            return;
-        }
-        if self.selected < self.scroll_top {
-            self.scroll_top = self.selected;
-        }
-        if self.selected >= self.scroll_top + visible_rows {
-            self.scroll_top = self.selected + 1 - visible_rows;
-        }
+        self.core.sync_scroll(visible_rows);
     }
 
     // ── Render ────────────────────────────────────────────────────────
@@ -286,47 +282,73 @@ impl FilePickerController {
     /// palette chrome; compute it as
     /// `popup_height.saturating_sub(PALETTE_CHROME_ROWS)` (see
     /// [`crate::compose::folder_picker::PALETTE_CHROME_ROWS`]).
-    pub fn handle(&mut self, event: &UiEvent, visible_rows: usize) -> FilePickerEvent {
+    pub fn handle_event(
+        &mut self,
+        event: &UiEvent,
+        visible_rows: usize,
+    ) -> Handled<PathPickerAction> {
         let result = match event {
             UiEvent::KeyPressed { key, modifiers, .. } => self.handle_key(key, modifiers),
-            _ => FilePickerEvent::Ignored,
+            _ => Handled::Ignored,
         };
-        if matches!(result, FilePickerEvent::Consumed) {
+        if matches!(result, Handled::Consumed) {
             self.sync_scroll(visible_rows);
         }
         result
     }
 
-    fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> FilePickerEvent {
-        // `cmd` is treated the same as `ctrl`: every backend delivers a
-        // Cmd-modified letter (the macOS accelerator convention) as a
-        // plain `Key::Char` with the modifier set, not a dedicated key
-        // variant, so it must be excluded here or it would be typed into
-        // the filter instead of falling through `Ignored` for an
-        // app-level accelerator.
-        let modified = modifiers.ctrl || modifiers.cmd;
-        match key {
-            Key::Named(NamedKey::Escape) => FilePickerEvent::Cancelled,
+    /// Drive the state machine with a backend-neutral `UiEvent`.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_event`, which returns `Handled<PathPickerAction>` instead of `FilePickerEvent`"
+    )]
+    #[allow(deprecated)] // `FilePickerEvent` is `#[deprecated]`; this method is its own shim.
+    pub fn handle(&mut self, event: &UiEvent, visible_rows: usize) -> FilePickerEvent {
+        match self.handle_event(event, visible_rows) {
+            Handled::Event(PathPickerAction::Confirmed { path }) => {
+                FilePickerEvent::Confirmed { path }
+            }
+            Handled::Event(PathPickerAction::Cancelled) => FilePickerEvent::Cancelled,
+            Handled::Consumed => FilePickerEvent::Consumed,
+            Handled::Ignored => FilePickerEvent::Ignored,
+        }
+    }
 
-            Key::Named(NamedKey::Enter) => self.confirm_selection(),
-
-            Key::Named(NamedKey::Up) => {
+    /// Key dispatch, shared with [`FolderPickerController`] via
+    /// [`classify_nav_key`] so the two pickers' key maps can't drift
+    /// apart; see the [module doc](self) for which modes the vim-style
+    /// `-`/`j`/`k` shortcuts are active in.
+    ///
+    /// [`FolderPickerController`]: crate::compose::FolderPickerController
+    fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> Handled<PathPickerAction> {
+        // `Save` mode's query is the destination filename, so the vim
+        // shortcuts must not steal `-`/`j`/`k` from it — only `Open`
+        // mode, where there is nothing to type a name into, gets them.
+        let vim_keys = self.mode == FilePickerMode::Open;
+        match classify_nav_key(key, modifiers, vim_keys) {
+            Some(NavKey::Escape) => Handled::Event(PathPickerAction::Cancelled),
+            Some(NavKey::Confirm) => self.confirm_selection(),
+            Some(NavKey::NavigateUp) => {
+                self.navigate_up();
+                Handled::Consumed
+            }
+            Some(NavKey::Up) => {
                 self.move_up();
-                FilePickerEvent::Consumed
+                Handled::Consumed
             }
-            Key::Named(NamedKey::Down) => {
+            Some(NavKey::Down) => {
                 self.move_down();
-                FilePickerEvent::Consumed
+                Handled::Consumed
             }
-            Key::Named(NamedKey::Backspace) => {
+            Some(NavKey::Backspace) => {
                 self.pop_char();
-                FilePickerEvent::Consumed
+                Handled::Consumed
             }
-            Key::Char(c) if !modified => {
-                self.push_char(*c);
-                FilePickerEvent::Consumed
+            Some(NavKey::Char(c)) => {
+                self.push_char(c);
+                Handled::Consumed
             }
-            _ => FilePickerEvent::Ignored,
+            None => Handled::Ignored,
         }
     }
 
@@ -344,46 +366,44 @@ impl FilePickerController {
     /// onto a *real* directory row (handled below, not here) still
     /// navigates regardless of mode or query, matching native save
     /// dialogs' "Enter on a folder row browses" convention.
-    fn confirm_selection(&mut self) -> FilePickerEvent {
-        let highlighted = self.filtered.get(self.selected).cloned();
+    fn confirm_selection(&mut self) -> Handled<PathPickerAction> {
+        let highlighted = self.core.filtered.get(self.core.selected).cloned();
         let highlighted_is_dotdot = highlighted
             .as_deref()
             .map(|p| p.as_os_str() == "..")
             .unwrap_or(false);
 
         if highlighted_is_dotdot {
-            if self.mode == FilePickerMode::Save && !self.query.is_empty() {
-                return FilePickerEvent::Confirmed {
-                    path: self.root.join(&self.query),
-                };
+            if self.mode == FilePickerMode::Save && !self.core.query.is_empty() {
+                return Handled::Event(PathPickerAction::Confirmed {
+                    path: self.core.root.join(&self.core.query),
+                });
             }
-            if let Some(parent) = self.root.parent() {
-                self.navigate_to(parent.to_path_buf());
-            }
-            return FilePickerEvent::Consumed;
+            self.navigate_up();
+            return Handled::Consumed;
         }
 
         if let Some(rel) = &highlighted {
             if self.is_dir_entry(rel) {
-                self.navigate_to(self.root.join(rel));
-                return FilePickerEvent::Consumed;
+                self.navigate_to(self.core.root.join(rel));
+                return Handled::Consumed;
             }
         }
 
         match self.mode {
             FilePickerMode::Open => match highlighted {
-                Some(rel) => FilePickerEvent::Confirmed {
-                    path: self.root.join(rel),
-                },
-                None => FilePickerEvent::Ignored,
+                Some(rel) => Handled::Event(PathPickerAction::Confirmed {
+                    path: self.core.root.join(rel),
+                }),
+                None => Handled::Ignored,
             },
             FilePickerMode::Save => {
-                if self.query.is_empty() {
-                    FilePickerEvent::Ignored
+                if self.core.query.is_empty() {
+                    Handled::Ignored
                 } else {
-                    FilePickerEvent::Confirmed {
-                        path: self.root.join(&self.query),
-                    }
+                    Handled::Event(PathPickerAction::Confirmed {
+                        path: self.core.root.join(&self.core.query),
+                    })
                 }
             }
         }
@@ -391,7 +411,7 @@ impl FilePickerController {
 
     /// Build the `Palette` descriptor for the current state.
     fn build_palette(&self, rect: Rect) -> Palette {
-        let r = self.root.to_string_lossy();
+        let r = self.core.root.to_string_lossy();
         let max = (rect.width as usize).saturating_sub(30).max(10);
         let root_display = if r.len() > max {
             let s: &str = r.as_ref();
@@ -423,6 +443,7 @@ impl FilePickerController {
             .unwrap_or_else(|| Icon::new("\u{1F4C4}", "\u{1F4C4}")); // 📄
 
         let items: Vec<PaletteItem> = self
+            .core
             .filtered
             .iter()
             .map(|entry| {
@@ -444,8 +465,8 @@ impl FilePickerController {
             .collect();
 
         let create_label = match self.mode {
-            FilePickerMode::Save if !self.query.is_empty() => {
-                Some(format!("Save as \"{}\"", self.query))
+            FilePickerMode::Save if !self.core.query.is_empty() => {
+                Some(format!("Save as \"{}\"", self.core.query))
             }
             _ => None,
         };
@@ -453,12 +474,12 @@ impl FilePickerController {
         Palette {
             id: self.id,
             title,
-            query: self.query.clone(),
-            query_cursor: self.query.len(),
+            query: self.core.query.clone(),
+            query_cursor: self.core.query.len(),
             items,
-            selected_idx: self.selected,
-            scroll_offset: self.scroll_top,
-            total_count: self.all_entries.len(),
+            selected_idx: self.core.selected,
+            scroll_offset: self.core.scroll_top,
+            total_count: self.core.all_entries.len(),
             has_focus: true,
             show_query: true,
             create_label,
@@ -554,42 +575,18 @@ fn walk_file_entries_recursive(
     }
 }
 
-/// Whether `entry` names a directory, preferring the file type the
-/// directory enumeration already handed us over a second trip to the
-/// filesystem.
-///
-/// # Why not just `path.is_dir()`
-///
-/// [`Path::is_dir`] issues a *fresh* `stat`/`GetFileAttributes` per
-/// entry and — because it returns `bool`, not `io::Result<bool>` —
-/// reports any failure as plain `false`. A directory that momentarily
-/// can't be stat'ed is therefore silently reclassified as a *file*,
-/// which is not a harmless downgrade here: files run the
-/// [`extension_matches`] gauntlet, so an active extension filter drops
-/// the row entirely and the user loses the ability to navigate through
-/// that directory (the exact invariant
-/// `filters_restrict_files_not_dirs` pins). Transient stat failures are
-/// routine on Windows, where an on-access virus scanner holds a brief
-/// exclusive handle on freshly created files and directories and
-/// unrelated opens come back `ERROR_SHARING_VIOLATION`.
-///
-/// [`std::fs::DirEntry::file_type`] answers from the data the directory
-/// read already returned, so on Windows (and Linux, and macOS) it costs
-/// no syscall at all and cannot fail for that reason. Its one documented
-/// gap is symlinks — it describes the *link*, never its target — so
-/// those alone fall through to the `is_dir()` probe, which follows the
-/// link the way this walk wants.
-fn dir_entry_is_dir(entry: &std::fs::DirEntry, path: &Path) -> bool {
-    match entry.file_type() {
-        Ok(ft) if !ft.is_symlink() => ft.is_dir(),
-        _ => path.is_dir(),
-    }
-}
-
 /// Whether `name` passes `filters` — an empty `filters` list accepts
-/// everything; otherwise `name`'s extension (case-insensitive, without
-/// the leading `.`) must match at least one extension in at least one
-/// filter, or a filter must carry the wildcard `"*"`.
+/// everything; otherwise `name`'s extension must match at least one
+/// extension in at least one filter (via the same
+/// [`crate::backend::normalize_filter_extension`] every backend's own
+/// filter mapping runs its extensions through, so `".rs"`, `"rs"`, and
+/// `"RS"` all mean the same filter here too), or a filter must carry the
+/// wildcard `"*"`. The wildcard check runs on the *normalized* filter
+/// entry, not the raw string a caller wrote, so `".*"` is a wildcard here
+/// too — [`crate::backend::normalize_filter_extension`] strips every
+/// leading dot before comparing, and a literal `".*"` extension would
+/// never match a real file's extension (`Path::extension` never returns
+/// `"*"`) otherwise.
 fn extension_matches(filters: &[(String, Vec<String>)], name: &str) -> bool {
     if filters.is_empty() {
         return true;
@@ -597,36 +594,14 @@ fn extension_matches(filters: &[(String, Vec<String>)], name: &str) -> bool {
     let ext = Path::new(name)
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+        .map(crate::backend::normalize_filter_extension)
+        .unwrap_or_default();
     filters.iter().any(|(_, exts)| {
-        exts.iter()
-            .any(|e| e == "*" || e.trim_start_matches('.').to_lowercase() == ext)
-    })
-}
-
-/// Filter `all` by `query` using subsequence matching with a relevance
-/// score — thin wrapper over [`crate::text_util::fuzzy_score`], same
-/// approach as [`crate::compose::folder_picker::filter_dir_entries`].
-fn filter_file_entries(all: &[PathBuf], query: &str) -> Vec<PathBuf> {
-    const CAP: usize = 50;
-    if query.is_empty() {
-        return all.iter().take(CAP).cloned().collect();
-    }
-    let q = query.to_lowercase();
-    let mut scored: Vec<(i32, &PathBuf)> = all
-        .iter()
-        .filter_map(|p| {
-            let display = p.to_string_lossy().to_lowercase();
-            crate::text_util::fuzzy_score(&display, &q).map(|(s, _)| (s, p))
+        exts.iter().any(|e| {
+            let e = crate::backend::normalize_filter_extension(e);
+            e == "*" || e == ext
         })
-        .collect();
-    scored.sort_by_key(|&(s, _)| Reverse(s));
-    scored
-        .into_iter()
-        .take(CAP)
-        .map(|(_, p)| p.clone())
-        .collect()
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -634,6 +609,7 @@ fn filter_file_entries(all: &[PathBuf], query: &str) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NamedKey;
 
     fn scratch_dir_with(files: &[&str], dirs: &[&str]) -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -650,9 +626,9 @@ mod tests {
     fn new_lists_files_and_dirs() {
         let tmp = scratch_dir_with(&["a.rs", "b.txt"], &["sub"]);
         let picker = FilePickerController::new(FilePickerMode::Open, tmp.path(), vec![]);
-        assert!(picker.all_entries.contains(&PathBuf::from("a.rs")));
-        assert!(picker.all_entries.contains(&PathBuf::from("b.txt")));
-        assert!(picker.all_entries.contains(&PathBuf::from("sub")));
+        assert!(picker.core.all_entries.contains(&PathBuf::from("a.rs")));
+        assert!(picker.core.all_entries.contains(&PathBuf::from("b.txt")));
+        assert!(picker.core.all_entries.contains(&PathBuf::from("sub")));
     }
 
     /// A directory row's icon is `Icon::codicon("folder", "📁")` and a
@@ -700,10 +676,10 @@ mod tests {
             tmp.path(),
             vec![("Rust".to_string(), vec!["rs".to_string()])],
         );
-        assert!(picker.all_entries.contains(&PathBuf::from("a.rs")));
-        assert!(!picker.all_entries.contains(&PathBuf::from("b.txt")));
+        assert!(picker.core.all_entries.contains(&PathBuf::from("a.rs")));
+        assert!(!picker.core.all_entries.contains(&PathBuf::from("b.txt")));
         assert!(
-            picker.all_entries.contains(&PathBuf::from("sub")),
+            picker.core.all_entries.contains(&PathBuf::from("sub")),
             "directories bypass file filters so the user can still navigate through them"
         );
     }
@@ -717,13 +693,13 @@ mod tests {
             .iter()
             .position(|p| p == &PathBuf::from("a.rs"))
             .expect("a.rs listed");
-        picker.selected = idx;
+        picker.core.selected = idx;
         let result = picker.confirm_selection();
         assert_eq!(
             result,
-            FilePickerEvent::Confirmed {
+            Handled::Event(PathPickerAction::Confirmed {
                 path: tmp.path().join("a.rs")
-            }
+            })
         );
     }
 
@@ -736,9 +712,9 @@ mod tests {
             .iter()
             .position(|p| p == &PathBuf::from("sub"))
             .expect("sub listed");
-        picker.selected = idx;
+        picker.core.selected = idx;
         let result = picker.confirm_selection();
-        assert_eq!(result, FilePickerEvent::Consumed);
+        assert_eq!(result, Handled::Consumed);
         assert_eq!(picker.root(), tmp.path().join("sub"));
     }
 
@@ -748,10 +724,10 @@ mod tests {
         let sub = parent.path().join("child");
         std::fs::create_dir_all(&sub).expect("mkdir child");
         let mut picker = FilePickerController::new(FilePickerMode::Open, sub.clone(), vec![]);
-        picker.selected = 0;
+        picker.core.selected = 0;
         assert_eq!(picker.filtered().first(), Some(&PathBuf::from("..")));
         let result = picker.confirm_selection();
-        assert_eq!(result, FilePickerEvent::Consumed);
+        assert_eq!(result, Handled::Consumed);
         assert_eq!(picker.root(), parent.path());
     }
 
@@ -765,9 +741,9 @@ mod tests {
         let result = picker.confirm_selection();
         assert_eq!(
             result,
-            FilePickerEvent::Confirmed {
+            Handled::Event(PathPickerAction::Confirmed {
                 path: tmp.path().join("new")
-            }
+            })
         );
     }
 
@@ -778,9 +754,9 @@ mod tests {
         // No entries at all (empty dir, no "..": tmp roots have a parent,
         // so ".." is still present) — clear it to hit the empty-query,
         // no-highlighted-row path directly.
-        picker.filtered.clear();
+        picker.core.filtered.clear();
         let result = picker.confirm_selection();
-        assert_eq!(result, FilePickerEvent::Ignored);
+        assert_eq!(result, Handled::Ignored);
     }
 
     #[test]
@@ -799,9 +775,9 @@ mod tests {
         let result = picker.confirm_selection();
         assert_eq!(
             result,
-            FilePickerEvent::Confirmed {
+            Handled::Event(PathPickerAction::Confirmed {
                 path: sub.join("untitled.txt")
-            }
+            })
         );
         assert_eq!(picker.root(), sub, "must not have navigated");
     }
@@ -812,6 +788,7 @@ mod tests {
         let mut picker = FilePickerController::new(FilePickerMode::Save, tmp.path(), vec![]);
         picker.push_char('x'); // non-empty query — would confirm if not for the dir row
         let idx = picker
+            .core
             .all_entries
             .iter()
             .position(|p| p == &PathBuf::from("sub"))
@@ -820,10 +797,10 @@ mod tests {
         // `filtered`, since "sub" doesn't fuzzy-match "x"); this test only
         // cares about `confirm_selection`'s directory-vs-file branch, so
         // bypass the filter machinery.
-        picker.filtered = vec![picker.all_entries[idx].clone()];
-        picker.selected = 0;
+        picker.core.filtered = vec![picker.core.all_entries[idx].clone()];
+        picker.core.selected = 0;
         let result = picker.confirm_selection();
-        assert_eq!(result, FilePickerEvent::Consumed);
+        assert_eq!(result, Handled::Consumed);
         assert_eq!(picker.root(), tmp.path().join("sub"));
     }
 
@@ -875,7 +852,10 @@ mod tests {
             modifiers: Modifiers::default(),
             repeat: false,
         };
-        assert_eq!(picker.handle(&ev, 10), FilePickerEvent::Cancelled);
+        assert_eq!(
+            picker.handle_event(&ev, 10),
+            Handled::Event(PathPickerAction::Cancelled)
+        );
     }
 
     // macOS delivers a Cmd-modified letter as a plain `Key::Char` with
@@ -893,8 +873,111 @@ mod tests {
             },
             repeat: false,
         };
-        assert_eq!(picker.handle(&ev, 10), FilePickerEvent::Ignored);
+        assert_eq!(picker.handle_event(&ev, 10), Handled::Ignored);
         assert_eq!(picker.query(), "");
+    }
+
+    // ── Open mode: shared vim-key navigation (unified with FolderPickerController) ─
+
+    #[test]
+    fn vim_j_and_k_move_selection_through_handle() {
+        let tmp = scratch_dir_with(&["a.rs", "b.rs"], &[]);
+        let mut picker = FilePickerController::new(FilePickerMode::Open, tmp.path(), vec![]);
+        assert!(picker.filtered().len() >= 2);
+
+        let down = UiEvent::KeyPressed {
+            key: Key::Char('j'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        assert_eq!(picker.handle_event(&down, 10), Handled::Consumed);
+        assert_eq!(picker.selected(), 1);
+
+        let up = UiEvent::KeyPressed {
+            key: Key::Char('k'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        assert_eq!(picker.handle_event(&up, 10), Handled::Consumed);
+        assert_eq!(picker.selected(), 0);
+    }
+
+    #[test]
+    fn dash_key_navigates_up() {
+        let parent = tempfile::tempdir().expect("parent tempdir");
+        let sub = parent.path().join("dash_nav_child");
+        std::fs::create_dir_all(&sub).expect("mkdir child");
+        let mut picker = FilePickerController::new(FilePickerMode::Open, sub.clone(), vec![]);
+        let ev = UiEvent::KeyPressed {
+            key: Key::Char('-'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        let result = picker.handle_event(&ev, 10);
+        assert_eq!(result, Handled::Consumed);
+        assert_eq!(picker.root(), parent.path());
+    }
+
+    // ── Save mode: vim shortcuts disabled, typing wins ──────────────────
+
+    /// In `Save` mode, `-`/`j`/`k` must reach the query through the full
+    /// `handle()` path (not just `push_char` directly) — Save's query is
+    /// the destination filename, so routing them as navigation would make
+    /// `journal.md`, `my-notes.txt`, and `Makefile-k8s` untypeable and
+    /// `-` actively destructive (it would call `navigate_up`, which
+    /// clears the query the user had already typed).
+    #[test]
+    fn save_mode_vim_chars_type_into_query_through_handle() {
+        let tmp = scratch_dir_with(&[], &[]);
+        let mut picker = FilePickerController::new(FilePickerMode::Save, tmp.path(), vec![]);
+
+        for c in "my-journal.md".chars() {
+            let ev = UiEvent::KeyPressed {
+                key: Key::Char(c),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            };
+            assert_eq!(picker.handle_event(&ev, 10), Handled::Consumed);
+        }
+
+        assert_eq!(picker.query(), "my-journal.md");
+        assert_eq!(picker.root(), tmp.path(), "must not have navigated up");
+    }
+
+    /// Named arrow keys still navigate the selection in Save mode — only
+    /// the vim letter/dash aliases are gated, not `Up`/`Down` themselves.
+    #[test]
+    fn save_mode_arrow_keys_still_navigate_selection() {
+        let tmp = scratch_dir_with(&["a.txt", "b.txt"], &[]);
+        let mut picker = FilePickerController::new(FilePickerMode::Save, tmp.path(), vec![]);
+        assert!(picker.filtered().len() >= 2);
+
+        let down = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Down),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        assert_eq!(picker.handle_event(&down, 10), Handled::Consumed);
+        assert_eq!(picker.selected(), 1);
+    }
+
+    #[test]
+    fn fuzzy_match_finds_kube_system_style_entry() {
+        // "kbs" as a non-contiguous subsequence should surface a
+        // "kube-system"-shaped entry, the same ranking both pickers share
+        // via `path_picker::filter_entries`.
+        let tmp = scratch_dir_with(&[], &["kube-system"]);
+        let mut picker = FilePickerController::new(FilePickerMode::Open, tmp.path(), vec![]);
+        picker.push_char('k');
+        picker.push_char('b');
+        picker.push_char('s');
+        assert!(
+            picker
+                .filtered()
+                .iter()
+                .any(|p| p == &PathBuf::from("kube-system")),
+            "\"kbs\" should fuzzy-match \"kube-system\""
+        );
     }
 
     #[test]
@@ -959,7 +1042,7 @@ mod tests {
             vec![("Rust".to_string(), vec!["rs".to_string()])],
         );
         assert!(
-            picker.all_entries.contains(&PathBuf::from("link")),
+            picker.core.all_entries.contains(&PathBuf::from("link")),
             "a symlink to a directory must bypass the file extension filter, \
              the same as a real directory"
         );
@@ -969,8 +1052,8 @@ mod tests {
             .iter()
             .position(|p| p == &PathBuf::from("link"))
             .expect("link listed");
-        picker.selected = idx;
-        assert_eq!(picker.confirm_selection(), FilePickerEvent::Consumed);
+        picker.core.selected = idx;
+        assert_eq!(picker.confirm_selection(), Handled::Consumed);
         assert_eq!(picker.root(), tmp.path().join("link"));
     }
 
@@ -995,6 +1078,18 @@ mod tests {
         assert!(!extension_matches(
             &[("Rust".to_string(), vec!["rs".to_string()])],
             "main.txt"
+        ));
+    }
+
+    /// `".*"` is a wildcard too, not just the bare `"*"` — the normalized
+    /// comparison in [`extension_matches`] strips its leading dot before
+    /// checking for the wildcard, so a filter written either way accepts
+    /// everything.
+    #[test]
+    fn extension_matches_treats_a_dotted_wildcard_as_a_wildcard_too() {
+        assert!(extension_matches(
+            &[("Any".to_string(), vec![".*".to_string()])],
+            "whatever.zzz"
         ));
     }
 }

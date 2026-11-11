@@ -24,6 +24,7 @@
 //! updates `selected_idx` and `scroll_offset` for the next frame.
 
 use crate::event::Rect;
+use crate::primitives::row_stack::{self, RowPaintState};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
@@ -91,17 +92,21 @@ pub struct ListView {
     /// header+rows layout used by quickfix and other inline panels.
     #[serde(default)]
     pub bordered: bool,
-    /// Horizontal scroll offset in chars (number of content columns to skip
-    /// from the left before rendering). Default `0` = no scroll.
-    /// The caller increments / decrements this in response
-    /// to Left / Right key events.
+    /// Horizontal scroll offset in **display cells** (terminal columns —
+    /// a CJK/emoji glyph counts as 2, matching
+    /// [`crate::text_util::char_cell_width`]), not characters. Number of
+    /// content columns to skip from the left before rendering. Default
+    /// `0` = no scroll. The caller increments / decrements this in
+    /// response to Left / Right key events.
     #[serde(default)]
     pub h_scroll: usize,
-    /// Total width (in chars) of the widest item row, including the 2-char
-    /// selection prefix, any icon, and the main text. When
-    /// `max_content_width > visible_area_width` the TUI rasteriser reserves
-    /// the bottom row of the list area for a horizontal scrollbar.
-    /// `None` = caller hasn't measured content; no scrollbar shown.
+    /// Total width (in **display cells**, not characters — see
+    /// [`crate::text_util::char_cell_width`]) of the widest item row,
+    /// including the 2-cell selection prefix, any icon, and the main
+    /// text. When `max_content_width > visible_area_width` the TUI
+    /// rasteriser reserves the bottom row of the list area for a
+    /// horizontal scrollbar. `None` = caller hasn't measured content; no
+    /// scrollbar shown.
     #[serde(default)]
     pub max_content_width: Option<usize>,
     /// When `true`, backends reserve the rightmost column of the list area
@@ -255,44 +260,13 @@ impl ListViewLayout {
 
 /// Per-frame paint-time state for a `ListView` — hover/press row
 /// tracking plus a pixel-precise scroll position, none of which live on
-/// the declarative [`ListView`] descriptor itself (see that struct's
-/// doc for why: consumers build it with full struct literals, so a
-/// required field there is a breaking change, per `PRIMITIVE_RULES.md`
-/// rule 8).
-///
-/// `#[non_exhaustive]`: construct via [`Default::default`] plus the
-/// `with_*` builders, so a future field here is additive.
-///
-/// `scroll_px: None` paints exactly as [`ListView::layout`] /
-/// [`ListView::vscrollbar`] already do (whole-row from
-/// `scroll_offset`); `Some(px)` wins and is resolved via
-/// [`crate::primitives::scrollbar::resolve_scroll_px`] into a
-/// `scroll_offset` plus a sub-row remainder — see
-/// [`ListView::layout_with_scroll_px`].
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct ListPaintState {
-    pub hovered_idx: Option<usize>,
-    pub pressed_idx: Option<usize>,
-    pub scroll_px: Option<f32>,
-}
-
-impl ListPaintState {
-    pub fn with_hovered_idx(mut self, idx: Option<usize>) -> Self {
-        self.hovered_idx = idx;
-        self
-    }
-
-    pub fn with_pressed_idx(mut self, idx: Option<usize>) -> Self {
-        self.pressed_idx = idx;
-        self
-    }
-
-    pub fn with_scroll_px(mut self, px: Option<f32>) -> Self {
-        self.scroll_px = px;
-        self
-    }
-}
+/// the declarative [`ListView`] descriptor itself (consumers build it
+/// with full struct literals, so a required field there is a breaking
+/// change, per `PRIMITIVE_RULES.md` rule 8). Field-identical to
+/// [`crate::primitives::tree::TreePaintState`], so both are aliases of
+/// the shared [`RowPaintState`] — see that type's doc for the full
+/// rationale and the `scroll_px` resolution rule.
+pub type ListPaintState = RowPaintState;
 
 impl ListView {
     /// Compute the full rendering + hit-test layout for this list.
@@ -404,51 +378,33 @@ impl ListView {
             title_bounds.map(|b| b.y + b.height).unwrap_or(0.0)
         };
 
-        // Resolve `scroll_offset` vs. `scroll_px` (the latter wins when
-        // set). The first item's height is the uniform row-height basis
-        // for the pixel conversion — the same approximation
-        // `vscrollbar`/`hscrollbar` already make for thumb sizing on
-        // lists with per-row-varying heights. Only measured when
-        // `scroll_px` is actually in play — `measure_item` can do real
-        // text-measurement work (Pango layout on GTK), and `None` never
-        // reads this value.
-        let row_height_basis = if scroll_px.is_none() || self.items.is_empty() {
-            1.0
-        } else {
-            measure_item(0).height
-        };
-        let (resolved_scroll_offset, scroll_sub_px) =
-            crate::primitives::scrollbar::resolve_scroll_px(
-                self.scroll_offset,
-                scroll_px,
-                self.items.len(),
-                row_height_basis,
-            );
-
         let items_y_end = if self.bordered {
             inset_y + items_h_max
         } else {
             viewport_height
         };
 
-        let mut y = items_y_start - scroll_sub_px;
-        for i in resolved_scroll_offset..self.items.len() {
-            if y >= items_y_end {
-                break;
-            }
-            let m = measure_item(i);
-            let remaining = items_y_end - y;
-            let height = m.height.min(remaining).max(0.0);
-            if height <= 0.0 {
-                break;
-            }
-            let bounds = Rect::new(inset_x, y, item_w, height);
+        // Resolve `scroll_offset` vs. `scroll_px` (the latter wins when
+        // set) and walk the rows — the shared row-stacking math also
+        // used by `TreeView::layout_with_scroll_px`. `()` extra: unlike
+        // `TreeView`, `ListView` items have no chevron split.
+        let stack = row_stack::layout_row_stack(
+            self.scroll_offset,
+            scroll_px,
+            self.items.len(),
+            inset_x,
+            items_y_start,
+            items_y_end,
+            item_w,
+            |i| (measure_item(i).height, ()),
+        );
+
+        for r in &stack.visible {
             visible_items.push(VisibleListItem {
-                item_idx: i,
-                bounds,
+                item_idx: r.idx,
+                bounds: r.bounds,
             });
-            hit_regions.push((bounds, ListViewHit::Item(i)));
-            y += m.height;
+            hit_regions.push((r.bounds, ListViewHit::Item(r.idx)));
         }
 
         ListViewLayout {
@@ -457,8 +413,8 @@ impl ListView {
             title_bounds,
             visible_items,
             hit_regions,
-            resolved_scroll_offset,
-            scroll_sub_px,
+            resolved_scroll_offset: stack.resolved_scroll_offset,
+            scroll_sub_px: stack.scroll_sub_px,
         }
     }
 
@@ -617,21 +573,14 @@ impl ListView {
         // `scroll_px` wins over `scroll_offset` when set, so the thumb
         // moves smoothly alongside the sub-row paint shift
         // `layout_with_scroll_px` applies.
-        let (resolved_scroll_offset, scroll_sub_px) =
-            crate::primitives::scrollbar::resolve_scroll_px(
-                self.scroll_offset,
-                scroll_px,
-                self.items.len(),
-                row_height,
-            );
-        let scroll_rows = resolved_scroll_offset as f32 + scroll_sub_px / row_height;
-        Some(Scrollbar::vertical(
+        Some(row_stack::vscrollbar_thumb(
             self.id,
             track,
-            scroll_rows,
-            total,
-            visible,
+            self.scroll_offset,
+            scroll_px,
+            self.items.len(),
             row_height,
+            visible,
         ))
     }
 }
@@ -943,6 +892,7 @@ mod vscrollbar_tests {
 pub(crate) mod native_surface_paint {
     use super::{ListView, ListViewLayout};
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::row_stack;
     use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::Decoration;
@@ -1213,27 +1163,20 @@ pub(crate) mod native_surface_paint {
             // still draws it — it has no row-fill cue to lean on).
             let mut cursor_x = row_x + style.row_padding_x - h_off_px;
 
-            if let Some(ref icon) = item.icon {
-                let glyph = if nerd_fonts_enabled {
-                    icon.glyph.as_str()
-                } else {
-                    icon.fallback.as_str()
-                };
-                let (iw, ih) = surface.surface_measure_text(glyph);
-                surface.surface_draw_text_run(
-                    Rect::new(cursor_x, row_y + (row_h - ih) / 2.0, iw, ih),
-                    glyph,
-                    decoration_fg,
-                );
-                cursor_x += iw + 6.0;
-            }
+            cursor_x = row_stack::row_content_paint::paint_row_icon(
+                surface,
+                item.icon.as_ref(),
+                nerd_fonts_enabled,
+                decoration_fg,
+                row_y,
+                row_h,
+                cursor_x,
+                |s, r, glyph, fg| s.surface_draw_text_run(r, glyph, fg),
+            );
 
-            let detail_info = item.detail.as_ref().map(|detail| {
-                let detail_text: String = detail.spans.iter().map(|s| s.text.as_str()).collect();
-                let (dw, _) = surface.surface_measure_text(&detail_text);
-                (detail_text, dw)
-            });
-            let detail_reserve = detail_info.as_ref().map(|(_, dw)| *dw + 8.0).unwrap_or(0.0);
+            let detail_info =
+                row_stack::row_content_paint::measure_row_detail(surface, item.detail.as_ref());
+            let detail_reserve = row_stack::row_content_paint::row_detail_reserve(&detail_info);
             // text_right_limit is absolute; the h_scroll shift of
             // cursor_x does not affect where the detail reserve
             // boundary sits.
@@ -1285,17 +1228,14 @@ pub(crate) mod native_surface_paint {
             // row clip.
             surface.surface_pop_clip();
 
-            if let Some((detail_text, dw)) = detail_info {
-                let dx = row_x + row_w - dw - 4.0;
-                if dx > cursor_x {
-                    let (_, dh) = surface.surface_measure_text(&detail_text);
-                    surface.surface_draw_text_run(
-                        Rect::new(dx, row_y + (row_h - dh) / 2.0, dw, dh),
-                        &detail_text,
-                        theme.muted_fg,
-                    );
-                }
-            }
+            row_stack::row_content_paint::paint_row_detail(
+                surface,
+                &detail_info,
+                Rect::new(row_x, row_y, row_w, row_h),
+                4.0,
+                cursor_x,
+                theme.muted_fg,
+            );
         }
 
         if items_clip_active {

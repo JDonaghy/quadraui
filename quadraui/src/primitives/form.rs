@@ -48,6 +48,21 @@
 //!   responsible for painting the open dropdown overlay itself, mirroring
 //!   `ColorPicker`'s popup contract, since `Form` doesn't grow the row to
 //!   show it.
+//! - `NumberInput` — unlike `DatePicker`/`ComboBox` above, render the
+//!   embedded control's own real layout (bordered text area plus stepper
+//!   buttons) through its existing standalone rasteriser, not a compact
+//!   summary; a consumer going through `FormController` gets Up/Down
+//!   stepping, typed-digit drafting, and Enter-to-commit (clamped/rounded
+//!   to `[min, max]`/`precision`) for free, emitting
+//!   `FormEvent::NumberChanged`/`NumberDraftChanged`/`NumberCommitted`/
+//!   `NumberCancelled`.
+//! - `RadioGroup` — the one `FieldKind` whose row spans one sub-row per
+//!   option rather than staying a single `row_h` (see
+//!   `crate::primitives::layout_metrics::form_field_measure`'s doc),
+//!   rendered through the embedded group's own existing standalone
+//!   rasteriser; a consumer going through `FormController` gets Up/Down/
+//!   Left/Right cursor movement (wrapping, skipping disabled options) for
+//!   free, emitting `FormEvent::RadioChanged`.
 //!
 //! Tab / Shift-Tab move `focused_field` forward/backward through
 //! interactive fields (skip `Label`, skip disabled fields); emit
@@ -55,6 +70,16 @@
 //! on the next frame — `FormController` computes `id`, it does not
 //! mutate `Form.focused_field` itself (the description stays app-owned,
 //! per this module's first paragraph).
+//!
+//! `ToggleGroup` / `ButtonRow` / `Toolbar` carry more than one clickable
+//! item under a single field id. Tab/Shift-Tab still only move
+//! `focused_field` between *fields*, never into one of these items —
+//! item-level keyboard focus (Left/Right move it, Enter/Space activate
+//! it) is a `FormController`-owned index, not a property of this
+//! declarative `Form`/`FormField` shape; see
+//! [`crate::compose::form_controller::FormController`]'s "Item-level
+//! keyboard focus" doc section. [`focusable_items`] enumerates each of
+//! the three kinds' navigable items for that controller logic.
 //!
 //! No measurement-dependent state — fields are uniform-height per
 //! backend.
@@ -90,6 +115,7 @@ use serde::{Deserialize, Serialize};
 ///         tab_index: None,
 ///         control_width: None,
 ///         min_control_width: None,
+///         row_align: None,
 ///     }],
 ///     focused_field: None,
 ///     scroll_offset: 0,
@@ -99,6 +125,7 @@ use serde::{Deserialize, Serialize};
 ///     label_width: None,
 ///     control_width: Default::default(),
 ///     min_control_width: None,
+///     spacing: Default::default(),
 /// };
 ///
 /// let layout = form.layout(40.0, 10.0, |_| FormFieldMeasure::new(1.0));
@@ -164,6 +191,12 @@ pub struct Form {
     /// reading this field directly.
     #[serde(default)]
     pub min_control_width: Option<f32>,
+    /// Form-wide padding/item-gap/row-alignment knobs — see
+    /// [`FormSpacing`]. Defaults to [`FormSpacing::default`] (no inset,
+    /// backend-chosen item gap, `Start` alignment), reproducing today's
+    /// only behavior bit-for-bit.
+    #[serde(default)]
+    pub spacing: FormSpacing,
 }
 
 /// How a [`FormField`]'s control column (the checkbox / input / slider
@@ -243,6 +276,67 @@ pub enum LabelAlign {
     End,
 }
 
+/// Form-wide padding/item-gap/row-alignment knobs. Set on [`Form::spacing`];
+/// every field defaults to `0.0`/`None`/`Start`, reproducing a `Form` built
+/// before this type existed bit-for-bit.
+///
+/// # TUI story
+///
+/// Every value here is in the same dual-unit convention as
+/// [`Form::label_width`]: cells for TUI, device pixels for GTK / macOS /
+/// Win. [`Form::layout`] applies all three uniformly for every backend —
+/// a backend's own measure closure (the `measure_field` callback) keeps
+/// supplying each field's natural size exactly as it does today; only
+/// the shared positioning math in [`Form::layout`] changes, so no
+/// backend-specific code needs to change to pick this up.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct FormSpacing {
+    /// Uniform inset, applied on all four edges of the form's content
+    /// area before any field is laid out. `0.0` (the default)
+    /// reproduces today's only behavior: fields fill the full
+    /// viewport passed to [`Form::layout`].
+    #[serde(default)]
+    pub padding: f32,
+    /// Overrides every item-bearing field's own backend-supplied gap
+    /// between items (`ToggleGroup` / `ButtonRow` / `SegmentedControl` /
+    /// `Toolbar`'s buttons). `None` (the default) keeps each field's
+    /// own gap, exactly as [`Form::layout`] already receives it from
+    /// the `measure_field` callback.
+    #[serde(default)]
+    pub item_gap: Option<f32>,
+    /// Form-wide default for how an item-bearing field's items pack
+    /// within their row's available width (see [`RowAlign`]). A
+    /// [`FormField::row_align`] override, when set, wins over this.
+    /// Use [`Form::resolved_row_align`] rather than reading this field
+    /// directly.
+    #[serde(default)]
+    pub row_align: RowAlign,
+}
+
+/// How an item-bearing [`FieldKind`]'s items (`ToggleGroup` /
+/// `ButtonRow` / `SegmentedControl` / `Toolbar`) pack within their
+/// row's available width — the space between `items_start_x` (from the
+/// field's [`FormFieldMeasure`]) and the row's right edge. Set on
+/// [`FormSpacing::row_align`] as the form-wide default, or on
+/// [`FormField::row_align`] to override a single field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RowAlign {
+    /// Items pack left-to-right starting at `items_start_x`, leaving
+    /// any slack at the row's right edge — today's only behavior.
+    #[default]
+    Start,
+    /// Items pack together, centered within the available width.
+    Center,
+    /// Items pack together, flush against the row's right edge.
+    End,
+    /// Slack is distributed evenly into the gaps *between* items
+    /// (never before the first or after the last), so the first and
+    /// last items stay at their `Start` positions while the row's
+    /// whole width is used. A single item behaves like `Start` — there
+    /// is no gap to stretch.
+    Stretch,
+}
+
 /// Validation state rendered as a colored indicator + message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ValidationState {
@@ -306,6 +400,13 @@ pub struct FormField {
     /// [`Form::resolved_min_control_width`].
     #[serde(default)]
     pub min_control_width: Option<f32>,
+    /// Overrides the form-wide [`Form::spacing`]'s
+    /// [`FormSpacing::row_align`] for this field only. Only meaningful
+    /// for an item-bearing [`FieldKind`] (`ToggleGroup`/`ButtonRow`/
+    /// `SegmentedControl`/`Toolbar`). `None` defers to the form's
+    /// default — read through [`Form::resolved_row_align`].
+    #[serde(default)]
+    pub row_align: Option<RowAlign>,
 }
 
 /// The input variant carried by a `FormField`.
@@ -488,6 +589,52 @@ pub enum FieldKind {
     /// language-server choice, font family, git branch, command palette
     /// style pickers.
     ComboBox(crate::primitives::combo_box::ComboBox),
+    /// A bounded [`crate::primitives::number_input::NumberInput`] embedded
+    /// as a single field row: a text area showing the current value (or
+    /// in-progress draft) plus stacked increment/decrement stepper
+    /// buttons. Unlike [`FieldKind::DatePicker`]/[`FieldKind::ComboBox`],
+    /// the row paints the embedded control's own layout via
+    /// [`crate::primitives::number_input::NumberInput::layout`] rather
+    /// than a compact summary — there is no popup to keep collapsed, so
+    /// reusing the real control (through the same `FormLayout::item_bounds`
+    /// mechanism [`FieldKind::ToggleGroup`]/[`FieldKind::ButtonRow`] use for
+    /// their own items) avoids a second, form-only paint path.
+    ///
+    /// A consumer going through
+    /// [`crate::compose::form_controller::FormController`] gets Up/Down
+    /// stepping, typed-digit drafting, and Enter-to-commit for free: the
+    /// controller calls the embedded input's own
+    /// [`crate::primitives::number_input::NumberInput::handle_key`] and
+    /// [`crate::primitives::number_input::NumberInput::click`], translating
+    /// the result into `FormEvent::NumberChanged`, `NumberDraftChanged`,
+    /// `NumberCommitted`, or `NumberCancelled`.
+    ///
+    /// Use for anything numeric with stepper affordances: font size, tab
+    /// width, a scroll/cursor-blink rate, a connection timeout.
+    NumberInput(crate::primitives::number_input::NumberInput),
+    /// A [`crate::primitives::radio_group::RadioGroup`] embedded as a
+    /// field whose row spans one sub-row per option (unlike every other
+    /// `FieldKind`, which stays a single row — see
+    /// [`crate::primitives::layout_metrics::form_field_measure`]'s doc),
+    /// painted through the embedded group's own
+    /// [`crate::primitives::radio_group::RadioGroup::layout`] and backend
+    /// rasteriser rather than a second paint path. Each option's hit
+    /// region carries the *option's* `WidgetId` (via `FormLayout::item_bounds`,
+    /// the same mechanism [`FieldKind::ToggleGroup`] uses for its own
+    /// items), so a click resolves straight to the clicked option.
+    ///
+    /// A consumer going through
+    /// [`crate::compose::form_controller::FormController`] gets Up/Down/
+    /// Left/Right cursor movement (wrapping, skipping disabled options)
+    /// for free: the controller calls the embedded group's own
+    /// [`crate::primitives::radio_group::RadioGroup::handle_key`]/
+    /// [`crate::primitives::radio_group::RadioGroup::select`] and
+    /// translates the result into `FormEvent::RadioChanged`.
+    ///
+    /// Use for a short, always-visible set of mutually exclusive choices
+    /// where every option should stay on screen (contrast
+    /// [`FieldKind::Dropdown`], which collapses them behind a popup).
+    RadioGroup(crate::primitives::radio_group::RadioGroup),
 }
 
 /// One toggle in a [`FieldKind::ToggleGroup`].
@@ -506,7 +653,10 @@ pub struct ButtonRowItem {
     #[serde(default)]
     pub disabled: bool,
     /// Optional icon rendered before the label. Enables icon-button
-    /// rows (commit, push, pull, fetch) in source-control panels.
+    /// rows (commit, push, pull, fetch) in source-control panels. Feeds
+    /// [`Self::resolved_button_spec`]'s derived spec when [`Self::spec`]
+    /// is `None`; ignored once `spec` is `Some` — set the spec's own
+    /// `icon` field to carry an icon on a spec-backed item.
     #[serde(default)]
     pub icon: Option<crate::types::Icon>,
     /// Optional [`crate::ButtonSpec`] override, carrying the B3a
@@ -525,10 +675,48 @@ impl ButtonRowItem {
         if let Some(spec) = &self.spec {
             return spec.clone();
         }
-        let mut derived = crate::primitives::button::ButtonSpec::new(self.label.clone());
-        derived.icon = self.icon.clone();
-        derived.disabled = self.disabled;
-        derived
+        crate::primitives::button::ButtonSpec::from_legacy(
+            self.label.clone(),
+            self.icon.clone(),
+            None,
+            self.disabled,
+        )
+    }
+}
+
+/// The keyboard-focus-navigable items inside an item-bearing `FieldKind`
+/// (`ButtonRow`, `ToggleGroup`, `Toolbar`) — each item's `WidgetId` paired
+/// with whether it can currently receive item focus (`false` for a
+/// disabled `ButtonRowItem`, or a `Toolbar`'s `ToolbarButton::Action` with
+/// `enabled: false`; a `ToggleGroupItem` has no per-item disablement, so
+/// every one of its entries is always enabled). `None` for every other
+/// `FieldKind`, or for an item-bearing kind whose item list is empty.
+///
+/// Shared by [`crate::compose::form_controller::FormController`]'s
+/// item-level keyboard focus (Left/Right move it, skipping disabled
+/// items with no wrap; Enter/Space activate it) — see that module's
+/// "Item-level keyboard focus" doc section — so the three kinds' items
+/// are enumerated in one place instead of three near-duplicate matches.
+pub(crate) fn focusable_items(kind: &FieldKind) -> Option<Vec<(WidgetId, bool)>> {
+    let items: Vec<(WidgetId, bool)> = match kind {
+        FieldKind::ButtonRow { buttons } => buttons.iter().map(|b| (b.id, !b.disabled)).collect(),
+        FieldKind::ToggleGroup { toggles } => toggles.iter().map(|t| (t.id, true)).collect(),
+        FieldKind::Toolbar(toolbar) => toolbar
+            .buttons
+            .iter()
+            .filter_map(|btn| match btn {
+                crate::primitives::toolbar::ToolbarButton::Action { id, enabled, .. } => {
+                    Some((*id, *enabled))
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => return None,
+    };
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
     }
 }
 
@@ -553,19 +741,52 @@ fn password_default_mask() -> char {
 // not layout, so it stays backend-owned: the layout just places rows.
 
 /// Per-field measurement supplied by the backend.
+///
+/// `#[non_exhaustive]`: every field is set through [`Self::new`]/
+/// [`Self::with_items`]/[`Self::with_vertical_items`]/
+/// [`Self::with_items_start_y`] rather than a struct literal, so a future
+/// field add here stays additive for a consumer building a `Backend`
+/// impl instead of becoming a breaking change.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct FormFieldMeasure {
     pub height: f32,
-    /// Per-item widths for `ToggleGroup` / `ButtonRow` fields. The
-    /// layout uses these to compute per-item hit regions. Empty for
-    /// other field kinds.
+    /// Per-item extents for `ToggleGroup` / `ButtonRow` / `SegmentedControl`
+    /// / `Toolbar` / `NumberInput` / `RadioGroup` fields. The layout uses
+    /// these to compute per-item hit regions. Empty for other field kinds.
+    /// [`FormItemMeasure::width`] is each item's extent along the packing
+    /// axis — horizontal (left-to-right) unless [`Self::vertical`] is set,
+    /// in which case it's each item's *height* (every field this crate
+    /// ships stacks same-height rows, so no separate height field exists).
     pub item_measures: Vec<FormItemMeasure>,
     /// X offset where items start (after label + padding). Only used
     /// when `item_measures` is non-empty.
     pub items_start_x: f32,
+    /// Y offset where items start, measured from the row's own top edge
+    /// — nonzero only for a field whose label resolves to
+    /// [`LabelPosition::Top`], in which case it equals the reserved
+    /// label-row height so the control/option stack starts *below* the
+    /// label line instead of underneath it. [`Form::layout`] both shifts
+    /// `item_measures`' rects down by this amount and shrinks their
+    /// available height by it, so a clipped row's items never overlap
+    /// the label and never extend past the row's own clipped bottom
+    /// edge. Set via [`Self::with_items_start_y`]; `0.0` (the default)
+    /// reproduces every existing item-bearing kind's behavior unchanged.
+    pub items_start_y: f32,
     /// Gap between items (cells for TUI, pixels for GTK). Only used
-    /// when `item_measures` is non-empty.
+    /// when `item_measures` is non-empty and [`Self::vertical`] is `false`
+    /// — a vertical stack (`FieldKind::RadioGroup`) packs its rows
+    /// edge-to-edge, the same no-gap convention
+    /// [`crate::primitives::radio_group::RadioGroup::layout`] itself uses.
     pub item_gap: f32,
+    /// When `true`, [`Form::layout`] stacks `item_measures` top-to-bottom
+    /// at `items_start_x` (each spanning the row's full remaining width)
+    /// instead of left-to-right at the row's own height — the shape
+    /// [`FieldKind::RadioGroup`] needs (one sub-row per option) and no
+    /// other field kind does today. `false` (the default via
+    /// [`Self::new`]/[`Self::with_items`]) reproduces every existing
+    /// item-bearing kind's horizontal packing unchanged.
+    pub vertical: bool,
 }
 
 impl FormFieldMeasure {
@@ -574,7 +795,9 @@ impl FormFieldMeasure {
             height,
             item_measures: Vec::new(),
             items_start_x: 0.0,
+            items_start_y: 0.0,
             item_gap: 0.0,
+            vertical: false,
         }
     }
 
@@ -588,12 +811,44 @@ impl FormFieldMeasure {
             height,
             item_measures: items,
             items_start_x,
+            items_start_y: 0.0,
             item_gap,
+            vertical: false,
         }
+    }
+
+    /// Like [`Self::with_items`], but stacked top-to-bottom — see
+    /// [`Self::vertical`]'s doc. `items_start_x` is still the shared
+    /// label-column-relative start column every other field honours;
+    /// each item spans from there to the row's right edge.
+    pub fn with_vertical_items(
+        height: f32,
+        items_start_x: f32,
+        items: Vec<FormItemMeasure>,
+    ) -> Self {
+        Self {
+            height,
+            item_measures: items,
+            items_start_x,
+            items_start_y: 0.0,
+            item_gap: 0.0,
+            vertical: true,
+        }
+    }
+
+    /// Shift [`Self::item_measures`] down by `items_start_y` — see that
+    /// field's doc. Chains onto [`Self::with_items`]/
+    /// [`Self::with_vertical_items`]; a no-op left at the default `0.0`
+    /// for every kind that doesn't reserve a label row above its items.
+    pub fn with_items_start_y(mut self, items_start_y: f32) -> Self {
+        self.items_start_y = items_start_y;
+        self
     }
 }
 
-/// Width of one item inside a `ToggleGroup` or `ButtonRow`.
+/// Extent of one item inside an item-bearing [`FieldKind`] along its
+/// packing axis — width for a horizontal kind, height for a vertical one
+/// (see [`FormFieldMeasure::vertical`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormItemMeasure {
     pub id: WidgetId,
@@ -692,6 +947,14 @@ impl Form {
         field.min_control_width.or(self.min_control_width)
     }
 
+    /// The effective row alignment for `field`: its own
+    /// [`FormField::row_align`] override if set, else this form's
+    /// [`FormSpacing::row_align`] default. Only meaningful for an
+    /// item-bearing [`FieldKind`].
+    pub fn resolved_row_align(&self, field: &FormField) -> RowAlign {
+        field.row_align.unwrap_or(self.spacing.row_align)
+    }
+
     /// Compute the full rendering + hit-test layout for this form.
     ///
     /// # Arguments
@@ -722,6 +985,16 @@ impl Form {
             self.fields.len(),
         );
 
+        // `FormSpacing::padding` insets the content box on all four
+        // edges before any field is laid out. `0.0` (the default)
+        // reproduces today's only behavior: fields fill the whole
+        // viewport, `content_*` equal to `viewport_*`.
+        let pad = self.spacing.padding.max(0.0);
+        let content_x = pad;
+        let content_y = pad;
+        let content_width = (viewport_width - pad * 2.0).max(0.0);
+        let content_height = (viewport_height - pad * 2.0).max(0.0);
+
         // First pass: walk fields in order deciding which ones are
         // visible and how tall each renders, using the original
         // sequential "stop once the viewport is exhausted" rule. This
@@ -735,16 +1008,19 @@ impl Form {
             clipped_height: f32,
             item_measures: Vec<FormItemMeasure>,
             items_start_x: f32,
+            items_start_y: f32,
             item_gap: f32,
+            row_align: RowAlign,
+            vertical: bool,
         }
         let mut rows: Vec<Row> = Vec::new();
         let mut y = 0.0_f32;
         for i in resolved_scroll_offset..self.fields.len() {
-            if y >= viewport_height {
+            if y >= content_height {
                 break;
             }
             let m = measure_field(i);
-            let remaining = viewport_height - y;
+            let remaining = content_height - y;
             let clipped_height = m.height.min(remaining).max(0.0);
             if clipped_height <= 0.0 {
                 break;
@@ -756,7 +1032,12 @@ impl Form {
                 clipped_height,
                 item_measures: m.item_measures,
                 items_start_x: m.items_start_x,
-                item_gap: m.item_gap,
+                items_start_y: m.items_start_y,
+                // `FormSpacing::item_gap`, when set, overrides every
+                // item-bearing field's own backend-supplied gap.
+                item_gap: self.spacing.item_gap.unwrap_or(m.item_gap),
+                row_align: self.resolved_row_align(&self.fields[i]),
+                vertical: m.vertical,
             });
         }
 
@@ -765,19 +1046,77 @@ impl Form {
         // invariant as the selection pass above — a row's position
         // never shrinks to make room for its own clipped height).
         let full_heights: Vec<f32> = rows.iter().map(|r| r.full_height).collect();
-        let ys = row_y_positions(viewport_width, &full_heights);
+        let ys = row_y_positions(content_width, &full_heights);
 
         for (row, y) in rows.into_iter().zip(ys) {
-            let bounds = Rect::new(0.0, y, viewport_width, row.clipped_height);
+            let bounds = Rect::new(content_x, content_y + y, content_width, row.clipped_height);
             let id = self.fields[row.idx].id;
 
             let mut item_bounds = Vec::new();
-            if !row.item_measures.is_empty() {
+            if !row.item_measures.is_empty() && row.vertical {
+                // `FieldKind::RadioGroup`'s shape: stack items top-to-bottom
+                // at `items_start_x`, each spanning the row's full
+                // remaining width — no `RowAlign`/gap math, since a
+                // vertical stack has no horizontal slack to distribute and
+                // packs its rows edge-to-edge (see
+                // `FormFieldMeasure::vertical`'s doc). `items_start_y`
+                // (see its doc) skips past a `Top`-resolved label's own
+                // line, and `row_bottom` stops the stack at the row's own
+                // clipped bottom edge so a partially scrolled-off group
+                // never hands a backend painter a rect past its row.
+                let item_x = content_x + row.items_start_x;
+                let item_w = (content_width - row.items_start_x).max(0.0);
+                let row_bottom = content_y + y + row.clipped_height;
+                let mut item_y = content_y + y + row.items_start_y;
+                for item in &row.item_measures {
+                    let item_h = item.width.min((row_bottom - item_y).max(0.0));
+                    if item_h <= 0.0 {
+                        break;
+                    }
+                    let item_rect = Rect::new(item_x, item_y, item_w, item_h);
+                    hit_regions.push((item_rect, FormHit::Field(item.id)));
+                    item_bounds.push((item.id, item_rect));
+                    item_y += item.width;
+                }
+            } else if !row.item_measures.is_empty() {
                 let widths: Vec<f32> = row.item_measures.iter().map(|item| item.width).collect();
-                let item_xs =
-                    item_x_positions(row.items_start_x, row.clipped_height, row.item_gap, &widths);
+                // Slack between the items' own packed width and the
+                // row's available width (from `items_start_x` to the
+                // content box's right edge) — `RowAlign` decides where
+                // that slack goes; see `RowAlign`'s doc.
+                let available = (content_width - row.items_start_x).max(0.0);
+                let packed_width = widths.iter().sum::<f32>()
+                    + row.item_gap * widths.len().saturating_sub(1) as f32;
+                let slack = (available - packed_width).max(0.0);
+                let (extra_origin, extra_gap) = match row.row_align {
+                    RowAlign::Start => (0.0, 0.0),
+                    RowAlign::Center => (slack / 2.0, 0.0),
+                    RowAlign::End => (slack, 0.0),
+                    RowAlign::Stretch => {
+                        if widths.len() > 1 {
+                            (0.0, slack / (widths.len() - 1) as f32)
+                        } else {
+                            (0.0, 0.0)
+                        }
+                    }
+                };
+                let origin_x = content_x + row.items_start_x + extra_origin;
+                let item_xs = item_x_positions(
+                    origin_x,
+                    row.clipped_height,
+                    row.item_gap + extra_gap,
+                    &widths,
+                );
+                // `items_start_y` (see its doc) skips past a
+                // `Top`-resolved label's own line and shrinks the
+                // available height to match, so an item like
+                // `FieldKind::NumberInput`'s control rect is exactly the
+                // control's own height rather than the row's — which
+                // would include the label line on top of it.
+                let item_y = content_y + y + row.items_start_y;
+                let item_h = (row.clipped_height - row.items_start_y).max(0.0);
                 for (item, item_x) in row.item_measures.iter().zip(item_xs) {
-                    let item_rect = Rect::new(item_x, y, item.width, row.clipped_height);
+                    let item_rect = Rect::new(item_x, item_y, item.width, item_h);
                     hit_regions.push((item_rect, FormHit::Field(item.id)));
                     item_bounds.push((item.id, item_rect));
                 }
@@ -899,6 +1238,10 @@ mod native_surface_paint {
     // the three backends' shapes (macOS painted it, GTK painted nothing,
     // Windows painted `hover_bg` at full row height).
     use crate::paint_geometry::selected_item_fill;
+    use crate::primitives::button;
+    use crate::primitives::number_input;
+    use crate::primitives::radio_group;
+    use crate::style::Style;
     use crate::text_util::snap_to_char_boundary;
     use crate::theme::Theme;
     use crate::types::{Color, StyledText};
@@ -1625,6 +1968,40 @@ mod native_surface_paint {
                             if let Some(b) = buttons.iter().find(|b| &b.id == item_id) {
                                 let r = translate(item_rect, origin);
                                 let disabled = b.disabled || field.disabled;
+
+                                // An explicit `spec` override paints
+                                // through the shared `Button` fill/
+                                // border/icon/intent-colour path instead
+                                // of this item's own plain hover-tinted
+                                // row look, so e.g. a `Danger` spec reads
+                                // in `theme.button_danger_bg()` the same
+                                // way a standalone `Button` does — see
+                                // `button::native_surface_paint::paint`'s
+                                // own doc. `Style::default()` stands in
+                                // for a live `&Style`: this fn takes no
+                                // `&Style` parameter, so a host's
+                                // `Backend::set_style` override doesn't
+                                // reach a spec-backed row button's corner
+                                // radius/padding. A
+                                // `spec: None` item keeps painting
+                                // through the plain hover-tinted
+                                // icon+label path below, unchanged.
+                                if let Some(spec) = &b.spec {
+                                    let mut resolved = spec.clone();
+                                    resolved.disabled = resolved.disabled || disabled;
+                                    let button = resolved.to_button(b.id, false);
+                                    button::native_surface_paint::paint(
+                                        &button,
+                                        surface,
+                                        theme,
+                                        r,
+                                        &Style::default(),
+                                        false,
+                                        false,
+                                    );
+                                    continue;
+                                }
+
                                 let bg = if disabled { row_bg } else { theme.hover_bg };
                                 surface.surface_fill_rect(r, bg);
                                 let fg = if disabled { theme.muted_fg } else { field_fg };
@@ -1722,6 +2099,45 @@ mod native_surface_paint {
                                 "\u{25BE}",
                                 theme.muted_fg,
                             );
+                        }
+                    }
+                    FieldKind::NumberInput(number) => {
+                        // `vf.item_bounds`'s single entry (populated by the
+                        // backend's `FieldKind::NumberInput` measure arm —
+                        // see e.g. `tui::form::tui_form_layout_with_label_width`'s
+                        // pixel-measurer twin in `layout_metrics.rs`) is the
+                        // control's on-screen rect; reuse it rather than
+                        // re-deriving `control_start` here, so paint and
+                        // click (`FormController`'s click routing reads the
+                        // same `item_bounds`) always agree.
+                        if let Some((_, item_rect)) = vf.item_bounds.first() {
+                            let r = translate(item_rect, origin);
+                            if r.width > 0.0 && r.height > 0.0 {
+                                let n_layout = number.layout(r);
+                                number_input::native_surface_paint::paint(
+                                    number, &n_layout, surface, theme,
+                                );
+                            }
+                        }
+                    }
+                    FieldKind::RadioGroup(group) => {
+                        // One `vf.item_bounds` entry per
+                        // `RadioOption` (see this field kind's measure
+                        // arm) — every entry shares the same x/width, so
+                        // the first one gives the control's column and
+                        // the entry count gives the per-option row
+                        // height's divisor.
+                        if let Some((_, first)) = vf.item_bounds.first() {
+                            let r = translate(first, origin);
+                            let n = vf.item_bounds.len() as f32;
+                            if r.width > 0.0 && r.height > 0.0 && n > 0.0 {
+                                let mut g = group.clone();
+                                g.focused = is_focused;
+                                let full_rect = Rect::new(r.x, r.y, r.width, r.height * n);
+                                radio_group::native_surface_paint::paint(
+                                    &g, surface, theme, full_rect, r.height,
+                                );
+                            }
                         }
                     }
                 }
@@ -1964,12 +2380,300 @@ mod native_surface_paint {
         }
     }
 
+    /// Cursor width for the settings-chrome search row — matches every
+    /// per-backend `draw_settings_chrome` twin's caret width
+    /// (`gtk::form`'s literal `1.5`, `macos::form::SETTINGS_CURSOR_W`,
+    /// `win::form::SETTINGS_CURSOR_W`).
+    const SETTINGS_CURSOR_W: f32 = 1.5;
+    /// Prefix rendered before the settings-chrome search query — the
+    /// same string every per-backend painter uses.
+    const SETTINGS_SEARCH_PREFIX: &str = " /  ";
+
+    /// Paint settings-panel chrome: a header row and, when
+    /// `rect.height` leaves room for it, a search input row beneath it
+    /// — designed to sit immediately above a [`Form`] body. Replaces
+    /// the three near-identical per-backend `draw_settings_chrome`
+    /// copies (`gtk::form`, `macos::form`, `win::form`); adopting it
+    /// from each backend is follow-on scope.
+    ///
+    /// The header row always paints at one `line_height` tall. The
+    /// search row paints only when `rect.height >= line_height * 1.5`
+    /// — a caller reserving a single row gets a header-only strip
+    /// instead of an unrequested second row painted past its own rect.
+    /// When the search row does paint, its full-width background is
+    /// `theme.selected_bg` when `active`, otherwise `theme.tab_bar_bg`.
+    /// Layout left to right: [`SETTINGS_SEARCH_PREFIX`] in
+    /// `theme.muted_fg`, then either `query` (in `theme.foreground`) or
+    /// `placeholder` (in `theme.muted_fg`, shown only when the query is
+    /// empty *and* the row is inactive). A [`SETTINGS_CURSOR_W`]-wide
+    /// `theme.accent_fg` cursor follows the query when `active`.
+    ///
+    /// Chrome only — the form body and any scrollbar layered below are
+    /// painted separately by the caller.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_settings_chrome(
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        line_height: f32,
+        header_text: &str,
+        query: &str,
+        placeholder: &str,
+        active: bool,
+    ) {
+        if rect.width <= 0.0 || line_height <= 0.0 {
+            return;
+        }
+
+        // Row 0: header bar.
+        surface.surface_fill_rect(
+            Rect::new(rect.x, rect.y, rect.width, line_height),
+            theme.header_bg,
+        );
+        let (header_w, header_h) = surface.surface_measure_text(header_text);
+        let header_y = rect.y + ((line_height - header_h) / 2.0).max(0.0);
+        surface.surface_draw_text_run(
+            Rect::new(rect.x + 2.0, header_y, header_w, header_h),
+            header_text,
+            theme.header_fg,
+        );
+
+        // Row 1: search input — only when `rect.height` leaves room
+        // for it (see this fn's doc). Skipped for a header-only strip
+        // instead of overpainting whatever the caller placed directly
+        // beneath it.
+        if rect.height >= line_height * 1.5 {
+            let search_y = rect.y + line_height;
+            let row_bg = if active {
+                theme.selected_bg
+            } else {
+                theme.tab_bar_bg
+            };
+            surface.surface_fill_rect(Rect::new(rect.x, search_y, rect.width, line_height), row_bg);
+
+            let (prefix_w, prefix_h) = surface.surface_measure_text(SETTINGS_SEARCH_PREFIX);
+            let prefix_y = search_y + ((line_height - prefix_h) / 2.0).max(0.0);
+            surface.surface_draw_text_run(
+                Rect::new(rect.x + 2.0, prefix_y, prefix_w, prefix_h),
+                SETTINGS_SEARCH_PREFIX,
+                theme.muted_fg,
+            );
+
+            let q_x = rect.x + 2.0 + prefix_w;
+            let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
+            let (text, color) = if show_placeholder {
+                (placeholder, theme.muted_fg)
+            } else if query.is_empty() {
+                (query, theme.muted_fg)
+            } else {
+                (query, theme.foreground)
+            };
+            let (text_w, text_h) = surface.surface_measure_text(text);
+            let text_y = search_y + ((line_height - text_h) / 2.0).max(0.0);
+            surface.surface_draw_text_run(Rect::new(q_x, text_y, text_w, text_h), text, color);
+
+            if active {
+                let (query_w, _) = surface.surface_measure_text(query);
+                let cur_x = q_x + if query.is_empty() { 0.0 } else { query_w };
+                surface.surface_fill_rect(
+                    Rect::new(
+                        cur_x,
+                        search_y + 2.0,
+                        SETTINGS_CURSOR_W,
+                        (line_height - 4.0).max(0.0),
+                    ),
+                    theme.accent_fg,
+                );
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod settings_chrome_tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::types::Color;
+        use crate::Image;
+
+        /// Records every drawing verb `paint_settings_chrome` issues —
+        /// mirrors `primitives::progress::native_surface_paint`'s own
+        /// `RecordingSurface`.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(300.0, 60.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn paint_one_row(surface: &mut RecordingSurface, height: f32, active: bool) {
+            paint_settings_chrome(
+                surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 200.0, height),
+                16.0,
+                "Settings",
+                "",
+                "Search",
+                active,
+            );
+        }
+
+        /// A one-`line_height`-tall rect leaves no room for the search
+        /// row — only the header paints.
+        #[test]
+        fn one_row_height_paints_no_search_row() {
+            let mut surface = RecordingSurface::default();
+            paint_one_row(&mut surface, 16.0, false);
+            assert_eq!(surface.fills.len(), 1, "only the header bar should fill");
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Settings"));
+            assert!(!surface.text_runs.iter().any(|(_, t, _)| t == "Search"));
+        }
+
+        /// A two-`line_height`-tall rect leaves room for the search
+        /// row, which shows the placeholder when `query` is empty and
+        /// the row is inactive.
+        #[test]
+        fn two_row_height_paints_search_row_with_placeholder() {
+            let mut surface = RecordingSurface::default();
+            paint_one_row(&mut surface, 32.0, false);
+            assert_eq!(
+                surface.fills.len(),
+                2,
+                "header bar + search row should fill"
+            );
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Search"));
+            assert!(surface
+                .text_runs
+                .iter()
+                .any(|(_, t, _)| t == SETTINGS_SEARCH_PREFIX));
+        }
+
+        /// An active search row with a non-empty query paints the
+        /// query (not the placeholder) plus a cursor fill.
+        #[test]
+        fn active_row_paints_query_and_cursor() {
+            let mut surface = RecordingSurface::default();
+            paint_settings_chrome(
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 200.0, 32.0),
+                16.0,
+                "Settings",
+                "abc",
+                "Search",
+                true,
+            );
+            let theme = Theme::default();
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "abc"));
+            assert!(!surface.text_runs.iter().any(|(_, t, _)| t == "Search"));
+            // Row bg + cursor are both fills distinct from the header fill.
+            assert!(surface.fills.iter().any(|(_, c)| *c == theme.selected_bg));
+            assert!(surface
+                .fills
+                .iter()
+                .any(|(r, c)| *c == theme.accent_fg && r.width == SETTINGS_CURSOR_W));
+        }
+
+        /// Inactive row background is `tab_bar_bg`, not `selected_bg`.
+        #[test]
+        fn inactive_row_uses_tab_bar_bg() {
+            let mut surface = RecordingSurface::default();
+            paint_one_row(&mut surface, 32.0, false);
+            let theme = Theme::default();
+            assert!(surface.fills.iter().any(|(_, c)| *c == theme.tab_bar_bg));
+            assert!(!surface.fills.iter().any(|(_, c)| *c == theme.selected_bg));
+        }
+
+        /// Zero-width rect is a no-op: nothing paints.
+        #[test]
+        fn zero_width_is_a_no_op() {
+            let mut surface = RecordingSurface::default();
+            paint_settings_chrome(
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 0.0, 32.0),
+                16.0,
+                "Settings",
+                "",
+                "Search",
+                false,
+            );
+            assert!(surface.fills.is_empty());
+            assert!(surface.text_runs.is_empty());
+        }
+
+        /// Chrome paints at a non-zero origin, not hardcoded to (0, 0).
+        #[test]
+        fn paints_at_a_nonzero_origin() {
+            let mut surface = RecordingSurface::default();
+            paint_settings_chrome(
+                &mut surface,
+                &Theme::default(),
+                Rect::new(7.0, 13.0, 200.0, 32.0),
+                16.0,
+                "Settings",
+                "",
+                "",
+                false,
+            );
+            assert!(surface.fills.iter().all(|(r, _)| r.x == 7.0 && r.y >= 13.0));
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::Viewport;
-        use crate::primitives::form::{ControlWidth, FormField, ToggleGroupItem};
+        use crate::primitives::form::{ButtonRowItem, ControlWidth, FormField, ToggleGroupItem};
         use crate::primitives::layout_metrics::{form_field_measure, form_row_height, TextMeasure};
         use crate::types::{StyledSpan, WidgetId};
         use crate::{FormFieldMeasure, Image};
@@ -2103,6 +2807,7 @@ mod native_surface_paint {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 }],
                 focused_field: None,
                 scroll_offset: 0,
@@ -2112,7 +2817,48 @@ mod native_surface_paint {
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             }
+        }
+
+        /// A `Danger` spec on a `ButtonRowItem` paints through
+        /// `button::native_surface_paint::paint` —
+        /// `theme.button_danger_bg()`, not this arm's own plain
+        /// hover-tinted row look `spec: None` items still get.
+        #[test]
+        fn button_row_danger_spec_fills_the_shared_button_danger_colour() {
+            let mut spec = crate::primitives::button::ButtonSpec::new("Delete all");
+            spec.variant = crate::primitives::button::ButtonVariant::Danger;
+            let form = one_field_form(
+                "actions",
+                FieldKind::ButtonRow {
+                    buttons: vec![ButtonRowItem {
+                        spec: Some(spec),
+                        id: WidgetId::new("delete-all"),
+                        label: "Delete all".into(),
+                        disabled: false,
+                        icon: None,
+                    }],
+                },
+            );
+            let theme = Theme::default();
+            let (surface, _) = paint_recorded(&form);
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(_, c)| *c == theme.button_danger_bg()),
+                "a Danger spec must fill the shared Button's danger colour; \
+                 fills were {:?}",
+                surface.fills,
+            );
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "Delete all"),
+                "the button label must still be painted through the shared \
+                 Button path; text runs were {:?}",
+                surface.text_runs,
+            );
         }
 
         /// Two toggle rows at `row_h = 20.0` in a viewport only 23px
@@ -2141,6 +2887,7 @@ mod native_surface_paint {
                         tab_index: None,
                         control_width: None,
                         min_control_width: None,
+                        row_align: None,
                     },
                     FormField {
                         id: WidgetId::new("toggle-1"),
@@ -2155,6 +2902,7 @@ mod native_surface_paint {
                         tab_index: None,
                         control_width: None,
                         min_control_width: None,
+                        row_align: None,
                     },
                 ],
                 focused_field: None,
@@ -2165,6 +2913,7 @@ mod native_surface_paint {
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             };
             (form, viewport_height)
         }
@@ -2254,6 +3003,7 @@ mod native_surface_paint {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             };
             let form = Form {
                 id: WidgetId::new("control-column"),
@@ -2269,6 +3019,7 @@ mod native_surface_paint {
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             };
 
             let (surface, flayout) = paint_recorded(&form);
@@ -2333,6 +3084,7 @@ mod native_surface_paint {
                 tab_index: None,
                 control_width,
                 min_control_width: None,
+                row_align: None,
             }
         }
 
@@ -2348,6 +3100,7 @@ mod native_surface_paint {
                 label_width: None,
                 control_width: Default::default(),
                 min_control_width: None,
+                spacing: Default::default(),
             }
         }
 
@@ -3281,6 +4034,7 @@ mod native_surface_paint {
                 tab_index: None,
                 control_width: None,
                 min_control_width: None,
+                row_align: None,
             });
 
             let (surface, _) = paint_recorded(&form);
@@ -3311,6 +4065,72 @@ mod native_surface_paint {
                  longer one within the shared End-aligned column",
             );
         }
+
+        // ── FieldKind::NumberInput / FieldKind::RadioGroup paint ──────
+
+        use crate::primitives::number_input::NumberInput;
+        use crate::primitives::radio_group::{RadioGroup, RadioOption};
+
+        /// `FieldKind::NumberInput` paints through the real
+        /// `number_input::native_surface_paint::paint`, not a second,
+        /// form-only representation: the formatted value and both
+        /// stepper glyphs must show up in the recorded surface calls.
+        #[test]
+        fn number_input_field_paints_through_the_shared_number_input_painter() {
+            let number = NumberInput::new(WidgetId::new("volume"), 0.0, 100.0);
+            let form = one_field_form("volume", FieldKind::NumberInput(number));
+            let (surface, _) = paint_recorded(&form);
+
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "0"),
+                "the committed value must be drawn: {:?}",
+                surface.text_runs
+            );
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "+"));
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "-"));
+        }
+
+        /// An in-progress `draft` overrides the displayed value — the
+        /// embedded `NumberInput`'s own contract, not a form-specific
+        /// rule.
+        #[test]
+        fn number_input_field_shows_draft_instead_of_committed_value() {
+            let mut number = NumberInput::new(WidgetId::new("volume"), 0.0, 100.0);
+            number.draft = Some("4".into());
+            let form = one_field_form("volume", FieldKind::NumberInput(number));
+            let (surface, _) = paint_recorded(&form);
+
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "4"));
+            assert!(!surface.text_runs.iter().any(|(_, t, _)| t == "0"));
+        }
+
+        /// `FieldKind::RadioGroup` paints every option through the real
+        /// `radio_group::native_surface_paint::paint`, one row each, with
+        /// the selected option filled (not just stroked).
+        #[test]
+        fn radio_group_field_paints_one_row_per_option() {
+            let mut group = RadioGroup::new(
+                WidgetId::new("theme"),
+                vec![
+                    RadioOption::new(WidgetId::new("theme:light"), "Light"),
+                    RadioOption::new(WidgetId::new("theme:dark"), "Dark"),
+                ],
+            );
+            group.selected = Some(1);
+            let form = one_field_form("theme", FieldKind::RadioGroup(group));
+            let (surface, flayout) = paint_recorded(&form);
+
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Light"));
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Dark"));
+
+            // Two options stack into two separate `item_bounds` rows at
+            // the same x, different y — not a single collapsed row like
+            // `DatePicker`/`ComboBox`.
+            let items = &flayout.visible_fields[0].item_bounds;
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].1.x, items[1].1.x);
+            assert!(items[1].1.y > items[0].1.y);
+        }
     }
 }
 
@@ -3323,7 +4143,7 @@ mod native_surface_paint {
     all(feature = "macos", target_os = "macos")
 ))]
 #[allow(unused_imports)]
-pub(crate) use native_surface_paint::{left_control_column_start, paint};
+pub(crate) use native_surface_paint::{left_control_column_start, paint, paint_settings_chrome};
 
 /// Events a `Form` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3400,6 +4220,36 @@ pub enum FormEvent {
     /// this event means setting `text = committed.clone()` and `open =
     /// false` on the `ComboBox`.
     ComboBoxCancelled { id: WidgetId },
+    /// A `NumberInput` field's committed value changed via a stepper
+    /// click or arrow-key stepping — immediate, not waiting for a
+    /// confirm step. `id` is the **`FormField`'s** id, not the embedded
+    /// `NumberInput`'s own id, the same `id: focused_id` shape
+    /// [`Self::DateChanged`] uses.
+    NumberChanged { id: WidgetId, value: f64 },
+    /// A `NumberInput` field's in-progress typed draft changed. Fires on
+    /// every keystroke that modifies it, mirroring
+    /// [`Self::TextInputChanged`]'s "fires every keystroke" shape. `id`
+    /// is the `FormField`'s id, as with [`Self::NumberChanged`].
+    NumberDraftChanged { id: WidgetId, draft: String },
+    /// A `NumberInput` field's typed draft was confirmed (Enter):
+    /// parsed, clamped to `[min, max]`, and rounded to the embedded
+    /// input's `precision`. Mirrors [`Self::TextInputCommitted`]'s
+    /// "fires once, on confirm" shape rather than
+    /// [`Self::NumberDraftChanged`]'s "fires every keystroke" shape.
+    /// `id` is the `FormField`'s id, as with [`Self::NumberChanged`].
+    NumberCommitted { id: WidgetId, value: f64 },
+    /// A `NumberInput` field's in-progress typed draft was cancelled
+    /// (Escape), discarded without touching the committed value. `id`
+    /// is the `FormField`'s id, as with [`Self::NumberChanged`].
+    /// Applying this event means clearing the embedded `NumberInput`'s
+    /// `draft`.
+    NumberCancelled { id: WidgetId },
+    /// A `RadioGroup` field's selection changed, via either the arrow
+    /// keys or a click on one of its options. `id` is the **`FormField`'s**
+    /// id, not the embedded `RadioGroup`'s own id, the same shape
+    /// [`Self::NumberChanged`] uses; `selected` is the chosen option's
+    /// index into the embedded group's `options`.
+    RadioChanged { id: WidgetId, selected: usize },
 }
 
 #[cfg(test)]
@@ -3425,6 +4275,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("line-numbers"),
@@ -3439,6 +4290,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("tabstop"),
@@ -3458,6 +4310,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("save"),
@@ -3472,6 +4325,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
                 FormField {
                     id: WidgetId::new("language"),
@@ -3489,6 +4343,7 @@ mod tests {
                     tab_index: None,
                     control_width: None,
                     min_control_width: None,
+                    row_align: None,
                 },
             ],
             focused_field: Some(WidgetId::new("line-numbers")),
@@ -3499,6 +4354,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         };
         let json = serde_json::to_string(&form).unwrap();
         let back: Form = serde_json::from_str(&json).unwrap();
@@ -3573,6 +4429,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -3630,6 +4487,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -3658,6 +4516,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -3708,6 +4567,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -3746,6 +4606,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -3768,6 +4629,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -3783,6 +4645,7 @@ mod tests {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -3900,6 +4763,7 @@ mod tests {
             tab_index: None,
             control_width: None,
             min_control_width: None,
+            row_align: None,
         };
         let json = serde_json::to_string(&field).unwrap();
         let back: FormField = serde_json::from_str(&json).unwrap();
@@ -3964,6 +4828,7 @@ mod tests {
             tab_index: None,
             control_width,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -3979,6 +4844,7 @@ mod tests {
             label_width: None,
             control_width: form_control_width,
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -4006,6 +4872,155 @@ mod tests {
 
         let unset = control_width_test_field(None);
         assert_eq!(form.resolved_min_control_width(&unset), Some(40.0));
+    }
+
+    // ── FormSpacing: padding / item_gap / row_align ────────────────────
+
+    #[test]
+    fn spacing_padding_insets_bounds_on_every_edge() {
+        let mut f = make_form(vec![make_form_field("only", "Only", FieldKind::Button)], 0);
+        f.spacing.padding = 2.0;
+        let layout = f.layout(40.0, 20.0, |_| FormFieldMeasure::new(1.0));
+        assert_eq!(layout.visible_fields.len(), 1);
+        let bounds = layout.visible_fields[0].bounds;
+        assert_eq!(bounds.x, 2.0);
+        assert_eq!(bounds.y, 2.0);
+        // Content width/height are shrunk by the inset on both edges.
+        assert_eq!(bounds.width, 36.0);
+    }
+
+    #[test]
+    fn spacing_padding_of_zero_reproduces_unpadded_layout() {
+        let f = make_form(vec![make_form_field("only", "Only", FieldKind::Button)], 0);
+        let layout = f.layout(40.0, 20.0, |_| FormFieldMeasure::new(1.0));
+        let bounds = layout.visible_fields[0].bounds;
+        assert_eq!(bounds, Rect::new(0.0, 0.0, 40.0, 1.0));
+    }
+
+    fn button_row_form(align: RowAlign) -> Form {
+        let mut f = make_form(
+            vec![make_form_field(
+                "buttons",
+                "",
+                FieldKind::ButtonRow {
+                    buttons: vec![
+                        ButtonRowItem {
+                            id: WidgetId::new("a"),
+                            label: "A".into(),
+                            disabled: false,
+                            icon: None,
+                            spec: None,
+                        },
+                        ButtonRowItem {
+                            id: WidgetId::new("b"),
+                            label: "B".into(),
+                            disabled: false,
+                            icon: None,
+                            spec: None,
+                        },
+                    ],
+                },
+            )],
+            0,
+        );
+        f.spacing.row_align = align;
+        f
+    }
+
+    /// Two 10-wide items with a 2-wide gap packed into a 40-wide row
+    /// starting at `items_start_x = 0.0` leave 18.0 of slack
+    /// (`40.0 - (10.0 + 2.0 + 10.0)`), which `RowAlign` places
+    /// differently depending on its mode.
+    fn button_row_item_xs(align: RowAlign) -> Vec<f32> {
+        let f = button_row_form(align);
+        let layout = f.layout(40.0, 1.0, |_| {
+            FormFieldMeasure::with_items(
+                1.0,
+                0.0,
+                2.0,
+                vec![
+                    FormItemMeasure {
+                        id: WidgetId::new("a"),
+                        width: 10.0,
+                    },
+                    FormItemMeasure {
+                        id: WidgetId::new("b"),
+                        width: 10.0,
+                    },
+                ],
+            )
+        });
+        layout.visible_fields[0]
+            .item_bounds
+            .iter()
+            .map(|(_, r)| r.x)
+            .collect()
+    }
+
+    #[test]
+    fn row_align_start_packs_items_flush_left() {
+        assert_eq!(button_row_item_xs(RowAlign::Start), vec![0.0, 12.0]);
+    }
+
+    #[test]
+    fn row_align_center_centers_the_packed_items() {
+        // 18.0 slack / 2 = 9.0 added to both items' start.
+        assert_eq!(button_row_item_xs(RowAlign::Center), vec![9.0, 21.0]);
+    }
+
+    #[test]
+    fn row_align_end_packs_items_flush_right() {
+        // All 18.0 of slack added before the first item.
+        assert_eq!(button_row_item_xs(RowAlign::End), vec![18.0, 30.0]);
+    }
+
+    #[test]
+    fn row_align_stretch_distributes_slack_into_the_gap() {
+        // Slack folds into the single gap between the two items: the
+        // first item stays at its `Start` position, the second moves
+        // to the row's right edge.
+        assert_eq!(button_row_item_xs(RowAlign::Stretch), vec![0.0, 30.0]);
+    }
+
+    #[test]
+    fn resolved_row_align_prefers_the_field_override_over_the_form_default() {
+        let mut form = make_form(vec![], 0);
+        form.spacing.row_align = RowAlign::Start;
+        let mut field = make_form_field("buttons", "", FieldKind::Label);
+        field.row_align = Some(RowAlign::End);
+        assert_eq!(form.resolved_row_align(&field), RowAlign::End);
+
+        field.row_align = None;
+        assert_eq!(form.resolved_row_align(&field), RowAlign::Start);
+    }
+
+    #[test]
+    fn spacing_item_gap_overrides_the_backend_supplied_gap() {
+        let mut f = button_row_form(RowAlign::Start);
+        f.spacing.item_gap = Some(5.0);
+        let layout = f.layout(40.0, 1.0, |_| {
+            FormFieldMeasure::with_items(
+                1.0,
+                0.0,
+                2.0, // backend's own gap — overridden by `spacing.item_gap`.
+                vec![
+                    FormItemMeasure {
+                        id: WidgetId::new("a"),
+                        width: 10.0,
+                    },
+                    FormItemMeasure {
+                        id: WidgetId::new("b"),
+                        width: 10.0,
+                    },
+                ],
+            )
+        });
+        let xs: Vec<f32> = layout.visible_fields[0]
+            .item_bounds
+            .iter()
+            .map(|(_, r)| r.x)
+            .collect();
+        assert_eq!(xs, vec![0.0, 15.0]);
     }
 
     // ── B3b: ButtonSpec seam ─────────────────────────────────────────────

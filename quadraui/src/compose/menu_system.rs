@@ -15,6 +15,7 @@
 //! }
 //! ```
 
+use super::context_menu_controller::menu_item_heights;
 use crate::backend::{Backend, ResolvedMenuStyle};
 use crate::event::{Rect, UiEvent};
 use crate::interaction::InteractionState;
@@ -749,8 +750,7 @@ impl MenuSystem {
         let viewport_rect = backend.context_menu_viewport();
         let ctx_menu = self.build_dropdown(open_idx);
         let menu_width = dropdown_width(backend, &ctx_menu.items, lh);
-        let item_h = (lh * 1.4).round().max(lh);
-        let sep_h = (lh * 0.5).round().max(1.0);
+        let (item_h, sep_h) = menu_item_heights(lh);
         let layout = ctx_menu.layout_at(anchor, viewport_rect, menu_width, |i| {
             if ctx_menu.items[i].is_separator() {
                 ContextMenuItemMeasure::new(sep_h)
@@ -777,8 +777,7 @@ impl MenuSystem {
         stack.push((root_menu, root_layout));
 
         let lh = backend.chrome_line_height();
-        let item_h = (lh * 1.4).round().max(lh);
-        let sep_h = (lh * 0.5).round().max(1.0);
+        let (item_h, sep_h) = menu_item_heights(lh);
         let vp = backend.context_menu_viewport();
 
         for (depth, &path_idx) in self.submenu_path.iter().enumerate() {
@@ -881,12 +880,12 @@ impl MenuSystem {
     }
 
     fn next_enabled_menu(&self, from: usize, delta: isize) -> usize {
-        let n = self.menus.len() as isize;
-        let mut idx = from as isize;
-        for _ in 0..self.menus.len() {
-            idx = (idx + delta).rem_euclid(n);
-            if !self.menus[idx as usize].disabled {
-                return idx as usize;
+        let n = self.menus.len();
+        let mut idx = from;
+        for _ in 0..n {
+            idx = crate::focus::cycle_index(idx, delta, n);
+            if !self.menus[idx].disabled {
+                return idx;
             }
         }
         from
@@ -955,6 +954,7 @@ mod tests {
         /// a platform-owned menu bar has in-window (macOS, by default).
         native_menu_bar: bool,
         invalidation_log: crate::backend::InvalidationLog,
+        services: crate::testing::NullPlatformServices,
     }
 
     impl MockBackend {
@@ -965,6 +965,7 @@ mod tests {
                 focus: crate::focus::FocusManager::new(),
                 native_menu_bar: false,
                 invalidation_log: crate::backend::InvalidationLog::new(),
+                services: crate::testing::NullPlatformServices::new(),
             }
         }
 
@@ -1033,7 +1034,7 @@ mod tests {
         }
         fn draw_focus_ring(&mut self, _r: Rect) {}
         fn services(&self) -> &dyn crate::backend::PlatformServices {
-            unimplemented!()
+            &self.services
         }
         fn backend_caps(&self) -> crate::backend::BackendCaps {
             crate::backend::BackendCaps {
@@ -1115,7 +1116,6 @@ mod tests {
         ) -> crate::StatusBarLayout {
             unimplemented!()
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn draw_tab_bar(
             &mut self,
             _r: Rect,
@@ -1124,7 +1124,6 @@ mod tests {
         ) -> crate::TabBarHits {
             unimplemented!()
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn draw_tab_bar_icons(
             &mut self,
             _r: Rect,
@@ -1187,7 +1186,6 @@ mod tests {
                 resolved_right_start: 0,
             }
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarHits {
             crate::TabBarHits::default()
         }
@@ -1220,7 +1218,6 @@ mod tests {
                 resolved_scroll_offset: 0,
             }
         }
-        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
         fn tab_bar_layout_icons(
             &self,
             _r: Rect,
@@ -1350,9 +1347,11 @@ mod tests {
         fn split_tree_layout(&self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
             unimplemented!()
         }
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this test double is its own plumbing.
         fn draw_panel(&mut self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
             unimplemented!()
         }
+        #[allow(deprecated)] // `Panel` is `#[deprecated]`; this test double is its own plumbing.
         fn panel_layout(&self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
             unimplemented!()
         }

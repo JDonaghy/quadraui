@@ -492,12 +492,12 @@ impl PlatformServices for GtkPlatformServices {
     /// directly in a unit test) — the same "nothing to parent this to
     /// yet" degrade `show_file_open_dialog` et al. already have via
     /// `self.window.borrow().clone()`.
-    fn send_notification(&self, n: Notification) {
+    fn send_notification(&self, n: Notification) -> ServiceResult<()> {
         let Some(window) = self.window.borrow().clone() else {
-            return;
+            return Err(BackendError::Unsupported);
         };
         let Some(app) = window.application() else {
-            return;
+            return Err(BackendError::Unsupported);
         };
         self.ensure_notification_action(&app);
 
@@ -545,6 +545,7 @@ impl PlatformServices for GtkPlatformServices {
             }
         };
         app.send_notification(Some(notif_id), &notification);
+        Ok(())
     }
 
     fn open_url(&self, url: &str) {
@@ -553,17 +554,19 @@ impl PlatformServices for GtkPlatformServices {
 
     /// Fallible twin of [`Self::open_url`]: reports
     /// `gio::AppInfo::launch_default_for_uri`'s real outcome instead of
-    /// `open_url`'s discarded one — before this override,
-    /// `open_url_result` fell to
-    /// [`crate::backend::PlatformServices::open_url_result`]'s default
-    /// (`open_url` then always `Ok(())`), so a URL scheme with no
-    /// registered handler (or no session D-Bus at all) was silently
-    /// reported as success.
+    /// `open_url`'s discarded one, and first validates `url` through
+    /// [`crate::desktop::validate_open_url`] (via [`open_url_via`]) — the
+    /// same backend-neutral seam the `tui` backend's own `open_url_result`
+    /// runs its input through — so a bare path or a `file:` URL pointing
+    /// at an executable or app bundle is rejected with
+    /// `Err(BackendError::Unsupported)` instead of being launched.
     fn open_url_result(&self, url: &str) -> ServiceResult<()> {
-        gtk4::gio::AppInfo::launch_default_for_uri(url, None::<&gtk4::gio::AppLaunchContext>)
-            .map_err(|e| BackendError::PlatformFailure {
-                context: format!("gio::AppInfo::launch_default_for_uri: {e}"),
-            })
+        open_url_via(url, |u| {
+            gtk4::gio::AppInfo::launch_default_for_uri(u, None::<&gtk4::gio::AppLaunchContext>)
+                .map_err(|e| BackendError::PlatformFailure {
+                    context: format!("gio::AppInfo::launch_default_for_uri: {e}"),
+                })
+        })
     }
 
     /// `org.freedesktop.FileManager1.ShowItems` over the session D-Bus
@@ -735,6 +738,24 @@ impl PlatformServices for GtkPlatformServices {
     fn platform_name(&self) -> &'static str {
         "gtk"
     }
+}
+
+// ── URL opening ──────────────────────────────────────────────────────────
+
+/// Shared body of [`GtkPlatformServices::open_url_result`]: validates `url`
+/// through [`crate::desktop::validate_open_url`] before ever calling
+/// `launch`, mirroring the `tui` backend's own `open_url_via` seam. `launch`
+/// is a parameter (not a direct `gio::AppInfo::launch_default_for_uri` call
+/// inline) purely so tests can swap in a double that records whether it
+/// ran, instead of actually spawning a browser/mail client — the real
+/// launch call unconditionally succeeds in starting *something* for any
+/// syntactically plausible URL (malformed hosts, bad percent-escapes, …
+/// all still launch the default handler and let it complain), so there is
+/// no way to exercise "reaches the launcher" against the live `gio` call
+/// without a real desktop side effect.
+fn open_url_via(url: &str, launch: impl FnOnce(&str) -> ServiceResult<()>) -> ServiceResult<()> {
+    crate::desktop::validate_open_url(url)?;
+    launch(url)
 }
 
 // ── Notifications ────────────────────────────────────────────────────────
@@ -1495,6 +1516,53 @@ mod tests {
             .is_err());
     }
 
+    /// `open_url_result` runs `crate::desktop::validate_open_url` before
+    /// ever touching GIO: a bare filesystem path has no recognized scheme,
+    /// so it is rejected with the validator's own
+    /// `BackendError::Unsupported` and never reaches
+    /// `gio::AppInfo::launch_default_for_uri` at all. Needs no
+    /// `gtk4::init()`/display, same as the test above.
+    #[test]
+    fn open_url_result_rejects_a_bare_path_via_the_shared_validator() {
+        let services = GtkPlatformServices::new();
+        assert_eq!(
+            services.open_url_result("/etc/passwd"),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    /// `open_url_via` (the seam [`GtkPlatformServices::open_url_result`]
+    /// is built on) rejects a bare path before ever calling `launch` — a
+    /// double that records whether it ran stands in for the real `gio`
+    /// call, since that call succeeds in starting *something* for any
+    /// syntactically plausible URL and there is no clean way to assert
+    /// "reached the launcher" against the live call without actually
+    /// spawning a browser.
+    #[test]
+    fn open_url_via_rejects_a_bare_path_before_invoking_the_launcher() {
+        let launched = std::cell::Cell::new(false);
+        let result = open_url_via("/etc/passwd", |_| {
+            launched.set(true);
+            Ok(())
+        });
+        assert_eq!(result, Err(BackendError::Unsupported));
+        assert!(!launched.get());
+    }
+
+    /// An `https:` URL passes `crate::desktop::validate_open_url` and
+    /// reaches `open_url_via`'s `launch` closure — unlike the bare-path
+    /// case above, which never calls it at all.
+    #[test]
+    fn open_url_via_passes_an_https_url_through_to_the_launcher() {
+        let launched = std::cell::Cell::new(false);
+        let result = open_url_via("https://example.com/quadraui-2142", |_| {
+            launched.set(true);
+            Ok(())
+        });
+        assert_eq!(result, Ok(()));
+        assert!(launched.get());
+    }
+
     // Regression test for #427 ("depth counter stays positive until the
     // outermost re-entrant pump unwinds") used to live here directly
     // against a local `PumpGuard`; that behavior is now covered once,
@@ -1728,7 +1796,10 @@ mod tests {
     #[test]
     fn send_notification_without_a_window_is_a_no_op() {
         let services = GtkPlatformServices::new();
-        services.send_notification(Notification::new("t", "b"));
+        assert_eq!(
+            services.send_notification(Notification::new("t", "b")),
+            Err(BackendError::Unsupported)
+        );
         // The early-return path taken above never touches `window` —
         // assert it's still exactly what `new()` left it as, so a
         // future refactor that accidentally starts constructing a

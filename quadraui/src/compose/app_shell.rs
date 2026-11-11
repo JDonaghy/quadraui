@@ -15,6 +15,12 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use serde::ser::SerializeMap;
+use serde::{Serialize, Serializer};
+
+use super::activity_bar_controller::ActivityBarKeyboard;
+use super::divider_drag::DividerDrag;
+use super::shell_layout;
 use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit, ActivityItem};
 use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
 use crate::types::{Color, Icon, WidgetId};
@@ -120,6 +126,71 @@ pub enum AppShellEvent {
     Ignored,
 }
 
+/// Externally-tagged, one-entry-map shape: `{"PanelChanged": {"panel_id":
+/// "panel:explorer"}}`, `{"SidebarHidden": null}`, etc. — the same shape a
+/// plain `#[derive(Serialize)]` would give every variant here *except* the
+/// four unit variants, which `serde`'s own external tagging would instead
+/// serialize as a bare string (`"SidebarHidden"`, not `{"SidebarHidden":
+/// null}`). A binding's own `on_shell_event` callback already observes the
+/// dict-with-`null` shape (see `quadraui-py`'s and `quadraui-node`'s own
+/// shell tests), so this impl is hand-written rather than derived, to keep
+/// that wire shape unchanged. Written once here instead of once per binding
+/// — a binding reaches this via a generic `pythonize::pythonize`/
+/// `serde_json::to_value` call, not its own hand-rolled match.
+impl Serialize for AppShellEvent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        struct PanelChangedPayload {
+            panel_id: WidgetId,
+        }
+        #[derive(Serialize)]
+        struct SidebarResizedPayload {
+            new_width: f32,
+        }
+        #[derive(Serialize)]
+        struct BottomPanelResizedPayload {
+            new_height: f32,
+        }
+        #[derive(Serialize)]
+        struct BottomItemClickedPayload {
+            id: WidgetId,
+        }
+
+        let mut map = serializer.serialize_map(Some(1))?;
+        match self {
+            AppShellEvent::PanelChanged { panel_id } => map.serialize_entry(
+                "PanelChanged",
+                &PanelChangedPayload {
+                    panel_id: *panel_id,
+                },
+            )?,
+            AppShellEvent::SidebarHidden => map.serialize_entry("SidebarHidden", &())?,
+            AppShellEvent::SidebarResized { new_width } => map.serialize_entry(
+                "SidebarResized",
+                &SidebarResizedPayload {
+                    new_width: *new_width,
+                },
+            )?,
+            AppShellEvent::BottomPanelResized { new_height } => map.serialize_entry(
+                "BottomPanelResized",
+                &BottomPanelResizedPayload {
+                    new_height: *new_height,
+                },
+            )?,
+            AppShellEvent::BottomPanelHidden => map.serialize_entry("BottomPanelHidden", &())?,
+            AppShellEvent::BottomItemClicked { id } => {
+                map.serialize_entry("BottomItemClicked", &BottomItemClickedPayload { id: *id })?
+            }
+            AppShellEvent::Consumed => map.serialize_entry("Consumed", &())?,
+            AppShellEvent::Ignored => map.serialize_entry("Ignored", &())?,
+        }
+        map.end()
+    }
+}
+
 /// Layout bounds returned by [`AppShell::render`] and [`AppShell::layout`].
 ///
 /// Bottom-band bounds are exposed via [`AppShell::bottom_band_bounds`]
@@ -186,8 +257,7 @@ pub struct AppShell {
     /// icons.
     activity_bar_width_px: Option<f32>,
     position: ShellPosition,
-    drag_offset: Option<f32>,
-    hovered_activity_idx: Option<usize>,
+    drag_offset: DividerDrag<f32>,
     // ── Chrome slot config ───────────────────────────────────────
     has_title_bar: bool,
     title_bar_height_lh: f32,
@@ -229,7 +299,7 @@ pub struct AppShell {
     /// command line span the whole window and the activity bar/sidebar
     /// stop above them.
     status_bar_under_main_column: bool,
-    bottom_panel_drag_offset: Option<f32>,
+    bottom_panel_drag_offset: DividerDrag<f32>,
     /// Independently-gated bottom bands, stacked bottom-up
     /// below the legacy single bottom-panel drawer. Empty by default —
     /// see [`BottomBand`]'s doc for the stacking order and the
@@ -258,25 +328,15 @@ pub struct AppShell {
     cached_activity_hits: RefCell<Vec<ActivityBarRowHit>>,
     cached_activity_bar_bounds: RefCell<Option<Rect>>,
     // ── Keyboard navigation state ─────────────────────────────────
-    /// Whether the activity bar currently holds keyboard focus. When
-    /// `true`, `build_activity_bar()` sets `is_keyboard_focused = true`
-    /// on the emitted [`ActivityBar`], causing the TUI and GTK backends
-    /// to redirect [`crate::UiEvent::KeyPressed`] events to
-    /// [`crate::UiEvent::ActivityBar`] events — so navigation logic
-    /// stays entirely in the consumer.
-    activity_keyboard_focused: bool,
-    /// Cursor position in the **logical item sequence**: top panels
-    /// (indices `0..panels.len()`) followed by bottom items
-    /// (indices `panels.len()..panels.len()+bottom_items.len()`).
-    /// Saturates at the ends; does not wrap.
-    activity_cursor: usize,
-    /// Show the keyboard cursor highlight without enabling the key-event
-    /// redirect that [`Self::activity_keyboard_focused`] triggers. A
-    /// `ShellApp` consumer that handles toolbar keys itself (via its own
-    /// `route_sidebar_chord_key` / `handle_activity_bar_key` in
-    /// `ShellApp::handle`) uses this to paint the cursor without having
-    /// the TUI backend redirect keys to `UiEvent::ActivityBar(…)`.
-    activity_cursor_visible: bool,
+    /// Keyboard focus/cursor + mouse-hover state for the activity bar's
+    /// **logical item sequence**: top panels (indices `0..panels.len()`)
+    /// followed by bottom items (indices
+    /// `panels.len()..panels.len()+bottom_items.len()`). See
+    /// [`ActivityBarKeyboard`]'s own doc for what each piece of state
+    /// means; [`Self::activity_keyboard_focused`] and friends below are
+    /// thin delegating wrappers that also resolve `total` (the combined
+    /// item count) from `panels`/`bottom_items` where needed.
+    activity_keyboard: ActivityBarKeyboard,
     /// Per-panel Nerd-Font glyph + ASCII fallback pairs, keyed by
     /// [`WidgetId`], registered via [`Self::with_panel_icon`]. Consulted by
     /// [`Self::build_activity_bar`] in preference to widening the panel's
@@ -292,8 +352,9 @@ pub struct AppShell {
     active_accent: Option<Color>,
     /// Colour [`Self::build_activity_bar`] sets on the emitted
     /// [`ActivityBar::selection_bg`] — the keyboard-selection highlight
-    /// each backend paints on the [`Self::activity_cursor`] row when the
-    /// bar [`Self::activity_keyboard_focused`]. `None` (the default) falls
+    /// each backend paints on the activity-bar cursor row (see
+    /// [`ActivityBarKeyboard`]) when the bar
+    /// [`Self::activity_keyboard_focused`]. `None` (the default) falls
     /// back to each backend's own reversed/brightened default fill.
     selection_bg: Option<Color>,
 }
@@ -313,8 +374,7 @@ impl AppShell {
             activity_bar_width: 4.0,
             activity_bar_width_px: None,
             position: ShellPosition::Left,
-            drag_offset: None,
-            hovered_activity_idx: None,
+            drag_offset: DividerDrag::none(),
             has_title_bar: false,
             title_bar_height_lh: 1.5,
             title_bar_min_px: None,
@@ -327,14 +387,12 @@ impl AppShell {
             has_status_bar: false,
             status_bar_height_px: None,
             status_bar_under_main_column: false,
-            bottom_panel_drag_offset: None,
+            bottom_panel_drag_offset: DividerDrag::none(),
             bottom_bands: Vec::new(),
             cached_bottom_band_bounds: RefCell::new(Vec::new()),
             cached_activity_hits: RefCell::new(Vec::new()),
             cached_activity_bar_bounds: RefCell::new(None),
-            activity_keyboard_focused: false,
-            activity_cursor_visible: false,
-            activity_cursor: 0,
+            activity_keyboard: ActivityBarKeyboard::new(),
             icon_overrides: HashMap::new(),
             active_accent: None,
             selection_bg: None,
@@ -594,7 +652,7 @@ impl AppShell {
     }
 
     pub fn hovered_activity_idx(&self) -> Option<usize> {
-        self.hovered_activity_idx
+        self.activity_keyboard.hovered_idx()
     }
 
     // ── Activity-bar keyboard navigation ─────────────────────────────
@@ -608,7 +666,7 @@ impl AppShell {
     /// than raw `UiEvent::KeyPressed`. The consumer maps those key strings to
     /// the navigation methods below.
     pub fn activity_keyboard_focused(&self) -> bool {
-        self.activity_keyboard_focused
+        self.activity_keyboard.focused()
     }
 
     /// Focus or unfocus the activity bar. Pair with
@@ -620,7 +678,7 @@ impl AppShell {
     /// the top item on focus, call
     /// `set_activity_keyboard_focused(true)` then `activity_set_cursor(0)`.
     pub fn set_activity_keyboard_focused(&mut self, focused: bool) {
-        self.activity_keyboard_focused = focused;
+        self.activity_keyboard.set_focused(focused);
     }
 
     /// Show (or hide) the keyboard cursor highlight on the activity bar
@@ -634,7 +692,7 @@ impl AppShell {
     /// TUI / GTK backends leave key events as `KeyPressed` rather than
     /// rewriting them to `UiEvent::ActivityBar(…)`.
     pub fn set_activity_cursor_visible(&mut self, visible: bool) {
-        self.activity_cursor_visible = visible;
+        self.activity_keyboard.set_cursor_visible(visible);
     }
 
     /// Set (or clear, with `None`) the active-panel accent colour
@@ -659,15 +717,13 @@ impl AppShell {
     /// item — does not wrap to the top.
     pub fn activity_select_next(&mut self) {
         let total = self.panels.len() + self.bottom_items.len();
-        if total > 0 {
-            self.activity_cursor = (self.activity_cursor + 1).min(total - 1);
-        }
+        self.activity_keyboard.select_next(total);
     }
 
     /// Move the keyboard cursor to the previous item. **Saturates** at
     /// index 0 — does not wrap to the bottom.
     pub fn activity_select_prev(&mut self) {
-        self.activity_cursor = self.activity_cursor.saturating_sub(1);
+        self.activity_keyboard.select_prev();
     }
 
     /// Set the keyboard cursor to an explicit index in the logical sequence.
@@ -675,9 +731,7 @@ impl AppShell {
     /// Has no effect when the panel + bottom-item lists are both empty.
     pub fn activity_set_cursor(&mut self, idx: usize) {
         let total = self.panels.len() + self.bottom_items.len();
-        if total > 0 {
-            self.activity_cursor = idx.min(total - 1);
-        }
+        self.activity_keyboard.set_cursor(idx, total);
     }
 
     /// Returns the [`WidgetId`] of the item currently under the keyboard
@@ -687,10 +741,11 @@ impl AppShell {
     /// bottom items (`panels.len()..`).
     pub fn activity_selected_id(&self) -> Option<&WidgetId> {
         let np = self.panels.len();
-        if self.activity_cursor < np {
-            Some(&self.panels[self.activity_cursor].id)
+        let cursor = self.activity_keyboard.cursor();
+        if cursor < np {
+            Some(&self.panels[cursor].id)
         } else {
-            let bi = self.activity_cursor - np;
+            let bi = cursor - np;
             self.bottom_items.get(bi).map(|p| &p.id)
         }
     }
@@ -913,16 +968,17 @@ impl AppShell {
         // panel occupied combined-index `idx`; everything after it shifts
         // down by one.
         let total = self.panels.len() + self.bottom_items.len();
+        let cursor = self.activity_keyboard.cursor();
         if total == 0 {
-            self.activity_cursor = 0;
-            self.activity_keyboard_focused = false;
-        } else if self.activity_cursor > idx {
-            self.activity_cursor -= 1;
-        } else if self.activity_cursor == idx {
+            self.activity_keyboard.set_cursor_raw(0);
+            self.activity_keyboard.set_focused(false);
+        } else if cursor > idx {
+            self.activity_keyboard.set_cursor_raw(cursor - 1);
+        } else if cursor == idx {
             // The cursor was on the removed panel; clamp to the new range.
-            self.activity_cursor = self.activity_cursor.min(total - 1);
+            self.activity_keyboard.set_cursor_raw(cursor.min(total - 1));
         }
-        // activity_cursor < idx: no change needed.
+        // cursor < idx: no change needed.
         true
     }
 
@@ -959,15 +1015,16 @@ impl AppShell {
             other => other,
         };
         let total = np + self.bottom_items.len();
+        let cursor = self.activity_keyboard.cursor();
         if total == 0 {
-            self.activity_cursor = 0;
-            self.activity_keyboard_focused = false;
-        } else if self.activity_cursor > combined_idx {
-            self.activity_cursor -= 1;
-        } else if self.activity_cursor == combined_idx {
-            self.activity_cursor = self.activity_cursor.min(total - 1);
+            self.activity_keyboard.set_cursor_raw(0);
+            self.activity_keyboard.set_focused(false);
+        } else if cursor > combined_idx {
+            self.activity_keyboard.set_cursor_raw(cursor - 1);
+        } else if cursor == combined_idx {
+            self.activity_keyboard.set_cursor_raw(cursor.min(total - 1));
         }
-        // activity_cursor < combined_idx: no change needed.
+        // cursor < combined_idx: no change needed.
         true
     }
 
@@ -1019,9 +1076,10 @@ impl AppShell {
     /// - `ActivityBar::is_keyboard_focused` is set to `true`, causing both
     ///   the TUI and GTK backends to route key events as
     ///   `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })`.
-    /// - The item at [`Self::activity_cursor`] (in the top-then-bottom
-    ///   logical sequence) has `is_keyboard_selected = true`, painting the
-    ///   selection ring on that icon.
+    /// - The item at the activity bar's keyboard cursor (in the
+    ///   top-then-bottom logical sequence, see [`ActivityBarKeyboard`])
+    ///   has `is_keyboard_selected = true`, painting the selection ring on
+    ///   that icon.
     ///
     /// `ActivityBar::active_accent`/`selection_bg` carry whatever colours
     /// were last set via [`Self::with_active_accent`]/[`Self::set_active_accent`]
@@ -1029,8 +1087,8 @@ impl AppShell {
     /// (no accent/highlight painted) until a host app opts in.
     pub fn build_activity_bar(&self) -> ActivityBar {
         let np = self.panels.len();
-        let focused = self.activity_keyboard_focused;
-        let show_cursor = focused || self.activity_cursor_visible;
+        let focused = self.activity_keyboard.focused();
+        let show_cursor = focused || self.activity_keyboard.cursor_visible();
 
         let top_items: Vec<ActivityItem> = self
             .panels
@@ -1048,7 +1106,7 @@ impl AppShell {
                 is_active: self.sidebar_bottom_owner.is_none()
                     && self.active_panel == Some(i)
                     && self.sidebar_visible,
-                is_keyboard_selected: show_cursor && self.activity_cursor == i,
+                is_keyboard_selected: show_cursor && self.activity_keyboard.cursor() == i,
             })
             .collect();
 
@@ -1064,7 +1122,7 @@ impl AppShell {
                 // active accent. The `sidebar_owner_panel()` call titles the
                 // header when a bottom item owns it.
                 is_active: false,
-                is_keyboard_selected: show_cursor && self.activity_cursor == np + j,
+                is_keyboard_selected: show_cursor && self.activity_keyboard.cursor() == np + j,
             })
             .collect();
 
@@ -1137,8 +1195,11 @@ impl AppShell {
         Self::register_chrome_zones(backend, &layout);
 
         let bar = self.build_activity_bar();
-        let hits =
-            backend.draw_activity_bar(layout.activity_bar_bounds, &bar, self.hovered_activity_idx);
+        let hits = backend.draw_activity_bar(
+            layout.activity_bar_bounds,
+            &bar,
+            self.activity_keyboard.hovered_idx(),
+        );
         // Register each activity-bar item's own zone (its real `WidgetId`,
         // e.g. `panel:git`) *before* `hits` moves into the hover-hit cache
         // below — this is the per-item provenance
@@ -1214,7 +1275,7 @@ impl AppShell {
                 if let Some(div) = layout.divider_bounds {
                     if contains(div, p) {
                         let center_x = div.x + div.width / 2.0;
-                        self.drag_offset = Some(p.x - center_x);
+                        self.drag_offset.begin(p.x - center_x);
                         return AppShellEvent::Consumed;
                     }
                 }
@@ -1226,7 +1287,7 @@ impl AppShell {
                     let grip_h = backend.snap_height(lh * 0.5).max(1.0);
                     let grip = Rect::new(bp.x, bp.y - grip_h, bp.width, grip_h);
                     if contains(grip, p) {
-                        self.bottom_panel_drag_offset = Some(p.y - bp.y);
+                        self.bottom_panel_drag_offset.begin(p.y - bp.y);
                         return AppShellEvent::Consumed;
                     }
                 }
@@ -1273,7 +1334,7 @@ impl AppShell {
                         right: _,
                     },
             } => {
-                if let Some(offset) = self.drag_offset {
+                if let Some(offset) = self.drag_offset.get() {
                     let ab_edge = match self.position {
                         ShellPosition::Left => {
                             layout.activity_bar_bounds.x + layout.activity_bar_bounds.width
@@ -1291,7 +1352,7 @@ impl AppShell {
                         new_width: clamped * lh,
                     };
                 }
-                if let Some(offset) = self.bottom_panel_drag_offset {
+                if let Some(offset) = self.bottom_panel_drag_offset.get() {
                     let bottom_edge = area.y + area.height;
                     let new_native = bottom_edge - (position.y - offset);
                     let status_lh = if self.has_status_bar { 1.0 } else { 0.0 };
@@ -1319,10 +1380,10 @@ impl AppShell {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.drag_offset.take().is_some() {
+                if self.drag_offset.end() {
                     return AppShellEvent::Consumed;
                 }
-                if self.bottom_panel_drag_offset.take().is_some() {
+                if self.bottom_panel_drag_offset.end() {
                     return AppShellEvent::Consumed;
                 }
                 AppShellEvent::Ignored
@@ -1342,6 +1403,12 @@ impl AppShell {
     /// [`Self::render`]/[`Self::handle`] pass `backend.snap_height`
     /// directly — the two agree because both apply the same
     /// above-one-line-height threshold.
+    ///
+    /// The actual carve lives in [`shell_layout::compute_layout`] as a
+    /// function of a read-only [`shell_layout::ShellLayoutConfig`]
+    /// snapshot rather than `&Self` — this wrapper builds that snapshot
+    /// and threads the resolved bottom-band bounds back into
+    /// `cached_bottom_band_bounds`.
     fn compute_layout(
         &self,
         area: Rect,
@@ -1349,341 +1416,33 @@ impl AppShell {
         style: &Style,
         snap: &dyn Fn(f32) -> f32,
     ) -> AppShellLayout {
-        // `activity_bar_width_px`, `title_bar_min_px` and
-        // `status_bar_height_px` are literal screen pixels. On a cell grid
-        // (TUI), `line_height` is architecturally always exactly `1.0` — one
-        // character cell, never a real pixel measurement — so a "48px"
-        // override would silently become "48 columns". Suppress the three
-        // px fields on that backend so the line-height-multiple fields
-        // (`activity_bar_width`, `title_bar_height_lh`, and the implicit
-        // `snap(lh)` status-bar fallback) keep driving TUI's layout instead.
-        //
-        // The same threshold also picks the *unset-override* defaults for
-        // `status_h`, `ab_w` and `header_h` below: a pixel backend (GUI)
-        // defaults to the matching VS Code `Style` chrome metric instead of
-        // a `line_height` multiple, while TUI's cell grid keeps the
-        // pre-existing `snap(lh)`/`activity_bar_width`-multiple behaviour
-        // (`Style`'s own tokens are a documented no-op there — see that
-        // module's "Where each token maps on TUI").
-        let is_cell_grid = line_height <= 1.0;
-        let activity_bar_width_px = self.activity_bar_width_px.filter(|_| !is_cell_grid);
-        let title_bar_min_px = self.title_bar_min_px.filter(|_| !is_cell_grid);
-        let status_bar_height_px = self.status_bar_height_px.filter(|_| !is_cell_grid);
-
-        let lh = line_height.max(1.0);
-
-        // ── Vertical carve: title bar (top), then status/cmd/bottom (bottom) ──
-
-        let mut band_y = area.y;
-        let mut band_h = area.height;
-
-        let title_bar_bounds = if self.has_title_bar {
-            let h = snap(self.title_bar_height_lh * lh).max(title_bar_min_px.unwrap_or(0.0));
-            let r = Rect::new(area.x, band_y, area.width, h);
-            band_y += h;
-            band_h -= h;
-            Some(r)
-        } else {
-            None
+        let cfg = shell_layout::ShellLayoutConfig {
+            activity_bar_width_px: self.activity_bar_width_px,
+            title_bar_min_px: self.title_bar_min_px,
+            status_bar_height_px: self.status_bar_height_px,
+            has_title_bar: self.has_title_bar,
+            title_bar_height_lh: self.title_bar_height_lh,
+            has_status_bar: self.has_status_bar,
+            status_bar_under_main_column: self.status_bar_under_main_column,
+            has_command_line: self.has_command_line,
+            has_bottom_panel: self.has_bottom_panel,
+            bottom_panel_visible: self.bottom_panel_visible,
+            bottom_panel_height_lh: self.bottom_panel_height_lh,
+            min_bottom_panel_height_lh: self.min_bottom_panel_height_lh,
+            max_bottom_panel_height_lh: self.max_bottom_panel_height_lh,
+            bottom_bands: &self.bottom_bands,
+            sidebar_visible: self.sidebar_visible,
+            panels_empty: self.panels.is_empty(),
+            position: self.position,
+            activity_bar_width: self.activity_bar_width,
+            sidebar_width: self.sidebar_width,
+            min_sidebar_width: self.min_sidebar_width,
+            max_sidebar_width: self.max_sidebar_width,
         };
-
-        let status_h = if self.has_status_bar {
-            status_bar_height_px.unwrap_or_else(|| {
-                if is_cell_grid {
-                    snap(lh)
-                } else {
-                    // Floored at `lh`, never shrunk below it — a chrome
-                    // font taller than the VS Code default must not be
-                    // clipped against a fixed strip.
-                    snap(lh.max(style.status_bar_height))
-                }
-            })
-        } else {
-            0.0
-        };
-        let cmd_h = if self.has_command_line { snap(lh) } else { 0.0 };
-
-        // Default carve: the status bar and command line consume height
-        // from the shared band before the activity bar/sidebar/main split
-        // below, full window width — so those columns stop above them.
-        // Opted into `status_bar_under_main_column`, the band stays full
-        // height here (the activity bar and sidebar run to the area's
-        // bottom edge) and the two bars are instead carved from each
-        // branch's own main-column rect below, via `carve_status_chrome`.
-        let (status_bar_bounds, command_line_bounds) = if self.status_bar_under_main_column {
-            (None, None)
-        } else {
-            band_h -= status_h;
-            let sb = self
-                .has_status_bar
-                .then(|| Rect::new(area.x, band_y + band_h, area.width, status_h));
-            band_h -= cmd_h;
-            let cl = self
-                .has_command_line
-                .then(|| Rect::new(area.x, band_y + band_h, area.width, cmd_h));
-            (sb, cl)
-        };
-
-        // Bottom panel height — computed here but *not* subtracted from the
-        // band. The panel docks only under main content (full width minus the
-        // sidebar), so it is carved from the main column after the horizontal
-        // split below. The sidebar and activity bar run the full band height.
-        // In `status_bar_under_main_column` mode `band_h` has not yet lost
-        // the status bar/command line height either (that happens per-branch
-        // below), so the 60%-of-band clamp is sized against what the main
-        // column will actually have left, not the taller shared band.
-        let main_column_h = (band_h
-            - if self.status_bar_under_main_column {
-                status_h + cmd_h
-            } else {
-                0.0
-            })
-        .max(0.0);
-        let bottom_panel_h = if self.has_bottom_panel && self.bottom_panel_visible {
-            let h = snap(
-                self.bottom_panel_height_lh.clamp(
-                    self.min_bottom_panel_height_lh,
-                    self.max_bottom_panel_height_lh,
-                ) * lh,
-            );
-            Some(h.min(main_column_h * 0.6))
-        } else {
-            None
-        };
-
-        let band_h = band_h.max(0.0);
-
-        // Carve the status bar then the command line from the bottom of a
-        // main-column rect — used only in `status_bar_under_main_column`
-        // mode. In the default mode those bars were already removed from
-        // `band_h` above, at full window width, before this rect existed.
-        let carve_status_chrome = |main: Rect| -> (Rect, Option<Rect>, Option<Rect>) {
-            let mut remaining = main;
-            let status = if self.has_status_bar {
-                let h = status_h.min(remaining.height);
-                let above_h = (remaining.height - h).max(0.0);
-                let rect = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
-                remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
-                Some(rect)
-            } else {
-                None
-            };
-            let cmd = if self.has_command_line {
-                let h = cmd_h.min(remaining.height);
-                let above_h = (remaining.height - h).max(0.0);
-                let rect = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
-                remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
-                Some(rect)
-            } else {
-                None
-            };
-            (remaining, status, cmd)
-        };
-
-        // Split a main-column rect into (content_above, bottom_panel + N
-        // bottom_bands). Bottom bands are carved first, stacked
-        // bottom-up flush against `main`'s bottom edge in list order (index
-        // 0 lowest); the legacy single bottom-panel drawer is then carved
-        // from what remains, so it always sits directly above every band —
-        // i.e. it behaves as one more, implicit band on top of the list.
-        let carve_bottom_chrome = |main: Rect| -> (Rect, Vec<(WidgetId, Rect)>, Option<Rect>) {
-            let mut remaining = main;
-            let mut band_bounds = Vec::new();
-            for band in &self.bottom_bands {
-                if !band.visible {
-                    continue;
-                }
-                let h = snap(band.height_lh * lh).clamp(0.0, remaining.height);
-                let above_h = (remaining.height - h).max(0.0);
-                let rect = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
-                remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
-                band_bounds.push((band.id, rect));
-            }
-            let bottom_panel_bounds = match bottom_panel_h {
-                Some(h) => {
-                    let h = h.min(remaining.height);
-                    let above_h = (remaining.height - h).max(0.0);
-                    let panel = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
-                    remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
-                    Some(panel)
-                }
-                None => None,
-            };
-            (remaining, band_bounds, bottom_panel_bounds)
-        };
-
-        // Combine the two carves above into the one step every branch below
-        // runs on its own `main_bounds` rect: in `status_bar_under_main_column`
-        // mode this carves the status bar and command line from the main
-        // column first, then the bottom bands/panel above them, so the full
-        // bottom-up stack (status bar, command line, bands, panel) lives
-        // entirely within the main column; otherwise the status bar and
-        // command line bounds computed above (full window width) pass
-        // through untouched and only the bottom bands/panel are carved here.
-        // (remaining main column, status bar bounds, command line bounds,
-        // bottom band bounds, bottom panel bounds).
-        type MainColumnChrome = (
-            Rect,
-            Option<Rect>,
-            Option<Rect>,
-            Vec<(WidgetId, Rect)>,
-            Option<Rect>,
-        );
-        let finish_main_column = |main: Rect| -> MainColumnChrome {
-            let (main, status, cmd) = if self.status_bar_under_main_column {
-                carve_status_chrome(main)
-            } else {
-                (main, status_bar_bounds, command_line_bounds)
-            };
-            let (main, bands, panel) = carve_bottom_chrome(main);
-            (main, status, cmd, bands, panel)
-        };
-
-        // ── Horizontal carve: activity bar + sidebar + divider + main ──
-        //
-        // Band widths (`ab_w`, `sidebar_w`, `divider_w`, `main_w`) are still
-        // decided by hand — they depend on clamping/min/max rules that are
-        // AppShell's own policy, not a layout concern. Once the widths are
-        // known, turning them into left-to-right x-positions is exactly the
-        // one-dimensional packing `crate::flex::pack_1d` already does for
-        // `Toolbar` and `Form` (same shared engine, see those modules), so
-        // `row_x_positions` delegates to it under the `layout` feature.
-
-        let ab_w = activity_bar_width_px.unwrap_or_else(|| {
-            if is_cell_grid {
-                snap(self.activity_bar_width * lh)
-            } else {
-                snap(style.activity_bar_width)
-            }
-        });
-        let divider_w = snap(lh * 0.25).clamp(1.0, 4.0);
-
-        if !self.sidebar_visible || self.panels.is_empty() {
-            let main_w = (area.width - ab_w).max(0.0);
-            let (ab_bounds, main_bounds) = match self.position {
-                ShellPosition::Left => {
-                    let x = row_x_positions(area.x, &[ab_w, main_w]);
-                    (
-                        Rect::new(x[0], band_y, ab_w, band_h),
-                        Rect::new(x[1], band_y, main_w, band_h),
-                    )
-                }
-                ShellPosition::Right => {
-                    let x = row_x_positions(area.x, &[main_w, ab_w]);
-                    (
-                        Rect::new(x[1], band_y, ab_w, band_h),
-                        Rect::new(x[0], band_y, main_w, band_h),
-                    )
-                }
-            };
-            let (
-                main_bounds,
-                status_bar_bounds,
-                command_line_bounds,
-                bottom_band_bounds,
-                bottom_panel_bounds,
-            ) = finish_main_column(main_bounds);
-            *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
-            return AppShellLayout {
-                window_bounds: area,
-                title_bar_bounds,
-                activity_bar_bounds: ab_bounds,
-                sidebar_header_bounds: None,
-                sidebar_content_bounds: None,
-                divider_bounds: None,
-                main_content_bounds: main_bounds,
-                bottom_panel_bounds,
-                command_line_bounds,
-                status_bar_bounds,
-            };
-        }
-
-        let sidebar_w = snap(
-            self.sidebar_width
-                .clamp(self.min_sidebar_width, self.max_sidebar_width)
-                * lh,
-        );
-        let remaining = (area.width - ab_w - divider_w).max(0.0);
-        let sidebar_w = sidebar_w.min(remaining * 0.8);
-        // The sidebar header strip (e.g. "EXPLORER") paints through the
-        // same chrome rendering as a tab strip, so a pixel backend sizes
-        // it off `Style::tab_height` instead of the raw chrome line
-        // height — floored at `lh` so a chrome font taller than the
-        // token isn't clipped; TUI's cell grid keeps the one-row default.
-        let header_h = if is_cell_grid {
-            lh
-        } else {
-            snap(lh.max(style.tab_height))
-        };
-
-        let main_w = (area.width - ab_w - sidebar_w - divider_w).max(0.0);
-
-        match self.position {
-            ShellPosition::Left => {
-                let x = row_x_positions(area.x, &[ab_w, sidebar_w, divider_w, main_w]);
-                let ab_bounds = Rect::new(x[0], band_y, ab_w, band_h);
-                let sidebar_x = x[1];
-                let header_bounds = Rect::new(sidebar_x, band_y, sidebar_w, header_h);
-                let content_y = band_y + header_h;
-                let content_h = (band_h - header_h).max(0.0);
-                let content_bounds = Rect::new(sidebar_x, content_y, sidebar_w, content_h);
-                let div_bounds = Rect::new(x[2], band_y, divider_w, band_h);
-                let main_bounds = Rect::new(x[3], band_y, main_w, band_h);
-                let (
-                    main_bounds,
-                    status_bar_bounds,
-                    command_line_bounds,
-                    bottom_band_bounds,
-                    bottom_panel_bounds,
-                ) = finish_main_column(main_bounds);
-                *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
-
-                AppShellLayout {
-                    window_bounds: area,
-                    title_bar_bounds,
-                    activity_bar_bounds: ab_bounds,
-                    sidebar_header_bounds: Some(header_bounds),
-                    sidebar_content_bounds: Some(content_bounds),
-                    divider_bounds: Some(div_bounds),
-                    main_content_bounds: main_bounds,
-                    bottom_panel_bounds,
-                    command_line_bounds,
-                    status_bar_bounds,
-                }
-            }
-            ShellPosition::Right => {
-                let x = row_x_positions(area.x, &[main_w, divider_w, sidebar_w, ab_w]);
-                let ab_bounds = Rect::new(x[3], band_y, ab_w, band_h);
-                let sidebar_x = x[2];
-                let header_bounds = Rect::new(sidebar_x, band_y, sidebar_w, header_h);
-                let content_y = band_y + header_h;
-                let content_h = (band_h - header_h).max(0.0);
-                let content_bounds = Rect::new(sidebar_x, content_y, sidebar_w, content_h);
-                let div_bounds = Rect::new(x[1], band_y, divider_w, band_h);
-                let main_bounds = Rect::new(x[0], band_y, main_w, band_h);
-                let (
-                    main_bounds,
-                    status_bar_bounds,
-                    command_line_bounds,
-                    bottom_band_bounds,
-                    bottom_panel_bounds,
-                ) = finish_main_column(main_bounds);
-                *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
-
-                AppShellLayout {
-                    window_bounds: area,
-                    title_bar_bounds,
-                    activity_bar_bounds: ab_bounds,
-                    sidebar_header_bounds: Some(header_bounds),
-                    sidebar_content_bounds: Some(content_bounds),
-                    divider_bounds: Some(div_bounds),
-                    main_content_bounds: main_bounds,
-                    bottom_panel_bounds,
-                    command_line_bounds,
-                    status_bar_bounds,
-                }
-            }
-        }
+        let (layout, bottom_band_bounds) =
+            shell_layout::compute_layout(&cfg, area, line_height, style, snap);
+        *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
+        layout
     }
 
     fn handle_activity_click(&mut self, clicked_id: &WidgetId) -> AppShellEvent {
@@ -1740,36 +1499,14 @@ impl AppShell {
         if contains(layout.activity_bar_bounds, *position) {
             let ab = layout.activity_bar_bounds;
             let hits = self.cached_activity_hits.borrow();
-            self.hovered_activity_idx = hits
+            let idx = hits
                 .iter()
                 .position(|hit| position.y >= hit.y_start + ab.y && position.y < hit.y_end + ab.y);
+            self.activity_keyboard.set_hovered_idx(idx);
         } else {
-            self.hovered_activity_idx = None;
+            self.activity_keyboard.set_hovered_idx(None);
         }
     }
-}
-
-/// Compute each chrome band's left edge, left-to-right starting at
-/// `origin`, with no gap between consecutive bands, never shrinking.
-///
-/// With the `layout` feature this runs through [`crate::flex`]'s shared
-/// flexbox engine — the same one `Toolbar` and `Form` pack their rows
-/// through. Without it, the same arithmetic is done by hand.
-#[cfg(feature = "layout")]
-fn row_x_positions(origin: f32, sizes: &[f32]) -> Vec<f32> {
-    crate::flex::pack_1d(crate::flex::FlexDirection::Row, origin, sizes, 0.0, 0.0)
-}
-
-/// Same contract as the `layout`-feature arm above, computed by hand.
-#[cfg(not(feature = "layout"))]
-fn row_x_positions(origin: f32, sizes: &[f32]) -> Vec<f32> {
-    let mut x = origin;
-    let mut xs = Vec::with_capacity(sizes.len());
-    for &s in sizes {
-        xs.push(x);
-        x += s;
-    }
-    xs
 }
 
 fn contains(rect: Rect, point: Point) -> bool {
@@ -2568,7 +2305,7 @@ mod tests {
     #[test]
     fn build_activity_bar_no_selection_when_not_focused() {
         let mut s = shell();
-        s.activity_cursor = 1;
+        s.activity_keyboard.set_cursor_raw(1);
         // focused is false → no item should be selected
         let bar = s.build_activity_bar();
         assert!(bar.top_items.iter().all(|i| !i.is_keyboard_selected));
@@ -2580,11 +2317,11 @@ mod tests {
         s.set_activity_keyboard_focused(true);
         // cursor starts at 0
         s.activity_select_next(); // → 1
-        assert_eq!(s.activity_cursor, 1);
+        assert_eq!(s.activity_keyboard.cursor(), 1);
         s.activity_select_next(); // → 2
-        assert_eq!(s.activity_cursor, 2);
+        assert_eq!(s.activity_keyboard.cursor(), 2);
         s.activity_select_next(); // → 3 (first bottom item)
-        assert_eq!(s.activity_cursor, 3);
+        assert_eq!(s.activity_keyboard.cursor(), 3);
 
         let bar = s.build_activity_bar();
         assert!(bar.bottom_items[0].is_keyboard_selected);
@@ -2599,7 +2336,7 @@ mod tests {
             s.activity_select_next();
         }
         // Should saturate at 3 (last index: 3 top + 1 bottom − 1 = 3).
-        assert_eq!(s.activity_cursor, 3);
+        assert_eq!(s.activity_keyboard.cursor(), 3);
     }
 
     #[test]
@@ -2607,32 +2344,32 @@ mod tests {
         let mut s = shell();
         // cursor is already at 0
         s.activity_select_prev();
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
         s.activity_select_prev();
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
     }
 
     #[test]
     fn select_prev_moves_cursor_up() {
         let mut s = shell();
-        s.activity_cursor = 3; // bottom item
+        s.activity_keyboard.set_cursor_raw(3); // bottom item
         s.activity_select_prev();
-        assert_eq!(s.activity_cursor, 2);
+        assert_eq!(s.activity_keyboard.cursor(), 2);
         s.activity_select_prev();
-        assert_eq!(s.activity_cursor, 1);
+        assert_eq!(s.activity_keyboard.cursor(), 1);
         s.activity_select_prev();
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
         s.activity_select_prev(); // saturates
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
     }
 
     #[test]
     fn activity_set_cursor_clamps_to_valid_range() {
         let mut s = shell(); // 4 items total
         s.activity_set_cursor(100);
-        assert_eq!(s.activity_cursor, 3);
+        assert_eq!(s.activity_keyboard.cursor(), 3);
         s.activity_set_cursor(0);
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
     }
 
     #[test]
@@ -2648,7 +2385,7 @@ mod tests {
     #[test]
     fn activity_selected_id_bottom_item() {
         let mut s = shell();
-        s.activity_cursor = 3; // first (and only) bottom item
+        s.activity_keyboard.set_cursor_raw(3); // first (and only) bottom item
         assert_eq!(
             s.activity_selected_id(),
             Some(&WidgetId::new("panel:settings"))
@@ -2658,7 +2395,7 @@ mod tests {
     #[test]
     fn activity_activate_selected_top_panel_emits_panel_changed() {
         let mut s = shell();
-        s.activity_cursor = 1; // panel:search
+        s.activity_keyboard.set_cursor_raw(1); // panel:search
         let ev = s.activity_activate_selected().expect("should return Some");
         assert_eq!(
             ev,
@@ -2672,7 +2409,7 @@ mod tests {
     #[test]
     fn activity_activate_selected_bottom_item_emits_bottom_clicked() {
         let mut s = shell();
-        s.activity_cursor = 3; // panel:settings
+        s.activity_keyboard.set_cursor_raw(3); // panel:settings
         let ev = s.activity_activate_selected().expect("should return Some");
         assert_eq!(
             ev,
@@ -2695,7 +2432,7 @@ mod tests {
     fn activity_activate_does_not_clear_keyboard_focus() {
         let mut s = shell();
         s.set_activity_keyboard_focused(true);
-        s.activity_cursor = 1;
+        s.activity_keyboard.set_cursor_raw(1);
         let _ = s.activity_activate_selected();
         // Consumer decides whether to clear focus; AppShell must not.
         assert!(s.activity_keyboard_focused());
@@ -2711,7 +2448,7 @@ mod tests {
     fn select_next_noop_on_empty_shell() {
         let mut s = AppShell::new(vec![], 30.0);
         s.activity_select_next(); // must not panic
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
     }
 
     // ── Programmatic state control ──────────────────────────────────
@@ -2780,7 +2517,7 @@ mod tests {
         let div = l.divider_bounds.unwrap();
         let _center = div.x + div.width / 2.0;
 
-        s.drag_offset = Some(0.0);
+        s.drag_offset.begin(0.0);
         let ab_right = l.activity_bar_bounds.x + l.activity_bar_bounds.width;
         let target_width = 40.0;
         let mouse_x = ab_right + target_width;
@@ -2804,7 +2541,7 @@ mod tests {
     #[test]
     fn resize_drag_clamps_to_min() {
         let mut s = shell();
-        s.drag_offset = Some(0.0);
+        s.drag_offset.begin(0.0);
         let ev = s.handle(
             &UiEvent::MouseMoved {
                 position: Point::new(s.activity_bar_width + 1.0, 5.0),
@@ -2824,7 +2561,7 @@ mod tests {
     #[test]
     fn mouse_up_ends_drag() {
         let mut s = shell();
-        s.drag_offset = Some(0.0);
+        s.drag_offset.begin(0.0);
         let ev = s.handle(
             &UiEvent::MouseUp {
                 button: MouseButton::Left,
@@ -2835,7 +2572,7 @@ mod tests {
             area(),
         );
         assert_eq!(ev, AppShellEvent::Consumed);
-        assert!(s.drag_offset.is_none());
+        assert!(!s.drag_offset.is_dragging());
     }
 
     // ── Dynamic panel registration ──────────────────────────────────
@@ -2945,7 +2682,7 @@ mod tests {
         s.activity_set_cursor(2); // pointing at git (index 2)
         s.remove_panel(&WidgetId::new("panel:explorer")); // remove index 0
                                                           // cursor was > 0, so should decrement to 1 (still pointing at git)
-        assert_eq!(s.activity_cursor, 1);
+        assert_eq!(s.activity_keyboard.cursor(), 1);
         assert_eq!(s.activity_selected_id(), Some(&WidgetId::new("panel:git")));
     }
 
@@ -2955,7 +2692,7 @@ mod tests {
         s.set_activity_keyboard_focused(true);
         s.activity_set_cursor(0); // pointing at explorer (index 0)
         s.remove_panel(&WidgetId::new("panel:search")); // remove index 1 (after cursor)
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
         assert_eq!(
             s.activity_selected_id(),
             Some(&WidgetId::new("panel:explorer"))
@@ -2970,7 +2707,7 @@ mod tests {
         s.remove_panel(&WidgetId::new("panel:git")); // remove the cursor item
                                                      // New total = 2 panels + 1 bottom = 3; cursor was 2, clamped to 2.
                                                      // Now index 2 is the bottom item (settings).
-        assert_eq!(s.activity_cursor, 2);
+        assert_eq!(s.activity_keyboard.cursor(), 2);
         assert_eq!(
             s.activity_selected_id(),
             Some(&WidgetId::new("panel:settings"))
@@ -2991,7 +2728,7 @@ mod tests {
         s.set_activity_keyboard_focused(true);
         s.remove_panel(&WidgetId::new("panel:only"));
         assert!(!s.activity_keyboard_focused());
-        assert_eq!(s.activity_cursor, 0);
+        assert_eq!(s.activity_keyboard.cursor(), 0);
     }
 
     #[test]
@@ -3004,7 +2741,7 @@ mod tests {
         s.set_activity_keyboard_focused(true);
         s.activity_set_cursor(1); // pointing at search (panel index 1)
         s.remove_bottom_item(&WidgetId::new("panel:settings")); // remove bottom at combined 3
-        assert_eq!(s.activity_cursor, 1); // cursor was before removed item
+        assert_eq!(s.activity_keyboard.cursor(), 1); // cursor was before removed item
         assert_eq!(
             s.activity_selected_id(),
             Some(&WidgetId::new("panel:search"))
@@ -3018,7 +2755,7 @@ mod tests {
         s.activity_set_cursor(3); // pointing at settings (combined index 3)
         s.remove_bottom_item(&WidgetId::new("panel:settings"));
         // New total = 3; cursor was 3, clamped to 2 (last panel).
-        assert_eq!(s.activity_cursor, 2);
+        assert_eq!(s.activity_keyboard.cursor(), 2);
         assert_eq!(s.activity_selected_id(), Some(&WidgetId::new("panel:git")));
     }
 
@@ -3454,7 +3191,7 @@ mod tests {
     #[test]
     fn bottom_panel_resize_drag() {
         let mut s = full_chrome_shell();
-        s.bottom_panel_drag_offset = Some(0.0);
+        s.bottom_panel_drag_offset.begin(0.0);
         let ev = s.handle(
             &UiEvent::MouseMoved {
                 position: Point::new(40.0, 18.0),
@@ -3659,5 +3396,55 @@ mod tests {
         assert_eq!(bands.len(), 1);
         assert_eq!(l.main_content_bounds.height, 0.0);
         assert!(bands[0].1.height > 0.0);
+    }
+
+    /// Golden shape for every [`AppShellEvent`] variant's [`Serialize`]
+    /// impl — the externally-tagged, one-entry-map JSON a binding's own
+    /// `on_shell_event` dict/JSON payload must keep matching byte-for-byte
+    /// (pins `quadraui-py`'s `test_run_shell.py` and `quadraui-node`'s
+    /// `shell.test.ts` expectations, which assert these exact shapes
+    /// through `pythonize`/`serde_json::to_value` rather than this crate's
+    /// own `Serialize` impl directly).
+    #[test]
+    fn app_shell_event_serializes_to_the_externally_tagged_dict_shape() {
+        let cases = [
+            (
+                AppShellEvent::PanelChanged {
+                    panel_id: WidgetId::new("panel:explorer"),
+                },
+                serde_json::json!({"PanelChanged": {"panel_id": "panel:explorer"}}),
+            ),
+            (
+                AppShellEvent::SidebarHidden,
+                serde_json::json!({"SidebarHidden": null}),
+            ),
+            (
+                AppShellEvent::SidebarResized { new_width: 42.0 },
+                serde_json::json!({"SidebarResized": {"new_width": 42.0}}),
+            ),
+            (
+                AppShellEvent::BottomPanelResized { new_height: 7.5 },
+                serde_json::json!({"BottomPanelResized": {"new_height": 7.5}}),
+            ),
+            (
+                AppShellEvent::BottomPanelHidden,
+                serde_json::json!({"BottomPanelHidden": null}),
+            ),
+            (
+                AppShellEvent::BottomItemClicked {
+                    id: WidgetId::new("bottom:logs"),
+                },
+                serde_json::json!({"BottomItemClicked": {"id": "bottom:logs"}}),
+            ),
+            (
+                AppShellEvent::Consumed,
+                serde_json::json!({"Consumed": null}),
+            ),
+            (AppShellEvent::Ignored, serde_json::json!({"Ignored": null})),
+        ];
+        for (event, expected) in cases {
+            let actual = serde_json::to_value(&event).expect("AppShellEvent always serializes");
+            assert_eq!(actual, expected, "{event:?}");
+        }
     }
 }

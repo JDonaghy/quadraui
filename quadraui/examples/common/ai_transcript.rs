@@ -22,8 +22,8 @@
 //! - `Esc` — quit.
 
 use quadraui::{
-    AppLogic, Backend, ChatController, ChatControllerEvent, ChatRole, Reaction, Rect, StyledText,
-    Theme, UiEvent,
+    AppLogic, Backend, ChatController, ChatControllerAction, ChatRole, Handled, Reaction, Rect,
+    StyledText, Theme, UiEvent,
 };
 
 /// Canned (prompt, markdown-reply) pairs cycled through on each send.
@@ -168,13 +168,13 @@ impl AppLogic for AiTranscript {
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         let vp = backend.viewport();
         let rect = Rect::new(0.0, 0.0, vp.width, vp.height);
-        match self.controller.handle(&event, backend, rect) {
-            ChatControllerEvent::Submit { .. } => {
+        match self.controller.handle_event(&event, backend, rect) {
+            Handled::Event(ChatControllerAction::Submit { .. }) => {
                 self.send_next();
                 Reaction::Redraw
             }
-            ChatControllerEvent::Cancelled => Reaction::Exit,
-            ChatControllerEvent::Consumed => Reaction::Redraw,
+            Handled::Event(ChatControllerAction::Cancelled) => Reaction::Exit,
+            Handled::Consumed => Reaction::Redraw,
             _ => Reaction::Continue,
         }
     }

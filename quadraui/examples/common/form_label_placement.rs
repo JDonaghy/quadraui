@@ -40,9 +40,9 @@
 //! - `q` (no field focused) → quit
 
 use quadraui::{
-    AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerEvent, FormField,
-    InteractionState, LabelAlign, LabelPosition, Reaction, Rect, StatusBar, StatusBarSegment,
-    StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerAction, FormField,
+    Handled, InteractionState, LabelAlign, LabelPosition, Reaction, Rect, StatusBar,
+    StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct FormLabelPlacementApp {
@@ -104,6 +104,7 @@ impl FormLabelPlacementApp {
             tab_index: Some(tab_index),
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -130,6 +131,7 @@ impl FormLabelPlacementApp {
             tab_index: Some(tab_index),
             control_width: None,
             min_control_width: None,
+            row_align: None,
         }
     }
 
@@ -165,6 +167,7 @@ impl FormLabelPlacementApp {
             label_width: None,
             control_width: Default::default(),
             min_control_width: None,
+            spacing: Default::default(),
         }
     }
 
@@ -241,8 +244,8 @@ impl AppLogic for FormLabelPlacementApp {
         self.fc.set_form(self.build_form());
         self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle_cached(&event, rect) {
-            FormControllerEvent::FormAction(fe) => {
+        match self.fc.handle_cached_event(&event, rect) {
+            Handled::Event(FormControllerAction::FormAction(fe)) => {
                 match fe {
                     quadraui::FormEvent::TextInputChanged { id, value } => {
                         match id.as_str() {
@@ -273,8 +276,10 @@ impl AppLogic for FormLabelPlacementApp {
                 self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
-            FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => Reaction::Redraw,
-            FormControllerEvent::Ignored => Reaction::Continue,
+            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
+                Reaction::Redraw
+            }
+            Handled::Ignored => Reaction::Continue,
         }
     }
 }
