@@ -110,21 +110,23 @@ pub struct ButtonMetrics {
     /// `Toast`/`Tooltip`/`ContextMenu`/`Palette`/`Dialog` already share.
     pub padding_x: f32,
     /// Resolved corner radius, in surface-native pixels — read straight
-    /// from [`Style::corner_radius`], the same radius every other
-    /// rounded-rect overlay rasterises its box with.
+    /// from [`Style::button_radius`], the button-specific radius token
+    /// (narrower than [`Style::corner_radius`], which every other
+    /// rounded-rect overlay rasterises its own box with).
     pub corner_radius: f32,
 }
 
 impl ButtonMetrics {
     /// Resolve a [`Button`]'s geometry from `style`. Every number here
-    /// is a direct read of an existing [`Style`] field — there is no
-    /// button-specific token, so a host that retunes `Style` once gets
-    /// a matching button for free on every backend.
+    /// is a direct read of an existing [`Style`] field — `corner_radius`
+    /// from [`Style::button_radius`] specifically, not
+    /// [`Style::corner_radius`] — so a host that retunes `Style` once
+    /// gets a matching button for free on every backend.
     pub fn resolve(style: &Style) -> Self {
         Self {
             height: style.control_height,
             padding_x: style.padding,
-            corner_radius: style.corner_radius,
+            corner_radius: style.button_radius,
         }
     }
 }
@@ -1285,7 +1287,7 @@ mod tests {
         let style = Style::default()
             .with_control_height(32.0)
             .with_padding(10.0)
-            .with_corner_radius(9.0);
+            .with_button_radius(9.0);
 
         let metrics = ButtonMetrics::resolve(&style);
 
@@ -1300,7 +1302,17 @@ mod tests {
         let metrics = ButtonMetrics::resolve(&style);
         assert_eq!(metrics.height, style.control_height);
         assert_eq!(metrics.padding_x, style.padding);
-        assert_eq!(metrics.corner_radius, style.corner_radius);
+        assert_eq!(metrics.corner_radius, style.button_radius);
+    }
+
+    /// A button's corner radius tracks [`Style::button_radius`], not
+    /// [`Style::corner_radius`] — the two are independent tokens, so
+    /// retuning one leaves the other's consumer unchanged.
+    #[test]
+    fn resolved_metrics_corner_radius_is_independent_of_style_corner_radius() {
+        let style = Style::default().with_corner_radius(20.0);
+        let metrics = ButtonMetrics::resolve(&style);
+        assert_eq!(metrics.corner_radius, Style::default().button_radius);
     }
 
     #[test]

@@ -181,22 +181,47 @@ impl MessageDialogController {
     /// two callers" pattern `docs/LESSONS.md` documents (also used by
     /// `examples/common/modal_occlusion_demo.rs`), so paint and hit-test
     /// can never disagree.
+    ///
+    /// On a pixel backend (`lh > 1.0`), the button row is sized at
+    /// [`crate::Style::control_height`] with VS Code-like horizontal
+    /// label padding, instead of the raw chrome line height/char-width
+    /// estimate — the same "pixel path reads `Style`, TUI's cell grid
+    /// keeps its char-cell geometry" split [`crate::compose::tab_group`]'s
+    /// own `strip_h` already draws for its tab strip.
     fn layout(&self, backend: &dyn Backend) -> DialogLayout {
         let m = backend.measure();
         let lh = m.line_height;
         let char_w = m.char_width;
         let viewport = backend.viewport();
         let has_title = self.dialog.title.spans.iter().any(|s| !s.text.is_empty());
-        // Floored at today's 10-char-width estimate; widened per-button
-        // via `resolved_button_spec()` so an explicit `spec`'s icon +
-        // longer label never clips its closing bracket — see
-        // `ButtonSpec::min_cell_width`'s own doc.
-        let button_width = self
-            .dialog
-            .buttons
-            .iter()
-            .map(|b| b.resolved_button_spec().min_cell_width() * char_w)
-            .fold(char_w * 10.0, f32::max);
+        let is_pixel = lh > 1.0;
+        let style = backend.style();
+        // VS Code's own dialog-button horizontal label inset, each side
+        // of the label — only meaningful once a real label width is
+        // available (`is_pixel`'s `measure_text` branch below).
+        const BUTTON_PADDING_X: f32 = 14.0;
+        let button_width = if is_pixel {
+            self.dialog
+                .buttons
+                .iter()
+                .map(|b| {
+                    let spec = b.resolved_button_spec();
+                    backend.measure_text(&spec.label, crate::FontRole::Chrome).0
+                        + BUTTON_PADDING_X * 2.0
+                })
+                .fold(0.0_f32, f32::max)
+        } else {
+            // Floored at today's 10-char-width estimate; widened
+            // per-button via `resolved_button_spec()` so an explicit
+            // `spec`'s icon + longer label never clips its closing
+            // bracket — see `ButtonSpec::min_cell_width`'s own doc.
+            self.dialog
+                .buttons
+                .iter()
+                .map(|b| b.resolved_button_spec().min_cell_width() * char_w)
+                .fold(char_w * 10.0, f32::max)
+        };
+        let button_row_height = if is_pixel { style.control_height } else { lh };
         // `button_row_height` is a *single* row; `Dialog::layout` itself
         // multiplies by `self.buttons.len()` when `vertical_buttons` is
         // set (see that method's own `button_block_h` local) — no need
@@ -207,7 +232,7 @@ impl MessageDialogController {
             body_height: lh * self.dialog.body.len().max(1) as f32,
             table_height: 0.0,
             input_height: 0.0,
-            button_row_height: lh,
+            button_row_height,
             button_width,
             button_gap: char_w * 2.0,
             padding: lh,
@@ -612,6 +637,72 @@ mod tests {
             vis.bounds.width,
             spec.min_cell_width() * char_w
         );
+    }
+
+    /// On a pixel backend (`line_height > 1.0`), the button row height is
+    /// `Style::control_height` — the VS Code-matching 26px row, not the
+    /// chrome font's own (usually shorter) line height — see this
+    /// issue's acceptance bar.
+    #[test]
+    fn pixel_backend_button_row_height_matches_control_height() {
+        let controller = MessageDialogController::new(opts_two_buttons());
+        let backend = crate::testing::RecordingBackend {
+            line_height: 16.0,
+            char_width: 7.0,
+            viewport: crate::Viewport {
+                width: 800.0,
+                height: 600.0,
+                scale: 1.0,
+            },
+            ..Default::default()
+        };
+
+        let layout = controller.layout(&backend);
+
+        assert_eq!(layout.visible_buttons.len(), 2);
+        for vis in &layout.visible_buttons {
+            assert_eq!(vis.bounds.height, crate::Style::default().control_height);
+        }
+    }
+
+    /// Same as `pixel_backend_button_row_height_matches_control_height`,
+    /// but through a `Backend::set_style` override — pins that the pixel
+    /// path reads the *live* `Style`, not a hardcoded `26.0` literal.
+    #[test]
+    fn pixel_backend_button_row_height_follows_a_set_style_override() {
+        let controller = MessageDialogController::new(opts_two_buttons());
+        let mut backend = crate::testing::RecordingBackend {
+            line_height: 16.0,
+            char_width: 7.0,
+            viewport: crate::Viewport {
+                width: 800.0,
+                height: 600.0,
+                scale: 1.0,
+            },
+            ..Default::default()
+        };
+        backend.set_style(crate::Style::default().with_control_height(40.0));
+
+        let layout = controller.layout(&backend);
+
+        assert_eq!(layout.visible_buttons[0].bounds.height, 40.0);
+    }
+
+    /// TUI's cell-grid geometry is unchanged by the pixel-path fix above
+    /// — `line_height <= 1.0` keeps sizing the button row off the raw
+    /// chrome line height, same as before.
+    #[test]
+    fn tui_backend_button_row_height_stays_the_raw_line_height() {
+        let controller = MessageDialogController::new(opts_two_buttons());
+        let backend = crate::tui::backend::TuiBackend::new();
+
+        let layout = controller.layout(&backend);
+
+        let lh = backend.measure().line_height;
+        assert!(lh <= 1.0, "TUI's line_height should stay cell-shaped");
+        for vis in &layout.visible_buttons {
+            assert_eq!(vis.bounds.height, lh);
+        }
     }
 
     #[test]
