@@ -534,9 +534,9 @@ for (const { name, tree, events, expected } of INLINE_LEAF_CASES) {
 // menu_bar) that doesn't fit `INLINE_LEAF_CASES`' generic "one Form event
 // per pushed event" shape above, so each gets its own test here instead of
 // a table row -- proving the same semantic event a flat-slot chrome bar
-// dispatches (ported from `toolbar_interactions.test.ts`'s own
-// `insertExtra`-based toolbar case) still reaches the handler when the bar
-// is painted as a literal inline `{ row: [{ id, <kind>: {...} }] }` leaf.
+// dispatches from an `insertExtra`-based flat slot still reaches the
+// handler when the bar is painted as a literal inline
+// `{ row: [{ id, <kind>: {...} }] }` leaf.
 
 test("inline tree leaf toolbar click emits Toolbar(ButtonClicked)", () => {
   const app = new QuiApp(40, 20);
@@ -700,10 +700,15 @@ test("inline tree leaf menu_bar Alt activation then Enter emits MenuActivated", 
 });
 
 test("inline tree leaf find_replace renders its query text", () => {
-  // `find_replace` has no `insertExtra` test at all today (unlike the
-  // other seven chrome kinds): `FindReplacePanel` carries no `id` field of
-  // its own (see `ExtraPaint::id`'s fixed-sentinel doc), so it only ever
-  // reaches the screen via an inline leaf.
+  // `FindReplacePanel` carries no `id` field of its own (see
+  // `ExtraPaint::id`'s fixed-sentinel doc), so this is its first coverage
+  // in this file, via an inline leaf. `hit_regions` drives both click
+  // routing AND which content the TUI rasteriser paints
+  // (`tui::draw_find_replace` walks it to place the find/replace input
+  // text) -- a real host builds it via `compute_find_replace_hit_regions`;
+  // this test supplies just the one entry it needs directly. An inline
+  // leaf gets the full 40-column viewport rather than a narrower
+  // `insertExtra` band, so a `width` of 20 keeps the region inside it.
   const app = new QuiApp(40, 20);
   app.setRender(() => ({
     row: [
@@ -712,6 +717,7 @@ test("inline tree leaf find_replace renders its query text", () => {
         find_replace: {
           query: "needle",
           group_bounds: { x: 0.0, y: 0.0, width: 40.0, height: 20.0 },
+          hit_regions: [[{ col: 0, row: 0, width: 20 }, { FindInput: 0 }]],
         },
       },
     ],
