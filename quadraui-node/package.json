@@ -10,6 +10,7 @@
   "files": [
     "js/index.ts",
     "js/wire.d.ts",
+    "js/app/*.ts",
     "index.js",
     "index.d.ts",
     "*.node"
