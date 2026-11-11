@@ -30,7 +30,7 @@ mutation a callback makes is already visible by the time that same
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple, cast
 
 from . import hot_reload as _hr
 from .component import Component
@@ -104,13 +104,13 @@ def _raw_key_name(key: Any) -> Optional[str]:
         return None
     char = key.get("Char")
     if char is not None:
-        return char
+        return str(char)
     named = key.get("Named")
     if named is None:
         return None
     if isinstance(named, dict):
         return f"F{named['F']}"
-    return named
+    return str(named)
 
 
 def key_name(event: Any) -> Optional[str]:
@@ -142,7 +142,7 @@ def _is_activate_key(name: Optional[str]) -> bool:
 # Maps a container-event wrapper's own key (`event["Tree"]`, `event["DataTable"]`,
 # ...) to {variant_name: (callback_name, args_from_payload)} -- the shape
 # every typed leaf node constructor's own `on_*` keyword documents.
-_CONTAINER_EVENT_MAP: Dict[str, Dict[str, Tuple[str, Callable[[dict], tuple]]]] = {
+_CONTAINER_EVENT_MAP: Dict[str, Dict[str, Tuple[str, Callable[[Dict[str, Any]], Tuple[Any, ...]]]]] = {
     "Tree": {
         "RowClicked": ("on_row_click", lambda p: (p["path"],)),
         "RowToggleExpand": ("on_toggle_expand", lambda p: (p["path"],)),
@@ -404,8 +404,8 @@ class App:
     def screen_contains(self, needle: str) -> bool:
         return self.qui.screen_contains(needle)
 
-    def widget_state(self, widget_id: str) -> Optional[dict]:
-        return self.qui.widget_state(widget_id)
+    def widget_state(self, widget_id: str) -> Optional[Dict[str, Any]]:
+        return cast(Optional[Dict[str, Any]], self.qui.widget_state(widget_id))
 
     def run_tui(self, mouse: bool = True) -> None:
         self.qui.run_tui(mouse)

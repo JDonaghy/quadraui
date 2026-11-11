@@ -87,7 +87,7 @@ class Node:
     id: Optional[str]
     callbacks: Dict[str, Callable[..., None]]
     children: Dict[str, Renderable]
-    build: Callable[[str, Dict[str, Any]], dict]
+    build: Callable[[str, Dict[str, Any]], Dict[str, Any]]
 
 
 def _callbacks(**named: Optional[Callable[..., None]]) -> Dict[str, Callable[..., None]]:
@@ -113,8 +113,8 @@ def Split(
     widget-state store with no state this layer needs to track; see
     `QuiApp.widget_state`'s own doc."""
 
-    def build(node_id: str, children: Dict[str, Any]) -> dict:
-        payload: dict = {
+    def build(node_id: str, children: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
             "id": node_id,
             "orientation": orientation,
             "ratio": ratio,
@@ -134,8 +134,8 @@ def Column(*items: Renderable, padding: Any = None, margin: Optional[float] = No
     """A vertical stack. Unaddressable on the wire (`LayoutColumnNode` has
     no `id` of its own), so it never takes callbacks."""
 
-    def build(_node_id: str, children: Dict[str, Any]) -> dict:
-        wire: dict = {"column": children["items"]}
+    def build(_node_id: str, children: Dict[str, Any]) -> Dict[str, Any]:
+        wire: Dict[str, Any] = {"column": children["items"]}
         if padding is not None:
             wire["padding"] = padding
         if margin is not None:
@@ -150,8 +150,8 @@ def Column(*items: Renderable, padding: Any = None, margin: Optional[float] = No
 def Row(*items: Renderable, padding: Any = None, margin: Optional[float] = None, gap: Optional[float] = None) -> Node:
     """A horizontal stack -- `Column`'s sibling, same unaddressable shape."""
 
-    def build(_node_id: str, children: Dict[str, Any]) -> dict:
-        wire: dict = {"row": children["items"]}
+    def build(_node_id: str, children: Dict[str, Any]) -> Dict[str, Any]:
+        wire: Dict[str, Any] = {"row": children["items"]}
         if padding is not None:
             wire["padding"] = padding
         if margin is not None:
@@ -174,8 +174,8 @@ def SidebarPanel(
     `ToolbarDescriptor` (build one with `Toolbar(...)`), not a child `Node`:
     it paints above `content` but isn't itself a layout-tree child."""
 
-    def build(node_id: str, children: Dict[str, Any]) -> dict:
-        payload: dict = {"id": node_id, "content": children["content"]}
+    def build(node_id: str, children: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"id": node_id, "content": children["content"]}
         if toolbar is not None:
             payload["toolbar"] = toolbar
         if toolbar_height is not None:
@@ -229,10 +229,10 @@ def Tabs(
     for how it is looked up. `on_close` fires on the tab's own `TabClosed`;
     this node never removes the tab itself -- the caller still owns `tabs`."""
 
-    def build(node_id: str, children: Dict[str, Any]) -> dict:
+    def build(node_id: str, children: Dict[str, Any]) -> Dict[str, Any]:
         wired_tabs = []
         for i, (spec, content_wire) in enumerate(zip(tabs, children["tabs"])):
-            entry: dict = {
+            entry: Dict[str, Any] = {
                 "id": spec.id or f"{node_id}:tab:{i}",
                 "title": spec.title,
                 "content": content_wire,
@@ -244,7 +244,7 @@ def Tabs(
             if spec.is_preview is not None:
                 entry["is_preview"] = spec.is_preview
             wired_tabs.append(entry)
-        payload: dict = {"id": node_id, "tabs": wired_tabs}
+        payload: Dict[str, Any] = {"id": node_id, "tabs": wired_tabs}
         if closable is not None:
             payload["closable"] = closable
         if right_segments is not None:
@@ -282,8 +282,8 @@ def Tree(
     `on_select` on `SelectionChanged`. Scroll is framework-owned; nothing
     here ever needs to read or write it."""
 
-    def build(node_id: str, _children: Dict[str, Any]) -> dict:
-        payload: dict = {
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
             "id": node_id,
             "rows": rows,
             "selection_mode": selection_mode,
@@ -316,7 +316,7 @@ def Table(
     Enter-to-activate both mean "open this row"); `on_select` on
     `RowSelected`; `on_header_click` on `HeaderClicked`."""
 
-    def build(node_id: str, _children: Dict[str, Any]) -> dict:
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "id": node_id,
             "data_table": {"id": node_id, "columns": columns, "rows": rows},
@@ -340,7 +340,7 @@ def StatusBar(
     """A `StatusBarDescriptor`. `on_segment_click` fires on `SegmentClicked`,
     with that segment's own `id`."""
 
-    def build(node_id: str, _children: Dict[str, Any]) -> dict:
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "id": node_id,
             "status_bar": {
@@ -357,7 +357,7 @@ def StatusBar(
 def TextDisplay(lines: List["TextDisplayLineDescriptor"], *, id: Optional[str] = None) -> Node:
     """A `TextDisplayDescriptor` leaf -- plain read-only text."""
 
-    def build(node_id: str, _children: Dict[str, Any]) -> dict:
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
         return {"id": node_id, "text_display": {"id": node_id, "lines": lines}}
 
     return Node("text_display", id, {}, {}, build)
@@ -384,8 +384,8 @@ def Button(
     button is focused (the same two paths `examples/tui_interactive_demo.py`
     hand-rolls)."""
 
-    def build(node_id: str, _children: Dict[str, Any]) -> dict:
-        payload: dict = {"id": node_id, "label": label}
+    def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"id": node_id, "label": label}
         for key, value in (
             ("variant", variant),
             ("icon", icon),

@@ -599,24 +599,31 @@ jobs:
         run: python3 tools/test_introduction_matches_readme.py
 
   wire-types-check:
-    # Staleness + acceptance gate for the generated wire types
-    # (`scripts/gen_wire_types.py`): fails if regenerating would change
-    # either committed output (`quadraui-py/python/quadraui/wire.pyi` /
-    # `quadraui-node/js/wire.d.ts`), if the "good" fixture scripts
-    # (`scripts/fixtures/wire_types_sample.{py,ts}`) fail to type-check under
-    # `mypy --strict`/`tsc --strict`, or if the "bad" misspelled-key
-    # fixtures (`scripts/fixtures/wire_types_sample_bad.{py,ts}`) type-check clean
-    # when they should not. `gen_wire_types.py` builds its schema by
-    # running `quadraui-binding-core`'s `export_wire_schema` binary (built
-    # from `quadraui-binding-core/src/wire_schema.rs`), so this job needs a
-    # Rust toolchain too -- a field or variant added to a wire-decoded Rust
-    # type without updating `wire_schema.rs` already fails `cargo test -p
-    # quadraui-binding-core` (or `cargo check --tests -p
-    # quadraui-binding-core`; the `coverage` drift guards live in a
+    # Staleness + acceptance gate for the generated wire types and
+    # native-extension stub (`scripts/gen_wire_types.py`): fails if
+    # regenerating would change any committed output
+    # (`quadraui-py/python/quadraui/wire.pyi`, `quadraui-node/js/wire.d.ts`,
+    # `quadraui-py/python/quadraui/_quadraui.pyi`), if the "good" fixture
+    # scripts (`scripts/fixtures/wire_types_sample.{py,ts}`, or every real
+    # example under `quadraui-py/examples/` for the `_quadraui.pyi` side)
+    # fail to type-check under `mypy --strict`/`pyright`/`tsc --strict`, or if the
+    # "bad" misspelled-key fixtures
+    # (`scripts/fixtures/wire_types_sample_bad.{py,ts}`) type-check clean
+    # when they should not. `gen_wire_types.py` builds its wire-data schema
+    # by running `quadraui-binding-core`'s `export_wire_schema` binary
+    # (built from `quadraui-binding-core/src/wire_schema.rs`), so this job
+    # needs a Rust toolchain too -- a field or variant added to a
+    # wire-decoded Rust type without updating `wire_schema.rs` already
+    # fails `cargo test -p quadraui-binding-core` (or `cargo check --tests
+    # -p quadraui-binding-core`; the `coverage` drift guards live in a
     # `#[cfg(test)]` module, so a bare `cargo check`/`cargo build` does not
     # compile them); the regeneration step below is what catches the
-    # matching "`wire_schema.rs` changed but `wire.pyi`/`wire.d.ts` weren't
-    # regenerated" half.
+    # matching "Rust side changed but the generated `.pyi`/`.d.ts` weren't
+    # regenerated" half -- `_quadraui.pyi`'s own source of truth is instead
+    # `quadraui-py/src/lib.rs`'s `#[pymethods]`/`#[pyfunction]` items,
+    # parsed by `gen_wire_types.py` directly (no Rust-side JSON export for
+    # those), so a method signature change there is caught by the same
+    # `--check` without needing its own coverage guard.
     name: Wire types (generated .pyi / .d.ts) staleness + type-check
     runs-on: ubuntu-latest
     needs: bump-shape

@@ -80,7 +80,7 @@ def resolve_modules(modules: Iterable[ModuleRef]) -> List[ModuleType]:
 
 
 def _source_path(module: ModuleType) -> Optional[str]:
-    path = getattr(module, "__file__", None)
+    path: Optional[str] = getattr(module, "__file__", None)
     if not path or not path.endswith(".py"):
         return None
     return path

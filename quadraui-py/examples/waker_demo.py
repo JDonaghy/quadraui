@@ -18,10 +18,18 @@ a quit keystroke raising from inside the handler is the only way to ask
 `run_tui()` to return.
 """
 
+from __future__ import annotations
+
 import threading
 import time
+from typing import TYPE_CHECKING, Any, Callable, List
 
-from quadraui import QuiApp
+from quadraui import QuiApp, QuiAppWaker
+
+if TYPE_CHECKING:
+    # `quadraui.wire` is a stub-only module -- see its own module docstring --
+    # so this import only runs under a type checker.
+    from quadraui.wire import Key, UiEvent
 
 WIDTH = 80
 HEIGHT = 24
@@ -31,7 +39,7 @@ class _Quit(Exception):
     """Sentinel raised from the handler to unwind out of `run_tui()`."""
 
 
-def make_app():
+def make_app() -> QuiApp:
     app = QuiApp(WIDTH, HEIGHT)
     app.insert_text_display(
         {
@@ -52,23 +60,23 @@ def make_app():
     return app
 
 
-def _is_quit_key(key):
+def _is_quit_key(key: "Key") -> bool:
     return key == {"Char": "q"} or key == {"Named": "Escape"}
 
 
-def fetch_in_background(waker):
+def fetch_in_background(waker: QuiAppWaker) -> None:
     """Stands in for a slow network call / subprocess / asyncio task that
     must not block the terminal's own event loop."""
     time.sleep(2)
     waker.post({"status": "fetched", "value": 42})
 
 
-def make_handler(results):
+def make_handler(results: "List[Any]") -> "Callable[[UiEvent], None]":
     """Builds a handler closing over a plain Python list used as an
     out-of-band result slot, since the handler cannot write back to the
     `QuiApp` it was invoked from."""
 
-    def handler(event):
+    def handler(event: "UiEvent") -> None:
         if not isinstance(event, dict):
             return
         if "KeyPressed" in event and _is_quit_key(event["KeyPressed"]["key"]):
@@ -86,7 +94,7 @@ if __name__ == "__main__":
     # why that's the one reachable way to get a handle that keeps
     # delivering once the real terminal loop takes over.
     waker = app.waker()
-    results = []
+    results: List[Any] = []
     app.set_handler(make_handler(results))
 
     worker = threading.Thread(target=fetch_in_background, args=(waker,), daemon=True)

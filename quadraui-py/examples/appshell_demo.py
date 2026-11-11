@@ -17,7 +17,16 @@ Run headless:
     python quadraui-py/examples/appshell_demo.py
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from quadraui import QuiApp
+
+if TYPE_CHECKING:
+    # `quadraui.wire` is a stub-only module -- see its own module docstring --
+    # so this import only runs under a type checker.
+    from quadraui.wire import ListItemDescriptor, ListViewDescriptor
 
 WIDTH = 80
 HEIGHT = 24
@@ -25,7 +34,7 @@ ROW_COUNT = 10_000
 PAGE = 250
 
 
-def make_rows(count):
+def make_rows(count: int) -> "list[ListItemDescriptor]":
     return [
         {"text": {"spans": [{"text": f"Row {i:05d}", "fg": None, "bg": None}]}}
         for i in range(count)
@@ -36,14 +45,14 @@ class AppShellDemo:
     """Drives the single `ListView` slot of a `QuiApp`, re-inserting it with
     an updated `scroll_offset`/`selected_idx` each time the list scrolls."""
 
-    def __init__(self, app, rows):
+    def __init__(self, app: QuiApp, rows: "list[ListItemDescriptor]") -> None:
         self.app = app
         self.rows = rows
         self.selected_idx = 0
         self.scroll_offset = 0
         self.slot = app.insert_list(self._descriptor())
 
-    def _descriptor(self):
+    def _descriptor(self) -> "ListViewDescriptor":
         return {
             "id": "list:appshell",
             "items": self.rows,
@@ -53,7 +62,7 @@ class AppShellDemo:
             "show_v_scrollbar": True,
         }
 
-    def scroll(self, delta):
+    def scroll(self, delta: int) -> None:
         last = len(self.rows) - 1
         self.selected_idx = max(0, min(last, self.selected_idx + delta))
         self.scroll_offset = max(0, min(last, self.scroll_offset + delta))
@@ -61,7 +70,7 @@ class AppShellDemo:
         self.slot = self.app.insert_list(self._descriptor())
 
 
-def run_demo(steps=20):
+def run_demo(steps: int = 20) -> "tuple[QuiApp, AppShellDemo, list[int]]":
     """Build the demo app, scroll down `steps` times, and return
     `(app, shell, offsets)` -- `offsets[0]` is the initial `scroll_offset`,
     `offsets[i]` the value after the i-th scroll step."""

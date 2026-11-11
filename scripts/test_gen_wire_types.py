@@ -189,12 +189,12 @@ class CheckExitCodeTests(unittest.TestCase):
     `scripts/check_wire_types.sh`'s job)."""
 
     def setUp(self) -> None:
-        self._py_out, self._ts_out = gwt.PY_OUT, gwt.TS_OUT
+        self._py_out, self._ts_out, self._stub_out = gwt.PY_OUT, gwt.TS_OUT, gwt.STUB_OUT
         self._defs = gwt.DEFS
         gwt.DEFS = [gwt.ObjDef("Foo", [gwt.Field("x", gwt.INT)])]
 
     def tearDown(self) -> None:
-        gwt.PY_OUT, gwt.TS_OUT = self._py_out, self._ts_out
+        gwt.PY_OUT, gwt.TS_OUT, gwt.STUB_OUT = self._py_out, self._ts_out, self._stub_out
         gwt.DEFS = self._defs
 
     def test_check_passes_once_outputs_match_generation(self) -> None:
@@ -206,6 +206,7 @@ class CheckExitCodeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=gwt.REPO_ROOT) as tmp:
             gwt.PY_OUT = Path(tmp) / "wire.pyi"
             gwt.TS_OUT = Path(tmp) / "wire.d.ts"
+            gwt.STUB_OUT = Path(tmp) / "_quadraui.pyi"
             self.assertEqual(gwt.main([]), 0)
             self.assertEqual(gwt.main(["--check"]), 0)
 
@@ -215,9 +216,255 @@ class CheckExitCodeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=gwt.REPO_ROOT) as tmp:
             gwt.PY_OUT = Path(tmp) / "wire.pyi"
             gwt.TS_OUT = Path(tmp) / "wire.d.ts"
+            gwt.STUB_OUT = Path(tmp) / "_quadraui.pyi"
             gwt.PY_OUT.write_text("stale\n")
             gwt.TS_OUT.write_text("stale\n")
+            gwt.STUB_OUT.write_text("stale\n")
             self.assertEqual(gwt.main(["--check"]), 1)
+
+
+class PymethodsParserTests(unittest.TestCase):
+    """[`gwt.parse_pymethods`]/[`gwt.parse_pyfunctions`] and the
+    Rust-type-to-`.pyi` mapping they feed, against small inline `lib.rs`-
+    shaped snippets rather than the real, 10k-line `quadraui-py/src/lib.rs`
+    -- that file's own drift is covered by `gen_wire_types.py --check`
+    (exercised above against throwaway output paths) and
+    `scripts/check_wire_types.sh`'s `mypy`/`pyright` runs against its real
+    generated output, not by this fast, toolchain-independent unit suite."""
+
+    def test_parses_doc_attrs_defaults_and_skips_python_token(self) -> None:
+        src = """
+#[pymethods]
+impl Foo {
+    /// Some doc comment, ignored by this parser entirely.
+    #[pyo3(signature = (needle, limit=10))]
+    fn find(&mut self, py: Python<'_>, needle: &str, limit: u32) -> PyResult<Option<String>> {
+        Ok(None)
+    }
+}
+"""
+        parsed = gwt.parse_pymethods(src, check_floor=False)
+        self.assertEqual(list(parsed.keys()), ["Foo"])
+        [meth] = parsed["Foo"]
+        self.assertEqual(meth.name, "find")
+        self.assertEqual([p.name for p in meth.params], ["self", "py", "needle", "limit"])
+        self.assertEqual(meth.params[3].default, "10")
+        self.assertEqual(meth.return_type, "PyResult<Option<String>>")
+        # `py: Python<'_>` is PyO3's own implicit GIL token, never a Python-
+        # visible argument -- dropped at render time, not at parse time.
+        rendered = "\n".join(gwt._render_method("Foo", meth))
+        self.assertIn("def find(self, needle: str, limit: int = 10) -> Optional[str]: ...", rendered)
+        self.assertNotIn("py", rendered)
+
+    def test_new_and_staticmethod_attributes_are_recognized(self) -> None:
+        src = """
+#[pymethods]
+impl Foo {
+    #[new]
+    fn new(width: u16) -> PyResult<Self> {
+        unimplemented!()
+    }
+
+    #[staticmethod]
+    fn make(width: u16) -> PyResult<Foo> {
+        unimplemented!()
+    }
+}
+"""
+        parsed = gwt.parse_pymethods(src, check_floor=False)
+        new_meth, make_meth = parsed["Foo"]
+        self.assertTrue(new_meth.is_new)
+        self.assertFalse(make_meth.is_new)
+        self.assertTrue(make_meth.is_static)
+        self.assertFalse(new_meth.is_static)
+
+    def test_parse_pyfunctions_finds_module_level_functions(self) -> None:
+        src = """
+/// Doc comment.
+#[pyfunction]
+fn app_path(kind: &str) -> PyResult<String> {
+    unimplemented!()
+}
+"""
+        [fn] = gwt.parse_pyfunctions(src)
+        self.assertEqual(fn.name, "app_path")
+        self.assertEqual([p.rust_type for p in fn.params], ["&str"])
+        self.assertEqual(fn.return_type, "PyResult<String>")
+
+    def test_parses_create_exception_hierarchy_and_aliases_pyexception(self) -> None:
+        src = """
+create_exception!(_quadraui, QuadrauiError, PyException, "doc");
+
+create_exception!(
+    _quadraui,
+    InvalidDescriptorError,
+    QuadrauiError,
+    "doc"
+);
+"""
+        self.assertEqual(
+            gwt.parse_create_exceptions(src),
+            [("QuadrauiError", "Exception"), ("InvalidDescriptorError", "QuadrauiError")],
+        )
+
+    def test_pymethods_attribute_between_pymethods_and_impl_is_skipped(self) -> None:
+        src = """
+#[pymethods]
+#[cfg(feature = "gtk")]
+impl Foo {
+    fn bar(&self) {}
+}
+"""
+        parsed = gwt.parse_pymethods(src, check_floor=False)
+        self.assertEqual(list(parsed.keys()), ["Foo"])
+        self.assertEqual(parsed["Foo"][0].name, "bar")
+
+    def test_floor_check_raises_when_an_expected_class_has_no_methods(self) -> None:
+        src = """
+#[pymethods]
+impl QuiApp {
+    fn bar(&self) {}
+}
+"""
+        with self.assertRaises(ValueError):
+            gwt.parse_pymethods(src, check_floor=True)
+
+
+class RustTypeToPyTests(unittest.TestCase):
+    def test_primitives_and_containers(self) -> None:
+        self.assertEqual(gwt.rust_type_to_py("u16"), "int")
+        self.assertEqual(gwt.rust_type_to_py("f32"), "float")
+        self.assertEqual(gwt.rust_type_to_py("bool"), "bool")
+        self.assertEqual(gwt.rust_type_to_py("&str"), "str")
+        self.assertEqual(gwt.rust_type_to_py("()"), "None")
+        self.assertEqual(gwt.rust_type_to_py("Option<u64>"), "Optional[int]")
+        self.assertEqual(gwt.rust_type_to_py("PyResult<bool>"), "bool")
+        self.assertEqual(gwt.rust_type_to_py("Vec<String>"), "List[str]")
+        self.assertEqual(gwt.rust_type_to_py("Vec<u8>"), "bytes")
+        self.assertEqual(
+            gwt.rust_type_to_py("Option<(u32, u32, Vec<u8>)>"),
+            "Optional[Tuple[int, int, bytes]]",
+        )
+        self.assertEqual(gwt.rust_type_to_py("&Bound<'_, PyDict>"), "Mapping[str, Any]")
+        self.assertEqual(gwt.rust_type_to_py("&Bound<'_, PyList>"), "Sequence[Any]")
+        self.assertEqual(gwt.rust_type_to_py("&'static str"), "str")
+        self.assertEqual(gwt.rust_type_to_py("QuiAppWaker"), "QuiAppWaker")
+
+    def test_unmapped_type_raises_instead_of_falling_back_to_any(self) -> None:
+        with self.assertRaises(ValueError):
+            gwt.rust_type_to_py("SomeNeverBeforeSeenType")
+
+    def test_is_param_widens_vec_to_whatever_pyo3_actually_accepts(self) -> None:
+        # A return value is always a concrete `list`/`bytes` once
+        # pythonized -- `is_param=False` (the default) reflects that.
+        self.assertEqual(gwt.rust_type_to_py("Vec<String>"), "List[str]")
+        self.assertEqual(gwt.rust_type_to_py("Vec<u8>"), "bytes")
+        # A parameter extracts from any sequence (`Vec<T>`) or from
+        # `bytes`/`bytearray`/`list[int]` alike (`Vec<u8>`) -- `is_param=True`
+        # renders the wider shape PyO3 actually accepts at the call site.
+        self.assertEqual(gwt.rust_type_to_py("Vec<String>", is_param=True), "Sequence[str]")
+        self.assertEqual(
+            gwt.rust_type_to_py("Vec<u8>", is_param=True), "Union[bytes, bytearray, Sequence[int]]"
+        )
+        self.assertEqual(
+            gwt.rust_type_to_py("Option<Vec<(String, Vec<String>)>>", is_param=True),
+            "Optional[Sequence[Tuple[str, Sequence[str]]]]",
+        )
+
+    def test_optional_any_collapses_to_bare_any(self) -> None:
+        self.assertEqual(gwt.rust_type_to_py("Option<Py<PyAny>>"), "Any")
+
+    def test_default_literal_mapping(self) -> None:
+        self.assertEqual(gwt._default_literal("None"), "None")
+        self.assertEqual(gwt._default_literal("true"), "True")
+        self.assertEqual(gwt._default_literal("false"), "False")
+        self.assertEqual(gwt._default_literal("Vec::new()"), "...")
+        self.assertEqual(gwt._default_literal("1"), "1")
+        self.assertEqual(gwt._default_literal('"chrome"'), '"chrome"')
+        with self.assertRaises(ValueError):
+            gwt._default_literal("SomeConstant::VALUE")
+
+
+class RenderPyiStubTests(unittest.TestCase):
+    def test_renders_a_class_a_free_function_and_the_exception_hierarchy(self) -> None:
+        src = """
+create_exception!(
+    _quadraui,
+    QuadrauiError,
+    PyException,
+    "Base class for every exception this binding raises itself."
+);
+
+#[pymethods]
+impl QuiAppWaker {
+    fn post(&self, value: Py<PyAny>) {}
+}
+
+#[pyfunction]
+fn app_path(kind: &str) -> PyResult<String> {
+    unimplemented!()
+}
+"""
+        text = gwt.render_pyi_stub(src, check_floor=False)
+        self.assertIn("class QuadrauiError(Exception): ...", text)
+        self.assertIn("class QuiAppWaker:", text)
+        self.assertIn("def post(self, value: Any) -> None: ...", text)
+        self.assertIn("def app_path(kind: str) -> str: ...", text)
+
+    def test_callable_named_params_render_as_callable_not_any(self) -> None:
+        src = """
+#[pymethods]
+impl QuiApp {
+    fn set_handler(&mut self, handler: Py<PyAny>) {}
+}
+"""
+        text = gwt.render_pyi_stub(src, check_floor=False)
+        self.assertIn("def set_handler(self, handler: Callable[..., Any]) -> None: ...", text)
+
+
+class OverridesResolveTests(unittest.TestCase):
+    """[`gwt._check_overrides_resolve`] -- a `PARAM_OVERRIDES`/
+    `RETURN_OVERRIDES` key that doesn't name a parsed method/parameter
+    (e.g. a stale entry left behind by a Rust-side rename) must fail
+    generation loudly instead of silently reverting to the generic
+    mapping."""
+
+    def setUp(self) -> None:
+        self._param_overrides = dict(gwt.PARAM_OVERRIDES)
+        self._return_overrides = dict(gwt.RETURN_OVERRIDES)
+
+    def tearDown(self) -> None:
+        gwt.PARAM_OVERRIDES.clear()
+        gwt.PARAM_OVERRIDES.update(self._param_overrides)
+        gwt.RETURN_OVERRIDES.clear()
+        gwt.RETURN_OVERRIDES.update(self._return_overrides)
+
+    def test_stale_param_override_key_raises(self) -> None:
+        gwt.PARAM_OVERRIDES.clear()
+        gwt.RETURN_OVERRIDES.clear()
+        gwt.PARAM_OVERRIDES[("QuiApp", "set_handler", "no_such_param")] = "Any"
+        with self.assertRaises(ValueError):
+            gwt._check_overrides_resolve({"QuiApp": []}, [])
+
+    def test_stale_return_override_key_raises(self) -> None:
+        gwt.PARAM_OVERRIDES.clear()
+        gwt.RETURN_OVERRIDES.clear()
+        gwt.RETURN_OVERRIDES[("QuiApp", "no_such_method")] = "Any"
+        with self.assertRaises(ValueError):
+            gwt._check_overrides_resolve({"QuiApp": []}, [])
+
+    def test_matching_override_keys_do_not_raise(self) -> None:
+        gwt.PARAM_OVERRIDES.clear()
+        gwt.RETURN_OVERRIDES.clear()
+        gwt.PARAM_OVERRIDES[("QuiApp", "set_handler", "value")] = "Any"
+        gwt.RETURN_OVERRIDES[("QuiApp", "theme")] = "Dict[str, Any]"
+        meth = gwt.RustMethod(
+            name="set_handler",
+            params=[gwt.RustParam(name="value", rust_type="Py<PyAny>")],
+            return_type=None,
+        )
+        theme_meth = gwt.RustMethod(name="theme", params=[], return_type="Py<PyDict>")
+        gwt._check_overrides_resolve({"QuiApp": [meth, theme_meth]}, [])
 
 
 if __name__ == "__main__":
