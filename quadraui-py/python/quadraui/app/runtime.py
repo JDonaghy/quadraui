@@ -15,7 +15,11 @@ event's own widget id up in that registry (rebuilt by the render this
 event's own `step()` just triggered) and calls whichever callback matches
 the event's shape -- see `_CONTAINER_EVENT_MAP` for the event-shape ->
 callback-name table, and `Button`'s own doc for why its `on_click` needs
-its own two-path dispatch instead of a table entry.
+its own two-path dispatch instead of a table entry. `App._render` swaps
+in only the component-state keys seen during that same pass, so a
+component that stops being rendered (a closed tab, a removed list row)
+drops its state slot instead of leaving it behind for a future, unrelated
+component to inherit.
 
 A callback mutating app/component state needs no explicit "please
 redraw" call: `QuiApp` already repaints once per `step()` whenever a
@@ -46,21 +50,27 @@ def _walk(
     value: Any,
     path: Tuple[Any, ...],
     registry: Dict[str, Dict[str, Callable[..., None]]],
-    component_states: Dict[Any, Dict[str, Any]],
+    old_states: Dict[Any, Dict[str, Any]],
+    new_states: Dict[Any, Dict[str, Any]],
 ) -> Any:
     if value is None:
         return None
     if isinstance(value, list):
-        return [_walk(item, path + (i,), registry, component_states) for i, item in enumerate(value)]
+        return [_walk(item, path + (i,), registry, old_states, new_states) for i, item in enumerate(value)]
     if isinstance(value, Component):
         state_key = (type(value), value.key if value.key is not None else path)
-        state = component_states.setdefault(state_key, value.initial_state())
+        state = new_states.get(state_key)
+        if state is None:
+            state = old_states.get(state_key)
+            if state is None:
+                state = value.initial_state()
+            new_states[state_key] = state
         child = value.view(state)
-        return _walk(child, path + ("component",), registry, component_states)
+        return _walk(child, path + ("component",), registry, old_states, new_states)
     if isinstance(value, Node):
         node_id = value.id if value.id is not None else _auto_id(path)
         children_wire = {
-            slot: _walk(child, path + (slot,), registry, component_states)
+            slot: _walk(child, path + (slot,), registry, old_states, new_states)
             for slot, child in value.children.items()
         }
         if value.callbacks:
@@ -174,12 +184,21 @@ class App:
         self.qui.set_handler(self._handle)
         self.actions = self.qui.actions()
 
+    def set_on_event(self, on_event: Optional[Callable[[Any], None]]) -> None:
+        """Replaces the global `on_event` fallback given at construction (or
+        clears it, with `None`) -- the public way to compose/swap the
+        escape-hatch handler after the fact, instead of assigning the
+        private `_on_event` attribute directly."""
+        self._on_event = on_event
+
     # --- render / dispatch ---------------------------------------------------
 
     def _render(self) -> Any:
         registry: Dict[str, Dict[str, Callable[..., None]]] = {}
-        wire = _walk(self._view(), (), registry, self._component_states)
+        new_states: Dict[Any, Dict[str, Any]] = {}
+        wire = _walk(self._view(), (), registry, self._component_states, new_states)
         self._registry = registry
+        self._component_states = new_states
         return wire
 
     def _handle(self, event: Any) -> None:

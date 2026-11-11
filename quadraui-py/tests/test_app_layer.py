@@ -10,7 +10,22 @@ Run against a built wheel/extension, e.g.:
     pytest quadraui-py/tests/test_app_layer.py
 """
 
-from quadraui.app import App, Button, Column, Component, Table, Tabs, Tab, TextDisplay, Tree, key_name
+from quadraui.app import (
+    App,
+    Button,
+    Column,
+    Component,
+    SidebarPanel,
+    Split,
+    StatusBar,
+    Table,
+    Tabs,
+    Tab,
+    TextDisplay,
+    Toolbar,
+    Tree,
+    key_name,
+)
 
 
 _NO_MODS = {"shift": False, "ctrl": False, "alt": False, "cmd": False}
@@ -56,6 +71,59 @@ def test_auto_ids_differ_by_structural_position():
     ids = sorted(app._registry.keys())
     assert len(ids) == 2
     assert ids[0] != ids[1]
+
+
+def test_id_bearing_node_constructors_all_accept_an_omitted_id():
+    """Every constructor the reviewer flagged as still requiring `id=`
+    (`Split`, `SidebarPanel`, `Tabs`, `Tree`, `Table`, `StatusBar`,
+    `TextDisplay`) must build without one -- the issue's own worked
+    example (`Tree(rows, on_activate=...)`) previously raised `TypeError`
+    for exactly this reason. `Toolbar` is checked separately below: it
+    returns a raw dict rather than a `Node`, so it never reaches `_walk`'s
+    own auto-id."""
+
+    def view():
+        tree = Tree([], on_activate=lambda path: None)
+        table = Table([], [])
+        status = StatusBar([], [])
+        text = TextDisplay([])
+        tabs = Tabs([Tab(text, title="one")])
+        panel = SidebarPanel(Column(tree, table, status, tabs))
+        return Split(panel, text)
+
+    app = App(20, 5, view=view)
+    assert app._render() is not None
+
+
+def test_auto_ids_from_node_constructors_are_stable_across_rerender():
+    """The same stability guarantee `test_auto_assigned_ids_are_stable_across_rerender_at_the_same_position`
+    proves for `Button` holds for every other id-bearing constructor too,
+    since they all resolve through the same `_walk`-driven auto-id."""
+
+    def view():
+        return Split(
+            Tree([], on_row_click=lambda path: None),
+            Table([], [], on_select=lambda idx: None),
+        )
+
+    app = App(20, 5, view=view)
+    ids_before = sorted(app._registry.keys())
+    app.step()
+    ids_after = sorted(app._registry.keys())
+    assert ids_before == ids_after
+    assert len(ids_before) == 2
+
+
+def test_toolbar_without_an_explicit_id_still_builds_a_wire_dict():
+    """`Toolbar` falls back to its own call-order counter (it never passes
+    through `Node`/`_walk`), but omitting `id=` must still produce a
+    well-formed `ToolbarDescriptor` rather than raising."""
+    toolbar = Toolbar(buttons=[{"Action": {"id": "a", "label": "Go"}}])
+    assert isinstance(toolbar["id"], str)
+    assert toolbar["buttons"] == [{"Action": {"id": "a", "label": "Go"}}]
+
+    other = Toolbar(buttons=[])
+    assert other["id"] != toolbar["id"]
 
 
 # --- callback dispatch ---------------------------------------------------
@@ -220,6 +288,7 @@ def test_component_state_survives_rerender_and_mutation_is_visible_next_render()
         app.push_event(_key_event({"Named": "Enter"}))
         app.step()
         assert _label(app) == expected
+        assert expected in app.screen()
 
 
 def test_two_components_in_a_list_keep_independent_state_by_position():
@@ -243,3 +312,40 @@ def test_two_components_in_a_list_keep_independent_state_by_position():
     screen = app.screen()
     assert "count=1" in screen
     assert "count=0" in screen
+
+
+def test_closing_and_reopening_a_row_does_not_resurrect_the_old_state():
+    """Two `Counter`s at positions 0 and 1; bump position 1's count, then
+    render with only position 0 present (closing a tab/removing a list
+    row) -- position 1's state slot must be pruned, not left behind. A
+    fresh `Counter` later rendered back at position 1 must start at
+    `count=0`, not inherit the pruned slot's stale count (the resurrection
+    bug a position-keyed, never-pruned `_component_states` dict would
+    otherwise cause for the common "one component per open tab/list row"
+    shape `component.py`'s own `key=` doc anticipates)."""
+    counters = [Counter(), Counter()]
+
+    def view():
+        return Column(*counters)
+
+    app = App(20, 5, view=view)
+    ids = sorted(app._registry.keys())
+    assert len(ids) == 2
+
+    for _ in range(2):
+        app._registry[ids[1]]["on_click"]()
+    assert "count=2" in app.screen()
+    assert len(app._component_states) == 2
+
+    # Render with only position 0 present -- position 1's slot must be
+    # pruned, since nothing visited it this render. (`screen()` itself
+    # triggers the render pass, same as every other assertion here.)
+    counters.pop()
+    app.screen()
+    assert len(app._component_states) == 1
+
+    # A brand-new `Counter` rendered back at position 1 starts fresh.
+    counters.append(Counter())
+    screen = app.screen()
+    assert "count=2" not in screen
+    assert screen.count("count=0") == 2

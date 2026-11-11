@@ -8,8 +8,18 @@ widget state -- nothing here reads or writes any of the three, same as
 the original.
 
 Interaction, and the headless/`--tui`/`--native` run modes, are identical
-to `file_manager.py`'s own docstring; see that module for the full command
-list and the walkthrough of what each key/click does.
+to `file_manager.py`'s own docstring; see that module for the walkthrough
+of what each key/click does. `--dump` (the raw-descriptor inspection mode)
+is not ported here -- it has nothing to do with the app layer this port
+exists to demonstrate, and re-adding its ~100 lines of inspection
+plumbing would undercut the shorter-and-with-no-manual-bookkeeping point
+of the port. Pass anything other than `--tui`/`--native` (including
+`--dump`) and this module falls back to the headless demo.
+
+One wire-level difference from the original: a details tab's own id is
+`Tabs`' auto-id convention (`"<tabs_id>:tab:<index>"`, here `"fm:tabs:tab:0"`,
+...) rather than the original's bare `"tab:0"` -- harmless (nothing reads a
+tab id directly), but worth knowing if you diff the two examples' screens.
 """
 
 from __future__ import annotations
@@ -23,6 +33,7 @@ from quadraui.app import App, SidebarPanel, Split, StatusBar, Tab, Table, Tabs, 
 
 if TYPE_CHECKING:
     from quadraui.wire import Color, DataRowDescriptor, Icon, StyledText, TreeRowDescriptor, TreeStyle
+
 
 @dataclass
 class Node:
@@ -41,14 +52,17 @@ class Node:
     def subdirs(self) -> list["Node"]:
         return [c for c in (self.children or ()) if c.is_dir]
 
+
 def _safe_size(path: Path) -> int | None:
     try:
         return path.stat().st_size
     except OSError:
         return None
 
+
 def _sort_key(node: Node) -> tuple[bool, str]:
     return (not node.is_dir, node.name.lower())
+
 
 def load_children(node: Node) -> None:
     if not node.is_dir:
@@ -73,9 +87,11 @@ def load_children(node: Node) -> None:
     node.children = kids
     node.load_error = False
 
+
 def ensure_loaded(node: Node) -> None:
     if node.is_dir and node.children is None:
         load_children(node)
+
 
 def build_root(root_path: Path) -> Node:
     root = Node(name=root_path.name or str(root_path), path=root_path, is_dir=root_path.is_dir())
@@ -96,8 +112,10 @@ TREE_STYLE: "TreeStyle" = {
 FOLDER_ICON: "Icon" = {"glyph": "\U0001f4c1", "fallback": "/", "color": None}
 FILE_ICON: "Icon" = {"glyph": "\U0001f4c4", "fallback": " ", "color": None}
 
+
 def _styled_text(text: str) -> "StyledText":
     return {"spans": [{"text": text, "fg": None, "bg": None}]}
+
 
 def folder_rows(root: Node) -> tuple[list["TreeRowDescriptor"], list[Node]]:
     """Walk the expanded model into index-aligned `(rows, nodes)`, directories
@@ -126,6 +144,7 @@ def folder_rows(root: Node) -> tuple[list["TreeRowDescriptor"], list[Node]]:
 
 _SIZE_UNITS = ("B", "KB", "MB", "GB", "TB")
 
+
 def _human_size(n: int | None) -> str:
     if n is None:
         return ""
@@ -135,6 +154,7 @@ def _human_size(n: int | None) -> str:
         size /= 1024
         i += 1
     return f"{int(size)} {_SIZE_UNITS[i]}" if i == 0 else f"{size:.1f} {_SIZE_UNITS[i]}"
+
 
 def details_rows(folder: Node) -> list["DataRowDescriptor"]:
     """The data_table rows for one opened folder's contents, subfolders
@@ -173,8 +193,10 @@ _STATUS_FG: "Color" = {"r": 220, "g": 220, "b": 230, "a": 255}
 _STATUS_BG: "Color" = {"r": 30, "g": 32, "b": 48, "a": 255}
 _STATUS_ACCENT: "Color" = {"r": 245, "g": 224, "b": 138, "a": 255}
 
+
 def _segment(text: str, *, accent: bool = False, bold: bool = False) -> dict:
     return {"text": text, "fg": _STATUS_ACCENT if accent else _STATUS_FG, "bg": _STATUS_BG, "bold": bold}
+
 
 class FileManager:
     """Holds the lazily-scanned model and the live UI state `view`/the
@@ -372,8 +394,10 @@ class FileManager:
         elif name == "r":
             self._refresh()
 
+
 class _Quit(Exception):
     """Raised from `_on_event` to unwind out of `run_tui()`/`run_native()`."""
+
 
 def _wrap_quit(fm: FileManager) -> None:
     inner = fm._on_event
@@ -383,8 +407,7 @@ def _wrap_quit(fm: FileManager) -> None:
             raise _Quit
         inner(event)
 
-    fm._on_event = on_event
-    fm.app._on_event = on_event
+    fm.app.set_on_event(on_event)
 
 UP_KEY = {"Named": "Up"}
 DOWN_KEY = {"Named": "Down"}
@@ -392,8 +415,10 @@ LEFT_KEY = {"Named": "Left"}
 RIGHT_KEY = {"Named": "Right"}
 ENTER_KEY = {"Named": "Enter"}
 
+
 def _key_event(key) -> dict:
     return {"KeyPressed": {"key": key, "modifiers": {"shift": False, "ctrl": False, "alt": False, "cmd": False}, "repeat": False}}
+
 
 def _run_headless(fm: FileManager) -> None:
     """Expand a folder, open it as a tab, drill into a subfolder from its
@@ -418,6 +443,7 @@ def _run_headless(fm: FileManager) -> None:
         f"tree_scroll_offset={tree_state.get('scroll_offset')}  "
         f"split_ratio={split_state.get('ratio')}"
     )
+
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]

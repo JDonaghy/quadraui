@@ -15,8 +15,26 @@ same way it always has, at the native extension's own decode step.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence
+import itertools
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence
+
+if TYPE_CHECKING:
+    # `quadraui.wire` is a stub-only module (no backing `.py`) -- see its own
+    # module docstring -- so this import only runs under a type checker.
+    from quadraui.wire import (
+        Color,
+        ColumnDescriptor,
+        DataRowDescriptor,
+        Icon,
+        StatusBarSegment,
+        TabBarSegmentDescriptor,
+        TextDisplayLineDescriptor,
+        ToolbarButtonDescriptor,
+        ToolbarDescriptor,
+        TreeRowDescriptor,
+        TreeStyle,
+    )
 
 __all__ = [
     "Node",
@@ -83,7 +101,7 @@ def Split(
     first: Renderable,
     second: Renderable,
     *,
-    id: str,
+    id: Optional[str] = None,
     orientation: str = "horizontal",
     ratio: float = 0.5,
     first_min: Optional[float] = None,
@@ -148,8 +166,8 @@ def Row(*items: Renderable, padding: Any = None, margin: Optional[float] = None,
 def SidebarPanel(
     content: Renderable,
     *,
-    id: str,
-    toolbar: Optional[dict] = None,
+    id: Optional[str] = None,
+    toolbar: Optional["ToolbarDescriptor"] = None,
     toolbar_height: Optional[float] = None,
 ) -> Node:
     """A reserved-top-slot chrome wrapper -- `toolbar` is a raw
@@ -195,10 +213,10 @@ def Tab(
 def Tabs(
     tabs: Sequence[_TabSpec],
     *,
-    id: str,
+    id: Optional[str] = None,
     closable: Optional[bool] = None,
-    right_segments: Optional[list] = None,
-    active_accent: Optional[dict] = None,
+    right_segments: Optional[List["TabBarSegmentDescriptor"]] = None,
+    active_accent: Optional["Color"] = None,
     compact: Optional[bool] = None,
     on_close: Optional[Callable[[int], None]] = None,
     on_activate: Optional[Callable[[int], None]] = None,
@@ -246,13 +264,13 @@ def Tabs(
 
 
 def Tree(
-    rows: list,
+    rows: List["TreeRowDescriptor"],
     *,
-    id: str,
+    id: Optional[str] = None,
     selection_mode: str = "Single",
     selected_path: Optional[List[int]] = None,
     has_focus: bool = False,
-    style: Optional[dict] = None,
+    style: Optional["TreeStyle"] = None,
     on_row_click: Optional[Callable[[List[int]], None]] = None,
     on_toggle_expand: Optional[Callable[[List[int]], None]] = None,
     on_activate: Optional[Callable[[List[int]], None]] = None,
@@ -285,10 +303,10 @@ def Tree(
 
 
 def Table(
-    columns: list,
-    rows: list,
+    columns: List["ColumnDescriptor"],
+    rows: List["DataRowDescriptor"],
     *,
-    id: str,
+    id: Optional[str] = None,
     on_activate: Optional[Callable[[int], None]] = None,
     on_select: Optional[Callable[[int], None]] = None,
     on_header_click: Optional[Callable[[int], None]] = None,
@@ -313,10 +331,10 @@ def Table(
 
 
 def StatusBar(
-    left_segments: list,
-    right_segments: list,
+    left_segments: List["StatusBarSegment"],
+    right_segments: List["StatusBarSegment"],
     *,
-    id: str,
+    id: Optional[str] = None,
     on_segment_click: Optional[Callable[[str], None]] = None,
 ) -> Node:
     """A `StatusBarDescriptor`. `on_segment_click` fires on `SegmentClicked`,
@@ -336,7 +354,7 @@ def StatusBar(
     return Node("status_bar", id, callbacks, {}, build)
 
 
-def TextDisplay(lines: list, *, id: str) -> Node:
+def TextDisplay(lines: List["TextDisplayLineDescriptor"], *, id: Optional[str] = None) -> Node:
     """A `TextDisplayDescriptor` leaf -- plain read-only text."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> dict:
@@ -351,7 +369,7 @@ def Button(
     id: Optional[str] = None,
     on_click: Optional[Callable[[], None]] = None,
     variant: Optional[str] = None,
-    icon: Optional[dict] = None,
+    icon: Optional["Icon"] = None,
     tooltip: Optional[str] = None,
     focused: Optional[bool] = None,
     disabled: Optional[bool] = None,
@@ -383,10 +401,23 @@ def Button(
     return Node("button", id, callbacks, {}, build)
 
 
-def Toolbar(buttons: list, *, id: str) -> dict:
+_toolbar_auto_ids = itertools.count()
+
+
+def Toolbar(buttons: List["ToolbarButtonDescriptor"], *, id: Optional[str] = None) -> "ToolbarDescriptor":
     """A raw `ToolbarDescriptor` -- not a `Node`: every place a toolbar can
     go (`SidebarPanel`'s own `toolbar=`, a `LayoutLeafNode`'s `"toolbar"`
     key) wants the descriptor dict directly, and the bindings don't yet
     route toolbar button clicks to an event (see `ButtonDescriptor`'s own
-    doc on why `on_click` lives on `Button`, not here)."""
-    return {"id": id, "buttons": buttons}
+    doc on why `on_click` lives on `Button`, not here).
+
+    Because this result never passes through `Node`/`_walk`, omitting
+    `id=` can't fall back to a tree-position auto-id the way every other
+    constructor here does -- there is no tree position to derive it from.
+    It falls back to a call-order counter instead, stable only as long as
+    this call site runs the same number of times, in the same order, on
+    every render. That holds for the common case (build one `Toolbar(...)`
+    once, e.g. as a module-level constant reused every frame); give an
+    explicit `id=` if constructing a fresh one inside `view()` itself."""
+    resolved_id = id if id is not None else f"auto:toolbar:{next(_toolbar_auto_ids)}"
+    return {"id": resolved_id, "buttons": buttons}
