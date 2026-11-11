@@ -58,6 +58,8 @@ section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
 only a push to `main` runs this workflow.
 
 ## [Unreleased]
+
+## [0.10.1] - 2026-11-11
 ### Added
 - `Style::button_radius` (#2368): a button-specific corner radius,
   defaulting to `2.0` (VS Code's own button radius) and read by
