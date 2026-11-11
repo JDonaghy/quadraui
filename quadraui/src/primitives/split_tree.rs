@@ -630,10 +630,20 @@ impl SplitTreeLayout {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{SplitDirection, SplitTreeLayout};
+    use super::{SplitDirection, SplitTreeDivider, SplitTreeLayout};
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::Rect;
+
+    /// Visual width of each painted sash line — VS Code's single-pixel
+    /// resize affordance. A divider's hit-testable band
+    /// ([`SplitTreeDivider::thickness`], what [`SplitTreeLayout::hit_test_divider`]
+    /// and [`SplitTreeLayout::hit_test_divider_cell`] use) stays the full
+    /// configured thickness; only the painted line is thinned to this and
+    /// centred within that band. Mirrors
+    /// [`crate::primitives::split::native_surface_paint::SASH_PAINT_WIDTH`]
+    /// so the two primitives read as the same visual weight.
+    pub(crate) const SASH_PAINT_WIDTH: f32 = 1.0;
 
     /// Paint a [`SplitTreeLayout`]'s dividers onto `surface` as filled
     /// rectangles in `theme.separator`. `layout` must be the same
@@ -642,19 +652,40 @@ pub(crate) mod native_surface_paint {
     /// fn's own caller — `Backend::draw_split_tree` — returns) so paint
     /// and hit-test can never disagree. Leaf content is NOT painted —
     /// every backend leaves the leaf rects (`layout.leaves`) to the
-    /// host, same contract as before this migration.
+    /// host, same contract as before this migration. Each painted rect
+    /// is [`SASH_PAINT_WIDTH`] wide, centred within the divider's full
+    /// hit-testable band (see [`sash_rect`]).
     pub(crate) fn paint(layout: &SplitTreeLayout, surface: &mut dyn PaintSurface, theme: &Theme) {
         for div in &layout.dividers {
-            let rect = match div.direction {
-                SplitDirection::Horizontal => {
-                    Rect::new(div.position, div.cross_start, div.thickness, div.cross_size)
-                }
-                SplitDirection::Vertical => {
-                    Rect::new(div.cross_start, div.position, div.cross_size, div.thickness)
-                }
-            };
-            surface.surface_fill_rect(rect, theme.separator);
+            surface.surface_fill_rect(sash_rect(div), theme.separator);
         }
+    }
+
+    /// Centre a [`SASH_PAINT_WIDTH`]-thick line inside `div`'s
+    /// `[position, position + thickness)` band, along `div.direction`'s
+    /// thickness axis, snapped to the nearest whole device pixel — see
+    /// [`centered_pixel_aligned`]'s doc for why a hairline needs the
+    /// snap. `crate::primitives::split`'s own `native_surface_paint`
+    /// module carries the identical formula for the two-pane primitive.
+    fn sash_rect(div: &SplitTreeDivider) -> Rect {
+        let width = SASH_PAINT_WIDTH.min(div.thickness.max(0.0));
+        let pos = centered_pixel_aligned(div.position, div.thickness, width);
+        match div.direction {
+            SplitDirection::Horizontal => Rect::new(pos, div.cross_start, width, div.cross_size),
+            SplitDirection::Vertical => Rect::new(div.cross_start, pos, div.cross_size, width),
+        }
+    }
+
+    /// Resolve the leading edge of a `width`-wide line centred inside
+    /// `[band_start, band_start + band_len)`, snapped to the nearest
+    /// whole device pixel so a 1px sash renders as a crisp line rather
+    /// than a blurred, anti-aliased straddle across two pixels — then
+    /// clamped back into the band so the snap can never push the line
+    /// outside the hit-testable area it's meant to sit inside.
+    fn centered_pixel_aligned(band_start: f32, band_len: f32, width: f32) -> f32 {
+        let center = band_start + band_len / 2.0;
+        let aligned = (center - width / 2.0).round();
+        aligned.clamp(band_start, (band_start + band_len - width).max(band_start))
     }
 
     #[cfg(test)]
@@ -770,6 +801,33 @@ pub(crate) mod native_surface_paint {
                     "dividers paint the opaque theme separator colour"
                 );
             }
+        }
+
+        #[test]
+        fn pixel_path_sash_is_one_px_wide_inside_the_wider_hit_band() {
+            // 4px divider thickness is the pixel-backend convention
+            // (`layout_metrics::pixel::DIVIDER`); the painted sash must
+            // still be 1px, centred inside that band, while the band
+            // itself (what `hit_test_divider`/`hit_test_divider_cell`
+            // use) stays the full 4px.
+            let layout = two_pane().layout(
+                QRect::new(0.0, 0.0, 200.0, 100.0),
+                SplitTreeMeasure::new(4.0),
+            );
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&layout, &mut surface, &theme);
+            let d = &layout.dividers[0];
+            assert_eq!(
+                d.thickness, 4.0,
+                "hit band keeps the full divider thickness"
+            );
+
+            let painted = surface.fills[0].0;
+            assert_eq!(painted.width, SASH_PAINT_WIDTH, "sash paints 1px wide");
+            assert_eq!(painted.height, d.cross_size);
+            assert!(painted.x >= d.position);
+            assert!(painted.x + painted.width <= d.position + d.thickness);
         }
 
         #[test]
