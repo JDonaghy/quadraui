@@ -1410,6 +1410,83 @@ fn slot_occupied_error(detail: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("SlotOccupiedError: {detail}"))
 }
 
+/// Reports a deprecated slot/extra-API call to Node via
+/// `process.emitWarning(message, "DeprecationWarning")` -- the host
+/// language's own one-time deprecation channel (`util.deprecate`'s own
+/// convention). Called only when `host.first_deprecation_report(what)` says
+/// this is the first time this app has reported `what` -- see
+/// [`BindingHost::first_deprecation_report`]'s own doc for why the dedup is
+/// per-app rather than process-wide.
+fn emit_slot_deprecation_warning(env: Env, message: &str) -> Result<()> {
+    let global = env.get_global()?;
+    let process: Object = global.get_named_property_unchecked("process")?;
+    let emit_warning: Function<FnArgs<(String, String)>, Unknown> =
+        process.get_named_property_unchecked("emitWarning")?;
+    emit_warning.call(FnArgs {
+        data: (message.to_string(), "DeprecationWarning".to_string()),
+    })?;
+    Ok(())
+}
+
+/// The shared slot/extra-API deprecation report every `QuiApp` slot/extra
+/// method calls before doing its own work: builds
+/// [`BindingHost::slot_deprecation_message`]'s message for `what`/
+/// `guidance`, then -- only on the first call for `what` this app has made,
+/// per [`BindingHost::first_deprecation_report`] -- reports it via
+/// [`emit_slot_deprecation_warning`].
+fn warn_slot_deprecated(host: &BindingHost, env: Env, what: &str, guidance: &str) -> Result<()> {
+    if !host.first_deprecation_report(what) {
+        return Ok(());
+    }
+    let message = BindingHost::slot_deprecation_message(what, guidance);
+    emit_slot_deprecation_warning(env, &message)
+}
+
+/// [`warn_slot_deprecated`] for inserting primitive `leaf_kind` via the
+/// deprecated `what` method -- the one call every `insert*`/`insertExtra`
+/// method makes, naming the inline layout leaf of that same kind as the
+/// replacement.
+fn warn_insert_deprecated(host: &BindingHost, env: Env, what: &str, leaf_kind: &str) -> Result<()> {
+    warn_slot_deprecated(
+        host,
+        env,
+        what,
+        &format!("render an inline `{leaf_kind}` layout leaf from a `render` callback instead"),
+    )
+}
+
+/// [`warn_slot_deprecated`] for `clearExtra`, naming omitting `kind`'s
+/// layout leaf from the next `render` callback as the replacement.
+fn warn_clear_extra_deprecated(host: &BindingHost, env: Env, kind: &str) -> Result<()> {
+    warn_slot_deprecated(
+        host,
+        env,
+        "clearExtra",
+        &format!(
+            "omit the `{kind}` layout leaf from the next `render` callback's \
+             returned layout instead of calling `clearExtra`"
+        ),
+    )
+}
+
+/// [`warn_slot_deprecated`] for `slotClear`, naming omitting `slot`'s
+/// fixed-primitive layout leaf from the next `render` callback as the
+/// replacement. `slot` is assumed already validated by
+/// [`NodeAppLogic::is_known_slot`] -- see [`BindingHost::slot_kind_name`]'s
+/// own doc for why this never actually sees an unrecognized slot.
+fn warn_slot_clear_deprecated(host: &BindingHost, env: Env, slot: i64) -> Result<()> {
+    let kind = BindingHost::slot_kind_name(slot).unwrap_or("fixed-slot");
+    warn_slot_deprecated(
+        host,
+        env,
+        "slotClear",
+        &format!(
+            "omit the `{kind}` layout leaf from the next `render` callback's \
+             returned layout instead of calling `slotClear`"
+        ),
+    )
+}
+
 /// Mirrors [`invalid_descriptor_error`] for a failure internal to this
 /// binding rather than caused by caller input -- e.g. a deferred OS-service
 /// action ([`flush_deferred_actions`]) failing -- the napi-rs analog of
@@ -2501,6 +2578,10 @@ impl QuiApp {
     /// so `screen()` no longer shows it. Returns whether the slot held
     /// anything. Raises if `slot` doesn't name one of the six, or
     /// `LiveRunnerActiveError` while `startTui` is active.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming
+    /// omitting the relevant fixed-slot layout leaf from the next `render`
+    /// callback as the replacement; removal is a later breaking release.
     #[napi(js_name = "slotClear")]
     pub fn slot_clear(&mut self, env: Env, slot: i64) -> Result<bool> {
         self.check_not_dispatching()?;
@@ -2508,6 +2589,7 @@ impl QuiApp {
         if !NodeAppLogic::is_known_slot(slot) {
             return Err(unknown_slot_error(format!("unknown slot id: {slot}")));
         }
+        warn_slot_clear_deprecated(&self.driver.app().host, env, slot)?;
         self.guarded(env, |app| {
             let cleared = app.driver.app_mut().clear_slot(slot);
             if cleared {
@@ -2635,8 +2717,13 @@ impl QuiApp {
     /// Inserts a `Button` descriptor from a JS object, returning its slot
     /// handle. Raises `SlotOccupiedError` if the button slot is already
     /// occupied -- call `slotClear` first.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `button` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertButton")]
     pub fn insert_button(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        warn_insert_deprecated(&self.driver.app().host, env, "insertButton", "button")?;
         self.insert_fixed(
             env,
             SLOT_BUTTON,
@@ -2649,8 +2736,18 @@ impl QuiApp {
     /// Inserts a `TextDisplay` descriptor from a JS object, returning its
     /// slot handle. Raises `SlotOccupiedError` if the text-display slot is
     /// already occupied -- call `slotClear` first.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `text_display` layout leaf as the replacement; removal is a
+    /// later breaking release.
     #[napi(js_name = "insertTextDisplay")]
     pub fn insert_text_display(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        warn_insert_deprecated(
+            &self.driver.app().host,
+            env,
+            "insertTextDisplay",
+            "text_display",
+        )?;
         self.insert_fixed(
             env,
             SLOT_TEXT_DISPLAY,
@@ -2663,8 +2760,13 @@ impl QuiApp {
     /// Inserts a `ListView` descriptor from a JS object, returning its slot
     /// handle. Raises `SlotOccupiedError` if the list slot is already
     /// occupied -- call `slotClear` first.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `list` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertList")]
     pub fn insert_list(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        warn_insert_deprecated(&self.driver.app().host, env, "insertList", "list")?;
         self.insert_fixed(
             env,
             SLOT_LIST,
@@ -2677,8 +2779,13 @@ impl QuiApp {
     /// Inserts a `TreeView` descriptor from a JS object, returning its slot
     /// handle. Raises `SlotOccupiedError` if the tree slot is already
     /// occupied -- call `slotClear` first.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `tree` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertTree")]
     pub fn insert_tree(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        warn_insert_deprecated(&self.driver.app().host, env, "insertTree", "tree")?;
         self.insert_fixed(
             env,
             SLOT_TREE,
@@ -2691,8 +2798,18 @@ impl QuiApp {
     /// Inserts a `DataTable` descriptor from a JS object, returning its
     /// slot handle. Raises `SlotOccupiedError` if the data-table slot is
     /// already occupied -- call `slotClear` first.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `data_table` layout leaf as the replacement; removal is a
+    /// later breaking release.
     #[napi(js_name = "insertDataTable")]
     pub fn insert_data_table(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        warn_insert_deprecated(
+            &self.driver.app().host,
+            env,
+            "insertDataTable",
+            "data_table",
+        )?;
         self.insert_fixed(
             env,
             SLOT_DATA_TABLE,
@@ -2705,8 +2822,13 @@ impl QuiApp {
     /// Inserts a `TabBar` descriptor from a JS object, returning its slot
     /// handle. Raises `SlotOccupiedError` if the tab-bar slot is already
     /// occupied -- call `slotClear` first.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `tab_bar` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertTabBar")]
     pub fn insert_tab_bar(&mut self, env: Env, descriptor: Unknown) -> Result<i64> {
+        warn_insert_deprecated(&self.driver.app().host, env, "insertTabBar", "tab_bar")?;
         self.insert_fixed(
             env,
             SLOT_TAB_BAR,
@@ -2720,8 +2842,13 @@ impl QuiApp {
     /// `"progress"` back. Raises `SlotOccupiedError` if `"progress"` is
     /// already occupied -- call `clearExtra("progress")` first. A thin,
     /// typed-descriptor convenience over [`Self::insert_extra`].
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `progress` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertProgress")]
     pub fn insert_progress(&mut self, env: Env, descriptor: Unknown) -> Result<String> {
+        warn_insert_deprecated(&self.driver.app().host, env, "insertProgress", "progress")?;
         self.store_extra(env, "progress", "insertProgress", descriptor)
     }
 
@@ -2729,8 +2856,13 @@ impl QuiApp {
     /// `"spinner"` back. Raises `SlotOccupiedError` if `"spinner"` is
     /// already occupied -- call `clearExtra("spinner")` first. A thin,
     /// typed-descriptor convenience over [`Self::insert_extra`].
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `spinner` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertSpinner")]
     pub fn insert_spinner(&mut self, env: Env, descriptor: Unknown) -> Result<String> {
+        warn_insert_deprecated(&self.driver.app().host, env, "insertSpinner", "spinner")?;
         self.store_extra(env, "spinner", "insertSpinner", descriptor)
     }
 
@@ -2738,8 +2870,13 @@ impl QuiApp {
     /// back. Raises `SlotOccupiedError` if `"image"` is already occupied --
     /// call `clearExtra("image")` first. A thin, typed-descriptor
     /// convenience over [`Self::insert_extra`].
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `image` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertImage")]
     pub fn insert_image(&mut self, env: Env, descriptor: Unknown) -> Result<String> {
+        warn_insert_deprecated(&self.driver.app().host, env, "insertImage", "image")?;
         self.store_extra(env, "image", "insertImage", descriptor)
     }
 
@@ -2750,8 +2887,13 @@ impl QuiApp {
     /// if `kind` is already occupied -- call `clearExtra(kind)` first. Lets
     /// a consumer insert a future additive primitive by name alone, with no
     /// new napi method needed on this class.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming the
+    /// inline `kind` layout leaf as the replacement; removal is a later
+    /// breaking release.
     #[napi(js_name = "insertExtra")]
     pub fn insert_extra(&mut self, env: Env, kind: String, descriptor: Unknown) -> Result<String> {
+        warn_insert_deprecated(&self.driver.app().host, env, "insertExtra", &kind)?;
         self.store_extra(env, &kind, "insertExtra", descriptor)
     }
 
@@ -2761,9 +2903,14 @@ impl QuiApp {
     /// slot held anything; an unrecognized `kind` simply has nothing to
     /// clear (unlike `slotClear`, this never raises for an unknown key).
     /// Raises `LiveRunnerActiveError` once `startTui` is active.
+    ///
+    /// @deprecated Reports a one-time `process.emitWarning` naming omitting
+    /// `kind`'s layout leaf from the next `render` callback as the
+    /// replacement; removal is a later breaking release.
     #[napi(js_name = "clearExtra")]
     pub fn clear_extra(&mut self, env: Env, kind: String) -> Result<bool> {
         self.check_not_live()?;
+        warn_clear_extra_deprecated(&self.driver.app().host, env, &kind)?;
         self.guarded(env, |app| {
             let cleared = app.driver.app_mut().clear_extra_slot(&kind);
             if cleared {
