@@ -4,6 +4,12 @@ rewritten, picks the new code up, and keeps component state, the state on
 its bound-method view's own object, and framework widget state; a broken
 edit leaves the last good code running.
 
+The app is driven through `quadraui.testing` -- the app-author test
+harness -- so a click is a click and a keypress is a keypress, with no
+wire event spelled out here. Only the reload calls themselves go straight
+to `App`: `enable_hot_reload`/`reload_if_changed` are the app's own
+lifecycle API, not something a user does to a widget.
+
 Run against a built wheel/extension, e.g.:
 
     maturin develop
@@ -20,9 +26,7 @@ import uuid
 import pytest
 
 from quadraui.app import App
-
-
-_NO_MODS = {"shift": False, "ctrl": False, "alt": False, "cmd": False}
+from quadraui.testing import harness
 
 
 class _Module:
@@ -80,93 +84,91 @@ COUNTER_V2 = COUNTER_V1.replace("v1 count=", "v2 count=").replace(
 )
 
 
-def _click(app, widget):
+def _click(ui, widget):
     """Activates a button the way a keyboard user does: focus it, press
     Enter."""
-    app.push_event({"FocusChanged": widget})
-    app.step()
-    app.push_event({"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": _NO_MODS, "repeat": False}})
-    app.step()
+    ui.focus(widget)
+    ui.press("Enter")
 
 
 def _app(fixture, **kwargs):
     shell = fixture.module.Shell()
     app = App(60, 10, view=shell.view)
     app.enable_hot_reload(fixture.module, interval=None, **kwargs)
-    return app, shell
+    return harness(app), shell
 
 
 def test_reload_picks_up_edited_view_and_keeps_component_and_app_object_state(tmp_path):
     fixture = _Module(tmp_path, COUNTER_V1)
-    app, shell = _app(fixture)
-    assert app.screen_contains("v1 count=0")
+    ui, shell = _app(fixture)
+    assert ui.contains("v1 count=0")
 
-    _click(app, "b:plus")
-    _click(app, "b:plus")
+    _click(ui, "b:plus")
+    _click(ui, "b:plus")
     shell.title = "edited-at-runtime"
-    app.step()
-    assert app.screen_contains("v1 count=2")
+    ui.step()
+    assert ui.contains("v1 count=2")
 
     fixture.write(COUNTER_V2)
-    assert app.reload_if_changed() is True
-    app.step()
+    assert ui.app.reload_if_changed() is True
+    ui.step()
 
     # New code renders, the component's count survived, the key the new
     # initial_state() introduced was merged in, and the bound-method view's
     # own object kept its attribute while running the new method body.
-    assert app.screen_contains("v2 count=2 step=5"), app.screen()
-    assert app.screen_contains("new title=edited-at-runtime"), app.screen()
+    assert ui.contains("v2 count=2 step=5"), ui.screen()
+    assert ui.contains("new title=edited-at-runtime"), ui.screen()
     assert type(shell) is fixture.module.Shell
-    assert app.reload_error is None
-    assert app.reload_count == 1
+    assert ui.app.reload_error is None
+    assert ui.app.reload_count == 1
 
     # Callbacks registered by the new code still drive the same state.
-    _click(app, "b:plus")
-    assert app.screen_contains("v2 count=3 step=5"), app.screen()
+    _click(ui, "b:plus")
+    assert ui.contains("v2 count=3 step=5"), ui.screen()
 
 
 def test_reload_if_changed_is_a_no_op_without_an_edit(tmp_path):
     fixture = _Module(tmp_path, COUNTER_V1)
-    app, _ = _app(fixture)
-    assert app.reload_if_changed() is False
-    assert app.reload_count == 0
+    ui, _ = _app(fixture)
+    assert ui.app.reload_if_changed() is False
+    assert ui.app.reload_count == 0
 
 
 def test_syntax_error_keeps_the_last_good_code_running(tmp_path):
     fixture = _Module(tmp_path, COUNTER_V1)
-    app, _ = _app(fixture)
-    _click(app, "b:plus")
+    ui, _ = _app(fixture)
+    _click(ui, "b:plus")
 
     fixture.write(COUNTER_V1 + "\n    def broken(:\n")
-    assert app.reload_if_changed() is False
-    assert isinstance(app.reload_error, SyntaxError)
-    app.step()
-    assert app.screen_contains("v1 count=1"), app.screen()
-    _click(app, "b:plus")
-    assert app.screen_contains("v1 count=2"), app.screen()
+    assert ui.app.reload_if_changed() is False
+    assert isinstance(ui.app.reload_error, SyntaxError)
+    ui.step()
+    assert ui.contains("v1 count=1"), ui.screen()
+    _click(ui, "b:plus")
+    assert ui.contains("v1 count=2"), ui.screen()
 
     # Fixing the file recovers and clears the error, state intact.
     fixture.write(COUNTER_V2)
-    assert app.reload_if_changed() is True
-    app.step()
-    assert app.reload_error is None
-    assert app.screen_contains("v2 count=2 step=5"), app.screen()
+    assert ui.app.reload_if_changed() is True
+    ui.step()
+    assert ui.app.reload_error is None
+    assert ui.contains("v2 count=2 step=5"), ui.screen()
 
 
 def test_view_that_raises_after_reload_rolls_back_to_the_previous_code(tmp_path):
     fixture = _Module(tmp_path, COUNTER_V1)
-    app, _ = _app(fixture)
-    _click(app, "b:plus")
+    ui, _ = _app(fixture)
+    _click(ui, "b:plus")
 
     fixture.write(COUNTER_V1.replace("def view(self):\n", "def view(self):\n            raise RuntimeError('boom')\n"))
-    assert app.reload_if_changed() is True
-    app.step()
+    assert ui.app.reload_if_changed() is True
+    ui.step()
 
-    assert app.screen_contains("v1 count=1"), app.screen()
-    assert isinstance(app.reload_error, RuntimeError)
-    assert app.screen_contains("title=first"), app.screen()
-    _click(app, "b:plus")
-    assert app.screen_contains("v1 count=2"), app.screen()
+    assert ui.contains("v1 count=1"), ui.screen()
+    assert isinstance(ui.app.reload_error, RuntimeError)
+    assert ui.contains("title=first"), ui.screen()
+    _click(ui, "b:plus")
+    assert ui.contains("v1 count=2"), ui.screen()
 
 
 def test_framework_widget_state_survives_a_reload(tmp_path):
@@ -185,26 +187,26 @@ def test_framework_widget_state_survives_a_reload(tmp_path):
     fixture = _Module(tmp_path, source % "old")
     app = App(40, 6, view=fixture.module.view)
     app.enable_hot_reload(fixture.module.__name__, interval=None)
-    assert app.screen_contains("old row 0")
+    ui = harness(app)
+    assert ui.contains("old row 0")
 
-    app.push_event({"Tree": ["t:tree", {"RowClicked": {"path": [2], "modifiers": _NO_MODS}}]})
-    app.step()
-    before = app.widget_state("t:tree")
+    ui.find(id="t:tree").row("old row 2").click()
+    before = ui.state("t:tree")
 
     fixture.write(source % "new")
-    assert app.reload_if_changed() is True
-    app.step()
+    assert ui.app.reload_if_changed() is True
+    ui.step()
 
-    assert app.screen_contains("new row 2"), app.screen()
-    assert app.widget_state("t:tree") == before
+    assert ui.contains("new row 2"), ui.screen()
+    assert ui.state("t:tree") == before
 
 
 def test_on_reload_hook_runs_after_a_successful_reload(tmp_path):
     fixture = _Module(tmp_path, COUNTER_V1)
     seen = []
-    app, _ = _app(fixture, on_reload=lambda a: seen.append(a.reload_count))
+    ui, _ = _app(fixture, on_reload=lambda a: seen.append(a.reload_count))
     fixture.write(COUNTER_V2)
-    app.reload_if_changed()
+    ui.app.reload_if_changed()
     assert seen == [0]
 
 
@@ -214,16 +216,17 @@ def test_watcher_thread_wakes_the_event_loop_on_an_edit(tmp_path):
     unclaimed = []
     app = App(60, 10, view=shell.view, on_event=unclaimed.append)
     app.enable_hot_reload(fixture.module, interval=0.02)
+    ui = harness(app)
     try:
         fixture.write(COUNTER_V2)
         deadline = time.monotonic() + 5
-        while app.reload_count == 0 and time.monotonic() < deadline:
-            app.run(1)
-        assert app.reload_count == 1
-        assert app.screen_contains("v2 count=0 step=5"), app.screen()
+        while ui.app.reload_count == 0 and time.monotonic() < deadline:
+            ui.app.run(1)
+        assert ui.app.reload_count == 1
+        assert ui.contains("v2 count=0 step=5"), ui.screen()
         assert unclaimed == [], "the reload wake must not reach on_event"
     finally:
-        app.disable_hot_reload()
+        ui.app.disable_hot_reload()
 
 
 def test_a_script_run_as_main_is_rejected_with_a_clear_error():
@@ -259,45 +262,46 @@ def _bump_mtime(path):
 
 def test_demo_edit_repaints_and_keeps_counter_notes_and_selection(tmp_path):
     demo, view_file = _load_demo(tmp_path)
-    app, notes = demo.build(interval=None)
+    app, _notes = demo.build(interval=None)
+    ui = harness(app)
     try:
-        assert app.screen_contains("Hot reload demo")
-        _click(app, "hr:add")
-        _click(app, "hr:add")
-        _click(app, "hr:note")
-        app.push_event({"Tree": ["hr:notes", {"RowClicked": {"path": [1], "modifiers": _NO_MODS}}]})
-        app.step()
-        assert app.screen_contains("Counter: 2"), app.screen()
-        assert app.screen_contains("note 4"), app.screen()
-        selection = app.widget_state("hr:notes")
+        assert ui.contains("Hot reload demo")
+        _click(ui, "hr:add")
+        _click(ui, "hr:add")
+        _click(ui, "hr:note")
+        ui.find(id="hr:notes").row(index=1).click()
+        assert ui.contains("Counter: 2"), ui.screen()
+        assert ui.contains("note 4"), ui.screen()
+        selection = ui.state("hr:notes")
 
         view_file.write_text(view_file.read_text().replace('"Hot reload demo"', '"Edited title"'))
         _bump_mtime(view_file)
-        assert app.reload_if_changed() is True
-        app.step()
+        assert ui.app.reload_if_changed() is True
+        ui.step()
 
-        assert app.screen_contains("Edited title"), app.screen()
-        assert app.screen_contains("Counter: 2"), app.screen()
-        assert app.screen_contains("note 4"), app.screen()
-        assert app.screen_contains("reloads: 1"), app.screen()
-        assert app.widget_state("hr:notes") == selection
+        assert ui.contains("Edited title"), ui.screen()
+        assert ui.contains("Counter: 2"), ui.screen()
+        assert ui.contains("note 4"), ui.screen()
+        assert ui.contains("reloads: 1"), ui.screen()
+        assert ui.state("hr:notes") == selection
     finally:
-        app.disable_hot_reload()
+        ui.app.disable_hot_reload()
 
 
 def test_demo_shows_a_broken_edit_in_the_status_bar(tmp_path):
     demo, view_file = _load_demo(tmp_path)
     app, _ = demo.build(interval=None)
+    ui = harness(app)
     try:
-        _click(app, "hr:add")
+        _click(ui, "hr:add")
         view_file.write_text(view_file.read_text() + "\ndef broken(:\n")
         _bump_mtime(view_file)
-        assert app.reload_if_changed() is False
-        app.step()
-        assert app.screen_contains("reload failed"), app.screen()
-        assert app.screen_contains("Counter: 1"), app.screen()
+        assert ui.app.reload_if_changed() is False
+        ui.step()
+        assert ui.contains("reload failed"), ui.screen()
+        assert ui.contains("Counter: 1"), ui.screen()
     finally:
-        app.disable_hot_reload()
+        ui.app.disable_hot_reload()
 
 
 def test_demo_quits_on_q():
@@ -309,9 +313,9 @@ def test_demo_quits_on_q():
     demo = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(demo)
     app, _ = demo.build(interval=None)
+    ui = harness(app)
     try:
-        app.push_event({"KeyPressed": {"key": {"Char": "q"}, "modifiers": _NO_MODS, "repeat": False}})
         with pytest.raises(demo._Quit):
-            app.step()
+            ui.press("q")
     finally:
-        app.disable_hot_reload()
+        ui.app.disable_hot_reload()

@@ -29,9 +29,9 @@ class Component:
     `key`, if given, identifies this component's state slot directly,
     instead of the (type, tree-position) pair `quadraui.app.runtime._walk`
     otherwise derives (the type part is the class's qualified name, so a
-    hot-reloaded class keeps its slots) -- needed only when a list of components can reorder
-    (state should follow the item, not the slot it happened to render into
-    this frame)."""
+    hot-reloaded class keeps its slots) -- needed only when a list of
+    components can reorder (state should follow the item, not the slot it
+    happened to render into this frame)."""
 
     key: Optional[Any] = None
 

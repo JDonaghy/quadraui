@@ -2,10 +2,15 @@
 cross-backend, resizable two-pane file manager -- a lazily-loaded folders-only
 tree on the left, and a details area on the right that opens one closable tab
 per folder (each tab a data_table of that folder's contents), all built from
-one layout tree the `render` callback returns. Drives the real
-`event -> handle -> render` path on the headless backend -- push an event,
-`step()`, then assert against the rebuilt descriptors and `screen()` /
-`screen_contains()`, never hardcoded coordinates.
+one `quadraui.app` node tree the `view` callback returns.
+
+Written entirely against `quadraui.testing` -- the app-author test harness --
+so every line below reads the way a user describes the app: find the tree,
+click the row labelled "alpha", press Enter, assert the frame shows
+"a1.txt". There is no raw wire event, no hand-built key dict and no
+hardcoded coordinate anywhere in this file; the harness synthesises the real
+`UiEvent` for each action and drives the real
+`event -> handle -> render` path on the headless backend.
 
 Built against a deterministic temp directory (not the repo), so names and
 ordering are fixed:
@@ -22,8 +27,9 @@ only) the visible folder rows are:
     0 root   1 alpha   2 beta
 
 alpha's own children (including the `sub/` subfolder) are not read until alpha
-is expanded or opened. Files (readme.md, a1.txt, ...) never appear in the tree;
-they show in a folder's details table once it is opened.
+is expanded or opened -- which is exactly why "sub" is absent from the tree
+below until something expands alpha. Files (readme.md, a1.txt, ...) never
+appear in the tree; they show in a folder's details table once it is opened.
 
 Run against a built wheel/extension, e.g.:
 
@@ -37,11 +43,11 @@ import sys
 
 import pytest
 
+from quadraui.testing import harness
+
 _EXAMPLE_PATH = (
     pathlib.Path(__file__).resolve().parent.parent / "examples" / "file_manager_app.py"
 )
-
-_NO_MODS = {"shift": False, "ctrl": False, "alt": False, "meta": False}
 
 
 def _load_file_manager():
@@ -80,332 +86,10 @@ def tree_root(tmp_path):
     return tmp_path
 
 
-def _manager(fmmod, root):
-    return fmmod.FileManager(root, width=80, height=30)
-
-
-def _press(fmmod, fm, key):
-    fm.app.push_event({"KeyPressed": {"key": key, "modifiers": _NO_MODS, "repeat": False}})
-    fm.app.step()
-
-
-def _send(fm, event):
-    fm.app.push_event(event)
-    fm.app.step()
-
-
-def _body_split(fm):
-    """The resizable tree/details split. The frame is an outer vertical split
-    (chrome+body over a status bar); the body lives in the first pane, inside
-    the `sidebar_panel` that carries the toolbar."""
-    outer = fm.app._render()["split"]
-    return outer["first"]["sidebar_panel"]["content"]["split"]
-
-
-def _status_bar(fm):
-    return fm.app._render()["split"]["second"]["status_bar"]
-
-
-def _active_tab_index(fm) -> int:
-    """The active details-tab index, read back from the engine's own
-    widget-state store -- `examples/file_manager_app.py` tracks no active-tab
-    state of its own (see `_tree_scroll_offset`'s own doc for why this is
-    the only place it is readable at all)."""
-    state = fm.app.widget_state("fm:tabs")
-    return 0 if state is None else state.get("active_tab", 0)
-
-
-def _active_table(fm):
-    """The data_table descriptor behind the active tab, or None if the details
-    pane is still the placeholder (no folder opened yet). `fm.app._render()`'s own
-    raw "tabs" dict never pins `"selected"` (see `_details_pane`'s own doc),
-    so the active index has to come from the store, not from that dict."""
-    second = _body_split(fm)["second"]
-    if "tabs" not in second:
-        return None
-    tabs = second["tabs"]
-    content = tabs["tabs"][_active_tab_index(fm)]["content"]
-    return content["data_table"]
-
-
-def _names(table):
-    return [r["cells"][0]["spans"][0]["text"] for r in table["rows"]]
-
-
-def _folder_names(fmmod, fm):
-    rows, _nodes = fmmod.folder_rows(fm.root)
-    return [r["text"]["spans"][0]["text"] for r in rows]
-
-
-def _segment_text(segments):
-    return "".join(s["text"] for s in segments)
-
-
-# --- the tree: folders-only, lazily loaded -----------------------------------
-
-
-def test_tree_starts_folders_only_and_lazily_loaded(fmmod, tree_root):
-    """The tree lists directories only, one level deep: the root is expanded
-    onto its subfolders, which are themselves collapsed and unread."""
-    fm = _manager(fmmod, tree_root)
-
-    assert _folder_names(fmmod, fm) == [tree_root.name, "alpha", "beta"]
-    # alpha's contents (and its `sub/` subfolder) are not read yet.
-    alpha = fm.root.children[0]
-    assert alpha.name == "alpha"
-    assert alpha.children is None
-    # The top-level dict is the outer vertical split; the body beneath is the
-    # horizontal tree/details divider.
-    assert set(fm.app._render()) == {"split"}
-    assert fm.app._render()["split"]["orientation"] == "vertical"
-    assert _body_split(fm)["orientation"] == "horizontal"
-
-
-def test_right_expands_and_loads_on_demand(fmmod, tree_root):
-    """Right on a collapsed folder reads it and reveals its subfolders; the
-    tree grows without any up-front deep scan."""
-    fm = _manager(fmmod, tree_root)
-
-    _press(fmmod, fm, fmmod.DOWN_KEY)   # cursor 0 -> alpha
-    assert fm.cursor.name == "alpha"
-    _press(fmmod, fm, fmmod.RIGHT_KEY)  # expand alpha (loads it)
-
-    assert fm.cursor.children is not None          # now loaded
-    assert _folder_names(fmmod, fm) == [tree_root.name, "alpha", "sub", "beta"]
-    assert fm.app.screen_contains("sub")
-
-
-def test_left_collapses_then_climbs_to_parent(fmmod, tree_root):
-    """Left collapses an expanded folder; a second Left (now collapsed) jumps
-    the cursor to the parent."""
-    fm = _manager(fmmod, tree_root)
-
-    _press(fmmod, fm, fmmod.DOWN_KEY)    # -> alpha
-    _press(fmmod, fm, fmmod.RIGHT_KEY)   # expand alpha
-    _press(fmmod, fm, fmmod.DOWN_KEY)    # -> sub (collapsed leaf dir)
-    _press(fmmod, fm, fmmod.LEFT_KEY)    # sub collapsed -> climb to parent alpha
-    assert fm.cursor.name == "alpha"
-    assert fm.cursor.expanded  # alpha still expanded
-
-    _press(fmmod, fm, fmmod.LEFT_KEY)    # alpha expanded -> collapse it
-    assert fm.cursor.name == "alpha"
-    assert not fm.cursor.expanded
-    assert _folder_names(fmmod, fm) == [tree_root.name, "alpha", "beta"]  # sub hidden
-
-    _press(fmmod, fm, fmmod.LEFT_KEY)    # alpha collapsed -> climb to root
-    assert fm.cursor.name == tree_root.name
-
-
-def test_chevron_click_toggles_expansion_without_moving_the_cursor(fmmod, tree_root):
-    """A `Tree(RowToggleExpand)` event -- what a chevron click resolves to --
-    expands/collapses that row in place; unlike a row-body click, it leaves
-    the cursor (still on the root) untouched."""
-    fm = _manager(fmmod, tree_root)
-
-    _send(fm, {"Tree": ["fm:tree", {"RowToggleExpand": {"path": [0]}}]})  # alpha
-    assert fm.cursor.name == tree_root.name  # cursor never moved
-    assert _folder_names(fmmod, fm) == [tree_root.name, "alpha", "sub", "beta"]
-
-    _send(fm, {"Tree": ["fm:tree", {"RowToggleExpand": {"path": [0]}}]})  # alpha again
-    assert fm.cursor.name == tree_root.name
-    assert _folder_names(fmmod, fm) == [tree_root.name, "alpha", "beta"]  # sub hidden again
-
-
-# --- opening folders as detail tabs ------------------------------------------
-
-
-def test_details_is_placeholder_until_a_folder_is_opened(fmmod, tree_root):
-    """With nothing opened the right pane is a placeholder, not a table."""
-    fm = _manager(fmmod, tree_root)
-
-    assert _active_table(fm) is None
-    assert fm.app.screen_contains("Select a folder")
-    assert not fm.app.screen_contains("Kind")  # no table header yet
-
-
-def test_enter_opens_the_cursored_folder_as_a_tab(fmmod, tree_root):
-    """Down onto alpha, Enter: a tab titled 'alpha' opens listing alpha's
-    contents, subfolders first with a trailing slash."""
-    fm = _manager(fmmod, tree_root)
-
-    _press(fmmod, fm, fmmod.DOWN_KEY)   # -> alpha
-    _press(fmmod, fm, fmmod.ENTER_KEY)
-
-    assert [n.name for n in fm.open] == ["alpha"]
-    assert _active_tab_index(fm) == 0
-    assert _names(_active_table(fm)) == ["sub/", "a1.txt", "a2.txt"]
-    assert fm.app.screen_contains("alpha")
-    for title in ("Name", "Size", "Kind"):
-        assert fm.app.screen_contains(title)
-
-
-def test_reopening_an_open_folder_focuses_its_tab(fmmod, tree_root):
-    """Enter on an already-open folder focuses its tab instead of duplicating."""
-    fm = _manager(fmmod, tree_root)
-
-    _press(fmmod, fm, fmmod.DOWN_KEY)   # -> alpha
-    _press(fmmod, fm, fmmod.ENTER_KEY)  # open alpha (tab 0)
-    _press(fmmod, fm, fmmod.DOWN_KEY)   # -> beta
-    _press(fmmod, fm, fmmod.ENTER_KEY)  # open beta (tab 1, active)
-    assert _active_tab_index(fm) == 1
-
-    _press(fmmod, fm, fmmod.UP_KEY)     # -> alpha
-    _press(fmmod, fm, fmmod.ENTER_KEY)
-    assert [n.name for n in fm.open] == ["alpha", "beta"]
-    assert _active_tab_index(fm) == 0
-
-
-# --- drilling in from the details table --------------------------------------
-
-
-def test_activating_a_subfolder_row_drills_into_it(fmmod, tree_root):
-    """Double-clicking a subfolder row in the details table opens that
-    subfolder as a new, active tab and moves the tree cursor onto it. A
-    single click must not: it only selects, never opens."""
-    fm = _manager(fmmod, tree_root)
-
-    _press(fmmod, fm, fmmod.DOWN_KEY)   # -> alpha
-    _press(fmmod, fm, fmmod.ENTER_KEY)  # open alpha (row 0 is sub/)
-    assert _names(_active_table(fm))[0] == "sub/"
-
-    _send(fm, {"DataTable": ["fm:grid:0", {"RowSelected": {"idx": 0}}]})
-    assert [n.name for n in fm.open] == ["alpha"], "a single click must not drill in"
-
-    _send(fm, {"DataTable": ["fm:grid:0", {"RowDoubleClicked": {"idx": 0}}]})
-
-    assert [n.name for n in fm.open] == ["alpha", "sub"]
-    assert _active_tab_index(fm) == 1
-    assert fm.cursor.name == "sub"
-    assert _names(_active_table(fm)) == ["deep.txt"]
-    assert fm.app.screen_contains("deep.txt")
-
-
-def test_activating_a_file_row_reports_it_without_opening_a_tab(fmmod, tree_root):
-    """Double-clicking a file row is not navigation: it reports the file in
-    the status bar and opens no tab."""
-    fm = _manager(fmmod, tree_root)
-
-    _press(fmmod, fm, fmmod.DOWN_KEY)   # -> alpha
-    _press(fmmod, fm, fmmod.ENTER_KEY)  # open alpha
-    _send(fm, {"DataTable": ["fm:grid:0", {"RowDoubleClicked": {"idx": 1}}]})  # a1.txt
-
-    assert [n.name for n in fm.open] == ["alpha"]  # no new tab
-    assert "a1.txt" in _segment_text(_status_bar(fm)["left_segments"])
-
-
-# --- tabs: click to switch, close to remove ----------------------------------
-
-
-def test_tab_activated_event_switches_the_shown_tab(fmmod, tree_root):
-    """A TabBar/TabActivated event (what a tab click delivers) switches which
-    tab's content paints on the next frame."""
-    fm = _manager(fmmod, tree_root)
-
-    _press(fmmod, fm, fmmod.DOWN_KEY)
-    _press(fmmod, fm, fmmod.ENTER_KEY)  # open alpha (tab 0)
-    _press(fmmod, fm, fmmod.DOWN_KEY)
-    _press(fmmod, fm, fmmod.ENTER_KEY)  # open beta (tab 1, active)
-    assert _active_tab_index(fm) == 1
-
-    _send(fm, {"TabBar": ["fm:tabs", {"TabActivated": {"index": 0}}]})
-
-    assert _active_tab_index(fm) == 0
-    assert _names(_active_table(fm))[0] == "sub/"  # alpha's contents
-
-
-def test_tab_closed_event_removes_the_tab(fmmod, tree_root):
-    """A TabBar/TabClosed event (what the tab's × delivers) drops that tab and
-    keeps the active index in range."""
-    fm = _manager(fmmod, tree_root)
-
-    _press(fmmod, fm, fmmod.DOWN_KEY)
-    _press(fmmod, fm, fmmod.ENTER_KEY)  # open alpha (tab 0)
-    _press(fmmod, fm, fmmod.DOWN_KEY)
-    _press(fmmod, fm, fmmod.ENTER_KEY)  # open beta (tab 1, active)
-
-    _send(fm, {"TabBar": ["fm:tabs", {"TabClosed": {"index": 0}}]})  # close alpha
-
-    assert [n.name for n in fm.open] == ["beta"]
-    assert _active_tab_index(fm) == 0
-    assert _names(_active_table(fm)) == ["b1.txt"]
-
-
-# --- the split divider --------------------------------------------------------
-
-
-def test_body_divider_drag_updates_the_ratio(fmmod, tree_root):
-    """A SplitDividerDragged on the body split persists the new ratio in the
-    engine's own widget-state store -- with no app code tracking it at all:
-    `_render()`'s own raw dict keeps resending the same starting literal
-    (`BODY_SPLIT_RATIO`) before and after the drag, and the store alone is
-    what the next real render actually paints."""
-    fm = _manager(fmmod, tree_root)
-
-    assert fm.app.widget_state("fm:split")["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
-    _send(fm, {"SplitDividerDragged": {"tree": "fm:split", "split_index": 0, "new_ratio": 0.6}})
-
-    assert fm.app.widget_state("fm:split")["ratio"] == pytest.approx(0.6)
-    assert _body_split(fm)["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
-
-
-def test_outer_divider_drag_persists_but_never_touches_the_body_split(fmmod, tree_root):
-    """The outer chrome/status divider resolves exactly the same uncontrolled
-    way the body split does (see `_render`'s own comment on `"fm:outer"`'s
-    `ratio` literal) -- it is not a fixed divider, so a drag on it persists
-    its own ratio in the store. What it must never do is move `"fm:split"`'s
-    own ratio: the two ids are tracked independently."""
-    fm = _manager(fmmod, tree_root)
-
-    _send(fm, {"SplitDividerDragged": {"tree": "fm:outer", "split_index": 0, "new_ratio": 0.9}})
-
-    assert fm.app.widget_state("fm:outer")["ratio"] == pytest.approx(0.9)
-    assert fm.app.widget_state("fm:split")["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
-
-
-# --- chrome: toolbar legend + live status bar --------------------------------
-
-
-def test_toolbar_band_is_present_and_rendered(fmmod, tree_root):
-    """A sidebar_panel wraps the body and carries the toolbar legend in its
-    reserved top slot; its action labels paint on screen."""
-    fm = _manager(fmmod, tree_root)
-
-    chrome = fm.app._render()["split"]["first"]["sidebar_panel"]
-    assert chrome["id"] == "fm:chrome"
-    assert chrome["toolbar"]["id"] == "fm:toolbar"
-    labels = [b["Action"]["label"] for b in chrome["toolbar"]["buttons"]]
-    assert any("Open" in label for label in labels)
-    for word in ("Move", "Expand", "Collapse", "Open", "Refresh"):
-        assert fm.app.screen_contains(word)
-
-
-def test_status_bar_reflects_cursor_and_open_tabs(fmmod, tree_root):
-    """The bottom status bar is live: it names the cursored folder, counts its
-    items once loaded, and summarizes the open tabs."""
-    fm = _manager(fmmod, tree_root)
-
-    status = _status_bar(fm)
-    assert status["id"] == "fm:status"
-    # The root is loaded (alpha, beta, readme.md == 3), no tabs yet.
-    assert tree_root.name in _segment_text(status["left_segments"])
-    assert "3 items" in _segment_text(status["left_segments"])
-    assert "no tabs" in _segment_text(status["right_segments"])
-
-    _press(fmmod, fm, fmmod.DOWN_KEY)   # -> alpha (still unopened)
-    assert "unopened" in _segment_text(_status_bar(fm)["left_segments"])
-
-    _press(fmmod, fm, fmmod.ENTER_KEY)  # open alpha: sub/, a1.txt, a2.txt == 3
-    status = _status_bar(fm)
-    assert "alpha" in _segment_text(status["left_segments"])
-    assert "3 items" in _segment_text(status["left_segments"])
-    assert "1 tab" in _segment_text(status["right_segments"])
-    assert fm.app.screen_contains("1 tab")
-
-
-# --- the real-terminal key path ----------------------------------------------
-
-
-# --- scrolling: the view follows the cursor, the scrollbar paints ------------
+@pytest.fixture
+def ui(fmmod, tree_root):
+    """The file manager over the fixture tree, wrapped in the harness."""
+    return harness(fmmod.FileManager(tree_root, width=80, height=30).app)
 
 
 def _deep_root(tmp_path, n):
@@ -416,12 +100,287 @@ def _deep_root(tmp_path, n):
     return tmp_path
 
 
-def test_short_tree_paints_no_scrollbar(fmmod, tree_root):
+def _tree(ui):
+    return ui.find(role="tree")
+
+
+def _cursor(ui):
+    """The folder the tree renders as selected -- the app's own cursor, read
+    back off the frame rather than out of the app object."""
+    return _tree(ui).selected_row.text
+
+
+def _folder_names(ui):
+    return _tree(ui).row_texts
+
+
+def _open_titles(ui):
+    """The title of every open details tab, left to right."""
+    tabs = ui.query(role="tabs")
+    return [] if tabs is None else [tab.title for tab in tabs.tabs]
+
+
+def _details_names(ui):
+    """The Name column of the details table behind the active tab, or `None`
+    when the details pane is still the placeholder."""
+    table = ui.query(role="data_table")
+    return None if table is None else [row.cells[0] for row in table.rows]
+
+
+def _status(ui):
+    return ui.find(role="status_bar")
+
+
+# --- the tree: folders-only, lazily loaded -----------------------------------
+
+
+def test_tree_starts_folders_only_and_lazily_loaded(ui, tree_root):
+    """The tree lists directories only, one level deep: the root is expanded
+    onto its subfolders, which are themselves collapsed and unread -- so
+    alpha's own `sub/` is nowhere on the frame yet."""
+    assert _folder_names(ui) == [tree_root.name, "alpha", "beta"]
+    ui.assert_not_text("sub")
+    # No file ever reaches the tree, at any depth.
+    ui.assert_not_text("readme.md", "a1.txt", "deep.txt")
+    # The frame is an outer vertical split (chrome + body over a status bar)
+    # whose body is the horizontal tree/details divider.
+    assert ui.root.role == "split"
+    assert ui.root["orientation"] == "vertical"
+    assert ui.find(id="fm:split")["orientation"] == "horizontal"
+
+
+def test_right_expands_and_loads_on_demand(ui, tree_root):
+    """Right on a collapsed folder reads it and reveals its subfolders; the
+    tree grows without any up-front deep scan."""
+    ui.press("Down")  # cursor root -> alpha
+    assert _cursor(ui) == "alpha"
+    ui.press("Right")  # expand alpha (loads it)
+
+    assert _tree(ui).row("alpha").expanded
+    assert _folder_names(ui) == [tree_root.name, "alpha", "sub", "beta"]
+    ui.assert_text("sub")
+
+
+def test_left_collapses_then_climbs_to_parent(ui, tree_root):
+    """Left collapses an expanded folder; a second Left (now collapsed) jumps
+    the cursor to the parent."""
+    ui.press("Down")   # -> alpha
+    ui.press("Right")  # expand alpha
+    ui.press("Down")   # -> sub (collapsed leaf dir)
+    ui.press("Left")   # sub collapsed -> climb to parent alpha
+    assert _cursor(ui) == "alpha"
+    assert _tree(ui).row("alpha").expanded
+
+    ui.press("Left")   # alpha expanded -> collapse it
+    assert _cursor(ui) == "alpha"
+    assert not _tree(ui).row("alpha").expanded
+    assert _folder_names(ui) == [tree_root.name, "alpha", "beta"]  # sub hidden
+
+    ui.press("Left")   # alpha collapsed -> climb to root
+    assert _cursor(ui) == tree_root.name
+
+
+def test_chevron_click_toggles_expansion_without_moving_the_cursor(ui, tree_root):
+    """Clicking a row's expand chevron expands/collapses that row in place;
+    unlike a row-body click, it leaves the cursor (still on the root)
+    untouched."""
+    _tree(ui).row("alpha").toggle()
+    assert _cursor(ui) == tree_root.name  # cursor never moved
+    assert _folder_names(ui) == [tree_root.name, "alpha", "sub", "beta"]
+
+    _tree(ui).row("alpha").toggle()
+    assert _cursor(ui) == tree_root.name
+    assert _folder_names(ui) == [tree_root.name, "alpha", "beta"]  # sub hidden again
+
+
+def test_row_body_click_moves_the_cursor(ui):
+    """A click on the row body (not its chevron) moves the cursor onto that
+    folder without expanding it."""
+    _tree(ui).row("beta").click()
+
+    assert _cursor(ui) == "beta"
+    assert _folder_names(ui)[-1] == "beta"  # nothing expanded
+
+
+# --- opening folders as detail tabs ------------------------------------------
+
+
+def test_details_is_placeholder_until_a_folder_is_opened(ui):
+    """With nothing opened the right pane is a placeholder, not a table."""
+    assert _details_names(ui) is None
+    ui.assert_text("Select a folder")
+    ui.assert_not_text("Kind")  # no table header yet
+
+
+def test_enter_opens_the_cursored_folder_as_a_tab(ui):
+    """Down onto alpha, Enter: a tab titled 'alpha' opens listing alpha's
+    contents, subfolders first with a trailing slash."""
+    ui.press("Down")   # -> alpha
+    ui.press("Enter")
+
+    assert _open_titles(ui) == ["alpha"]
+    assert ui.find(role="tabs").active_index == 0
+    assert _details_names(ui) == ["sub/", "a1.txt", "a2.txt"]
+    ui.assert_text("alpha", "Name", "Size", "Kind")
+
+
+def test_reopening_an_open_folder_focuses_its_tab(ui):
+    """Enter on an already-open folder focuses its tab instead of duplicating."""
+    ui.press("Down")   # -> alpha
+    ui.press("Enter")  # open alpha (tab 0)
+    ui.press("Down")   # -> beta
+    ui.press("Enter")  # open beta (tab 1, active)
+    assert ui.find(role="tabs").active_index == 1
+
+    ui.press("Up")     # -> alpha
+    ui.press("Enter")
+    assert _open_titles(ui) == ["alpha", "beta"]
+    assert ui.find(role="tabs").active_index == 0
+
+
+# --- drilling in from the details table --------------------------------------
+
+
+def test_activating_a_subfolder_row_drills_into_it(ui):
+    """Double-clicking a subfolder row in the details table opens that
+    subfolder as a new, active tab and moves the tree cursor onto it. A
+    single click must not: it only selects, never opens."""
+    ui.press("Down")   # -> alpha
+    ui.press("Enter")  # open alpha (row 0 is sub/)
+    assert _details_names(ui)[0] == "sub/"
+
+    ui.find(role="data_table").row("sub/").click()
+    assert _open_titles(ui) == ["alpha"], "a single click must not drill in"
+
+    ui.find(role="data_table").row("sub/").double_click()
+
+    assert _open_titles(ui) == ["alpha", "sub"]
+    assert ui.find(role="tabs").active_index == 1
+    assert _cursor(ui) == "sub"
+    assert _details_names(ui) == ["deep.txt"]
+    ui.assert_text("deep.txt")
+
+
+def test_activating_a_file_row_reports_it_without_opening_a_tab(ui):
+    """Double-clicking a file row is not navigation: it reports the file in
+    the status bar and opens no tab."""
+    ui.press("Down")   # -> alpha
+    ui.press("Enter")  # open alpha
+    ui.find(role="data_table").row("a1.txt").double_click()
+
+    assert _open_titles(ui) == ["alpha"]  # no new tab
+    assert "a1.txt" in _status(ui).text_of("left_segments")
+
+
+# --- tabs: click to switch, close to remove ----------------------------------
+
+
+def test_clicking_a_tab_switches_the_shown_tab(ui):
+    """Clicking a tab header switches which tab's content paints on the next
+    frame -- and the inactive tab's table stops being on screen at all."""
+    ui.press("Down")
+    ui.press("Enter")  # open alpha (tab 0)
+    ui.press("Down")
+    ui.press("Enter")  # open beta (tab 1, active)
+    assert ui.find(role="tabs").active_index == 1
+
+    ui.find(role="tabs").tabs[0].click()
+
+    assert ui.find(role="tabs").active_index == 0
+    assert _details_names(ui)[0] == "sub/"  # alpha's contents
+    # Both tables are in the tree; only the active tab's is visible.
+    assert len(ui.find_all(role="data_table")) == 1
+    assert len(ui.find_all(role="data_table", include_hidden=True)) == 2
+
+
+def test_closing_a_tab_removes_it(ui):
+    """A tab's close affordance drops that tab and keeps the active index in
+    range."""
+    ui.press("Down")
+    ui.press("Enter")  # open alpha (tab 0)
+    ui.press("Down")
+    ui.press("Enter")  # open beta (tab 1, active)
+
+    ui.find(role="tabs").tabs[0].close()  # close alpha
+
+    assert _open_titles(ui) == ["beta"]
+    assert ui.find(role="tabs").active_index == 0
+    assert _details_names(ui) == ["b1.txt"]
+
+
+# --- the split divider --------------------------------------------------------
+
+
+def test_body_divider_drag_updates_the_ratio(ui, fmmod):
+    """Dragging the body split's divider persists the new ratio in the
+    engine's own widget-state store -- with no app code tracking it at all:
+    the app keeps re-declaring the same starting literal
+    (`BODY_SPLIT_RATIO`) before and after the drag, and the store alone is
+    what the next real render actually paints."""
+    split = ui.find(id="fm:split")
+    assert split.state["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
+
+    split.drag_divider(0.6)
+
+    split = ui.find(id="fm:split")
+    assert split.state["ratio"] == pytest.approx(0.6)
+    assert split["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
+
+
+def test_outer_divider_drag_persists_but_never_touches_the_body_split(ui, fmmod):
+    """The outer chrome/status divider resolves exactly the same uncontrolled
+    way the body split does -- it is not a fixed divider, so a drag on it
+    persists its own ratio in the store. What it must never do is move the
+    body split's own ratio: the two ids are tracked independently."""
+    ui.find(id="fm:outer").drag_divider(0.9)
+
+    assert ui.find(id="fm:outer").state["ratio"] == pytest.approx(0.9)
+    assert ui.find(id="fm:split").state["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
+
+
+# --- chrome: toolbar legend + live status bar --------------------------------
+
+
+def test_toolbar_band_is_present_and_rendered(ui):
+    """A sidebar_panel wraps the body and carries the toolbar legend in its
+    reserved top slot; its action labels paint on screen."""
+    chrome = ui.find(role="sidebar_panel")
+    assert chrome.id == "fm:chrome"
+
+    toolbar = chrome.find(role="toolbar")
+    assert toolbar.id == "fm:toolbar"
+    assert "Open" in toolbar.button("Open").label
+    ui.assert_text("Move", "Expand", "Collapse", "Open", "Refresh")
+
+
+def test_status_bar_reflects_cursor_and_open_tabs(ui, tree_root):
+    """The bottom status bar is live: it names the cursored folder, counts its
+    items once loaded, and summarizes the open tabs."""
+    status = _status(ui)
+    assert status.id == "fm:status"
+    # The root is loaded (alpha, beta, readme.md == 3), no tabs yet.
+    assert tree_root.name in status.text_of("left_segments")
+    assert "3 items" in status.text_of("left_segments")
+    assert "no tabs" in status.text_of("right_segments")
+
+    ui.press("Down")  # -> alpha (still unopened)
+    assert "unopened" in _status(ui).text_of("left_segments")
+
+    ui.press("Enter")  # open alpha: sub/, a1.txt, a2.txt == 3
+    status = _status(ui)
+    assert "alpha" in status.text_of("left_segments")
+    assert "3 items" in status.text_of("left_segments")
+    assert "1 tab" in status.text_of("right_segments")
+    ui.assert_text("1 tab")
+
+
+# --- scrolling: the view follows the cursor, the scrollbar paints ------------
+
+
+def test_short_tree_paints_no_scrollbar(ui):
     """When every folder row fits the pane, no scrollbar track/thumb paints --
     `Backend::tree_vscrollbar` returns None and nothing is drawn over it."""
-    fm = fmmod.FileManager(tree_root, width=80, height=30)  # 3 rows, 30 tall
-    assert not fm.app.screen_contains("░")  # track glyph
-    assert not fm.app.screen_contains("█")  # thumb glyph
+    ui.assert_not_text("░", "█")  # track glyph, thumb glyph
 
 
 def test_overflowing_tree_paints_a_scrollbar_on_tui(fmmod, tmp_path):
@@ -429,20 +388,9 @@ def test_overflowing_tree_paints_a_scrollbar_on_tui(fmmod, tmp_path):
     vertical scrollbar the tree rasteriser itself doesn't draw -- the binding
     composes it from `tree_vscrollbar` geometry, so a declarative tree gets a
     scrollbar with no per-app code."""
-    fm = fmmod.FileManager(_deep_root(tmp_path, 20), width=60, height=12)
-    fm.app.step()
-    assert fm.app.screen_contains("░")  # track
-    assert fm.app.screen_contains("█")  # thumb
+    ui = harness(fmmod.FileManager(_deep_root(tmp_path, 20), width=60, height=12).app)
 
-
-def _tree_scroll_offset(fm) -> int:
-    """The tree's current scroll offset read back from the engine's own
-    widget-state store -- `examples/file_manager_app.py` tracks no scroll state
-    of its own, so this (called here from outside any active `fm.app` call,
-    same as `QuiApp.widget_state`'s own doc requires) is the only place it
-    is readable at all."""
-    state = fm.app.widget_state("fm:tree")
-    return 0 if state is None else state.get("scroll_offset", 0)
+    ui.assert_text("░", "█")  # track, thumb
 
 
 def test_scroll_follows_cursor_down_and_clamps(fmmod, tmp_path):
@@ -450,37 +398,32 @@ def test_scroll_follows_cursor_down_and_clamps(fmmod, tmp_path):
     scroll offset so the cursor stays painted, and the last page clamps
     without scrolling past the end -- with no `scroll`/keep-visible code in
     the app itself."""
-    fm = fmmod.FileManager(_deep_root(tmp_path, 20), width=60, height=12)
+    ui = harness(fmmod.FileManager(_deep_root(tmp_path, 20), width=60, height=12).app)
 
-    assert _tree_scroll_offset(fm) == 0
+    assert _tree(ui).scroll_offset == 0
     for _ in range(15):
-        _press(fmmod, fm, fmmod.DOWN_KEY)
+        ui.press("Down")
 
     # The cursor advanced past the first window, so the view scrolled...
-    assert _tree_scroll_offset(fm) > 0
+    assert _tree(ui).scroll_offset > 0
     # ...and the cursored folder is actually on screen (not off the bottom).
-    assert fm.app.screen_contains(fm.cursor.name)
+    ui.assert_text(_cursor(ui))
 
     # Arrowing back to the top pulls the window back to the start.
     for _ in range(20):
-        _press(fmmod, fm, fmmod.UP_KEY)
-    assert _tree_scroll_offset(fm) == 0
-    assert fm.cursor.name == tmp_path.name
+        ui.press("Up")
+    assert _tree(ui).scroll_offset == 0
+    assert _cursor(ui) == tmp_path.name
 
 
-def test_focus_scoped_key_event_moves_the_cursor(fmmod, tree_root):
-    """On the real backends a focused tree's keys arrive wrapped as
-    Tree/KeyPressed, not a plain KeyPressed; the handler must honor both so the
+def test_focus_scoped_key_event_moves_the_cursor(ui, tree_root):
+    """On the real backends a focused tree's keys arrive scoped to that
+    widget, not as a plain top-level key; the handler must honor both so the
     keyboard works in an actual terminal."""
-    fm = _manager(fmmod, tree_root)
+    assert _cursor(ui) == tree_root.name
 
-    assert fm.cursor.name == tree_root.name
-    # A focused tree stringifies the key ("Down"), unlike a plain KeyPressed's
-    # tagged {"Named": "Down"}. Deliver that shape straight to the handler (it
-    # is what the real backend hands Python after focus routing).
-    fm.app._handle({"Tree": ["fm:tree", {"KeyPressed": {"key": "Down", "modifiers": _NO_MODS}}]})
-    assert fm.cursor.name == "alpha"
+    _tree(ui).press("Down")  # the shape a focused tree receives
+    assert _cursor(ui) == "alpha"
 
-    # And the plain top-level KeyPressed shape still works.
-    _press(fmmod, fm, fmmod.DOWN_KEY)
-    assert fm.cursor.name == "beta"
+    ui.press("Down")  # the plain top-level shape
+    assert _cursor(ui) == "beta"

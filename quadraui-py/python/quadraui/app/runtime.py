@@ -246,7 +246,8 @@ class App:
 
     def reload_if_changed(self) -> bool:
         """Reloads the watched modules if any source file changed since the
-        last check; `True` when a reload succeeded. Needs
+        last check; `True` when the re-import succeeded, with the same
+        "not yet rendered" caveat `reload()` documents. Needs
         `enable_hot_reload()` first."""
         if self._watcher is None:
             raise RuntimeError("enable_hot_reload() has not been called")
@@ -258,7 +259,15 @@ class App:
         """Re-imports every watched module now, whether or not it changed,
         and swaps the view/`on_event` over to the new code. On failure the
         previous code stays in place, the exception is stored on
-        `reload_error`, and this returns `False`."""
+        `reload_error`, and this returns `False`.
+
+        `True` means the re-import and the view/`on_event` rebind
+        succeeded -- *not* that the new code has rendered, since rendering
+        is driven separately (the next `step()`). A view that raises on
+        that first render is rolled back there instead: `reload_error`
+        becomes that exception and `reload_count` goes back down, after
+        this call has already returned `True`. Read `reload_error` after
+        the next render, not this return value, to know a reload stuck."""
         if self._watcher is None:
             raise RuntimeError("enable_hot_reload() has not been called")
         modules = self._watcher.modules

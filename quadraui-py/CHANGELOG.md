@@ -12,6 +12,21 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `quadraui.testing` — the app-author test harness: a public API over the
+  headless runner that queries by widget id/role/text (`harness(app)`,
+  `find`/`find_all`/`query`/`exists`, and `Widget.find` for one subtree),
+  synthesises the gestures a user performs (`press`, `type`, `click_text`,
+  `Widget.click`/`press`/`focus`/`drag_divider`, `Row.click`/
+  `double_click`/`activate`/`toggle`, `Tab.click`/`close`), and asserts on
+  the rendered frame (`screen`, `contains`, `assert_text`,
+  `assert_not_text`). Queries read the descriptors the app actually
+  rendered and skip what is off screen (an inactive tab's content) unless
+  asked for with `include_hidden=True`; a button click goes through the
+  engine's own hit test against the label as it painted, so a test needs
+  no coordinates. Wraps a `quadraui.app.App` directly, or a plain `QuiApp`
+  given the same `render` callable it was built with.
+  `tests/test_file_manager_app.py` is written entirely against it.
+
 - Hot reload for `quadraui.app.App`: `enable_hot_reload(*modules,
   interval=0.5, on_reload=None)` watches the given modules' source files and
   re-imports them on change (a daemon thread wakes the event loop through
