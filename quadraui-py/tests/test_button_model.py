@@ -7,10 +7,11 @@ build, and a dict naming them just works.
 
 Three scenarios:
 
-- `insert_button` with a plain dict naming `variant`/`icon`/`tooltip`
-  directly, asserting the rendered result (label + icon fallback text on
-  screen, and the `Danger` variant's `Theme.error_fg` foreground actually
-  painted -- not just accepted without raising).
+- An inline `button` layout leaf with a plain dict naming
+  `variant`/`icon`/`tooltip` directly, asserting the rendered result
+  (label + icon fallback text on screen, and the `Danger` variant's
+  `Theme.error_fg` foreground actually painted -- not just accepted
+  without raising).
 - `show_toast`'s action buttons, which carry an optional `ButtonSpec`
   override (`ToastButton::spec`) painted by `tui::toast::paint_toast`
   with no stripping in between -- the sibling of `DialogButton::spec`
@@ -56,15 +57,17 @@ def _rgb(color_dict):
     return (color_dict["r"], color_dict["g"], color_dict["b"])
 
 
-def test_insert_button_decodes_variant_icon_and_tooltip_from_a_plain_dict():
+def test_an_inline_button_leaf_decodes_variant_icon_and_tooltip_from_a_plain_dict():
     app = QuiApp(40, 20)
-    app.insert_button(
-        {
-            "id": "demo:danger",
-            "label": "Delete",
-            "variant": "Danger",
-            "icon": {"glyph": "", "fallback": "!", "color": None},
-            "tooltip": "This cannot be undone",
+    app.set_render(
+        lambda: {
+            "button": {
+                "id": "demo:danger",
+                "label": "Delete",
+                "variant": "Danger",
+                "icon": {"glyph": "", "fallback": "!", "color": None},
+                "tooltip": "This cannot be undone",
+            }
         }
     )
 
@@ -85,12 +88,12 @@ def test_insert_button_decodes_variant_icon_and_tooltip_from_a_plain_dict():
     assert label_fg == _rgb(app.theme()["error_fg"])
 
 
-def test_insert_button_without_variant_keeps_the_default_primary_look():
+def test_an_inline_button_leaf_without_variant_keeps_the_default_primary_look():
     # Same dict shape, minus `variant`/`icon`/`tooltip` entirely -- proves
     # the `Danger` colouring above comes from the field actually being
     # set, not from some unrelated default already matching `error_fg`.
     app = QuiApp(40, 20)
-    app.insert_button({"id": "demo:plain", "label": "Delete"})
+    app.set_render(lambda: {"button": {"id": "demo:plain", "label": "Delete"}})
 
     row, col = _locate(app, "Delete")
     label_fg, _ = app.cell_colors(col, row)

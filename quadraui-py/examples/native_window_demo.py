@@ -49,7 +49,7 @@ window first on every backend. All three end with the final
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from quadraui import QuiApp
 
@@ -68,44 +68,55 @@ class _Quit(Exception):
     """Sentinel raised from the handler to unwind out of `run_native()`."""
 
 
+def _render() -> "Dict[str, Any]":
+    return {
+        "column": [
+            {
+                "id": "demo:ok",
+                "button": {
+                    "id": "demo:ok",
+                    "label": "OK (Enter/Space)",
+                    "focused": True,
+                },
+            },
+            {
+                "id": "demo:label",
+                "text_display": {
+                    "id": "demo:label",
+                    "lines": [
+                        {
+                            "spans": [
+                                {
+                                    "text": "native_window_demo: Enter/Space clicks, q quits",
+                                    "fg": None,
+                                    "bg": None,
+                                }
+                            ]
+                        }
+                    ],
+                },
+            },
+            {
+                "id": "demo:list",
+                "list": {
+                    "id": "demo:list",
+                    "items": [
+                        {"text": {"spans": [{"text": row, "fg": None, "bg": None}]}}
+                        for row in ROWS
+                    ],
+                    "selected_idx": 0,
+                    "scroll_offset": 0,
+                    "has_focus": False,
+                    "show_v_scrollbar": True,
+                },
+            },
+        ]
+    }
+
+
 def make_app() -> QuiApp:
     app = QuiApp(WIDTH, HEIGHT)
-    app.insert_button(
-        {
-            "id": "demo:ok",
-            "label": "OK (Enter/Space)",
-            "focused": True,
-        }
-    )
-    app.insert_text_display(
-        {
-            "id": "demo:label",
-            "lines": [
-                {
-                    "spans": [
-                        {
-                            "text": "native_window_demo: Enter/Space clicks, q quits",
-                            "fg": None,
-                            "bg": None,
-                        }
-                    ]
-                }
-            ],
-        }
-    )
-    app.insert_list(
-        {
-            "id": "demo:list",
-            "items": [
-                {"text": {"spans": [{"text": row, "fg": None, "bg": None}]}}
-                for row in ROWS
-            ],
-            "selected_idx": 0,
-            "scroll_offset": 0,
-            "has_focus": False,
-            "show_v_scrollbar": True,
-        }
-    )
+    app.set_render(_render)
     return app
 
 

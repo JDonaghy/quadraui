@@ -23,13 +23,14 @@ from quadraui import InvalidDescriptorError, QuiApp
 
 
 def _insert_empty_status_bar(app: QuiApp) -> None:
-    app.insert_extra(
-        "status_bar",
-        {
-            "id": "status_bar:main",
-            "left_segments": [],
-            "right_segments": [],
-        },
+    app.set_render(
+        lambda: {
+            "status_bar": {
+                "id": "status_bar:main",
+                "left_segments": [],
+                "right_segments": [],
+            }
+        }
     )
 
 

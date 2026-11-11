@@ -14,28 +14,29 @@ const assert = require("node:assert/strict");
 
 const { QuiApp } = require("../js/index.ts");
 
-// A toolbar is the only extra inserted and nothing occupies the six fixed
-// slots ahead of it, so `draw_bands` lays its band at the very top of the
-// viewport (row 0) -- the single button starts at its own x=0, and the
-// TUI rasteriser's `[ Filter ]` bracket puts the clickable body one cell
-// in, at x=1.
+// The toolbar is the only leaf this render callback returns, so
+// `draw_bands` lays its band at the very top of the viewport (row 0) --
+// the single button starts at its own x=0, and the TUI rasteriser's
+// `[ Filter ]` bracket puts the clickable body one cell in, at x=1.
 function insertFilterToolbar(app: any) {
-  app.insertExtra("toolbar", {
-    id: "toolbar:main",
-    buttons: [
-      {
-        Action: {
-          id: "filter",
-          label: "Filter",
-          icon: null,
-          key_hint: null,
-          enabled: true,
-          is_active: false,
-          tooltip: "",
+  app.setRender(() => ({
+    toolbar: {
+      id: "toolbar:main",
+      buttons: [
+        {
+          Action: {
+            id: "filter",
+            label: "Filter",
+            icon: null,
+            key_hint: null,
+            enabled: true,
+            is_active: false,
+            tooltip: "",
+          },
         },
-      },
-    ],
-  });
+      ],
+    },
+  }));
 }
 
 test("click on a toolbar action button emits Toolbar(ButtonClicked) with the flipped state", () => {
@@ -74,22 +75,28 @@ the clicked button's) is a tab stop: ${JSON.stringify(received)}`,
 
 test("a disabled toolbar action's click stays a raw, unresolved MouseDown", () => {
   const app = new QuiApp(40, 5);
-  app.insertExtra("toolbar", {
-    id: "toolbar:main",
-    buttons: [
-      {
-        Action: {
-          id: "disabled-action",
-          label: "Disabled",
-          icon: null,
-          key_hint: null,
-          enabled: false,
-          is_active: false,
-          tooltip: "",
+  app.setRender(() => ({
+    toolbar: {
+      id: "toolbar:main",
+      buttons: [
+        {
+          Action: {
+            id: "disabled-action",
+            label: "Disabled",
+            icon: null,
+            key_hint: null,
+            enabled: false,
+            is_active: false,
+            tooltip: "",
+          },
         },
-      },
-    ],
-  });
+      ],
+    },
+  }));
+  // Force the first paint so the toolbar's hit-test layout is on the hit
+  // map before the click below -- `pushEvent`/`run` only ever re-render
+  // on a handler-returned `Reaction::Redraw`, never on their own.
+  app.screen();
 
   const received: any[] = [];
   app.setHandler((event: unknown) => received.push(event));

@@ -19,7 +19,7 @@ from quadraui import QuiApp
 
 def test_push_key_event_runs_handler_with_pythonized_payload():
     app = QuiApp(40, 20)
-    app.insert_button({"id": "demo:ok", "label": "OK"})
+    app.set_render(lambda: {"button": {"id": "demo:ok", "label": "OK"}})
 
     received = []
     app.set_handler(lambda event: received.append(event))

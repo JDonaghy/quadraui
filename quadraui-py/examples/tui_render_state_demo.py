@@ -1,9 +1,9 @@
 """Shows the `render` callback's reason for existing: a `set_handler`
 callback runs while the run loop holds the one mutable borrow of this
-app's `QuiApp` for the whole step, so it cannot call back into
-`insert_list`/`slot_clear` on that same instance to show the new
-selection -- the way `appshell_demo.py` drives its scroll loop from
-outside `run()`/`step()` entirely, never from a bound handler.
+app's `QuiApp` for the whole step, so it cannot call `set_render` again
+on that same instance to show the new selection -- the way
+`appshell_demo.py` drives its scroll loop from outside `run()`/`step()`
+entirely, never from a bound handler.
 
 The `render` callback is the way around that. It takes no arguments and
 is called once per frame -- the same frame the runner already repaints

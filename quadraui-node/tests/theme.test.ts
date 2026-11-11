@@ -21,11 +21,13 @@ const assert = require("node:assert/strict");
 const { QuiApp } = require("../js/index.ts");
 
 function insertEmptyStatusBar(app: any) {
-  app.insertExtra("status_bar", {
-    id: "status_bar:main",
-    left_segments: [],
-    right_segments: [],
-  });
+  app.setRender(() => ({
+    status_bar: {
+      id: "status_bar:main",
+      left_segments: [],
+      right_segments: [],
+    },
+  }));
 }
 
 test("setTheme changes the painted background colour", () => {

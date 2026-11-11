@@ -64,7 +64,7 @@ def test_show_toast_paints_over_base_content_and_action_click_routes():
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    app.insert_button({"id": "ok", "label": "OK"})
+    app.set_render(lambda: {"button": {"id": "ok", "label": "OK"}})
     assert app.screen_contains("OK")
 
     app.show_toast(
@@ -138,7 +138,7 @@ def test_show_tooltip_paints_over_base_content_then_auto_dismisses_on_click():
     app = QuiApp(40, 20)
     app.set_handler(lambda event: None)
 
-    app.insert_button({"id": "ok", "label": "OK"})
+    app.set_render(lambda: {"button": {"id": "ok", "label": "OK"}})
     app.show_tooltip({"id": "tip:hint", "text": "Hello tip"}, (0.0, 2.0, 10.0, 1.0))
 
     assert app.screen_contains("OK")
@@ -233,7 +233,7 @@ def test_show_float_paints_chrome_then_escape_dismisses():
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    app.insert_button({"id": "ok", "label": "OK"})
+    app.set_render(lambda: {"button": {"id": "ok", "label": "OK"}})
     app.show_float({"id": "float:hints", "anchor": _anchor(2.0, 2.0)}, 10.0, 4.0)
 
     # Chrome-only -- no app content of its own, but the border it paints

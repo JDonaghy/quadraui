@@ -4,15 +4,14 @@ own `tooltip` text shows up as a real `show_tooltip`-equivalent overlay
 once the pointer has hovered it continuously for `tooltip_delay_ms`, and
 hides again on pointer leave, the next click, or the auto-dismiss timeout
 -- with no Python-side wiring beyond
-`insert_button`/`set_handler`/`push_event`/`step`, since the *host*
+`set_render`/`set_handler`/`push_event`/`step`, since the *host*
 (`BindingHost::drive_hover_tooltip`) drives `HoverTooltipTracker` itself.
 
-Most of this file drives `insert_button`'s static slot
-(`BindingHost::button`). `test_tooltip_appears_via_a_render_callback_layout_tree_leaf`
-drives the same contract through `set_render`'s layout-tree path instead --
-a `Button` leaf painted by `paint_leaf`/`paint_layout` rather than
-`BindingHost::button` -- since `BindingHost::hover_tooltip_text` resolves
-both the same way.
+Every test here paints its `Button` through an inline layout leaf (a
+`set_render` callback). `test_tooltip_appears_via_a_render_callback_layout_tree_leaf`
+additionally covers the multi-leaf case (two `Button` leaves inside a
+`"row"`), since `BindingHost::hover_tooltip_text` resolves a leaf's tooltip
+the same way regardless of how many sibling leaves share the tree.
 
 `test_handler_shows_and_hides_its_own_tooltip_via_actions` covers the other
 half of the contract: a tooltip source with no `Button.tooltip` to carry it
@@ -85,7 +84,29 @@ def _make_app(auto_dismiss_ms=0):
         {"tooltip_delay_ms": DELAY_MS, "tooltip_auto_dismiss_ms": auto_dismiss_ms}
     )
     app.set_test_clock_ms(0)
-    app.insert_button({"id": "save", "label": "Save", "tooltip": "Save the file"})
+    # Wrapped in a `"row"` container (a layout tree, not the bare flat
+    # six-slot shape) so the leaf's hover tooltip is actually resolvable:
+    # only `paint_layout`'s tree path refreshes `BindingHost.leaf_tooltips`
+    # every render (see `PyAppLogic::render`'s own doc) -- the flat shape
+    # clears it instead, so a bare `{"button": {...}}` dict here would
+    # leave this leaf with no host-driven tooltip at all. A lone leaf in a
+    # `"row"` fills the whole viewport, leaving no position outside its own
+    # bounds -- a second, tooltip-less leaf gives the pointer somewhere to
+    # "leave" to.
+    app.set_render(
+        lambda: {
+            "row": [
+                {
+                    "id": "leaf:save",
+                    "button": {"id": "save", "label": "Save", "tooltip": "Save the file"},
+                },
+                {
+                    "id": "leaf:other",
+                    "button": {"id": "other", "label": "Other"},
+                },
+            ]
+        }
+    )
     assert app.screen_contains("Save")
     return app
 
@@ -175,7 +196,9 @@ def test_a_button_with_no_tooltip_never_shows_one():
     app.set_handler(lambda event: None)
     app.set_style({"tooltip_delay_ms": DELAY_MS})
     app.set_test_clock_ms(0)
-    app.insert_button({"id": "plain", "label": "Plain"})
+    app.set_render(
+        lambda: {"row": [{"id": "leaf:plain", "button": {"id": "plain", "label": "Plain"}}]}
+    )
     row, col = _locate(app, "Plain")
 
     before = app.screen()
@@ -270,7 +293,7 @@ def test_handler_shows_and_hides_its_own_tooltip_via_actions():
             actions.hide_tooltip()
 
     app.set_handler(on_event)
-    app.insert_button({"id": "act", "label": "Act"})
+    app.set_render(lambda: {"button": {"id": "act", "label": "Act"}})
     row, col = _locate(app, "Act")
 
     # Entering the button dispatches the hit-tested `MouseEntered`; the

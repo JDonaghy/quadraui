@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Callable, List
+from typing import TYPE_CHECKING, Any, Callable, Dict, List
 
 from quadraui import QuiApp, QuiAppWaker
 
@@ -39,10 +39,9 @@ class _Quit(Exception):
     """Sentinel raised from the handler to unwind out of `run_tui()`."""
 
 
-def make_app() -> QuiApp:
-    app = QuiApp(WIDTH, HEIGHT)
-    app.insert_text_display(
-        {
+def _render() -> "Dict[str, Any]":
+    return {
+        "text_display": {
             "id": "demo:status",
             "lines": [
                 {
@@ -56,7 +55,12 @@ def make_app() -> QuiApp:
                 }
             ],
         }
-    )
+    }
+
+
+def make_app() -> QuiApp:
+    app = QuiApp(WIDTH, HEIGHT)
+    app.set_render(_render)
     return app
 
 
