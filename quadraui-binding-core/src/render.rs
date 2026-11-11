@@ -579,7 +579,7 @@ pub fn paint_layout(
 /// matching `Split::first_min`/`second_min`'s "a minimum applies to the
 /// pane" contract. [`apply_split_gap`] reinserts the carved-out space
 /// after painting.
-fn shrink_main_axis(area: Rect, horizontal: bool, gap: f32) -> Rect {
+pub(crate) fn shrink_main_axis(area: Rect, horizontal: bool, gap: f32) -> Rect {
     if horizontal {
         Rect::new(area.x, area.y, (area.width - gap).max(0.0), area.height)
     } else {
@@ -596,7 +596,7 @@ fn shrink_main_axis(area: Rect, horizontal: bool, gap: f32) -> Rect {
 /// panes end up visually separated by blank space rather than both
 /// touching the divider. A no-op when `gap` is `0.0`, the overwhelmingly
 /// common case.
-fn apply_split_gap(layout: &mut SplitLayout, horizontal: bool, gap: f32) {
+pub(crate) fn apply_split_gap(layout: &mut SplitLayout, horizontal: bool, gap: f32) {
     if gap <= 0.0 {
         return;
     }

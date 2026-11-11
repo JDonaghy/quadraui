@@ -1621,6 +1621,10 @@ struct WidgetStateJs {
     selected_path: Option<Vec<u16>>,
     selected_index: Option<usize>,
     scroll_offset: Option<usize>,
+    // Widens through `serde_json::to_value`'s `f32` -> `f64` promotion on
+    // its way to JS, same as every other `f32` this crate hands across the
+    // boundary -- a ratio like `0.3` round-trips as `0.30000001192092896`,
+    // not the shorter decimal a hand-authored `f64` literal would give.
     split_ratio: Option<f32>,
     active_tab: Option<usize>,
     expanded: Option<Vec<Vec<u16>>>,
