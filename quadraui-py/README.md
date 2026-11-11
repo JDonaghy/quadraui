@@ -25,6 +25,13 @@ which every platform's wheel supports unchanged.
 Full docs, the primitive reference, and worked examples live on the project
 site: <https://jdonaghy.github.io/quadraui/>.
 
+**Building an app with a coding agent?** The package ships its own guide,
+`AGENTS.md`. It covers how to structure a `quadraui.app` app, test it with
+the harness, use hot reload, and which gotchas to avoid. It sits next to the
+installed module, so it always matches your installed version:
+`python -c "import quadraui, os; print(os.path.join(os.path.dirname(quadraui.__file__), 'AGENTS.md'))"`.
+[Read it on GitHub](https://github.com/JDonaghy/quadraui/blob/main/quadraui-py/python/quadraui/AGENTS.md).
+
 ## Building and testing an app
 
 `quadraui.app` is a thin layer over `QuiApp`: a `view()` returning typed
