@@ -80,6 +80,38 @@ class DiscriminatedRenderingTests(unittest.TestCase):
         self.assertIn("export type _NoCommon = { Foo: string; };", text)
 
 
+class KeywordCollidingFieldTests(unittest.TestCase):
+    """A Rust field name that collides with a Python keyword (`from` on
+    `DrawOp::Line`/`Bezier`/`DashedLine`) can't be a class-body `TypedDict`
+    attribute (`class X: from: Y` is a `SyntaxError`) -- `render_python`
+    falls back to the functional `TypedDict("X", {...})` form for any
+    `ObjDef` with such a field, and keeps using the ordinary class form for
+    one without."""
+
+    def test_keyword_field_renders_as_functional_typed_dict(self) -> None:
+        obj = gwt.ObjDef(
+            "_Sample3",
+            [
+                gwt.Field("from", gwt.STR, doc="where it came from"),
+                gwt.Field("to", gwt.STR, optional=True),
+            ],
+        )
+        text = gwt.render_python([obj])
+        self.assertIn('_Sample3 = TypedDict(', text)
+        self.assertIn('"_Sample3"', text)
+        # The field's own doc still shows up as a trailing comment, the
+        # same as the class-based renderer's per-field comment.
+        self.assertIn('"from": str,  # where it came from', text)
+        self.assertIn('"to": NotRequired[str],', text)
+        self.assertNotIn("class _Sample3", text)
+
+    def test_non_keyword_field_still_renders_as_a_class(self) -> None:
+        obj = gwt.ObjDef("_Sample4", [gwt.Field("source", gwt.STR)])
+        text = gwt.render_python([obj])
+        self.assertIn("class _Sample4(TypedDict):", text)
+        self.assertNotIn("_Sample4 = TypedDict(", text)
+
+
 class DefJsonDecodeTests(unittest.TestCase):
     """[`gwt._ty_from_json`]/[`gwt._def_from_json`] -- the decode half of
     [`gwt.load_defs_from_rust`], exercised directly against hand-built JSON

@@ -38,22 +38,19 @@
 //!   `#[non_exhaustive]` **structs**. A struct marked `#[non_exhaustive]`
 //!   requires a trailing `..` in any pattern built outside its defining
 //!   crate, so a *new field* is invisible to [`assert_fields_non_exhaustive!`]
-//!   there. `Button` and `Toolbar` close that gap with a
+//!   there. Every one of those structs closes that gap with a
 //!   `serde_json::to_value` key-set assertion instead (see
-//!   [`coverage::value_shape`]); the rest only carry the compile-time
-//!   guard today, the same bar `ButtonSpec` was already held to before
-//!   this doc was last revised.
+//!   [`coverage::value_shape`]).
 //! - `ToolbarButton`, `TabBarEvent`, `ChartKind` and `DrawOp` are
 //!   `#[non_exhaustive]` **enums**. An enum marked `#[non_exhaustive]` only
 //!   requires a wildcard arm for *unlisted* variants; a known variant's own
 //!   fields (`ToolbarButton::Action { .. }`, `TabBarEvent::KeyPressed { .. }`)
 //!   are still matched exhaustively by name, so a new field on one of
 //!   those is caught the same as any other type here — only a brand new
-//!   *variant* stays invisible to the match. `ToolbarButton` and
-//!   `TabBarEvent` close that gap too, by deserializing a deliberately
-//!   unrecognised tag and parsing serde's own "expected one of ..." error
-//!   message back into the real variant list (see
-//!   [`coverage::variant_shape`]).
+//!   *variant* stays invisible to the match. Every one of those enums
+//!   closes that gap too, by deserializing a deliberately unrecognised tag
+//!   and parsing serde's own "expected one of ..." error message back into
+//!   the real variant list (see [`coverage::variant_shape`]).
 //!
 //! The layout-tree node shapes (`"row"`/`"column"`/`"split"`/...) have no
 //! single Rust type to destructure this way — they're dynamically-keyed
@@ -989,10 +986,11 @@ pub fn schema() -> Vec<DefJson> {
     ));
 
     // ── Additive primitive descriptors (`EXTRA_PRIMITIVE_KINDS`) ─────────
-    // Every kind below `status_bar` decodes to, field-by-field -- see this
-    // module's own doc for the source-of-truth contract each entry carries
-    // (a matching `coverage` guard) and why the layout-tree node shapes
-    // above don't get the same treatment.
+    // Every kind below `status_bar` is what one `EXTRA_PRIMITIVE_KINDS`
+    // entry decodes to, field-by-field -- see this module's own doc for
+    // the source-of-truth contract each entry carries (a matching
+    // `coverage` guard) and why the layout-tree node shapes above don't
+    // get the same treatment.
     let progress_bar_descriptor = b.define(obj(
         "ProgressBarDescriptor",
         vec![
@@ -4897,19 +4895,23 @@ mod coverage {
         }
     }
 
-    /// Runtime key-set guards for the two `#[non_exhaustive]` **structs**
-    /// (`Button`, `Toolbar`) [`assert_fields_non_exhaustive!`] can't fully
-    /// cover -- a struct pattern built outside its defining crate must end
-    /// in `..`, so a brand-new named field never shows up in that macro's
-    /// destructure. Serializing a real value and comparing its JSON key
-    /// set against the exact field list [`super::schema`] declares catches
-    /// that new field instead: `serde_json` emits one key per struct
-    /// field regardless of `..`, so an added field changes the key set
-    /// even though it was invisible to the pattern match above.
+    /// Runtime key-set guards for every `#[non_exhaustive]` **struct**
+    /// [`assert_fields_non_exhaustive!`] can't fully cover -- a struct
+    /// pattern built outside its defining crate must end in `..`, so a
+    /// brand-new named field never shows up in that macro's destructure.
+    /// Serializing a real value and comparing its JSON key set against the
+    /// exact field list [`super::schema`] declares catches that new field
+    /// instead: `serde_json` emits one key per struct field regardless of
+    /// `..`, so an added field changes the key set even though it was
+    /// invisible to the pattern match above.
     mod value_shape {
         use std::collections::BTreeSet;
 
-        use quadraui::{Button, ButtonVariant, Toolbar, WidgetId};
+        use quadraui::{
+            Button, ButtonVariant, CalendarDate, ComboBox, DatePicker, Editor, NumberInput,
+            RadioGroup, RadioOption, Rect, ScrollView, Scrollbar, Switch, TextInput, Toolbar,
+            WidgetId,
+        };
 
         fn keys(v: &serde_json::Value) -> BTreeSet<String> {
             v.as_object()
@@ -4923,59 +4925,243 @@ mod coverage {
             names.iter().map(|s| s.to_string()).collect()
         }
 
-        #[test]
-        fn button_json_keys_match_the_schema_field_list() {
-            let button = Button::new(WidgetId::new("test"), "label");
-            let value = serde_json::to_value(&button).expect("Button must serialize");
-            assert_eq!(
-                keys(&value),
-                set(&[
-                    "id",
-                    "label",
-                    "variant",
-                    "disabled",
-                    "focused",
-                    "tooltip",
-                    "icon",
-                    "icon_position",
-                    "icon_gap",
-                ]),
-                "a field was added to or removed from `Button` without a matching \
-                 update to `schema()`'s `ButtonDescriptor` entry -- \
-                 `assert_fields_non_exhaustive!` can't see a new field on a \
-                 `#[non_exhaustive]` struct, so this key-set check is the guard \
-                 that catches it"
-            );
-            // `ButtonVariant` is itself `#[non_exhaustive]`; constructing one
-            // here (rather than only via `Button::default()`'s `Primary`)
-            // keeps this test from silently losing coverage if `Button`'s own
-            // default variant ever changes.
-            let _ = ButtonVariant::Secondary;
+        /// Emits one `#[test]` that serializes `$value` and asserts its
+        /// JSON key set against the exact field list `schema()`'s
+        /// `$desc_name` entry declares for `$ty_name` -- the runtime
+        /// backstop [`assert_fields_non_exhaustive!`] can't provide for a
+        /// `#[non_exhaustive]` struct's *added* field (see this module's
+        /// own doc). An optional trailing `extra: { .. }` block runs after
+        /// the assertion, for a type that needs one more line of coverage
+        /// beyond the key-set check itself.
+        macro_rules! value_shape_test {
+            (
+                $fn_name:ident,
+                $ty_name:literal,
+                $desc_name:literal,
+                $value:expr,
+                [$($key:literal),+ $(,)?]
+                $(, extra: $extra:block)?
+            ) => {
+                #[test]
+                fn $fn_name() {
+                    let value = serde_json::to_value(&$value)
+                        .unwrap_or_else(|e| panic!(concat!($ty_name, " must serialize: {}"), e));
+                    assert_eq!(
+                        keys(&value),
+                        set(&[$($key),+]),
+                        concat!(
+                            "a field was added to or removed from `",
+                            $ty_name,
+                            "` without a matching update to `schema()`'s `",
+                            $desc_name,
+                            "` entry -- `assert_fields_non_exhaustive!` can't see a \
+                             new field on a `#[non_exhaustive]` struct, so this \
+                             key-set check is the guard that catches it",
+                        )
+                    );
+                    $($extra)?
+                }
+            };
         }
 
-        #[test]
-        fn toolbar_json_keys_match_the_schema_field_list() {
-            let toolbar = Toolbar::new(WidgetId::new("test"));
-            let value = serde_json::to_value(&toolbar).expect("Toolbar must serialize");
-            assert_eq!(
-                keys(&value),
-                set(&["id", "buttons", "bg", "focused_index"]),
-                "a field was added to or removed from `Toolbar` without a \
-                 matching update to `schema()`'s `ToolbarDescriptor` entry -- \
-                 `assert_fields_non_exhaustive!` can't see a new field on a \
-                 `#[non_exhaustive]` struct, so this key-set check is the guard \
-                 that catches it"
-            );
-        }
+        value_shape_test!(
+            button_json_keys_match_the_schema_field_list,
+            "Button",
+            "ButtonDescriptor",
+            Button::new(WidgetId::new("test"), "label"),
+            [
+                "id",
+                "label",
+                "variant",
+                "disabled",
+                "focused",
+                "tooltip",
+                "icon",
+                "icon_position",
+                "icon_gap",
+            ],
+            extra: {
+                // `ButtonVariant` is itself `#[non_exhaustive]`; constructing
+                // one here (rather than only via `Button::default()`'s
+                // `Primary`) keeps this test from silently losing coverage if
+                // `Button`'s own default variant ever changes.
+                let _ = ButtonVariant::Secondary;
+            }
+        );
+
+        value_shape_test!(
+            toolbar_json_keys_match_the_schema_field_list,
+            "Toolbar",
+            "ToolbarDescriptor",
+            Toolbar::new(WidgetId::new("test")),
+            ["id", "buttons", "bg", "focused_index"]
+        );
+
+        value_shape_test!(
+            text_input_json_keys_match_the_schema_field_list,
+            "TextInput",
+            "TextInputDescriptor",
+            TextInput::new(WidgetId::new("test")),
+            [
+                "id",
+                "lines",
+                "cursor_line",
+                "cursor_col",
+                "placeholder",
+                "scroll_offset",
+                "scroll_col",
+                "has_focus",
+            ]
+        );
+
+        value_shape_test!(
+            number_input_json_keys_match_the_schema_field_list,
+            "NumberInput",
+            "NumberInputDescriptor",
+            NumberInput::new(WidgetId::new("test"), 0.0, 10.0),
+            [
+                "id",
+                "value",
+                "min",
+                "max",
+                "step",
+                "precision",
+                "draft",
+                "disabled",
+                "focused",
+            ]
+        );
+
+        value_shape_test!(
+            combo_box_json_keys_match_the_schema_field_list,
+            "ComboBox",
+            "ComboBoxDescriptor",
+            ComboBox::new(WidgetId::new("test"), vec!["one".to_string()]),
+            [
+                "id",
+                "options",
+                "text",
+                "committed",
+                "open",
+                "highlighted",
+                "disabled",
+                "focused",
+            ]
+        );
+
+        value_shape_test!(
+            switch_json_keys_match_the_schema_field_list,
+            "Switch",
+            "SwitchDescriptor",
+            Switch::new(WidgetId::new("test")),
+            ["id", "value", "disabled", "focused"]
+        );
+
+        value_shape_test!(
+            scrollbar_json_keys_match_the_schema_field_list,
+            "Scrollbar",
+            "ScrollbarDescriptor",
+            Scrollbar::vertical(
+                WidgetId::new("test"),
+                Rect::new(0.0, 0.0, 10.0, 10.0),
+                0.0,
+                10.0,
+                5.0,
+                1.0
+            ),
+            [
+                "id",
+                "axis",
+                "track",
+                "thumb_start",
+                "thumb_len",
+                "hovered",
+                "dragging",
+            ]
+        );
+
+        value_shape_test!(
+            scroll_view_json_keys_match_the_schema_field_list,
+            "ScrollView",
+            "ScrollViewDescriptor",
+            ScrollView::new(WidgetId::new("test"), Rect::new(0.0, 0.0, 10.0, 10.0), 20.0),
+            [
+                "id",
+                "axis",
+                "viewport",
+                "content_len",
+                "scroll_offset",
+                "focused",
+            ]
+        );
+
+        value_shape_test!(
+            radio_group_json_keys_match_the_schema_field_list,
+            "RadioGroup",
+            "RadioGroupDescriptor",
+            RadioGroup::new(
+                WidgetId::new("test"),
+                vec![RadioOption::new(WidgetId::new("test:option"), "label")]
+            ),
+            ["id", "options", "selected", "focused"]
+        );
+
+        value_shape_test!(
+            date_picker_json_keys_match_the_schema_field_list,
+            "DatePicker",
+            "DatePickerDescriptor",
+            DatePicker::new(WidgetId::new("test"), CalendarDate::new(2024, 1, 1)),
+            [
+                "id",
+                "visible_month",
+                "selected",
+                "focused",
+                "locale",
+                "time",
+                "has_focus",
+            ]
+        );
+
+        value_shape_test!(
+            editor_json_keys_match_the_schema_field_list,
+            "Editor",
+            "EditorDescriptor",
+            Editor::new(WidgetId::new("test"), Rect::new(0.0, 0.0, 10.0, 10.0)),
+            [
+                "id",
+                "rect",
+                "lines",
+                "cursor",
+                "extra_cursors",
+                "selection",
+                "extra_selections",
+                "yank_highlight",
+                "scroll_top",
+                "scroll_left",
+                "total_lines",
+                "max_col",
+                "gutter_char_width",
+                "is_active",
+                "show_active_bg",
+                "has_git_diff",
+                "has_breakpoints",
+                "diagnostic_gutter",
+                "code_action_lines",
+                "bracket_match_positions",
+                "active_indent_col",
+                "tabstop",
+                "cursorline",
+                "lightbulb_glyph",
+            ]
+        );
     }
 
-    /// Runtime variant-set guards for the two `#[non_exhaustive]` **enums**
-    /// (`ToolbarButton`, `TabBarEvent`) a pattern match can't fully cover --
-    /// an external match only needs a wildcard arm for *unlisted* variants
-    /// (see this module's own doc), so a brand-new variant added upstream
-    /// is invisible to [`assert_toolbar_button`]/[`assert_tab_bar_event`]
-    /// even though every *known* variant's own fields are still matched
-    /// exhaustively there.
+    /// Runtime variant-set guards for every `#[non_exhaustive]` **enum** a
+    /// pattern match can't fully cover -- an external match only needs a
+    /// wildcard arm for *unlisted* variants (see this module's own doc), so
+    /// a brand-new variant added upstream is invisible to a `match` like
+    /// [`assert_toolbar_button`]/[`assert_tab_bar_event`] even though every
+    /// *known* variant's own fields are still matched exhaustively there.
     ///
     /// Serde's own derive has no such blind spot: deserializing an
     /// externally-tagged enum with an unrecognised tag produces an error
@@ -4984,11 +5170,15 @@ mod coverage {
     /// so parsing that message back out gives the exact variant set the
     /// *compiled* enum has today -- catching an added, removed, or renamed
     /// variant the same way [`value_shape`]'s JSON key-set check catches a
-    /// field `assert_fields_non_exhaustive!` can't see.
+    /// field `assert_fields_non_exhaustive!` can't see. This also covers a
+    /// fieldless (C-like) `#[non_exhaustive]` enum like `ChartKind`: serde's
+    /// generated `Deserialize` still routes an externally-tagged map probe
+    /// through the same "expected one of ..." error, even though every real
+    /// variant there only ever appears as a bare string on the wire.
     mod variant_shape {
         use std::collections::BTreeSet;
 
-        use quadraui::{TabBarEvent, ToolbarButton};
+        use quadraui::{ChartKind, DrawOp, TabBarEvent, ToolbarButton};
 
         /// Deserializes a deliberately-unknown tag into `T` and parses the
         /// resulting serde error's "expected one of `A`, `B`, ..." variant
@@ -5023,42 +5213,87 @@ mod coverage {
                 .collect()
         }
 
-        #[test]
-        fn toolbar_button_variants_match_the_schema_tag_list() {
-            assert_eq!(
-                known_variants::<ToolbarButton>(),
-                ["Action", "Separator", "Label", "Spacer"]
-                    .into_iter()
-                    .map(String::from)
-                    .collect::<BTreeSet<_>>(),
-                "a variant was added to or removed from `ToolbarButton` without a \
-                 matching update to `schema()`'s `ToolbarButtonDescriptor` entry \
-                 -- `assert_toolbar_button`'s wildcard arm can't see a new \
-                 variant on a `#[non_exhaustive]` enum, so this probe-deserialize \
-                 check is the guard that catches it"
-            );
+        /// Emits one `#[test]` asserting `known_variants::<$ty>()` against
+        /// the exact tag list `schema()`'s `$desc_name` entry declares for
+        /// `$ty_name` -- the backstop a wildcard-arm `match` can't provide
+        /// for a `#[non_exhaustive]` enum's *added* variant (see this
+        /// module's own doc).
+        macro_rules! variant_shape_test {
+            ($fn_name:ident, $ty:ty, $ty_name:literal, $desc_name:literal, [$($variant:literal),+ $(,)?]) => {
+                #[test]
+                fn $fn_name() {
+                    assert_eq!(
+                        known_variants::<$ty>(),
+                        [$($variant),+]
+                            .into_iter()
+                            .map(String::from)
+                            .collect::<BTreeSet<_>>(),
+                        concat!(
+                            "a variant was added to or removed from `",
+                            $ty_name,
+                            "` without a matching update to `schema()`'s `",
+                            $desc_name,
+                            "` entry -- a wildcard arm can't see a new variant \
+                             on a `#[non_exhaustive]` enum, so this \
+                             probe-deserialize check is the guard that catches it",
+                        )
+                    );
+                }
+            };
         }
 
-        #[test]
-        fn tab_bar_event_variants_match_the_schema_tag_list() {
-            assert_eq!(
-                known_variants::<TabBarEvent>(),
-                [
-                    "TabActivated",
-                    "TabClosed",
-                    "ButtonClicked",
-                    "KeyPressed",
-                    "FocusMoved",
-                ]
-                .into_iter()
-                .map(String::from)
-                .collect::<BTreeSet<_>>(),
-                "a variant was added to or removed from `TabBarEvent` without a \
-                 matching update to `schema()`'s `TabBarEvent` entry -- \
-                 `assert_tab_bar_event`'s wildcard arm can't see a new variant \
-                 on a `#[non_exhaustive]` enum, so this probe-deserialize check \
-                 is the guard that catches it"
-            );
-        }
+        variant_shape_test!(
+            toolbar_button_variants_match_the_schema_tag_list,
+            ToolbarButton,
+            "ToolbarButton",
+            "ToolbarButtonDescriptor",
+            ["Action", "Separator", "Label", "Spacer"]
+        );
+
+        variant_shape_test!(
+            tab_bar_event_variants_match_the_schema_tag_list,
+            TabBarEvent,
+            "TabBarEvent",
+            "TabBarEvent",
+            [
+                "TabActivated",
+                "TabClosed",
+                "ButtonClicked",
+                "KeyPressed",
+                "FocusMoved",
+            ]
+        );
+
+        variant_shape_test!(
+            chart_kind_variants_match_the_schema_tag_list,
+            ChartKind,
+            "ChartKind",
+            "ChartKind",
+            ["Sparkline", "Line", "Bar", "BarGrouped"]
+        );
+
+        variant_shape_test!(
+            draw_op_variants_match_the_schema_tag_list,
+            DrawOp,
+            "DrawOp",
+            "DrawOp",
+            [
+                "Rect",
+                "RoundedRect",
+                "Line",
+                "Path",
+                "TextRun",
+                "Image",
+                "PushClip",
+                "PopClip",
+                "Polygon",
+                "Ellipse",
+                "Arc",
+                "Bezier",
+                "DashedLine",
+                "StrokeRect",
+                "StyledTextRun",
+            ]
+        );
     }
 }

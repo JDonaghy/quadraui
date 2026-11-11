@@ -375,7 +375,8 @@ def render_python(defs: List[Def]) -> str:
                 lines.append("    {")
                 for f in all_fields:
                     ty = f"NotRequired[{f.ty.py}]" if f.optional else f.ty.py
-                    lines.append(f'        "{f.name}": {ty},')
+                    comment = f"  # {f.doc}" if f.doc else ""
+                    lines.append(f'        "{f.name}": {ty},{comment}')
                 lines.append("    },")
                 lines.append(")")
                 if d.doc:
