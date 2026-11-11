@@ -53,6 +53,20 @@ needs the same `render` callable the app gave the `QuiApp`, since there
 is no way to read a registered callback back out:
 
     h = harness(qui_app, render=my_render)
+
+**pytest.** Installing this package registers a `pytest` plugin
+(`quadraui.testing.pytest_plugin`) providing a `quadraui_harness`
+fixture -- `harness` with teardown attached, so a test that enabled hot
+reload does not leak its watcher thread into the rest of the session:
+
+    def test_saving(quadraui_harness):
+        h = quadraui_harness(MyApp().app)
+        h.find(role="button", text="Save").click()
+
+`Harness.close()` is that teardown on its own, for a test that builds a
+harness without the fixture. `quadraui-node`'s `js/testing.ts` is this
+module's TypeScript twin; a `node --test` suite requires it directly and
+calls `close()` from the runner's own `after()`.
 """
 
 from __future__ import annotations
@@ -822,6 +836,16 @@ class Harness:
         result = self.qui.step()
         self._invalidate()
         return result
+
+    def close(self) -> None:
+        """Releases what the wrapped app holds outside this process's own
+        control -- today, the hot-reload watcher thread, so a test that
+        enabled it does not leak the thread into the rest of the session.
+        The `quadraui_harness` fixture calls this for you; a harness built
+        by hand should be closed by hand. Safe to call more than once."""
+        disable = getattr(self.app, "disable_hot_reload", None)
+        if disable is not None:
+            disable()
 
 
 def harness(app: Any, *, render: Optional[Callable[[], Any]] = None) -> Harness:

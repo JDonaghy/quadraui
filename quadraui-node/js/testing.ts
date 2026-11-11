@@ -56,6 +56,13 @@
 //
 //     const h = harness(quiApp, { render: myRender });
 //
+// **The test runner.** `node --test` has no fixture mechanism, so a
+// `require` of this module is the whole integration -- but a suite that
+// enables hot reload should call `h.close()` from the runner's own
+// `after()` so its watcher timer does not outlive the test.
+// `quadraui-py`'s `quadraui.testing` packages the same teardown as a
+// `pytest` fixture (`quadraui_harness`), since pytest does have one.
+//
 // Runtime exports go through `exports.X = ...` rather than `export`, the
 // same reason `./index.ts`'s own header comment gives.
 
@@ -849,6 +856,17 @@ class Harness {
     const result = this.qui.step();
     this.invalidate();
     return result;
+  }
+
+  /**
+   * Releases what the wrapped app holds outside this process's own
+   * control -- today, the hot-reload watcher timer, so a test that enabled
+   * it does not leak the timer into the rest of the run. Call it from the
+   * test runner's own teardown (`node:test`'s `after`). Safe to call more
+   * than once.
+   */
+  close(): void {
+    this.app.disableHotReload?.();
   }
 }
 exports.Harness = Harness;
