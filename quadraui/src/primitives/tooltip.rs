@@ -138,8 +138,12 @@ pub struct Tooltip {
 /// Border chrome vocabulary for [`Tooltip`].
 ///
 /// Each backend can ask for a particular border style: side bars only,
-/// a full 4-sided box, or no border at all. An optional title can be
-/// embedded in the top border row when the border is `Full`.
+/// a full 4-sided box, or no border at all. An optional title is shown
+/// when the border is `Full` — how depends on the backend: TUI centres it
+/// into the top border row (a terminal titled box); every pixel backend
+/// (GTK/macOS/Win, via [`native_surface_paint::paint`]) instead renders it
+/// as a bold first line *inside* the rounded card, left-aligned with the
+/// body text below it.
 ///
 /// `#[non_exhaustive]`: marking it means a future variant (e.g. a
 /// `Rounded` corner style) is additive instead of a breaking change.
@@ -154,7 +158,8 @@ pub enum TooltipBorder {
     /// too short (`height < 3` or `width < 2`), the border falls back to
     /// `Sides` chrome so the tooltip still shows border.
     ///
-    /// Carries `title`, centred into the top border row, when set.
+    /// Carries `title`, when set — see this enum's own doc for where it
+    /// lands on TUI vs. every pixel backend.
     #[default]
     Full,
     /// No border chrome at all — background fill (and text) only.
@@ -490,18 +495,17 @@ pub(crate) mod native_surface_paint {
             surface.surface_fill_rect(bounds, bg);
         }
 
-        // `Full` reserves its top border row, so content starts 2 units
-        // below the box's top edge; a title pushes that down further,
-        // since its real font height (`title_h`) is typically much
-        // taller than the 1-unit border line it's centred on — without
-        // this, a title would visually collide with the first content
-        // row instead of sitting in its own space above it. `Sides` and
-        // `None` have no top rule to clear, so content starts flush with
-        // the box's top edge — callers following the `TooltipMeasure`
-        // contract size those two variants to exactly the content rows
-        // they hold, with no border row to spare.
+        // `Full` is the VS-Code-style card: content starts a few pixels
+        // inside the stroked edge, not flush against it — VS Code's own
+        // hover-card vertical inset (distinct from `style.padding`'s 8px
+        // *horizontal* body inset, see `text_padding_x` below). `Sides`
+        // and `None` have no top rule to clear, so content starts flush
+        // with the box's top edge — callers following the
+        // `TooltipMeasure` contract size those two variants to exactly the
+        // content rows they hold, with no border row to spare.
+        const CARD_VPAD: f32 = 4.0;
         let mut text_top = match chrome.border {
-            TooltipBorder::Full => bounds.y + 2.0,
+            TooltipBorder::Full => bounds.y + CARD_VPAD,
             TooltipBorder::Sides | TooltipBorder::None => bounds.y,
         };
 
@@ -513,33 +517,6 @@ pub(crate) mod native_surface_paint {
                     border,
                     style.border_width,
                 );
-
-                if let Some(title) = chrome
-                    .title
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty())
-                {
-                    let (title_w, title_h) = surface.surface_measure_text(title);
-                    let pad = 4.0;
-                    let title_x = bounds.x + ((bounds.width - title_w) / 2.0).max(0.0);
-                    let title_y = bounds.y - title_h / 2.0;
-
-                    // Punch a background-coloured gap through the border
-                    // stroke so the title reads as embedded in the top
-                    // rule, not a content row sitting on top of it.
-                    surface.surface_fill_rect(
-                        Rect::new(title_x - pad, title_y, title_w + pad * 2.0, title_h),
-                        bg,
-                    );
-                    surface.surface_draw_text_run(
-                        Rect::new(title_x, title_y, title_w.max(1.0), title_h.max(1.0)),
-                        title,
-                        fg,
-                    );
-
-                    text_top = text_top.max(title_y + title_h + 2.0);
-                }
             }
             TooltipBorder::Sides => {
                 surface.surface_draw_line(
@@ -565,6 +542,39 @@ pub(crate) mod native_surface_paint {
         };
         let text_x = bounds.x + text_padding_x;
         let text_w = (bounds.x + bounds.width - text_x).max(0.0);
+
+        // Title: a bold first line *inside* the card, left-aligned with
+        // the body text below it — not centred into (and punched through)
+        // the border stroke the way a terminal titled box draws it. Only
+        // `Full` chrome has a closed card for a title to sit inside;
+        // `Sides`/`None` ignore it, per `TooltipChrome::title`'s doc.
+        if matches!(chrome.border, TooltipBorder::Full) {
+            if let Some(title) = chrome
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+            {
+                let (title_w, title_h) = surface.surface_measure_text_styled(title, true);
+                surface.surface_draw_text_run_styled(
+                    Rect::new(
+                        text_x,
+                        text_top,
+                        text_w.max(title_w).max(1.0),
+                        title_h.max(1.0),
+                    ),
+                    title,
+                    fg,
+                    true,
+                    false,
+                    false,
+                    1.0,
+                );
+                // Gap between the bold title row and the body text below
+                // it — the same vertical inset as the card's own top edge.
+                text_top += title_h + CARD_VPAD;
+            }
+        }
 
         if let Some(ref styled_lines) = tooltip.styled_lines {
             for (i, styled) in styled_lines.iter().enumerate() {
@@ -771,5 +781,190 @@ mod tests {
             _ => panic!(),
         }
         assert_eq!(layout.hit_test(0.0, 0.0, &t.id), TooltipHit::Empty);
+    }
+
+    // ── Pixel-path card paint (`native_surface_paint::paint`) ──────────
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    mod pixel_card {
+        use super::*;
+        use crate::paint_surface::PaintSurface;
+        use crate::style::Style;
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::{Point, Viewport};
+
+        /// Records every drawn text run (plain or styled) and every
+        /// filled rect, so a test can assert on what `paint` actually
+        /// drew rather than an internal helper — the same shape as
+        /// `context_menu`'s `RecordingSurface`.
+        #[derive(Default)]
+        struct RecordingSurface {
+            /// `(rect, text, bold)` for every drawn run.
+            runs: Vec<(Rect, String, bool)>,
+        }
+
+        impl PaintSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(0.0, 0.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                _rect: Rect,
+                _radius: f32,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, _color: Color) {
+                self.runs.push((rect, text.to_string(), false));
+            }
+            #[allow(clippy::too_many_arguments)]
+            fn surface_draw_text_run_styled(
+                &mut self,
+                rect: Rect,
+                text: &str,
+                _color: Color,
+                bold: bool,
+                _italic: bool,
+                _underline: bool,
+                _scale_x: f32,
+            ) {
+                self.runs.push((rect, text.to_string(), bold));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: Point,
+                _to: Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(
+                &mut self,
+                _rect: Rect,
+                _image: &crate::Image,
+            ) -> crate::backend::ImagePaintResult {
+                crate::backend::ImagePaintResult::Unsupported
+            }
+        }
+
+        /// VS-Code-style default: a titled `Full` card renders its title
+        /// as a bold first line *inside* the card bounds, not a label
+        /// centred into (and punched through) the top border stroke the
+        /// way a terminal titled box draws it.
+        #[test]
+        fn full_border_title_renders_bold_inside_card_bounds() {
+            let tooltip = Tooltip::new(WidgetId::new("tip"), "Body text");
+            let layout = TooltipLayout {
+                bounds: Rect::new(10.0, 10.0, 120.0, 60.0),
+                resolved_placement: ResolvedPlacement::Bottom,
+            };
+            let mut chrome = TooltipChrome::new(TooltipBorder::Full);
+            chrome.title = Some("Title".to_string());
+
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint(
+                &tooltip,
+                &layout,
+                &chrome,
+                16.0,
+                8.0,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+            );
+
+            let (title_rect, title_text, bold) = surface
+                .runs
+                .first()
+                .expect("title line should be painted before the body text");
+            assert_eq!(title_text, "Title");
+            assert!(bold, "the title line must paint bold");
+
+            let bounds = layout.bounds;
+            assert!(
+                title_rect.y >= bounds.y
+                    && title_rect.y + title_rect.height <= bounds.y + bounds.height,
+                "title row must sit inside the card's vertical bounds, got {title_rect:?} \
+                 within {bounds:?}"
+            );
+            assert!(
+                title_rect.x >= bounds.x
+                    && title_rect.x + title_rect.width <= bounds.x + bounds.width,
+                "title row must sit inside the card's horizontal bounds, got {title_rect:?} \
+                 within {bounds:?}"
+            );
+
+            // Body text follows the title, further down inside the card —
+            // not reusing the title's row.
+            let (body_rect, body_text, body_bold) =
+                surface.runs.get(1).expect("body text should be painted");
+            assert_eq!(body_text, "Body text");
+            assert!(
+                !body_bold,
+                "body text must not inherit the title's bold weight"
+            );
+            assert!(
+                body_rect.y > title_rect.y + title_rect.height,
+                "body text must start below the title row, got body={body_rect:?} \
+                 title={title_rect:?}"
+            );
+        }
+
+        /// `Sides`/`None` chrome has no closed card for a title to sit
+        /// inside — `TooltipChrome::title`'s doc says both ignore it, and
+        /// that stays true under the new inside-the-card placement.
+        #[test]
+        fn title_still_ignored_for_sides_and_none_chrome() {
+            for border in [TooltipBorder::Sides, TooltipBorder::None] {
+                let tooltip = Tooltip::new(WidgetId::new("tip"), "Body text");
+                let layout = TooltipLayout {
+                    bounds: Rect::new(10.0, 10.0, 120.0, 16.0),
+                    resolved_placement: ResolvedPlacement::Bottom,
+                };
+                let mut chrome = TooltipChrome::new(border);
+                chrome.title = Some("Title".to_string());
+
+                let mut surface = RecordingSurface::default();
+                native_surface_paint::paint(
+                    &tooltip,
+                    &layout,
+                    &chrome,
+                    16.0,
+                    8.0,
+                    &mut surface,
+                    &Theme::default(),
+                    &Style::default(),
+                );
+
+                assert_eq!(
+                    surface.runs.len(),
+                    1,
+                    "{border:?}: only the body text should be painted, no title line"
+                );
+                assert_eq!(surface.runs[0].1, "Body text");
+            }
+        }
     }
 }

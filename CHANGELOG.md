@@ -121,6 +121,13 @@ only a push to `main` runs this workflow.
   (`spec: None`) button fill/stroke now also rounds its corners at
   `Style::button_radius`, matching the spec-backed path, instead of
   painting square corners.
+- `Tooltip`'s pixel-path `TooltipBorder::Full` card (#2369): a title now
+  renders as a bold first line inside the card, with a VS Code-style
+  vertical inset from the stroked edge, instead of being centred into
+  (and punching a background-coloured gap through) the top border stroke.
+  Content keeps the same `Sides`/`None` chrome vocabulary and the same
+  `TooltipChrome`/`TooltipLayout` shapes — no field added or changed.
+  `quadraui::tui`'s terminal-style titled box is unaffected.
 
 ## [0.10.0] - 2026-11-10
 ### Added
