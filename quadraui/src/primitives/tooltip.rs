@@ -571,6 +571,11 @@ pub(crate) mod native_surface_paint {
         // `Full` chrome has a closed card for a title to sit inside;
         // `Sides`/`None` ignore it, per `TooltipChrome::title`'s doc.
         if let (Some(title), Some((title_w, title_h))) = (title, title_size) {
+            // The title always starts below the border stroke, even when
+            // a tightly-sized card leaves no spare height for the
+            // vertical inset — otherwise a font whose ascent sits at the
+            // top of its line box paints glyph ink onto the border row.
+            text_top = text_top.max(bounds.y + style.border_width.max(1.0));
             surface.surface_draw_text_run_styled(
                 Rect::new(
                     text_x,
@@ -975,6 +980,39 @@ mod tests {
             assert!(
                 rect.y + rect.height <= layout.bounds.y + layout.bounds.height,
                 "row fits inside the card, got {rect:?}"
+            );
+        }
+
+        /// A titled `Full` card too short for its title plus body still
+        /// starts the title below the border stroke, so no glyph ink
+        /// lands on the top border row.
+        #[test]
+        fn tightly_sized_titled_card_keeps_title_below_border_stroke() {
+            let tooltip = Tooltip::new(WidgetId::new("tip"), "Body text");
+            let layout = TooltipLayout {
+                bounds: Rect::new(10.0, 10.0, 120.0, 18.0),
+                resolved_placement: ResolvedPlacement::Bottom,
+            };
+            let mut chrome = TooltipChrome::default();
+            chrome.title = Some("Title".to_string());
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint(
+                &tooltip,
+                &layout,
+                &chrome,
+                16.0,
+                8.0,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+            );
+
+            let (title_rect, title_text, _) =
+                surface.runs.first().expect("title line should be painted");
+            assert_eq!(title_text, "Title");
+            assert!(
+                title_rect.y >= layout.bounds.y + Style::default().border_width,
+                "title must start below the border stroke, got {title_rect:?}"
             );
         }
 

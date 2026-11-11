@@ -124,7 +124,8 @@ only a push to `main` runs this workflow.
 - `Tooltip`'s pixel-path `TooltipBorder::Full` card (#2369): a title now
   renders as a bold first line inside the card, with a VS Code-style
   vertical inset from the stroked edge (shrinking to fit a tightly-sized
-  box so its rows still paint), instead of being centred into
+  box so its rows still paint, while the title always starts below the
+  border stroke), instead of being centred into
   (and punching a background-coloured gap through) the top border stroke.
   Content keeps the same `Sides`/`None` chrome vocabulary and the same
   `TooltipChrome`/`TooltipLayout` shapes — no field added or changed.
