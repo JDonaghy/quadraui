@@ -94,6 +94,13 @@ export interface ScrollDelta {
   y: number;
 }
 
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface ButtonMask {
   left?: boolean;
   right?: boolean;
@@ -476,7 +483,955 @@ export interface LayoutSplitTreeNode {
   split_tree: LayoutSplitTreePayload;
 }
 
-/** One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. `status_bar` and the six core kinds are fully typed; every other additive kind (`progress`, `form`, ...) decodes here too but is typed `Any` pending field-by-field narrowing. */
+export interface ProgressBarDescriptor {
+  id: WidgetId;
+  label?: string;
+  value?: number | null;
+  frame_idx?: number;
+  cancellable?: boolean;
+  accent?: Color | null;
+}
+
+export interface SpinnerDescriptor {
+  id: WidgetId;
+  label?: string;
+  frame_idx?: number;
+  accent?: Color | null;
+}
+
+export interface _ImageSourceBytes {
+  Bytes: number[];
+}
+
+export interface _ImageSourcePath {
+  Path: string;
+}
+
+/** `{"Bytes": [u8, ...]}` or `{"Path": "..."}` -- a `PathBuf` serializes as a plain string. */
+export type ImageSource = _ImageSourceBytes | _ImageSourcePath;
+
+export type ImageFit = "Contain" | "Cover" | "Fill" | "None";
+
+export interface ImageDescriptor {
+  id: WidgetId;
+  source: ImageSource;
+  intrinsic_size: [number, number] | null;
+  fit: ImageFit;
+  fallback_text: string;
+}
+
+export interface TextInputDescriptor {
+  id: WidgetId;
+  lines: string[];
+  cursor_line?: number;
+  cursor_col?: number;
+  placeholder?: string | null;
+  scroll_offset?: number;
+  scroll_col?: number;
+  has_focus?: boolean;
+}
+
+export interface NumberInputDescriptor {
+  id: WidgetId;
+  value?: number;
+  min: number;
+  max: number;
+  step?: number;
+  precision?: number;
+  draft?: string | null;
+  disabled?: boolean;
+  focused?: boolean;
+}
+
+export interface ComboBoxDescriptor {
+  id: WidgetId;
+  options: string[];
+  text?: string;
+  committed?: string;
+  open?: boolean;
+  highlighted?: number | null;
+  disabled?: boolean;
+  focused?: boolean;
+}
+
+export interface SwitchDescriptor {
+  id: WidgetId;
+  value?: boolean;
+  disabled?: boolean;
+  focused?: boolean;
+}
+
+export type ScrollAxis = "Vertical" | "Horizontal";
+
+export interface ScrollbarDescriptor {
+  id: WidgetId;
+  axis: ScrollAxis;
+  track: Rect;
+  thumb_start: number;
+  thumb_len: number;
+  hovered?: boolean;
+  dragging?: boolean;
+}
+
+export interface ScrollViewDescriptor {
+  id: WidgetId;
+  axis?: ScrollAxis;
+  viewport: Rect;
+  content_len: number;
+  scroll_offset?: number;
+  focused?: boolean;
+}
+
+export interface CommandLineDescriptor {
+  id: WidgetId;
+  text: string;
+  cursor_offset?: number | null;
+  right_align?: boolean;
+}
+
+export interface CommandCenterDescriptor {
+  id: WidgetId;
+  back_enabled: boolean;
+  forward_enabled: boolean;
+  search_label?: string;
+}
+
+export interface RadioOptionDescriptor {
+  id: WidgetId;
+  label: string;
+  disabled?: boolean;
+}
+
+export interface RadioGroupDescriptor {
+  id: WidgetId;
+  options: RadioOptionDescriptor[];
+  selected?: number | null;
+  focused?: boolean;
+}
+
+export interface MessageRowDescriptor {
+  text: string;
+  fg: Color;
+  indent?: number;
+  spans?: StyledSpan[];
+  scale?: number;
+}
+
+export interface MessageListDescriptor {
+  id: WidgetId;
+  rows: MessageRowDescriptor[];
+  scroll_top?: number;
+}
+
+export type Weekday = "Sunday" | "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday";
+
+export type DateFormat = "Iso8601" | "UsSlash" | "EuSlash";
+
+export interface DateLocale {
+  first_weekday: Weekday;
+  format: DateFormat;
+}
+
+export interface TimeOfDay {
+  hour: number;
+  minute: number;
+}
+
+export interface DatePickerDescriptor {
+  id: WidgetId;
+  visible_month: CalendarDate;
+  selected?: CalendarDate | null;
+  focused: CalendarDate;
+  locale: DateLocale;
+  time?: TimeOfDay | null;
+  has_focus?: boolean;
+}
+
+export type ChartKind = "Sparkline" | "Line" | "Bar" | "BarGrouped";
+
+export interface SeriesDescriptor {
+  label: string;
+  data: number[];
+  color?: Color | null;
+  fill?: boolean;
+}
+
+export interface ChartDescriptor {
+  id: WidgetId;
+  kind: ChartKind;
+  series: SeriesDescriptor[];
+  x_label?: string | null;
+  y_label?: string | null;
+  y_range?: [number, number] | null;
+  x_range?: [number, number] | null;
+  show_legend?: boolean;
+  y_ticks?: number | null;
+  x_ticks?: number | null;
+  show_grid?: boolean;
+}
+
+export type StageStatus = "Pending" | "Active" | "Done" | "Failed" | "Skipped" | "Stale";
+
+export interface PipelineStageDescriptor {
+  label: string;
+  status: StageStatus;
+  action?: string | null;
+}
+
+export interface PipelineViewDescriptor {
+  id: WidgetId;
+  stages: PipelineStageDescriptor[];
+  focused_stage?: number | null;
+}
+
+export type BadgeStatus = "Pending" | "Running" | "Passed" | "Warning" | "Blocked";
+
+export interface CardBadgeDescriptor {
+  label: string;
+  status: BadgeStatus;
+}
+
+export interface BoardCardDescriptor {
+  id: WidgetId;
+  title: string;
+  labels?: string[];
+  badges?: CardBadgeDescriptor[];
+  hint?: string | null;
+}
+
+export interface BoardColumnDescriptor {
+  id: WidgetId;
+  title: string;
+  cards: BoardCardDescriptor[];
+  scroll_offset?: number;
+}
+
+export interface BoardModelDescriptor {
+  id: WidgetId;
+  columns: BoardColumnDescriptor[];
+  selected_card_id?: WidgetId | null;
+  col_scroll_offset?: number;
+}
+
+export interface MinimapLineDescriptor {
+  text: string;
+  line_idx: number;
+}
+
+export interface MinimapSpanDescriptor {
+  line_idx: number;
+  start_col: number;
+  end_col: number;
+  color: Color;
+}
+
+export interface MinimapDescriptor {
+  id: WidgetId;
+  lines: MinimapLineDescriptor[];
+  syntax_spans: MinimapSpanDescriptor[];
+  visible_row_start: number;
+  visible_row_count: number;
+  total_buffer_lines: number;
+}
+
+export interface ActivityItemDescriptor {
+  id: WidgetId;
+  icon: Icon;
+  tooltip?: string;
+  is_active?: boolean;
+  is_keyboard_selected?: boolean;
+}
+
+export interface ActivityBarDescriptor {
+  id: WidgetId;
+  top_items: ActivityItemDescriptor[];
+  bottom_items?: ActivityItemDescriptor[];
+  active_accent?: Color | null;
+  selection_bg?: Color | null;
+  is_keyboard_focused?: boolean;
+}
+
+export type PaletteMode = "List" | "Input";
+
+export interface PaletteItemDescriptor {
+  text: StyledText;
+  detail?: StyledText | null;
+  icon?: Icon | null;
+  match_positions?: number[];
+  depth?: number;
+  expandable?: boolean;
+  expanded?: boolean;
+}
+
+export interface PalettePreviewDescriptor {
+  lines: StyledText[];
+  title?: string | null;
+  scroll_offset?: number;
+  highlight_line?: number | null;
+}
+
+export interface PaletteDescriptor {
+  id: WidgetId;
+  title: string;
+  query: string;
+  query_cursor?: number;
+  items: PaletteItemDescriptor[];
+  selected_idx: number;
+  scroll_offset?: number;
+  total_count?: number;
+  has_focus?: boolean;
+  show_query?: boolean;
+  create_label?: string | null;
+  preview?: PalettePreviewDescriptor | null;
+  mode?: PaletteMode;
+}
+
+export type TerminalCursorShape = "Block" | "Underline" | "Bar";
+
+export interface TerminalCellDescriptor {
+  text: string;
+  fg: Color;
+  bg: Color;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  dim?: boolean;
+  selected?: boolean;
+  is_cursor?: boolean;
+  cursor_shape?: TerminalCursorShape;
+  cursor_blinking?: boolean;
+  is_find_match?: boolean;
+  is_find_active?: boolean;
+}
+
+export interface TerminalScrollbarDescriptor {
+  total_lines: number;
+  visible_lines: number;
+  scroll_offset: number;
+  inverted?: boolean;
+  width?: number | null;
+}
+
+export interface TerminalDescriptor {
+  id: WidgetId;
+  cells: TerminalCellDescriptor[][];
+  scrollbar?: TerminalScrollbarDescriptor | null;
+}
+
+export type CanvasFontRole = "Chrome" | "Editor";
+
+export interface _DrawOpRect {
+  rect: Rect;
+  color: Color;
+}
+
+export interface _DrawOpRoundedRect {
+  rect: Rect;
+  radius: number;
+  color: Color;
+}
+
+export interface _DrawOpLine {
+  from: Point;
+  to: Point;
+  color: Color;
+  stroke_width: number;
+}
+
+export interface _DrawOpPath {
+  points: Point[];
+  color: Color;
+  stroke_width: number;
+  closed: boolean;
+}
+
+export interface _DrawOpTextRun {
+  rect: Rect;
+  text: string;
+  color: Color;
+}
+
+export interface _DrawOpImage {
+  rect: Rect;
+  image: ImageDescriptor;
+}
+
+export interface _DrawOpPushClip {
+  rect: Rect;
+}
+
+export interface _DrawOpPolygon {
+  points: Point[];
+  color: Color;
+}
+
+export interface _DrawOpEllipse {
+  center: Point;
+  radius_x: number;
+  radius_y: number;
+  color: Color;
+}
+
+export interface _DrawOpArc {
+  center: Point;
+  radius: number;
+  start_angle: number;
+  end_angle: number;
+  color: Color;
+  stroke_width: number;
+}
+
+export interface _DrawOpBezier {
+  from: Point;
+  control1: Point;
+  control2: Point;
+  to: Point;
+  color: Color;
+  stroke_width: number;
+}
+
+export interface _DrawOpDashedLine {
+  from: Point;
+  to: Point;
+  color: Color;
+  stroke_width: number;
+  dash_len: number;
+  gap_len: number;
+}
+
+export interface _DrawOpStrokeRect {
+  rect: Rect;
+  color: Color;
+  stroke_width: number;
+}
+
+export interface _DrawOpStyledTextRun {
+  rect: Rect;
+  text: string;
+  color: Color;
+  role: CanvasFontRole;
+  italic: boolean;
+  size?: number | null;
+}
+
+export type _DrawOpDict = { Rect: _DrawOpRect; } | { RoundedRect: _DrawOpRoundedRect; } | { Line: _DrawOpLine; } | { Path: _DrawOpPath; } | { TextRun: _DrawOpTextRun; } | { Image: _DrawOpImage; } | { PushClip: _DrawOpPushClip; } | { Polygon: _DrawOpPolygon; } | { Ellipse: _DrawOpEllipse; } | { Arc: _DrawOpArc; } | { Bezier: _DrawOpBezier; } | { DashedLine: _DrawOpDashedLine; } | { StrokeRect: _DrawOpStrokeRect; } | { StyledTextRun: _DrawOpStyledTextRun; };
+
+/** A single `Canvas` paint instruction -- `"PopClip"` (bare string, no payload) or `{"<Variant>": {...}}`. */
+export type DrawOp = "PopClip" | _DrawOpDict;
+
+export interface CanvasDescriptor {
+  id: WidgetId;
+  ops: DrawOp[];
+}
+
+export type DiagnosticSeverity = "Error" | "Warning" | "Information" | "Hint";
+
+export type GitLineStatus = "Added" | "Modified" | "Deleted";
+
+export type EditorDiffLine = "Same" | "Added" | "Removed" | "Padding";
+
+export type CursorShape = "Block" | "Bar" | "Underline";
+
+export type SelectionKind = "Char" | "Line" | "Block";
+
+export interface CursorPos {
+  view_line: number;
+  col: number;
+}
+
+export interface EditorCursor {
+  pos: CursorPos;
+  shape: CursorShape;
+}
+
+export interface EditorSelection {
+  kind: SelectionKind;
+  start_line: number;
+  start_col: number;
+  end_line: number;
+  end_col: number;
+}
+
+export interface EditorStyle {
+  fg: Color;
+  bg: Color | null;
+  bold?: boolean;
+  italic?: boolean;
+  font_scale: number;
+}
+
+export interface EditorStyledSpan {
+  start_byte: number;
+  end_byte: number;
+  style: EditorStyle;
+}
+
+export interface DiagnosticMark {
+  start_col: number;
+  end_col: number;
+  severity: DiagnosticSeverity;
+  message: string;
+}
+
+export interface SpellMark {
+  start_col: number;
+  end_col: number;
+}
+
+export interface EditorLine {
+  raw_text: string;
+  gutter_text: string;
+  spans: EditorStyledSpan[];
+  line_idx: number;
+  is_current_line?: boolean;
+  is_fold_header?: boolean;
+  folded_line_count?: number;
+  git_diff?: GitLineStatus | null;
+  diff_status?: EditorDiffLine | null;
+  diagnostics?: DiagnosticMark[];
+  spell_errors?: SpellMark[];
+  is_breakpoint?: boolean;
+  is_conditional_bp?: boolean;
+  is_dap_current?: boolean;
+  is_wrap_continuation?: boolean;
+  segment_col_offset?: number;
+  annotation?: string | null;
+  ghost_suffix?: string | null;
+  is_ghost_continuation?: boolean;
+  indent_guides?: number[];
+  colorcolumns?: number[];
+}
+
+export interface EditorDescriptor {
+  id: WidgetId;
+  rect: Rect;
+  lines: EditorLine[];
+  cursor?: EditorCursor | null;
+  extra_cursors?: CursorPos[];
+  selection?: EditorSelection | null;
+  extra_selections?: EditorSelection[];
+  yank_highlight?: EditorSelection | null;
+  scroll_top: number;
+  scroll_left?: number;
+  total_lines: number;
+  max_col?: number;
+  gutter_char_width?: number;
+  is_active: boolean;
+  show_active_bg: boolean;
+  has_git_diff: boolean;
+  has_breakpoints: boolean;
+  diagnostic_gutter?: Record<string, DiagnosticSeverity>;
+  code_action_lines?: number[];
+  bracket_match_positions?: [number, number][];
+  active_indent_col?: number | null;
+  tabstop: number;
+  cursorline: boolean;
+  lightbulb_glyph?: string;
+}
+
+export interface _FrClickFindInput {
+  FindInput: number;
+}
+
+export interface _FrClickReplaceInput {
+  ReplaceInput: number;
+}
+
+export type FindReplaceClickTarget = ("Chevron" | "ToggleCase" | "ToggleWholeWord" | "ToggleRegex" | "PrevMatch" | "NextMatch" | "ToggleInSelection" | "Close" | "TogglePreserveCase" | "ReplaceCurrent" | "ReplaceAll") | _FrClickFindInput | _FrClickReplaceInput;
+
+export interface FrHitRegion {
+  col: number;
+  row: number;
+  width: number;
+}
+
+export interface FindReplacePanelDescriptor {
+  query: string;
+  replacement?: string;
+  show_replace?: boolean;
+  focus?: number;
+  cursor?: number;
+  sel_anchor?: number | null;
+  match_info?: string;
+  case_sensitive?: boolean;
+  whole_word?: boolean;
+  use_regex?: boolean;
+  preserve_case?: boolean;
+  in_selection?: boolean;
+  group_bounds: Rect;
+  panel_width?: number;
+  replace_one_glyph?: string;
+  replace_all_glyph?: string;
+  hit_regions?: [FrHitRegion, FindReplaceClickTarget][];
+}
+
+export interface _ControlWidthFixed {
+  Fixed: number;
+}
+
+export type ControlWidth = ("Fill" | "Content") | _ControlWidthFixed;
+
+export type LabelPosition = "Left" | "Top" | "Inline" | "Hidden";
+
+export type LabelAlign = "Start" | "Center" | "End";
+
+export type RowAlign = "Start" | "Center" | "End" | "Stretch";
+
+export interface FormSpacing {
+  padding?: number;
+  item_gap?: number | null;
+  row_align?: RowAlign;
+}
+
+export interface _ValidationStateError {
+  Error: string;
+}
+
+export interface _ValidationStateWarning {
+  Warning: string;
+}
+
+/** `{"Error": "..."}` or `{"Warning": "..."}`. */
+export type ValidationState = _ValidationStateError | _ValidationStateWarning;
+
+export interface ToggleGroupItem {
+  id: WidgetId;
+  label: string;
+  value: boolean;
+}
+
+export interface ButtonRowItem {
+  id: WidgetId;
+  label: string;
+  disabled?: boolean;
+  icon?: Icon | null;
+  spec?: ButtonSpecDescriptor | null;
+}
+
+export interface _FieldKindTextInput {
+  value: string;
+  placeholder?: string;
+  cursor?: number | null;
+  selection_anchor?: number | null;
+}
+
+export interface _FieldKindReadOnly {
+  value: StyledText;
+}
+
+export interface _FieldKindSlider {
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+}
+
+export interface _FieldKindColorPicker {
+  value: Color;
+}
+
+export interface _FieldKindDropdown {
+  options: StyledText[];
+  selected_idx: number;
+}
+
+export interface _FieldKindTextArea {
+  value: string;
+  placeholder?: string;
+  cursor?: number | null;
+  visible_rows?: number;
+}
+
+export interface _FieldKindPasswordInput {
+  value: string;
+  placeholder?: string;
+  cursor?: number | null;
+  mask_char?: string;
+}
+
+export interface _FieldKindSegmentedControl {
+  options: string[];
+  selected_idx: number;
+}
+
+export interface _FieldKindToggleGroup {
+  toggles: ToggleGroupItem[];
+}
+
+export interface _FieldKindButtonRow {
+  buttons: ButtonRowItem[];
+}
+
+export interface _FieldKindToolbar {
+  Toolbar: ToolbarDescriptor;
+}
+
+export interface _FieldKindDatePicker {
+  DatePicker: DatePickerDescriptor;
+}
+
+export interface _FieldKindComboBox {
+  ComboBox: ComboBoxDescriptor;
+}
+
+export interface _FieldKindNumberInput {
+  NumberInput: NumberInputDescriptor;
+}
+
+export interface _FieldKindRadioGroup {
+  RadioGroup: RadioGroupDescriptor;
+}
+
+export interface _FieldKindToggle {
+  value: boolean;
+}
+
+export type _FieldKindDict = { Toggle: _FieldKindToggle; } | { TextInput: _FieldKindTextInput; } | { ReadOnly: _FieldKindReadOnly; } | { Slider: _FieldKindSlider; } | { ColorPicker: _FieldKindColorPicker; } | { Dropdown: _FieldKindDropdown; } | { TextArea: _FieldKindTextArea; } | { PasswordInput: _FieldKindPasswordInput; } | { SegmentedControl: _FieldKindSegmentedControl; } | { ToggleGroup: _FieldKindToggleGroup; } | { ButtonRow: _FieldKindButtonRow; };
+
+/** A `FormField`'s kind -- `"Label"`/`"Button"` (bare strings, no payload), a tagged variant from `_FieldKindDict`, or one of the embedded-primitive wrappers (`{"Toolbar": ...}`, `{"DatePicker": ...}`, `{"ComboBox": ...}`, `{"NumberInput": ...}`, `{"RadioGroup": ...}`). */
+export type FieldKind = ("Label" | "Button") | _FieldKindDict | _FieldKindToolbar | _FieldKindDatePicker | _FieldKindComboBox | _FieldKindNumberInput | _FieldKindRadioGroup;
+
+export interface FormFieldDescriptor {
+  id: WidgetId;
+  label: StyledText;
+  kind: FieldKind;
+  hint?: StyledText;
+  disabled?: boolean;
+  validation?: ValidationState | null;
+  label_position?: LabelPosition | null;
+  label_align?: LabelAlign | null;
+  label_width?: number | null;
+  tab_index?: number | null;
+  control_width?: ControlWidth | null;
+  min_control_width?: number | null;
+  row_align?: RowAlign | null;
+}
+
+export interface FormDescriptor {
+  id: WidgetId;
+  fields: FormFieldDescriptor[];
+  focused_field: WidgetId | null;
+  scroll_offset?: number;
+  has_focus?: boolean;
+  label_position?: LabelPosition;
+  label_align?: LabelAlign;
+  label_width?: number | null;
+  control_width?: ControlWidth;
+  min_control_width?: number | null;
+  spacing?: FormSpacing;
+}
+
+export type MsvAxis = "Vertical" | "Horizontal";
+
+export type ScrollMode = "PerSection" | "WholePanel";
+
+export interface _SectionSizeFixed {
+  Fixed: number;
+}
+
+export interface _SectionSizePercent {
+  Percent: number;
+}
+
+export interface _SectionSizeWeight {
+  Weight: number;
+}
+
+export type SectionSize = ("Content" | "EqualShare") | _SectionSizeFixed | _SectionSizePercent | _SectionSizeWeight;
+
+export interface HeaderAction {
+  id: string;
+  icon: Icon;
+  tooltip: string | null;
+  enabled?: boolean;
+}
+
+export interface SectionHeader {
+  icon: Icon | null;
+  title: StyledText;
+  badge: StyledText | null;
+  actions?: HeaderAction[];
+  show_chevron?: boolean;
+}
+
+export interface EmptyBody {
+  icon: Icon | null;
+  text: StyledText;
+  hint: StyledText | null;
+  action: HeaderAction | null;
+}
+
+export interface InlineInput {
+  id: WidgetId;
+  text: string;
+  caret?: number;
+  placeholder: string | null;
+  has_focus?: boolean;
+}
+
+export interface _SectionAuxInput {
+  Input: InlineInput;
+}
+
+export interface _SectionAuxToolbar {
+  Toolbar: HeaderAction[];
+}
+
+export interface _SectionAuxSearch {
+  Search: InlineInput;
+}
+
+export interface _SectionAuxCustom {
+  Custom: WidgetId;
+}
+
+export type SectionAux = _SectionAuxInput | _SectionAuxToolbar | _SectionAuxSearch | _SectionAuxCustom;
+
+export interface _SectionBodyTree {
+  Tree: TreeViewDescriptor;
+}
+
+export interface _SectionBodyList {
+  List: ListViewDescriptor;
+}
+
+export interface _SectionBodyForm {
+  Form: FormDescriptor;
+}
+
+export interface _SectionBodyTerminal {
+  Terminal: TerminalDescriptor;
+}
+
+export interface _SectionBodyMessageList {
+  MessageList: MessageListDescriptor;
+}
+
+export interface _SectionBodyText {
+  Text: StyledText[];
+}
+
+export interface _SectionBodyChart {
+  Chart: ChartDescriptor;
+}
+
+export interface _SectionBodyEmpty {
+  Empty: EmptyBody;
+}
+
+export interface _SectionBodyCustom {
+  Custom: WidgetId;
+}
+
+export type SectionBody = _SectionBodyTree | _SectionBodyList | _SectionBodyForm | _SectionBodyTerminal | _SectionBodyMessageList | _SectionBodyText | _SectionBodyChart | _SectionBodyEmpty | _SectionBodyCustom;
+
+export interface Section {
+  id: string;
+  header: SectionHeader;
+  body: SectionBody;
+  aux?: SectionAux | null;
+  size: SectionSize;
+  collapsed?: boolean;
+  min_size?: number | null;
+  max_size?: number | null;
+}
+
+export interface MultiSectionViewDescriptor {
+  id: WidgetId;
+  sections: Section[];
+  active_section?: number | null;
+  axis: MsvAxis;
+  allow_resize?: boolean;
+  allow_collapse?: boolean;
+  scroll_mode: ScrollMode;
+  has_focus?: boolean;
+  panel_scroll?: number;
+}
+
+export interface _KeyBindingLiteral {
+  Literal: string;
+}
+
+/** A universal accelerator name (bare string) or `{"Literal": "..."}` for an app-specific binding. */
+export type KeyBinding = ("Save" | "Open" | "New" | "Close" | "Copy" | "Cut" | "Paste" | "Undo" | "Redo" | "SelectAll" | "Find" | "Replace" | "Quit") | _KeyBindingLiteral;
+
+export interface _AcceleratorScopeWidget {
+  Widget: WidgetId;
+}
+
+export interface _AcceleratorScopeMode {
+  Mode: string;
+}
+
+export type AcceleratorScope = "Global" | _AcceleratorScopeWidget | _AcceleratorScopeMode;
+
+export interface Accelerator {
+  id: AcceleratorId;
+  binding: KeyBinding;
+  scope: AcceleratorScope;
+  label: string | null;
+}
+
+export interface ContextMenuItem {
+  id?: WidgetId | null;
+  label: StyledText;
+  detail?: StyledText | null;
+  disabled?: boolean;
+  key_equivalent?: Accelerator | null;
+  checked?: boolean | null;
+  icon?: Icon | null;
+  submenu?: ContextMenuItem[] | null;
+}
+
+export interface MenuBarItemDescriptor {
+  id: WidgetId;
+  label: string;
+  disabled?: boolean;
+  submenu?: ContextMenuItem[] | null;
+}
+
+export interface MenuBarDescriptor {
+  id: WidgetId;
+  items: MenuBarItemDescriptor[];
+  open_item?: number | null;
+  focused_item?: number | null;
+}
+
+export type DiffRowKind = "Same" | "Changed" | "Removed" | "Added";
+
+export interface DiffRow {
+  left: string | null;
+  right: string | null;
+  kind: DiffRowKind;
+}
+
+export interface DiffHunk {
+  left_start: number;
+  right_start: number;
+  rows: DiffRow[];
+}
+
+export type DiffMode = "SideBySide" | "Unified";
+
+export type DiffEditability = "ReadOnly" | "RightEditable";
+
+export type DiffPane = "Left" | "Right";
+
+export interface DiffViewDescriptor {
+  id: WidgetId;
+  left: string;
+  right: string;
+  left_label: string | null;
+  right_label: string | null;
+  hunks: DiffHunk[];
+  mode: DiffMode;
+  editability: DiffEditability;
+  scroll_offset: number;
+  focused_pane: DiffPane;
+  has_focus: boolean;
+}
+
+/** One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, and every `EXTRA_PRIMITIVE_KINDS` additive kind) is fully typed. */
 export interface LayoutLeafNode {
   id: string;
   button?: ButtonDescriptor;
@@ -486,41 +1441,41 @@ export interface LayoutLeafNode {
   data_table?: DataTableDescriptor;
   tab_bar?: TabBarDescriptor;
   status_bar?: StatusBarDescriptor;
-  progress?: unknown;
-  spinner?: unknown;
-  image?: unknown;
-  form?: unknown;
-  text_input?: unknown;
-  number_input?: unknown;
-  combo_box?: unknown;
-  date_picker?: unknown;
-  radio_group?: unknown;
-  switch?: unknown;
-  chart?: unknown;
-  message_list?: unknown;
-  board?: unknown;
-  pipeline_view?: unknown;
-  minimap?: unknown;
-  multi_section_view?: unknown;
-  diff_view?: unknown;
-  activity_bar?: unknown;
-  toolbar?: unknown;
-  menu_bar?: unknown;
-  command_line?: unknown;
-  command_center?: unknown;
-  palette?: unknown;
-  scrollbar?: unknown;
-  editor?: unknown;
-  terminal?: unknown;
-  canvas?: unknown;
-  scroll_view?: unknown;
-  find_replace?: unknown;
+  progress?: ProgressBarDescriptor;
+  spinner?: SpinnerDescriptor;
+  image?: ImageDescriptor;
+  form?: FormDescriptor;
+  text_input?: TextInputDescriptor;
+  number_input?: NumberInputDescriptor;
+  combo_box?: ComboBoxDescriptor;
+  date_picker?: DatePickerDescriptor;
+  radio_group?: RadioGroupDescriptor;
+  switch?: SwitchDescriptor;
+  chart?: ChartDescriptor;
+  message_list?: MessageListDescriptor;
+  board?: BoardModelDescriptor;
+  pipeline_view?: PipelineViewDescriptor;
+  minimap?: MinimapDescriptor;
+  multi_section_view?: MultiSectionViewDescriptor;
+  diff_view?: DiffViewDescriptor;
+  activity_bar?: ActivityBarDescriptor;
+  toolbar?: ToolbarDescriptor;
+  menu_bar?: MenuBarDescriptor;
+  command_line?: CommandLineDescriptor;
+  command_center?: CommandCenterDescriptor;
+  palette?: PaletteDescriptor;
+  scrollbar?: ScrollbarDescriptor;
+  editor?: EditorDescriptor;
+  terminal?: TerminalDescriptor;
+  canvas?: CanvasDescriptor;
+  scroll_view?: ScrollViewDescriptor;
+  find_replace?: FindReplacePanelDescriptor;
 }
 
 /** One node of a render callback's returned layout tree. */
 export type LayoutNode = LayoutRowNode | LayoutColumnNode | LayoutSplitNode | LayoutTabsNode | LayoutPanelNode | LayoutSidebarPanelNode | LayoutSplitTreeNode | LayoutLeafNode;
 
-/** The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. The six core kinds and `status_bar` are fully typed; every other additive kind is typed `Any`. */
+/** The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. Every registered kind is fully typed. */
 export interface RenderFrameDict {
   button?: ButtonDescriptor | null;
   text_display?: TextDisplayDescriptor | null;
@@ -529,35 +1484,35 @@ export interface RenderFrameDict {
   data_table?: DataTableDescriptor | null;
   tab_bar?: TabBarDescriptor | null;
   status_bar?: StatusBarDescriptor | null;
-  progress?: unknown;
-  spinner?: unknown;
-  image?: unknown;
-  form?: unknown;
-  text_input?: unknown;
-  number_input?: unknown;
-  combo_box?: unknown;
-  date_picker?: unknown;
-  radio_group?: unknown;
-  switch?: unknown;
-  chart?: unknown;
-  message_list?: unknown;
-  board?: unknown;
-  pipeline_view?: unknown;
-  minimap?: unknown;
-  multi_section_view?: unknown;
-  diff_view?: unknown;
-  activity_bar?: unknown;
-  toolbar?: unknown;
-  menu_bar?: unknown;
-  command_line?: unknown;
-  command_center?: unknown;
-  palette?: unknown;
-  scrollbar?: unknown;
-  editor?: unknown;
-  terminal?: unknown;
-  canvas?: unknown;
-  scroll_view?: unknown;
-  find_replace?: unknown;
+  progress?: ProgressBarDescriptor | null;
+  spinner?: SpinnerDescriptor | null;
+  image?: ImageDescriptor | null;
+  form?: FormDescriptor | null;
+  text_input?: TextInputDescriptor | null;
+  number_input?: NumberInputDescriptor | null;
+  combo_box?: ComboBoxDescriptor | null;
+  date_picker?: DatePickerDescriptor | null;
+  radio_group?: RadioGroupDescriptor | null;
+  switch?: SwitchDescriptor | null;
+  chart?: ChartDescriptor | null;
+  message_list?: MessageListDescriptor | null;
+  board?: BoardModelDescriptor | null;
+  pipeline_view?: PipelineViewDescriptor | null;
+  minimap?: MinimapDescriptor | null;
+  multi_section_view?: MultiSectionViewDescriptor | null;
+  diff_view?: DiffViewDescriptor | null;
+  activity_bar?: ActivityBarDescriptor | null;
+  toolbar?: ToolbarDescriptor | null;
+  menu_bar?: MenuBarDescriptor | null;
+  command_line?: CommandLineDescriptor | null;
+  command_center?: CommandCenterDescriptor | null;
+  palette?: PaletteDescriptor | null;
+  scrollbar?: ScrollbarDescriptor | null;
+  editor?: EditorDescriptor | null;
+  terminal?: TerminalDescriptor | null;
+  canvas?: CanvasDescriptor | null;
+  scroll_view?: ScrollViewDescriptor | null;
+  find_replace?: FindReplacePanelDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */

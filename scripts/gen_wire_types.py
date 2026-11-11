@@ -19,14 +19,10 @@ compile under `cargo test`/`cargo check --tests` (see that module's own
 reached by a bare `cargo build`/`cargo check`), and a `wire_schema.rs`
 update that isn't reflected here is caught by `--check` below.
 
-Coverage is deliberately bounded for the 28 additive "extra" primitive
-kinds other than `status_bar` (registered in
-`quadraui-binding-core/src/extra_paint.rs`'s `extra_primitives!` table):
-`wire_schema.rs` lists every one of them (reading
-`EXTRA_PRIMITIVE_KINDS` directly, so a new kind is never missed), but types
-all but `status_bar` as `Any`/`unknown` rather than enumerated field-by-field
--- each is a large, independently-evolving vocabulary of its own; narrowing
-them is follow-on work, not a gap in this script's generation logic.
+Every additive "extra" primitive kind (registered in
+`quadraui-binding-core/src/extra_paint.rs`'s `extra_primitives!` table) is
+narrowed field-by-field in `wire_schema.rs`, which lists every one of them
+by reading `EXTRA_PRIMITIVE_KINDS` directly, so a new kind is never missed.
 
 Usage:
 
@@ -39,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import keyword
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -347,10 +344,7 @@ def render_python(defs: List[Def]) -> str:
         f"{GENERATED_BANNER}",
         '"""',
         "",
-        # No schema entry currently builds a `Ty.dict` (Rust's `dictt()`),
-        # so `Dict` has nothing to type here -- add it back the day a
-        # schema entry does.
-        "from typing import Any, List, Literal, Optional, Tuple, Union",
+        "from typing import Any, Dict, List, Literal, Optional, Tuple, Union",
         "from typing_extensions import NotRequired, TypedDict",
         "",
     ]
@@ -361,12 +355,39 @@ def render_python(defs: List[Def]) -> str:
             lines.append(f"{d.name} = {d.ty.py}")
             lines.append("")
         elif isinstance(d, ObjDef):
+            all_fields = (*d.fields, *d.common)
+            # A wire field name is a Rust struct/variant field (or, for a
+            # `flat()`-built dict, the Rust variant tag itself) -- nothing
+            # stops either from colliding with a Python keyword (`from` on
+            # `DrawOp::Line`/`Bezier`/`DashedLine`, say), which the
+            # class-based `TypedDict` syntax below can't express at all
+            # (`class X: from: Y` is a `SyntaxError`, keyword status is a
+            # property of the identifier position, not escapable the way
+            # `from_` or a raw string would be). The *functional* form
+            # (`X = TypedDict("X", {...})`) takes the field names as
+            # ordinary dict string keys instead, so it has no such
+            # restriction -- reach for it only when a class body actually
+            # can't say what's needed, since the class form is more
+            # readable and keeps editor rename/go-to-definition working.
+            if any(keyword.iskeyword(f.name) for f in all_fields):
+                lines.append(f"{d.name} = TypedDict(")
+                lines.append(f'    "{d.name}",')
+                lines.append("    {")
+                for f in all_fields:
+                    ty = f"NotRequired[{f.ty.py}]" if f.optional else f.ty.py
+                    lines.append(f'        "{f.name}": {ty},')
+                lines.append("    },")
+                lines.append(")")
+                if d.doc:
+                    lines.append(f'"""{d.doc}"""')
+                lines.append("")
+                continue
             lines.append(f"class {d.name}(TypedDict):")
             if d.doc:
                 lines.append(f'    """{d.doc}"""')
             if not d.fields and not d.common:
                 lines.append("    pass")
-            for f in (*d.fields, *d.common):
+            for f in all_fields:
                 ty = f"NotRequired[{f.ty.py}]" if f.optional else f.ty.py
                 comment = f"  # {f.doc}" if f.doc else ""
                 lines.append(f"    {f.name}: {ty}{comment}")
