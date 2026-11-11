@@ -8642,7 +8642,11 @@ mod tests {
     /// bold override actually does something against a real `pango::Layout`.
     /// Paints the same text through the real `Backend::draw_status_bar`
     /// path once bold, once not, and asserts the bold segment's resolved
-    /// (painted) width is strictly wider.
+    /// (painted) width is strictly wider. The chrome font is pinned to a
+    /// large explicit size rather than the backend default: at the default
+    /// 13px chrome size, macOS's Pango/CoreText rounds regular and bold
+    /// "READY" to the same pixel width, which would test glyph hinting
+    /// rather than the bold override.
     #[test]
     fn gtk_backend_draw_status_bar_bold_segment_measures_wider() {
         let (surface, font, _) = ui_font_test_surface_and_contexts();
@@ -8654,6 +8658,7 @@ mod tests {
             pango_ctx.set_font_description(&font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
+            Backend::set_ui_font(&mut backend, "Sans 20");
             let bar = StatusBar {
                 id: WidgetId::new("test:status-bar"),
                 left_segments: vec![crate::primitives::status_bar::StatusBarSegment {
