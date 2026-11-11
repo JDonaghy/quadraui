@@ -106,14 +106,25 @@ def _status_bar(fm):
     return fm._render()["split"]["second"]["status_bar"]
 
 
+def _active_tab_index(fm) -> int:
+    """The active details-tab index, read back from the engine's own
+    widget-state store -- `examples/file_manager.py` tracks no active-tab
+    state of its own (see `_tree_scroll_offset`'s own doc for why this is
+    the only place it is readable at all)."""
+    state = fm.app.widget_state("fm:tabs")
+    return 0 if state is None else state.get("active_tab", 0)
+
+
 def _active_table(fm):
     """The data_table descriptor behind the active tab, or None if the details
-    pane is still the placeholder (no folder opened yet)."""
+    pane is still the placeholder (no folder opened yet). `fm._render()`'s own
+    raw "tabs" dict never pins `"selected"` (see `_details_pane`'s own doc),
+    so the active index has to come from the store, not from that dict."""
     second = _body_split(fm)["second"]
     if "tabs" not in second:
         return None
     tabs = second["tabs"]
-    content = tabs["tabs"][tabs["selected"]]["content"]
+    content = tabs["tabs"][_active_tab_index(fm)]["content"]
     return content["data_table"]
 
 
@@ -221,7 +232,7 @@ def test_enter_opens_the_cursored_folder_as_a_tab(fmmod, tree_root):
     _press(fmmod, fm, fmmod.ENTER_KEY)
 
     assert [n.name for n in fm.open] == ["alpha"]
-    assert fm.active_tab == 0
+    assert _active_tab_index(fm) == 0
     assert _names(_active_table(fm)) == ["sub/", "a1.txt", "a2.txt"]
     assert fm.app.screen_contains("alpha")
     for title in ("Name", "Size", "Kind"):
@@ -236,12 +247,12 @@ def test_reopening_an_open_folder_focuses_its_tab(fmmod, tree_root):
     _press(fmmod, fm, fmmod.ENTER_KEY)  # open alpha (tab 0)
     _press(fmmod, fm, fmmod.DOWN_KEY)   # -> beta
     _press(fmmod, fm, fmmod.ENTER_KEY)  # open beta (tab 1, active)
-    assert fm.active_tab == 1
+    assert _active_tab_index(fm) == 1
 
     _press(fmmod, fm, fmmod.UP_KEY)     # -> alpha
     _press(fmmod, fm, fmmod.ENTER_KEY)
     assert [n.name for n in fm.open] == ["alpha", "beta"]
-    assert fm.active_tab == 0
+    assert _active_tab_index(fm) == 0
 
 
 # --- drilling in from the details table --------------------------------------
@@ -263,7 +274,7 @@ def test_activating_a_subfolder_row_drills_into_it(fmmod, tree_root):
     _send(fm, {"DataTable": ["fm:grid:0", {"RowDoubleClicked": {"idx": 0}}]})
 
     assert [n.name for n in fm.open] == ["alpha", "sub"]
-    assert fm.active_tab == 1
+    assert _active_tab_index(fm) == 1
     assert fm.cursor.name == "sub"
     assert _names(_active_table(fm)) == ["deep.txt"]
     assert fm.app.screen_contains("deep.txt")
@@ -294,11 +305,11 @@ def test_tab_activated_event_switches_the_shown_tab(fmmod, tree_root):
     _press(fmmod, fm, fmmod.ENTER_KEY)  # open alpha (tab 0)
     _press(fmmod, fm, fmmod.DOWN_KEY)
     _press(fmmod, fm, fmmod.ENTER_KEY)  # open beta (tab 1, active)
-    assert fm.active_tab == 1
+    assert _active_tab_index(fm) == 1
 
     _send(fm, {"TabBar": ["fm:tabs", {"TabActivated": {"index": 0}}]})
 
-    assert fm.active_tab == 0
+    assert _active_tab_index(fm) == 0
     assert _names(_active_table(fm))[0] == "sub/"  # alpha's contents
 
 
@@ -315,7 +326,7 @@ def test_tab_closed_event_removes_the_tab(fmmod, tree_root):
     _send(fm, {"TabBar": ["fm:tabs", {"TabClosed": {"index": 0}}]})  # close alpha
 
     assert [n.name for n in fm.open] == ["beta"]
-    assert fm.active_tab == 0
+    assert _active_tab_index(fm) == 0
     assert _names(_active_table(fm)) == ["b1.txt"]
 
 
@@ -337,11 +348,17 @@ def test_body_divider_drag_updates_the_ratio(fmmod, tree_root):
     assert _body_split(fm)["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
 
 
-def test_outer_divider_drag_is_ignored(fmmod, tree_root):
-    """Dragging the outer chrome/status divider must not resize the body."""
+def test_outer_divider_drag_persists_but_never_touches_the_body_split(fmmod, tree_root):
+    """The outer chrome/status divider resolves exactly the same uncontrolled
+    way the body split does (see `_render`'s own comment on `"fm:outer"`'s
+    `ratio` literal) -- it is not a fixed divider, so a drag on it persists
+    its own ratio in the store. What it must never do is move `"fm:split"`'s
+    own ratio: the two ids are tracked independently."""
     fm = _manager(fmmod, tree_root)
 
     _send(fm, {"SplitDividerDragged": {"tree": "fm:outer", "split_index": 0, "new_ratio": 0.9}})
+
+    assert fm.app.widget_state("fm:outer")["ratio"] == pytest.approx(0.9)
     assert fm.app.widget_state("fm:split")["ratio"] == pytest.approx(fmmod.BODY_SPLIT_RATIO)
 
 
@@ -381,8 +398,8 @@ def test_status_bar_reflects_cursor_and_open_tabs(fmmod, tree_root):
     status = _status_bar(fm)
     assert "alpha" in _segment_text(status["left_segments"])
     assert "3 items" in _segment_text(status["left_segments"])
-    assert "tab 1/1" in _segment_text(status["right_segments"])
-    assert fm.app.screen_contains("tab 1/1")
+    assert "1 tab" in _segment_text(status["right_segments"])
+    assert fm.app.screen_contains("1 tab")
 
 
 # --- the real-terminal key path ----------------------------------------------

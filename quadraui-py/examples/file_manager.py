@@ -19,14 +19,18 @@ browse an arbitrarily deep filesystem without scanning it up front. Folders
 expand and collapse; a folder's children are read the first time it is opened.
 
 The UI is *live*: plain Python attributes hold what changes (the cursor node,
-which folders are open as tabs, the active tab, a transient status hint), the
-event handler mutates them, and `render()` rebuilds the whole layout tree from
-them every frame. Neither callback calls back into `QuiApp` -- see
-`QuiApp.widget_state`'s own doc for why. The tree's scroll position and the
-body split's divider ratio are deliberately NOT among those Python attributes:
-both are left uncontrolled in the descriptors `render()` returns, so
-`quadraui`'s own widget-state store derives the scroll that keeps the cursor
-visible and persists a dragged ratio, with no app code for either.
+which folders are open as tabs, a transient status hint), the event handler
+mutates them, and `render()` rebuilds the whole layout tree from them every
+frame. Neither callback calls back into `QuiApp` -- see `QuiApp.widget_state`'s
+own doc for why. The tree's scroll position, the body split's divider ratio,
+and the details tabs' active index are deliberately NOT among those Python
+attributes: all three are left uncontrolled in the descriptors `render()`
+returns, so `quadraui`'s own widget-state store derives the scroll that keeps
+the cursor visible, persists a dragged ratio, and tracks which tab is active
+-- a click switches it with no app code at all, and `_open`'s own
+"programmatically focus this tab" case goes through `QuiApp.actions().apply_tab_activated`
+(queued from the handler, applied by the engine directly) rather than ever
+pinning the descriptor's own active index.
 
 Interaction (keyboard drives, mouse works too):
   Up / Down    move the folder cursor
@@ -371,10 +375,17 @@ class FileManager:
         self.height = height
         self.cursor: Node = self.root   # the selected folder node
         self.open: list[Node] = []      # folder nodes shown as tabs, in order
-        self.active_tab = 0             # index into self.open
         self.message = ""               # transient status hint
         self.app = QuiApp(width, height, render=self._render)
         self.app.set_handler(self._handle)
+        # Obtained once up front, per `QuiApp.actions`'s own doc -- `_handle`
+        # uses it to make a newly-opened (or re-focused) folder's tab active
+        # in the engine's own widget-state store, since calling
+        # `self.app.apply_tab_activated(...)` straight from inside the
+        # handler would hit the "already borrowed" wall `QuiApp.actions`'s
+        # own doc describes (there is no such method on `self.app` itself
+        # for that reason -- only on `self.actions`).
+        self.actions = self.app.actions()
 
     # --- navigation helpers --------------------------------------------------
 
@@ -425,7 +436,11 @@ class FileManager:
 
     def _open(self, node: Node | None = None) -> None:
         """Open `node` (default: the cursor) as a details tab, expanding it;
-        focus its tab if already open. A file just reports itself."""
+        focus its tab if already open. A file just reports itself. Which tab
+        ends up active is the engine's own widget-state store's business, not
+        this app's -- `_details_pane`'s own doc covers why `_open` drives it
+        through `self.actions.apply_tab_activated` rather than a Python
+        attribute pinned into the descriptor."""
         node = node or self.cursor
         if not node.is_dir:
             self.message = f"{node.name} ({_human_size(node.size_bytes)})"
@@ -433,10 +448,10 @@ class FileManager:
         ensure_loaded(node)
         for i, existing in enumerate(self.open):
             if existing.path == node.path:
-                self.active_tab = i
+                self.actions.apply_tab_activated("fm:tabs", i)
                 return
         self.open.append(node)
-        self.active_tab = len(self.open) - 1
+        self.actions.apply_tab_activated("fm:tabs", len(self.open) - 1)
 
     def _refresh(self) -> None:
         node = self.cursor
@@ -446,10 +461,13 @@ class FileManager:
             self.message = f"reloaded {node.name}"
 
     def _close_tab(self, index: int) -> None:
+        """Drops `self.open[index]` -- the model-side half of a `TabClosed`
+        event. The engine has already shifted the store's own active index
+        past the closed tab by the time this runs (`InteractionEngine::handle`
+        applies that before dispatching to this handler at all), so there is
+        no active-tab bookkeeping left for this app to do."""
         if 0 <= index < len(self.open):
             del self.open[index]
-            if self.active_tab >= len(self.open):
-                self.active_tab = max(0, len(self.open) - 1)
 
     def _on_row_click(self, path: list[int]) -> None:
         """A tree-row click: select that folder and toggle its expansion."""
@@ -475,14 +493,21 @@ class FileManager:
                     node.expanded = not node.expanded
                 return
 
-    def _activate_detail(self, idx: int) -> None:
+    def _activate_detail(self, table_id: str, idx: int) -> None:
         """A details-table row was double-clicked: drill into a subfolder, or
         report a file's size. A single click only emits `RowSelected` (see
         `_handle`), which this demo does not act on, so opening never
-        happens on the click that merely moves the cursor there."""
+        happens on the click that merely moves the cursor there. `table_id`
+        (`"fm:grid:<n>"`, per `details_table`'s own doc) names the clicked
+        tab's folder directly, rather than asking which tab is active --
+        the engine's widget-state store owns that, not this app (see
+        `_details_pane`'s own doc)."""
         if not self.open:
             return
-        folder = self.open[self.active_tab]
+        folder_index = int(table_id.rsplit(":", 1)[1])
+        if not (0 <= folder_index < len(self.open)):
+            return
+        folder = self.open[folder_index]
         children = folder.children or []
         if not (0 <= idx < len(children)):
             return
@@ -499,7 +524,16 @@ class FileManager:
 
     def _details_pane(self) -> dict:
         """The body split's second pane: a placeholder until a folder is opened,
-        then a closable tabs container with one data_table tab per open folder."""
+        then a closable tabs container with one data_table tab per open folder.
+        Omits `"selected"` entirely -- the Rust side defaults it to `0` on
+        every single frame, which (never actually changing) reads back as
+        fully uncontrolled, the same way `BODY_SPLIT_RATIO`'s own unchanging
+        literal does for the split ratio. The active tab is therefore the
+        engine's own widget-state store's business, derived from whichever
+        tab was last clicked (`InteractionEngine::handle`'s own
+        `apply_tab_activated` call) or last activated programmatically
+        (`_open`'s `self.actions.apply_tab_activated` call) -- with no app
+        code tracking it."""
         if not self.open:
             return {
                 "id": "fm:empty",
@@ -512,7 +546,6 @@ class FileManager:
             "id": "fm:tabs",
             "tabs": {
                 "id": "fm:tabs",
-                "selected": self.active_tab,
                 "closable": True,
                 "tabs": [
                     {
@@ -531,7 +564,13 @@ class FileManager:
 
     def _status_leaf(self) -> dict:
         """The outer split's bottom pane: a live status bar showing the cursored
-        folder, its item count, the open-tab summary, and any transient hint."""
+        folder, its item count, the open-tab count, and any transient hint.
+        Which tab is active is not shown here -- that index lives only in the
+        engine's own widget-state store (see `_details_pane`'s own doc), not
+        in a Python attribute this render callback could read without
+        re-entering `QuiApp`; `QuiApp.widget_state("fm:tabs")` is the only way
+        to read it back, and only from outside an active `render`/`handle`
+        call."""
         node = self.cursor
         if node.children is None:
             count_text = "unopened"
@@ -545,7 +584,7 @@ class FileManager:
             left.append(_segment(f" {self.message} "))
         open_n = len(self.open)
         if open_n:
-            right = [_segment(f" tab {self.active_tab + 1}/{open_n} ")]
+            right = [_segment(f" {open_n} tab{'s' if open_n != 1 else ''} ")]
         else:
             right = [_segment(" no tabs ")]
         return {
@@ -586,10 +625,14 @@ class FileManager:
                 "content": body,
             }
         }
-        # Pin the status bar to the bottom line: `ratio` derives from the known
-        # height so the bottom pane is ~one line, and `second_min` floors it at
-        # one line if the real terminal is a different size. Drags on this outer
-        # divider are ignored by the handler (it keys on the body split's id).
+        # `ratio` derives from the known height so the bottom status-bar pane
+        # starts at ~one line, and `second_min` floors it at one line if the
+        # real terminal is a different size. Like the body split, this
+        # literal is resent unchanged every frame, so it too resolves as
+        # uncontrolled from the second frame on: a drag on this divider
+        # persists in the engine's own widget-state store exactly the way
+        # `BODY_SPLIT_RATIO`'s own doc describes for the body split -- there
+        # is no separate "this one is fixed" opt-out the store offers today.
         h = max(self.height, 2)
         return {
             "split": {
@@ -615,9 +658,9 @@ class FileManager:
             return
 
         if "DataTable" in event:
-            activation = event["DataTable"][1]
+            table_id, activation = event["DataTable"]
             if "RowDoubleClicked" in activation:
-                self._activate_detail(activation["RowDoubleClicked"]["idx"])
+                self._activate_detail(table_id, activation["RowDoubleClicked"]["idx"])
         elif "Tree" in event:
             activation = event["Tree"][1]
             if "RowClicked" in activation:
@@ -626,10 +669,12 @@ class FileManager:
                 self._on_row_toggle_expand(activation["RowToggleExpand"]["path"])
         elif "TabBar" in event:
             activation = event["TabBar"][1]
-            if "TabActivated" in activation:
-                self.active_tab = activation["TabActivated"]["index"]
-            elif "TabClosed" in activation:
+            if "TabClosed" in activation:
                 self._close_tab(activation["TabClosed"]["index"])
+            # No `TabActivated` branch: `InteractionEngine::handle` already
+            # persisted the click in the engine's own widget-state store
+            # before this handler ever saw the event -- see
+            # `_details_pane`'s own doc.
         # No `SplitDividerDragged` branch: `BODY_SPLIT_RATIO`'s own doc
         # covers why a drag on the body split already persists with no app
         # code -- the engine's widget-state store handles it.
@@ -752,13 +797,14 @@ def _run_headless(fm: FileManager) -> None:
     # `widget_state` reads the engine's own store, called here from outside
     # any active `fm.app` call (it cannot be called from inside `_render`/
     # `_handle` themselves -- see `QuiApp.widget_state`'s own doc) -- the
-    # tree's scroll and the split's ratio are both uncontrolled in this
-    # example's own descriptors, so this is the only place either value is
-    # readable at all.
+    # tree's scroll, the split's ratio, and the details tabs' active index
+    # are all uncontrolled in this example's own descriptors, so this is the
+    # only place any of the three is readable at all.
     tree_state = fm.app.widget_state("fm:tree") or {}
     split_state = fm.app.widget_state("fm:split") or {}
+    tabs_state = fm.app.widget_state("fm:tabs") or {}
     print(f"\ncursor={fm.cursor.name}  open_tabs={open_names}  "
-          f"active_tab={fm.active_tab}  "
+          f"active_tab={tabs_state.get('active_tab')}  "
           f"tree_scroll_offset={tree_state.get('scroll_offset')}  "
           f"split_ratio={split_state.get('ratio')}")
 

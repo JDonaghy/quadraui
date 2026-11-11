@@ -183,15 +183,15 @@ use quadraui_binding_core::tree_scroll_state;
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
-    add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction, caret_shape,
-    clear_recent_documents, click_down_up_events, collect_leaf_tooltips, color_depth_name,
-    data_table_rows_and_viewport, decode_extra_primitive, dialog_severity, draw_bands,
-    end_power_save_block, font_role, guarded as core_guarded, is_default_protocol_client,
-    key_pressed_event, list_rows_and_viewport, login_item_enabled, menu_for_surface,
-    merge_overrides, message_dialog_options_from_buttons, paint_layout, pointer_shape,
-    record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
-    resolve_data_table_cursor, resolve_layout_tabs_active, resolve_list_cursor,
-    resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor,
+    add_recent_document, apply_tab_activated, begin_drag_out, begin_power_save_block,
+    callback_reaction, caret_shape, clear_recent_documents, click_down_up_events,
+    collect_leaf_tooltips, color_depth_name, data_table_rows_and_viewport, decode_extra_primitive,
+    dialog_severity, draw_bands, end_power_save_block, font_role, guarded as core_guarded,
+    is_default_protocol_client, key_pressed_event, list_rows_and_viewport, login_item_enabled,
+    menu_for_surface, merge_overrides, message_dialog_options_from_buttons, paint_layout,
+    pointer_shape, record_pending_error, remove_as_default_protocol_client, render_overlays,
+    resolve_app_path, resolve_data_table_cursor, resolve_layout_tabs_active, resolve_list_cursor,
+    resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_expansion,
     set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
     take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
     toast_corner, tree_rows_and_viewport, update_apply_on_quit, update_check_for_update,
@@ -427,6 +427,18 @@ const SLOT_TAB_BAR: i64 = quadraui_binding_core::SLOT_TAB_BAR;
 /// pairs onto the real live backend's current theme right before applying
 /// it.
 ///
+/// [`DeferredAction::ActivateTab`] is a third exception: it mirrors no
+/// `QuiApp` method at all (there is no reentrancy-restricted
+/// `QuiApp::apply_tab_activated` it stands in for), since the engine's
+/// widget-state store had no write-side binding surface before
+/// [`QuiAppActions::apply_tab_activated`] added one. [`flush_deferred_actions`]
+/// applies it via the exact same
+/// [`quadraui_binding_core::apply_tab_activated`] call
+/// `InteractionEngine::handle` itself makes for a real `TabActivated`
+/// click, so a programmatic "make tab N active" persists in the store the
+/// identical way, with no round trip through the next render's descriptor
+/// needed.
+///
 /// The ten platform-services variants below (`ApplyUpdateOnQuit` through
 /// `SetJumpList`) are a second exception, for the same underlying reason:
 /// every one of them is applied via a `quadraui_binding_core::services`
@@ -473,6 +485,7 @@ enum DeferredAction {
     ClearRecentDocuments,
     SetDockMenu(serde_json::Value),
     SetJumpList(serde_json::Value),
+    ActivateTab(WidgetId, usize),
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
@@ -1514,16 +1527,21 @@ fn resolved_viewport_rows(
 /// `tab_bar` slots against [`InteractionEngine::widget_state`] in place --
 /// the flat six-slot counterpart of [`resolve_layout_node_state`], called
 /// right before [`draw_bands`] paints `frame.as_refs()` so an uncontrolled
-/// cursor/scroll/active-tab a key press or click just moved in the store
-/// (via [`InteractionEngine::handle`]'s own `apply_*` calls) is what
-/// actually gets painted this frame, with no app code needed to track it.
-/// A slot the render callback left `None` is untouched; a slot whose
+/// cursor/scroll/active-tab/expanded-set a key press or click just moved in
+/// the store (via [`InteractionEngine::handle`]'s own `apply_*` calls) is
+/// what actually gets painted this frame, with no app code needed to track
+/// it. A slot the render callback left `None` is untouched; a slot whose
 /// descriptor pins an explicit value keeps winning outright, since every
 /// `resolve_*` call below returns a controlled value unchanged -- see each
 /// one's own "controlled / uncontrolled" doc.
 fn resolve_render_frame_state(engine: &InteractionEngine, frame: &mut RenderFrame) {
     let widget_state = engine.widget_state();
     if let Some(tree) = frame.tree.take() {
+        // Expansion first: a collapsed ancestor prunes its descendants from
+        // `rows`, so the cursor's own scroll-to-visible search below walks
+        // the same row list that actually gets painted, not the
+        // not-yet-collapsed one.
+        let tree = resolve_tree_expansion(widget_state, &tree);
         let viewport_rows = resolved_viewport_rows(
             engine,
             tree.id,
@@ -1602,17 +1620,22 @@ fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) 
 /// [`resolve_layout_node_state`]'s `LayoutNode::Leaf` arm defers to, mirroring
 /// [`resolve_render_frame_state`]'s per-slot handling for the four leaf
 /// kinds the widget-state store tracks. A `Button`/`TextDisplay`/`Extra`
-/// leaf is untouched -- none of those have cursor/scroll/active-tab state.
+/// leaf is untouched -- none of those have cursor/scroll/active-tab/
+/// expanded-set state.
 fn resolve_layout_leaf_state(engine: &InteractionEngine, leaf: &mut LayoutLeaf) {
     match &mut leaf.descriptor {
         LeafDescriptor::Tree(tree) => {
+            // Expansion first -- see `resolve_render_frame_state`'s own
+            // `tree` branch for why collapse has to run before scroll-into-
+            // view's row-position search.
+            let expanded = resolve_tree_expansion(engine.widget_state(), tree);
             let viewport_rows = resolved_viewport_rows(
                 engine,
-                tree.id,
-                tree.rows.len(),
+                expanded.id,
+                expanded.rows.len(),
                 tree_rows_and_viewport_for_resolve,
             );
-            *tree = resolve_tree_cursor(engine.widget_state(), tree, viewport_rows);
+            *tree = resolve_tree_cursor(engine.widget_state(), &expanded, viewport_rows);
         }
         LeafDescriptor::List(list) => {
             let viewport_rows = resolved_viewport_rows(
@@ -1855,8 +1878,10 @@ impl QuiAppWaker {
 /// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
 /// `set_title`, `set_document_edited`, `set_represented_filename`,
 /// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
-/// `set_theme` — so a registered event handler can request one of them
-/// without re-entering `QuiApp`'s own PyO3 cell.
+/// `set_theme` — plus [`Self::apply_tab_activated`], a write into the
+/// engine's own widget-state store with no restricted `QuiApp` method of
+/// its own at all (see its own doc) — so a registered event handler can
+/// request one of them without re-entering `QuiApp`'s own PyO3 cell.
 ///
 /// A handler already holds `QuiApp`'s one mutable borrow for the whole
 /// dispatch that invoked it (the same wall `show_message_dialog`'s own doc
@@ -2253,6 +2278,24 @@ impl QuiAppActions {
             .push_back(DeferredAction::SetJumpList(items));
         Ok(())
     }
+
+    /// Queues a [`DeferredAction::ActivateTab`]: makes tab `index` of the
+    /// `TabBar`/`LayoutTabs` widget `id` the active one in the engine's own
+    /// widget-state store, the same persisted change a real click on that
+    /// tab makes via `InteractionEngine::handle`. For a `render` callback
+    /// that leaves its tabs widget uncontrolled (never pins `"selected"`/
+    /// marks a tab `is_active` from frame to frame — see
+    /// [`quadraui_binding_core::resolve_tab_bar_active`]'s own doc for why
+    /// that matters), this is how an app drives which tab is active from
+    /// its own business logic (e.g. "open this folder as a new tab and
+    /// focus it") without resorting to pinning the active index in the
+    /// descriptor itself, which would make every later render controlled
+    /// and defeat click-driven switching.
+    fn apply_tab_activated(&self, id: &str, index: usize) {
+        self.queue
+            .borrow_mut()
+            .push_back(DeferredAction::ActivateTab(WidgetId::new(id), index));
+    }
 }
 
 /// Applies every action queued on `app_logic.deferred_actions` directly
@@ -2489,6 +2532,9 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
                         service_error_to_py("set_jump_list", err),
                     );
                 }
+            }
+            DeferredAction::ActivateTab(id, index) => {
+                apply_tab_activated(app_logic.engine.widget_state(), id, index);
             }
         }
     }
