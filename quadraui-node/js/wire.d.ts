@@ -377,6 +377,7 @@ export interface LayoutRowNode {
   padding?: PaddingValue;
   margin?: number;
   gap?: number;
+  wire_version?: number;
 }
 
 export interface LayoutColumnNode {
@@ -384,6 +385,7 @@ export interface LayoutColumnNode {
   padding?: PaddingValue;
   margin?: number;
   gap?: number;
+  wire_version?: number;
 }
 
 export interface LayoutSplitPayload {
@@ -401,6 +403,7 @@ export interface LayoutSplitNode {
   padding?: PaddingValue;
   margin?: number;
   gap?: number;
+  wire_version?: number;
 }
 
 export interface LayoutTabEntryNode {
@@ -428,6 +431,7 @@ export interface LayoutTabsNode {
   tabs: LayoutTabsPayload;
   padding?: PaddingValue;
   margin?: number;
+  wire_version?: number;
 }
 
 /** The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`. */
@@ -444,6 +448,7 @@ export interface LayoutPanelNode {
   panel: LayoutPanelPayload;
   padding?: PaddingValue;
   margin?: number;
+  wire_version?: number;
 }
 
 export interface LayoutSidebarPanelPayload {
@@ -455,6 +460,7 @@ export interface LayoutSidebarPanelPayload {
 
 export interface LayoutSidebarPanelNode {
   sidebar_panel: LayoutSidebarPanelPayload;
+  wire_version?: number;
 }
 
 export interface _SplitTreeLeaf {
@@ -481,6 +487,7 @@ export interface LayoutSplitTreePayload {
 
 export interface LayoutSplitTreeNode {
   split_tree: LayoutSplitTreePayload;
+  wire_version?: number;
 }
 
 export interface ProgressBarDescriptor {
@@ -1434,6 +1441,7 @@ export interface DiffViewDescriptor {
 /** One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, and every `EXTRA_PRIMITIVE_KINDS` additive kind) is fully typed. */
 export interface LayoutLeafNode {
   id: string;
+  wire_version?: number;
   button?: ButtonDescriptor;
   text_display?: TextDisplayDescriptor;
   list?: ListViewDescriptor;
@@ -1477,6 +1485,7 @@ export type LayoutNode = LayoutRowNode | LayoutColumnNode | LayoutSplitNode | La
 
 /** The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. Every registered kind is fully typed. */
 export interface RenderFrameDict {
+  wire_version?: number;
   button?: ButtonDescriptor | null;
   text_display?: TextDisplayDescriptor | null;
   list?: ListViewDescriptor | null;

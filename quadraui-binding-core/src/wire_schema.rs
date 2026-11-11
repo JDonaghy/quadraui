@@ -68,6 +68,34 @@ use serde::Serialize;
 use crate::extra_paint::EXTRA_PRIMITIVE_KINDS;
 use crate::layout::LEAF_KIND_KEYS;
 
+// ─── Wire format version ───────────────────────────────────────────────────
+
+/// Version of the layout-tree / render-output wire shape a render
+/// callback's returned `dict`/object carries in its optional top-level
+/// `"wire_version"` key -- see [`crate::wire::check_wire_version`] for the
+/// decode-time check against this constant.
+///
+/// # Mismatch policy
+///
+/// - **Absent key**: treated as version `1` -- every render callback
+///   written before this field existed, in either binding, keeps decoding
+///   unchanged.
+/// - **`wire_version` <= this constant**: accepted. The wire shape only
+///   ever grows additively (new optional keys, never a changed or removed
+///   one -- see `quadraui/docs/PRIMITIVE_RULES.md` rule 8), so a tree
+///   built against an older version is still fully decodable by a newer
+///   host.
+/// - **`wire_version` > this constant**: rejected with a `DecodeError`
+///   naming both versions. A binding newer than this host may have
+///   started emitting a shape this decoder doesn't know about yet;
+///   accepting it silently risks silently dropping data the binding meant
+///   to send, so this host raises instead of guessing.
+///
+/// Bump this constant only alongside a real additive change to the wire
+/// shape, and only once both `quadraui-py` and `quadraui-node` emit the
+/// new value.
+pub const WIRE_VERSION: u32 = 1;
+
 // ─── A tiny two-target type expression, mirroring `gen_wire_types.py`'s `Ty` ──
 
 #[derive(Debug, Clone, Serialize)]
@@ -844,6 +872,13 @@ pub fn schema() -> Vec<DefJson> {
 
     let layout_node = re("LayoutNode");
 
+    // An optional `"wire_version"` sibling key, valid on *any* top-level
+    // `RenderOutput` shape (every variant below, plus `RenderFrameDict`
+    // further down) -- never on a nested child node. See
+    // `crate::wire_schema::WIRE_VERSION`'s own doc for the accept/reject
+    // policy `crate::wire::check_wire_version` checks it against.
+    let wire_version_field = field_opt("wire_version", int_());
+
     let layout_row_node = b.define(obj(
         "LayoutRowNode",
         vec![
@@ -851,6 +886,7 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("padding", padding_value.clone()),
             field_opt("margin", float_()),
             field_opt("gap", float_()),
+            wire_version_field.clone(),
         ],
     ));
     let layout_column_node = b.define(obj(
@@ -860,6 +896,7 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("padding", padding_value.clone()),
             field_opt("margin", float_()),
             field_opt("gap", float_()),
+            wire_version_field.clone(),
         ],
     ));
     let layout_split_payload = b.define(obj(
@@ -881,6 +918,7 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("padding", padding_value.clone()),
             field_opt("margin", float_()),
             field_opt("gap", float_()),
+            wire_version_field.clone(),
         ],
     ));
     let layout_tab_entry_node = b.define(obj(
@@ -914,6 +952,7 @@ pub fn schema() -> Vec<DefJson> {
             field("tabs", layout_tabs_payload),
             field_opt("padding", padding_value.clone()),
             field_opt("margin", float_()),
+            wire_version_field.clone(),
         ],
     ));
     let layout_panel_payload = b.define(obj_doc(
@@ -934,6 +973,7 @@ pub fn schema() -> Vec<DefJson> {
             field("panel", layout_panel_payload),
             field_opt("padding", padding_value.clone()),
             field_opt("margin", float_()),
+            wire_version_field.clone(),
         ],
     ));
     let layout_sidebar_panel_payload = b.define(obj(
@@ -947,7 +987,10 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let layout_sidebar_panel_node = b.define(obj(
         "LayoutSidebarPanelNode",
-        vec![field("sidebar_panel", layout_sidebar_panel_payload)],
+        vec![
+            field("sidebar_panel", layout_sidebar_panel_payload),
+            wire_version_field.clone(),
+        ],
     ));
 
     let split_tree_recursive_node = re("SplitTreeRecursiveNode");
@@ -982,7 +1025,10 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let layout_split_tree_node = b.define(obj(
         "LayoutSplitTreeNode",
-        vec![field("split_tree", layout_split_tree_payload)],
+        vec![
+            field("split_tree", layout_split_tree_payload),
+            wire_version_field.clone(),
+        ],
     ));
 
     // ── Additive primitive descriptors (`EXTRA_PRIMITIVE_KINDS`) ─────────
@@ -2209,8 +2255,8 @@ pub fn schema() -> Vec<DefJson> {
     // from_value`'s `slot_entry` (`crate::wire`) treats a missing key and
     // an explicit `null` value identically ("draw nothing in this slot this
     // frame") -- so every kind field there must accept `null` too.
-    let mut leaf_fields = vec![field("id", str_())];
-    let mut render_frame_fields = Vec::new();
+    let mut leaf_fields = vec![field("id", str_()), wire_version_field.clone()];
+    let mut render_frame_fields = vec![wire_version_field.clone()];
     for key in LEAF_KIND_KEYS {
         let ty = match key {
             "button" => button_descriptor.clone(),

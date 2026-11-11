@@ -12,6 +12,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- A render callback's returned `dict` may carry an optional top-level
+  `"wire_version"` integer key. A tree with no `"wire_version"` key still
+  decodes exactly as before (treated as version 1); a version the native
+  extension doesn't understand yet raises `InvalidDescriptorError` naming
+  both versions instead of silently misinterpreting it. No app needs to
+  set this key today — it exists for a future wire-shape change to check
+  against.
+
 - `quadraui.testing` — the app-author test harness: a public API over the
   headless runner that queries by widget id/role/text (`harness(app)`,
   `find`/`find_all`/`query`/`exists`, and `Widget.find` for one subtree),

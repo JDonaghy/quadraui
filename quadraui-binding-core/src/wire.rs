@@ -956,16 +956,45 @@ fn is_layout_tree(value: &Value) -> bool {
         .any(|key| obj_get(value, key).is_some())
 }
 
+/// Checks a render callback's returned value's optional top-level
+/// `"wire_version"` key against [`crate::wire_schema::WIRE_VERSION`] — see
+/// that constant's own doc for the full mismatch policy (absent accepted
+/// as version 1, older-or-equal accepted, newer rejected). Called once, by
+/// [`decode_render_output`], before the flat-vs-tree dispatch — the
+/// version key is a property of the whole render output, not of any one
+/// layout-tree node, so nested [`decode_layout_node`] calls never re-check
+/// it.
+fn check_wire_version(what: &str, value: &Value) -> Result<(), DecodeError> {
+    let Some(v) = obj_get(value, "wire_version") else {
+        return Ok(());
+    };
+    let version = v.as_u64().ok_or_else(|| {
+        DecodeError(format!(
+            "{what}: \"wire_version\" must be a non-negative integer, got {v}"
+        ))
+    })?;
+    let current = u64::from(crate::wire_schema::WIRE_VERSION);
+    if version > current {
+        return Err(DecodeError(format!(
+            "{what}: \"wire_version\" {version} is newer than this host understands \
+             (current {current}) — upgrade the host, or downgrade the binding"
+        )));
+    }
+    Ok(())
+}
+
 /// Decodes a render callback's returned dict into a [`RenderOutput`] — see
-/// [`is_layout_tree`] for the flat-vs-tree sniff. On the tree path, also
-/// runs [`validate_unique_leaf_ids`] over the decoded tree before
-/// returning it.
+/// [`check_wire_version`] for the `"wire_version"` mismatch policy checked
+/// first, and [`is_layout_tree`] for the flat-vs-tree sniff. On the tree
+/// path, also runs [`validate_unique_leaf_ids`] over the decoded tree
+/// before returning it.
 pub fn decode_render_output<'de, D: Deserializer<'de>>(
     what: &str,
     deserializer: D,
 ) -> Result<RenderOutput, DecodeError> {
     let value = materialize(deserializer)
         .map_err(|err| DecodeError(format!("{what}: invalid descriptor: {err}")))?;
+    check_wire_version(what, &value)?;
     if is_layout_tree(&value) {
         let node = layout_node_from_value(what, &value)?;
         validate_unique_leaf_ids(what, &node)?;
@@ -1887,6 +1916,87 @@ mod tests {
         assert!(frame.button.is_some());
         assert!(frame.list.is_none());
         assert!(frame.text_display.is_none());
+    }
+
+    /// A render callback's returned value with no `"wire_version"` key at
+    /// all decodes exactly like before this key existed -- the versionless
+    /// policy [`crate::wire_schema::WIRE_VERSION`]'s own doc describes.
+    #[test]
+    fn decode_render_output_accepts_a_versionless_tree() {
+        let value = json!({
+            "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+        });
+        let output = decode_render_output("render", &value).expect("versionless tree accepted");
+        assert!(matches!(output, RenderOutput::Tree(_)));
+    }
+
+    /// A `"wire_version"` equal to the current [`crate::wire_schema::WIRE_VERSION`] is accepted
+    /// on both the tree and flat shapes.
+    #[test]
+    fn decode_render_output_accepts_the_current_wire_version() {
+        let tree = json!({
+            "wire_version": crate::wire_schema::WIRE_VERSION,
+            "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
+        });
+        let output = decode_render_output("render", &tree).expect("current version accepted");
+        assert!(matches!(output, RenderOutput::Tree(_)));
+
+        let flat = json!({
+            "wire_version": crate::wire_schema::WIRE_VERSION,
+            "button": {"id": "b1", "label": "Go"},
+        });
+        let output = decode_render_output("render", &flat).expect("current version accepted");
+        assert!(matches!(output, RenderOutput::Flat(_)));
+    }
+
+    /// A `"wire_version"` older than the current [`crate::wire_schema::WIRE_VERSION`] is
+    /// accepted -- the accept-older half of the mismatch policy.
+    #[test]
+    fn decode_render_output_accepts_an_older_wire_version() {
+        let value = json!({
+            "wire_version": 0,
+            "button": {"id": "b1", "label": "Go"},
+        });
+        let output = decode_render_output("render", &value).expect("older version accepted");
+        assert!(matches!(output, RenderOutput::Flat(_)));
+    }
+
+    /// A `"wire_version"` newer than the current [`crate::wire_schema::WIRE_VERSION`] is a
+    /// clear decode error naming both versions -- the reject-newer half of
+    /// the mismatch policy.
+    #[test]
+    fn decode_render_output_rejects_a_newer_wire_version() {
+        let value = json!({
+            "wire_version": crate::wire_schema::WIRE_VERSION + 1,
+            "button": {"id": "b1", "label": "Go"},
+        });
+        let decode_err = err(decode_render_output("render", &value));
+        assert!(
+            decode_err.0.contains("\"wire_version\""),
+            "{}",
+            decode_err.0
+        );
+        assert!(
+            decode_err.0.contains("newer than this host understands"),
+            "{}",
+            decode_err.0
+        );
+    }
+
+    /// A non-integer `"wire_version"` is a decode error, not a silent
+    /// coercion.
+    #[test]
+    fn decode_render_output_rejects_a_non_integer_wire_version() {
+        let value = json!({
+            "wire_version": "1",
+            "button": {"id": "b1", "label": "Go"},
+        });
+        let decode_err = err(decode_render_output("render", &value));
+        assert!(
+            decode_err.0.contains("must be a non-negative integer"),
+            "{}",
+            decode_err.0
+        );
     }
 
     /// `run_shell`'s `config` dict applies its documented defaults
