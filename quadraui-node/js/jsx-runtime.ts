@@ -163,25 +163,43 @@ export interface ButtonProps extends ButtonOptions {
   label: string;
 }
 
-declare global {
-  namespace JSX {
-    interface IntrinsicElements {
-      split: SplitProps;
-      column: ColumnProps;
-      row: RowProps;
-      sidebarPanel: SidebarPanelProps;
-      tabs: TabsProps;
-      tree: TreeProps;
-      table: TableProps;
-      statusBar: StatusBarProps;
-      textDisplay: TextDisplayProps;
-      button: ButtonProps;
-    }
-    /** What any JSX expression (`<Foo/>`) evaluates to -- `createElement`'s own return type. */
-    type Element = Renderable;
-    interface ElementChildrenAttribute {
-      children: Record<string, never>;
-    }
+/**
+ * A local, exported `JSX` namespace -- not `declare global`. TS's automatic
+ * JSX transform looks for a `JSX` export on the `jsxImportSource` module
+ * before falling back to the ambient global one, so this is enough for
+ * `"jsxImportSource": "@quadraui/node"` to resolve every `IntrinsicElements`
+ * entry below without ever touching the global namespace -- a program that
+ * also uses React/Preact in the same `tsc` run keeps its own `JSX.
+ * IntrinsicElements` untouched by this package's.
+ */
+export namespace JSX {
+  export interface IntrinsicElements {
+    split: SplitProps;
+    column: ColumnProps;
+    row: RowProps;
+    sidebarPanel: SidebarPanelProps;
+    tabs: TabsProps;
+    tree: TreeProps;
+    table: TableProps;
+    statusBar: StatusBarProps;
+    textDisplay: TextDisplayProps;
+    button: ButtonProps;
+  }
+  /** What any JSX expression (`<Foo/>`) evaluates to -- `createElement`'s own return type. */
+  export type Element = Renderable;
+  export interface ElementChildrenAttribute {
+    children: Record<string, never>;
+  }
+  /**
+   * Props every JSX element accepts regardless of its own `*Props`
+   * interface. `key` is reachable from the runtime today (`createElement`
+   * passes it straight to `new type(key)` for a `Component` class, which is
+   * how a reorderable list keeps each instance's own state slot) but was
+   * otherwise untyped, so `<MyComponent key={...}/>` failed `tsc` as an
+   * unknown prop even though the runtime already supported it.
+   */
+  export interface IntrinsicAttributes {
+    key?: unknown;
   }
 }
 
@@ -327,11 +345,15 @@ function createElement(type: ElementType, props: AnyProps, key?: unknown): Rende
     return (props.children as Renderable | undefined) ?? null;
   }
   if (typeof type === "string") {
-    const builder = INTRINSICS[type as IntrinsicTag];
-    if (builder === undefined) {
+    // `hasOwnProperty`, not a bare `INTRINSICS[type]` lookup: `INTRINSICS`
+    // is a plain object literal, so an inherited `Object.prototype` key
+    // (e.g. `"toString"`) would otherwise slip past an `=== undefined`
+    // check and silently call through to `Object.prototype.toString`
+    // instead of hitting the "unknown intrinsic" error below.
+    if (!Object.prototype.hasOwnProperty.call(INTRINSICS, type)) {
       throw new TypeError(`unknown quadraui JSX intrinsic element: <${type}>`);
     }
-    return builder(props);
+    return INTRINSICS[type as IntrinsicTag](props);
   }
   if (isComponentClass(type)) {
     return new type(key);

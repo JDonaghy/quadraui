@@ -51,6 +51,12 @@ the same way it checks a direct `Tree(rows, {...})` call — a wrong prop name
 (`<Tree row={...} />` instead of `rows`) fails `tsc` the same way the
 equivalent typo in a direct constructor call would.
 
+`@quadraui/node/jsx-runtime` and `@quadraui/node/jsx-dev-runtime` resolve
+only through this package's `exports` map, which `tsc`'s legacy
+`"moduleResolution": "node"`/`"node10"` ignores — set `"node16"`,
+`"nodenext"`, or `"bundler"` instead, or TS reports `TS2307` on the
+implicit `<jsxImportSource>/jsx-runtime` import the transform emits.
+
 esbuild needs the same two settings passed as build options instead (or via
 the `tsconfig.json` above, which esbuild also reads):
 
@@ -64,6 +70,17 @@ esbuild.build({
 
 Bun picks up `tsconfig.json`'s `jsx`/`jsxImportSource` automatically; no
 separate Bun-specific configuration is needed.
+
+**Bundling (not just transforming) with esbuild**: esbuild's own
+module-type inference mishandles `js/app/nodes.ts` once it sees a sibling
+`export interface` in that file — it infers the whole module is ESM and
+emits a namespace with no callable values, so a *bundled* esbuild build
+hits `nodeConstructors.Split is not a function` at runtime even though the
+JSX itself transforms cleanly. This is a property of `js/app/nodes.ts`'s
+own `exports.X = ...` convention, not of the JSX runtime; it only shows up
+once esbuild inlines that file instead of leaving it to `require` at
+runtime. Transform-only (`esbuild.transformSync`/`.transform`, or a build
+with `js/app/*` left external) avoids it.
 
 ### Intrinsic elements vs. components
 
