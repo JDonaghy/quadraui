@@ -1009,4 +1009,110 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].1, WidgetId::new("pal"));
     }
+
+    /// A `Switch` placed directly as a `LayoutNode::Leaf` (not through the
+    /// flat-slot `extra` map) paints via [`crate::render::paint_layout`] and
+    /// a `MouseDown` landing on it round-trips through
+    /// [`crate::engine::InteractionEngine::handle`] into the same
+    /// `UiEvent::Form(.., FormEvent::ToggleChanged)` a slot-painted switch
+    /// dispatches — proving the additive-primitive leaf path
+    /// (`crate::layout::LeafDescriptor::Extra`, wired generically for every
+    /// `EXTRA_PRIMITIVE_KINDS` entry) carries an interactive form control's
+    /// semantic event all the way to the handler, not just its paint.
+    #[test]
+    fn switch_leaf_click_toggles_through_the_interaction_engine() {
+        use crate::engine::{EventSink, InteractionEngine};
+        use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+        use crate::render::paint_layout;
+        use quadraui::{FormEvent, Modifiers, MouseButton};
+
+        #[derive(Default)]
+        struct RecordingSink {
+            dispatched: Vec<UiEvent>,
+        }
+
+        impl EventSink for RecordingSink {
+            fn dispatch(
+                &mut self,
+                event: &UiEvent,
+                _hit_detail: Option<&crate::hit::HitDetail>,
+            ) -> Reaction {
+                self.dispatched.push(event.clone());
+                Reaction::Continue
+            }
+        }
+
+        struct SwitchLeafApp {
+            engine: InteractionEngine,
+            sink: RefCell<RecordingSink>,
+        }
+
+        impl AppLogic for SwitchLeafApp {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let tree = LayoutNode::Row(LayoutContainer {
+                    children: vec![LayoutNode::Leaf(LayoutLeaf {
+                        id: "sw:1".into(),
+                        descriptor: LeafDescriptor::Extra(Rc::new(Switch::new(WidgetId::new(
+                            "sw:1",
+                        )))),
+                        scroll_px: None,
+                    })],
+                    spacing: Spacing::default(),
+                });
+                let viewport = backend.viewport();
+                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                let mut hits = Vec::new();
+                paint_layout(backend, area, &tree, &mut hits, &|id| {
+                    self.engine.chrome_interaction(id)
+                });
+                self.engine.set_hits(hits);
+            }
+
+            fn tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+                self.engine.tab_stops()
+            }
+
+            fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+                self.engine
+                    .handle(event, backend, &mut *self.sink.borrow_mut())
+            }
+        }
+
+        let app = SwitchLeafApp {
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(app, 20, 5);
+
+        let switch_area = {
+            let hits = driver.app().engine.hit_map();
+            hits.iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::Extra { id, area, .. } if *id == WidgetId::new("sw:1") => {
+                        Some(*area)
+                    }
+                    _ => None,
+                })
+                .expect("switch leaf should have painted an Extra hit")
+        };
+
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(switch_area.x, switch_area.y),
+            modifiers: Modifiers::default(),
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::Form(id, FormEvent::ToggleChanged { value: true, .. })
+                    if *id == WidgetId::new("sw:1")
+            )),
+            "expected a ToggleChanged event for the inline switch leaf, got {dispatched:?}"
+        );
+    }
 }
