@@ -81,6 +81,30 @@ use super::services::GtkPlatformServices;
 /// to give every backend one definition of "what counts as a double-click."
 pub(crate) const GTK_DOUBLE_CLICK_RADIUS: f32 = 4.0;
 
+/// Default chrome (UI) font point size [`GtkBackend::new`] installs as
+/// `ui_font` before any [`Backend::set_ui_font`] call, and the same value
+/// [`GtkBackend::default_fonts`] advertises as `ui_size_pt` — the two must
+/// stay derived from this one constant so they cannot drift the way they
+/// did before this constant existed (GTK's twin of macOS's
+/// `DEFAULT_UI_FONT_SIZE_PT`).
+///
+/// Pango font-description point sizes are typographic points, converted
+/// to on-screen pixels by the context's DPI (96 for a standard,
+/// unscaled GTK display) — unlike macOS/Win-GUI, where 1pt == 1px. VS
+/// Code's UI chrome renders at 13px; at 96 DPI that is
+/// `13 * 72 / 96 == 9.75` typographic points, so `9.75`, not `13.0`, is
+/// the value that actually paints chrome at the visual target.
+pub(crate) const DEFAULT_UI_FONT_SIZE_PT: f32 = 9.75;
+
+/// Build the default `ui_font` Pango description string from
+/// [`DEFAULT_UI_FONT_SIZE_PT`] — the single place [`GtkBackend::new`],
+/// [`crate::gtk::run::activate`] and [`crate::gtk::testing::GtkDriver::new`]
+/// each seed their own `"Sans"`-family Pango context/field from, so a
+/// future size change only has to edit the constant above.
+pub(crate) fn default_ui_font_desc() -> String {
+    format!("Sans {DEFAULT_UI_FONT_SIZE_PT}")
+}
+
 /// One piece of text painted this frame, with its on-surface bounds in
 /// backend (pixel) coordinates. Recorded via
 /// [`GtkBackend::record_painted_text`] into [`GtkBackend::painted_text`].
@@ -306,7 +330,9 @@ pub struct GtkBackend {
     /// in title/buttons of `Dialog`, etc). Format is
     /// `"<family> <size>"` per Pango convention. Apps set this from
     /// their settings (vimcode passes `format!("{} {}", ui_font_family,
-    /// ui_font_size)`). Falls back to `"Sans 11"` if unset.
+    /// ui_font_size)`). Falls back to [`default_ui_font_desc`] if unset —
+    /// see [`DEFAULT_UI_FONT_SIZE_PT`]'s doc for why that's `9.75`, not a
+    /// round number.
     ui_font: String,
     /// Font family used to paint [`crate::primitives::editor::Editor`]
     /// content. Defaults to `"Monospace"` — the historical hardcoded
@@ -401,8 +427,8 @@ pub struct GtkBackend {
     /// (e.g. `MenuSystem::handle`), which runs *outside* any frame
     /// scope — `current_frame_refs()` is always `None` there. Without
     /// this cache the click-time measurement fell all the way back to
-    /// `pango_ctx`, which carries a different font (`"Sans 11"`, set
-    /// once at widget-init in `gtk::run::activate`) than the frame's
+    /// `pango_ctx`, which carries a different font (the default UI font,
+    /// set once at widget-init in `gtk::run::activate`) than the frame's
     /// live layout (`"Monospace 11"`, set fresh every `set_draw_func`
     /// call) — the two fonts have different glyph widths, so hit
     /// regions silently drifted off the painted labels. Caching the
@@ -647,7 +673,7 @@ impl GtkBackend {
             current_chrome_char_width: 8.0,
             pango_ctx: None,
             nerd_fonts_enabled: true,
-            ui_font: "Sans 11".to_string(),
+            ui_font: default_ui_font_desc(),
             editor_font_family: "Monospace".to_string(),
             editor_font_size_pt: 11.0,
             zones: Vec::new(),
@@ -2170,17 +2196,18 @@ impl Backend for GtkBackend {
     /// to — Pango/fontconfig picks the concrete installed face (Droid
     /// Sans Mono, DejaVu Sans Mono, whatever the distro ships) at
     /// render time, so there is no single concrete family name to
-    /// return here the way macOS/Win-GUI have one. Sizes (14pt editor,
-    /// 13pt UI) match the VS Code convention this issue's table
-    /// documents — distinct from `editor_font_size_pt`/`ui_font`'s own
-    /// 11pt un-set default above, which exists for headless-test
-    /// convenience rather than to model a platform recommendation.
+    /// return here the way macOS/Win-GUI have one. The editor size
+    /// (14pt) matches the VS Code convention this crate's font table
+    /// documents; the UI size is [`DEFAULT_UI_FONT_SIZE_PT`] — the exact
+    /// value [`GtkBackend::new`] installs as `ui_font` before any
+    /// [`Backend::set_ui_font`] call, so a consumer that renders chrome
+    /// off a fresh backend sees what this method advertises.
     fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
         crate::backend::PlatformFontDefaults {
             editor_family: "Monospace".to_string(),
             editor_size_pt: 14.0,
             ui_family: "Sans".to_string(),
-            ui_size_pt: 13.0,
+            ui_size_pt: DEFAULT_UI_FONT_SIZE_PT,
         }
     }
 
@@ -7929,8 +7956,8 @@ mod tests {
     /// measurement. Outside vs. inside a frame scope with a
     /// wildly-different editor font (`"Sans 8"` vs. `"Sans 40"`) must
     /// measure *identically*, because both paths measure `ui_font`
-    /// (`"Sans 11"` by default), not whatever the resolved layout's own
-    /// font description says.
+    /// ([`DEFAULT_UI_FONT_SIZE_PT`] by default), not whatever the
+    /// resolved layout's own font description says.
     #[test]
     fn gtk_backend_menu_bar_layout_ignores_resolved_layouts_own_font() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
@@ -8164,7 +8191,7 @@ mod tests {
 
         // Paint (inside a frame scope) with a huge *editor* font, exactly
         // like `gtk::run::activate`'s draw callback does — `ui_font`
-        // stays at the "Sans 11" default throughout.
+        // stays at the default throughout.
         let painted_width = backend.enter_frame_scope(&cr, &large_layout, |b| {
             b.draw_menu_bar(rect, &bar).visible_items[0].bounds.width
         });
@@ -8231,10 +8258,11 @@ mod tests {
     }
 
     /// `default_fonts()` reports GTK's fontconfig-alias platform
-    /// convention (`Monospace`/`Sans`, 14pt/13pt), matching this crate's
-    /// VS-Code-alignment table — not this instance's own
-    /// `editor_font_family`/`ui_font` state, which stays at its own
-    /// separate 11pt un-set default.
+    /// convention (`Monospace` 14pt editor / `Sans`
+    /// [`DEFAULT_UI_FONT_SIZE_PT`] chrome), matching this crate's
+    /// VS-Code-alignment table and the exact value [`GtkBackend::new`]
+    /// installs as `ui_font` — see [`DEFAULT_UI_FONT_SIZE_PT`]'s doc for
+    /// why the chrome value is `9.75`, not `13.0`.
     #[test]
     fn gtk_backend_default_fonts_reports_platform_convention() {
         let backend = GtkBackend::new();
@@ -8242,7 +8270,7 @@ mod tests {
         assert_eq!(defaults.editor_family, "Monospace");
         assert_eq!(defaults.editor_size_pt, 14.0);
         assert_eq!(defaults.ui_family, "Sans");
-        assert_eq!(defaults.ui_size_pt, 13.0);
+        assert_eq!(defaults.ui_size_pt, DEFAULT_UI_FONT_SIZE_PT);
     }
 
     /// A prior `set_editor_font`/`set_ui_font` call must not perturb
@@ -8258,7 +8286,64 @@ mod tests {
         assert_eq!(defaults.editor_family, "Monospace");
         assert_eq!(defaults.editor_size_pt, 14.0);
         assert_eq!(defaults.ui_family, "Sans");
-        assert_eq!(defaults.ui_size_pt, 13.0);
+        assert_eq!(defaults.ui_size_pt, DEFAULT_UI_FONT_SIZE_PT);
+    }
+
+    /// The chrome font [`GtkBackend::new`] installs as `ui_font` before
+    /// any [`Backend::set_ui_font`] call must carry the exact point size
+    /// [`Backend::default_fonts`] advertises as `ui_size_pt` — a consumer
+    /// that renders chrome straight off a fresh backend (never calling
+    /// `set_ui_font` itself) sees the size `default_fonts()` promises,
+    /// not a smaller, un-advertised runtime default.
+    ///
+    /// Separately, that installed point size must actually *paint* at
+    /// VS Code's 13px UI-chrome target once converted to pixels at a
+    /// standard, unscaled 96 DPI — Pango font-description point sizes
+    /// are typographic points, not pixels, so this is the check that
+    /// catches a future edit that bumps [`DEFAULT_UI_FONT_SIZE_PT`]
+    /// toward the advertised-but-wrong `13.0` (≈17.3px) instead of the
+    /// `9.75` that actually renders at 13px.
+    #[test]
+    fn installed_ui_font_size_matches_default_fonts_ui_size_pt_and_renders_at_13px() {
+        let backend = GtkBackend::new();
+        let advertised = Backend::default_fonts(&backend).ui_size_pt;
+
+        let installed_desc = pango::FontDescription::from_string(&backend.ui_font);
+        let installed_pt = installed_desc.size() as f64 / f64::from(pango::SCALE);
+        assert_eq!(
+            installed_pt, advertised as f64,
+            "GtkBackend::new's installed ui_font point size must match \
+             default_fonts().ui_size_pt"
+        );
+        assert_eq!(
+            DEFAULT_UI_FONT_SIZE_PT, advertised,
+            "DEFAULT_UI_FONT_SIZE_PT must stay in lockstep with default_fonts()'s \
+             ui_size_pt"
+        );
+
+        const STANDARD_DPI: f64 = 96.0;
+        let rendered_px = installed_pt * STANDARD_DPI / 72.0;
+        assert!(
+            (rendered_px - 13.0).abs() <= 0.5,
+            "installed ui_font ({installed_pt}pt) must render at VS Code's 13px \
+             UI-chrome target at {STANDARD_DPI} DPI, got {rendered_px}px"
+        );
+    }
+
+    /// `TreeStyle`/`ListView` row pitch is a fixed [`crate::Style::row_height`]
+    /// token (22px), resolved via [`GtkBackend::resolved_row_height`] from
+    /// the *editor* font's line height — independent of `ui_font`'s size,
+    /// so moving the chrome font's install point from `11` to
+    /// [`DEFAULT_UI_FONT_SIZE_PT`] (`9.75`, smaller in points, but larger
+    /// in rendered pixels) cannot perturb it. Pinned here via the real
+    /// resolver, not prose.
+    #[test]
+    fn row_height_stays_at_22px_style_token_after_ui_font_default_change() {
+        let backend = GtkBackend::new();
+        assert_eq!(backend.current_style.row_height, 22.0);
+        // A plausible chrome/editor line height (comfortably under 22px)
+        // must resolve up to the style token, not be clipped down to it.
+        assert_eq!(backend.resolved_row_height(16.0), 22.0);
     }
 
     /// `monospace`/`sans-serif` (and Pango's own `Monospace`/`Sans`
@@ -9618,8 +9703,8 @@ mod tests {
     /// path, so they can never silently diverge. Renders a real
     /// English-prose row label (proportional fonts don't wrap a synthetic
     /// `"MMMM…"` run the same way they wrap prose) with the editor font
-    /// forced to a size wildly different from the `"Sans 11"` chrome
-    /// default, then compares the label's actual painted width against
+    /// forced to a size wildly different from the [`DEFAULT_UI_FONT_SIZE_PT`]
+    /// chrome default, then compares the label's actual painted width against
     /// both `list_char_width() * chars` and `char_width() * chars`.
     #[test]
     fn list_char_width_matches_what_draw_list_actually_paints() {
@@ -9665,11 +9750,11 @@ mod tests {
         let mut backend = GtkBackend::new();
         backend.set_painted_text_recording(true);
         // Force the editor font to a wildly different size than the
-        // ("Sans 11") chrome default — a bare "Monospace 11" vs. "Sans
-        // 11" pairing isn't guaranteed to differ on every host (a
+        // default chrome size — a bare "Monospace 11" vs. "Sans 9.75"
+        // pairing isn't guaranteed to differ on every host (a
         // minimal fontconfig setup can resolve both generic aliases to
         // the same fallback face), which would make both assertions
-        // below vacuously true. A 40pt/11pt size gap is guaranteed to
+        // below vacuously true. A 40pt/9.75pt size gap is guaranteed to
         // produce different advances regardless of which family either
         // alias resolves to, while `draw_list`'s painted width — which
         // paints in `ui_font`, not the editor font — must stay
@@ -9692,13 +9777,13 @@ mod tests {
         let chars = ROW_TEXT.chars().count() as f32;
 
         // Fixture assumption: the (forced-huge) editor font and the
-        // ("Sans 11") chrome font must actually have visibly different
+        // default chrome font must actually have visibly different
         // advances, or neither assertion below proves anything (they'd
         // both look "right" by accident).
         assert!(
             (editor_cw - list_cw).abs() > 0.5,
             "test fixture assumption broken: the editor font (forced to \
-             \"Monospace 40\" above) and chrome font (\"Sans 11\") must \
+             \"Monospace 40\" above) and chrome font (default) must \
              have visibly different advances for this test to prove \
              anything — editor_cw={editor_cw}, list_cw={list_cw}"
         );

@@ -396,7 +396,7 @@ pub(crate) fn set_current_nerd_font_fallback_family(family: &str) {
 
 /// Build a Pango font description for GTK chrome text (list/tree/
 /// palette rows, status bar segments, menu items, dialogs, ...) from a
-/// `ui_font`-style description string (e.g. `"Sans 11"`), appending
+/// `ui_font`-style description string (e.g. `"Sans 9.75"`), appending
 /// [`NERD_FONT_FALLBACK_FAMILY`] to the family list.
 ///
 /// Chrome primitives paint icon glyphs (`Icon::glyph`) and — on the
