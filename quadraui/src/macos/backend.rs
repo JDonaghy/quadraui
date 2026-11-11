@@ -462,9 +462,11 @@ const MAC_DOUBLE_CLICK_RADIUS: f32 = 4.0;
 
 /// Default chrome (UI) font size in points, paired with the CoreText
 /// system UI font [`MacBackend::new`] installs as `chrome_font` before
-/// any [`Backend::set_ui_font`] call — matches GTK's `"Sans 11"` /
-/// Win-GUI's `DEFAULT_UI_FONT_SIZE_PT` default.
-const DEFAULT_UI_FONT_SIZE_PT: f64 = 11.0;
+/// any [`Backend::set_ui_font`] call — matches [`MacBackend::default_fonts`]'s
+/// advertised `ui_size_pt` (VS Code's own `13pt` macOS UI font size), so a
+/// consumer that never calls `set_ui_font` still gets chrome at the size
+/// `default_fonts()` promises.
+const DEFAULT_UI_FONT_SIZE_PT: f64 = 13.0;
 
 /// What [`parse_ui_font_desc`] resolved a font description's family
 /// portion to.
@@ -9434,6 +9436,32 @@ mod tests {
         );
     }
 
+    /// The chrome font [`MacBackend::new`] installs before any
+    /// [`Backend::set_ui_font`] call must carry the exact point size
+    /// [`Backend::default_fonts`] advertises as `ui_size_pt` — a
+    /// consumer that renders chrome straight off a fresh backend (never
+    /// calling `set_ui_font` itself) still gets the size it would see by
+    /// reading `default_fonts()`, rather than a smaller, un-advertised
+    /// runtime default.
+    #[test]
+    fn installed_ui_font_size_matches_default_fonts_ui_size_pt() {
+        use crate::Backend;
+
+        let b = MacBackend::new();
+        let advertised = Backend::default_fonts(&b).ui_size_pt;
+        assert_eq!(
+            b.chrome_font.pt_size(),
+            advertised as f64,
+            "MacBackend::new's installed chrome_font size must match \
+             default_fonts().ui_size_pt"
+        );
+        assert_eq!(
+            DEFAULT_UI_FONT_SIZE_PT, advertised as f64,
+            "DEFAULT_UI_FONT_SIZE_PT must stay in lockstep with default_fonts()'s \
+             literal ui_size_pt"
+        );
+    }
+
     /// `set_editor_font` and `set_ui_font` must land on independent state.
     /// Growing one must never move the other's cached line height, and each
     /// setter must install exactly the font it was asked for.
@@ -10155,7 +10183,7 @@ mod tests {
             // proxy for the painted label's glyph extent. The whole
             // surface is scanned rather than one chosen scanline
             // because the label is vertically centred in its row using
-            // the *chrome* font's measured height, so an 11pt default
+            // the *chrome* font's measured height, so a 13pt default
             // and a 60pt `ui_font` put ink on completely different rows;
             // a fixed probe line would measure "is there a glyph at
             // y=N", not "how wide is the glyph". Row background and

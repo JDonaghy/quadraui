@@ -111,6 +111,14 @@ only a push to `main` runs this workflow.
   against a real `cargo semver-checks --list`, v0.51.0), so hiding — or
   later moving/splitting — a painter internal no longer registers as a
   breaking change.
+### Fixed
+- macOS: `MacBackend::new` now installs the chrome (UI) font at `13pt`
+  (#2366), matching the `ui_size_pt` `Backend::default_fonts` already
+  advertised — previously it installed at `11pt`, so the chrome a consumer
+  saw before any `set_ui_font` call read noticeably smaller than
+  `default_fonts()` promised. `TreeStyle`'s default row pitch is a fixed
+  `22px`, independent of chrome line height, so list/tree row heights are
+  unaffected.
 
 ### Fixed
 - `MessageDialogController`'s OK/Cancel button row (#2368): on a pixel
