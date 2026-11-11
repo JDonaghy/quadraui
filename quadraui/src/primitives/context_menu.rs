@@ -6,9 +6,10 @@
 //!
 //! Items carry `submenu: Option<Vec<ContextMenuItem>>` for nested menus.
 //! The TUI rasteriser renders the `▶` affordance and the pull-right child
-//! popup; see [`crate::tui::draw_context_menu`] and
-//! [`crate::tui::draw_context_menu_with_submenus`]. The macOS backend
-//! wires this into native `NSMenu` nesting.
+//! popup; see `crate::tui::draw_context_menu` and
+//! `crate::tui::draw_context_menu_with_submenus` (both `#[doc(hidden)]`,
+//! so not linked here). The macOS backend wires this into native
+//! `NSMenu` nesting.
 //!
 //! # Backend contract
 //!
@@ -109,9 +110,10 @@ pub struct ContextMenu {
 /// always uses the surrounding theme foreground, never the `Icon`'s own
 /// colour.
 ///
-/// [`crate::tui::draw_context_menu_with_submenus`] does not take a
-/// `glyphs` argument and always paints the default submenu-arrow glyph;
-/// only [`native_surface_paint::paint_with_glyphs`] honours this override.
+/// `crate::tui::draw_context_menu_with_submenus` (`#[doc(hidden)]`, so not
+/// linked here) does not take a `glyphs` argument and always paints the
+/// default submenu-arrow glyph; only
+/// [`native_surface_paint::paint_with_glyphs`] honours this override.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ContextMenuGlyphs {
@@ -253,8 +255,9 @@ pub struct ContextMenuItem {
     /// Nested submenu. When `Some`, activating the item opens the child
     /// menu instead of firing an action. The TUI rasteriser renders a `▶`
     /// affordance and a pull-right popup (see
-    /// [`crate::tui::draw_context_menu_with_submenus`]). The macOS NSMenu
-    /// installer wires this as a real nested `NSMenu`. GTK is a follow-up.
+    /// `crate::tui::draw_context_menu_with_submenus`, `#[doc(hidden)]` so
+    /// not linked here). The macOS NSMenu installer wires this as a real
+    /// nested `NSMenu`. GTK is a follow-up.
     #[serde(default)]
     pub submenu: Option<Vec<ContextMenuItem>>,
 }

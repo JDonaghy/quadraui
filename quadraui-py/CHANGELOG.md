@@ -12,6 +12,44 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `quadraui.testing` — the app-author test harness: a public API over the
+  headless runner that queries by widget id/role/text (`harness(app)`,
+  `find`/`find_all`/`query`/`exists`, and `Widget.find` for one subtree),
+  synthesises the gestures a user performs (`press`, `type`, `click_text`,
+  `Widget.click`/`press`/`focus`/`drag_divider`, `Row.click`/
+  `double_click`/`activate`/`toggle`, `Tab.click`/`close`), and asserts on
+  the rendered frame (`screen`, `contains`, `assert_text`,
+  `assert_not_text`). Queries read the descriptors the app actually
+  rendered and skip what is off screen (an inactive tab's content) unless
+  asked for with `include_hidden=True`; a button click goes through the
+  engine's own hit test against the label as it painted, so a test needs
+  no coordinates. Wraps a `quadraui.app.App` directly, or a plain `QuiApp`
+  given the same `render` callable it was built with.
+  `tests/test_file_manager_app.py` is written entirely against it.
+
+- A `pytest` plugin (`quadraui.testing.pytest_plugin`, registered by this
+  distribution's own `pytest11` entry point) providing a
+  `quadraui_harness` factory fixture: `quadraui_harness(app)` builds a
+  `Harness` and `Harness.close()`s it when the test ends, so a test that
+  enabled hot reload cannot leak its watcher thread into the rest of the
+  session. No `conftest.py` needed in a consumer's own repo.
+
+- Hot reload for `quadraui.app.App`: `enable_hot_reload(*modules,
+  interval=0.5, on_reload=None)` watches the given modules' source files and
+  re-imports them on change (a daemon thread wakes the event loop through
+  `QuiApp.waker()`, so `run_tui()`/`run_native()` repaint with no input),
+  plus `reload_if_changed()`, `reload()`, `disable_hot_reload()`,
+  `reload_error` and `reload_count`. Component state, the state on a
+  bound-method view's own object (its class is swapped for the reloaded
+  one in place) and framework widget state (scroll, selection, focus) all
+  survive. `Component.migrate_state(state)` runs once per surviving slot
+  after a reload and by default merges in keys a new `initial_state()`
+  added. A broken edit — import error or a view that raises on its first
+  render — rolls back to the last good code and is reported on
+  `reload_error`. Component state slots are now keyed by the class's
+  qualified name rather than the class object. `examples/hot_reload_demo.py`
+  demonstrates it.
+
 - `QuiApp.widget_state(id)` — a read of a widget's current state in the
   engine's widget-state store: `selected_path`/`selected_idx`, `scroll_offset`,
   `ratio`, `active_tab` and `expanded`, whichever apply to the id's widget
@@ -194,6 +232,17 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   expose `quadraui::PlatformServices`'s OS-wide hotkey seam — headless-only
   for now, and raising `InternalError` until an in-tree backend implements
   a real OS hotkey call.
+- `quadraui.app` — a thin app layer over `QuiApp`'s render/handle seam:
+  typed node constructors (`Split`, `Column`, `Row`, `SidebarPanel`, `Tab`,
+  `Tabs`, `Tree`, `Table`, `StatusBar`, `TextDisplay`, `Button`, `Toolbar`)
+  that build the existing wire dict shapes and accept `on_*` callbacks
+  directly (`Button("Save", on_click=self.save)`), a `Component` base
+  class for view + local state bundled together and keyed by tree
+  position (or an explicit `key=`) so it survives re-render, and an `App`
+  that walks a `view()` tree once per render into an id → callback
+  registry and dispatches events against it — no manual id switching, no
+  scroll/selection bookkeeping (both stay framework-owned widget state).
+  `examples/file_manager_app.py` ports `examples/file_manager.py` onto it.
 
 ### Fixed
 

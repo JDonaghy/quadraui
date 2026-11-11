@@ -25,6 +25,28 @@ which every platform's wheel supports unchanged.
 Full docs, the primitive reference, and worked examples live on the project
 site: <https://jdonaghy.github.io/quadraui/>.
 
+## Building and testing an app
+
+`quadraui.app` is a thin layer over `QuiApp`: a `view()` returning typed
+node trees, `on_*` callbacks on those nodes instead of one app-wide event
+switch, and `App.enable_hot_reload(module)` to pick up edits to your view
+code while the app runs, keeping the state you built up.
+
+`quadraui.testing` is the harness you write that app's tests against — it
+queries the frame the app actually rendered and synthesises the gestures a
+user performs, so a test never spells out a wire event or a coordinate:
+
+```python
+def test_opening_a_folder(quadraui_harness):      # fixture ships with the package
+    h = quadraui_harness(MyApp(width=80, height=30).app)
+
+    h.find(role="tree").row("alpha").double_click()
+    h.press("Enter")
+
+    assert h.find(role="data_table").row_texts == ["a1.txt", "a2.txt"]
+    h.assert_text("alpha")
+```
+
 ## Wheels
 
 Prebuilt `abi3` wheels (CPython >= 3.8) are published for Linux, macOS, and

@@ -59,6 +59,88 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-11
+### Added
+- `Style::button_radius` (#2368): a button-specific corner radius,
+  defaulting to `2.0` (VS Code's own button radius) and read by
+  `ButtonMetrics::resolve` instead of `Style::corner_radius`, so a host can
+  retune a button's own rounding independently of every other rounded-rect
+  overlay (hover card, quick-pick, notification, context menu, dialog box)
+  that stays on `corner_radius`.
+### Fixed
+- `Split`/`SplitTree`'s pixel-path divider paint (#2371): the shared
+  `native_surface_paint::paint` for both primitives now paints a 1px sash
+  line, snapped to the device pixel grid and centred inside the 4px
+  divider band (`layout_metrics::pixel::DIVIDER`), matching VS Code's thin
+  resize-sash convention — the painted line is purely cosmetic and no
+  longer equals the full 4px band. `SplitLayout::divider_bounds`/
+  `divider_hit_bounds()` and `SplitTreeDivider::thickness` are unchanged,
+  so the drag hit target stays the full 4px; only the pixel backends
+  (GTK/win/macOS) are affected, TUI's 1-cell-thick divider already painted
+  (and still paints) at its full thickness.
+
+### Changed
+- `ButtonMetrics::resolve`'s corner radius (#2368): every pixel-backend
+  `Button` (in-tree and downstream) now paints at `Style::button_radius`
+  (default `2.0`) instead of `Style::corner_radius` (default `6.0`) — a
+  visible, out-of-the-box shape change for any existing button that
+  didn't already override `corner_radius`. The shared dialog painter's
+  `spec: None` OK/Cancel buttons (`primitives::dialog`) pick up the same
+  radius, so a message dialog's buttons now match. A host that relied on
+  the old 6px look sets `Style::button_radius(6.0)` explicitly.
+- `quadraui::macos`'s ~40 per-primitive painter submodules (#2355) are now
+  `#[doc(hidden)]` — unstable, not covered by semver — matching the
+  `quadraui::{gtk,tui,win}` backends, which already keep their equivalent
+  submodules private. Every path a consumer previously used still compiles
+  unchanged: the backend struct, `events`, `services`, `shell_runner`,
+  `testing`, and `text` stay `pub` and documented.
+- `quadraui::{gtk,tui,win,macos}` (#2355): the flat `crate::<backend>::
+  <item>` re-exports at the bottom of each module — `draw_*`/`*_layout`
+  painter internals that duplicate what `Backend::draw_*` already exposes —
+  are now `#[doc(hidden)]` unless a real caller in `~/src/vimcode/src`,
+  `~/src/coord-tui/src`, or an in-tree consumer (`quadraui/examples`,
+  `quadraui/benches`, `quadraui/tests`, `kubeui*`) reaches that exact flat
+  path today (`GtkBackend`, `run`/`run_with`, `draw_data_table`, …; see
+  `quadraui/tests/backend_module_doc_hidden.rs` for the enforced list).
+  `win`'s `run` module (the one backend where it was `pub mod` instead of
+  crate-private, unlike its `gtk`/`tui`/`macos` siblings) and `gtk`'s unused
+  `menu_overlay`/`tui`'s unused `caps`/`color` modules get the same
+  treatment. Every path a consumer previously used still compiles
+  unchanged — nothing is renamed, narrowed, or removed, only hidden from
+  rustdoc's module index. `quadraui/Cargo.toml`'s
+  `[package.metadata.cargo-semver-checks.lints]` table downgrades the
+  `*_now_doc_hidden` lint family to `allow` (every lint name verified
+  against a real `cargo semver-checks --list`, v0.51.0), so hiding — or
+  later moving/splitting — a painter internal no longer registers as a
+  breaking change.
+### Fixed
+- macOS: `MacBackend::new` now installs the chrome (UI) font at `13pt`
+  (#2366), matching the `ui_size_pt` `Backend::default_fonts` already
+  advertised — previously it installed at `11pt`, so the chrome a consumer
+  saw before any `set_ui_font` call read noticeably smaller than
+  `default_fonts()` promised. `TreeStyle`'s default row pitch is a fixed
+  `22px`, independent of chrome line height, so list/tree row heights are
+  unaffected.
+
+### Fixed
+- `MessageDialogController`'s OK/Cancel button row (#2368): on a pixel
+  backend, the button row is now sized at `Style::control_height` with
+  VS Code-like horizontal label padding, instead of the raw chrome line
+  height/char-width estimate that rendered an undersized pill. TUI's
+  char-cell geometry is unchanged. The shared dialog painter's legacy
+  (`spec: None`) button fill/stroke now also rounds its corners at
+  `Style::button_radius`, matching the spec-backed path, instead of
+  painting square corners.
+- `Tooltip`'s pixel-path `TooltipBorder::Full` card (#2369): a title now
+  renders as a bold first line inside the card, with a VS Code-style
+  vertical inset from the stroked edge (shrinking to fit a tightly-sized
+  box so its rows still paint, while the title always starts below the
+  border stroke), instead of being centred into
+  (and punching a background-coloured gap through) the top border stroke.
+  Content keeps the same `Sides`/`None` chrome vocabulary and the same
+  `TooltipChrome`/`TooltipLayout` shapes — no field added or changed.
+  `quadraui::tui`'s terminal-style titled box is unaffected.
+
 ## [0.10.0] - 2026-11-10
 ### Added
 - `quadraui_binding_core::{widget_state_snapshot, WidgetStateSnapshot}` (#2307):

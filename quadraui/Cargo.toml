@@ -1,6 +1,6 @@
 [package]
 name = "quadraui"
-version = "0.10.0"
+version = "0.10.1"
 edition.workspace = true
 description = "Cross-platform Rust UI toolkit: write one AppLogic and run it unmodified on TUI, GTK4 (Linux), macOS, and Windows backends"
 license.workspace = true
@@ -212,6 +212,50 @@ exclude = [
 # instead comes from `.github/workflows/macos.yml`'s `Doc (macos feature)`
 # step, which runs `cargo doc --features macos` for real on a `macos-latest`
 # runner.
+
+# Every per-primitive rasteriser submodule under `src/macos/` stays `pub
+# mod` (see that module's own comment for why `pub(crate)` is a separate,
+# breaking step) but carries `#[doc(hidden)]` — unstable, not covered by
+# semver. `src/gtk/mod.rs`, `src/tui/mod.rs` and `src/win/mod.rs` keep their
+# equivalent rasteriser submodules `mod` (private) already, so the surface
+# that needed the same treatment there is the flat `pub use` re-export list
+# each of those four modules carries at its tail (plus, on `win`, the two
+# fully-`pub mod`s — `run`, `scroll_view` — that have no private-submodule
+# equivalent on the other three backends): every item in those lists that
+# vimcode/coord-tui don't reach by that exact path is `#[doc(hidden)]`
+# too, for the same reason. `cargo-semver-checks` ships a dedicated,
+# individually configurable lint for each item kind's "became
+# `#[doc(hidden)]`" transition (`function_now_doc_hidden`,
+# `struct_now_doc_hidden`, …); its built-in default for every one of them is
+# `deny` + `required-update = "major"`, the same severity as outright
+# removing the item. Downgraded to `allow` here so hiding — or later
+# moving/splitting — a painter internal never requires a version bump; the
+# handful of re-exports a consumer actually depends on (`crate::macos::
+# MacBackend`, `crate::tui::TuiBackend`, `crate::gtk::draw_data_table`'s
+# siblings, …) are untouched by `#[doc(hidden)]` on their source and stay
+# fully tracked. Every name below is confirmed against a real `cargo
+# semver-checks --list` run (v0.51.0) — none are guessed.
+[package.metadata.cargo-semver-checks.lints]
+enum_now_doc_hidden = "allow"
+enum_struct_variant_field_now_doc_hidden = "allow"
+enum_tuple_variant_field_now_doc_hidden = "allow"
+exhaustive_struct_with_doc_hidden_fields_added = "allow"
+function_now_doc_hidden = "allow"
+inherent_associated_const_now_doc_hidden = "allow"
+inherent_method_now_doc_hidden = "allow"
+macro_now_doc_hidden = "allow"
+proc_macro_now_doc_hidden = "allow"
+pub_module_level_const_now_doc_hidden = "allow"
+pub_static_now_doc_hidden = "allow"
+struct_now_doc_hidden = "allow"
+struct_pub_field_now_doc_hidden = "allow"
+trait_associated_const_now_doc_hidden = "allow"
+trait_associated_type_now_doc_hidden = "allow"
+trait_method_now_doc_hidden = "allow"
+trait_now_doc_hidden = "allow"
+union_now_doc_hidden = "allow"
+union_pub_field_now_doc_hidden = "allow"
+
 [package.metadata.docs.rs]
 features = ["tui", "gtk", "win", "terminal", "macos", "layout", "a11y"]
 rustdoc-args = ["--cfg", "docsrs"]

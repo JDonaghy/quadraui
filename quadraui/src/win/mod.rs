@@ -19,6 +19,13 @@
 //! See `quadraui/docs/NATIVE_GUI_LESSONS.md` for pitfalls discovered
 //! during Win-GUI work. See the GTK backend (`quadraui/src/gtk/`)
 //! as the reference implementation for a pixel-based backend.
+//!
+//! Most of the free functions re-exported at the bottom of this module are
+//! painter internals, not a documented API: **unstable, not covered by
+//! semver** — they can move, split, or disappear between any two 0.1.x
+//! releases with no version bump. The few re-exports with doc comments on
+//! this page (`WinBackend`, `run`, …) are the stable, consumer-depended-on
+//! subset; everything else is `#[doc(hidden)]`.
 
 /// Direct2D / DirectWrite rasteriser for [`crate::ActivityBar`].
 /// Windows-only in full — see its module docs.
@@ -156,6 +163,15 @@ mod radio_group;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod rich_text_popup;
+// `gtk`/`tui`/`macos` keep this submodule crate-private (`mod run;`) and
+// surface only the flat re-exports below; `win` is the one backend where
+// it is `pub mod` instead. No caller in `~/src/vimcode/src`,
+// `~/src/coord-tui/src`, or any in-tree consumer reaches it module-qualified
+// (`crate::win::run::…`) — every real caller goes through the flat
+// `crate::win::{run, run_with, RunConfig, StepOutcome, WinRunner}` paths
+// below instead — so `#[doc(hidden)]` brings this module's own tracked
+// surface to parity with the other three backends.
+#[doc(hidden)]
 pub mod run;
 /// Win painter for [`crate::ScrollView`]: `paint_clipped` +
 /// `draw_scrollbar_for`, generic over [`crate::Backend`] like its GTK
@@ -275,57 +291,93 @@ pub(crate) mod tray;
 #[cfg(target_os = "windows")]
 mod tree;
 
+// The flat re-exports below split into two groups, verified by grepping
+// `~/src/vimcode/src`, `~/src/coord-tui/src`, and every in-tree consumer
+// (`quadraui/examples`, `quadraui/benches`, `quadraui/tests`, `kubeui*`) for
+// `quadraui::win::<name>` / `crate::win::<name>`: the handful a real caller
+// reaches by this exact flat path stay documented; everything else is a
+// painter internal duplicating what `Backend::draw_*` already exposes, with
+// zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
+// semver, free to move or disappear without a version bump (see
+// `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use activity_bar::{draw_activity_bar, win_activity_bar_layout, ACTIVITY_ROW_DIP};
 pub use backend::WinBackend;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use board::win_board_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use button::win_button_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use chart::win_chart_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use command_center::{draw_command_center, win_command_center_layout};
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use command_line::{draw_command_line, draw_command_line_selection, win_command_line_layout};
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use completions::draw_completions;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use context_menu::draw_context_menu;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use data_table::draw_data_table;
+#[doc(hidden)]
 pub use data_table::win_data_table_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use dialog::draw_dialog;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use editor::draw_editor;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use form::{draw_settings_chrome, win_form_layout};
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use image::draw_image;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use list::draw_list;
+#[doc(hidden)]
 pub use list::win_list_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use menu_bar::draw_menu_bar;
+#[doc(hidden)]
 pub use menu_bar::win_menu_bar_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use message_list::draw_message_list;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use minimap::{draw_minimap, win_minimap_layout};
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_metrics};
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use palette::{draw_palette, win_palette_layout};
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use panel::win_panel_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use pipeline_view::win_pipeline_view_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use progress::win_progress_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use radio_group::win_radio_group_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use rich_text_popup::draw_rich_text_popup;
 pub use run::{run, run_with, RunConfig, StepOutcome};
 // `WinRunner` needs a real `HWND`/`WindowState<A>` (built inside
@@ -334,23 +386,33 @@ pub use run::{run, run_with, RunConfig, StepOutcome};
 // Windows-only rasteriser re-export in this file, this one is gated too.
 #[cfg(target_os = "windows")]
 pub use run::WinRunner;
+#[doc(hidden)]
 pub use services::WinPlatformServices;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use sidebar_panel::win_sidebar_panel_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use spinner::draw_spinner;
+#[doc(hidden)]
 pub use spinner::win_spinner_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use split::win_split_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use split_tree::win_split_tree_layout;
+#[doc(hidden)]
 pub use status_bar::{win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use switch::win_switch_layout;
 #[cfg(target_os = "windows")]
 #[allow(deprecated)]
+#[doc(hidden)]
 pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons};
 #[allow(deprecated)]
+#[doc(hidden)]
 pub use tab_bar::{win_tab_bar_layout, win_tab_bar_layout_icons};
 // The `TabBarLayout`-returning counterparts to the four above —
 // exported for the same reason: a consumer holding only the free
@@ -358,19 +420,28 @@ pub use tab_bar::{win_tab_bar_layout, win_tab_bar_layout_icons};
 // pair every other new-method site does. The `win_tab_bar_*` no-paint
 // fns are pure geometry (generic over `TextMeasure`) and compile
 // everywhere; only the two `draw_tab_bar_*` paint fns are Windows-only.
+// Zero reachers for either pair, like their siblings above — `#[doc(hidden)]`.
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use tab_bar::{draw_tab_bar_icons_layout, draw_tab_bar_layout};
+#[doc(hidden)]
 pub use tab_bar::{win_tab_bar_native_layout, win_tab_bar_native_layout_icons};
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use text_display::win_text_display_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use text_input::win_text_input_layout;
+#[doc(hidden)]
 pub use toast::win_toast_stack_layout;
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use toolbar::{draw_toolbar, draw_toolbar_with_options, win_toolbar_layout};
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 #[cfg(target_os = "windows")]
+#[doc(hidden)]
 pub use tree::{draw_tree, win_tree_layout, win_tree_layout_measured};
 
 /// Serialises every `#[test]` fn in this module tree that drives the

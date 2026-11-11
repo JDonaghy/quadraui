@@ -3435,7 +3435,7 @@ pub trait Backend: sealed::Sealed {
     /// [`crate::primitives::float::native_surface_paint::paint`], the
     /// same zero-backend-specific-policy pattern as `Canvas`/`Panel`;
     /// TUI has its own cell-based rasteriser in
-    /// [`crate::tui::draw_float`].
+    /// `crate::tui::draw_float` (`#[doc(hidden)]`, so not linked here).
     fn draw_float(&mut self, float: &Float, layout: &FloatLayout);
 
     /// Draw a [`MultiSectionView`]. The backend computes the layout

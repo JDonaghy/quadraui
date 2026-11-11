@@ -65,8 +65,8 @@
 //! The TUI backend is cell-granular: it paints at `h_scroll.round()`
 //! (`tui::data_table`'s `h_off`), so it must overwrite the returned
 //! layout's `h_scroll` with that same rounded value. It does that in one
-//! place — [`tui::data_table_layout`](crate::tui::data_table_layout) —
-//! which **both** `tui::data_table::draw_data_table` and
+//! place — `tui::data_table_layout` (`#[doc(hidden)]`, so not linked
+//! here) — which **both** `tui::data_table::draw_data_table` and
 //! `Backend::data_table_layout` route through, so the layout-on-demand
 //! hit-test path (no repaint) agrees with the paint path bit-for-bit.
 //! Adding a third TUI entry point that calls [`DataTable::layout`]
@@ -439,7 +439,8 @@ pub struct DataTableLayout {
     /// misroutes clicks whenever `DataTable::h_scroll`'s fractional part
     /// crosses 0.5. Both TUI entry points that produce a layout —
     /// `tui::data_table::draw_data_table` and `Backend::data_table_layout`
-    /// — apply it via [`tui::data_table_layout`](crate::tui::data_table_layout).
+    /// — apply it via `tui::data_table_layout` (`#[doc(hidden)]`, so not
+    /// linked here).
     pub h_scroll: f32,
 }
 

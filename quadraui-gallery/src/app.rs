@@ -362,6 +362,25 @@ impl GalleryApp {
         rows
     }
 
+    /// Height of the main pane's Demo/Code/Data [`TabBar`] strip —
+    /// `Style::tab_height` on a pixel backend (floored at the chrome line
+    /// height so a chrome font taller than the token isn't clipped), the
+    /// plain chrome line height on TUI's fixed cell grid. Mirrors
+    /// `AppShell`'s own `tab_height`-derived sidebar header sizing
+    /// (`compose/shell_layout.rs`'s `header_h`) so every tab strip in the
+    /// gallery — the shell's own sidebar header and this app's main-pane
+    /// strip alike — agrees on how tall a tab bar is. Shared by
+    /// `render_content`, `dispatch_to_shell_and_demo` and `handle` so all
+    /// three agree on where the main pane's body starts.
+    fn main_tab_strip_height(backend: &dyn Backend) -> f32 {
+        let lh = backend.chrome_line_height();
+        if lh <= 1.0 {
+            backend.snap_height(lh)
+        } else {
+            backend.snap_height(lh.max(backend.style().tab_height))
+        }
+    }
+
     /// The Demo tab's content rect, after reserving
     /// `demo_header_rows(idx, backend)` lines at the top. Shared by
     /// `render_content` and `handle` so the two never disagree about
@@ -466,11 +485,17 @@ impl ShellApp for GalleryApp {
         // ── Main pane: Demo / Code / Data tabs ──────────────────────
         let main = layout.main_content_bounds;
         if main.width > 0.0 && main.height > 0.0 {
-            let tab_rect = Rect::new(main.x, main.y, main.width, lh);
+            let tab_h = Self::main_tab_strip_height(backend);
+            let tab_rect = Rect::new(main.x, main.y, main.width, tab_h);
             let bar = self.tab_bar(backend);
             backend.draw_tab_bar_layout(tab_rect, &bar, None);
 
-            let body = Rect::new(main.x, main.y + lh, main.width, (main.height - lh).max(0.0));
+            let body = Rect::new(
+                main.x,
+                main.y + tab_h,
+                main.width,
+                (main.height - tab_h).max(0.0),
+            );
 
             match self.selected {
                 None => {
@@ -716,8 +741,9 @@ impl GalleryApp {
 
             // Main-pane tab strip click (Demo / Code / Data).
             let lh = backend.line_height();
+            let tab_h = Self::main_tab_strip_height(backend);
             let main = ctx.main_bounds();
-            let tab_rect = Rect::new(main.x, main.y, main.width, lh);
+            let tab_rect = Rect::new(main.x, main.y, main.width, tab_h);
             if position.x >= tab_rect.x
                 && position.x < tab_rect.x + tab_rect.width
                 && position.y >= tab_rect.y
@@ -743,7 +769,7 @@ impl GalleryApp {
                 if let Some(idx) = self.selected {
                     let variants = self.demos[idx].variants();
                     if variants.len() > 1 {
-                        let row_rect = Rect::new(main.x, main.y + lh, main.width, lh);
+                        let row_rect = Rect::new(main.x, main.y + tab_h, main.width, lh);
                         if position.y >= row_rect.y && position.y < row_rect.y + row_rect.height {
                             if let Some(col) = variant_col_at(row_rect, variants.len(), position.x)
                             {
@@ -770,10 +796,14 @@ impl GalleryApp {
                     .map(|p| !ctx.in_main(p.x, p.y))
                     .unwrap_or(false);
                 if !outside_main {
-                    let lh = backend.line_height();
+                    let tab_h = Self::main_tab_strip_height(backend);
                     let main = ctx.main_bounds();
-                    let body =
-                        Rect::new(main.x, main.y + lh, main.width, (main.height - lh).max(0.0));
+                    let body = Rect::new(
+                        main.x,
+                        main.y + tab_h,
+                        main.width,
+                        (main.height - tab_h).max(0.0),
+                    );
                     let demo_rect = self.demo_content_rect(idx, backend, body);
                     return self.demos[idx].handle(self.active_variant, event, backend, demo_rect);
                 }
@@ -1020,6 +1050,33 @@ mod tests {
                 assert_eq!(i == j, a == b);
             }
         }
+    }
+
+    /// On a pixel backend (a GTK-shaped chrome line height, simulated via
+    /// `RecordingBackend`), the main pane's Demo/Code/Data tab strip is
+    /// exactly `Style::tab_height` tall — not the raw chrome line height,
+    /// the bug this test guards against regressing.
+    #[test]
+    fn main_tab_strip_height_matches_tab_height_token_on_a_pixel_backend() {
+        let backend = quadraui::testing::RecordingBackend {
+            chrome_line_height: Some(20.0),
+            ..quadraui::testing::RecordingBackend::new()
+        };
+        assert_eq!(
+            GalleryApp::main_tab_strip_height(&backend),
+            quadraui::Style::default().tab_height
+        );
+    }
+
+    /// TUI's fixed cell grid keeps its one-row degrade —
+    /// `Style::tab_height` is a documented no-op there.
+    #[test]
+    fn main_tab_strip_height_stays_one_chrome_line_on_a_cell_grid() {
+        let backend = quadraui::testing::RecordingBackend::new();
+        assert_eq!(
+            GalleryApp::main_tab_strip_height(&backend),
+            backend.chrome_line_height()
+        );
     }
 
     /// Fake two-variant demo — `registry()` has no such demo today (the

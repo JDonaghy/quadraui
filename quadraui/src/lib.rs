@@ -72,6 +72,18 @@
 //! render onto a target none of the four cover? Contribute a fifth
 //! in-tree backend — see `BACKEND.md`.
 //!
+//! Each backend's module (`gtk`, `macos`, `tui`, `win`) exposes a small,
+//! documented stable surface — the backend struct itself, `events`,
+//! `services`, `shell_runner`, `testing`, and (where it exists) `text` —
+//! plus a flat re-export of the handful of free-function rasterisers an
+//! app calls directly (`draw_tab_bar`, `mac_tree_layout`, …). Everything
+//! else is a per-primitive painter internal: `#[doc(hidden)]` where it
+//! must stay `pub mod` for compatibility (see `src/macos/mod.rs`), or
+//! simply private where nothing outside the backend needs the submodule
+//! path at all (`src/{gtk,tui,win}/mod.rs`). Either way it is unstable —
+//! not covered by semver — so painter internals can be split, merged, or
+//! moved between sibling modules without a version bump.
+//!
 //! ## Documentation
 //!
 //! Every file named below ships in the published `.crate` — this list

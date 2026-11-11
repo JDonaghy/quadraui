@@ -7,9 +7,26 @@
   "type": "commonjs",
   "main": "js/index.ts",
   "types": "js/index.ts",
+  "exports": {
+    ".": "./js/index.ts",
+    "./jsx-runtime": "./js/jsx-runtime.ts",
+    "./jsx-dev-runtime": "./js/jsx-dev-runtime.ts",
+    "./testing": "./js/testing.ts",
+    "./wire": {
+      "types": "./js/wire.d.ts"
+    },
+    "./app": "./js/app/index.ts",
+    "./app/*": "./js/app/*.ts",
+    "./js/*": "./js/*"
+  },
   "files": [
+    "README.md",
     "js/index.ts",
+    "js/testing.ts",
     "js/wire.d.ts",
+    "js/jsx-runtime.ts",
+    "js/jsx-dev-runtime.ts",
+    "js/app/*.ts",
     "index.js",
     "index.d.ts",
     "*.node"
@@ -17,10 +34,14 @@
   "scripts": {
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
-    "test": "node --test tests/*.test.ts"
+    "test": "node --test tests/*.test.ts",
+    "typecheck:jsx": "tsc -p tsconfig.jsx.json"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^3"
+    "@napi-rs/cli": "^3",
+    "@types/node": "^22",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.9.0"
   },
   "napi": {
     "binaryName": "quadraui-node",

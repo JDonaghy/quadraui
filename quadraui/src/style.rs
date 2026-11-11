@@ -30,9 +30,10 @@
 //!
 //! - **No-op** — the token has no effect because the TUI rasteriser
 //!   for that primitive doesn't read [`Style`] at all. [`Self::focus_ring_width`]
-//!   is this: [`crate::tui::draw_focus_ring`] always paints a 1-cell
-//!   box-drawing border regardless of what a GUI backend's style carries
-//!   (its own doc already says so — this struct doesn't change that).
+//!   is this: `crate::tui::draw_focus_ring` (`#[doc(hidden)]`, so not
+//!   linked here) always paints a 1-cell box-drawing border regardless
+//!   of what a GUI backend's style carries (its own doc already says so
+//!   — this struct doesn't change that).
 //! - **Cell-quantised** — a spacing/padding token rounds to whole cells
 //!   rather than being dropped outright, the same way
 //!   `LayoutMetrics::cell_quantum` already quantises hit-test geometry
@@ -41,8 +42,9 @@
 //!   their own docs for the exact rounding rule.
 //! - **Pre-blend** — a token whose pixel-backend refinement is alpha
 //!   compositing, which ratatui's `Buffer` has no primitive for.
-//!   [`Self::backdrop_opacity`] is this: [`crate::tui::draw_palette`]
-//!   pre-mixes the backdrop colour on the CPU via [`crate::Color::blend`]
+//!   [`Self::backdrop_opacity`] is this: `crate::tui::draw_palette`
+//!   (`#[doc(hidden)]`, so not linked here) pre-mixes the backdrop
+//!   colour on the CPU via [`crate::Color::blend`]
 //!   before writing opaque cells, the same technique
 //!   [`crate::tui::draw_minimap`] already uses to simulate a translucent
 //!   highlight tint.
@@ -142,7 +144,8 @@ pub struct Style {
     /// — see that trait's module doc for why this reaches `GtkBackend`,
     /// `MacBackend` and `WinBackend` from one call site.
     ///
-    /// **TUI story: no-op.** [`crate::tui::draw_focus_ring`] always
+    /// **TUI story: no-op.** `crate::tui::draw_focus_ring`
+    /// (`#[doc(hidden)]`, so not linked here) always
     /// paints a 1-cell box-drawing border; there is no sub-cell stroke
     /// weight on a terminal grid to refine. See the module doc's *Where
     /// each token maps on TUI* section.
@@ -192,6 +195,25 @@ pub struct Style {
     /// Default `6.0` — VS Code's own widget corner radius (hover,
     /// quick-pick, notifications, context menus).
     pub corner_radius: f32,
+
+    /// Corner radius, in surface-native pixels, a [`crate::Button`]
+    /// rasterises its own fill/border with — read by
+    /// [`crate::primitives::button::ButtonMetrics::resolve`] instead of
+    /// [`Self::corner_radius`]. A button reads its own narrower radius
+    /// because VS Code's buttons (and the OK/Cancel pair on its message
+    /// dialogs) are a much subtler rounded rect than the hover-card/
+    /// quick-pick/notification/context-menu/dialog-box radius
+    /// [`Self::corner_radius`] stays at, and every other rounded-rect
+    /// overlay already shares that one token — splitting this one out
+    /// lets a host retune buttons without retuning every other overlay's
+    /// box.
+    ///
+    /// **TUI story: no-op**, same as [`Self::corner_radius`] — a
+    /// terminal cell grid has no sub-cell corner to round.
+    ///
+    /// Default `2.0` — VS Code's own button corner radius.
+    #[serde(default = "default_button_radius")]
+    pub button_radius: f32,
 
     /// Border stroke width, in surface-native pixels, every bordered
     /// overlay strokes its box outline with — independent of
@@ -459,6 +481,13 @@ pub struct Style {
     pub tooltip_auto_dismiss_ms: u64,
 }
 
+/// `#[serde(default)]` value for [`Style::button_radius`] — a struct
+/// serialized before this field existed deserializes at the VS Code
+/// default, matching [`Style::default`].
+fn default_button_radius() -> f32 {
+    2.0
+}
+
 /// `#[serde(default)]` value for [`Style::tab_height`] — a struct
 /// serialized before this field existed deserializes at the VS Code
 /// default, matching [`Style::default`].
@@ -535,6 +564,7 @@ impl Default for Style {
             focus_ring_width: 2.0,
             padding: 8.0,
             corner_radius: 6.0,
+            button_radius: 2.0,
             border_width: 1.0,
             shadow_elevation: 1,
             control_height: 26.0,
@@ -576,6 +606,13 @@ impl Style {
     #[must_use]
     pub fn with_corner_radius(mut self, corner_radius: f32) -> Self {
         self.corner_radius = corner_radius;
+        self
+    }
+
+    /// Set [`Self::button_radius`].
+    #[must_use]
+    pub fn with_button_radius(mut self, button_radius: f32) -> Self {
+        self.button_radius = button_radius;
         self
     }
 
@@ -718,6 +755,42 @@ mod tests {
         assert_eq!(style.border_width, 1.0);
         assert_eq!(style.shadow_elevation, 1);
         assert_eq!(style.control_height, 26.0);
+    }
+
+    /// Pins the narrower VS-Code-matching button radius, distinct from
+    /// [`Style::corner_radius`] — a future edit to either is a
+    /// deliberate, reviewed visual change.
+    #[test]
+    fn default_button_radius_is_narrower_than_corner_radius() {
+        let style = Style::default();
+        assert_eq!(style.button_radius, 2.0);
+        assert_eq!(style.corner_radius, 6.0);
+    }
+
+    /// Same proof as `with_focus_ring_width_builder_overrides_only_that_field`,
+    /// for [`Style::button_radius`].
+    #[test]
+    fn with_button_radius_builder_overrides_only_that_field() {
+        let style = Style::default().with_button_radius(4.0);
+        assert_eq!(style.button_radius, 4.0);
+        assert_eq!(style.corner_radius, Style::default().corner_radius);
+    }
+
+    /// A JSON payload serialized before [`Style::button_radius`] existed
+    /// has no such key; `#[serde(default = "…")]` must deserialize it at
+    /// the VS Code default rather than erroring.
+    #[test]
+    fn deserializing_without_button_radius_defaults_to_two_pixels() {
+        let json = r#"{
+            "focus_ring_width": 2.0,
+            "padding": 8.0,
+            "corner_radius": 6.0,
+            "border_width": 1.0,
+            "shadow_elevation": 1,
+            "control_height": 26.0
+        }"#;
+        let style: Style = serde_json::from_str(json).expect("deserialize without button_radius");
+        assert_eq!(style.button_radius, 2.0);
     }
 
     /// Pins the VS-Code-matching GUI chrome-metric defaults, so a future

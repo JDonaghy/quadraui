@@ -7,12 +7,28 @@
 
 use quadraui::{
     Backend, BackendCaps, Color, Icon, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, UiEvent, WidgetId,
+    StatusBarSegment, Style, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
 
 const SOURCE: &str = include_str!("toolbar.rs");
+
+/// `Style`'s chrome-metric `token` (`tab_height`, `status_bar_height`,
+/// `toolbar_height`, …), floored at the chrome line height on a pixel
+/// backend — never shrunk below it, so a chrome font taller than the
+/// design token isn't clipped — or the plain chrome line height on TUI's
+/// fixed cell grid, where every `Style` chrome metric is a documented
+/// no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
+fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
+    let lh = backend.chrome_line_height();
+    if lh <= 1.0 {
+        backend.snap_height(lh)
+    } else {
+        backend.snap_height(lh.max(token(&backend.style())))
+    }
+}
 
 // gallery:begin
 pub struct ToolbarDemo {
@@ -134,7 +150,17 @@ impl ToolbarDemo {
     }
 
     fn toolbar_rect(area: Rect, backend: &dyn Backend) -> Rect {
-        Rect::new(area.x, area.y, area.width, backend.line_height())
+        let h = chrome_strip_height(backend, |s| s.toolbar_height);
+        Rect::new(area.x, area.y, area.width, h)
+    }
+
+    /// The hint bar below [`Self::toolbar_rect`] — a one-line
+    /// [`StatusBar`], sized off `Style::status_bar_height` the same way
+    /// [`crate::demos::status_bar::StatusBarDemo`] sizes its own strip.
+    fn hint_rect(area: Rect, backend: &dyn Backend) -> Rect {
+        let toolbar_h = Self::toolbar_rect(area, backend).height;
+        let hint_h = chrome_strip_height(backend, |s| s.status_bar_height);
+        Rect::new(area.x, area.y + toolbar_h, area.width, hint_h)
     }
 
     fn hint_bar(&self) -> StatusBar {
@@ -247,12 +273,11 @@ impl Demo for ToolbarDemo {
     }
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
-        let lh = backend.line_height();
         let rect = Self::toolbar_rect(area, backend);
         let bar = self.painted_toolbar(variant, backend);
         let _ = backend.draw_toolbar_interactive(rect, &bar, &self.interaction);
 
-        let hint_rect = Rect::new(area.x, area.y + lh, area.width, lh);
+        let hint_rect = Self::hint_rect(area, backend);
         let _ = backend.draw_status_bar_interactive(
             hint_rect,
             &self.hint_bar(),
@@ -369,6 +394,26 @@ mod tests {
         assert!(demo.filter_active);
     }
 
+    /// On a pixel backend (a GTK-shaped chrome line height, simulated via
+    /// `RecordingBackend`), the painted toolbar rect is exactly
+    /// `Style::toolbar_height` tall and the hint status bar below it is
+    /// exactly `Style::status_bar_height` tall — not the raw chrome line
+    /// height, the bug this test guards against regressing.
+    #[test]
+    fn toolbar_and_hint_rect_heights_match_their_tokens_on_a_pixel_backend() {
+        let backend = quadraui::testing::RecordingBackend {
+            chrome_line_height: Some(20.0),
+            ..quadraui::testing::RecordingBackend::new()
+        };
+        let area = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let toolbar_rect = ToolbarDemo::toolbar_rect(area, &backend);
+        assert_eq!(toolbar_rect.height, Style::default().toolbar_height);
+
+        let hint_rect = ToolbarDemo::hint_rect(area, &backend);
+        assert_eq!(hint_rect.height, Style::default().status_bar_height);
+        assert_eq!(hint_rect.y, area.y + toolbar_rect.height);
+    }
+
     #[test]
     fn advance_focus_skips_disabled_buttons() {
         let mut demo = ToolbarDemo::new();
@@ -428,5 +473,24 @@ mod tests {
             .buttons
             .iter()
             .any(|b| matches!(b, ToolbarButton::Action { label, .. } if label == "Continue")));
+    }
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod tui_tests {
+    use super::*;
+
+    /// TUI's fixed cell grid keeps its one-row degrade for both strips —
+    /// `Style::toolbar_height`/`Style::status_bar_height` are documented
+    /// no-ops there.
+    #[test]
+    fn toolbar_and_hint_rect_heights_stay_one_chrome_line_on_tui() {
+        let backend = quadraui::tui::TuiBackend::new();
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let toolbar_rect = ToolbarDemo::toolbar_rect(area, &backend);
+        assert_eq!(toolbar_rect.height, backend.chrome_line_height());
+
+        let hint_rect = ToolbarDemo::hint_rect(area, &backend);
+        assert_eq!(hint_rect.height, backend.chrome_line_height());
     }
 }

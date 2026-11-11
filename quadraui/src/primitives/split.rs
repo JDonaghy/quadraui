@@ -253,6 +253,17 @@ pub(crate) mod native_surface_paint {
     use super::SplitLayout;
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
+    use crate::Rect;
+
+    /// Visual width of the painted sash line, in the same units as
+    /// `divider_bounds` — VS Code's single-pixel resize affordance.
+    /// [`SplitLayout::divider_bounds`]/[`SplitLayout::divider_hit_bounds`]
+    /// stay the full [`super::SplitMeasure::divider_thickness`]-wide band
+    /// (so a drag target is wider than one pixel); only the painted line
+    /// is thinned to this and centred within that band. Mirrors
+    /// [`crate::primitives::split_tree::native_surface_paint::SASH_PAINT_WIDTH`]
+    /// so the two primitives read as the same visual weight.
+    pub(crate) const SASH_PAINT_WIDTH: f32 = 1.0;
 
     /// Paint a [`SplitLayout`]'s divider onto `surface` as a filled
     /// rectangle in `theme.separator`. `layout` must be the same
@@ -261,9 +272,42 @@ pub(crate) mod native_surface_paint {
     /// own caller — `Backend::draw_split` — returns) so paint and
     /// hit-test can never disagree. Pane content is NOT painted —
     /// every backend leaves `first_bounds`/`second_bounds` to the host,
-    /// same contract as before this migration.
+    /// same contract as before this migration. The painted rect is
+    /// [`SASH_PAINT_WIDTH`] wide, centred within `layout.divider_bounds`
+    /// — narrower than the hit-testable band so the sash reads as a thin
+    /// line while the drag target stays wide (see [`sash_rect`]).
     pub(crate) fn paint(layout: &SplitLayout, surface: &mut dyn PaintSurface, theme: &Theme) {
-        surface.surface_fill_rect(layout.divider_bounds, theme.separator);
+        surface.surface_fill_rect(sash_rect(layout.divider_bounds), theme.separator);
+    }
+
+    /// Centre a [`SASH_PAINT_WIDTH`]-thick line inside `divider_bounds`
+    /// along whichever axis is the divider's thickness. [`super::Split::layout`]
+    /// always builds `divider_bounds` with `divider_thickness` on one
+    /// axis and the full cross-axis span (container width/height) on the
+    /// other, so the thickness axis is reliably the shorter of the two —
+    /// no need to thread `SplitDirection` through just for this.
+    fn sash_rect(divider_bounds: Rect) -> Rect {
+        if divider_bounds.width <= divider_bounds.height {
+            let width = SASH_PAINT_WIDTH.min(divider_bounds.width.max(0.0));
+            let x = centered_pixel_aligned(divider_bounds.x, divider_bounds.width, width);
+            Rect::new(x, divider_bounds.y, width, divider_bounds.height)
+        } else {
+            let height = SASH_PAINT_WIDTH.min(divider_bounds.height.max(0.0));
+            let y = centered_pixel_aligned(divider_bounds.y, divider_bounds.height, height);
+            Rect::new(divider_bounds.x, y, divider_bounds.width, height)
+        }
+    }
+
+    /// Resolve the leading edge of a `width`-wide line centred inside
+    /// `[band_start, band_start + band_len)`, snapped to the nearest
+    /// whole device pixel so a 1px sash renders as a crisp line rather
+    /// than a blurred, anti-aliased straddle across two pixels — then
+    /// clamped back into the band so the snap can never push the line
+    /// outside the hit-testable area it's meant to sit inside.
+    fn centered_pixel_aligned(band_start: f32, band_len: f32, width: f32) -> f32 {
+        let center = band_start + band_len / 2.0;
+        let aligned = (center - width / 2.0).round();
+        aligned.clamp(band_start, (band_start + band_len - width).max(band_start))
     }
 
     #[cfg(test)]
@@ -347,7 +391,7 @@ pub(crate) mod native_surface_paint {
         }
 
         #[test]
-        fn paints_exactly_the_divider_rect_in_theme_separator() {
+        fn paints_a_one_px_sash_centred_inside_the_wider_hit_band() {
             let split = two_pane(SplitDirection::Horizontal);
             let layout = split.layout(QRect::new(0.0, 0.0, 200.0, 100.0), SplitMeasure::new(4.0));
             let theme = Theme::default();
@@ -355,11 +399,25 @@ pub(crate) mod native_surface_paint {
             paint(&layout, &mut surface, &theme);
 
             assert_eq!(surface.fills.len(), 1, "split paints chrome only");
-            assert_eq!(surface.fills[0], (layout.divider_bounds, theme.separator));
+            let (painted, color) = surface.fills[0];
+            assert_eq!(color, theme.separator);
+            assert_eq!(painted.width, SASH_PAINT_WIDTH, "sash paints 1px wide");
+            assert_eq!(painted.height, layout.divider_bounds.height);
+            // The painted sash is centred inside — and so fully contained
+            // within — the wider (4px) hit-testable band.
+            assert!(painted.x >= layout.divider_bounds.x);
+            assert!(
+                painted.x + painted.width <= layout.divider_bounds.x + layout.divider_bounds.width
+            );
+            assert_eq!(
+                layout.divider_hit_bounds().width,
+                4.0,
+                "hit target stays the full divider thickness"
+            );
         }
 
         #[test]
-        fn vertical_direction_paints_the_same_divider_bounds() {
+        fn vertical_direction_paints_a_one_px_horizontal_sash() {
             let split = two_pane(SplitDirection::Vertical);
             let layout = split.layout(QRect::new(0.0, 0.0, 100.0, 200.0), SplitMeasure::new(4.0));
             let theme = Theme::default();
@@ -367,7 +425,19 @@ pub(crate) mod native_surface_paint {
             paint(&layout, &mut surface, &theme);
 
             assert_eq!(surface.fills.len(), 1);
-            assert_eq!(surface.fills[0].0, layout.divider_bounds);
+            let painted = surface.fills[0].0;
+            assert_eq!(painted.height, SASH_PAINT_WIDTH, "sash paints 1px tall");
+            assert_eq!(painted.width, layout.divider_bounds.width);
+            assert!(painted.y >= layout.divider_bounds.y);
+            assert!(
+                painted.y + painted.height
+                    <= layout.divider_bounds.y + layout.divider_bounds.height
+            );
+            assert_eq!(
+                layout.divider_hit_bounds().height,
+                4.0,
+                "hit target stays the full divider thickness"
+            );
         }
 
         #[test]
@@ -378,8 +448,27 @@ pub(crate) mod native_surface_paint {
             let mut surface = RecordingSurface::default();
             paint(&layout, &mut surface, &theme);
 
-            assert_eq!(surface.fills[0].0, layout.divider_bounds);
-            assert!(surface.fills[0].0.x >= 7.0);
+            let painted = surface.fills[0].0;
+            assert!(painted.x >= layout.divider_bounds.x);
+            assert!(
+                painted.x + painted.width <= layout.divider_bounds.x + layout.divider_bounds.width
+            );
+            assert!(painted.x >= 7.0);
+        }
+
+        #[test]
+        fn sash_stays_no_wider_than_a_tiny_divider_band() {
+            // When `divider_thickness` is itself below `SASH_PAINT_WIDTH`
+            // (degenerate, but `SplitMeasure` doesn't forbid it), the sash
+            // must not paint wider than the band it sits inside.
+            let split = two_pane(SplitDirection::Horizontal);
+            let layout = split.layout(QRect::new(0.0, 0.0, 200.0, 100.0), SplitMeasure::new(0.5));
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&layout, &mut surface, &theme);
+
+            let painted = surface.fills[0].0;
+            assert!(painted.width <= layout.divider_bounds.width + 1e-6);
         }
     }
 }

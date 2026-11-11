@@ -110,21 +110,23 @@ pub struct ButtonMetrics {
     /// `Toast`/`Tooltip`/`ContextMenu`/`Palette`/`Dialog` already share.
     pub padding_x: f32,
     /// Resolved corner radius, in surface-native pixels — read straight
-    /// from [`Style::corner_radius`], the same radius every other
-    /// rounded-rect overlay rasterises its box with.
+    /// from [`Style::button_radius`], the button-specific radius token
+    /// (narrower than [`Style::corner_radius`], which every other
+    /// rounded-rect overlay rasterises its own box with).
     pub corner_radius: f32,
 }
 
 impl ButtonMetrics {
     /// Resolve a [`Button`]'s geometry from `style`. Every number here
-    /// is a direct read of an existing [`Style`] field — there is no
-    /// button-specific token, so a host that retunes `Style` once gets
-    /// a matching button for free on every backend.
+    /// is a direct read of an existing [`Style`] field — `corner_radius`
+    /// from [`Style::button_radius`] specifically, not
+    /// [`Style::corner_radius`] — so a host that retunes `Style` once
+    /// gets a matching button for free on every backend.
     pub fn resolve(style: &Style) -> Self {
         Self {
             height: style.control_height,
             padding_x: style.padding,
-            corner_radius: style.corner_radius,
+            corner_radius: style.button_radius,
         }
     }
 }
@@ -536,14 +538,21 @@ pub(crate) mod native_surface_paint {
     /// Shared geometry for a focus-visible ring drawn around `bounds`:
     /// an outset stroke rect ([`FOCUS_RING_GAP`] clear of `bounds` on
     /// every side), `style.corner_radius` (read from `style` itself, so
-    /// there is no separate radius argument for a call site to drift
-    /// from the primitive's own fill/border radius), and the stroke
-    /// width [`Style::focus_ring_width`] configures. This module's own
-    /// [`paint`] below computes its ring through here; a per-backend
-    /// `TextInput` rasteriser that adds a ring stroke should too, rather
-    /// than re-deriving the outset gap independently, so widening
-    /// `Style::focus_ring_width` widens every primitive's ring
-    /// identically instead of drifting through hand-tuned literals.
+    /// a caller whose own fill/border also radiuses at
+    /// `style.corner_radius` — [`TextInput`] via `crate::primitives::text_input`,
+    /// every per-backend rasteriser listed below — gets a matching ring
+    /// for free without a separate radius argument to drift), and the
+    /// stroke width [`Style::focus_ring_width`] configures. This
+    /// module's own [`paint`] below computes its ring through here but
+    /// then overwrites [`FocusRingGeometry::corner_radius`] with its own
+    /// [`ButtonMetrics::corner_radius`] (`Style::button_radius`, not
+    /// `style.corner_radius`) before stroking, since `Button`'s body
+    /// radiuses narrower than the shared overlay default. A per-backend
+    /// `TextInput` rasteriser that adds a ring stroke should call
+    /// through here too, rather than re-deriving the outset gap
+    /// independently, so widening `Style::focus_ring_width` widens every
+    /// primitive's ring identically instead of drifting through
+    /// hand-tuned literals.
     ///
     /// Distinct from [`crate::backend::Backend::draw_focus_ring`], which
     /// every backend already implements by stroking the bare rect with
@@ -664,7 +673,15 @@ pub(crate) mod native_surface_paint {
         // `focused` itself on click rather than on Tab — see
         // `crate::compose::FocusRing::is_focus_visible`.
         if button.focused && !button.disabled {
-            let ring = focus_ring_geometry(rect, style);
+            let mut ring = focus_ring_geometry(rect, style);
+            // `focus_ring_geometry` reads `style.corner_radius` by
+            // default (the radius every other rounded-rect overlay's
+            // ring shares), but a `Button`'s own body paints at
+            // `metrics.corner_radius` (`Style::button_radius`) above —
+            // overridden here so the ring traces the same corner the
+            // fill/border just drew, rather than a wider `corner_radius`
+            // ring sitting visibly outside a tighter body.
+            ring.corner_radius = metrics.corner_radius;
             surface.surface_stroke_rounded_rect(
                 ring.rect,
                 ring.corner_radius,
@@ -895,6 +912,40 @@ pub(crate) mod native_surface_paint {
             // The ring surrounds the button rather than tracing it exactly.
             assert!(ring.0.x < RECT.x && ring.0.y < RECT.y);
             assert!(ring.0.width > RECT.width && ring.0.height > RECT.height);
+        }
+
+        /// The ring traces the button's own body radius
+        /// (`Style::button_radius`), not the wider `Style::corner_radius`
+        /// every other overlay's ring shares — otherwise a radius-6
+        /// ring would sit visibly outside a radius-2 body.
+        #[test]
+        fn focused_button_ring_radius_matches_button_radius_not_corner_radius() {
+            let mut button = Button::new(WidgetId::new("b"), "OK");
+            button.focused = true;
+            let theme = Theme::default();
+            let style = Style::default()
+                .with_button_radius(2.0)
+                .with_corner_radius(6.0);
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let body = surface
+                .fills
+                .iter()
+                .find(|(_, _, c)| *c == theme.accent_bg)
+                .expect("the button body must fill theme.accent_bg");
+            assert_eq!(body.1, 2.0, "the body must fill at button_radius");
+
+            let ring = surface
+                .strokes
+                .iter()
+                .find(|(_, _, color, _)| *color == theme.focus_ring_color())
+                .expect("a focused button must paint a ring stroke");
+            assert_eq!(
+                ring.1, 2.0,
+                "the ring must stroke at button_radius, not corner_radius"
+            );
         }
 
         #[test]
@@ -1285,7 +1336,7 @@ mod tests {
         let style = Style::default()
             .with_control_height(32.0)
             .with_padding(10.0)
-            .with_corner_radius(9.0);
+            .with_button_radius(9.0);
 
         let metrics = ButtonMetrics::resolve(&style);
 
@@ -1300,7 +1351,17 @@ mod tests {
         let metrics = ButtonMetrics::resolve(&style);
         assert_eq!(metrics.height, style.control_height);
         assert_eq!(metrics.padding_x, style.padding);
-        assert_eq!(metrics.corner_radius, style.corner_radius);
+        assert_eq!(metrics.corner_radius, style.button_radius);
+    }
+
+    /// A button's corner radius tracks [`Style::button_radius`], not
+    /// [`Style::corner_radius`] — the two are independent tokens, so
+    /// retuning one leaves the other's consumer unchanged.
+    #[test]
+    fn resolved_metrics_corner_radius_is_independent_of_style_corner_radius() {
+        let style = Style::default().with_corner_radius(20.0);
+        let metrics = ButtonMetrics::resolve(&style);
+        assert_eq!(metrics.corner_radius, Style::default().button_radius);
     }
 
     #[test]

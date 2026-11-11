@@ -1,0 +1,22 @@
+{
+  "//": "Type-checks this package's JSX runtime and its own example against `tsc --strict` -- see the README's 'JSX' section. Needs a built native addon first (`npm run build:debug`), since `js/app/runtime.ts` type-imports `./index`'s own generated `index.d.ts`. `npm run typecheck:jsx` resolves `tsc` from the hoisted `typescript@^5.9` devDependency (not the separate `typescript@6` `@napi-rs/cli` carries as its own nested dependency) -- this config is only ever exercised against 5.9, so a behavior difference in TS 6 (e.g. around the local-vs-global `JSX` namespace this runtime exports) would not be caught here.",
+  "compilerOptions": {
+    "strict": true,
+    "module": "commonjs",
+    "target": "es2020",
+    "moduleResolution": "node",
+    "skipLibCheck": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "@quadraui/node",
+    "paths": {
+      "@quadraui/node/jsx-runtime": ["./js/jsx-runtime.ts"],
+      "@quadraui/node/jsx-dev-runtime": ["./js/jsx-dev-runtime.ts"]
+    }
+  },
+  "include": [
+    "js/jsx-runtime.ts",
+    "js/jsx-dev-runtime.ts",
+    "examples/file_manager_app_jsx.tsx"
+  ]
+}

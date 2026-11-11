@@ -7,13 +7,29 @@
 //! (`TabIcon`), and a CJK double-width label (a vt100 conformance fixture).
 
 use quadraui::{
-    Backend, BackendCaps, Color, Reaction, Rect, TabBar, TabBarHit, TabChrome, TabFrame, TabIcon,
-    TabItem, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Reaction, Rect, Style, TabBar, TabBarHit, TabChrome, TabFrame,
+    TabIcon, TabItem, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
 
 const SOURCE: &str = include_str!("tab_bar.rs");
+
+/// `Style`'s chrome-metric `token` (`tab_height`, `status_bar_height`,
+/// `toolbar_height`, …), floored at the chrome line height on a pixel
+/// backend — never shrunk below it, so a chrome font taller than the
+/// design token isn't clipped — or the plain chrome line height on TUI's
+/// fixed cell grid, where every `Style` chrome metric is a documented
+/// no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
+fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
+    let lh = backend.chrome_line_height();
+    if lh <= 1.0 {
+        backend.snap_height(lh)
+    } else {
+        backend.snap_height(lh.max(token(&backend.style())))
+    }
+}
 
 // gallery:begin
 const CHROME_LABELS: [&str; 2] = ["main.rs", "lib.rs"];
@@ -133,8 +149,14 @@ impl TabBarDemo {
         }
     }
 
+    /// `area`'s top strip, sized off `Style::tab_height` on a pixel
+    /// backend (floored at the chrome line height so a chrome font taller
+    /// than the token isn't clipped) and off the plain chrome line height
+    /// on TUI's fixed cell grid — mirrors `AppShell`'s own tab-strip
+    /// sizing (`compose/shell_layout.rs`'s `header_h`).
     fn rect(area: Rect, backend: &dyn Backend) -> Rect {
-        Rect::new(area.x, area.y, area.width, backend.line_height())
+        let h = chrome_strip_height(backend, |s| s.tab_height);
+        Rect::new(area.x, area.y, area.width, h)
     }
 
     fn toggle_icons(&mut self) {
@@ -306,6 +328,21 @@ mod tests {
         assert_eq!(demo.chrome_action, format!("closed {}", CHROME_LABELS[0]));
     }
 
+    /// On a pixel backend (a GTK-shaped chrome line height, simulated via
+    /// `RecordingBackend`), the painted tab-bar rect is exactly
+    /// `Style::tab_height` tall — not the raw chrome line height, the bug
+    /// this test guards against regressing.
+    #[test]
+    fn rect_height_matches_tab_height_token_on_a_pixel_backend() {
+        let backend = quadraui::testing::RecordingBackend {
+            chrome_line_height: Some(20.0),
+            ..quadraui::testing::RecordingBackend::new()
+        };
+        let area = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let rect = TabBarDemo::rect(area, &backend);
+        assert_eq!(rect.height, Style::default().tab_height);
+    }
+
     #[test]
     fn activating_a_chrome_tab_updates_both_active_index_and_action() {
         let mut demo = TabBarDemo::new();
@@ -316,5 +353,20 @@ mod tests {
             demo.chrome_action,
             format!("activated {}", CHROME_LABELS[1])
         );
+    }
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod tui_tests {
+    use super::*;
+
+    /// TUI's fixed cell grid keeps its one-row degrade — `Style::tab_height`
+    /// is a documented no-op there.
+    #[test]
+    fn rect_height_stays_one_chrome_line_on_tui() {
+        let backend = quadraui::tui::TuiBackend::new();
+        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let rect = TabBarDemo::rect(area, &backend);
+        assert_eq!(rect.height, backend.chrome_line_height());
     }
 }

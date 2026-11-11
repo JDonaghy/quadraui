@@ -3,7 +3,8 @@
 //! Paints the field (border + current text) exactly like
 //! [`crate::tui::text_input`], then — when `layout.dropdown` is
 //! `Some` — the filtered option list beneath it, in the same row
-//! chrome as [`crate::tui::draw_completions`]. Row labels resolve
+//! chrome as `crate::tui::draw_completions` (`#[doc(hidden)]`, so not
+//! linked here). Row labels resolve
 //! through [`ComboBox::filtered_indices`] back into `combo_box.options`,
 //! mirroring [`crate::primitives::combo_box::native_surface_paint::paint`].
 
