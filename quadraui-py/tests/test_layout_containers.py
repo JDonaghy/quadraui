@@ -12,8 +12,10 @@ binding work:
   before any file is open) doesn't need to special-case the empty case
   itself.
 - a `"split"` node's `"first_min"`/`"second_min"` are honoured as a minimum
-  pane size, specified in portable line-count units rather than a
-  backend-native one.
+  pane size, specified in the same portable surface-native-pixel unit
+  `"padding"`/`"margin"`/`"gap"` use (quantised against whichever axis the
+  split's own `"orientation"` actually bounds -- width for `"horizontal"`,
+  height for `"vertical"`), rather than a backend-native one.
 - a `"row"`/`"column"` node's optional `"padding"`/`"gap"`/`"margin"`
   spacing keys, siblings of the `"row"`/`"column"` key in the same node
   dict, are honoured by the shared layout pass.
@@ -284,12 +286,14 @@ def test_tabs_with_empty_list_renders_without_error():
 
 
 def test_split_honors_first_min_as_a_portable_minimum_pane_size():
-    # #1745: `first_min`/`second_min` are portable line-count units, not a
-    # backend-native one -- at an extreme ratio that would otherwise
-    # collapse the first pane to ~0, a non-zero `first_min` still reserves
-    # it a minimum width. The divider's `'|'` column is found by scanning
-    # the plain-text `screen()` dump (no bounds/position pymethod is
-    # exposed to Python), and compared with vs. without a minimum.
+    # `first_min`/`second_min` are in the same portable surface-native-pixel
+    # unit `"padding"`/`"margin"`/`"gap"` use, not a backend-native one -- at
+    # an extreme ratio that would otherwise collapse the first pane to ~0, a
+    # non-zero `first_min` still reserves it a minimum width. `80` quantises
+    # to `ceil(80 / 8) == 10` TUI columns, the same 8px-wide nominal cell
+    # `"padding"` converts against. The divider's `'|'` column is found by
+    # scanning the plain-text `screen()` dump (no bounds/position pymethod
+    # is exposed to Python), and compared with vs. without a minimum.
     def divider_column(app):
         screen = app.screen()
         line = screen.splitlines()[0]
@@ -315,11 +319,12 @@ def test_split_honors_first_min_as_a_portable_minimum_pane_size():
     col_no_min = divider_column(app_no_min)
 
     app_with_min = QuiApp(40, 10)
-    app_with_min.set_render(render_with_min(10))
+    app_with_min.set_render(render_with_min(80))
     col_with_min = divider_column(app_with_min)
 
-    # Without a minimum the divider sits near ratio*width (~1); with a
-    # 10-line minimum it's pushed out to at least that many columns.
+    # Without a minimum the divider sits near ratio*width (~1); with an
+    # 80px (10-column) minimum it's pushed out to at least that many
+    # columns.
     assert col_no_min < 5
     assert col_with_min >= 10
 
@@ -571,3 +576,106 @@ def test_duplicate_leaf_id_inside_panel_content_is_rejected():
     app.set_render(render)
     with pytest.raises(InvalidDescriptorError):
         app.screen()
+
+
+def test_row_sidebar_fixed_content_weight_inspector_percent_layout():
+    # The acceptance scenario: a sidebar (`"Fixed"`), a content pane
+    # (`"Weight"`), and an inspector (`"Percent"`) sharing one row. `size`
+    # is a sibling of whatever key names a child's own node kind, same as
+    # `"padding"` is a sibling of `"row"` -- here that's the leaf dict's
+    # own `"id"`/`"text_display"` pair. `Fixed(80)` quantises to `ceil(80
+    # / 8) == 10` TUI columns; `Percent(0.2)` of the 40-column screen is
+    # 8 columns; the only `Weight` child (there's no `EqualShare` sibling
+    # here) absorbs the entire 22-column remainder.
+    app = QuiApp(40, 1)
+
+    def render():
+        return {
+            "row": [
+                {**_text("text:sidebar", "S"), "size": {"Fixed": 80}},
+                {**_text("text:content", "C"), "size": {"Weight": 1.0}},
+                {**_text("text:inspector", "I"), "size": {"Percent": 0.2}},
+            ],
+        }
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    assert line.index("S") == 0
+    assert line.index("C") == 10
+    assert line.index("I") == 32
+
+
+def test_row_child_min_floors_a_fixed_size_below_its_natural_width():
+    # A child's `"min"` key is in the same portable pixel unit as `"size"`
+    # `Fixed`/`padding`/`margin`/`gap` -- `"size": {"Fixed": 8}` alone
+    # would quantise to 1 column, but `"min": 80` floors it to 10.
+    app = QuiApp(40, 1)
+
+    def render():
+        return {
+            "row": [
+                {**_text("text:left", "L"), "size": {"Fixed": 8}, "min": 80},
+                _text("text:right", "R"),
+            ],
+        }
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    assert line.index("L") == 0
+    assert line.index("R") == 10
+
+
+def test_row_justify_space_between_spreads_leftover_between_fixed_children():
+    # Two 80px (10-column) `Fixed` children in a 40-column row leave 20
+    # columns of leftover; `"justify": "space_between"` puts all of it
+    # between them rather than after the last one (the `"start"` default).
+    app = QuiApp(40, 1)
+
+    def render():
+        return {
+            "row": [
+                {**_text("text:left", "L"), "size": {"Fixed": 80}},
+                {**_text("text:right", "R"), "size": {"Fixed": 80}},
+            ],
+            "justify": "space_between",
+        }
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    assert line.index("L") == 0
+    assert line.index("R") == 30
+
+
+def test_column_align_center_centers_a_narrower_than_stretch_child():
+    # `"align": "center"` sizes a child to its own natural cross-axis
+    # extent (here, a one-character button's measured width) and centers
+    # it, instead of stretching it across the full row width -- the
+    # `"stretch"` default every pre-`align` column used.
+    app = QuiApp(10, 1)
+
+    def render():
+        return {
+            "column": [
+                {"id": "btn", "button": {"id": "btn", "label": "X"}},
+            ],
+            "align": "center",
+        }
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    assert line.index("X") > 0, "a centered 1-column-wide button is not flush with the left edge"
+
+
+def test_row_with_no_size_key_still_decodes_the_legacy_leaf_shape():
+    # A bare leaf dict with no `"size"`/`"min"`/`"max"` keys -- the shape
+    # every pre-existing render callback uses -- still decodes to
+    # `EqualShare`, unchanged from before per-child sizing existed.
+    app = QuiApp(10, 1)
+
+    def render():
+        return {"row": [_text("text:left", "L"), _text("text:right", "R")]}
+
+    app.set_render(render)
+    line = app.screen().splitlines()[0]
+    assert line.index("L") == 0
+    assert line.index("R") == 5

@@ -377,7 +377,12 @@ export interface LayoutRowNode {
   padding?: PaddingValue;
   margin?: number;
   gap?: number;
+  justify?: "start" | "center" | "end" | "space_between";
+  align?: "start" | "center" | "end" | "stretch";
   wire_version?: number;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 export interface LayoutColumnNode {
@@ -385,7 +390,12 @@ export interface LayoutColumnNode {
   padding?: PaddingValue;
   margin?: number;
   gap?: number;
+  justify?: "start" | "center" | "end" | "space_between";
+  align?: "start" | "center" | "end" | "stretch";
   wire_version?: number;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 export interface LayoutSplitPayload {
@@ -404,6 +414,9 @@ export interface LayoutSplitNode {
   margin?: number;
   gap?: number;
   wire_version?: number;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 export interface LayoutTabEntryNode {
@@ -432,6 +445,9 @@ export interface LayoutTabsNode {
   padding?: PaddingValue;
   margin?: number;
   wire_version?: number;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 /** The deprecated `panel` node's own chrome dict -- prefer `LayoutSidebarPanelNode`. */
@@ -449,6 +465,9 @@ export interface LayoutPanelNode {
   padding?: PaddingValue;
   margin?: number;
   wire_version?: number;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 export interface LayoutSidebarPanelPayload {
@@ -461,6 +480,9 @@ export interface LayoutSidebarPanelPayload {
 export interface LayoutSidebarPanelNode {
   sidebar_panel: LayoutSidebarPanelPayload;
   wire_version?: number;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 export interface _SplitTreeLeaf {
@@ -488,6 +510,9 @@ export interface LayoutSplitTreePayload {
 export interface LayoutSplitTreeNode {
   split_tree: LayoutSplitTreePayload;
   wire_version?: number;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 export interface ProgressBarDescriptor {
@@ -1478,6 +1503,9 @@ export interface LayoutLeafNode {
   canvas?: CanvasDescriptor;
   scroll_view?: ScrollViewDescriptor;
   find_replace?: FindReplacePanelDescriptor;
+  size?: SectionSize;
+  min?: number;
+  max?: number;
 }
 
 /** One node of a render callback's returned layout tree. */

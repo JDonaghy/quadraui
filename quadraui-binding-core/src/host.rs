@@ -52,8 +52,8 @@ use crate::layout::{
     quantise_horizontal, quantise_vertical, LayoutLeaf, LayoutNode, LayoutTabs, LeafDescriptor,
 };
 use crate::render::{
-    apply_split_gap, data_table_viewport_rows, list_viewport_rows, shrink_main_axis,
-    split_rects_with_gap, tree_viewport_rows, RenderFrame, RenderRefs,
+    apply_split_gap, data_table_viewport_rows, layout_container_rects, list_viewport_rows,
+    shrink_main_axis, tree_viewport_rows, RenderFrame, RenderRefs,
 };
 use crate::widget_state::WidgetState;
 
@@ -1577,9 +1577,9 @@ pub fn resolve_render_refs(
 /// and [`crate::engine::InteractionEngine`]'s nav/expand hooks write back
 /// under, so a render callback that leaves a descriptor's embedded id at
 /// its default (or reuses one across leaves) still resolves and persists
-/// correctly. Walks `Row`/`Column`'s own [`split_rects_with_gap`]
+/// correctly. Walks `Row`/`Column`'s own [`crate::render::layout_container_rects`]
 /// subdivision and `Split`'s own [`Split::layout`] exactly as
-/// [`crate::render::paint_layout`] does — including scaling `first_min`/
+/// [`crate::render::paint_layout`] does — including quantising `first_min`/
 /// `second_min` into native units and carving the quantised gap out
 /// before layout — so a `Tree`/`List`/`DataTable` leaf nested under either
 /// gets the same rect it will actually be painted into, for
@@ -1616,32 +1616,18 @@ pub fn resolve_layout_node(
             let char_width = backend.char_width();
             let line_height = backend.line_height();
             let inner = container.spacing.inset(area, char_width, line_height);
-            let rects = split_rects_with_gap(
-                inner,
-                container.children.len(),
-                true,
-                container.spacing.gap,
-                char_width,
-                line_height,
-            );
+            let rects = layout_container_rects(backend, inner, container, true);
             for (child, rect) in container.children.iter_mut().zip(rects) {
-                resolve_layout_node(widget_state, backend, rect, child);
+                resolve_layout_node(widget_state, backend, rect, &mut child.node);
             }
         }
         LayoutNode::Column(container) => {
             let char_width = backend.char_width();
             let line_height = backend.line_height();
             let inner = container.spacing.inset(area, char_width, line_height);
-            let rects = split_rects_with_gap(
-                inner,
-                container.children.len(),
-                false,
-                container.spacing.gap,
-                char_width,
-                line_height,
-            );
+            let rects = layout_container_rects(backend, inner, container, false);
             for (child, rect) in container.children.iter_mut().zip(rects) {
-                resolve_layout_node(widget_state, backend, rect, child);
+                resolve_layout_node(widget_state, backend, rect, &mut child.node);
             }
         }
         LayoutNode::Leaf(LayoutLeaf {
@@ -3932,8 +3918,8 @@ mod tests {
         let mut save_button = Button::new(WidgetId::new("save"), "Save");
         save_button.tooltip = Some("Save the file".to_string());
         let other_button = Button::new(WidgetId::new("other"), "Other");
-        let tree = LayoutNode::Row(LayoutContainer {
-            children: vec![
+        let tree = LayoutNode::Row(LayoutContainer::new(
+            vec![
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "leaf:save".to_string(),
                     descriptor: LeafDescriptor::Button(save_button),
@@ -3945,8 +3931,8 @@ mod tests {
                     scroll_px: None,
                 }),
             ],
-            spacing: Spacing::default(),
-        });
+            Spacing::default(),
+        ));
         let logic = TreeHoverHostLogic {
             host: BindingHost::default(),
             engine: InteractionEngine::default(),
@@ -4014,8 +4000,8 @@ mod tests {
         alpha.tooltip = Some("Tooltip for Alpha".to_string());
         let mut bravo = Button::new(shared_id, "Bravo");
         bravo.tooltip = Some("Tooltip for Bravo".to_string());
-        let tree = LayoutNode::Row(LayoutContainer {
-            children: vec![
+        let tree = LayoutNode::Row(LayoutContainer::new(
+            vec![
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "leaf:alpha".to_string(),
                     descriptor: LeafDescriptor::Button(alpha),
@@ -4027,8 +4013,8 @@ mod tests {
                     scroll_px: None,
                 }),
             ],
-            spacing: Spacing::default(),
-        });
+            Spacing::default(),
+        ));
         let logic = TreeHoverHostLogic {
             host: BindingHost::default(),
             engine: InteractionEngine::default(),

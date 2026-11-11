@@ -14,8 +14,8 @@ use std::rc::Rc;
 // — the `"panel"` wire node itself is a separate breaking change.
 #[allow(deprecated)]
 use quadraui::{
-    Button, DataTable, ListView, Panel, Rect, SidebarPanel, Split, SplitTree, TabBar, TextDisplay,
-    TreeView,
+    Button, DataTable, ListView, Panel, Rect, SectionSize, SidebarPanel, Split, SplitTree, TabBar,
+    TextDisplay, TreeView,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -41,15 +41,311 @@ pub enum LayoutNode {
 }
 
 /// A [`LayoutNode::Row`]/[`LayoutNode::Column`]'s decoded shape: its child
-/// nodes paired with the [`Spacing`] (`padding`/`margin`/`gap`) the render
+/// slots ([`LayoutChild`], each pairing one child node with its own
+/// main-axis size/min/max) paired with the [`Spacing`] (`padding`/`margin`/
+/// `gap`) and the main-axis [`Justify`]/cross-axis [`Align`] the render
 /// callback's `"row"`/`"column"` dict declared alongside them — see
 /// `crate::wire::layout_node_from_value`'s decode for the wire shape.
-/// `spacing` defaults to [`Spacing::default`] (no inset, no gap), so an
-/// existing tree with no spacing keys paints bit-for-bit identical to
-/// before this field existed.
+/// `spacing`/`justify`/`align` each default to no inset/no gap/`Start`/
+/// `Stretch`, and every child's own size defaults to
+/// [`SectionSize::EqualShare`] with no min/max, so an existing tree with
+/// none of these keys paints the same shares as before they existed:
+/// every child gets the same share of the full container, the way
+/// [`crate::render::split_rects_with_gap`] (this container's own
+/// predecessor) always divided it — down to floating-point tolerance, not
+/// necessarily the identical bit pattern, since the two now reach that
+/// share by different arithmetic (see
+/// `crate::render::layout_container_rects`).
 pub struct LayoutContainer {
-    pub children: Vec<LayoutNode>,
+    pub children: Vec<LayoutChild>,
     pub spacing: Spacing,
+    pub justify: Justify,
+    pub align: Align,
+}
+
+impl LayoutContainer {
+    /// Builds a container whose every child uses the default
+    /// [`LayoutChild::new`] sizing (`EqualShare`, no min/max) and whose
+    /// `justify`/`align` are both their defaults — the equal-share-only
+    /// shape every `"row"`/`"column"` node had before per-child sizing
+    /// existed. Convenient for a call site that only ever deals in bare
+    /// [`LayoutNode`]s (most of this crate's own tests, and any decode
+    /// path that hasn't been taught the new per-child keys).
+    pub fn new(children: Vec<LayoutNode>, spacing: Spacing) -> Self {
+        Self {
+            children: children.into_iter().map(LayoutChild::new).collect(),
+            spacing,
+            justify: Justify::default(),
+            align: Align::default(),
+        }
+    }
+}
+
+/// One [`LayoutContainer`] child slot: the child [`LayoutNode`] itself,
+/// paired with the main-axis [`SectionSize`] strategy it resolves under
+/// (default [`SectionSize::EqualShare`], the only strategy that existed
+/// before per-child sizing), and an optional `min`/`max` clamp in the same
+/// portable surface-native-pixel unit [`Spacing`]'s fields use (quantised
+/// to a whole native unit at paint time, same as `padding`/`margin`/`gap`
+/// — see `crate::render::layout_container_rects`).
+pub struct LayoutChild {
+    pub node: LayoutNode,
+    pub size: SectionSize,
+    pub min: Option<f32>,
+    pub max: Option<f32>,
+}
+
+impl LayoutChild {
+    /// A child with the pre-existing default sizing: `EqualShare`, no
+    /// min/max.
+    pub fn new(node: LayoutNode) -> Self {
+        Self {
+            node,
+            size: SectionSize::default(),
+            min: None,
+            max: None,
+        }
+    }
+}
+
+/// A [`LayoutContainer`]'s main-axis distribution of any leftover space
+/// once every child's own size is resolved — CSS flexbox's
+/// `justify-content`, restricted to the four values this layout tree
+/// supports. Only visible when the children's resolved sizes sum to less
+/// than the container's own main-axis extent (the common case — all
+/// `EqualShare`, or a `Weight`/`EqualShare` mix with no min/max clamp —
+/// always consumes the whole extent, so `justify` is a no-op there; it
+/// matters once every child is `Fixed`/`Percent`/`Content`/clamped and
+/// together they fall short of the container).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Justify {
+    /// Leftover space goes after the last child.
+    #[default]
+    Start,
+    /// Leftover space is split evenly before the first and after the
+    /// last child.
+    Center,
+    /// Leftover space goes before the first child.
+    End,
+    /// No leading/trailing leftover; it is split evenly *between*
+    /// children instead (a no-op with zero or one child).
+    SpaceBetween,
+}
+
+/// A [`LayoutContainer`]'s cross-axis treatment of each child — CSS
+/// flexbox's `align-items`, restricted to the four values this layout tree
+/// supports. `Stretch` (the default) gives every child the container's
+/// full cross-axis extent, exactly like every `Row`/`Column` child before
+/// `align` existed. `Start`/`Center`/`End` instead size a child to its own
+/// natural cross-axis extent (see `crate::render::natural_size`) and
+/// position it within the container's cross-axis extent; a child with no
+/// cheap natural-size measurement on that axis (anything but a `Button`/
+/// `TextDisplay`/`TabBar` leaf) degrades to `Stretch` instead of collapsing
+/// to zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Align {
+    Start,
+    Center,
+    End,
+    #[default]
+    Stretch,
+}
+
+/// One [`LayoutContainer`] child's main-axis sizing input to
+/// [`resolve_main_axis_sizes`]: its [`SectionSize`] strategy, optional
+/// `min`/`max` clamp (already converted to native units — see
+/// `crate::render::layout_container_rects`), and `content` — the child's
+/// own natural main-axis extent, consulted only when `size` is
+/// [`SectionSize::Content`] (`0.0` for every other strategy, including a
+/// `Content` child with no cheap natural-size measurement available).
+#[derive(Clone, Copy, Debug)]
+pub struct MainAxisSpec {
+    pub size: SectionSize,
+    pub min: Option<f32>,
+    pub max: Option<f32>,
+    pub content: f32,
+}
+
+/// Clamps `raw` between `spec.min`/`spec.max` (either bound optional),
+/// then floors at `0.0` — a negative resolved size never reaches a
+/// [`Rect`], regardless of how aggressively a caller-supplied `max` or a
+/// `Percent`/`Weight` overflow squeezed it.
+fn apply_min_max(spec: &MainAxisSpec, raw: f32) -> f32 {
+    let mut v = raw;
+    if let Some(min) = spec.min {
+        v = v.max(min);
+    }
+    if let Some(max) = spec.max {
+        v = v.min(max);
+    }
+    v.max(0.0)
+}
+
+/// Three-pass main-axis size resolution for a [`LayoutContainer`]'s
+/// children — the same `Fixed` → `Percent` → `Weight`/`EqualShare` pass
+/// order `quadraui::MultiSectionView`'s own per-section layout uses for
+/// the identical [`SectionSize`] vocabulary, adapted for a plain
+/// `Row`/`Column` child (no header chrome cost, no collapsed state).
+///
+/// Pass 1 resolves every `Fixed`/`Content` child exactly (clamped by its
+/// own min/max). Pass 2 resolves every `Percent` child against
+/// `container_main` (the container's full main-axis extent, before any
+/// child consumed part of it); if the percentages overflow what's left of
+/// `usable_main`, every `Percent` child scales down proportionally. Pass 3
+/// splits whatever remains of `usable_main` across every `Weight`/
+/// `EqualShare` child by weight ratio (`EqualShare` is `Weight(1.0)`); with
+/// no such child, the remainder goes unused (same as before per-child
+/// sizing existed only when every child was `EqualShare` and consumed the
+/// whole extent by construction). `usable_main` is `container_main` minus
+/// whatever gap the caller already reserved between children.
+pub fn resolve_main_axis_sizes(
+    specs: &[MainAxisSpec],
+    container_main: f32,
+    usable_main: f32,
+) -> Vec<f32> {
+    let n = specs.len();
+    let mut out = vec![0.0_f32; n];
+    let mut done = vec![false; n];
+    let mut consumed = 0.0_f32;
+
+    // Pass 1: Fixed + Content.
+    for (i, spec) in specs.iter().enumerate() {
+        let raw = match spec.size {
+            SectionSize::Fixed(v) => v as f32,
+            SectionSize::Content => spec.content,
+            _ => continue,
+        };
+        let v = apply_min_max(spec, raw);
+        out[i] = v;
+        consumed += v;
+        done[i] = true;
+    }
+
+    // Pass 2: Percent, against the original `container_main`.
+    let mut percent_indices = Vec::new();
+    let mut percent_raw = Vec::new();
+    for (i, spec) in specs.iter().enumerate() {
+        if done[i] {
+            continue;
+        }
+        if let SectionSize::Percent(p) = spec.size {
+            percent_indices.push(i);
+            percent_raw.push(p.clamp(0.0, 1.0) * container_main);
+        }
+    }
+    let percent_total: f32 = percent_raw.iter().sum();
+    let percent_budget = (usable_main - consumed).max(0.0);
+    let percent_scale = if percent_total > percent_budget && percent_total > 0.0 {
+        percent_budget / percent_total
+    } else {
+        1.0
+    };
+    for (k, &i) in percent_indices.iter().enumerate() {
+        let v = apply_min_max(&specs[i], percent_raw[k] * percent_scale);
+        out[i] = v;
+        consumed += v;
+        done[i] = true;
+    }
+
+    // Pass 3: Weight + EqualShare share whatever remains.
+    let remainder = (usable_main - consumed).max(0.0);
+    let mut flex_indices = Vec::new();
+    let mut weights = Vec::new();
+    for (i, spec) in specs.iter().enumerate() {
+        if done[i] {
+            continue;
+        }
+        match spec.size {
+            SectionSize::Weight(w) => {
+                flex_indices.push(i);
+                weights.push(w.max(0.0));
+            }
+            SectionSize::EqualShare => {
+                flex_indices.push(i);
+                weights.push(1.0);
+            }
+            SectionSize::Fixed(_) | SectionSize::Content | SectionSize::Percent(_) => {
+                unreachable!("already resolved in pass 1/2")
+            }
+        }
+    }
+    let weight_sum: f32 = weights.iter().sum();
+    if !flex_indices.is_empty() && weight_sum > 0.0 {
+        for (k, &i) in flex_indices.iter().enumerate() {
+            let raw = remainder * (weights[k] / weight_sum);
+            out[i] = apply_min_max(&specs[i], raw);
+        }
+    } else {
+        for &i in &flex_indices {
+            out[i] = apply_min_max(&specs[i], 0.0);
+        }
+    }
+
+    out
+}
+
+/// Main-axis starting offset of each child, relative to the container's
+/// own main-axis origin, once [`resolve_main_axis_sizes`] has resolved
+/// every `sizes[i]`. `gap` (already in native units) is inserted between
+/// every pair of adjacent children regardless of `justify`; `justify`
+/// only disposes of `usable_main - (sum(sizes) + total gap)` — the
+/// leftover once sizing and the declared gap are both accounted for. A
+/// negative leftover (children overflow `usable_main`) clamps to `0.0`,
+/// so `justify` never pushes a child to a negative offset.
+pub fn justify_starts(sizes: &[f32], usable_main: f32, gap: f32, justify: Justify) -> Vec<f32> {
+    let n = sizes.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let total: f32 = sizes.iter().sum::<f32>() + gap * (n - 1) as f32;
+    let leftover = (usable_main - total).max(0.0);
+    let (lead, extra) = match justify {
+        Justify::Start => (0.0, 0.0),
+        Justify::Center => (leftover / 2.0, 0.0),
+        Justify::End => (leftover, 0.0),
+        Justify::SpaceBetween => {
+            if n > 1 {
+                (0.0, leftover / (n - 1) as f32)
+            } else {
+                (0.0, 0.0)
+            }
+        }
+    };
+    let mut starts = Vec::with_capacity(n);
+    let mut cursor = lead;
+    for (i, &size) in sizes.iter().enumerate() {
+        starts.push(cursor);
+        cursor += size;
+        if i + 1 < n {
+            cursor += gap + extra;
+        }
+    }
+    starts
+}
+
+/// A child's cross-axis `(offset, size)` within `cross_extent`, given its
+/// own natural cross-axis extent (`None` when no cheap measurement exists
+/// — see [`Align`]'s own doc) and the container's [`Align`]. `Stretch`
+/// ignores `natural_cross` entirely and always returns `(0.0,
+/// cross_extent)` — the pre-`align` behaviour. Every other value sizes the
+/// child to `natural_cross` (falling back to `cross_extent` — i.e.
+/// degrading to `Stretch` — when `None`), clamped to fit inside
+/// `cross_extent`, then positions it at the start/middle/end of whatever
+/// cross-axis space that size didn't use.
+pub fn align_cross(cross_extent: f32, natural_cross: Option<f32>, align: Align) -> (f32, f32) {
+    if align == Align::Stretch {
+        return (0.0, cross_extent.max(0.0));
+    }
+    let size = natural_cross
+        .unwrap_or(cross_extent)
+        .clamp(0.0, cross_extent.max(0.0));
+    let offset = match align {
+        Align::Start => 0.0,
+        Align::Center => ((cross_extent - size) / 2.0).max(0.0),
+        Align::End => (cross_extent - size).max(0.0),
+        Align::Stretch => 0.0,
+    };
+    (offset, size)
 }
 
 /// One edge inset a `padding` spacing key decodes into: all four sides
@@ -371,7 +667,7 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
         match node {
             LayoutNode::Row(container) | LayoutNode::Column(container) => {
                 for child in &container.children {
-                    walk(what, child, seen)?;
+                    walk(what, &child.node, seen)?;
                 }
                 Ok(())
             }
@@ -498,5 +794,200 @@ mod tests {
         let insets = EdgeInsets::uniform(12.0);
         let inset = insets.inset(rect, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
         assert_eq!(inset, Rect::new(2.0, 1.0, 76.0, 22.0));
+    }
+
+    fn spec(size: SectionSize) -> MainAxisSpec {
+        MainAxisSpec {
+            size,
+            min: None,
+            max: None,
+            content: 0.0,
+        }
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_all_equal_share_divides_evenly() {
+        let specs = vec![
+            spec(SectionSize::EqualShare),
+            spec(SectionSize::EqualShare),
+            spec(SectionSize::EqualShare),
+        ];
+        assert_eq!(resolve_main_axis_sizes(&specs, 90.0, 90.0), vec![30.0; 3]);
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_fixed_plus_weight_mix() {
+        // Fixed(20) first, the 80 that's left split 2:1 between the two
+        // Weight children -- 53.333.. and 26.666...
+        let specs = vec![
+            spec(SectionSize::Fixed(20)),
+            spec(SectionSize::Weight(2.0)),
+            spec(SectionSize::Weight(1.0)),
+        ];
+        let sizes = resolve_main_axis_sizes(&specs, 100.0, 100.0);
+        assert_eq!(sizes[0], 20.0);
+        assert!((sizes[1] - 53.333_332).abs() < 0.01);
+        assert!((sizes[2] - 26.666_666).abs() < 0.01);
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_percent_is_against_the_original_container() {
+        let specs = vec![
+            spec(SectionSize::Percent(0.25)),
+            spec(SectionSize::EqualShare),
+        ];
+        let sizes = resolve_main_axis_sizes(&specs, 200.0, 200.0);
+        assert_eq!(sizes, vec![50.0, 150.0]);
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_percent_overflow_scales_down_proportionally() {
+        // Two 70% children overflow the 100-wide container; both scale
+        // down by the same factor so they still sum to the full width.
+        let specs = vec![
+            spec(SectionSize::Percent(0.7)),
+            spec(SectionSize::Percent(0.7)),
+        ];
+        let sizes = resolve_main_axis_sizes(&specs, 100.0, 100.0);
+        assert_eq!(sizes, vec![50.0, 50.0]);
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_content_uses_the_supplied_content_size() {
+        let specs = vec![
+            MainAxisSpec {
+                size: SectionSize::Content,
+                min: None,
+                max: None,
+                content: 15.0,
+            },
+            spec(SectionSize::EqualShare),
+        ];
+        let sizes = resolve_main_axis_sizes(&specs, 100.0, 100.0);
+        assert_eq!(sizes, vec![15.0, 85.0]);
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_min_floors_a_fixed_child() {
+        let specs = vec![MainAxisSpec {
+            size: SectionSize::Fixed(5),
+            min: Some(20.0),
+            max: None,
+            content: 0.0,
+        }];
+        assert_eq!(resolve_main_axis_sizes(&specs, 100.0, 100.0), vec![20.0]);
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_max_caps_an_equal_share_child() {
+        let specs = vec![
+            MainAxisSpec {
+                size: SectionSize::EqualShare,
+                min: None,
+                max: Some(10.0),
+                content: 0.0,
+            },
+            spec(SectionSize::EqualShare),
+        ];
+        // Each would get 50 by equal share; the first is capped to 10.
+        assert_eq!(
+            resolve_main_axis_sizes(&specs, 100.0, 100.0),
+            vec![10.0, 50.0]
+        );
+    }
+
+    #[test]
+    fn resolve_main_axis_sizes_with_no_flex_child_leaves_the_remainder_unused() {
+        let specs = vec![spec(SectionSize::Fixed(30))];
+        assert_eq!(resolve_main_axis_sizes(&specs, 100.0, 100.0), vec![30.0]);
+    }
+
+    #[test]
+    fn justify_starts_start_puts_leftover_after_the_last_child() {
+        assert_eq!(
+            justify_starts(&[10.0, 10.0], 100.0, 0.0, Justify::Start),
+            vec![0.0, 10.0]
+        );
+    }
+
+    #[test]
+    fn justify_starts_center_splits_leftover_before_and_after() {
+        // 100 - 20 = 80 leftover, 40 leads.
+        assert_eq!(
+            justify_starts(&[10.0, 10.0], 100.0, 0.0, Justify::Center),
+            vec![40.0, 50.0]
+        );
+    }
+
+    #[test]
+    fn justify_starts_end_puts_leftover_before_the_first_child() {
+        assert_eq!(
+            justify_starts(&[10.0, 10.0], 100.0, 0.0, Justify::End),
+            vec![80.0, 90.0]
+        );
+    }
+
+    #[test]
+    fn justify_starts_space_between_spreads_leftover_between_children() {
+        // 100 - 30 = 70 leftover split between the 2 gaps between 3
+        // children -- 35 each.
+        assert_eq!(
+            justify_starts(&[10.0, 10.0, 10.0], 100.0, 0.0, Justify::SpaceBetween),
+            vec![0.0, 45.0, 90.0]
+        );
+    }
+
+    #[test]
+    fn justify_starts_space_between_with_one_child_is_a_no_op() {
+        assert_eq!(
+            justify_starts(&[10.0], 100.0, 0.0, Justify::SpaceBetween),
+            vec![0.0]
+        );
+    }
+
+    #[test]
+    fn justify_starts_respects_a_declared_gap_regardless_of_justify() {
+        // 100 - (10 + 10 + 5 gap) = 75 leftover, split before/after by
+        // Center.
+        assert_eq!(
+            justify_starts(&[10.0, 10.0], 100.0, 5.0, Justify::Center),
+            vec![37.5, 52.5]
+        );
+    }
+
+    #[test]
+    fn align_cross_stretch_ignores_natural_size_and_fills_the_extent() {
+        assert_eq!(align_cross(40.0, Some(10.0), Align::Stretch), (0.0, 40.0));
+    }
+
+    #[test]
+    fn align_cross_start_sizes_to_natural_and_anchors_at_zero() {
+        assert_eq!(align_cross(40.0, Some(10.0), Align::Start), (0.0, 10.0));
+    }
+
+    #[test]
+    fn align_cross_center_sizes_to_natural_and_centers_it() {
+        assert_eq!(align_cross(40.0, Some(10.0), Align::Center), (15.0, 10.0));
+    }
+
+    #[test]
+    fn align_cross_end_sizes_to_natural_and_anchors_at_the_far_edge() {
+        assert_eq!(align_cross(40.0, Some(10.0), Align::End), (30.0, 10.0));
+    }
+
+    #[test]
+    fn align_cross_with_no_natural_size_degrades_to_stretch() {
+        assert_eq!(align_cross(40.0, None, Align::Center), (0.0, 40.0));
+    }
+
+    #[test]
+    fn layout_child_new_defaults_to_equal_share_with_no_min_max() {
+        let child = LayoutChild::new(LayoutNode::Row(LayoutContainer::new(
+            Vec::new(),
+            Spacing::default(),
+        )));
+        assert_eq!(child.size, SectionSize::EqualShare);
+        assert_eq!(child.min, None);
+        assert_eq!(child.max, None);
     }
 }

@@ -10,15 +10,16 @@ use std::rc::Rc;
 use serde::{Deserialize, Deserializer};
 
 use quadraui::{
-    Backend, Button, DataTable, InteractionState, ListView, Rect, Scrollbar, Split, SplitDirection,
-    SplitHit, SplitLayout, TabBar, TabChrome, TextDisplay, TextDisplayLayout, TextRegion, TreeView,
-    WidgetId,
+    Backend, Button, DataTable, FontRole, InteractionState, ListView, Rect, Scrollbar, SectionSize,
+    Split, SplitDirection, SplitHit, SplitLayout, TabBar, TabChrome, TextDisplay,
+    TextDisplayLayout, TextRegion, TreeView, WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
 use crate::hit::PaintedHit;
 use crate::layout::{
-    quantise_horizontal, quantise_vertical, LayoutContainer, LayoutLeaf, LayoutNode, LeafDescriptor,
+    align_cross, justify_starts, quantise_horizontal, quantise_vertical, resolve_main_axis_sizes,
+    LayoutContainer, LayoutLeaf, LayoutNode, LeafDescriptor, MainAxisSpec,
 };
 
 /// Owned decode of a render callback's returned descriptor set — one
@@ -394,30 +395,18 @@ pub fn paint_layout(
             let char_width = backend.char_width();
             let line_height = backend.line_height();
             let area = inset_for_spacing(area, container, char_width, line_height);
-            for (child, rect) in container.children.iter().zip(split_rects_with_gap(
-                area,
-                container.children.len(),
-                true,
-                container.spacing.gap,
-                char_width,
-                line_height,
-            )) {
-                paint_layout(backend, rect, child, hits, chrome_interaction);
+            let rects = layout_container_rects(backend, area, container, true);
+            for (child, rect) in container.children.iter().zip(rects) {
+                paint_layout(backend, rect, &child.node, hits, chrome_interaction);
             }
         }
         LayoutNode::Column(container) => {
             let char_width = backend.char_width();
             let line_height = backend.line_height();
             let area = inset_for_spacing(area, container, char_width, line_height);
-            for (child, rect) in container.children.iter().zip(split_rects_with_gap(
-                area,
-                container.children.len(),
-                false,
-                container.spacing.gap,
-                char_width,
-                line_height,
-            )) {
-                paint_layout(backend, rect, child, hits, chrome_interaction);
+            let rects = layout_container_rects(backend, area, container, false);
+            for (child, rect) in container.children.iter().zip(rects) {
+                paint_layout(backend, rect, &child.node, hits, chrome_interaction);
             }
         }
         LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf, hits, chrome_interaction),
@@ -425,17 +414,28 @@ pub fn paint_layout(
             let char_width = backend.char_width();
             let line_height = backend.line_height();
             let area = split.spacing.inset(area, char_width, line_height);
-            // `split.split.first_min`/`second_min` are decoded as portable
-            // line counts (see `crate::wire::decode_layout_node`'s split
-            // decode); scale them into the backend's native unit here,
-            // right before painting, so every backend gets a minimum pane
-            // size of the same visual weight from the same decoded number.
+            let horizontal = matches!(split.split.direction, SplitDirection::Horizontal);
+            // `split.split.first_min`/`second_min` are decoded in the same
+            // portable surface-native-pixel unit `Spacing`'s own fields
+            // use — see `crate::wire::decode_layout_node`'s split decode —
+            // so they're quantised into the backend's native unit here,
+            // right before painting, exactly like `gap` just below:
+            // `quantise_horizontal` (against `char_width`) for a
+            // `Horizontal` split, where `first_min`/`second_min` bound the
+            // pane's *width*; `quantise_vertical` (against `line_height`)
+            // for a `Vertical` one, where they bound its *height*. Using
+            // the wrong axis's metric would scale a minimum meant for one
+            // dimension by the other backend's font metric for the other.
+            let (min_metric, quantise_min): (f32, fn(f32, f32) -> f32) = if horizontal {
+                (char_width, quantise_horizontal)
+            } else {
+                (line_height, quantise_vertical)
+            };
             let native_split = Split {
-                first_min: split.split.first_min * line_height,
-                second_min: split.split.second_min * line_height,
+                first_min: quantise_min(split.split.first_min, min_metric),
+                second_min: quantise_min(split.split.second_min, min_metric),
                 ..split.split.clone()
             };
-            let horizontal = matches!(native_split.direction, SplitDirection::Horizontal);
             let gap = if horizontal {
                 quantise_horizontal(split.spacing.gap, char_width)
             } else {
@@ -570,6 +570,210 @@ pub fn paint_layout(
             }
         }
     }
+}
+
+/// A node's intrinsic `(width, height)`, each `None` when no cheap
+/// measurement exists for that axis on this node kind — see
+/// [`natural_size`], the only producer of this type.
+struct NaturalSize {
+    width: Option<f32>,
+    height: Option<f32>,
+}
+
+impl NaturalSize {
+    /// The extent along whichever axis is `horizontal`'s container's main
+    /// axis (width for a `Row`, height for a `Column`).
+    fn main(&self, horizontal: bool) -> Option<f32> {
+        if horizontal {
+            self.width
+        } else {
+            self.height
+        }
+    }
+
+    /// [`Self::main`]'s counterpart on the container's cross axis.
+    fn cross(&self, horizontal: bool) -> Option<f32> {
+        if horizontal {
+            self.height
+        } else {
+            self.width
+        }
+    }
+}
+
+/// Best-effort intrinsic size of `node`, consulted by
+/// [`layout_container_rects`] for a [`quadraui::SectionSize::Content`]
+/// child's main-axis size and for a non-`Stretch`
+/// [`crate::layout::Align`]'s cross-axis size. Measured directly off the
+/// descriptor already decoded for painting: `Button`/`TabBar` via
+/// `Backend::measure_text` (the same measurer `quadraui::compose::
+/// menu_system` already leans on for its own label widths), `TextDisplay`
+/// via its own line count/widest line, `List`/`Tree`/`DataTable` via their
+/// own row count (height only — none of the three has a cheap intrinsic
+/// width). Every other node kind (a nested `Row`/`Column`/`Split`/`Tabs`/
+/// `Panel`/`SidebarPanel`/`SplitTree`, or an `Extra` additive primitive)
+/// has no cheap measurement at this layer and reports [`None`] on both
+/// axes — see [`NaturalSize::main`]/[`NaturalSize::cross`]'s callers for
+/// how each degrades a `None`.
+fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) -> NaturalSize {
+    let LayoutNode::Leaf(leaf) = node else {
+        return NaturalSize {
+            width: None,
+            height: None,
+        };
+    };
+    match &leaf.descriptor {
+        LeafDescriptor::Button(button) => {
+            let (label_w, label_h) = backend.measure_text(&button.label, FontRole::Chrome);
+            // `measure_text` reports the bare label; every non-`Icon`
+            // variant paints chrome around it too (TUI's `"[ Label ]"`
+            // bracket chrome — see `quadraui::tui::button` — a pixel
+            // backend's own left/right `Button` padding). Omitting this
+            // would undersize the natural width enough to clip the
+            // chrome under `Align::Start`/`Center`/`End` or a `Content`
+            // main-axis size, not just misalign it. `char_width <= 1.0`
+            // is the same cell-grid-backend test `layout::native_units`
+            // uses; the pixel-backend branch is a nominal estimate, not
+            // a real `Style::padding` read (this layer has no `Style`
+            // handle), so it's the shakier of the two.
+            let chrome_w = if backend.char_width() <= 1.0 {
+                4.0
+            } else {
+                24.0
+            };
+            NaturalSize {
+                width: Some(label_w + chrome_w),
+                height: Some(label_h),
+            }
+        }
+        LeafDescriptor::TextDisplay(text) => {
+            let width = text
+                .lines
+                .iter()
+                .map(|line| {
+                    let line_text: String =
+                        line.spans.iter().map(|span| span.text.as_str()).collect();
+                    backend.measure_text(&line_text, FontRole::Chrome).0
+                })
+                .fold(0.0_f32, f32::max);
+            NaturalSize {
+                width: Some(width),
+                height: Some(text.lines.len() as f32 * line_height),
+            }
+        }
+        LeafDescriptor::List(list) => NaturalSize {
+            width: None,
+            height: Some(list.items.len() as f32 * line_height),
+        },
+        LeafDescriptor::Tree(tree) => NaturalSize {
+            width: None,
+            height: Some(tree.rows.len() as f32 * line_height),
+        },
+        LeafDescriptor::DataTable(table) => NaturalSize {
+            width: None,
+            height: Some(table.rows.len() as f32 * line_height),
+        },
+        LeafDescriptor::TabBar(tab_bar) => {
+            let width = tab_bar
+                .tabs
+                .iter()
+                .map(|tab| backend.measure_text(&tab.label, FontRole::Chrome).0)
+                .sum::<f32>();
+            NaturalSize {
+                width: Some(width),
+                height: Some(3.0 * line_height),
+            }
+        }
+        LeafDescriptor::Extra(_) => NaturalSize {
+            width: None,
+            height: None,
+        },
+    }
+}
+
+/// Resolves a [`LayoutContainer`]'s children into their final paint rects:
+/// each child's [`quadraui::SectionSize`] main-axis size (clamped by its
+/// own `min`/`max`, both quantised into native units here — the same
+/// treatment [`crate::layout::Spacing`]'s own fields get), the container's
+/// [`crate::layout::Justify`] distributing any leftover main-axis space,
+/// and the container's [`crate::layout::Align`] sizing/positioning each
+/// child on the cross axis. `area` is already the container's own inset
+/// area (post `padding`/`margin` — see [`inset_for_spacing`]); `horizontal`
+/// is `true` for a `Row` (main axis = width), `false` for a `Column` (main
+/// axis = height). The one call site each in [`paint_layout`] and
+/// `crate::host::resolve_layout_node` share this so a click always
+/// resolves against the exact geometry just painted.
+pub fn layout_container_rects(
+    backend: &mut dyn Backend,
+    area: Rect,
+    container: &LayoutContainer,
+    horizontal: bool,
+) -> Vec<Rect> {
+    let n = container.children.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let char_width = backend.char_width();
+    let line_height = backend.line_height();
+    let (main_metric, quantise_main): (f32, fn(f32, f32) -> f32) = if horizontal {
+        (char_width, quantise_horizontal)
+    } else {
+        (line_height, quantise_vertical)
+    };
+    let gap = quantise_main(container.spacing.gap, main_metric);
+    let container_main = if horizontal { area.width } else { area.height };
+    let usable_main = (container_main - gap * (n - 1) as f32).max(0.0);
+
+    let specs: Vec<MainAxisSpec> = container
+        .children
+        .iter()
+        .map(|child| {
+            // `SectionSize::Fixed`'s own `u16` is decoded in the same
+            // portable surface-native-pixel unit as `min`/`max` below —
+            // quantise it into native units the same way before
+            // `resolve_main_axis_sizes` ever sees it.
+            let size = match child.size {
+                SectionSize::Fixed(raw) => {
+                    SectionSize::Fixed(quantise_main(raw as f32, main_metric).round() as u16)
+                }
+                other => other,
+            };
+            let content = if matches!(size, SectionSize::Content) {
+                natural_size(backend, &child.node, line_height)
+                    .main(horizontal)
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            MainAxisSpec {
+                size,
+                min: child.min.map(|v| quantise_main(v, main_metric)),
+                max: child.max.map(|v| quantise_main(v, main_metric)),
+                content,
+            }
+        })
+        .collect();
+
+    let sizes = resolve_main_axis_sizes(&specs, container_main, usable_main);
+    let starts = justify_starts(&sizes, usable_main, gap, container.justify);
+
+    let cross_extent = if horizontal { area.height } else { area.width };
+    container
+        .children
+        .iter()
+        .zip(sizes.iter())
+        .zip(starts.iter())
+        .map(|((child, &size), &start)| {
+            let natural_cross = natural_size(backend, &child.node, line_height).cross(horizontal);
+            let (cross_offset, cross_size) =
+                align_cross(cross_extent, natural_cross, container.align);
+            if horizontal {
+                Rect::new(area.x + start, area.y + cross_offset, size, cross_size)
+            } else {
+                Rect::new(area.x + cross_offset, area.y + start, cross_size, size)
+            }
+        })
+        .collect()
 }
 
 /// Shrinks `area`'s main-axis extent by `gap`, anchored at the same
@@ -842,7 +1046,7 @@ pub fn collect_leaf_tooltips(node: &LayoutNode, out: &mut HashMap<WidgetId, Stri
     match node {
         LayoutNode::Row(container) | LayoutNode::Column(container) => {
             for child in &container.children {
-                collect_leaf_tooltips(child, out);
+                collect_leaf_tooltips(&child.node, out);
             }
         }
         LayoutNode::Leaf(leaf) => {
@@ -980,17 +1184,12 @@ mod tests {
     const TUI_LINE_HEIGHT: f32 = 1.0;
 
     fn container(children: usize, spacing: Spacing) -> LayoutContainer {
-        LayoutContainer {
-            children: (0..children)
-                .map(|_| {
-                    LayoutNode::Row(LayoutContainer {
-                        children: Vec::new(),
-                        spacing: Spacing::default(),
-                    })
-                })
+        LayoutContainer::new(
+            (0..children)
+                .map(|_| LayoutNode::Row(LayoutContainer::new(Vec::new(), Spacing::default())))
                 .collect(),
             spacing,
-        }
+        )
     }
 
     #[test]
@@ -1246,6 +1445,106 @@ mod tests {
         assert_eq!(layout, before);
     }
 
+    /// Minimal [`quadraui::AppLogic`] around a `LayoutNode::Split` of two
+    /// empty `Row` children, with `first_min`/`second_min` both set to
+    /// `min` — drives [`paint_layout`]'s `Split` arm through a real
+    /// [`quadraui::tui::testing::TuiDriver`] frame (the same headless
+    /// harness CLAUDE.md's testing doc calls for), the one real exercise
+    /// of `crate::wire::decode_layout_node`'s documented unit for these
+    /// two fields (the same portable surface-native-pixel unit
+    /// `padding`/`margin`/`gap` use).
+    struct MinSplitLogic {
+        direction: SplitDirection,
+        min: f32,
+        engine: crate::engine::InteractionEngine,
+    }
+
+    impl quadraui::AppLogic for MinSplitLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let empty_row =
+                || LayoutNode::Row(LayoutContainer::new(Vec::new(), Spacing::default()));
+            let node = LayoutNode::Split(crate::layout::LayoutSplit {
+                split: Split {
+                    id: WidgetId::new("s"),
+                    direction: self.direction,
+                    ratio: 0.01,
+                    first_min: self.min,
+                    second_min: self.min,
+                },
+                first: Box::new(empty_row()),
+                second: Box::new(empty_row()),
+                spacing: Spacing::default(),
+            });
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn handle(
+            &mut self,
+            _event: quadraui::UiEvent,
+            _backend: &mut dyn Backend,
+        ) -> quadraui::Reaction {
+            quadraui::Reaction::Continue
+        }
+    }
+
+    fn paint_split_with_min(
+        direction: SplitDirection,
+        min: f32,
+        width: u16,
+        height: u16,
+    ) -> (Rect, Rect) {
+        use quadraui::tui::testing::TuiDriver;
+
+        let logic = MinSplitLogic {
+            direction,
+            min,
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, width, height);
+        driver.render();
+        let layout = driver
+            .app()
+            .engine
+            .hit_map()
+            .iter()
+            .find_map(|hit| match hit {
+                PaintedHit::Split { layout } => Some(layout.clone()),
+                _ => None,
+            })
+            .expect("the split should have painted");
+        (layout.first_bounds, layout.second_bounds)
+    }
+
+    /// A `Horizontal` split's `first_min`/`second_min` bound the pane's
+    /// *width*, so they quantise against `char_width` — `10` (portable
+    /// px) quantises to `ceil(10 / 8) = 2` cells on `TuiBackend`, not the
+    /// `ceil(10 / 16) = 1` a `line_height`-keyed quantisation (the pre-fix
+    /// behaviour, which also skipped quantising altogether) would've
+    /// produced.
+    #[test]
+    fn horizontal_split_min_quantises_against_char_width() {
+        let (first, _second) = paint_split_with_min(SplitDirection::Horizontal, 10.0, 100, 10);
+        assert_eq!(first.width, 2.0);
+    }
+
+    /// [`horizontal_split_min_quantises_against_char_width`]'s `Vertical`
+    /// counterpart: `first_min`/`second_min` bound the pane's *height*
+    /// there, so the same `10` quantises against `line_height` instead —
+    /// `ceil(10 / 16) = 1` cell.
+    #[test]
+    fn vertical_split_min_quantises_against_line_height() {
+        let (first, _second) = paint_split_with_min(SplitDirection::Vertical, 10.0, 10, 100);
+        assert_eq!(first.height, 1.0);
+    }
+
     /// The acceptance scenario for `"split"`: `padding: 12, margin: 4,
     /// gap: 8` on a stock 80×24 terminal must still leave both panes real
     /// room to paint into, and the second pane must never overflow past
@@ -1357,5 +1656,262 @@ mod tests {
         };
         let inset = spacing.inset(area, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
         assert_eq!(inset, Rect::new(8.0, 8.0, 200.0 - 16.0, 100.0 - 16.0));
+    }
+
+    // ── `layout_container_rects`: per-child size/min/max/justify/align ──
+    //
+    // Headless render tests driven straight through `quadraui::tui::
+    // TuiBackend` -- the real `char_width`/`line_height`/`measure_text`
+    // path every TUI render callback paints through, exercised at two
+    // terminal sizes per mode so a mode's own math isn't accidentally
+    // pinned to one viewport.
+
+    use crate::layout::{Align, Justify, LayoutChild};
+    use quadraui::tui::TuiBackend;
+
+    fn tui() -> TuiBackend {
+        TuiBackend::new()
+    }
+
+    fn leaf_child(id: &str, size: SectionSize, min: Option<f32>, max: Option<f32>) -> LayoutChild {
+        LayoutChild {
+            node: LayoutNode::Leaf(LayoutLeaf {
+                id: id.to_string(),
+                descriptor: LeafDescriptor::Button(Button::new(WidgetId::new(id), id)),
+                scroll_px: None,
+            }),
+            size,
+            min,
+            max,
+        }
+    }
+
+    fn row(children: Vec<LayoutChild>, justify: Justify, align: Align) -> LayoutContainer {
+        LayoutContainer {
+            children,
+            spacing: Spacing::default(),
+            justify,
+            align,
+        }
+    }
+
+    #[test]
+    fn fixed_plus_weight_mix_at_two_terminal_sizes() {
+        for width in [80.0_f32, 40.0] {
+            let area = Rect::new(0.0, 0.0, width, 10.0);
+            let c = row(
+                vec![
+                    // `SectionSize::Fixed` is decoded in the same portable
+                    // surface-native-pixel unit as `padding`/`margin`/
+                    // `gap`; `80` quantises to exactly `10` cells on
+                    // `TuiBackend` (`ceil(80 / 8) = 10`).
+                    leaf_child("fixed", SectionSize::Fixed(80), None, None),
+                    leaf_child("w2", SectionSize::Weight(2.0), None, None),
+                    leaf_child("w1", SectionSize::Weight(1.0), None, None),
+                ],
+                Justify::Start,
+                Align::Stretch,
+            );
+            let rects = layout_container_rects(&mut tui(), area, &c, true);
+            assert_eq!(rects[0].width, 10.0);
+            let remainder = width - 10.0;
+            assert!((rects[1].width - remainder * 2.0 / 3.0).abs() < 0.01);
+            assert!((rects[2].width - remainder * 1.0 / 3.0).abs() < 0.01);
+            // Every child still fills the full row height -- `Align::Stretch`.
+            for r in &rects {
+                assert_eq!(r.height, 10.0);
+            }
+            // The three children tile the row with no gap/overlap.
+            assert_eq!(rects[0].x, 0.0);
+            assert_eq!(rects[1].x, rects[0].width);
+            assert_eq!(rects[2].x, rects[0].width + rects[1].width);
+        }
+    }
+
+    #[test]
+    fn percent_at_two_terminal_sizes() {
+        for width in [80.0_f32, 40.0] {
+            let area = Rect::new(0.0, 0.0, width, 10.0);
+            let c = row(
+                vec![
+                    leaf_child("quarter", SectionSize::Percent(0.25), None, None),
+                    leaf_child("rest", SectionSize::EqualShare, None, None),
+                ],
+                Justify::Start,
+                Align::Stretch,
+            );
+            let rects = layout_container_rects(&mut tui(), area, &c, true);
+            assert_eq!(rects[0].width, width * 0.25);
+            assert_eq!(rects[1].width, width * 0.75);
+        }
+    }
+
+    #[test]
+    fn content_sized_leaf_uses_its_natural_main_axis_extent() {
+        for width in [80.0_f32, 40.0] {
+            let area = Rect::new(0.0, 0.0, width, 10.0);
+            let c = row(
+                vec![
+                    // A `Button`'s natural width is its label's measured
+                    // width (`measure_text` reports a label's display
+                    // width directly on `TuiBackend`, so a 4-character
+                    // label measures 4.0 cells) plus the `"[ " + " ]"`
+                    // bracket chrome TUI paints around it (4.0 more).
+                    leaf_child("abcd", SectionSize::Content, None, None),
+                    leaf_child("rest", SectionSize::EqualShare, None, None),
+                ],
+                Justify::Start,
+                Align::Stretch,
+            );
+            let rects = layout_container_rects(&mut tui(), area, &c, true);
+            assert_eq!(rects[0].width, 8.0);
+            assert_eq!(rects[1].width, width - 8.0);
+        }
+    }
+
+    #[test]
+    fn min_max_clamp_at_two_terminal_sizes() {
+        for width in [80.0_f32, 40.0] {
+            let area = Rect::new(0.0, 0.0, width, 10.0);
+            let c = row(
+                vec![
+                    // A tiny `Fixed` floored by `min` (both in the same
+                    // portable px unit: `120` quantises to `15` cells,
+                    // `ceil(120 / 8) = 15`).
+                    leaf_child("floored", SectionSize::Fixed(1), Some(120.0), None),
+                    // The only other (flex) child, capped by `max` (`40`
+                    // quantises to `5` cells) -- same single-pass clamp
+                    // `quadraui::MultiSectionView`'s own per-section
+                    // layout uses, so the space a `max` clamps away isn't
+                    // redistributed to a sibling; it goes unused, same as
+                    // a `Weight`/`EqualShare` child with no min/max at all
+                    // when nothing else absorbs the remainder.
+                    leaf_child("capped", SectionSize::EqualShare, None, Some(40.0)),
+                ],
+                Justify::Start,
+                Align::Stretch,
+            );
+            let rects = layout_container_rects(&mut tui(), area, &c, true);
+            assert_eq!(rects[0].width, 15.0);
+            assert_eq!(rects[1].width, 5.0);
+        }
+    }
+
+    #[test]
+    fn justify_every_value_at_two_terminal_sizes() {
+        for width in [80.0_f32, 40.0] {
+            let area = Rect::new(0.0, 0.0, width, 10.0);
+            // `80` quantises to exactly `10` cells on `TuiBackend`.
+            let fixed = || {
+                vec![
+                    leaf_child("a", SectionSize::Fixed(80), None, None),
+                    leaf_child("b", SectionSize::Fixed(80), None, None),
+                ]
+            };
+            let leftover = width - 20.0;
+
+            let start = row(fixed(), Justify::Start, Align::Stretch);
+            let rects = layout_container_rects(&mut tui(), area, &start, true);
+            assert_eq!(rects[0].x, 0.0);
+            assert_eq!(rects[1].x, 10.0);
+
+            let center = row(fixed(), Justify::Center, Align::Stretch);
+            let rects = layout_container_rects(&mut tui(), area, &center, true);
+            assert_eq!(rects[0].x, leftover / 2.0);
+            assert_eq!(rects[1].x, leftover / 2.0 + 10.0);
+
+            let end = row(fixed(), Justify::End, Align::Stretch);
+            let rects = layout_container_rects(&mut tui(), area, &end, true);
+            assert_eq!(rects[0].x, leftover);
+            assert_eq!(rects[1].x, leftover + 10.0);
+
+            let space_between = row(fixed(), Justify::SpaceBetween, Align::Stretch);
+            let rects = layout_container_rects(&mut tui(), area, &space_between, true);
+            assert_eq!(rects[0].x, 0.0);
+            assert_eq!(rects[1].x, width - 10.0);
+        }
+    }
+
+    #[test]
+    fn align_every_value_at_two_terminal_sizes() {
+        for height in [24.0_f32, 10.0] {
+            let area = Rect::new(0.0, 0.0, 80.0, height);
+            // `Button::new`'s label "x" measures to a natural height of
+            // `1.0` on `TuiBackend` (the bracket chrome only widens it,
+            // never heightens it) -- its natural cross-axis (height)
+            // extent for a `Row` is `1.0`.
+            let one = || {
+                vec![LayoutChild::new(LayoutNode::Leaf(LayoutLeaf {
+                    id: "x".to_string(),
+                    descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("x"), "x")),
+                    scroll_px: None,
+                }))]
+            };
+
+            let stretch = row(one(), Justify::Start, Align::Stretch);
+            let rects = layout_container_rects(&mut tui(), area, &stretch, true);
+            assert_eq!(rects[0].y, 0.0);
+            assert_eq!(rects[0].height, height);
+
+            let start = row(one(), Justify::Start, Align::Start);
+            let rects = layout_container_rects(&mut tui(), area, &start, true);
+            assert_eq!(rects[0].y, 0.0);
+            assert_eq!(rects[0].height, 1.0);
+
+            let center = row(one(), Justify::Start, Align::Center);
+            let rects = layout_container_rects(&mut tui(), area, &center, true);
+            assert_eq!(rects[0].y, (height - 1.0) / 2.0);
+            assert_eq!(rects[0].height, 1.0);
+
+            let end = row(one(), Justify::Start, Align::End);
+            let rects = layout_container_rects(&mut tui(), area, &end, true);
+            assert_eq!(rects[0].y, height - 1.0);
+            assert_eq!(rects[0].height, 1.0);
+        }
+    }
+
+    /// A pre-per-child-sizing tree (every child defaults to `EqualShare`,
+    /// no min/max, `Justify::Start`/`Align::Stretch`) divides the row the
+    /// same way [`split_rects_with_gap`]'s plain equal-share split always
+    /// did — the backward-compatibility contract every default above
+    /// rests on. Compared with a small tolerance rather than exact
+    /// equality: the two now reach the same share width by different
+    /// floating-point paths (a weight-ratio division here, a direct
+    /// `(width - gap) / n` there), which can differ by a ULP or two
+    /// without being visually or behaviourally different.
+    #[test]
+    fn default_container_matches_the_pre_per_child_sizing_equal_split() {
+        for width in [80.0_f32, 40.0] {
+            let area = Rect::new(0.0, 0.0, width, 10.0);
+            let c = LayoutContainer::new(
+                vec![
+                    LayoutNode::Leaf(LayoutLeaf {
+                        id: "a".to_string(),
+                        descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("a"), "a")),
+                        scroll_px: None,
+                    }),
+                    LayoutNode::Leaf(LayoutLeaf {
+                        id: "b".to_string(),
+                        descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("b"), "b")),
+                        scroll_px: None,
+                    }),
+                    LayoutNode::Leaf(LayoutLeaf {
+                        id: "c".to_string(),
+                        descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("c"), "c")),
+                        scroll_px: None,
+                    }),
+                ],
+                Spacing::default(),
+            );
+            let got = layout_container_rects(&mut tui(), area, &c, true);
+            let want = split_rects_with_gap(area, 3, true, 0.0, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
+            assert_eq!(got.len(), want.len());
+            for (g, w) in got.iter().zip(want.iter()) {
+                assert!((g.x - w.x).abs() < 0.001);
+                assert!((g.y - w.y).abs() < 0.001);
+                assert!((g.width - w.width).abs() < 0.001);
+                assert!((g.height - w.height).abs() < 0.001);
+            }
+        }
     }
 }

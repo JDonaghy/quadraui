@@ -879,25 +879,52 @@ pub fn schema() -> Vec<DefJson> {
     // policy `crate::wire::check_wire_version` checks it against.
     let wire_version_field = field_opt("wire_version", int_());
 
+    // Every node-kind object below also accepts the three child-sizing
+    // keys a `"row"`/`"column"` parent reads off its own children
+    // (`crate::wire::layout_children_from_value`) -- `"size"` (a
+    // `SectionSize`, defaulting to `EqualShare`), `"min"`/`"max"` (a
+    // portable surface-native-pixel clamp, same unit as `padding`/
+    // `margin`/`gap`). They're meaningless on a node that isn't itself a
+    // row/column child, but harmless there too -- `layout_node_from_value`
+    // never reads them except via that one path.
+    let child_size_fields = || {
+        vec![
+            field_opt("size", re("SectionSize")),
+            field_opt("min", float_()),
+            field_opt("max", float_()),
+        ]
+    };
     let layout_row_node = b.define(obj(
         "LayoutRowNode",
-        vec![
-            field("row", list(layout_node.clone())),
-            field_opt("padding", padding_value.clone()),
-            field_opt("margin", float_()),
-            field_opt("gap", float_()),
-            wire_version_field.clone(),
-        ],
+        [
+            vec![field("row", list(layout_node.clone()))],
+            vec![
+                field_opt("padding", padding_value.clone()),
+                field_opt("margin", float_()),
+                field_opt("gap", float_()),
+                field_opt("justify", lit(&["start", "center", "end", "space_between"])),
+                field_opt("align", lit(&["start", "center", "end", "stretch"])),
+                wire_version_field.clone(),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
     let layout_column_node = b.define(obj(
         "LayoutColumnNode",
-        vec![
-            field("column", list(layout_node.clone())),
-            field_opt("padding", padding_value.clone()),
-            field_opt("margin", float_()),
-            field_opt("gap", float_()),
-            wire_version_field.clone(),
-        ],
+        [
+            vec![field("column", list(layout_node.clone()))],
+            vec![
+                field_opt("padding", padding_value.clone()),
+                field_opt("margin", float_()),
+                field_opt("gap", float_()),
+                field_opt("justify", lit(&["start", "center", "end", "space_between"])),
+                field_opt("align", lit(&["start", "center", "end", "stretch"])),
+                wire_version_field.clone(),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
     let layout_split_payload = b.define(obj(
         "LayoutSplitPayload",
@@ -913,13 +940,17 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let layout_split_node = b.define(obj(
         "LayoutSplitNode",
-        vec![
-            field("split", layout_split_payload),
-            field_opt("padding", padding_value.clone()),
-            field_opt("margin", float_()),
-            field_opt("gap", float_()),
-            wire_version_field.clone(),
-        ],
+        [
+            vec![
+                field("split", layout_split_payload),
+                field_opt("padding", padding_value.clone()),
+                field_opt("margin", float_()),
+                field_opt("gap", float_()),
+                wire_version_field.clone(),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
     let layout_tab_entry_node = b.define(obj(
         "LayoutTabEntryNode",
@@ -948,12 +979,16 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let layout_tabs_node = b.define(obj(
         "LayoutTabsNode",
-        vec![
-            field("tabs", layout_tabs_payload),
-            field_opt("padding", padding_value.clone()),
-            field_opt("margin", float_()),
-            wire_version_field.clone(),
-        ],
+        [
+            vec![
+                field("tabs", layout_tabs_payload),
+                field_opt("padding", padding_value.clone()),
+                field_opt("margin", float_()),
+                wire_version_field.clone(),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
     let layout_panel_payload = b.define(obj_doc(
         "LayoutPanelPayload",
@@ -969,12 +1004,16 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let layout_panel_node = b.define(obj(
         "LayoutPanelNode",
-        vec![
-            field("panel", layout_panel_payload),
-            field_opt("padding", padding_value.clone()),
-            field_opt("margin", float_()),
-            wire_version_field.clone(),
-        ],
+        [
+            vec![
+                field("panel", layout_panel_payload),
+                field_opt("padding", padding_value.clone()),
+                field_opt("margin", float_()),
+                wire_version_field.clone(),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
     let layout_sidebar_panel_payload = b.define(obj(
         "LayoutSidebarPanelPayload",
@@ -987,10 +1026,14 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let layout_sidebar_panel_node = b.define(obj(
         "LayoutSidebarPanelNode",
-        vec![
-            field("sidebar_panel", layout_sidebar_panel_payload),
-            wire_version_field.clone(),
-        ],
+        [
+            vec![
+                field("sidebar_panel", layout_sidebar_panel_payload),
+                wire_version_field.clone(),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
 
     let split_tree_recursive_node = re("SplitTreeRecursiveNode");
@@ -1025,10 +1068,14 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let layout_split_tree_node = b.define(obj(
         "LayoutSplitTreeNode",
-        vec![
-            field("split_tree", layout_split_tree_payload),
-            wire_version_field.clone(),
-        ],
+        [
+            vec![
+                field("split_tree", layout_split_tree_payload),
+                wire_version_field.clone(),
+            ],
+            child_size_fields(),
+        ]
+        .concat(),
     ));
 
     // ── Additive primitive descriptors (`EXTRA_PRIMITIVE_KINDS`) ─────────
@@ -2314,6 +2361,12 @@ pub fn schema() -> Vec<DefJson> {
         leaf_fields.push(field_opt(kind, ty.clone()));
         render_frame_fields.push(field_opt(kind, nullable(ty)));
     }
+    // A `LayoutLeafNode` is itself a valid row/column child, so it takes
+    // the same `"size"`/`"min"`/`"max"` sibling keys every other
+    // node-kind object above does -- `RenderFrameDict` (the flat shape,
+    // never a row/column child) does not, so `render_frame_fields` stays
+    // untouched.
+    leaf_fields.extend(child_size_fields());
     let layout_leaf_node = b.define(obj_doc(
         "LayoutLeafNode",
         leaf_fields,

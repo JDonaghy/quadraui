@@ -1054,16 +1054,16 @@ mod tests {
             type AreaId = ();
 
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
-                let tree = LayoutNode::Row(LayoutContainer {
-                    children: vec![LayoutNode::Leaf(LayoutLeaf {
+                let tree = LayoutNode::Row(LayoutContainer::new(
+                    vec![LayoutNode::Leaf(LayoutLeaf {
                         id: "sw:1".into(),
                         descriptor: LeafDescriptor::Extra(Rc::new(Switch::new(WidgetId::new(
                             "sw:1",
                         )))),
                         scroll_px: None,
                     })],
-                    spacing: Spacing::default(),
-                });
+                    Spacing::default(),
+                ));
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
                 let mut hits = Vec::new();
@@ -1158,14 +1158,14 @@ mod tests {
                         spec: None,
                     },
                 ]);
-                let tree = LayoutNode::Row(LayoutContainer {
-                    children: vec![LayoutNode::Leaf(LayoutLeaf {
+                let tree = LayoutNode::Row(LayoutContainer::new(
+                    vec![LayoutNode::Leaf(LayoutLeaf {
                         id: "toolbar:main".into(),
                         descriptor: LeafDescriptor::Extra(Rc::new(toolbar)),
                         scroll_px: None,
                     })],
-                    spacing: Spacing::default(),
-                });
+                    Spacing::default(),
+                ));
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
                 let mut hits = Vec::new();
@@ -1265,14 +1265,14 @@ mod tests {
                     open_item: None,
                     focused_item: None,
                 };
-                let tree = LayoutNode::Row(LayoutContainer {
-                    children: vec![LayoutNode::Leaf(LayoutLeaf {
+                let tree = LayoutNode::Row(LayoutContainer::new(
+                    vec![LayoutNode::Leaf(LayoutLeaf {
                         id: "menu_bar:main".into(),
                         descriptor: LeafDescriptor::Extra(Rc::new(menu_bar)),
                         scroll_px: None,
                     })],
-                    spacing: Spacing::default(),
-                });
+                    Spacing::default(),
+                ));
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
                 let mut hits = Vec::new();

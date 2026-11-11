@@ -1586,7 +1586,7 @@ fn resolve_layout_node_state(engine: &InteractionEngine, node: &mut LayoutNode) 
     match node {
         LayoutNode::Row(container) | LayoutNode::Column(container) => {
             for child in &mut container.children {
-                resolve_layout_node_state(engine, child);
+                resolve_layout_node_state(engine, &mut child.node);
             }
         }
         LayoutNode::Leaf(leaf) => resolve_layout_leaf_state(engine, leaf),
