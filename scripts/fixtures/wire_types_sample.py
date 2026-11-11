@@ -9,7 +9,11 @@ with:
 Builds a tree + split + data_table layout tree, and matches on a tree-row
 click the same way `quadraui-py/examples/file_manager.py`'s own handler
 does -- the two acceptance scenarios from the "generated .pyi / TypeScript
-types" issue. This file must type-check with zero errors;
+types" issue. `build_editor`/`draw_cursor_line` additionally construct an
+`EditorDescriptor` (whose stub references `Dict`) and a `DrawOp::Line`
+(whose `from` field renders as a functional `TypedDict` instead of a
+class), so a regression in either generator path shows up here. This
+file must type-check with zero errors;
 `scripts/fixtures/wire_types_sample_bad.py` is its negative counterpart -- the same
 shapes with one key misspelled each -- which `scripts/check_wire_types.sh`
 asserts *fails* to type-check.
@@ -24,6 +28,8 @@ if TYPE_CHECKING:
         ColumnDescriptor,
         DataRowDescriptor,
         DataTableDescriptor,
+        DrawOp,
+        EditorDescriptor,
         LayoutNode,
         StyledText,
         TreeRowDescriptor,
@@ -68,6 +74,38 @@ def build_table() -> "LayoutNode":
     rows: list["DataRowDescriptor"] = [{"cells": [_styled_text("main.rs"), _styled_text("4 KB")]}]
     table: "DataTableDescriptor" = {"id": "demo:table", "columns": columns, "rows": rows}
     return {"id": "demo:table", "data_table": table}
+
+
+def build_editor() -> "LayoutNode":
+    editor: "EditorDescriptor" = {
+        "id": "demo:editor",
+        "rect": {"x": 0.0, "y": 0.0, "width": 80.0, "height": 24.0},
+        "lines": [
+            {"raw_text": "fn main() {}", "gutter_text": "1", "spans": [], "line_idx": 0},
+        ],
+        "scroll_top": 0,
+        "total_lines": 1,
+        "is_active": True,
+        "show_active_bg": True,
+        "has_git_diff": False,
+        "has_breakpoints": False,
+        "tabstop": 4,
+        "cursorline": True,
+    }
+    return {"id": "demo:editor", "editor": editor}
+
+
+def draw_cursor_line(x0: float, y0: float, x1: float, y1: float) -> "DrawOp":
+    # `DrawOp::Line` has a `from` field -- a Python keyword, which is why
+    # `_DrawOpLine` renders as a functional `TypedDict` instead of a class.
+    return {
+        "Line": {
+            "from": {"x": x0, "y": y0},
+            "to": {"x": x1, "y": y1},
+            "color": {"r": 255, "g": 255, "b": 255, "a": 255},
+            "stroke_width": 1.0,
+        }
+    }
 
 
 def build_layout() -> "LayoutNode":
