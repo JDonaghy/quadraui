@@ -35,14 +35,21 @@ def _row(name, age):
 
 
 def _insert_table(app, selected_idx=None):
-    app.insert_data_table(
-        {
-            "id": "table",
-            "columns": _COLUMNS,
-            "rows": [_row("Alice", "30"), _row("Bob", "40"), _row("Cleo", "50")],
-            "selected_idx": selected_idx,
+    app.set_render(
+        lambda: {
+            "data_table": {
+                "id": "table",
+                "columns": _COLUMNS,
+                "rows": [_row("Alice", "30"), _row("Bob", "40"), _row("Cleo", "50")],
+                "selected_idx": selected_idx,
+            }
         }
     )
+    # Force the first paint so the table's hit-test layout is on the hit
+    # map before any interaction below -- `push_event`/`run` only ever
+    # re-render on a handler-returned `Reaction::Redraw`, never on their
+    # own.
+    app.screen()
 
 
 def test_clicking_a_header_emits_header_clicked():
@@ -148,16 +155,19 @@ def test_fixed_px_column_degrades_to_a_nominal_cell_count_on_tui():
     a click at x == 15.0 (well past its right edge) hits column 1.
     """
     app = QuiApp(30, 8)
-    app.insert_data_table(
-        {
-            "id": "table",
-            "columns": [
-                {"title": "Name", "width": {"FixedPx": 80.0}},
-                {"title": "Age", "width": {"Flex": 1.0}},
-            ],
-            "rows": [_row("Alice", "30")],
+    app.set_render(
+        lambda: {
+            "data_table": {
+                "id": "table",
+                "columns": [
+                    {"title": "Name", "width": {"FixedPx": 80.0}},
+                    {"title": "Age", "width": {"Flex": 1.0}},
+                ],
+                "rows": [_row("Alice", "30")],
+            }
         }
     )
+    app.screen()
 
     received = []
     app.set_handler(lambda event: received.append(event))

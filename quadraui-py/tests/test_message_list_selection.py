@@ -14,19 +14,25 @@ _NO_MODS = {"shift": False, "ctrl": False, "alt": False, "cmd": False}
 
 
 def _insert_message_list(app):
-    app.insert_extra(
-        "message_list",
-        {
-            "id": "messages:1",
-            "rows": [
-                {
-                    "text": f"Row {i}",
-                    "fg": {"r": 200, "g": 200, "b": 200, "a": 255},
-                }
-                for i in range(3)
-            ],
-        },
+    app.set_render(
+        lambda: {
+            "message_list": {
+                "id": "messages:1",
+                "rows": [
+                    {
+                        "text": f"Row {i}",
+                        "fg": {"r": 200, "g": 200, "b": 200, "a": 255},
+                    }
+                    for i in range(3)
+                ],
+            }
+        }
     )
+    # Force the first paint so the message list's `TextRegion` is on the
+    # hit map before any interaction below -- `push_event`/`run` only
+    # ever re-render on a handler-returned `Reaction::Redraw`, never on
+    # their own.
+    app.screen()
 
 
 def test_drag_over_message_list_emits_text_selection_changed():
@@ -36,9 +42,8 @@ def test_drag_over_message_list_emits_text_selection_changed():
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    # Start drag at (2, 0), move to (2, 2) -- inside the 3-row band
-    # `insert_extra` reserves at the top of the viewport for the first
-    # (and here, only) additive primitive.
+    # Start drag at (2, 0), move to (2, 2) -- inside the 3-row band the
+    # `message_list` leaf occupies at the top of the viewport.
     app.push_event(
         {
             "MouseDown": {

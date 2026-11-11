@@ -31,15 +31,17 @@ function rgb(color: any): [number, number, number] {
   return [color.r, color.g, color.b];
 }
 
-test("insertButton decodes variant/icon/tooltip from a plain object and paints the Danger colour", () => {
+test("an inline button leaf decodes variant/icon/tooltip from a plain object and paints the Danger colour", () => {
   const app = new QuiApp(40, 20);
-  app.insertButton({
-    id: "demo:danger",
-    label: "Delete",
-    variant: "Danger",
-    icon: { glyph: "", fallback: "!", color: null },
-    tooltip: "This cannot be undone",
-  });
+  app.setRender(() => ({
+    button: {
+      id: "demo:danger",
+      label: "Delete",
+      variant: "Danger",
+      icon: { glyph: "", fallback: "!", color: null },
+      tooltip: "This cannot be undone",
+    },
+  }));
 
   // The label and the icon's plain-text fallback both paint -- the
   // headless backend defaults nerd fonts off, so `Icon::resolve` picks
@@ -56,12 +58,12 @@ test("insertButton decodes variant/icon/tooltip from a plain object and paints t
   assert.deepEqual(labelFg, rgb((app.theme() as any).error_fg));
 });
 
-test("insertButton without variant keeps the default primary look", () => {
+test("an inline button leaf without variant keeps the default primary look", () => {
   // Same shape minus `variant`/`icon`/`tooltip` -- proves the Danger
   // colouring above comes from the field actually being set, not from
   // some unrelated default already matching `error_fg`.
   const app = new QuiApp(40, 20);
-  app.insertButton({ id: "demo:plain", label: "Delete" });
+  app.setRender(() => ({ button: { id: "demo:plain", label: "Delete" } }));
 
   const [row, col] = locate(app, "Delete");
   const [labelFg] = app.cellColors(col, row) as [number[], number[]];

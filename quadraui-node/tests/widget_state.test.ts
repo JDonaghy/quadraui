@@ -51,13 +51,20 @@ test("a 500-row tree with no scroll/selection fields scrolls to keep the cursor 
   // read the navigation's effect back through `widgetState`, not the event
   // stream.
   app.setHandler(() => {});
-  app.insertTree({
-    id: "fm:tree",
-    rows: treeRows(500),
-    selection_mode: "Single",
-    selected_path: null,
-    style: TREE_STYLE,
-  });
+  app.setRender(() => ({
+    tree: {
+      id: "fm:tree",
+      rows: treeRows(500),
+      selection_mode: "Single",
+      selected_path: null,
+      style: TREE_STYLE,
+    },
+  }));
+  // Force the first paint so the tree's hit-test layout is on the hit
+  // map before any interaction below -- `pushEvent`/`run` only ever
+  // re-render on a handler-returned `Reaction::Redraw`, never on their
+  // own.
+  app.screen();
 
   // A click inside row 0's content cell -- one in from the bordered
   // frame's top-left corner -- focuses the tree (click-to-focus, same as
@@ -91,14 +98,17 @@ test("a 500-row tree with no scroll/selection fields scrolls to keep the cursor 
 test("supplying scroll_offset explicitly pins the tree's scroll", () => {
   const app = new QuiApp(24, 8);
   app.setHandler(() => {});
-  app.insertTree({
-    id: "fm:tree",
-    rows: treeRows(500),
-    selection_mode: "Single",
-    selected_path: null,
-    scroll_offset: 50,
-    style: TREE_STYLE,
-  });
+  app.setRender(() => ({
+    tree: {
+      id: "fm:tree",
+      rows: treeRows(500),
+      selection_mode: "Single",
+      selected_path: null,
+      scroll_offset: 50,
+      style: TREE_STYLE,
+    },
+  }));
+  app.screen();
 
   app.pushEvent({
     MouseDown: { button: "Left", position: { x: 1, y: 1 }, modifiers: {} },

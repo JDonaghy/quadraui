@@ -1,11 +1,12 @@
 """Black-box coverage for mouse text selection + Ctrl-C copy against a
 `text_display` descriptor.
 
-`insert_text_display`'s render path registers a `TextRegion` for the
-painted area (`quadraui-binding-core/src/render.rs`'s `draw_text_display_hit`),
-so a drag across it begins a `DragTarget::TextSelection` and a following
-`MouseMoved` emits `TextSelectionChanged`; `Ctrl-C` with an active selection
-emits `TextCopied` instead of forwarding the raw key press. This mirrors
+An inline `text_display` leaf's render path registers a `TextRegion` for
+the painted area (`quadraui-binding-core/src/render.rs`'s
+`draw_text_display_hit`), so a drag across it begins a
+`DragTarget::TextSelection` and a following `MouseMoved` emits
+`TextSelectionChanged`; `Ctrl-C` with an active selection emits
+`TextCopied` instead of forwarding the raw key press. This mirrors
 `quadraui::tui::run`'s own `drag_over_text_region_emits_selection_changed` /
 `ctrl_c_with_selection_emits_text_copied` Rust tests, through the Python
 surface.
@@ -17,15 +18,22 @@ _NO_MODS = {"shift": False, "ctrl": False, "alt": False, "cmd": False}
 
 
 def _insert_text_display(app):
-    app.insert_text_display(
-        {
-            "id": "text:1",
-            "lines": [
-                {"spans": [{"text": f"Line {i}", "fg": None, "bg": None}]}
-                for i in range(3)
-            ],
+    app.set_render(
+        lambda: {
+            "text_display": {
+                "id": "text:1",
+                "lines": [
+                    {"spans": [{"text": f"Line {i}", "fg": None, "bg": None}]}
+                    for i in range(3)
+                ],
+            }
         }
     )
+    # Force the first paint so the text display's `TextRegion` is on the
+    # hit map before any interaction below -- `push_event`/`run` only
+    # ever re-render on a handler-returned `Reaction::Redraw`, never on
+    # their own.
+    app.screen()
 
 
 def test_drag_over_text_display_emits_text_selection_changed():
@@ -35,9 +43,8 @@ def test_drag_over_text_display_emits_text_selection_changed():
     received = []
     app.set_handler(lambda event: received.append(event))
 
-    # Start drag at (2, 0), move to (2, 2) -- inside the 3-row band
-    # `insert_text_display`'s fixed-slot render reserves at the top of the
-    # viewport.
+    # Start drag at (2, 0), move to (2, 2) -- inside the 3-row band the
+    # `text_display` leaf occupies at the top of the viewport.
     app.push_event(
         {
             "MouseDown": {

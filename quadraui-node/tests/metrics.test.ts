@@ -81,7 +81,7 @@ test("backendCaps reports the headless tui vocabulary", () => {
 
 test("cellColors reads back the painted RGB colours at a cell", () => {
   const app = new QuiApp(10, 3);
-  app.insertButton({ id: "ok", label: "OK" });
+  app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
   // Outside the viewport -> null, not an error.
   assert.equal(app.cellColors(100, 100), null);
   // Inside the viewport -> a `[[r,g,b],[r,g,b]]` pair, not null.

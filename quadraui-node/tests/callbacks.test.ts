@@ -352,12 +352,12 @@ test("setRender rejects an unknown justify value", () => {
   assert.throws(() => app.screen(), /InvalidDescriptorError/);
 });
 
-test("a handler calling back into QuiApp (e.g. insertButton) mid-dispatch raises instead of corrupting state", () => {
+test("a handler calling back into QuiApp (e.g. setRender) mid-dispatch raises instead of corrupting state", () => {
   const app = new QuiApp(20, 5);
   let reentrantCallThrew = false;
   app.setHandler(() => {
     try {
-      app.insertButton({ id: "demo:ok", label: "OK" });
+      app.setRender(() => ({ button: { id: "demo:ok", label: "OK" } }));
     } catch {
       reentrantCallThrew = true;
     }
@@ -365,7 +365,7 @@ test("a handler calling back into QuiApp (e.g. insertButton) mid-dispatch raises
   app.pushKeyEvent("a".codePointAt(0));
   app.step();
   assert.ok(reentrantCallThrew, "a reentrant call into QuiApp must raise, not succeed");
-  assert.ok(!app.screenContains("OK"), "the reentrant insertButton call must not have applied");
+  assert.ok(!app.screenContains("OK"), "the reentrant setRender call must not have applied");
 });
 
 test("actions().showMessageDialog queues a dialog a handler cannot open directly mid-dispatch", () => {

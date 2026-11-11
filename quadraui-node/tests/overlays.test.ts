@@ -198,7 +198,7 @@ test("showToast paints over base content and action click routes", () => {
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.insertButton({ id: "ok", label: "OK" });
+  app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
   assert.ok(app.screenContains("OK"));
 
   app.showToast({
@@ -260,7 +260,7 @@ test("showTooltip paints over base content then auto-dismisses on click", () => 
   const app = new QuiApp(40, 20);
   app.setHandler(() => undefined);
 
-  app.insertButton({ id: "ok", label: "OK" });
+  app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
   app.showTooltip(
     { id: "tip:hint", text: "Hello tip" },
     { x: 0.0, y: 2.0, width: 10.0, height: 1.0 },
@@ -358,7 +358,7 @@ test("showFloat paints chrome then escape dismisses", () => {
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
 
-  app.insertButton({ id: "ok", label: "OK" });
+  app.setRender(() => ({ button: { id: "ok", label: "OK" } }));
   app.showFloat({ id: "float:hints", anchor: anchor(2.0, 2.0) }, 10.0, 4.0);
 
   assert.ok(app.screenContains("OK"));
