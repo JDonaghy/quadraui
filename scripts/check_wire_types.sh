@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Staleness + acceptance check for the generated wire types
-# (`scripts/gen_wire_types.py`): fails if regenerating would change either
-# committed output, if the "good" fixture scripts (or `quadraui-py/examples/
-# file_manager.py`, the one real Python example checked here) fail to
-# type-check, or if the "bad" (misspelled-key) fixture scripts type-check
-# clean when they should not. Installs `mypy`/`pyright`/`typescript` into throwaway
+# Staleness + acceptance check for the generated wire types and native-
+# extension stub (`scripts/gen_wire_types.py`): fails if regenerating would
+# change any committed output (`wire.pyi`, `wire.d.ts`, `_quadraui.pyi`), if
+# the "good" fixture scripts (or `quadraui-py/examples/file_manager.py`, the
+# one real Python example checked here) fail to type-check, or if the "bad"
+# (misspelled-key) fixture scripts type-check clean when they should not.
+# Installs `mypy`/`pyright`/`typescript` into throwaway
 # locations under `$CHECK_WIRE_TYPES_TMP` (default: a fresh `mktemp -d`,
 # removed on exit) rather than the repo or the user's own environment, so
 # a local run never fights an existing venv/node_modules. All three tools

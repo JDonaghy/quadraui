@@ -189,12 +189,12 @@ class CheckExitCodeTests(unittest.TestCase):
     `scripts/check_wire_types.sh`'s job)."""
 
     def setUp(self) -> None:
-        self._py_out, self._ts_out = gwt.PY_OUT, gwt.TS_OUT
+        self._py_out, self._ts_out, self._stub_out = gwt.PY_OUT, gwt.TS_OUT, gwt.STUB_OUT
         self._defs = gwt.DEFS
         gwt.DEFS = [gwt.ObjDef("Foo", [gwt.Field("x", gwt.INT)])]
 
     def tearDown(self) -> None:
-        gwt.PY_OUT, gwt.TS_OUT = self._py_out, self._ts_out
+        gwt.PY_OUT, gwt.TS_OUT, gwt.STUB_OUT = self._py_out, self._ts_out, self._stub_out
         gwt.DEFS = self._defs
 
     def test_check_passes_once_outputs_match_generation(self) -> None:
@@ -206,6 +206,7 @@ class CheckExitCodeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=gwt.REPO_ROOT) as tmp:
             gwt.PY_OUT = Path(tmp) / "wire.pyi"
             gwt.TS_OUT = Path(tmp) / "wire.d.ts"
+            gwt.STUB_OUT = Path(tmp) / "_quadraui.pyi"
             self.assertEqual(gwt.main([]), 0)
             self.assertEqual(gwt.main(["--check"]), 0)
 
@@ -215,9 +216,145 @@ class CheckExitCodeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=gwt.REPO_ROOT) as tmp:
             gwt.PY_OUT = Path(tmp) / "wire.pyi"
             gwt.TS_OUT = Path(tmp) / "wire.d.ts"
+            gwt.STUB_OUT = Path(tmp) / "_quadraui.pyi"
             gwt.PY_OUT.write_text("stale\n")
             gwt.TS_OUT.write_text("stale\n")
+            gwt.STUB_OUT.write_text("stale\n")
             self.assertEqual(gwt.main(["--check"]), 1)
+
+
+class PymethodsParserTests(unittest.TestCase):
+    """[`gwt.parse_pymethods`]/[`gwt.parse_pyfunctions`] and the
+    Rust-type-to-`.pyi` mapping they feed, against small inline `lib.rs`-
+    shaped snippets rather than the real, 10k-line `quadraui-py/src/lib.rs`
+    -- that file's own drift is covered by `gen_wire_types.py --check`
+    (exercised above against throwaway output paths) and
+    `scripts/check_wire_types.sh`'s `mypy`/`pyright` runs against its real
+    generated output, not by this fast, toolchain-independent unit suite."""
+
+    def test_parses_doc_attrs_defaults_and_skips_python_token(self) -> None:
+        src = """
+#[pymethods]
+impl Foo {
+    /// Some doc comment, ignored by this parser entirely.
+    #[pyo3(signature = (needle, limit=10))]
+    fn find(&mut self, py: Python<'_>, needle: &str, limit: u32) -> PyResult<Option<String>> {
+        Ok(None)
+    }
+}
+"""
+        parsed = gwt.parse_pymethods(src)
+        self.assertEqual(list(parsed.keys()), ["Foo"])
+        [meth] = parsed["Foo"]
+        self.assertEqual(meth.name, "find")
+        self.assertEqual([p.name for p in meth.params], ["self", "py", "needle", "limit"])
+        self.assertEqual(meth.params[3].default, "10")
+        self.assertEqual(meth.return_type, "PyResult<Option<String>>")
+        # `py: Python<'_>` is PyO3's own implicit GIL token, never a Python-
+        # visible argument -- dropped at render time, not at parse time.
+        rendered = "\n".join(gwt._render_method("Foo", meth))
+        self.assertIn("def find(self, needle: str, limit: int = 10) -> Optional[str]: ...", rendered)
+        self.assertNotIn("py", rendered)
+
+    def test_new_and_staticmethod_attributes_are_recognized(self) -> None:
+        src = """
+#[pymethods]
+impl Foo {
+    #[new]
+    fn new(width: u16) -> PyResult<Self> {
+        unimplemented!()
+    }
+
+    #[staticmethod]
+    fn make(width: u16) -> PyResult<Foo> {
+        unimplemented!()
+    }
+}
+"""
+        parsed = gwt.parse_pymethods(src)
+        new_meth, make_meth = parsed["Foo"]
+        self.assertTrue(new_meth.is_new)
+        self.assertFalse(make_meth.is_new)
+        self.assertTrue(make_meth.is_static)
+        self.assertFalse(new_meth.is_static)
+
+    def test_parse_pyfunctions_finds_module_level_functions(self) -> None:
+        src = """
+/// Doc comment.
+#[pyfunction]
+fn app_path(kind: &str) -> PyResult<String> {
+    unimplemented!()
+}
+"""
+        [fn] = gwt.parse_pyfunctions(src)
+        self.assertEqual(fn.name, "app_path")
+        self.assertEqual([p.rust_type for p in fn.params], ["&str"])
+        self.assertEqual(fn.return_type, "PyResult<String>")
+
+
+class RustTypeToPyTests(unittest.TestCase):
+    def test_primitives_and_containers(self) -> None:
+        self.assertEqual(gwt.rust_type_to_py("u16"), "int")
+        self.assertEqual(gwt.rust_type_to_py("f32"), "float")
+        self.assertEqual(gwt.rust_type_to_py("bool"), "bool")
+        self.assertEqual(gwt.rust_type_to_py("&str"), "str")
+        self.assertEqual(gwt.rust_type_to_py("()"), "None")
+        self.assertEqual(gwt.rust_type_to_py("Option<u64>"), "Optional[int]")
+        self.assertEqual(gwt.rust_type_to_py("PyResult<bool>"), "bool")
+        self.assertEqual(gwt.rust_type_to_py("Vec<String>"), "List[str]")
+        self.assertEqual(gwt.rust_type_to_py("Vec<u8>"), "bytes")
+        self.assertEqual(
+            gwt.rust_type_to_py("Option<(u32, u32, Vec<u8>)>"),
+            "Optional[Tuple[int, int, bytes]]",
+        )
+        self.assertEqual(gwt.rust_type_to_py("&Bound<'_, PyDict>"), "Mapping[str, Any]")
+        self.assertEqual(gwt.rust_type_to_py("&Bound<'_, PyList>"), "Sequence[Any]")
+        self.assertEqual(gwt.rust_type_to_py("&'static str"), "str")
+        self.assertEqual(gwt.rust_type_to_py("QuiAppWaker"), "QuiAppWaker")
+
+    def test_unmapped_type_raises_instead_of_falling_back_to_any(self) -> None:
+        with self.assertRaises(ValueError):
+            gwt.rust_type_to_py("SomeNeverBeforeSeenType")
+
+    def test_default_literal_mapping(self) -> None:
+        self.assertEqual(gwt._default_literal("None"), "None")
+        self.assertEqual(gwt._default_literal("true"), "True")
+        self.assertEqual(gwt._default_literal("false"), "False")
+        self.assertEqual(gwt._default_literal("Vec::new()"), "[]")
+        self.assertEqual(gwt._default_literal("1"), "1")
+        self.assertEqual(gwt._default_literal('"chrome"'), '"chrome"')
+        with self.assertRaises(ValueError):
+            gwt._default_literal("SomeConstant::VALUE")
+
+
+class RenderPyiStubTests(unittest.TestCase):
+    def test_renders_a_class_a_free_function_and_the_exception_hierarchy(self) -> None:
+        src = """
+#[pymethods]
+impl QuiAppWaker {
+    fn post(&self, value: Py<PyAny>) {}
+}
+
+#[pyfunction]
+fn app_path(kind: &str) -> PyResult<String> {
+    unimplemented!()
+}
+"""
+        text = gwt.render_pyi_stub(src)
+        self.assertIn("class QuadrauiError(Exception): ...", text)
+        self.assertIn("class QuiAppWaker:", text)
+        self.assertIn("def post(self, value: Any) -> None: ...", text)
+        self.assertIn("def app_path(kind: str) -> str: ...", text)
+
+    def test_callable_named_params_render_as_callable_not_any(self) -> None:
+        src = """
+#[pymethods]
+impl QuiApp {
+    fn set_handler(&mut self, handler: Py<PyAny>) {}
+}
+"""
+        text = gwt.render_pyi_stub(src)
+        self.assertIn("def set_handler(self, handler: Callable[..., Any]) -> None: ...", text)
 
 
 if __name__ == "__main__":
