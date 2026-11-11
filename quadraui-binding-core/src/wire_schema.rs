@@ -32,17 +32,28 @@
 //!   `_`, so changing a field's or variant payload's *type* (e.g.
 //!   `FormEvent::SliderChanged { value: f32 }` to `value: String`) compiles
 //!   clean while the schema keeps emitting the old type.
-//! - `Button`, `Toolbar`, `ToolbarButton` and `TabBarEvent` are themselves
-//!   `#[non_exhaustive]`. A struct marked `#[non_exhaustive]` requires a
-//!   trailing `..` in any pattern built outside its defining crate, so a
-//!   *new field* on `Button`/`Toolbar` is invisible to this guard (closed
-//!   instead by a `serde_json::to_value` key-set assertion — see
-//!   [`coverage::value_shape`]). An enum marked `#[non_exhaustive]` only
+//! - A good number of the real types below (`Button`, `Toolbar`,
+//!   `TextInput`, `NumberInput`, `ComboBox`, `DatePicker`, `RadioGroup`,
+//!   `Switch`, `Scrollbar`, `ScrollView`, `Editor`, ...) are themselves
+//!   `#[non_exhaustive]` **structs**. A struct marked `#[non_exhaustive]`
+//!   requires a trailing `..` in any pattern built outside its defining
+//!   crate, so a *new field* is invisible to [`assert_fields_non_exhaustive!`]
+//!   there. `Button` and `Toolbar` close that gap with a
+//!   `serde_json::to_value` key-set assertion instead (see
+//!   [`coverage::value_shape`]); the rest only carry the compile-time
+//!   guard today, the same bar `ButtonSpec` was already held to before
+//!   this doc was last revised.
+//! - `ToolbarButton`, `TabBarEvent`, `ChartKind` and `DrawOp` are
+//!   `#[non_exhaustive]` **enums**. An enum marked `#[non_exhaustive]` only
 //!   requires a wildcard arm for *unlisted* variants; a known variant's own
 //!   fields (`ToolbarButton::Action { .. }`, `TabBarEvent::KeyPressed { .. }`)
 //!   are still matched exhaustively by name, so a new field on one of
 //!   those is caught the same as any other type here — only a brand new
-//!   *variant* on `ToolbarButton`/`TabBarEvent` stays invisible.
+//!   *variant* stays invisible to the match. `ToolbarButton` and
+//!   `TabBarEvent` close that gap too, by deserializing a deliberately
+//!   unrecognised tag and parsing serde's own "expected one of ..." error
+//!   message back into the real variant list (see
+//!   [`coverage::variant_shape`]).
 //!
 //! The layout-tree node shapes (`"row"`/`"column"`/`"split"`/...) have no
 //! single Rust type to destructure this way — they're dynamically-keyed
@@ -51,9 +62,9 @@
 //! straight from [`crate::layout::LEAF_KIND_KEYS`] and
 //! [`crate::extra_paint::EXTRA_PRIMITIVE_KINDS`] below rather than
 //! re-typed, so a new leaf kind or additive primitive always gets a schema
-//! entry (even if, for the 28 additive kinds beyond `status_bar`, only an
-//! untyped placeholder one — narrowing those field-by-field is tracked
-//! follow-on work, not done here).
+//! entry -- every registered kind, including every `EXTRA_PRIMITIVE_KINDS`
+//! additive kind beyond `status_bar`, is narrowed field-by-field, not left
+//! as an untyped placeholder.
 
 use serde::Serialize;
 
@@ -132,12 +143,9 @@ pub(crate) fn list(inner: TyJson) -> TyJson {
         inner: Box::new(inner),
     }
 }
-/// No current schema entry needs a `Dict[K, V]`/`Record<K, V>` wire shape,
-/// so this constructor has no caller today -- kept (like
-/// `gen_wire_types.py`'s own `DICTT`, whose only remaining caller is the
-/// JSON-decode match arm for [`TyJson::Dict`], not a schema entry either)
-/// so the vocabulary stays complete for the next entry that needs one.
-#[allow(dead_code)]
+/// A `Dict[K, V]`/`Record<K, V>` wire shape -- e.g. `EditorDescriptor`'s
+/// `diagnostic_gutter` field, keyed by the JSON-object string form of a
+/// Rust `HashMap<usize, _>`'s integer key.
 pub(crate) fn dictt(key: TyJson, value: TyJson) -> TyJson {
     TyJson::Dict {
         key: Box::new(key),
@@ -435,6 +443,15 @@ pub fn schema() -> Vec<DefJson> {
     let scroll_delta = b.define(obj(
         "ScrollDelta",
         vec![field("x", float_()), field("y", float_())],
+    ));
+    let rect = b.define(obj(
+        "Rect",
+        vec![
+            field("x", float_()),
+            field("y", float_()),
+            field("width", float_()),
+            field("height", float_()),
+        ],
     ));
     let button_mask = b.define(obj(
         "ButtonMask",
@@ -762,7 +779,7 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("enabled", bool_()),
             field_opt("is_active", bool_()),
             field_opt("tooltip", str_()),
-            field_opt("spec", nullable(button_spec_descriptor)),
+            field_opt("spec", nullable(button_spec_descriptor.clone())),
         ],
     ));
     let toolbar_button_action_wrapper = b.define(obj(
@@ -926,7 +943,7 @@ pub fn schema() -> Vec<DefJson> {
         "LayoutSidebarPanelPayload",
         vec![
             field("id", str_()),
-            field_opt("toolbar", nullable(toolbar_descriptor)),
+            field_opt("toolbar", nullable(toolbar_descriptor.clone())),
             field_opt("toolbar_height", nullable(float_())),
             field("content", layout_node.clone()),
         ],
@@ -971,12 +988,1218 @@ pub fn schema() -> Vec<DefJson> {
         vec![field("split_tree", layout_split_tree_payload)],
     ));
 
+    // ── Additive primitive descriptors (`EXTRA_PRIMITIVE_KINDS`) ─────────
+    // Every kind below `status_bar` decodes to, field-by-field -- see this
+    // module's own doc for the source-of-truth contract each entry carries
+    // (a matching `coverage` guard) and why the layout-tree node shapes
+    // above don't get the same treatment.
+    let progress_bar_descriptor = b.define(obj(
+        "ProgressBarDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("label", str_()),
+            field_opt("value", nullable(float_())),
+            field_opt("frame_idx", int_()),
+            field_opt("cancellable", bool_()),
+            field_opt("accent", nullable(color.clone())),
+        ],
+    ));
+    let spinner_descriptor = b.define(obj(
+        "SpinnerDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("label", str_()),
+            field_opt("frame_idx", int_()),
+            field_opt("accent", nullable(color.clone())),
+        ],
+    ));
+    let image_source_bytes = b.define(obj("_ImageSourceBytes", vec![field("Bytes", list(int_()))]));
+    let image_source_path = b.define(obj("_ImageSourcePath", vec![field("Path", str_())]));
+    let image_source = b.define(union_of_doc(
+        "ImageSource",
+        vec![image_source_bytes, image_source_path],
+        "`{\"Bytes\": [u8, ...]}` or `{\"Path\": \"...\"}` -- a `PathBuf` serializes as a plain string.",
+    ));
+    let image_fit = b.define(alias(
+        "ImageFit",
+        lit(&["Contain", "Cover", "Fill", "None"]),
+    ));
+    let image_descriptor = b.define(obj(
+        "ImageDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("source", image_source),
+            field("intrinsic_size", nullable(tup(vec![int_(), int_()]))),
+            field("fit", image_fit),
+            field("fallback_text", str_()),
+        ],
+    ));
+    let text_input_descriptor = b.define(obj(
+        "TextInputDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("lines", list(str_())),
+            field_opt("cursor_line", int_()),
+            field_opt("cursor_col", int_()),
+            field_opt("placeholder", nullable(str_())),
+            field_opt("scroll_offset", int_()),
+            field_opt("scroll_col", int_()),
+            field_opt("has_focus", bool_()),
+        ],
+    ));
+    let number_input_descriptor = b.define(obj(
+        "NumberInputDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("value", float_()),
+            field("min", float_()),
+            field("max", float_()),
+            field_opt("step", float_()),
+            field_opt("precision", int_()),
+            field_opt("draft", nullable(str_())),
+            field_opt("disabled", bool_()),
+            field_opt("focused", bool_()),
+        ],
+    ));
+    let combo_box_descriptor = b.define(obj(
+        "ComboBoxDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("options", list(str_())),
+            field_opt("text", str_()),
+            field_opt("committed", str_()),
+            field_opt("open", bool_()),
+            field_opt("highlighted", nullable(int_())),
+            field_opt("disabled", bool_()),
+            field_opt("focused", bool_()),
+        ],
+    ));
+    let switch_descriptor = b.define(obj(
+        "SwitchDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("value", bool_()),
+            field_opt("disabled", bool_()),
+            field_opt("focused", bool_()),
+        ],
+    ));
+    let scroll_axis = b.define(alias("ScrollAxis", lit(&["Vertical", "Horizontal"])));
+    let scrollbar_descriptor = b.define(obj(
+        "ScrollbarDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("axis", scroll_axis.clone()),
+            field("track", rect.clone()),
+            field("thumb_start", float_()),
+            field("thumb_len", float_()),
+            field_opt("hovered", bool_()),
+            field_opt("dragging", bool_()),
+        ],
+    ));
+    let scroll_view_descriptor = b.define(obj(
+        "ScrollViewDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field_opt("axis", scroll_axis),
+            field("viewport", rect.clone()),
+            field("content_len", float_()),
+            field_opt("scroll_offset", float_()),
+            field_opt("focused", bool_()),
+        ],
+    ));
+    let command_line_descriptor = b.define(obj(
+        "CommandLineDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("text", str_()),
+            field_opt("cursor_offset", nullable(int_())),
+            field_opt("right_align", bool_()),
+        ],
+    ));
+    let command_center_descriptor = b.define(obj(
+        "CommandCenterDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("back_enabled", bool_()),
+            field("forward_enabled", bool_()),
+            field_opt("search_label", str_()),
+        ],
+    ));
+    let radio_option_descriptor = b.define(obj(
+        "RadioOptionDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("label", str_()),
+            field_opt("disabled", bool_()),
+        ],
+    ));
+    let radio_group_descriptor = b.define(obj(
+        "RadioGroupDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("options", list(radio_option_descriptor)),
+            field_opt("selected", nullable(int_())),
+            field_opt("focused", bool_()),
+        ],
+    ));
+    let message_row_descriptor = b.define(obj(
+        "MessageRowDescriptor",
+        vec![
+            field("text", str_()),
+            field("fg", color.clone()),
+            field_opt("indent", float_()),
+            field_opt("spans", list(styled_span.clone())),
+            field_opt("scale", float_()),
+        ],
+    ));
+    let message_list_descriptor = b.define(obj(
+        "MessageListDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("rows", list(message_row_descriptor)),
+            field_opt("scroll_top", int_()),
+        ],
+    ));
+    let weekday = b.define(alias(
+        "Weekday",
+        lit(&[
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+        ]),
+    ));
+    let date_format = b.define(alias("DateFormat", lit(&["Iso8601", "UsSlash", "EuSlash"])));
+    let date_locale = b.define(obj(
+        "DateLocale",
+        vec![
+            field("first_weekday", weekday),
+            field("format", date_format),
+        ],
+    ));
+    let time_of_day = b.define(obj(
+        "TimeOfDay",
+        vec![field("hour", int_()), field("minute", int_())],
+    ));
+    let date_picker_descriptor = b.define(obj(
+        "DatePickerDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("visible_month", re("CalendarDate")),
+            field_opt("selected", nullable(re("CalendarDate"))),
+            field("focused", re("CalendarDate")),
+            field("locale", date_locale),
+            field_opt("time", nullable(time_of_day)),
+            field_opt("has_focus", bool_()),
+        ],
+    ));
+    let chart_kind = b.define(alias(
+        "ChartKind",
+        lit(&["Sparkline", "Line", "Bar", "BarGrouped"]),
+    ));
+    let series_descriptor = b.define(obj(
+        "SeriesDescriptor",
+        vec![
+            field("label", str_()),
+            field("data", list(float_())),
+            field_opt("color", nullable(color.clone())),
+            field_opt("fill", bool_()),
+        ],
+    ));
+    let chart_descriptor = b.define(obj(
+        "ChartDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("kind", chart_kind),
+            field("series", list(series_descriptor)),
+            field_opt("x_label", nullable(str_())),
+            field_opt("y_label", nullable(str_())),
+            field_opt("y_range", nullable(tup(vec![float_(), float_()]))),
+            field_opt("x_range", nullable(tup(vec![float_(), float_()]))),
+            field_opt("show_legend", bool_()),
+            field_opt("y_ticks", nullable(int_())),
+            field_opt("x_ticks", nullable(int_())),
+            field_opt("show_grid", bool_()),
+        ],
+    ));
+    let stage_status = b.define(alias(
+        "StageStatus",
+        lit(&["Pending", "Active", "Done", "Failed", "Skipped", "Stale"]),
+    ));
+    let pipeline_stage_descriptor = b.define(obj(
+        "PipelineStageDescriptor",
+        vec![
+            field("label", str_()),
+            field("status", stage_status),
+            field_opt("action", nullable(str_())),
+        ],
+    ));
+    let pipeline_view_descriptor = b.define(obj(
+        "PipelineViewDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("stages", list(pipeline_stage_descriptor)),
+            field_opt("focused_stage", nullable(int_())),
+        ],
+    ));
+    let badge_status = b.define(alias(
+        "BadgeStatus",
+        lit(&["Pending", "Running", "Passed", "Warning", "Blocked"]),
+    ));
+    let card_badge_descriptor = b.define(obj(
+        "CardBadgeDescriptor",
+        vec![field("label", str_()), field("status", badge_status)],
+    ));
+    let board_card_descriptor = b.define(obj(
+        "BoardCardDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("title", str_()),
+            field_opt("labels", list(str_())),
+            field_opt("badges", list(card_badge_descriptor)),
+            field_opt("hint", nullable(str_())),
+        ],
+    ));
+    let board_column_descriptor = b.define(obj(
+        "BoardColumnDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("title", str_()),
+            field("cards", list(board_card_descriptor)),
+            field_opt("scroll_offset", int_()),
+        ],
+    ));
+    let board_model_descriptor = b.define(obj(
+        "BoardModelDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("columns", list(board_column_descriptor)),
+            field_opt("selected_card_id", nullable(re("WidgetId"))),
+            field_opt("col_scroll_offset", int_()),
+        ],
+    ));
+    let minimap_line_descriptor = b.define(obj(
+        "MinimapLineDescriptor",
+        vec![field("text", str_()), field("line_idx", int_())],
+    ));
+    let minimap_span_descriptor = b.define(obj(
+        "MinimapSpanDescriptor",
+        vec![
+            field("line_idx", int_()),
+            field("start_col", int_()),
+            field("end_col", int_()),
+            field("color", color.clone()),
+        ],
+    ));
+    let minimap_descriptor = b.define(obj(
+        "MinimapDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("lines", list(minimap_line_descriptor)),
+            field("syntax_spans", list(minimap_span_descriptor)),
+            field("visible_row_start", int_()),
+            field("visible_row_count", int_()),
+            field("total_buffer_lines", int_()),
+        ],
+    ));
+    let activity_item_descriptor = b.define(obj(
+        "ActivityItemDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("icon", icon.clone()),
+            field_opt("tooltip", str_()),
+            field_opt("is_active", bool_()),
+            field_opt("is_keyboard_selected", bool_()),
+        ],
+    ));
+    let activity_bar_descriptor = b.define(obj(
+        "ActivityBarDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("top_items", list(activity_item_descriptor.clone())),
+            field_opt("bottom_items", list(activity_item_descriptor)),
+            field_opt("active_accent", nullable(color.clone())),
+            field_opt("selection_bg", nullable(color.clone())),
+            field_opt("is_keyboard_focused", bool_()),
+        ],
+    ));
+    let palette_mode = b.define(alias("PaletteMode", lit(&["List", "Input"])));
+    let palette_item_descriptor = b.define(obj(
+        "PaletteItemDescriptor",
+        vec![
+            field("text", styled_text.clone()),
+            field_opt("detail", nullable(styled_text.clone())),
+            field_opt("icon", nullable(icon.clone())),
+            field_opt("match_positions", list(int_())),
+            field_opt("depth", int_()),
+            field_opt("expandable", bool_()),
+            field_opt("expanded", bool_()),
+        ],
+    ));
+    let palette_preview_descriptor = b.define(obj(
+        "PalettePreviewDescriptor",
+        vec![
+            field("lines", list(styled_text.clone())),
+            field_opt("title", nullable(str_())),
+            field_opt("scroll_offset", int_()),
+            field_opt("highlight_line", nullable(int_())),
+        ],
+    ));
+    let palette_descriptor = b.define(obj(
+        "PaletteDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("title", str_()),
+            field("query", str_()),
+            field_opt("query_cursor", int_()),
+            field("items", list(palette_item_descriptor)),
+            field("selected_idx", int_()),
+            field_opt("scroll_offset", int_()),
+            field_opt("total_count", int_()),
+            field_opt("has_focus", bool_()),
+            field_opt("show_query", bool_()),
+            field_opt("create_label", nullable(str_())),
+            field_opt("preview", nullable(palette_preview_descriptor)),
+            field_opt("mode", palette_mode),
+        ],
+    ));
+    let terminal_cursor_shape = b.define(alias(
+        "TerminalCursorShape",
+        lit(&["Block", "Underline", "Bar"]),
+    ));
+    let terminal_cell_descriptor = b.define(obj(
+        "TerminalCellDescriptor",
+        vec![
+            field("text", str_()),
+            field("fg", color.clone()),
+            field("bg", color.clone()),
+            field_opt("bold", bool_()),
+            field_opt("italic", bool_()),
+            field_opt("underline", bool_()),
+            field_opt("dim", bool_()),
+            field_opt("selected", bool_()),
+            field_opt("is_cursor", bool_()),
+            field_opt("cursor_shape", terminal_cursor_shape),
+            field_opt("cursor_blinking", bool_()),
+            field_opt("is_find_match", bool_()),
+            field_opt("is_find_active", bool_()),
+        ],
+    ));
+    let terminal_scrollbar_descriptor = b.define(obj(
+        "TerminalScrollbarDescriptor",
+        vec![
+            field("total_lines", int_()),
+            field("visible_lines", int_()),
+            field("scroll_offset", int_()),
+            field_opt("inverted", bool_()),
+            field_opt("width", nullable(int_())),
+        ],
+    ));
+    let terminal_descriptor = b.define(obj(
+        "TerminalDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("cells", list(list(terminal_cell_descriptor))),
+            field_opt("scrollbar", nullable(terminal_scrollbar_descriptor)),
+        ],
+    ));
+    let canvas_font_role = b.define(alias("CanvasFontRole", lit(&["Chrome", "Editor"])));
+    let draw_op_rect = b.define(obj(
+        "_DrawOpRect",
+        vec![field("rect", rect.clone()), field("color", color.clone())],
+    ));
+    let draw_op_rounded_rect = b.define(obj(
+        "_DrawOpRoundedRect",
+        vec![
+            field("rect", rect.clone()),
+            field("radius", float_()),
+            field("color", color.clone()),
+        ],
+    ));
+    let draw_op_line = b.define(obj(
+        "_DrawOpLine",
+        vec![
+            field("from", point.clone()),
+            field("to", point.clone()),
+            field("color", color.clone()),
+            field("stroke_width", float_()),
+        ],
+    ));
+    let draw_op_path = b.define(obj(
+        "_DrawOpPath",
+        vec![
+            field("points", list(point.clone())),
+            field("color", color.clone()),
+            field("stroke_width", float_()),
+            field("closed", bool_()),
+        ],
+    ));
+    let draw_op_text_run = b.define(obj(
+        "_DrawOpTextRun",
+        vec![
+            field("rect", rect.clone()),
+            field("text", str_()),
+            field("color", color.clone()),
+        ],
+    ));
+    let draw_op_image = b.define(obj(
+        "_DrawOpImage",
+        vec![
+            field("rect", rect.clone()),
+            field("image", image_descriptor.clone()),
+        ],
+    ));
+    let draw_op_push_clip = b.define(obj("_DrawOpPushClip", vec![field("rect", rect.clone())]));
+    let draw_op_polygon = b.define(obj(
+        "_DrawOpPolygon",
+        vec![
+            field("points", list(point.clone())),
+            field("color", color.clone()),
+        ],
+    ));
+    let draw_op_ellipse = b.define(obj(
+        "_DrawOpEllipse",
+        vec![
+            field("center", point.clone()),
+            field("radius_x", float_()),
+            field("radius_y", float_()),
+            field("color", color.clone()),
+        ],
+    ));
+    let draw_op_arc = b.define(obj(
+        "_DrawOpArc",
+        vec![
+            field("center", point.clone()),
+            field("radius", float_()),
+            field("start_angle", float_()),
+            field("end_angle", float_()),
+            field("color", color.clone()),
+            field("stroke_width", float_()),
+        ],
+    ));
+    let draw_op_bezier = b.define(obj(
+        "_DrawOpBezier",
+        vec![
+            field("from", point.clone()),
+            field("control1", point.clone()),
+            field("control2", point.clone()),
+            field("to", point.clone()),
+            field("color", color.clone()),
+            field("stroke_width", float_()),
+        ],
+    ));
+    let draw_op_dashed_line = b.define(obj(
+        "_DrawOpDashedLine",
+        vec![
+            field("from", point.clone()),
+            field("to", point.clone()),
+            field("color", color.clone()),
+            field("stroke_width", float_()),
+            field("dash_len", float_()),
+            field("gap_len", float_()),
+        ],
+    ));
+    let draw_op_stroke_rect = b.define(obj(
+        "_DrawOpStrokeRect",
+        vec![
+            field("rect", rect.clone()),
+            field("color", color.clone()),
+            field("stroke_width", float_()),
+        ],
+    ));
+    let draw_op_styled_text_run = b.define(obj(
+        "_DrawOpStyledTextRun",
+        vec![
+            field("rect", rect.clone()),
+            field("text", str_()),
+            field("color", color.clone()),
+            field("role", canvas_font_role),
+            field("italic", bool_()),
+            field_opt("size", nullable(float_())),
+        ],
+    ));
+    let draw_op_dict = b.define(flat(
+        "_DrawOpDict",
+        &[
+            ("Rect", draw_op_rect),
+            ("RoundedRect", draw_op_rounded_rect),
+            ("Line", draw_op_line),
+            ("Path", draw_op_path),
+            ("TextRun", draw_op_text_run),
+            ("Image", draw_op_image),
+            ("PushClip", draw_op_push_clip),
+            ("Polygon", draw_op_polygon),
+            ("Ellipse", draw_op_ellipse),
+            ("Arc", draw_op_arc),
+            ("Bezier", draw_op_bezier),
+            ("DashedLine", draw_op_dashed_line),
+            ("StrokeRect", draw_op_stroke_rect),
+            ("StyledTextRun", draw_op_styled_text_run),
+        ],
+        vec![],
+    ));
+    let draw_op = b.define(alias_doc(
+        "DrawOp",
+        uniont(vec![lit(&["PopClip"]), draw_op_dict]),
+        "A single `Canvas` paint instruction -- `\"PopClip\"` (bare string, no payload) or `{\"<Variant>\": {...}}`.",
+    ));
+    let canvas_descriptor = b.define(obj(
+        "CanvasDescriptor",
+        vec![field("id", re("WidgetId")), field("ops", list(draw_op))],
+    ));
+    let diagnostic_severity = b.define(alias(
+        "DiagnosticSeverity",
+        lit(&["Error", "Warning", "Information", "Hint"]),
+    ));
+    let git_line_status = b.define(alias(
+        "GitLineStatus",
+        lit(&["Added", "Modified", "Deleted"]),
+    ));
+    let editor_diff_line = b.define(alias(
+        "EditorDiffLine",
+        lit(&["Same", "Added", "Removed", "Padding"]),
+    ));
+    let cursor_shape = b.define(alias("CursorShape", lit(&["Block", "Bar", "Underline"])));
+    let selection_kind = b.define(alias("SelectionKind", lit(&["Char", "Line", "Block"])));
+    let cursor_pos = b.define(obj(
+        "CursorPos",
+        vec![field("view_line", int_()), field("col", int_())],
+    ));
+    let editor_cursor = b.define(obj(
+        "EditorCursor",
+        vec![
+            field("pos", cursor_pos.clone()),
+            field("shape", cursor_shape),
+        ],
+    ));
+    let editor_selection = b.define(obj(
+        "EditorSelection",
+        vec![
+            field("kind", selection_kind),
+            field("start_line", int_()),
+            field("start_col", int_()),
+            field("end_line", int_()),
+            field("end_col", int_()),
+        ],
+    ));
+    let editor_style = b.define(obj(
+        "EditorStyle",
+        vec![
+            field("fg", color.clone()),
+            field("bg", nullable(color.clone())),
+            field_opt("bold", bool_()),
+            field_opt("italic", bool_()),
+            field("font_scale", float_()),
+        ],
+    ));
+    let editor_styled_span = b.define(obj(
+        "EditorStyledSpan",
+        vec![
+            field("start_byte", int_()),
+            field("end_byte", int_()),
+            field("style", editor_style),
+        ],
+    ));
+    let diagnostic_mark = b.define(obj(
+        "DiagnosticMark",
+        vec![
+            field("start_col", int_()),
+            field("end_col", int_()),
+            field("severity", diagnostic_severity.clone()),
+            field("message", str_()),
+        ],
+    ));
+    let spell_mark = b.define(obj(
+        "SpellMark",
+        vec![field("start_col", int_()), field("end_col", int_())],
+    ));
+    let editor_line = b.define(obj(
+        "EditorLine",
+        vec![
+            field("raw_text", str_()),
+            field("gutter_text", str_()),
+            field("spans", list(editor_styled_span)),
+            field("line_idx", int_()),
+            field_opt("is_current_line", bool_()),
+            field_opt("is_fold_header", bool_()),
+            field_opt("folded_line_count", int_()),
+            field_opt("git_diff", nullable(git_line_status)),
+            field_opt("diff_status", nullable(editor_diff_line)),
+            field_opt("diagnostics", list(diagnostic_mark)),
+            field_opt("spell_errors", list(spell_mark)),
+            field_opt("is_breakpoint", bool_()),
+            field_opt("is_conditional_bp", bool_()),
+            field_opt("is_dap_current", bool_()),
+            field_opt("is_wrap_continuation", bool_()),
+            field_opt("segment_col_offset", int_()),
+            field_opt("annotation", nullable(str_())),
+            field_opt("ghost_suffix", nullable(str_())),
+            field_opt("is_ghost_continuation", bool_()),
+            field_opt("indent_guides", list(int_())),
+            field_opt("colorcolumns", list(int_())),
+        ],
+    ));
+    let editor_descriptor = b.define(obj(
+        "EditorDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("rect", rect.clone()),
+            field("lines", list(editor_line)),
+            field_opt("cursor", nullable(editor_cursor)),
+            field_opt("extra_cursors", list(cursor_pos)),
+            field_opt("selection", nullable(editor_selection.clone())),
+            field_opt("extra_selections", list(editor_selection.clone())),
+            field_opt("yank_highlight", nullable(editor_selection)),
+            field("scroll_top", int_()),
+            field_opt("scroll_left", int_()),
+            field("total_lines", int_()),
+            field_opt("max_col", int_()),
+            field_opt("gutter_char_width", int_()),
+            field("is_active", bool_()),
+            field("show_active_bg", bool_()),
+            field("has_git_diff", bool_()),
+            field("has_breakpoints", bool_()),
+            field_opt("diagnostic_gutter", dictt(str_(), diagnostic_severity)),
+            field_opt("code_action_lines", list(int_())),
+            field_opt("bracket_match_positions", list(tup(vec![int_(), int_()]))),
+            field_opt("active_indent_col", nullable(int_())),
+            field("tabstop", int_()),
+            field("cursorline", bool_()),
+            field_opt("lightbulb_glyph", str_()),
+        ],
+    ));
+    let find_replace_click_target_find_input =
+        b.define(obj("_FrClickFindInput", vec![field("FindInput", int_())]));
+    let find_replace_click_target_replace_input = b.define(obj(
+        "_FrClickReplaceInput",
+        vec![field("ReplaceInput", int_())],
+    ));
+    let find_replace_click_target = b.define(union_of(
+        "FindReplaceClickTarget",
+        vec![
+            lit(&[
+                "Chevron",
+                "ToggleCase",
+                "ToggleWholeWord",
+                "ToggleRegex",
+                "PrevMatch",
+                "NextMatch",
+                "ToggleInSelection",
+                "Close",
+                "TogglePreserveCase",
+                "ReplaceCurrent",
+                "ReplaceAll",
+            ]),
+            find_replace_click_target_find_input,
+            find_replace_click_target_replace_input,
+        ],
+    ));
+    let fr_hit_region = b.define(obj(
+        "FrHitRegion",
+        vec![
+            field("col", int_()),
+            field("row", int_()),
+            field("width", int_()),
+        ],
+    ));
+    let find_replace_panel_descriptor = b.define(obj(
+        "FindReplacePanelDescriptor",
+        vec![
+            field("query", str_()),
+            field_opt("replacement", str_()),
+            field_opt("show_replace", bool_()),
+            field_opt("focus", int_()),
+            field_opt("cursor", int_()),
+            field_opt("sel_anchor", nullable(int_())),
+            field_opt("match_info", str_()),
+            field_opt("case_sensitive", bool_()),
+            field_opt("whole_word", bool_()),
+            field_opt("use_regex", bool_()),
+            field_opt("preserve_case", bool_()),
+            field_opt("in_selection", bool_()),
+            field("group_bounds", rect.clone()),
+            field_opt("panel_width", int_()),
+            field_opt("replace_one_glyph", str_()),
+            field_opt("replace_all_glyph", str_()),
+            field_opt(
+                "hit_regions",
+                list(tup(vec![fr_hit_region, find_replace_click_target])),
+            ),
+        ],
+    ));
+    let control_width_fixed = b.define(obj("_ControlWidthFixed", vec![field("Fixed", float_())]));
+    let control_width = b.define(union_of(
+        "ControlWidth",
+        vec![lit(&["Fill", "Content"]), control_width_fixed],
+    ));
+    let label_position = b.define(alias(
+        "LabelPosition",
+        lit(&["Left", "Top", "Inline", "Hidden"]),
+    ));
+    let label_align = b.define(alias("LabelAlign", lit(&["Start", "Center", "End"])));
+    let row_align = b.define(alias(
+        "RowAlign",
+        lit(&["Start", "Center", "End", "Stretch"]),
+    ));
+    let form_spacing = b.define(obj(
+        "FormSpacing",
+        vec![
+            field_opt("padding", float_()),
+            field_opt("item_gap", nullable(float_())),
+            field_opt("row_align", row_align.clone()),
+        ],
+    ));
+    let validation_state_error =
+        b.define(obj("_ValidationStateError", vec![field("Error", str_())]));
+    let validation_state_warning = b.define(obj(
+        "_ValidationStateWarning",
+        vec![field("Warning", str_())],
+    ));
+    let validation_state = b.define(union_of_doc(
+        "ValidationState",
+        vec![validation_state_error, validation_state_warning],
+        "`{\"Error\": \"...\"}` or `{\"Warning\": \"...\"}`.",
+    ));
+    let toggle_group_item = b.define(obj(
+        "ToggleGroupItem",
+        vec![
+            field("id", re("WidgetId")),
+            field("label", str_()),
+            field("value", bool_()),
+        ],
+    ));
+    let button_row_item = b.define(obj(
+        "ButtonRowItem",
+        vec![
+            field("id", re("WidgetId")),
+            field("label", str_()),
+            field_opt("disabled", bool_()),
+            field_opt("icon", nullable(icon.clone())),
+            field_opt("spec", nullable(button_spec_descriptor.clone())),
+        ],
+    ));
+    let field_kind_text_input = b.define(obj(
+        "_FieldKindTextInput",
+        vec![
+            field("value", str_()),
+            field_opt("placeholder", str_()),
+            field_opt("cursor", nullable(int_())),
+            field_opt("selection_anchor", nullable(int_())),
+        ],
+    ));
+    let field_kind_read_only = b.define(obj(
+        "_FieldKindReadOnly",
+        vec![field("value", styled_text.clone())],
+    ));
+    let field_kind_slider = b.define(obj(
+        "_FieldKindSlider",
+        vec![
+            field("value", float_()),
+            field("min", float_()),
+            field("max", float_()),
+            field_opt("step", float_()),
+        ],
+    ));
+    let field_kind_color_picker = b.define(obj(
+        "_FieldKindColorPicker",
+        vec![field("value", color.clone())],
+    ));
+    let field_kind_dropdown = b.define(obj(
+        "_FieldKindDropdown",
+        vec![
+            field("options", list(styled_text.clone())),
+            field("selected_idx", int_()),
+        ],
+    ));
+    let field_kind_text_area = b.define(obj(
+        "_FieldKindTextArea",
+        vec![
+            field("value", str_()),
+            field_opt("placeholder", str_()),
+            field_opt("cursor", nullable(int_())),
+            field_opt("visible_rows", int_()),
+        ],
+    ));
+    let field_kind_password_input = b.define(obj(
+        "_FieldKindPasswordInput",
+        vec![
+            field("value", str_()),
+            field_opt("placeholder", str_()),
+            field_opt("cursor", nullable(int_())),
+            field_opt("mask_char", str_()),
+        ],
+    ));
+    let field_kind_segmented_control = b.define(obj(
+        "_FieldKindSegmentedControl",
+        vec![
+            field("options", list(str_())),
+            field("selected_idx", int_()),
+        ],
+    ));
+    let field_kind_toggle_group = b.define(obj(
+        "_FieldKindToggleGroup",
+        vec![field("toggles", list(toggle_group_item))],
+    ));
+    let field_kind_button_row = b.define(obj(
+        "_FieldKindButtonRow",
+        vec![field("buttons", list(button_row_item))],
+    ));
+    let field_kind_toolbar = b.define(obj(
+        "_FieldKindToolbar",
+        vec![field("Toolbar", toolbar_descriptor.clone())],
+    ));
+    let field_kind_date_picker_wrapper = b.define(obj(
+        "_FieldKindDatePicker",
+        vec![field("DatePicker", date_picker_descriptor.clone())],
+    ));
+    let field_kind_combo_box_wrapper = b.define(obj(
+        "_FieldKindComboBox",
+        vec![field("ComboBox", combo_box_descriptor.clone())],
+    ));
+    let field_kind_number_input_wrapper = b.define(obj(
+        "_FieldKindNumberInput",
+        vec![field("NumberInput", number_input_descriptor.clone())],
+    ));
+    let field_kind_radio_group_wrapper = b.define(obj(
+        "_FieldKindRadioGroup",
+        vec![field("RadioGroup", radio_group_descriptor.clone())],
+    ));
+    let field_kind_toggle = b.define(obj("_FieldKindToggle", vec![field("value", bool_())]));
+    let field_kind_dict = b.define(flat(
+        "_FieldKindDict",
+        &[
+            ("Toggle", field_kind_toggle),
+            ("TextInput", field_kind_text_input),
+            ("ReadOnly", field_kind_read_only),
+            ("Slider", field_kind_slider),
+            ("ColorPicker", field_kind_color_picker),
+            ("Dropdown", field_kind_dropdown),
+            ("TextArea", field_kind_text_area),
+            ("PasswordInput", field_kind_password_input),
+            ("SegmentedControl", field_kind_segmented_control),
+            ("ToggleGroup", field_kind_toggle_group),
+            ("ButtonRow", field_kind_button_row),
+        ],
+        vec![],
+    ));
+    let field_kind = b.define(alias_doc(
+        "FieldKind",
+        uniont(vec![
+            lit(&["Label", "Button"]),
+            field_kind_dict,
+            field_kind_toolbar,
+            field_kind_date_picker_wrapper,
+            field_kind_combo_box_wrapper,
+            field_kind_number_input_wrapper,
+            field_kind_radio_group_wrapper,
+        ]),
+        "A `FormField`'s kind -- `\"Label\"`/`\"Button\"` (bare strings, no payload), a tagged variant from `_FieldKindDict`, or one of the embedded-primitive wrappers (`{\"Toolbar\": ...}`, `{\"DatePicker\": ...}`, `{\"ComboBox\": ...}`, `{\"NumberInput\": ...}`, `{\"RadioGroup\": ...}`).",
+    ));
+    let form_field_descriptor = b.define(obj(
+        "FormFieldDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("label", styled_text.clone()),
+            field("kind", field_kind),
+            field_opt("hint", styled_text.clone()),
+            field_opt("disabled", bool_()),
+            field_opt("validation", nullable(validation_state)),
+            field_opt("label_position", nullable(label_position.clone())),
+            field_opt("label_align", nullable(label_align.clone())),
+            field_opt("label_width", nullable(float_())),
+            field_opt("tab_index", nullable(int_())),
+            field_opt("control_width", nullable(control_width.clone())),
+            field_opt("min_control_width", nullable(float_())),
+            field_opt("row_align", nullable(row_align)),
+        ],
+    ));
+    let form_descriptor = b.define(obj(
+        "FormDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("fields", list(form_field_descriptor)),
+            field("focused_field", nullable(re("WidgetId"))),
+            field_opt("scroll_offset", int_()),
+            field_opt("has_focus", bool_()),
+            field_opt("label_position", label_position),
+            field_opt("label_align", label_align),
+            field_opt("label_width", nullable(float_())),
+            field_opt("control_width", control_width),
+            field_opt("min_control_width", nullable(float_())),
+            field_opt("spacing", form_spacing),
+        ],
+    ));
+    let msv_axis = b.define(alias("MsvAxis", lit(&["Vertical", "Horizontal"])));
+    let scroll_mode = b.define(alias("ScrollMode", lit(&["PerSection", "WholePanel"])));
+    let section_size_fixed = b.define(obj("_SectionSizeFixed", vec![field("Fixed", int_())]));
+    let section_size_percent =
+        b.define(obj("_SectionSizePercent", vec![field("Percent", float_())]));
+    let section_size_weight = b.define(obj("_SectionSizeWeight", vec![field("Weight", float_())]));
+    let section_size = b.define(union_of(
+        "SectionSize",
+        vec![
+            lit(&["Content", "EqualShare"]),
+            section_size_fixed,
+            section_size_percent,
+            section_size_weight,
+        ],
+    ));
+    let header_action = b.define(obj(
+        "HeaderAction",
+        vec![
+            field("id", str_()),
+            field("icon", icon.clone()),
+            field("tooltip", nullable(str_())),
+            field_opt("enabled", bool_()),
+        ],
+    ));
+    let section_header = b.define(obj(
+        "SectionHeader",
+        vec![
+            field("icon", nullable(icon.clone())),
+            field("title", styled_text.clone()),
+            field("badge", nullable(styled_text.clone())),
+            field_opt("actions", list(header_action.clone())),
+            field_opt("show_chevron", bool_()),
+        ],
+    ));
+    let empty_body = b.define(obj(
+        "EmptyBody",
+        vec![
+            field("icon", nullable(icon.clone())),
+            field("text", styled_text.clone()),
+            field("hint", nullable(styled_text.clone())),
+            field("action", nullable(header_action.clone())),
+        ],
+    ));
+    let inline_input = b.define(obj(
+        "InlineInput",
+        vec![
+            field("id", re("WidgetId")),
+            field("text", str_()),
+            field_opt("caret", int_()),
+            field("placeholder", nullable(str_())),
+            field_opt("has_focus", bool_()),
+        ],
+    ));
+    let section_aux_input = b.define(obj(
+        "_SectionAuxInput",
+        vec![field("Input", inline_input.clone())],
+    ));
+    let section_aux_toolbar = b.define(obj(
+        "_SectionAuxToolbar",
+        vec![field("Toolbar", list(header_action))],
+    ));
+    let section_aux_search = b.define(obj(
+        "_SectionAuxSearch",
+        vec![field("Search", inline_input)],
+    ));
+    let section_aux_custom = b.define(obj(
+        "_SectionAuxCustom",
+        vec![field("Custom", re("WidgetId"))],
+    ));
+    let section_aux = b.define(union_of(
+        "SectionAux",
+        vec![
+            section_aux_input,
+            section_aux_toolbar,
+            section_aux_search,
+            section_aux_custom,
+        ],
+    ));
+    let section_body_tree = b.define(obj(
+        "_SectionBodyTree",
+        vec![field("Tree", tree_view_descriptor.clone())],
+    ));
+    let section_body_list = b.define(obj(
+        "_SectionBodyList",
+        vec![field("List", list_view_descriptor.clone())],
+    ));
+    let section_body_form = b.define(obj(
+        "_SectionBodyForm",
+        vec![field("Form", form_descriptor.clone())],
+    ));
+    let section_body_terminal = b.define(obj(
+        "_SectionBodyTerminal",
+        vec![field("Terminal", terminal_descriptor.clone())],
+    ));
+    let section_body_message_list = b.define(obj(
+        "_SectionBodyMessageList",
+        vec![field("MessageList", message_list_descriptor.clone())],
+    ));
+    let section_body_text = b.define(obj(
+        "_SectionBodyText",
+        vec![field("Text", list(styled_text.clone()))],
+    ));
+    let section_body_chart = b.define(obj(
+        "_SectionBodyChart",
+        vec![field("Chart", chart_descriptor.clone())],
+    ));
+    let section_body_empty = b.define(obj("_SectionBodyEmpty", vec![field("Empty", empty_body)]));
+    let section_body_custom = b.define(obj(
+        "_SectionBodyCustom",
+        vec![field("Custom", re("WidgetId"))],
+    ));
+    let section_body = b.define(union_of(
+        "SectionBody",
+        vec![
+            section_body_tree,
+            section_body_list,
+            section_body_form,
+            section_body_terminal,
+            section_body_message_list,
+            section_body_text,
+            section_body_chart,
+            section_body_empty,
+            section_body_custom,
+        ],
+    ));
+    let section = b.define(obj(
+        "Section",
+        vec![
+            field("id", str_()),
+            field("header", section_header),
+            field("body", section_body),
+            field_opt("aux", nullable(section_aux)),
+            field("size", section_size),
+            field_opt("collapsed", bool_()),
+            field_opt("min_size", nullable(int_())),
+            field_opt("max_size", nullable(int_())),
+        ],
+    ));
+    let multi_section_view_descriptor = b.define(obj(
+        "MultiSectionViewDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("sections", list(section)),
+            field_opt("active_section", nullable(int_())),
+            field("axis", msv_axis),
+            field_opt("allow_resize", bool_()),
+            field_opt("allow_collapse", bool_()),
+            field("scroll_mode", scroll_mode),
+            field_opt("has_focus", bool_()),
+            field_opt("panel_scroll", float_()),
+        ],
+    ));
+    let key_binding_literal = b.define(obj("_KeyBindingLiteral", vec![field("Literal", str_())]));
+    let key_binding = b.define(union_of_doc(
+        "KeyBinding",
+        vec![
+            lit(&[
+                "Save", "Open", "New", "Close", "Copy", "Cut", "Paste", "Undo", "Redo",
+                "SelectAll", "Find", "Replace", "Quit",
+            ]),
+            key_binding_literal,
+        ],
+        "A universal accelerator name (bare string) or `{\"Literal\": \"...\"}` for an app-specific binding.",
+    ));
+    let accelerator_scope_widget = b.define(obj(
+        "_AcceleratorScopeWidget",
+        vec![field("Widget", re("WidgetId"))],
+    ));
+    let accelerator_scope_mode =
+        b.define(obj("_AcceleratorScopeMode", vec![field("Mode", str_())]));
+    let accelerator_scope = b.define(union_of(
+        "AcceleratorScope",
+        vec![
+            lit(&["Global"]),
+            accelerator_scope_widget,
+            accelerator_scope_mode,
+        ],
+    ));
+    let accelerator = b.define(obj(
+        "Accelerator",
+        vec![
+            field("id", re("AcceleratorId")),
+            field("binding", key_binding),
+            field("scope", accelerator_scope),
+            field("label", nullable(str_())),
+        ],
+    ));
+    let context_menu_item = re("ContextMenuItem");
+    let context_menu_item_def = b.define(obj(
+        "ContextMenuItem",
+        vec![
+            field_opt("id", nullable(re("WidgetId"))),
+            field("label", styled_text.clone()),
+            field_opt("detail", nullable(styled_text.clone())),
+            field_opt("disabled", bool_()),
+            field_opt("key_equivalent", nullable(accelerator)),
+            field_opt("checked", nullable(bool_())),
+            field_opt("icon", nullable(icon)),
+            field_opt("submenu", nullable(list(context_menu_item))),
+        ],
+    ));
+    let menu_bar_item = b.define(obj(
+        "MenuBarItemDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("label", str_()),
+            field_opt("disabled", bool_()),
+            field_opt("submenu", nullable(list(context_menu_item_def))),
+        ],
+    ));
+    let menu_bar_descriptor = b.define(obj(
+        "MenuBarDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("items", list(menu_bar_item)),
+            field_opt("open_item", nullable(int_())),
+            field_opt("focused_item", nullable(int_())),
+        ],
+    ));
+    let diff_row_kind = b.define(alias(
+        "DiffRowKind",
+        lit(&["Same", "Changed", "Removed", "Added"]),
+    ));
+    let diff_row = b.define(obj(
+        "DiffRow",
+        vec![
+            field("left", nullable(str_())),
+            field("right", nullable(str_())),
+            field("kind", diff_row_kind),
+        ],
+    ));
+    let diff_hunk = b.define(obj(
+        "DiffHunk",
+        vec![
+            field("left_start", int_()),
+            field("right_start", int_()),
+            field("rows", list(diff_row)),
+        ],
+    ));
+    let diff_mode = b.define(alias("DiffMode", lit(&["SideBySide", "Unified"])));
+    let diff_editability = b.define(alias(
+        "DiffEditability",
+        lit(&["ReadOnly", "RightEditable"]),
+    ));
+    let diff_pane = b.define(alias("DiffPane", lit(&["Left", "Right"])));
+    let diff_view_descriptor = b.define(obj(
+        "DiffViewDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("left", str_()),
+            field("right", str_()),
+            field("left_label", nullable(str_())),
+            field("right_label", nullable(str_())),
+            field("hunks", list(diff_hunk)),
+            field("mode", diff_mode),
+            field("editability", diff_editability),
+            field("scroll_offset", int_()),
+            field("focused_pane", diff_pane),
+            field("has_focus", bool_()),
+        ],
+    ));
+
     // `LayoutLeafNode`/`RenderFrameDict`'s descriptor-kind keys: the six
-    // fixed `LEAF_KIND_KEYS`, typed, plus every `EXTRA_PRIMITIVE_KINDS`
-    // additive kind -- `status_bar` typed (the one already-modeled extra
-    // kind), every other one an untyped placeholder (see this module's own
-    // doc). Reading straight off the real Rust consts means a new fixed or
-    // additive kind always gets *a* schema entry with no further edit here.
+    // fixed `LEAF_KIND_KEYS`, `status_bar`, and every `EXTRA_PRIMITIVE_KINDS`
+    // additive kind are all fully typed. Reading straight off the real Rust
+    // consts means a new fixed or additive kind always gets *a* schema entry
+    // with no further edit here (the `unreachable!` arm below is this
+    // function's own reminder to type it before merging).
     //
     // `leaf_fields` and `render_frame_fields` are built independently
     // (rather than one sliced from the other) because they are not the
@@ -1012,18 +2235,45 @@ pub fn schema() -> Vec<DefJson> {
         if kind == "status_bar" {
             continue;
         }
-        // `any_()` already renders as `Optional[Any]`/`unknown | null` on
-        // both targets, so wrapping it in `nullable()` here would be a
-        // redundant double-optional -- unlike the six core kinds and
-        // `status_bar` above, where `nullable(ty)` is load-bearing because
-        // `ty` itself is a concrete, non-nullable descriptor type.
-        leaf_fields.push(field_opt(kind, any_()));
-        render_frame_fields.push(field_opt(kind, any_()));
+        let ty = match kind {
+            "progress" => progress_bar_descriptor.clone(),
+            "spinner" => spinner_descriptor.clone(),
+            "image" => image_descriptor.clone(),
+            "form" => form_descriptor.clone(),
+            "text_input" => text_input_descriptor.clone(),
+            "number_input" => number_input_descriptor.clone(),
+            "combo_box" => combo_box_descriptor.clone(),
+            "date_picker" => date_picker_descriptor.clone(),
+            "radio_group" => radio_group_descriptor.clone(),
+            "switch" => switch_descriptor.clone(),
+            "chart" => chart_descriptor.clone(),
+            "message_list" => message_list_descriptor.clone(),
+            "board" => board_model_descriptor.clone(),
+            "pipeline_view" => pipeline_view_descriptor.clone(),
+            "minimap" => minimap_descriptor.clone(),
+            "multi_section_view" => multi_section_view_descriptor.clone(),
+            "diff_view" => diff_view_descriptor.clone(),
+            "activity_bar" => activity_bar_descriptor.clone(),
+            "toolbar" => toolbar_descriptor.clone(),
+            "menu_bar" => menu_bar_descriptor.clone(),
+            "command_line" => command_line_descriptor.clone(),
+            "command_center" => command_center_descriptor.clone(),
+            "palette" => palette_descriptor.clone(),
+            "scrollbar" => scrollbar_descriptor.clone(),
+            "editor" => editor_descriptor.clone(),
+            "terminal" => terminal_descriptor.clone(),
+            "canvas" => canvas_descriptor.clone(),
+            "scroll_view" => scroll_view_descriptor.clone(),
+            "find_replace" => find_replace_panel_descriptor.clone(),
+            other => unreachable!("EXTRA_PRIMITIVE_KINDS grew an unhandled kind {other:?}"),
+        };
+        leaf_fields.push(field_opt(kind, ty.clone()));
+        render_frame_fields.push(field_opt(kind, nullable(ty)));
     }
     let layout_leaf_node = b.define(obj_doc(
         "LayoutLeafNode",
         leaf_fields,
-        "One `{\"id\", \"<kind>\": <descriptor>}` leaf -- exactly one kind key is present. `status_bar` and the six core kinds are fully typed; every other additive kind (`progress`, `form`, ...) decodes here too but is typed `Any` pending field-by-field narrowing.",
+        "One `{\"id\", \"<kind>\": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, and every `EXTRA_PRIMITIVE_KINDS` additive kind) is fully typed.",
     ));
 
     b.define(union_of_doc(
@@ -1044,7 +2294,7 @@ pub fn schema() -> Vec<DefJson> {
     b.define(obj_doc(
         "RenderFrameDict",
         render_frame_fields,
-        "The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. The six core kinds and `status_bar` are fully typed; every other additive kind is typed `Any`.",
+        "The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. Every registered kind is fully typed.",
     ));
     b.define(alias_doc(
         "RenderOutput",
@@ -1689,14 +2939,15 @@ mod coverage {
     //! this whole module is still gated by `#[cfg(test)]`, so it is only
     //! *compiled* -- and the guards only take effect -- under a command
     //! that builds test targets (`cargo test`, `cargo check --tests`), not
-    //! a bare `cargo build`/`cargo check`. [`value_shape`] below is the
-    //! exception: it has real runtime assertions, because `Button`'s and
-    //! `Toolbar`'s own `#[non_exhaustive]` blocks a pure pattern-match
-    //! guard from seeing an added field (see this module's own doc).
-    //! Keeping every guard in a dedicated test module (rather than
-    //! scattered through `schema()` itself) keeps the schema construction
-    //! and its coverage guards reviewable side by side without
-    //! interleaving unrelated code.
+    //! a bare `cargo build`/`cargo check`. [`value_shape`] and
+    //! [`variant_shape`] below are the exception: they have real runtime
+    //! assertions, because a `#[non_exhaustive]` struct's added field or a
+    //! `#[non_exhaustive]` enum's added variant each has a case a pure
+    //! pattern-match guard can't see (see this module's own doc). Keeping
+    //! every guard in a dedicated test module (rather than scattered
+    //! through `schema()` itself) keeps the schema construction and its
+    //! coverage guards reviewable side by side without interleaving
+    //! unrelated code.
 
     #![allow(dead_code, unused_variables)]
     // `Panel`/`PanelAction` are `#[deprecated]` (use `SidebarPanel` + a
@@ -1706,16 +2957,34 @@ mod coverage {
     #![allow(deprecated)]
 
     use quadraui::{
-        ActivityBarEvent, BackendNativeEvent, Badge, Button, ButtonIconPosition, ButtonMask,
-        ButtonSpec, ButtonVariant, CalendarDate, ChartEvent, Color, Column, ColumnAlign,
-        ColumnWidth, DataRow, DataTable, DataTableEvent, Decoration, FormEvent, Icon, Key,
-        ListItem, ListView, ListViewEvent, Modifiers, MouseButton, NamedKey, PaletteEvent, Panel,
-        PanelAction, Point, PowerEventKind, ScrollDelta, SelectionMode, SidebarPanel,
-        SortDirection, StatusBar, StatusBarEvent, StatusBarSegment, StyledSpan, StyledText,
-        SystemTheme, TabBar, TabBarEvent, TabBarSegment, TabItem, TerminalEvent, TextDisplay,
-        TextDisplayEvent, TextDisplayLine, Toolbar, ToolbarButton, ToolbarEvent, TreeEvent,
-        TreeRow, TreeRowEditState, TreeStyle, TreeView, UiEvent, Viewport,
+        Accelerator, AcceleratorScope, ActivityBar, ActivityBarEvent, ActivityItem,
+        BackendNativeEvent, Badge, BadgeStatus, BoardCard, BoardColumn, BoardModel, Button,
+        ButtonIconPosition, ButtonMask, ButtonRowItem, ButtonSpec, ButtonVariant, CalendarDate,
+        Canvas, CardBadge, Chart, ChartEvent, ChartKind, Color, Column, ColumnAlign, ColumnWidth,
+        ComboBox, CommandCenter, CommandLine, ContextMenuItem, ControlWidth, DataRow, DataTable,
+        DataTableEvent, DateFormat, DateLocale, DatePicker, Decoration, DiagnosticMark,
+        DiagnosticSeverity, DiffEditability, DiffHunk, DiffLine, DiffMode, DiffPane, DiffRow,
+        DiffRowKind, DiffView, DrawOp, Editor, EditorCursor, EditorCursorPos as CursorPos,
+        EditorCursorShape as CursorShape, EditorLine, EditorSelection,
+        EditorSelectionKind as SelectionKind, EditorStyle, EditorStyledSpan, EmptyBody, FieldKind,
+        FindReplaceClickTarget, FindReplacePanel, Form, FormEvent, FormField, FormSpacing,
+        FrHitRegion, GitLineStatus, HeaderAction, Icon, Image, ImageFit, ImageSource, InlineInput,
+        Key, KeyBinding, LabelAlign, LabelPosition, ListItem, ListView, ListViewEvent, MenuBar,
+        MenuBarItem, MessageList, MessageRow, Minimap, MinimapLine, MinimapSpan, Modifiers,
+        MouseButton, MsvAxis, MultiSectionView, NamedKey, NumberInput, Palette, PaletteEvent,
+        PaletteItem, PaletteMode, PalettePreview, Panel, PanelAction, PipelineStage, PipelineView,
+        Point, PowerEventKind, ProgressBar, RadioGroup, RadioOption, Rect, RowAlign, ScrollAxis,
+        ScrollDelta, ScrollMode, ScrollView, Scrollbar, Section, SectionAux, SectionBody,
+        SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel, SortDirection, SpellMark,
+        Spinner, StageStatus, StatusBar, StatusBarEvent, StatusBarSegment, StyledSpan, StyledText,
+        Switch, SystemTheme, TabBar, TabBarEvent, TabBarSegment, TabItem, Terminal, TerminalCell,
+        TerminalCursorShape, TerminalEvent, TerminalScrollbar, TextDisplay, TextDisplayEvent,
+        TextDisplayLine, TextInput, TimeOfDay, ToggleGroupItem, Toolbar, ToolbarButton,
+        ToolbarEvent, TreeEvent, TreeRow, TreeRowEditState, TreeStyle, TreeView, UiEvent,
+        ValidationState, Viewport, Weekday,
     };
+
+    use quadraui::primitives::canvas::CanvasFontRole;
 
     use crate::hit::HitDetail;
     use crate::layout::{LayoutNode, LeafDescriptor};
@@ -2459,6 +3728,15 @@ mod coverage {
         }
     );
     assert_fields!(assert_point_fields, Point { x, y });
+    assert_fields!(
+        assert_rect_fields,
+        Rect {
+            x,
+            y,
+            width,
+            height
+        }
+    );
     assert_fields!(assert_scroll_delta_fields, ScrollDelta { x, y });
     assert_fields!(
         assert_button_mask_fields,
@@ -2527,6 +3805,1074 @@ mod coverage {
             icon_gap,
             tooltip,
             disabled
+        }
+    );
+
+    // ── Additive primitive descriptors: field/variant drift guards ──────
+
+    assert_fields!(
+        assert_progress_bar_fields,
+        ProgressBar {
+            id,
+            label,
+            value,
+            frame_idx,
+            cancellable,
+            accent
+        }
+    );
+    assert_fields!(
+        assert_spinner_fields,
+        Spinner {
+            id,
+            label,
+            frame_idx,
+            accent
+        }
+    );
+    fn assert_image_source(s: ImageSource) {
+        match s {
+            ImageSource::Bytes(_) => {}
+            ImageSource::Path(_) => {}
+        }
+    }
+    fn assert_image_fit(f: ImageFit) {
+        match f {
+            ImageFit::Contain => {}
+            ImageFit::Cover => {}
+            ImageFit::Fill => {}
+            ImageFit::None => {}
+        }
+    }
+    assert_fields!(
+        assert_image_fields,
+        Image {
+            id,
+            source,
+            intrinsic_size,
+            fit,
+            fallback_text
+        }
+    );
+    assert_fields_non_exhaustive!(
+        assert_text_input_fields,
+        TextInput {
+            id,
+            lines,
+            cursor_line,
+            cursor_col,
+            placeholder,
+            scroll_offset,
+            scroll_col,
+            has_focus
+        }
+    );
+    assert_fields_non_exhaustive!(
+        assert_number_input_fields,
+        NumberInput {
+            id,
+            value,
+            min,
+            max,
+            step,
+            precision,
+            draft,
+            disabled,
+            focused
+        }
+    );
+    assert_fields_non_exhaustive!(
+        assert_combo_box_fields,
+        ComboBox {
+            id,
+            options,
+            text,
+            committed,
+            open,
+            highlighted,
+            disabled,
+            focused
+        }
+    );
+    assert_fields_non_exhaustive!(
+        assert_switch_fields,
+        Switch {
+            id,
+            value,
+            disabled,
+            focused
+        }
+    );
+    fn assert_scroll_axis(a: ScrollAxis) {
+        match a {
+            ScrollAxis::Vertical => {}
+            ScrollAxis::Horizontal => {}
+        }
+    }
+    assert_fields_non_exhaustive!(
+        assert_scrollbar_fields,
+        Scrollbar {
+            id,
+            axis,
+            track,
+            thumb_start,
+            thumb_len,
+            hovered,
+            dragging
+        }
+    );
+    assert_fields_non_exhaustive!(
+        assert_scroll_view_fields,
+        ScrollView {
+            id,
+            axis,
+            viewport,
+            content_len,
+            scroll_offset,
+            focused
+        }
+    );
+    assert_fields!(
+        assert_command_line_fields,
+        CommandLine {
+            id,
+            text,
+            cursor_offset,
+            right_align
+        }
+    );
+    assert_fields!(
+        assert_command_center_fields,
+        CommandCenter {
+            id,
+            back_enabled,
+            forward_enabled,
+            search_label
+        }
+    );
+    assert_fields!(
+        assert_radio_option_fields,
+        RadioOption {
+            id,
+            label,
+            disabled
+        }
+    );
+    assert_fields_non_exhaustive!(
+        assert_radio_group_fields,
+        RadioGroup {
+            id,
+            options,
+            selected,
+            focused
+        }
+    );
+    assert_fields!(
+        assert_message_row_fields,
+        MessageRow {
+            text,
+            fg,
+            indent,
+            spans,
+            scale
+        }
+    );
+    assert_fields!(
+        assert_message_list_fields,
+        MessageList {
+            id,
+            rows,
+            scroll_top
+        }
+    );
+    fn assert_weekday(w: Weekday) {
+        match w {
+            Weekday::Sunday => {}
+            Weekday::Monday => {}
+            Weekday::Tuesday => {}
+            Weekday::Wednesday => {}
+            Weekday::Thursday => {}
+            Weekday::Friday => {}
+            Weekday::Saturday => {}
+        }
+    }
+    fn assert_date_format(f: DateFormat) {
+        match f {
+            DateFormat::Iso8601 => {}
+            DateFormat::UsSlash => {}
+            DateFormat::EuSlash => {}
+        }
+    }
+    assert_fields!(
+        assert_date_locale_fields,
+        DateLocale {
+            first_weekday,
+            format
+        }
+    );
+    assert_fields!(assert_time_of_day_fields, TimeOfDay { hour, minute });
+    assert_fields_non_exhaustive!(
+        assert_date_picker_fields,
+        DatePicker {
+            id,
+            visible_month,
+            selected,
+            focused,
+            locale,
+            time,
+            has_focus
+        }
+    );
+    fn assert_chart_kind(k: ChartKind) {
+        match k {
+            ChartKind::Sparkline => {}
+            ChartKind::Line => {}
+            ChartKind::Bar => {}
+            ChartKind::BarGrouped => {}
+            // `ChartKind` is `#[non_exhaustive]` -- see
+            // `assert_tab_bar_event`'s matching comment.
+            _ => {}
+        }
+    }
+    assert_fields!(
+        assert_series_fields,
+        Series {
+            label,
+            data,
+            color,
+            fill
+        }
+    );
+    assert_fields!(
+        assert_chart_fields,
+        Chart {
+            id,
+            kind,
+            series,
+            x_label,
+            y_label,
+            y_range,
+            x_range,
+            show_legend,
+            y_ticks,
+            x_ticks,
+            show_grid
+        }
+    );
+    fn assert_stage_status(s: StageStatus) {
+        match s {
+            StageStatus::Pending => {}
+            StageStatus::Active => {}
+            StageStatus::Done => {}
+            StageStatus::Failed => {}
+            StageStatus::Skipped => {}
+            StageStatus::Stale => {}
+        }
+    }
+    assert_fields!(
+        assert_pipeline_stage_fields,
+        PipelineStage {
+            label,
+            status,
+            action
+        }
+    );
+    assert_fields!(
+        assert_pipeline_view_fields,
+        PipelineView {
+            id,
+            stages,
+            focused_stage
+        }
+    );
+    fn assert_badge_status(s: BadgeStatus) {
+        match s {
+            BadgeStatus::Pending => {}
+            BadgeStatus::Running => {}
+            BadgeStatus::Passed => {}
+            BadgeStatus::Warning => {}
+            BadgeStatus::Blocked => {}
+        }
+    }
+    assert_fields!(assert_card_badge_fields, CardBadge { label, status });
+    assert_fields!(
+        assert_board_card_fields,
+        BoardCard {
+            id,
+            title,
+            labels,
+            badges,
+            hint
+        }
+    );
+    assert_fields!(
+        assert_board_column_fields,
+        BoardColumn {
+            id,
+            title,
+            cards,
+            scroll_offset
+        }
+    );
+    assert_fields!(
+        assert_board_model_fields,
+        BoardModel {
+            id,
+            columns,
+            selected_card_id,
+            col_scroll_offset
+        }
+    );
+    assert_fields!(assert_minimap_line_fields, MinimapLine { text, line_idx });
+    assert_fields!(
+        assert_minimap_span_fields,
+        MinimapSpan {
+            line_idx,
+            start_col,
+            end_col,
+            color
+        }
+    );
+    assert_fields!(
+        assert_minimap_fields,
+        Minimap {
+            id,
+            lines,
+            syntax_spans,
+            visible_row_start,
+            visible_row_count,
+            total_buffer_lines
+        }
+    );
+    assert_fields!(
+        assert_activity_item_fields,
+        ActivityItem {
+            id,
+            icon,
+            tooltip,
+            is_active,
+            is_keyboard_selected
+        }
+    );
+    assert_fields!(
+        assert_activity_bar_fields2,
+        ActivityBar {
+            id,
+            top_items,
+            bottom_items,
+            active_accent,
+            selection_bg,
+            is_keyboard_focused
+        }
+    );
+    fn assert_palette_mode(m: PaletteMode) {
+        match m {
+            PaletteMode::List => {}
+            PaletteMode::Input => {}
+        }
+    }
+    assert_fields!(
+        assert_palette_item_fields,
+        PaletteItem {
+            text,
+            detail,
+            icon,
+            match_positions,
+            depth,
+            expandable,
+            expanded
+        }
+    );
+    assert_fields!(
+        assert_palette_preview_fields,
+        PalettePreview {
+            lines,
+            title,
+            scroll_offset,
+            highlight_line
+        }
+    );
+    assert_fields!(
+        assert_palette_fields2,
+        Palette {
+            id,
+            title,
+            query,
+            query_cursor,
+            items,
+            selected_idx,
+            scroll_offset,
+            total_count,
+            has_focus,
+            show_query,
+            create_label,
+            preview,
+            mode
+        }
+    );
+    fn assert_terminal_cursor_shape(s: TerminalCursorShape) {
+        match s {
+            TerminalCursorShape::Block => {}
+            TerminalCursorShape::Underline => {}
+            TerminalCursorShape::Bar => {}
+        }
+    }
+    assert_fields!(
+        assert_terminal_cell_fields,
+        TerminalCell {
+            text,
+            fg,
+            bg,
+            bold,
+            italic,
+            underline,
+            dim,
+            selected,
+            is_cursor,
+            cursor_shape,
+            cursor_blinking,
+            is_find_match,
+            is_find_active
+        }
+    );
+    assert_fields!(
+        assert_terminal_scrollbar_fields,
+        TerminalScrollbar {
+            total_lines,
+            visible_lines,
+            scroll_offset,
+            inverted,
+            width
+        }
+    );
+    assert_fields!(
+        assert_terminal_fields2,
+        Terminal {
+            id,
+            cells,
+            scrollbar
+        }
+    );
+    fn assert_canvas_font_role(r: CanvasFontRole) {
+        match r {
+            CanvasFontRole::Chrome => {}
+            CanvasFontRole::Editor => {}
+        }
+    }
+    fn assert_draw_op(op: DrawOp) {
+        match op {
+            DrawOp::Rect { rect: _, color: _ } => {}
+            DrawOp::RoundedRect {
+                rect: _,
+                radius: _,
+                color: _,
+            } => {}
+            DrawOp::Line {
+                from: _,
+                to: _,
+                color: _,
+                stroke_width: _,
+            } => {}
+            DrawOp::Path {
+                points: _,
+                color: _,
+                stroke_width: _,
+                closed: _,
+            } => {}
+            DrawOp::TextRun {
+                rect: _,
+                text: _,
+                color: _,
+            } => {}
+            DrawOp::Image { rect: _, image: _ } => {}
+            DrawOp::PushClip { rect: _ } => {}
+            DrawOp::PopClip => {}
+            DrawOp::Polygon {
+                points: _,
+                color: _,
+            } => {}
+            DrawOp::Ellipse {
+                center: _,
+                radius_x: _,
+                radius_y: _,
+                color: _,
+            } => {}
+            DrawOp::Arc {
+                center: _,
+                radius: _,
+                start_angle: _,
+                end_angle: _,
+                color: _,
+                stroke_width: _,
+            } => {}
+            DrawOp::Bezier {
+                from: _,
+                control1: _,
+                control2: _,
+                to: _,
+                color: _,
+                stroke_width: _,
+            } => {}
+            DrawOp::DashedLine {
+                from: _,
+                to: _,
+                color: _,
+                stroke_width: _,
+                dash_len: _,
+                gap_len: _,
+            } => {}
+            DrawOp::StrokeRect {
+                rect: _,
+                color: _,
+                stroke_width: _,
+            } => {}
+            DrawOp::StyledTextRun {
+                rect: _,
+                text: _,
+                color: _,
+                role: _,
+                italic: _,
+                size: _,
+            } => {}
+            // `DrawOp` is `#[non_exhaustive]` -- see
+            // `assert_tab_bar_event`'s matching comment.
+            _ => {}
+        }
+    }
+    assert_fields!(assert_canvas_fields, Canvas { id, ops });
+    fn assert_diagnostic_severity(s: DiagnosticSeverity) {
+        match s {
+            DiagnosticSeverity::Error => {}
+            DiagnosticSeverity::Warning => {}
+            DiagnosticSeverity::Information => {}
+            DiagnosticSeverity::Hint => {}
+        }
+    }
+    fn assert_git_line_status(s: GitLineStatus) {
+        match s {
+            GitLineStatus::Added => {}
+            GitLineStatus::Modified => {}
+            GitLineStatus::Deleted => {}
+        }
+    }
+    fn assert_editor_diff_line(d: DiffLine) {
+        match d {
+            DiffLine::Same => {}
+            DiffLine::Added => {}
+            DiffLine::Removed => {}
+            DiffLine::Padding => {}
+        }
+    }
+    fn assert_cursor_shape(s: CursorShape) {
+        match s {
+            CursorShape::Block => {}
+            CursorShape::Bar => {}
+            CursorShape::Underline => {}
+        }
+    }
+    fn assert_selection_kind(k: SelectionKind) {
+        match k {
+            SelectionKind::Char => {}
+            SelectionKind::Line => {}
+            SelectionKind::Block => {}
+        }
+    }
+    assert_fields!(assert_cursor_pos_fields, CursorPos { view_line, col });
+    assert_fields!(assert_editor_cursor_fields, EditorCursor { pos, shape });
+    assert_fields!(
+        assert_editor_selection_fields,
+        EditorSelection {
+            kind,
+            start_line,
+            start_col,
+            end_line,
+            end_col
+        }
+    );
+    assert_fields!(
+        assert_editor_style_fields,
+        EditorStyle {
+            fg,
+            bg,
+            bold,
+            italic,
+            font_scale
+        }
+    );
+    assert_fields!(
+        assert_editor_styled_span_fields,
+        EditorStyledSpan {
+            start_byte,
+            end_byte,
+            style
+        }
+    );
+    assert_fields!(
+        assert_diagnostic_mark_fields,
+        DiagnosticMark {
+            start_col,
+            end_col,
+            severity,
+            message
+        }
+    );
+    assert_fields!(assert_spell_mark_fields, SpellMark { start_col, end_col });
+    assert_fields!(
+        assert_editor_line_fields,
+        EditorLine {
+            raw_text,
+            gutter_text,
+            spans,
+            line_idx,
+            is_current_line,
+            is_fold_header,
+            folded_line_count,
+            git_diff,
+            diff_status,
+            diagnostics,
+            spell_errors,
+            is_breakpoint,
+            is_conditional_bp,
+            is_dap_current,
+            is_wrap_continuation,
+            segment_col_offset,
+            annotation,
+            ghost_suffix,
+            is_ghost_continuation,
+            indent_guides,
+            colorcolumns
+        }
+    );
+    assert_fields_non_exhaustive!(
+        assert_editor_fields,
+        Editor {
+            id,
+            rect,
+            lines,
+            cursor,
+            extra_cursors,
+            selection,
+            extra_selections,
+            yank_highlight,
+            scroll_top,
+            scroll_left,
+            total_lines,
+            max_col,
+            gutter_char_width,
+            is_active,
+            show_active_bg,
+            has_git_diff,
+            has_breakpoints,
+            diagnostic_gutter,
+            code_action_lines,
+            bracket_match_positions,
+            active_indent_col,
+            tabstop,
+            cursorline,
+            lightbulb_glyph
+        }
+    );
+    fn assert_find_replace_click_target(t: FindReplaceClickTarget) {
+        match t {
+            FindReplaceClickTarget::Chevron => {}
+            FindReplaceClickTarget::FindInput(_) => {}
+            FindReplaceClickTarget::ReplaceInput(_) => {}
+            FindReplaceClickTarget::ToggleCase => {}
+            FindReplaceClickTarget::ToggleWholeWord => {}
+            FindReplaceClickTarget::ToggleRegex => {}
+            FindReplaceClickTarget::PrevMatch => {}
+            FindReplaceClickTarget::NextMatch => {}
+            FindReplaceClickTarget::ToggleInSelection => {}
+            FindReplaceClickTarget::Close => {}
+            FindReplaceClickTarget::TogglePreserveCase => {}
+            FindReplaceClickTarget::ReplaceCurrent => {}
+            FindReplaceClickTarget::ReplaceAll => {}
+        }
+    }
+    assert_fields!(assert_fr_hit_region_fields, FrHitRegion { col, row, width });
+    assert_fields!(
+        assert_find_replace_panel_fields,
+        FindReplacePanel {
+            query,
+            replacement,
+            show_replace,
+            focus,
+            cursor,
+            sel_anchor,
+            match_info,
+            case_sensitive,
+            whole_word,
+            use_regex,
+            preserve_case,
+            in_selection,
+            group_bounds,
+            panel_width,
+            replace_one_glyph,
+            replace_all_glyph,
+            hit_regions
+        }
+    );
+    fn assert_control_width(w: ControlWidth) {
+        match w {
+            ControlWidth::Fill => {}
+            ControlWidth::Fixed(_) => {}
+            ControlWidth::Content => {}
+        }
+    }
+    fn assert_label_position(p: LabelPosition) {
+        match p {
+            LabelPosition::Left => {}
+            LabelPosition::Top => {}
+            LabelPosition::Inline => {}
+            LabelPosition::Hidden => {}
+        }
+    }
+    fn assert_label_align(a: LabelAlign) {
+        match a {
+            LabelAlign::Start => {}
+            LabelAlign::Center => {}
+            LabelAlign::End => {}
+        }
+    }
+    fn assert_row_align(a: RowAlign) {
+        match a {
+            RowAlign::Start => {}
+            RowAlign::Center => {}
+            RowAlign::End => {}
+            RowAlign::Stretch => {}
+        }
+    }
+    assert_fields!(
+        assert_form_spacing_fields,
+        FormSpacing {
+            padding,
+            item_gap,
+            row_align
+        }
+    );
+    fn assert_validation_state(v: ValidationState) {
+        match v {
+            ValidationState::Error(_) => {}
+            ValidationState::Warning(_) => {}
+        }
+    }
+    assert_fields!(
+        assert_toggle_group_item_fields,
+        ToggleGroupItem { id, label, value }
+    );
+    assert_fields!(
+        assert_button_row_item_fields,
+        ButtonRowItem {
+            id,
+            label,
+            disabled,
+            icon,
+            spec
+        }
+    );
+    fn assert_field_kind(k: FieldKind) {
+        match k {
+            FieldKind::Label => {}
+            FieldKind::Toggle { value: _ } => {}
+            FieldKind::TextInput {
+                value: _,
+                placeholder: _,
+                cursor: _,
+                selection_anchor: _,
+            } => {}
+            FieldKind::Button => {}
+            FieldKind::ReadOnly { value: _ } => {}
+            FieldKind::Slider {
+                value: _,
+                min: _,
+                max: _,
+                step: _,
+            } => {}
+            FieldKind::ColorPicker { value: _ } => {}
+            FieldKind::Dropdown {
+                options: _,
+                selected_idx: _,
+            } => {}
+            FieldKind::TextArea {
+                value: _,
+                placeholder: _,
+                cursor: _,
+                visible_rows: _,
+            } => {}
+            FieldKind::PasswordInput {
+                value: _,
+                placeholder: _,
+                cursor: _,
+                mask_char: _,
+            } => {}
+            FieldKind::SegmentedControl {
+                options: _,
+                selected_idx: _,
+            } => {}
+            FieldKind::ToggleGroup { toggles: _ } => {}
+            FieldKind::ButtonRow { buttons: _ } => {}
+            FieldKind::Toolbar(_) => {}
+            FieldKind::DatePicker(_) => {}
+            FieldKind::ComboBox(_) => {}
+            FieldKind::NumberInput(_) => {}
+            FieldKind::RadioGroup(_) => {}
+        }
+    }
+    assert_fields!(
+        assert_form_field_fields,
+        FormField {
+            id,
+            label,
+            kind,
+            hint,
+            disabled,
+            validation,
+            label_position,
+            label_align,
+            label_width,
+            tab_index,
+            control_width,
+            min_control_width,
+            row_align
+        }
+    );
+    assert_fields!(
+        assert_form_fields2,
+        Form {
+            id,
+            fields,
+            focused_field,
+            scroll_offset,
+            has_focus,
+            label_position,
+            label_align,
+            label_width,
+            control_width,
+            min_control_width,
+            spacing
+        }
+    );
+    fn assert_msv_axis(a: MsvAxis) {
+        match a {
+            MsvAxis::Vertical => {}
+            MsvAxis::Horizontal => {}
+        }
+    }
+    fn assert_scroll_mode(m: ScrollMode) {
+        match m {
+            ScrollMode::PerSection => {}
+            ScrollMode::WholePanel => {}
+        }
+    }
+    fn assert_section_size(s: SectionSize) {
+        match s {
+            SectionSize::Fixed(_) => {}
+            SectionSize::Percent(_) => {}
+            SectionSize::Weight(_) => {}
+            SectionSize::Content => {}
+            SectionSize::EqualShare => {}
+        }
+    }
+    assert_fields!(
+        assert_header_action_fields,
+        HeaderAction {
+            id,
+            icon,
+            tooltip,
+            enabled
+        }
+    );
+    assert_fields!(
+        assert_section_header_fields,
+        SectionHeader {
+            icon,
+            title,
+            badge,
+            actions,
+            show_chevron
+        }
+    );
+    assert_fields!(
+        assert_empty_body_fields,
+        EmptyBody {
+            icon,
+            text,
+            hint,
+            action
+        }
+    );
+    assert_fields!(
+        assert_inline_input_fields,
+        InlineInput {
+            id,
+            text,
+            caret,
+            placeholder,
+            has_focus
+        }
+    );
+    fn assert_section_aux(a: SectionAux) {
+        match a {
+            SectionAux::Input(_) => {}
+            SectionAux::Toolbar(_) => {}
+            SectionAux::Search(_) => {}
+            SectionAux::Custom(_) => {}
+        }
+    }
+    fn assert_section_body(b: SectionBody) {
+        match b {
+            SectionBody::Tree(_) => {}
+            SectionBody::List(_) => {}
+            SectionBody::Form(_) => {}
+            SectionBody::Terminal(_) => {}
+            SectionBody::MessageList(_) => {}
+            SectionBody::Text(_) => {}
+            SectionBody::Chart(_) => {}
+            SectionBody::Empty(_) => {}
+            SectionBody::Custom(_) => {}
+        }
+    }
+    assert_fields!(
+        assert_section_fields,
+        Section {
+            id,
+            header,
+            body,
+            aux,
+            size,
+            collapsed,
+            min_size,
+            max_size
+        }
+    );
+    assert_fields!(
+        assert_multi_section_view_fields,
+        MultiSectionView {
+            id,
+            sections,
+            active_section,
+            axis,
+            allow_resize,
+            allow_collapse,
+            scroll_mode,
+            has_focus,
+            panel_scroll
+        }
+    );
+    fn assert_key_binding(k: KeyBinding) {
+        match k {
+            KeyBinding::Save => {}
+            KeyBinding::Open => {}
+            KeyBinding::New => {}
+            KeyBinding::Close => {}
+            KeyBinding::Copy => {}
+            KeyBinding::Cut => {}
+            KeyBinding::Paste => {}
+            KeyBinding::Undo => {}
+            KeyBinding::Redo => {}
+            KeyBinding::SelectAll => {}
+            KeyBinding::Find => {}
+            KeyBinding::Replace => {}
+            KeyBinding::Quit => {}
+            KeyBinding::Literal(_) => {}
+        }
+    }
+    fn assert_accelerator_scope(s: AcceleratorScope) {
+        match s {
+            AcceleratorScope::Global => {}
+            AcceleratorScope::Widget(_) => {}
+            AcceleratorScope::Mode(_) => {}
+        }
+    }
+    assert_fields!(
+        assert_accelerator_fields,
+        Accelerator {
+            id,
+            binding,
+            scope,
+            label
+        }
+    );
+    assert_fields!(
+        assert_context_menu_item_fields,
+        ContextMenuItem {
+            id,
+            label,
+            detail,
+            disabled,
+            key_equivalent,
+            checked,
+            icon,
+            submenu
+        }
+    );
+    assert_fields!(
+        assert_menu_bar_item_fields,
+        MenuBarItem {
+            id,
+            label,
+            disabled,
+            submenu
+        }
+    );
+    assert_fields!(
+        assert_menu_bar_fields,
+        MenuBar {
+            id,
+            items,
+            open_item,
+            focused_item
+        }
+    );
+    fn assert_diff_row_kind(k: DiffRowKind) {
+        match k {
+            DiffRowKind::Same => {}
+            DiffRowKind::Changed => {}
+            DiffRowKind::Removed => {}
+            DiffRowKind::Added => {}
+        }
+    }
+    assert_fields!(assert_diff_row_fields, DiffRow { left, right, kind });
+    assert_fields!(
+        assert_diff_hunk_fields,
+        DiffHunk {
+            left_start,
+            right_start,
+            rows
+        }
+    );
+    fn assert_diff_mode(m: DiffMode) {
+        match m {
+            DiffMode::SideBySide => {}
+            DiffMode::Unified => {}
+        }
+    }
+    fn assert_diff_editability(e: DiffEditability) {
+        match e {
+            DiffEditability::ReadOnly => {}
+            DiffEditability::RightEditable => {}
+        }
+    }
+    fn assert_diff_pane(p: DiffPane) {
+        match p {
+            DiffPane::Left => {}
+            DiffPane::Right => {}
+        }
+    }
+    assert_fields!(
+        assert_diff_view_fields,
+        DiffView {
+            id,
+            left,
+            right,
+            left_label,
+            right_label,
+            hunks,
+            mode,
+            editability,
+            scroll_offset,
+            focused_pane,
+            has_focus
         }
     );
 
@@ -2619,6 +4965,99 @@ mod coverage {
                  `assert_fields_non_exhaustive!` can't see a new field on a \
                  `#[non_exhaustive]` struct, so this key-set check is the guard \
                  that catches it"
+            );
+        }
+    }
+
+    /// Runtime variant-set guards for the two `#[non_exhaustive]` **enums**
+    /// (`ToolbarButton`, `TabBarEvent`) a pattern match can't fully cover --
+    /// an external match only needs a wildcard arm for *unlisted* variants
+    /// (see this module's own doc), so a brand-new variant added upstream
+    /// is invisible to [`assert_toolbar_button`]/[`assert_tab_bar_event`]
+    /// even though every *known* variant's own fields are still matched
+    /// exhaustively there.
+    ///
+    /// Serde's own derive has no such blind spot: deserializing an
+    /// externally-tagged enum with an unrecognised tag produces an error
+    /// whose message serde generates straight from the enum's real variant
+    /// list (`unknown variant` ``tag``, expected one of ``a``, ``b``, ...``),
+    /// so parsing that message back out gives the exact variant set the
+    /// *compiled* enum has today -- catching an added, removed, or renamed
+    /// variant the same way [`value_shape`]'s JSON key-set check catches a
+    /// field `assert_fields_non_exhaustive!` can't see.
+    mod variant_shape {
+        use std::collections::BTreeSet;
+
+        use quadraui::{TabBarEvent, ToolbarButton};
+
+        /// Deserializes a deliberately-unknown tag into `T` and parses the
+        /// resulting serde error's "expected one of `A`, `B`, ..." variant
+        /// list back out. Panics if `T` accepts the probe tag (it shouldn't
+        /// -- the tag is namespaced specifically so it can never collide
+        /// with a real variant) or if serde's message shape ever changes in
+        /// a way this parser doesn't recognise.
+        fn known_variants<T: serde::de::DeserializeOwned + std::fmt::Debug>() -> BTreeSet<String> {
+            let err = serde_json::from_str::<T>(r#"{"__quadraui_schema_probe__":null}"#)
+                .expect_err("the probe tag must not be a real variant");
+            let message = err.to_string();
+            let marker = "expected one of ";
+            let list = message
+                .split_once(marker)
+                .map(|(_, rest)| rest)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "serde's unknown-variant error message no longer contains \
+                         {marker:?} -- update `known_variants`'s parser to match \
+                         the new shape (got: {message:?})"
+                    )
+                });
+            // Each name is backtick-delimited (`` `A`, `B`, ... ``); the
+            // list is followed by serde_json's own trailing " at line N
+            // column N" location suffix, outside the last pair of
+            // backticks, so splitting on backtick alone (rather than on
+            // `, `) is what keeps that suffix out of the last entry.
+            list.split('`')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_string)
+                .collect()
+        }
+
+        #[test]
+        fn toolbar_button_variants_match_the_schema_tag_list() {
+            assert_eq!(
+                known_variants::<ToolbarButton>(),
+                ["Action", "Separator", "Label", "Spacer"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect::<BTreeSet<_>>(),
+                "a variant was added to or removed from `ToolbarButton` without a \
+                 matching update to `schema()`'s `ToolbarButtonDescriptor` entry \
+                 -- `assert_toolbar_button`'s wildcard arm can't see a new \
+                 variant on a `#[non_exhaustive]` enum, so this probe-deserialize \
+                 check is the guard that catches it"
+            );
+        }
+
+        #[test]
+        fn tab_bar_event_variants_match_the_schema_tag_list() {
+            assert_eq!(
+                known_variants::<TabBarEvent>(),
+                [
+                    "TabActivated",
+                    "TabClosed",
+                    "ButtonClicked",
+                    "KeyPressed",
+                    "FocusMoved",
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect::<BTreeSet<_>>(),
+                "a variant was added to or removed from `TabBarEvent` without a \
+                 matching update to `schema()`'s `TabBarEvent` entry -- \
+                 `assert_tab_bar_event`'s wildcard arm can't see a new variant \
+                 on a `#[non_exhaustive]` enum, so this probe-deserialize check \
+                 is the guard that catches it"
             );
         }
     }
