@@ -498,14 +498,36 @@ pub(crate) mod native_surface_paint {
         // `Full` is the VS-Code-style card: content starts a few pixels
         // inside the stroked edge, not flush against it — VS Code's own
         // hover-card vertical inset (distinct from `style.padding`'s 8px
-        // *horizontal* body inset, see `text_padding_x` below). `Sides`
+        // *horizontal* body inset, see `text_padding_x` below). The inset
+        // shrinks to fit when the box is sized tightly around its content
+        // (half the spare height, never negative), so a caller that sizes
+        // the box to just its rows still gets every row painted. `Sides`
         // and `None` have no top rule to clear, so content starts flush
         // with the box's top edge — callers following the
         // `TooltipMeasure` contract size those two variants to exactly the
         // content rows they hold, with no border row to spare.
         const CARD_VPAD: f32 = 4.0;
+        let title = if matches!(chrome.border, TooltipBorder::Full) {
+            chrome
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+        } else {
+            None
+        };
+        let title_size = title.map(|t| surface.surface_measure_text_styled(t, true));
         let mut text_top = match chrome.border {
-            TooltipBorder::Full => bounds.y + CARD_VPAD,
+            TooltipBorder::Full => {
+                let body_rows = match tooltip.styled_lines {
+                    Some(ref lines) => lines.len(),
+                    None => tooltip.text.lines().count(),
+                };
+                let title_block = title_size.map_or(0.0, |(_, h)| h + CARD_VPAD);
+                let content_h = title_block + body_rows as f32 * line_height;
+                let spare = (bounds.height - content_h).max(0.0);
+                bounds.y + CARD_VPAD.min(spare / 2.0)
+            }
             TooltipBorder::Sides | TooltipBorder::None => bounds.y,
         };
 
@@ -548,32 +570,24 @@ pub(crate) mod native_surface_paint {
         // the border stroke the way a terminal titled box draws it. Only
         // `Full` chrome has a closed card for a title to sit inside;
         // `Sides`/`None` ignore it, per `TooltipChrome::title`'s doc.
-        if matches!(chrome.border, TooltipBorder::Full) {
-            if let Some(title) = chrome
-                .title
-                .as_deref()
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-            {
-                let (title_w, title_h) = surface.surface_measure_text_styled(title, true);
-                surface.surface_draw_text_run_styled(
-                    Rect::new(
-                        text_x,
-                        text_top,
-                        text_w.max(title_w).max(1.0),
-                        title_h.max(1.0),
-                    ),
-                    title,
-                    fg,
-                    true,
-                    false,
-                    false,
-                    1.0,
-                );
-                // Gap between the bold title row and the body text below
-                // it — the same vertical inset as the card's own top edge.
-                text_top += title_h + CARD_VPAD;
-            }
+        if let (Some(title), Some((title_w, title_h))) = (title, title_size) {
+            surface.surface_draw_text_run_styled(
+                Rect::new(
+                    text_x,
+                    text_top,
+                    text_w.max(title_w).max(1.0),
+                    title_h.max(1.0),
+                ),
+                title,
+                fg,
+                true,
+                false,
+                false,
+                1.0,
+            );
+            // Gap between the bold title row and the body text below
+            // it — the same vertical inset as the card's own top edge.
+            text_top += title_h + CARD_VPAD;
         }
 
         if let Some(ref styled_lines) = tooltip.styled_lines {
@@ -929,6 +943,38 @@ mod tests {
                 body_rect.y > title_rect.y + title_rect.height,
                 "body text must start below the title row, got body={body_rect:?} \
                  title={title_rect:?}"
+            );
+        }
+
+        /// A `Full` card sized to barely more than its one body row
+        /// still paints that row: the card's vertical inset shrinks to
+        /// the spare height instead of pushing the row past the bottom.
+        #[test]
+        fn tightly_sized_full_card_still_paints_its_body_row() {
+            let tooltip = Tooltip::new(WidgetId::new("tip"), "Body text");
+            let layout = TooltipLayout {
+                bounds: Rect::new(10.0, 10.0, 120.0, 18.0),
+                resolved_placement: ResolvedPlacement::Bottom,
+            };
+            let mut surface = RecordingSurface::default();
+            native_surface_paint::paint(
+                &tooltip,
+                &layout,
+                &TooltipChrome::default(),
+                16.0,
+                8.0,
+                &mut surface,
+                &Theme::default(),
+                &Style::default(),
+            );
+
+            assert_eq!(surface.runs.len(), 1, "the body row must be painted");
+            let (rect, text, _) = &surface.runs[0];
+            assert_eq!(text, "Body text");
+            assert!(rect.y > layout.bounds.y, "row sits inside the top edge");
+            assert!(
+                rect.y + rect.height <= layout.bounds.y + layout.bounds.height,
+                "row fits inside the card, got {rect:?}"
             );
         }
 
