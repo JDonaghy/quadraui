@@ -66,14 +66,15 @@ only a push to `main` runs this workflow.
   overlay (hover card, quick-pick, notification, context menu, dialog box)
   that stays on `corner_radius`.
 
-### Fixed
-- `MessageDialogController`'s OK/Cancel button row (#2368): on a pixel
-  backend, the button row is now sized at `Style::control_height` with
-  VS Code-like horizontal label padding, instead of the raw chrome line
-  height/char-width estimate that rendered an undersized pill. TUI's
-  char-cell geometry is unchanged.
-
 ### Changed
+- `ButtonMetrics::resolve`'s corner radius (#2368): every pixel-backend
+  `Button` (in-tree and downstream) now paints at `Style::button_radius`
+  (default `2.0`) instead of `Style::corner_radius` (default `6.0`) — a
+  visible, out-of-the-box shape change for any existing button that
+  didn't already override `corner_radius`. The shared dialog painter's
+  `spec: None` OK/Cancel buttons (`primitives::dialog`) pick up the same
+  radius, so a message dialog's buttons now match. A host that relied on
+  the old 6px look sets `Style::button_radius(6.0)` explicitly.
 - `quadraui::macos`'s ~40 per-primitive painter submodules (#2355) are now
   `#[doc(hidden)]` — unstable, not covered by semver — matching the
   `quadraui::{gtk,tui,win}` backends, which already keep their equivalent
@@ -99,6 +100,16 @@ only a push to `main` runs this workflow.
   against a real `cargo semver-checks --list`, v0.51.0), so hiding — or
   later moving/splitting — a painter internal no longer registers as a
   breaking change.
+
+### Fixed
+- `MessageDialogController`'s OK/Cancel button row (#2368): on a pixel
+  backend, the button row is now sized at `Style::control_height` with
+  VS Code-like horizontal label padding, instead of the raw chrome line
+  height/char-width estimate that rendered an undersized pill. TUI's
+  char-cell geometry is unchanged. The shared dialog painter's legacy
+  (`spec: None`) button fill/stroke now also rounds its corners at
+  `Style::button_radius`, matching the spec-backed path, instead of
+  painting square corners.
 
 ## [0.10.0] - 2026-11-10
 ### Added

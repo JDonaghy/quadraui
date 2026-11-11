@@ -1033,7 +1033,9 @@ pub(crate) mod native_surface_paint {
             // spec-backed button the same way the legacy path's
             // `selected_bg` fill does below. A `spec: None` button keeps
             // painting through the plain highlighted-row/label path
-            // below, unchanged.
+            // below, but still fills/strokes at `Style::button_radius`
+            // (via `ButtonMetrics::resolve`) so both paths share the
+            // same corner shape.
             if let Some(spec) = &btn.spec {
                 let button = spec.to_button(btn.id, btn.is_default);
                 crate::primitives::button::native_surface_paint::paint(
@@ -1042,10 +1044,12 @@ pub(crate) mod native_surface_paint {
                 continue;
             }
 
+            let button_radius =
+                crate::primitives::button::ButtonMetrics::resolve(style).corner_radius;
             if btn.is_default {
-                surface.surface_fill_rect(vis.bounds, theme.selected_bg);
+                surface.surface_fill_rounded_rect(vis.bounds, button_radius, theme.selected_bg);
             }
-            surface.surface_stroke_rect(vis.bounds, theme.border_fg, 1.0);
+            surface.surface_stroke_rounded_rect(vis.bounds, button_radius, theme.border_fg, 1.0);
 
             // The default button's style (selected_bg fill + border) is
             // the marker on GUI — no leading glyph needed (the TUI
@@ -1085,7 +1089,15 @@ pub(crate) mod native_surface_paint {
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
+            /// Every fill's rounded-rect radius, in the same order as
+            /// `fills` — a plain `surface_fill_rect` call records `0.0`
+            /// here so a test asserting "this fill used the button
+            /// radius" can zip the two vecs instead of needing a
+            /// separate recording per call shape.
+            fill_radii: Vec<f32>,
             strokes: Vec<(Rect, Color, f32)>,
+            /// Parallel to `strokes` — see `fill_radii`'s doc.
+            stroke_radii: Vec<f32>,
             text_runs: Vec<(Rect, String, Color)>,
             lines: Vec<(Point, Point, Color, f32)>,
         }
@@ -1107,12 +1119,25 @@ pub(crate) mod native_surface_paint {
             }
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
+                self.fill_radii.push(0.0);
             }
-            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
                 self.fills.push((rect, color));
+                self.fill_radii.push(radius);
             }
             fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
                 self.strokes.push((rect, color, stroke_width));
+                self.stroke_radii.push(0.0);
+            }
+            fn surface_stroke_rounded_rect(
+                &mut self,
+                rect: Rect,
+                radius: f32,
+                color: Color,
+                stroke_width: f32,
+            ) {
+                self.strokes.push((rect, color, stroke_width));
+                self.stroke_radii.push(radius);
             }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.text_runs.push((rect, text.to_string(), color));
@@ -1234,6 +1259,78 @@ pub(crate) mod native_surface_paint {
                 "the default button must still fill selected_bg as its \
                  marker; fills were {:?}",
                 surface.fills,
+            );
+        }
+
+        /// A `spec: None` button — the default OK/Cancel path
+        /// `MessageDialogController` builds — still fills and strokes at
+        /// `Style::button_radius`, not square corners: it shares
+        /// `ButtonMetrics::resolve` with the spec-backed path above
+        /// rather than falling back to the bare `surface_fill_rect`/
+        /// `surface_stroke_rect` verbs.
+        #[test]
+        fn spec_none_button_paints_at_the_shared_button_radius() {
+            let dialog = Dialog {
+                id: WidgetId::new("dialog:confirm"),
+                title: StyledText::plain("Confirm"),
+                body: vec![],
+                buttons: vec![DialogButton {
+                    spec: None,
+                    id: WidgetId::new("dialog:ok"),
+                    label: "OK".to_string(),
+                    is_default: true,
+                    is_cancel: false,
+                    tint: None,
+                }],
+                severity: None,
+                vertical_buttons: true,
+                table: None,
+                input: None,
+            };
+            let dlayout = DialogLayout {
+                bounds: Rect::new(0.0, 0.0, 100.0, 60.0),
+                title_bounds: None,
+                body_bounds: Rect::new(0.0, 0.0, 0.0, 0.0),
+                table_bounds: None,
+                input_bounds: None,
+                body_toolbar_layout: None,
+                button_row_bounds: Rect::new(0.0, 40.0, 100.0, 20.0),
+                visible_buttons: vec![VisibleDialogButton {
+                    button_idx: 0,
+                    id: dialog.buttons[0].id.clone(),
+                    bounds: Rect::new(10.0, 40.0, 40.0, 16.0),
+                }],
+                hit_regions: vec![],
+            };
+            let style = crate::style::Style::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &dialog,
+                &dlayout,
+                14.0,
+                &mut surface,
+                &Theme::default(),
+                &style,
+            );
+
+            let expected_radius =
+                crate::primitives::button::ButtonMetrics::resolve(&style).corner_radius;
+            assert_ne!(
+                expected_radius, 0.0,
+                "the default Style::button_radius must be non-zero for \
+                 this test to be meaningful",
+            );
+            assert!(
+                surface.fill_radii.contains(&expected_radius),
+                "the default button's fill must use Style::button_radius \
+                 ({expected_radius}); fill radii were {:?}",
+                surface.fill_radii,
+            );
+            assert!(
+                surface.stroke_radii.contains(&expected_radius),
+                "the button border must stroke at Style::button_radius \
+                 ({expected_radius}); stroke radii were {:?}",
+                surface.stroke_radii,
             );
         }
 

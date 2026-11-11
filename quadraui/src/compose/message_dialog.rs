@@ -200,14 +200,33 @@ impl MessageDialogController {
         // of the label — only meaningful once a real label width is
         // available (`is_pixel`'s `measure_text` branch below).
         const BUTTON_PADDING_X: f32 = 14.0;
+        // VS Code's own dialog button minimum width — a short "OK"/"No"
+        // label still gets a VS Code-sized button rather than shrinking
+        // to just its own text + padding.
+        const MIN_BUTTON_WIDTH_PX: f32 = 65.0;
         let button_width = if is_pixel {
             self.dialog
                 .buttons
                 .iter()
                 .map(|b| {
                     let spec = b.resolved_button_spec();
-                    backend.measure_text(&spec.label, crate::FontRole::Chrome).0
-                        + BUTTON_PADDING_X * 2.0
+                    let (label_w, _) = backend.measure_text(&spec.label, crate::FontRole::Chrome);
+                    // An icon reserves its own glyph width plus the gap
+                    // before the label, mirroring
+                    // `button::native_surface_paint::paint`'s own
+                    // `icon_w + gap + label_w` content width — otherwise
+                    // a `Danger`/`Warning` spec's icon has no room and
+                    // clips against the label, the same anti-clipping
+                    // property `min_cell_width()` already pins on TUI.
+                    let icon_w = spec.icon.as_ref().map_or(0.0, |icon| {
+                        backend.measure_text(&icon.glyph, crate::FontRole::Chrome).0
+                    });
+                    let gap = if spec.icon.is_some() && !spec.label.is_empty() {
+                        spec.icon_gap.max(0.0)
+                    } else {
+                        0.0
+                    };
+                    (label_w + icon_w + gap + BUTTON_PADDING_X * 2.0).max(MIN_BUTTON_WIDTH_PX)
                 })
                 .fold(0.0_f32, f32::max)
         } else {
@@ -639,10 +658,84 @@ mod tests {
         );
     }
 
+    /// On a pixel backend, a short label ("OK") floors at the VS Code
+    /// minimum button width rather than sizing down to just its own text
+    /// + padding — otherwise a two-character label would paint narrower
+    /// than the dialog's own undersized-pill bug this fix replaces.
+    #[test]
+    fn pixel_backend_short_label_button_floors_at_the_min_width() {
+        let controller = MessageDialogController::new(opts_two_buttons());
+        let backend = crate::testing::RecordingBackend {
+            line_height: 16.0,
+            char_width: 7.0,
+            viewport: crate::Viewport {
+                width: 800.0,
+                height: 600.0,
+                scale: 1.0,
+            },
+            ..Default::default()
+        };
+
+        let layout = controller.layout(&backend);
+
+        for vis in &layout.visible_buttons {
+            assert!(
+                vis.bounds.width >= 65.0,
+                "a short-label button must not size below the VS Code \
+                 minimum button width; got {}",
+                vis.bounds.width,
+            );
+        }
+    }
+
+    /// On a pixel backend, a spec with an icon reserves room for the
+    /// icon glyph and its gap before the label — mirrors
+    /// `button::native_surface_paint::paint`'s own `icon_w + gap +
+    /// label_w` content width, so the icon never clips against the
+    /// label the way `danger_spec_button_widens_the_button_row_so_it_is_not_clipped`
+    /// already pins on TUI.
+    #[test]
+    fn pixel_backend_icon_spec_button_widens_for_the_icon() {
+        let long_label = "A Very Long Button Label Indeed";
+
+        let mut controller = MessageDialogController::new(opts_ok_only());
+        let mut spec = crate::primitives::button::ButtonSpec::new(long_label);
+        spec.icon = Some(crate::types::Icon::new("\u{f071}", "!"));
+        controller.dialog.buttons[0].label = long_label.into();
+        controller.dialog.buttons[0].spec = Some(spec);
+
+        let mut controller_no_icon = MessageDialogController::new(opts_ok_only());
+        controller_no_icon.dialog.buttons[0].label = long_label.into();
+        controller_no_icon.dialog.buttons[0].spec =
+            Some(crate::primitives::button::ButtonSpec::new(long_label));
+
+        let backend = crate::testing::RecordingBackend {
+            line_height: 16.0,
+            char_width: 7.0,
+            viewport: crate::Viewport {
+                width: 800.0,
+                height: 600.0,
+                scale: 1.0,
+            },
+            ..Default::default()
+        };
+
+        let with_icon = controller.layout(&backend).visible_buttons[0].bounds.width;
+        let without_icon = controller_no_icon.layout(&backend).visible_buttons[0]
+            .bounds
+            .width;
+
+        assert!(
+            with_icon > without_icon,
+            "an icon spec must widen the button beyond the plain-label \
+             width; with_icon={with_icon}, without_icon={without_icon}",
+        );
+    }
+
     /// On a pixel backend (`line_height > 1.0`), the button row height is
     /// `Style::control_height` — the VS Code-matching 26px row, not the
-    /// chrome font's own (usually shorter) line height — see this
-    /// issue's acceptance bar.
+    /// chrome font's own (usually shorter) line height — the
+    /// control_height row this test pins.
     #[test]
     fn pixel_backend_button_row_height_matches_control_height() {
         let controller = MessageDialogController::new(opts_two_buttons());
